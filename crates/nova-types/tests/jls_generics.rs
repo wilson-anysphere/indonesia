@@ -330,9 +330,9 @@ fn field_resolution_applies_capture_conversion_for_extends_wildcard() {
 
     let receiver = Type::class(
         boxed,
-        vec![Type::Wildcard(WildcardBound::Extends(Box::new(Type::class(
-            number, vec![],
-        ))))],
+        vec![Type::Wildcard(WildcardBound::Extends(Box::new(
+            Type::class(number, vec![]),
+        )))],
     );
 
     let mut ctx = TyContext::new(&env);
@@ -349,7 +349,11 @@ fn field_resolution_applies_capture_conversion_for_extends_wildcard() {
 
     // Reading is safe (capture <: Number), but writing is not (Number is not necessarily <: capture).
     assert!(is_assignable(&ctx, &field.ty, &Type::class(number, vec![])));
-    assert!(!is_assignable(&ctx, &Type::class(number, vec![]), &field.ty));
+    assert!(!is_assignable(
+        &ctx,
+        &Type::class(number, vec![]),
+        &field.ty
+    ));
 }
 
 #[test]
@@ -378,7 +382,8 @@ fn field_resolution_applies_capture_conversion_for_super_wildcard() {
     let receiver = Type::class(
         boxed,
         vec![Type::Wildcard(WildcardBound::Super(Box::new(Type::class(
-            integer, vec![],
+            integer,
+            vec![],
         ))))],
     );
 
@@ -396,7 +401,11 @@ fn field_resolution_applies_capture_conversion_for_super_wildcard() {
 
     // Reading is only safe as Object, writing Integer is safe.
     assert!(is_assignable(&ctx, &field.ty, &Type::class(object, vec![])));
-    assert!(!is_assignable(&ctx, &field.ty, &Type::class(integer, vec![])));
+    assert!(!is_assignable(
+        &ctx,
+        &field.ty,
+        &Type::class(integer, vec![])
+    ));
     assert!(is_assignable(
         &ctx,
         &Type::class(integer, vec![]),

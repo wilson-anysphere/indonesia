@@ -179,7 +179,6 @@ impl<'a> TypeStoreLoader<'a> {
             .as_deref()
             .and_then(|sig| parse_class_signature(sig).ok())
         {
-
             for tp in &sig.type_parameters {
                 let id = self
                     .store
@@ -299,7 +298,6 @@ impl<'a> TypeStoreLoader<'a> {
             .as_deref()
             .and_then(|sig| parse_method_signature(sig).ok())
         {
-
             let object = self.object_type()?;
             let mut type_vars = class_type_vars.clone();
 
@@ -357,7 +355,6 @@ impl<'a> TypeStoreLoader<'a> {
             .as_deref()
             .and_then(|sig| parse_method_signature(sig).ok())
         {
-
             let object = self.object_type()?;
             let mut type_vars = class_type_vars.clone();
             let mut type_params = Vec::new();

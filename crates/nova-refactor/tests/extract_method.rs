@@ -18,7 +18,8 @@ fn assert_no_overlaps(edits: &[nova_refactor::TextEdit]) {
             .map(nova_refactor::WorkspaceTextEdit::from)
             .collect(),
     );
-    edit.normalize().expect("edits should normalize without overlaps");
+    edit.normalize()
+        .expect("edits should normalize without overlaps");
 }
 
 #[test]

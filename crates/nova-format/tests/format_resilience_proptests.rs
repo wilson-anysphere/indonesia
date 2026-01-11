@@ -17,18 +17,7 @@ fn hex_digit() -> impl Strategy<Value = char> {
 
 fn whitespace_fragment() -> impl Strategy<Value = String> {
     const WHITESPACE: &[&str] = &[
-        " ",
-        "  ",
-        "   ",
-        "\t",
-        "\n",
-        "\n\n",
-        "\r\n",
-        "\r\n\r\n",
-        " \t",
-        "\t ",
-        " \n",
-        "\n ",
+        " ", "  ", "   ", "\t", "\n", "\n\n", "\r\n", "\r\n\r\n", " \t", "\t ", " \n", "\n ",
     ];
     proptest::sample::select(WHITESPACE).prop_map(ToString::to_string)
 }

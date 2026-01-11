@@ -87,7 +87,11 @@ pub struct InMemoryJavaDatabase {
 
 impl InMemoryJavaDatabase {
     pub fn new(files: impl IntoIterator<Item = (FileId, String)>) -> Self {
-        Self::new_shared(files.into_iter().map(|(file, text)| (file, Arc::<str>::from(text))))
+        Self::new_shared(
+            files
+                .into_iter()
+                .map(|(file, text)| (file, Arc::<str>::from(text))),
+        )
     }
 
     pub fn new_shared(files: impl IntoIterator<Item = (FileId, Arc<str>)>) -> Self {

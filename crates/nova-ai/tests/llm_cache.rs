@@ -46,7 +46,10 @@ async fn llm_chat_is_cached_for_identical_requests() {
         .chat(request.clone(), CancellationToken::new())
         .await
         .unwrap();
-    let out2 = client.chat(request, CancellationToken::new()).await.unwrap();
+    let out2 = client
+        .chat(request, CancellationToken::new())
+        .await
+        .unwrap();
 
     assert_eq!(out1, "Pong");
     assert_eq!(out2, "Pong");

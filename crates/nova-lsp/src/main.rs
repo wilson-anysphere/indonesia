@@ -15,7 +15,8 @@ use nova_ai::context::{
 use nova_ai::NovaAi;
 #[cfg(feature = "ai")]
 use nova_ai::{
-    AiClient, CloudMultiTokenCompletionProvider, CompletionContextBuilder, MultiTokenCompletionProvider,
+    AiClient, CloudMultiTokenCompletionProvider, CompletionContextBuilder,
+    MultiTokenCompletionProvider,
 };
 use nova_db::{FileId as DbFileId, InMemoryFileStore};
 use nova_ide::{
@@ -27,13 +28,13 @@ use nova_ide::{
 #[cfg(feature = "ai")]
 use nova_ide::{multi_token_completion_context, CompletionConfig, CompletionEngine};
 use nova_index::{Index, SymbolKind};
+use nova_lsp::refactor_workspace::RefactorWorkspaceSnapshot;
 use nova_memory::{MemoryBudget, MemoryCategory, MemoryEvent, MemoryManager};
 use nova_refactor::{
     code_action_for_edit, organize_imports, rename as semantic_rename, workspace_edit_to_lsp,
     FileId as RefactorFileId, OrganizeImportsParams, RenameParams as RefactorRenameParams,
     SafeDeleteTarget, SemanticRefactorError,
 };
-use nova_lsp::refactor_workspace::RefactorWorkspaceSnapshot;
 use nova_vfs::{ContentChange, Document, FileIdRegistry, VfsPath};
 use serde::Deserialize;
 use serde_json::json;
@@ -550,7 +551,10 @@ impl ServerState {
         }
     }
 
-    fn refactor_snapshot(&mut self, uri: &LspUri) -> Result<Arc<RefactorWorkspaceSnapshot>, String> {
+    fn refactor_snapshot(
+        &mut self,
+        uri: &LspUri,
+    ) -> Result<Arc<RefactorWorkspaceSnapshot>, String> {
         let project_root =
             RefactorWorkspaceSnapshot::project_root_for_uri(uri).map_err(|e| e.to_string())?;
 
@@ -1600,17 +1604,17 @@ fn handle_code_action_resolve(
     action.data = Some(data_without_uri);
 
     match action_type {
-        Some("ExtractMember") => nova_ide::refactor::resolve_extract_member_code_action(
+        Some("ExtractMember") => {
+            nova_ide::refactor::resolve_extract_member_code_action(&uri, &source, &mut action, None)
+                .map_err(|e| e.to_string())?
+        }
+        Some("ExtractVariable") => nova_lsp::refactor::resolve_extract_variable_code_action(
             &uri,
             &source,
             &mut action,
             None,
         )
         .map_err(|e| e.to_string())?,
-        Some("ExtractVariable") => {
-            nova_lsp::refactor::resolve_extract_variable_code_action(&uri, &source, &mut action, None)
-                .map_err(|e| e.to_string())?
-        }
         _ => {}
     }
 
@@ -1632,9 +1636,11 @@ fn organize_imports_code_action(
 
     let snapshot = state.refactor_snapshot(uri).ok()?;
     let file = RefactorFileId::new(uri.to_string());
-    let edit =
-        organize_imports(snapshot.refactor_db(), OrganizeImportsParams { file: file.clone() })
-            .ok()?;
+    let edit = organize_imports(
+        snapshot.refactor_db(),
+        OrganizeImportsParams { file: file.clone() },
+    )
+    .ok()?;
     if edit.is_empty() {
         return None;
     }
@@ -1690,8 +1696,11 @@ fn handle_java_organize_imports(
         .refactor_snapshot(&uri)
         .map_err(|e| (-32603, e.to_string()))?;
     let file = RefactorFileId::new(uri.to_string());
-    let edit = organize_imports(snapshot.refactor_db(), OrganizeImportsParams { file: file.clone() })
-        .map_err(|e| (-32603, e.to_string()))?;
+    let edit = organize_imports(
+        snapshot.refactor_db(),
+        OrganizeImportsParams { file: file.clone() },
+    )
+    .map_err(|e| (-32603, e.to_string()))?;
 
     if edit.is_empty() {
         return serde_json::to_value(JavaOrganizeImportsResponse {
@@ -1701,8 +1710,8 @@ fn handle_java_organize_imports(
         .map_err(|e| (-32603, e.to_string()));
     }
 
-    let lsp_edit =
-        workspace_edit_to_lsp(snapshot.refactor_db(), &edit).map_err(|e| (-32603, e.to_string()))?;
+    let lsp_edit = workspace_edit_to_lsp(snapshot.refactor_db(), &edit)
+        .map_err(|e| (-32603, e.to_string()))?;
     write_json_message(
         writer,
         &json!({
@@ -2285,13 +2294,17 @@ fn handle_completion(
                 "AI completions are enabled but the Tokio runtime is unavailable".to_string()
             })?;
             let _guard = runtime.enter();
-            state
-                .completion_service
-                .completion_with_document_uri(ctx, cancel.clone(), document_uri.clone())
+            state.completion_service.completion_with_document_uri(
+                ctx,
+                cancel.clone(),
+                document_uri.clone(),
+            )
         } else {
-            state
-                .completion_service
-                .completion_with_document_uri(ctx, cancel.clone(), document_uri.clone())
+            state.completion_service.completion_with_document_uri(
+                ctx,
+                cancel.clone(),
+                document_uri.clone(),
+            )
         };
         (Some(response.context_id.to_string()), has_more)
     };
@@ -3231,7 +3244,8 @@ fn detect_empty_method_signature(selected: &str) -> Option<String> {
     Some(trimmed[..open].trim().to_string())
 }
 
-fn load_ai_config_from_env() -> Result<Option<(nova_config::AiConfig, nova_ai::PrivacyMode)>, String> {
+fn load_ai_config_from_env() -> Result<Option<(nova_config::AiConfig, nova_ai::PrivacyMode)>, String>
+{
     let provider = match std::env::var("NOVA_AI_PROVIDER") {
         Ok(p) => p,
         Err(_) => return Ok(None),
@@ -3324,12 +3338,14 @@ fn load_ai_config_from_env() -> Result<Option<(nova_config::AiConfig, nova_ai::P
             url::Url::parse(&endpoint).map_err(|e| e.to_string())?
         }
         "ollama" => url::Url::parse(
-            &std::env::var("NOVA_AI_ENDPOINT").unwrap_or_else(|_| "http://localhost:11434".to_string()),
+            &std::env::var("NOVA_AI_ENDPOINT")
+                .unwrap_or_else(|_| "http://localhost:11434".to_string()),
         )
         .map_err(|e| e.to_string())?,
         "openai_compatible" => {
-            let endpoint = std::env::var("NOVA_AI_ENDPOINT")
-                .map_err(|_| "NOVA_AI_ENDPOINT is required for openai_compatible provider".to_string())?;
+            let endpoint = std::env::var("NOVA_AI_ENDPOINT").map_err(|_| {
+                "NOVA_AI_ENDPOINT is required for openai_compatible provider".to_string()
+            })?;
             url::Url::parse(&endpoint).map_err(|e| e.to_string())?
         }
         "openai" => url::Url::parse(
@@ -3343,9 +3359,8 @@ fn load_ai_config_from_env() -> Result<Option<(nova_config::AiConfig, nova_ai::P
         )
         .map_err(|e| e.to_string())?,
         "gemini" => url::Url::parse(
-            &std::env::var("NOVA_AI_ENDPOINT").unwrap_or_else(|_| {
-                "https://generativelanguage.googleapis.com/".to_string()
-            }),
+            &std::env::var("NOVA_AI_ENDPOINT")
+                .unwrap_or_else(|_| "https://generativelanguage.googleapis.com/".to_string()),
         )
         .map_err(|e| e.to_string())?,
         "azure" => {
@@ -3357,10 +3372,10 @@ fn load_ai_config_from_env() -> Result<Option<(nova_config::AiConfig, nova_ai::P
     };
 
     if provider == "azure" {
-        cfg.provider.azure_deployment = Some(
-            std::env::var("NOVA_AI_AZURE_DEPLOYMENT")
-                .map_err(|_| "NOVA_AI_AZURE_DEPLOYMENT is required for azure provider".to_string())?,
-        );
+        cfg.provider.azure_deployment =
+            Some(std::env::var("NOVA_AI_AZURE_DEPLOYMENT").map_err(|_| {
+                "NOVA_AI_AZURE_DEPLOYMENT is required for azure provider".to_string()
+            })?);
         cfg.provider.azure_api_version = Some(
             std::env::var("NOVA_AI_AZURE_API_VERSION").unwrap_or_else(|_| "2024-02-01".to_string()),
         );

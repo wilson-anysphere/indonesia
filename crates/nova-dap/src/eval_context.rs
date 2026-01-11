@@ -39,4 +39,3 @@ impl EvalOptions {
         Self::for_context(EvalContext::from_dap_context(context))
     }
 }
-

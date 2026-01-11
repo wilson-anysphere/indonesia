@@ -1,6 +1,6 @@
 use nova_remote_proto::v3::{
-    self, Capabilities, CompressionAlgo, ProtocolVersion, Request, Response, RpcError as ProtoRpcError,
-    RpcErrorCode, RpcPayload, SupportedVersions, WireFrame, WorkerHello,
+    self, Capabilities, CompressionAlgo, ProtocolVersion, Request, Response,
+    RpcError as ProtoRpcError, RpcErrorCode, RpcPayload, SupportedVersions, WireFrame, WorkerHello,
 };
 use nova_remote_proto::{FileText, WorkerStats};
 use nova_remote_rpc::{RpcConnection, RpcTransportError, DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN};
@@ -77,8 +77,14 @@ async fn handshake_rejects_unsupported_version() {
 
     let mut worker_hello = hello(None);
     worker_hello.supported_versions = SupportedVersions {
-        min: ProtocolVersion { major: 99, minor: 0 },
-        max: ProtocolVersion { major: 99, minor: 0 },
+        min: ProtocolVersion {
+            major: 99,
+            minor: 0,
+        },
+        max: ProtocolVersion {
+            major: 99,
+            minor: 0,
+        },
     };
 
     let (router_res, worker_res) = tokio::join!(
@@ -263,12 +269,20 @@ async fn request_id_parity_router_even_worker_odd() {
     let (worker, _) = worker;
 
     worker.set_request_handler(|ctx, _req| async move {
-        assert_eq!(ctx.request_id() % 2, 0, "router must generate even request ids");
+        assert_eq!(
+            ctx.request_id() % 2,
+            0,
+            "router must generate even request ids"
+        );
         Ok(Response::Ack)
     });
 
     router.set_request_handler(|ctx, _req| async move {
-        assert_eq!(ctx.request_id() % 2, 1, "worker must generate odd request ids");
+        assert_eq!(
+            ctx.request_id() % 2,
+            1,
+            "worker must generate odd request ids"
+        );
         Ok(Response::Ack)
     });
 
@@ -295,7 +309,10 @@ async fn read_wire_frame(
     max_frame_len: u32,
 ) -> WireFrame {
     let len = stream.read_u32_le().await.unwrap();
-    assert!(len <= max_frame_len, "frame too large: {len} > {max_frame_len}");
+    assert!(
+        len <= max_frame_len,
+        "frame too large: {len} > {max_frame_len}"
+    );
     let mut buf = vec![0u8; len as usize];
     stream.read_exact(&mut buf).await.unwrap();
     v3::decode_wire_frame(&buf).unwrap()
@@ -332,10 +349,13 @@ async fn inbound_parity_violation_closes_connection() {
     .await;
 
     // Router should close the connection.
-    let err = tokio::time::timeout(std::time::Duration::from_millis(200), worker_io.read_u32_le())
-        .await
-        .expect("timed out waiting for router to close")
-        .expect_err("expected EOF after protocol violation");
+    let err = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        worker_io.read_u32_le(),
+    )
+    .await
+    .expect("timed out waiting for router to close")
+    .expect_err("expected EOF after protocol violation");
     assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
 
     let err = router
@@ -373,10 +393,13 @@ async fn reserved_request_id_zero_closes_connection() {
     )
     .await;
 
-    let err = tokio::time::timeout(std::time::Duration::from_millis(200), worker_io.read_u32_le())
-        .await
-        .expect("timed out waiting for router to close")
-        .expect_err("expected EOF after protocol violation");
+    let err = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        worker_io.read_u32_le(),
+    )
+    .await
+    .expect("timed out waiting for router to close")
+    .expect_err("expected EOF after protocol violation");
     assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
 
     let err = router
@@ -560,7 +583,8 @@ async fn chunking_reassembles_interleaved_packets() {
     // Expect two Ack responses, one per request id, in any order.
     let mut seen: HashMap<u64, Response> = HashMap::new();
     while seen.len() < 2 {
-        let frame = read_wire_frame(&mut worker_io, welcome.chosen_capabilities.max_frame_len).await;
+        let frame =
+            read_wire_frame(&mut worker_io, welcome.chosen_capabilities.max_frame_len).await;
         match frame {
             WireFrame::Packet {
                 id,

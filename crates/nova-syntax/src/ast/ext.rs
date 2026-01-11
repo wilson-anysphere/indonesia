@@ -1,6 +1,6 @@
-use crate::{JavaLanguage, SyntaxKind, SyntaxNode, SyntaxToken};
-use crate::ast::AstNode;
 use super::support;
+use crate::ast::AstNode;
+use crate::{JavaLanguage, SyntaxKind, SyntaxNode, SyntaxToken};
 
 impl super::ImportDeclaration {
     pub fn is_static(&self) -> bool {

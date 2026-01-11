@@ -1,7 +1,7 @@
 use nova_cache::{CacheConfig, CacheDir, ProjectSnapshot};
 use nova_index::{
-    append_index_segment, compact_index_segments, load_index_archives, save_indexes,
-    load_index_view, ProjectIndexes, SymbolLocation,
+    append_index_segment, compact_index_segments, load_index_archives, load_index_view,
+    save_indexes, ProjectIndexes, SymbolLocation,
 };
 use std::path::PathBuf;
 

@@ -807,7 +807,10 @@ impl Database {
         index: Option<Arc<nova_classpath::ClasspathIndex>>,
     ) {
         let index = index.map(ArcEq::new);
-        self.inputs.lock().classpath_index.insert(project, index.clone());
+        self.inputs
+            .lock()
+            .classpath_index
+            .insert(project, index.clone());
         self.inner.lock().set_classpath_index(project, index);
     }
 
@@ -970,9 +973,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nova_cache::{CacheConfig, Fingerprint};
     use nova_hir::hir::{Body, Expr, ExprId};
     use nova_memory::{MemoryBudget, MemoryPressure};
-    use nova_cache::{CacheConfig, Fingerprint};
     use std::collections::BTreeMap;
     use std::sync::atomic::Ordering;
     use tempfile::TempDir;

@@ -34,7 +34,9 @@ impl AnthropicProvider {
         );
         headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
 
-        let client = reqwest::Client::builder().default_headers(headers).build()?;
+        let client = reqwest::Client::builder()
+            .default_headers(headers)
+            .build()?;
 
         Ok(Self {
             endpoint,
@@ -47,7 +49,11 @@ impl AnthropicProvider {
 
 #[async_trait]
 impl LlmProvider for AnthropicProvider {
-    async fn chat(&self, request: ChatRequest, cancel: CancellationToken) -> Result<String, AiError> {
+    async fn chat(
+        &self,
+        request: ChatRequest,
+        cancel: CancellationToken,
+    ) -> Result<String, AiError> {
         let url = self
             .endpoint
             .join("v1/messages")
@@ -137,7 +143,11 @@ impl GeminiProvider {
 
 #[async_trait]
 impl LlmProvider for GeminiProvider {
-    async fn chat(&self, request: ChatRequest, cancel: CancellationToken) -> Result<String, AiError> {
+    async fn chat(
+        &self,
+        request: ChatRequest,
+        cancel: CancellationToken,
+    ) -> Result<String, AiError> {
         let mut url = self
             .endpoint
             .join(&format!("v1beta/models/{}:generateContent", self.model))
@@ -222,7 +232,9 @@ impl AzureOpenAiProvider {
             HeaderValue::from_str(&api_key)
                 .map_err(|e| AiError::InvalidConfig(format!("invalid azure api_key: {e}")))?,
         );
-        let client = reqwest::Client::builder().default_headers(headers).build()?;
+        let client = reqwest::Client::builder()
+            .default_headers(headers)
+            .build()?;
         Ok(Self {
             endpoint,
             deployment,
@@ -235,7 +247,11 @@ impl AzureOpenAiProvider {
 
 #[async_trait]
 impl LlmProvider for AzureOpenAiProvider {
-    async fn chat(&self, request: ChatRequest, cancel: CancellationToken) -> Result<String, AiError> {
+    async fn chat(
+        &self,
+        request: ChatRequest,
+        cancel: CancellationToken,
+    ) -> Result<String, AiError> {
         let mut url = self
             .endpoint
             .join(&format!(
@@ -316,7 +332,9 @@ impl HttpProvider {
                     .map_err(|e| AiError::InvalidConfig(e.to_string()))?,
             );
         }
-        let client = reqwest::Client::builder().default_headers(headers).build()?;
+        let client = reqwest::Client::builder()
+            .default_headers(headers)
+            .build()?;
         Ok(Self {
             endpoint,
             model: model.into(),
@@ -328,7 +346,11 @@ impl HttpProvider {
 
 #[async_trait]
 impl LlmProvider for HttpProvider {
-    async fn chat(&self, request: ChatRequest, cancel: CancellationToken) -> Result<String, AiError> {
+    async fn chat(
+        &self,
+        request: ChatRequest,
+        cancel: CancellationToken,
+    ) -> Result<String, AiError> {
         let prompt = messages_to_prompt(&request.messages);
 
         let mut body = serde_json::Map::new();
@@ -511,7 +533,9 @@ fn parse_http_completion(bytes: &[u8]) -> Result<String, AiError> {
     }
     let resp: HttpResponse = serde_json::from_slice(bytes)?;
     if resp.completion.is_empty() {
-        return Err(AiError::UnexpectedResponse("missing completion field".into()));
+        return Err(AiError::UnexpectedResponse(
+            "missing completion field".into(),
+        ));
     }
     Ok(resp.completion)
 }

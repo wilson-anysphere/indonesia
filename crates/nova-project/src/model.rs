@@ -93,9 +93,7 @@ pub enum SourceRootOrigin {
 /// This is designed to be populated from build-tool metadata (Gradle init script JSON, Maven
 /// effective POM, Bazel `aquery`, etc). Callers should treat absent values as "unknown" and fall
 /// back to conventional defaults when needed.
-#[derive(
-    Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, Default,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, Default)]
 pub struct AnnotationProcessingConfig {
     /// Whether annotation processing is enabled for the compilation.
     pub enabled: bool,
@@ -112,9 +110,7 @@ pub struct AnnotationProcessingConfig {
 }
 
 /// Annotation processing configuration for a module, split into main vs test compilations.
-#[derive(
-    Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, Default,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, Default)]
 pub struct AnnotationProcessing {
     pub main: Option<AnnotationProcessingConfig>,
     pub test: Option<AnnotationProcessingConfig>,

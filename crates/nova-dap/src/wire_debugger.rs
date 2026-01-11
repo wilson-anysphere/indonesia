@@ -903,8 +903,14 @@ impl Debugger {
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string();
-                let variables_reference = v.get("variablesReference").and_then(|v| v.as_i64()).unwrap_or(0);
-                let type_name = v.get("type").and_then(|v| v.as_str()).map(|v| v.to_string());
+                let variables_reference = v
+                    .get("variablesReference")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                let type_name = v
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .map(|v| v.to_string());
 
                 let mut obj = serde_json::Map::new();
                 obj.insert("result".to_string(), json!(result));
@@ -1265,23 +1271,24 @@ impl Debugger {
 
         let parent_eval = self.objects.evaluate_name(handle).map(|s| s.to_string());
 
-        let children = match cancellable_jdwp(cancel, self.inspector.object_children(object_id)).await {
-            Ok(children) => children,
-            Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
-            Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
-                self.objects.mark_invalid_object_id(object_id);
-                return Ok(vec![invalid_collected_variable()]);
-            }
-            Err(err) => return Err(err.into()),
-        };
+        let children =
+            match cancellable_jdwp(cancel, self.inspector.object_children(object_id)).await {
+                Ok(children) => children,
+                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
+                    self.objects.mark_invalid_object_id(object_id);
+                    return Ok(vec![invalid_collected_variable()]);
+                }
+                Err(err) => return Err(err.into()),
+            };
 
         let mut out = Vec::with_capacity(children.len());
         for child in children {
             check_cancel(cancel)?;
             let name = child.name;
-            let eval = parent_eval.as_ref().and_then(|base| {
-                is_identifier(&name).then(|| format!("{base}.{name}"))
-            });
+            let eval = parent_eval
+                .as_ref()
+                .and_then(|base| is_identifier(&name).then(|| format!("{base}.{name}")));
             out.push(
                 self.render_variable(cancel, name, eval, child.value, child.static_type)
                     .await?,
@@ -1300,15 +1307,16 @@ impl Debugger {
     ) -> Result<Vec<serde_json::Value>> {
         check_cancel(cancel)?;
 
-        let length = match cancellable_jdwp(cancel, self.jdwp.array_reference_length(array_id)).await {
-            Ok(length) => length.max(0) as i64,
-            Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
-            Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
-                self.objects.mark_invalid_object_id(array_id);
-                return Ok(vec![invalid_collected_variable()]);
-            }
-            Err(err) => return Err(err.into()),
-        };
+        let length =
+            match cancellable_jdwp(cancel, self.jdwp.array_reference_length(array_id)).await {
+                Ok(length) => length.max(0) as i64,
+                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
+                    self.objects.mark_invalid_object_id(array_id);
+                    return Ok(vec![invalid_collected_variable()]);
+                }
+                Err(err) => return Err(err.into()),
+            };
 
         let element_type = self
             .objects
@@ -1326,7 +1334,8 @@ impl Debugger {
 
         let values = match cancellable_jdwp(
             cancel,
-            self.jdwp.array_reference_get_values(array_id, start_index as i32, count as i32),
+            self.jdwp
+                .array_reference_get_values(array_id, start_index as i32, count as i32),
         )
         .await
         {
@@ -1423,7 +1432,9 @@ impl Debugger {
 
         let evaluate_name = evaluate_name.or_else(|| Some(name.clone()));
         if let Some(eval) = evaluate_name.clone() {
-            if let Some(handle) = ObjectHandle::from_variables_reference(formatted.variables_reference) {
+            if let Some(handle) =
+                ObjectHandle::from_variables_reference(formatted.variables_reference)
+            {
                 self.objects.set_evaluate_name(handle, eval);
             }
         }

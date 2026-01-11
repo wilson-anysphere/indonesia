@@ -17,9 +17,7 @@ use nova_scheduler::{CancellationToken, Cancelled, Scheduler, SchedulerConfig, T
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, BufReader};
 use tokio::net::TcpListener;
 use tokio::process::Command;
-use tokio::sync::{
-    mpsc, oneshot, watch, Mutex, Notify, OwnedSemaphorePermit, RwLock, Semaphore,
-};
+use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify, OwnedSemaphorePermit, RwLock, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{timeout, Duration, Instant};
 use tracing::{error, info, warn};
@@ -1351,8 +1349,8 @@ async fn handle_new_connection(
         WORKER_HANDSHAKE_TIMEOUT,
         transport::read_payload_limited(&mut stream, MAX_HELLO_BYTES),
     )
-        .await
-        .context("timed out waiting for WorkerHello")??;
+    .await
+    .context("timed out waiting for WorkerHello")??;
     let hello = match nova_remote_proto::decode_message(&payload) {
         Ok(message) => message,
         Err(v2_err) => {

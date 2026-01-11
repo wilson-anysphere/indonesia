@@ -601,7 +601,10 @@ fn stdio_server_resolves_extract_variable_code_action() {
     let mut extract_variable = extract_variable.clone();
     if let Some(data) = extract_variable.get_mut("data") {
         if let Some(obj) = data.as_object_mut() {
-            obj.insert("name".to_string(), serde_json::Value::String("sum".to_string()));
+            obj.insert(
+                "name".to_string(),
+                serde_json::Value::String("sum".to_string()),
+            );
         }
     }
 
@@ -665,10 +668,7 @@ fn stdio_server_offers_inline_variable_code_actions() {
         .parse()
         .expect("uri");
 
-    let cursor_offset = source
-        .find("println(a)")
-        .expect("println call")
-        + "println(".len();
+    let cursor_offset = source.find("println(a)").expect("println call") + "println(".len();
     let index = LineIndex::new(source);
     let cursor_pos = index.position(source, TextSize::from(cursor_offset as u32));
     let cursor = Position::new(cursor_pos.line, cursor_pos.character);
@@ -736,16 +736,21 @@ fn stdio_server_offers_inline_variable_code_actions() {
         .expect("code actions array");
 
     assert!(
-        actions.iter().any(|action| action.get("title").and_then(|v| v.as_str()) == Some("Inline variable")),
+        actions
+            .iter()
+            .any(|action| action.get("title").and_then(|v| v.as_str()) == Some("Inline variable")),
         "expected Inline variable action"
     );
 
     let inline_all = actions
         .iter()
-        .find(|action| action.get("title").and_then(|v| v.as_str()) == Some("Inline variable (all usages)"))
+        .find(|action| {
+            action.get("title").and_then(|v| v.as_str()) == Some("Inline variable (all usages)")
+        })
         .expect("inline all usages action");
 
-    let inline_all: CodeAction = serde_json::from_value(inline_all.clone()).expect("decode CodeAction");
+    let inline_all: CodeAction =
+        serde_json::from_value(inline_all.clone()).expect("decode CodeAction");
     let edit = inline_all.edit.expect("edit");
     let changes = edit.changes.expect("changes");
     let edits = changes.get(&uri).expect("edits for file");

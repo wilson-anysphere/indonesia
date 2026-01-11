@@ -586,7 +586,10 @@ impl AptManager {
     ///
     /// This is best-effort: if build metadata extraction fails, Nova falls back to conventional
     /// generated source roots.
-    pub fn status_with_build(&mut self, build: &BuildManager) -> io::Result<GeneratedSourcesStatus> {
+    pub fn status_with_build(
+        &mut self,
+        build: &BuildManager,
+    ) -> io::Result<GeneratedSourcesStatus> {
         let _ = self.apply_build_annotation_processing(build);
         self.status()
     }
@@ -811,7 +814,10 @@ impl AptManager {
         roots
     }
 
-    fn apply_build_annotation_processing(&mut self, build: &BuildManager) -> nova_build::Result<()> {
+    fn apply_build_annotation_processing(
+        &mut self,
+        build: &BuildManager,
+    ) -> nova_build::Result<()> {
         let workspace_root = self.project.workspace_root.clone();
 
         match self.project.build_system {
@@ -833,10 +839,8 @@ impl AptManager {
                         .strip_prefix(&workspace_root)
                         .ok()
                         .and_then(rel_to_gradle_project_path);
-                    module.annotation_processing = build.annotation_processing_gradle(
-                        &workspace_root,
-                        project_path.as_deref(),
-                    )?;
+                    module.annotation_processing = build
+                        .annotation_processing_gradle(&workspace_root, project_path.as_deref())?;
                 }
             }
             _ => {}

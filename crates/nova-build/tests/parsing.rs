@@ -1,8 +1,9 @@
 use nova_build::{
-    collect_gradle_build_files, collect_maven_build_files, parse_gradle_classpath_output,
-    parse_gradle_annotation_processing_output, parse_gradle_projects_output, parse_javac_diagnostics,
-    parse_maven_classpath_output, parse_maven_effective_pom_annotation_processing,
-    parse_maven_evaluate_scalar_output, BuildFileFingerprint, GradleProjectInfo, JavaCompileConfig,
+    collect_gradle_build_files, collect_maven_build_files,
+    parse_gradle_annotation_processing_output, parse_gradle_classpath_output,
+    parse_gradle_projects_output, parse_javac_diagnostics, parse_maven_classpath_output,
+    parse_maven_effective_pom_annotation_processing, parse_maven_evaluate_scalar_output,
+    BuildFileFingerprint, GradleProjectInfo, JavaCompileConfig,
 };
 use nova_core::{DiagnosticSeverity, Position, Range};
 use std::path::{Path, PathBuf};
@@ -600,8 +601,8 @@ fn parses_maven_effective_pom_annotation_processing() {
 </project>
 "#;
 
-    let ap = parse_maven_effective_pom_annotation_processing(xml, Path::new("/workspace/app"))
-        .unwrap();
+    let ap =
+        parse_maven_effective_pom_annotation_processing(xml, Path::new("/workspace/app")).unwrap();
     let main = ap.main.unwrap();
     assert!(!main.enabled);
     assert_eq!(

@@ -463,7 +463,9 @@ async fn handle_request_inner(
                             Some("cancelled".to_string()),
                         );
                     }
-                    Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+                    Err(err) => {
+                        send_response(out_tx, seq, request, false, None, Some(err.to_string()))
+                    }
                 }
             } else {
                 send_response(out_tx, seq, request, true, None, None);
@@ -1747,7 +1749,10 @@ async fn handle_request_inner(
 
             let options = EvalOptions::from_dap_context(args.context.as_deref());
 
-            match dbg.evaluate(cancel, frame_id, &args.expression, options).await {
+            match dbg
+                .evaluate(cancel, frame_id, &args.expression, options)
+                .await
+            {
                 Ok(body) if cancel.is_cancelled() => send_response(
                     out_tx,
                     seq,

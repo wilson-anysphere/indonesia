@@ -65,8 +65,7 @@ fn uppercased_file_words(db: &dyn NovaIde, file: FileId) -> Vec<String> {
     let start = Instant::now();
 
     #[cfg(feature = "tracing")]
-    let _span =
-        tracing::debug_span!("query", name = "uppercased_file_words", ?file).entered();
+    let _span = tracing::debug_span!("query", name = "uppercased_file_words", ?file).entered();
 
     cancel::check_cancelled(db);
 
@@ -84,7 +83,9 @@ fn uppercased_file_words(db: &dyn NovaIde, file: FileId) -> Vec<String> {
         Fingerprint::from_bytes(text.as_bytes()),
     );
 
-    let args = UppercasedFileWordsArgs { file: file.to_raw() };
+    let args = UppercasedFileWordsArgs {
+        file: file.to_raw(),
+    };
 
     let result = db.persistence().get_or_compute_derived(
         "uppercased_file_words",

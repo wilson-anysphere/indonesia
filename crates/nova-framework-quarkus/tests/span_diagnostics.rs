@@ -70,4 +70,3 @@ fn ambiguous_dependency_diagnostic_has_span() {
     let span = diag.diagnostic.span.expect("expected diagnostic span");
     assert_eq!(&greeter[span.start..span.end], "service");
 }
-

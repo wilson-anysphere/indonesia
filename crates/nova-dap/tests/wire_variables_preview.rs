@@ -50,7 +50,8 @@ async fn wire_variables_have_richer_previews_and_support_pinning() {
 
     let (client, server_stream) = tokio::io::duplex(64 * 1024);
     let (server_read, server_write) = tokio::io::split(server_stream);
-    let server_task = tokio::spawn(async move { wire_server::run(server_read, server_write).await });
+    let server_task =
+        tokio::spawn(async move { wire_server::run(server_read, server_write).await });
 
     let (client_read, client_write) = tokio::io::split(client);
     let mut reader = DapReader::new(client_read);
@@ -58,9 +59,15 @@ async fn wire_variables_have_richer_previews_and_support_pinning() {
 
     send_request(&mut writer, 1, "initialize", json!({})).await;
     let init_resp = read_response(&mut reader, 1).await;
-    assert!(init_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    assert!(init_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
     let initialized = read_next(&mut reader).await;
-    assert_eq!(initialized.get("event").and_then(|v| v.as_str()), Some("initialized"));
+    assert_eq!(
+        initialized.get("event").and_then(|v| v.as_str()),
+        Some("initialized")
+    );
 
     send_request(
         &mut writer,
@@ -73,7 +80,10 @@ async fn wire_variables_have_richer_previews_and_support_pinning() {
     )
     .await;
     let attach_resp = read_response(&mut reader, 2).await;
-    assert!(attach_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    assert!(attach_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
 
     send_request(
         &mut writer,
@@ -86,12 +96,10 @@ async fn wire_variables_have_richer_previews_and_support_pinning() {
     )
     .await;
     let bp_resp = read_response(&mut reader, 3).await;
-    assert!(
-        bp_resp
-            .pointer("/body/breakpoints/0/verified")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    );
+    assert!(bp_resp
+        .pointer("/body/breakpoints/0/verified")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
 
     send_request(&mut writer, 4, "threads", json!({})).await;
     let threads_resp = read_response(&mut reader, 4).await;
@@ -100,7 +108,13 @@ async fn wire_variables_have_richer_previews_and_support_pinning() {
         .and_then(|v| v.as_i64())
         .unwrap();
 
-    send_request(&mut writer, 5, "stackTrace", json!({ "threadId": thread_id })).await;
+    send_request(
+        &mut writer,
+        5,
+        "stackTrace",
+        json!({ "threadId": thread_id }),
+    )
+    .await;
     let stack_resp = read_response(&mut reader, 5).await;
     let frame_id = stack_resp
         .pointer("/body/stackFrames/0/id")
@@ -109,9 +123,15 @@ async fn wire_variables_have_richer_previews_and_support_pinning() {
 
     send_request(&mut writer, 6, "scopes", json!({ "frameId": frame_id })).await;
     let scopes_resp = read_response(&mut reader, 6).await;
-    let scopes = scopes_resp.pointer("/body/scopes").and_then(|v| v.as_array()).unwrap();
+    let scopes = scopes_resp
+        .pointer("/body/scopes")
+        .and_then(|v| v.as_array())
+        .unwrap();
     assert_eq!(scopes.len(), 2);
-    assert_eq!(scopes[0].get("name").and_then(|v| v.as_str()), Some("Locals"));
+    assert_eq!(
+        scopes[0].get("name").and_then(|v| v.as_str()),
+        Some("Locals")
+    );
     assert_eq!(
         scopes[1].get("name").and_then(|v| v.as_str()),
         Some("Pinned Objects")
@@ -123,24 +143,51 @@ async fn wire_variables_have_richer_previews_and_support_pinning() {
 
     let locals_ref = scopes[0]["variablesReference"].as_i64().unwrap();
 
-    send_request(&mut writer, 7, "variables", json!({ "variablesReference": locals_ref })).await;
+    send_request(
+        &mut writer,
+        7,
+        "variables",
+        json!({ "variablesReference": locals_ref }),
+    )
+    .await;
     let vars_resp = read_response(&mut reader, 7).await;
-    let locals = vars_resp.pointer("/body/variables").and_then(|v| v.as_array()).unwrap();
+    let locals = vars_resp
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
 
     let string_var = find_var(locals, "s");
     let string_value = string_var.get("value").and_then(|v| v.as_str()).unwrap();
     assert!(string_value.starts_with("\"mock string\""));
-    assert_eq!(string_var.get("type").and_then(|v| v.as_str()), Some("java.lang.String"));
+    assert_eq!(
+        string_var.get("type").and_then(|v| v.as_str()),
+        Some("java.lang.String")
+    );
 
     let array_var = find_var(locals, "arr");
-    let array_ref = array_var.get("variablesReference").and_then(|v| v.as_i64()).unwrap();
+    let array_ref = array_var
+        .get("variablesReference")
+        .and_then(|v| v.as_i64())
+        .unwrap();
     assert!(array_ref > 1000);
-    assert_eq!(array_var.get("type").and_then(|v| v.as_str()), Some("int[]"));
+    assert_eq!(
+        array_var.get("type").and_then(|v| v.as_str()),
+        Some("int[]")
+    );
 
     // Handles should be stable across multiple variables() calls.
-    send_request(&mut writer, 8, "variables", json!({ "variablesReference": locals_ref })).await;
+    send_request(
+        &mut writer,
+        8,
+        "variables",
+        json!({ "variablesReference": locals_ref }),
+    )
+    .await;
     let vars_resp2 = read_response(&mut reader, 8).await;
-    let locals2 = vars_resp2.pointer("/body/variables").and_then(|v| v.as_array()).unwrap();
+    let locals2 = vars_resp2
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
     let array_ref2 = find_var(locals2, "arr")
         .get("variablesReference")
         .and_then(|v| v.as_i64())
@@ -156,15 +203,24 @@ async fn wire_variables_have_richer_previews_and_support_pinning() {
     )
     .await;
     let array_vars = read_response(&mut reader, 9).await;
-    let elements = array_vars.pointer("/body/variables").and_then(|v| v.as_array()).unwrap();
+    let elements = array_vars
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
     assert_eq!(elements.len(), 2);
-    assert_eq!(elements[0].get("name").and_then(|v| v.as_str()), Some("[1]"));
+    assert_eq!(
+        elements[0].get("name").and_then(|v| v.as_str()),
+        Some("[1]")
+    );
     assert_eq!(elements[0].get("value").and_then(|v| v.as_str()), Some("1"));
     assert_eq!(
         elements[0].get("evaluateName").and_then(|v| v.as_str()),
         Some("arr[1]")
     );
-    assert_eq!(elements[1].get("name").and_then(|v| v.as_str()), Some("[2]"));
+    assert_eq!(
+        elements[1].get("name").and_then(|v| v.as_str()),
+        Some("[2]")
+    );
     assert_eq!(elements[1].get("value").and_then(|v| v.as_str()), Some("2"));
 
     // Pin the array object.
@@ -177,14 +233,29 @@ async fn wire_variables_have_richer_previews_and_support_pinning() {
     )
     .await;
     let pin_resp = read_response(&mut reader, 10).await;
-    assert!(pin_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
-    assert_eq!(pin_resp.pointer("/body/pinned").and_then(|v| v.as_bool()), Some(true));
+    assert!(pin_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
+    assert_eq!(
+        pin_resp.pointer("/body/pinned").and_then(|v| v.as_bool()),
+        Some(true)
+    );
     assert_eq!(jdwp.pinned_object_ids().await.len(), 1);
 
     // Pinned scope should now include the array handle.
-    send_request(&mut writer, 11, "variables", json!({ "variablesReference": PINNED_SCOPE_REF })).await;
+    send_request(
+        &mut writer,
+        11,
+        "variables",
+        json!({ "variablesReference": PINNED_SCOPE_REF }),
+    )
+    .await;
     let pinned_vars_resp = read_response(&mut reader, 11).await;
-    let pinned_vars = pinned_vars_resp.pointer("/body/variables").and_then(|v| v.as_array()).unwrap();
+    let pinned_vars = pinned_vars_resp
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
     assert_eq!(pinned_vars.len(), 1);
     assert_eq!(
         pinned_vars[0]["variablesReference"].as_i64().unwrap(),
@@ -206,13 +277,28 @@ async fn wire_variables_have_richer_previews_and_support_pinning() {
     );
     assert!(jdwp.pinned_object_ids().await.is_empty());
 
-    send_request(&mut writer, 13, "variables", json!({ "variablesReference": PINNED_SCOPE_REF })).await;
+    send_request(
+        &mut writer,
+        13,
+        "variables",
+        json!({ "variablesReference": PINNED_SCOPE_REF }),
+    )
+    .await;
     let pinned_vars_resp2 = read_response(&mut reader, 13).await;
-    let pinned_vars2 = pinned_vars_resp2.pointer("/body/variables").and_then(|v| v.as_array()).unwrap();
+    let pinned_vars2 = pinned_vars_resp2
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
     assert!(pinned_vars2.is_empty());
 
     // Object handles should remain stable across stops.
-    send_request(&mut writer, 14, "continue", json!({ "threadId": thread_id })).await;
+    send_request(
+        &mut writer,
+        14,
+        "continue",
+        json!({ "threadId": thread_id }),
+    )
+    .await;
     let mut continue_resp = None;
     let mut stopped_evt = None;
     for _ in 0..50 {
@@ -232,11 +318,23 @@ async fn wire_variables_have_richer_previews_and_support_pinning() {
         }
     }
     let continue_resp = continue_resp.expect("missing continue response");
-    assert!(continue_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    assert!(continue_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
     let stopped_evt = stopped_evt.expect("missing stopped event");
-    assert_eq!(stopped_evt.pointer("/body/reason").and_then(|v| v.as_str()), Some("breakpoint"));
+    assert_eq!(
+        stopped_evt.pointer("/body/reason").and_then(|v| v.as_str()),
+        Some("breakpoint")
+    );
 
-    send_request(&mut writer, 15, "stackTrace", json!({ "threadId": thread_id })).await;
+    send_request(
+        &mut writer,
+        15,
+        "stackTrace",
+        json!({ "threadId": thread_id }),
+    )
+    .await;
     let stack_resp2 = read_response(&mut reader, 15).await;
     let frame_id2 = stack_resp2
         .pointer("/body/stackFrames/0/id")
@@ -248,9 +346,18 @@ async fn wire_variables_have_richer_previews_and_support_pinning() {
         .pointer("/body/scopes/0/variablesReference")
         .and_then(|v| v.as_i64())
         .unwrap();
-    send_request(&mut writer, 17, "variables", json!({ "variablesReference": locals_ref2 })).await;
+    send_request(
+        &mut writer,
+        17,
+        "variables",
+        json!({ "variablesReference": locals_ref2 }),
+    )
+    .await;
     let vars_resp3 = read_response(&mut reader, 17).await;
-    let locals3 = vars_resp3.pointer("/body/variables").and_then(|v| v.as_array()).unwrap();
+    let locals3 = vars_resp3
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
     let array_ref3 = find_var(locals3, "arr")
         .get("variablesReference")
         .and_then(|v| v.as_i64())

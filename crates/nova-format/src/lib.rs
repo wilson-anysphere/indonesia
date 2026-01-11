@@ -232,8 +232,14 @@ pub fn format_java(tree: &SyntaxTree, source: &str, config: &FormatConfig) -> St
     for _ in 0..8 {
         let tree = nova_syntax::parse(&formatted);
         input_has_final_newline = ends_with_line_break(&formatted);
-        let next =
-            format_java_with_indent(&tree, &formatted, config, 0, input_has_final_newline, newline);
+        let next = format_java_with_indent(
+            &tree,
+            &formatted,
+            config,
+            0,
+            input_has_final_newline,
+            newline,
+        );
         if next == formatted {
             break;
         }

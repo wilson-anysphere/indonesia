@@ -338,7 +338,8 @@ impl GradleBuild {
         let mut config = parse_gradle_annotation_processing_output(&combined)?;
 
         // Fill in conventional defaults when the Gradle model doesn't expose a value.
-        let project_dir = gradle_project_dir_cached(project_root, project_path, cache, &fingerprint)?;
+        let project_dir =
+            gradle_project_dir_cached(project_root, project_path, cache, &fingerprint)?;
         if let Some(main) = config.main.as_mut() {
             if main.generated_sources_dir.is_none() {
                 main.generated_sources_dir =
@@ -870,7 +871,9 @@ struct GradleJavaCompileAptJson {
 pub fn parse_gradle_annotation_processing_output(output: &str) -> Result<AnnotationProcessing> {
     let json = extract_sentinel_block(output, NOVA_APT_BEGIN, NOVA_APT_END)
         .or_else(|| extract_json_payload(output).map(str::to_string))
-        .ok_or_else(|| BuildError::Parse("failed to locate Gradle annotation processing JSON".into()))?;
+        .ok_or_else(|| {
+            BuildError::Parse("failed to locate Gradle annotation processing JSON".into())
+        })?;
 
     let parsed: GradleAnnotationProcessingJson =
         serde_json::from_str(json.trim()).map_err(|e| BuildError::Parse(e.to_string()))?;
@@ -945,10 +948,14 @@ fn annotation_processing_from_gradle(json: GradleJavaCompileAptJson) -> Annotati
     };
 
     let mut seen_processors = std::collections::HashSet::new();
-    config.processors.retain(|p| seen_processors.insert(p.clone()));
+    config
+        .processors
+        .retain(|p| seen_processors.insert(p.clone()));
 
     let mut seen_paths = std::collections::HashSet::new();
-    config.processor_path.retain(|p| seen_paths.insert(p.clone()));
+    config
+        .processor_path
+        .retain(|p| seen_paths.insert(p.clone()));
 
     config
 }

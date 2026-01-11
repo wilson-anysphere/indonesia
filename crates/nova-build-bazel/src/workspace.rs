@@ -347,10 +347,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             if !args_raw.is_empty() {
                 config.args = if args_raw.starts_with('[') {
                     serde_json::from_str::<Vec<String>>(args_raw).unwrap_or_else(|_| {
-                        args_raw
-                            .split_whitespace()
-                            .map(|s| s.to_string())
-                            .collect()
+                        args_raw.split_whitespace().map(|s| s.to_string()).collect()
                     })
                 } else {
                     args_raw.split_whitespace().map(|s| s.to_string()).collect()

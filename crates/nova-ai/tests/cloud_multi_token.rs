@@ -1,7 +1,8 @@
 use httpmock::prelude::*;
 use nova_ai::{
-    AiClient, CloudMultiTokenCompletionProvider, CompletionContextBuilder, MultiTokenCompletionContext,
-    MultiTokenCompletionProvider, MultiTokenCompletionRequest, MultiTokenInsertTextFormat, PrivacyMode,
+    AiClient, CloudMultiTokenCompletionProvider, CompletionContextBuilder,
+    MultiTokenCompletionContext, MultiTokenCompletionProvider, MultiTokenCompletionRequest,
+    MultiTokenInsertTextFormat, PrivacyMode,
 };
 use nova_config::{AiConfig, AiProviderKind};
 use serde_json::json;

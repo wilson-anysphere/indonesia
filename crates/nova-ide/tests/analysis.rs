@@ -31,4 +31,3 @@ fn completions_delegate_to_code_intelligence_layer() {
         "expected completion list to contain String.length; got {labels:?}"
     );
 }
-

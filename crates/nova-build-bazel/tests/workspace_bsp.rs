@@ -7,7 +7,7 @@ use nova_build_bazel::bsp::{
     BuildTarget, BuildTargetIdentifier, CompileProvider, InitializeBuildResult, JavacOptionsItem,
     JavacProvider, ServerCapabilities,
 };
-use nova_build_bazel::{BazelWorkspace, CommandOutput, CommandRunner, BspWorkspace};
+use nova_build_bazel::{BazelWorkspace, BspWorkspace, CommandOutput, CommandRunner};
 use std::{
     path::Path,
     sync::{Arc, Mutex},
@@ -165,4 +165,3 @@ fn bazel_workspace_target_compile_info_prefers_bsp_javac_options() {
     drop(workspace);
     server.join();
 }
-

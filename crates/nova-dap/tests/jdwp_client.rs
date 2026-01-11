@@ -345,7 +345,10 @@ async fn reference_type_get_values_returns_static_values() {
     };
 
     // Static-ish primitive field access on the object's reference type.
-    let (_ref_type_tag, class_id) = client.object_reference_reference_type(object_id).await.unwrap();
+    let (_ref_type_tag, class_id) = client
+        .object_reference_reference_type(object_id)
+        .await
+        .unwrap();
     let fields = client.reference_type_fields(class_id).await.unwrap();
     let field_ids: Vec<u64> = fields.iter().map(|f| f.field_id).collect();
 
@@ -356,7 +359,10 @@ async fn reference_type_get_values_returns_static_values() {
     assert_eq!(values, vec![JdwpValue::Int(7)]);
 
     // Ensure we handle object-like tags in ReferenceType.GetValues replies.
-    let throwable = client.classes_by_signature("Ljava/lang/Throwable;").await.unwrap();
+    let throwable = client
+        .classes_by_signature("Ljava/lang/Throwable;")
+        .await
+        .unwrap();
     assert_eq!(throwable.len(), 1);
     let throwable_id = throwable[0].type_id;
     let throwable_fields = client.reference_type_fields(throwable_id).await.unwrap();

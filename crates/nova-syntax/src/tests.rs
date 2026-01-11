@@ -960,7 +960,9 @@ fn parse_expression_snapshot() {
 
 #[test]
 fn generated_ast_accessors_work() {
-    use crate::ast::{AstNode, ClassMember, CompilationUnit, Expression, Statement, TypeDeclaration};
+    use crate::ast::{
+        AstNode, ClassMember, CompilationUnit, Expression, Statement, TypeDeclaration,
+    };
 
     let input = r#"
 package com.example;
@@ -2316,11 +2318,8 @@ fn incremental_edit_inside_switch_expression_preserves_yield_statement() {
     let old_text = "class Foo { int m(int x) { return switch (x) { case 1 -> { yield 1; } default -> { yield 0; } }; } }\nclass Bar {}\n";
     let old = parse_java(old_text);
 
-    let edit_offset = old_text
-        .find("yield 1;")
-        .expect("expected `yield 1;`")
-        as u32
-        + "yield ".len() as u32;
+    let edit_offset =
+        old_text.find("yield 1;").expect("expected `yield 1;`") as u32 + "yield ".len() as u32;
     let edit = TextEdit::new(
         TextRange {
             start: edit_offset,
@@ -2354,11 +2353,8 @@ fn incremental_edit_inside_switch_statement_in_switch_expression_keeps_yield_as_
     let old_text = "class Foo {\n  int m(int x, int y) {\n    return switch (x) {\n      case 1 -> {\n        switch (y) {\n          case 1 -> { yield(); }\n          default -> { }\n        }\n        yield 1;\n      }\n      default -> 0;\n    };\n  }\n}\nclass Bar {}\n";
     let old = parse_java(old_text);
 
-    let insert_offset = old_text
-        .find("yield();")
-        .expect("expected `yield();` call")
-        as u32
-        + "yield(".len() as u32;
+    let insert_offset =
+        old_text.find("yield();").expect("expected `yield();` call") as u32 + "yield(".len() as u32;
     let edit = TextEdit::insert(insert_offset, "1");
 
     let mut new_text = old_text.to_string();

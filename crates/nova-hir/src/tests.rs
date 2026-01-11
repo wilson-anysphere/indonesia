@@ -58,8 +58,7 @@ fn hir_persisted_schema_fingerprint_guardrail() {
     let expected = EXPECTED_HIR_PERSISTED_SCHEMA_FINGERPRINT;
 
     assert_eq!(
-        actual,
-        expected,
+        actual, expected,
         "HIR persisted schema fingerprint changed.\n\
 \n\
 This is a guardrail for Nova's on-disk AST cache:\n\

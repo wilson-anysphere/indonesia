@@ -70,7 +70,8 @@ impl RefactorWorkspaceSnapshot {
         //
         // For ad-hoc "file:///Foo.java" documents (common in tests / snippets), `find_project_root`
         // falls back to the filesystem root which would make a recursive scan disastrous.
-        let should_scan = project_root.parent().is_some() && crate::looks_like_project_root(&project_root);
+        let should_scan =
+            project_root.parent().is_some() && crate::looks_like_project_root(&project_root);
 
         let mut paths: BTreeSet<PathBuf> = BTreeSet::new();
         paths.insert(focus_path.clone());
@@ -82,9 +83,10 @@ impl RefactorWorkspaceSnapshot {
 
             // Include overlay-only files that aren't on disk yet.
             for (overlay_uri, _) in overlays {
-                if let Ok(overlay_path) = nova_core::file_uri_to_path(overlay_uri).map(|p| p.into_path_buf()) {
-                    if is_java_file(&overlay_path) && overlay_path.starts_with(&project_root)
-                    {
+                if let Ok(overlay_path) =
+                    nova_core::file_uri_to_path(overlay_uri).map(|p| p.into_path_buf())
+                {
+                    if is_java_file(&overlay_path) && overlay_path.starts_with(&project_root) {
                         paths.insert(overlay_path);
                     }
                 }

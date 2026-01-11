@@ -21,9 +21,9 @@ use super::{
     },
     inspect::InspectCache,
     types::{
-        ClassInfo, FieldId, FieldInfo, FrameId, FrameInfo, JdwpCapabilitiesNew, JdwpError, JdwpEvent,
-        JdwpIdSizes, JdwpValue, LineTable, LineTableEntry, Location, MethodId, MethodInfo, ObjectId,
-        ReferenceTypeId, Result, ThreadId, VariableInfo, VmClassPaths,
+        ClassInfo, FieldId, FieldInfo, FrameId, FrameInfo, JdwpCapabilitiesNew, JdwpError,
+        JdwpEvent, JdwpIdSizes, JdwpValue, LineTable, LineTableEntry, Location, MethodId,
+        MethodInfo, ObjectId, ReferenceTypeId, Result, ThreadId, VariableInfo, VmClassPaths,
     },
 };
 
@@ -638,7 +638,11 @@ impl JdwpClient {
     /// StackFrame.ThisObject (16, 3)
     ///
     /// Returns the `this` object for the given stack frame (or 0 if the frame has no `this`).
-    pub async fn stack_frame_this_object(&self, thread: ThreadId, frame_id: FrameId) -> Result<ObjectId> {
+    pub async fn stack_frame_this_object(
+        &self,
+        thread: ThreadId,
+        frame_id: FrameId,
+    ) -> Result<ObjectId> {
         let sizes = self.id_sizes().await;
         let mut w = JdwpWriter::new();
         w.write_object_id(thread, &sizes);

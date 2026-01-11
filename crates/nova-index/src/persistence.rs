@@ -481,13 +481,7 @@ impl ProjectIndexesView {
 
         let mut segment_lists = Vec::new();
         for (segment_idx, segment) in self.segments.iter().enumerate() {
-            if let Some(locations) = segment
-                .archive
-                .archived()
-                .annotations
-                .annotations
-                .get(name)
-            {
+            if let Some(locations) = segment.archive.archived().annotations.annotations.get(name) {
                 segment_lists.push((segment_idx, locations));
             }
         }
@@ -544,20 +538,20 @@ impl ProjectIndexesView {
         let invalidated_files = &self.invalidated_files;
         let file_to_segment = &self.file_to_segment;
 
-        let base = self
-            .annotations
-            .archived()
-            .annotations
-            .iter()
-            .filter_map(move |(name, locations)| {
-                locations
-                    .iter()
-                    .any(|loc| {
-                        let file = loc.file.as_str();
-                        !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
-                    })
-                    .then(|| name.as_str())
-            });
+        let base =
+            self.annotations
+                .archived()
+                .annotations
+                .iter()
+                .filter_map(move |(name, locations)| {
+                    locations
+                        .iter()
+                        .any(|loc| {
+                            let file = loc.file.as_str();
+                            !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
+                        })
+                        .then(|| name.as_str())
+                });
 
         let mut iter: Box<dyn Iterator<Item = &'a str> + 'a> = Box::new(base);
         for (segment_idx, segment) in self.segments.iter().enumerate() {
@@ -685,13 +679,7 @@ impl ProjectIndexesView {
 
         let mut segment_lists = Vec::new();
         for (segment_idx, segment) in self.segments.iter().enumerate() {
-            if let Some(locations) = segment
-                .archive
-                .archived()
-                .references
-                .references
-                .get(symbol)
-            {
+            if let Some(locations) = segment.archive.archived().references.references.get(symbol) {
                 segment_lists.push((segment_idx, locations));
             }
         }
@@ -748,20 +736,20 @@ impl ProjectIndexesView {
         let invalidated_files = &self.invalidated_files;
         let file_to_segment = &self.file_to_segment;
 
-        let base = self
-            .references
-            .archived()
-            .references
-            .iter()
-            .filter_map(move |(symbol, locations)| {
-                locations
-                    .iter()
-                    .any(|loc| {
-                        let file = loc.file.as_str();
-                        !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
-                    })
-                    .then(|| symbol.as_str())
-            });
+        let base =
+            self.references
+                .archived()
+                .references
+                .iter()
+                .filter_map(move |(symbol, locations)| {
+                    locations
+                        .iter()
+                        .any(|loc| {
+                            let file = loc.file.as_str();
+                            !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
+                        })
+                        .then(|| symbol.as_str())
+                });
 
         let mut iter: Box<dyn Iterator<Item = &'a str> + 'a> = Box::new(base);
         for (segment_idx, segment) in self.segments.iter().enumerate() {

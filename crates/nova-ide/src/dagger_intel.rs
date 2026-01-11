@@ -224,7 +224,11 @@ fn sources_look_like_dagger(files: &[JavaSourceFile]) -> bool {
         .any(|file| MARKERS.iter().any(|needle| file.text.contains(needle)))
 }
 
-fn collect_java_sources(db: &dyn Database, root: &Path, canonical_root: &Path) -> (Vec<JavaSourceFile>, u64) {
+fn collect_java_sources(
+    db: &dyn Database,
+    root: &Path,
+    canonical_root: &Path,
+) -> (Vec<JavaSourceFile>, u64) {
     let mut all = Vec::new();
     let mut under_root = Vec::new();
 

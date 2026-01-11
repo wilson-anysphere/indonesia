@@ -78,7 +78,11 @@ fn doc_comment_forces_hardline_before_following_declaration() {
     let ctx = FmtCtx::new(4);
     let comment = make_comment(CommentKind::Doc, src);
 
-    let doc = Doc::concat([Doc::text("    "), fmt_comment(&ctx, &comment, src), Doc::text("void")]);
+    let doc = Doc::concat([
+        Doc::text("    "),
+        fmt_comment(&ctx, &comment, src),
+        Doc::text("void"),
+    ]);
 
     assert_eq!(
         print(doc, PrintConfig::default()),
@@ -92,7 +96,11 @@ fn multiline_doc_comment_normalizes_star_lines() {
     let ctx = FmtCtx::new(4);
     let comment = make_comment(CommentKind::Doc, src);
 
-    let doc = Doc::concat([Doc::text("    "), fmt_comment(&ctx, &comment, src), Doc::text("void")]);
+    let doc = Doc::concat([
+        Doc::text("    "),
+        fmt_comment(&ctx, &comment, src),
+        Doc::text("void"),
+    ]);
 
     assert_eq!(
         print(doc, PrintConfig::default()),

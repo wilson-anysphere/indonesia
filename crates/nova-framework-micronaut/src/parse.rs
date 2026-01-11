@@ -1,5 +1,5 @@
-pub(crate) use nova_framework_parse::{clean_type, simple_name, ParsedAnnotation};
 use nova_framework_parse::parse_annotation_text;
+pub(crate) use nova_framework_parse::{clean_type, simple_name, ParsedAnnotation};
 use nova_syntax::{JavaParseResult, SyntaxKind, SyntaxNode, SyntaxToken};
 use nova_types::Span;
 
@@ -52,7 +52,10 @@ pub(crate) fn find_named_child(node: &SyntaxNode, kind: SyntaxKind) -> Option<Sy
 
 pub(crate) fn collect_annotations(modifiers: SyntaxNode, source: &str) -> Vec<ParsedAnnotation> {
     let mut anns = Vec::new();
-    for child in modifiers.children().filter(|c| c.kind() == SyntaxKind::Annotation) {
+    for child in modifiers
+        .children()
+        .filter(|c| c.kind() == SyntaxKind::Annotation)
+    {
         let text = node_text(source, &child);
         let span = node_span(&child);
         if let Some(ann) = parse_annotation_text(text, span) {

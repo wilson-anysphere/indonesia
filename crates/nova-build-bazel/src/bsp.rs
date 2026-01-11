@@ -312,7 +312,9 @@ impl BspClient {
 
     /// Drain any diagnostics received via `build/publishDiagnostics` notifications.
     pub fn drain_diagnostics(&mut self) -> Vec<PublishDiagnosticsParams> {
-        std::mem::take(&mut self.diagnostics).into_values().collect()
+        std::mem::take(&mut self.diagnostics)
+            .into_values()
+            .collect()
     }
 
     fn request<P: Serialize, R: DeserializeOwned>(&mut self, method: &str, params: P) -> Result<R> {

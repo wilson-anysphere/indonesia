@@ -189,7 +189,10 @@ fn stdio_server_handles_safe_mode_status_request() {
     match status {
         SafeModeStatusResult::Object(status) => {
             assert_eq!(status.schema_version, 1);
-            assert!(!status.enabled, "safe-mode should not be enabled at startup");
+            assert!(
+                !status.enabled,
+                "safe-mode should not be enabled at startup"
+            );
             assert_eq!(status.reason, None);
         }
         SafeModeStatusResult::Bool(_) => panic!("expected safeModeStatus response object"),

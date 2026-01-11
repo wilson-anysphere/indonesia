@@ -65,9 +65,10 @@ pub fn reparse_java(
 
     let fragment = match plan.target {
         ReparseTarget::Block(stmt_ctx) => parse_block_fragment(fragment_text, stmt_ctx),
-        ReparseTarget::SwitchBlock { stmt_ctx, switch_ctx } => {
-            parse_switch_block_fragment(fragment_text, stmt_ctx, switch_ctx)
-        }
+        ReparseTarget::SwitchBlock {
+            stmt_ctx,
+            switch_ctx,
+        } => parse_switch_block_fragment(fragment_text, stmt_ctx, switch_ctx),
         ReparseTarget::ClassBody(kind) => parse_class_body_fragment(fragment_text, kind),
         ReparseTarget::ClassMember => parse_class_member_fragment(fragment_text),
     };
@@ -346,7 +347,10 @@ fn classify_list_or_block(node: &crate::SyntaxNode) -> Option<ReparseTarget> {
         SyntaxKind::Block => ReparseTarget::Block(statement_context_for_block(node)),
         SyntaxKind::SwitchBlock => {
             let (stmt_ctx, switch_ctx) = switch_context_for_block(node);
-            ReparseTarget::SwitchBlock { stmt_ctx, switch_ctx }
+            ReparseTarget::SwitchBlock {
+                stmt_ctx,
+                switch_ctx,
+            }
         }
         SyntaxKind::ClassBody
         | SyntaxKind::InterfaceBody
@@ -391,7 +395,10 @@ fn switch_context_for_block(node: &crate::SyntaxNode) -> (StatementContext, Swit
         .parent()
         .is_some_and(|parent| parent.kind() == SyntaxKind::SwitchExpression);
     if is_expression {
-        (StatementContext::SwitchExpression, SwitchContext::Expression)
+        (
+            StatementContext::SwitchExpression,
+            SwitchContext::Expression,
+        )
     } else {
         (StatementContext::Normal, SwitchContext::Statement)
     }

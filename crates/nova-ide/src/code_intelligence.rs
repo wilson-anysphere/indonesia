@@ -16,8 +16,6 @@ use lsp_types::{
     SignatureInformation, SymbolKind, TextEdit, TypeHierarchyItem,
 };
 
-use once_cell::sync::Lazy;
-use serde_json::json;
 use nova_core::{path_to_file_uri, AbsPathBuf};
 use nova_db::{Database, FileId};
 use nova_fuzzy::FuzzyMatcher;
@@ -26,6 +24,8 @@ use nova_types::{
     CallKind, ClassId, ClassKind, Diagnostic, MethodCall, MethodDef, MethodResolution,
     PrimitiveType, ResolvedMethod, Severity, Span, TyContext, Type, TypeEnv, TypeStore,
 };
+use once_cell::sync::Lazy;
+use serde_json::json;
 
 use crate::framework_cache;
 use crate::lombok_intel;
@@ -1632,7 +1632,9 @@ pub fn hover(db: &dyn Database, file: FileId, position: Position) -> Option<Hove
 
     // Method hover (prefer call-sites so we can resolve classpath methods).
     if let Some(call) = analysis.calls.iter().find(|c| c.name_span == token.span) {
-        if let Some(sig) = semantic_call_signatures(&mut types, &analysis, call, 1).into_iter().next()
+        if let Some(sig) = semantic_call_signatures(&mut types, &analysis, call, 1)
+            .into_iter()
+            .next()
         {
             return Some(Hover {
                 contents: HoverContents::Markup(MarkupContent {
@@ -1671,11 +1673,7 @@ pub fn hover(db: &dyn Database, file: FileId, position: Position) -> Option<Hove
     }
 
     // Method hover for declarations in this file.
-    if let Some(method) = analysis
-        .methods
-        .iter()
-        .find(|m| m.name_span == token.span)
-    {
+    if let Some(method) = analysis.methods.iter().find(|m| m.name_span == token.span) {
         return Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
@@ -2065,10 +2063,9 @@ fn ensure_type_methods_loaded(types: &mut TypeStore, receiver: &Type) {
         }
     }
 
-    if types
-        .class(class_id)
-        .is_some_and(|class_def| class_def.methods.is_empty() && class_def.name == "java.lang.String")
-    {
+    if types.class(class_id).is_some_and(|class_def| {
+        class_def.methods.is_empty() && class_def.name == "java.lang.String"
+    }) {
         add_builtin_string_methods(types, class_id);
     }
 }
@@ -2254,7 +2251,10 @@ fn format_resolved_method_signature(env: &dyn TypeEnv, method: &ResolvedMethod) 
 }
 
 fn param_names_for_method(env: &dyn TypeEnv, method: &ResolvedMethod) -> Vec<String> {
-    let owner = env.class(method.owner).map(|c| c.name.as_str()).unwrap_or("");
+    let owner = env
+        .class(method.owner)
+        .map(|c| c.name.as_str())
+        .unwrap_or("");
     let arity = method.params.len();
 
     if let Some(names) = known_param_names(owner, method.name.as_str(), arity) {
@@ -2264,11 +2264,7 @@ fn param_names_for_method(env: &dyn TypeEnv, method: &ResolvedMethod) -> Vec<Str
     (0..arity).map(|idx| format!("arg{idx}")).collect()
 }
 
-fn known_param_names(
-    owner: &str,
-    name: &str,
-    arity: usize,
-) -> Option<&'static [&'static str]> {
+fn known_param_names(owner: &str, name: &str, arity: usize) -> Option<&'static [&'static str]> {
     match (owner, name, arity) {
         ("java.lang.String", "substring", 1) => Some(&["beginIndex"]),
         ("java.lang.String", "substring", 2) => Some(&["beginIndex", "endIndex"]),

@@ -121,7 +121,12 @@ impl<'env> TyContext<'env> {
     }
 
     /// Resolve a field access against `receiver`, applying capture conversion first.
-    pub fn resolve_field(&mut self, receiver: &Type, name: &str, call_kind: CallKind) -> Option<FieldDef> {
+    pub fn resolve_field(
+        &mut self,
+        receiver: &Type,
+        name: &str,
+        call_kind: CallKind,
+    ) -> Option<FieldDef> {
         let mut receiver = receiver.clone();
         if let Type::Named(n) = &receiver {
             if let Some(id) = self.lookup_class(n) {

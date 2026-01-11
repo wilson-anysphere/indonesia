@@ -30,8 +30,8 @@ pub use diagnostics::{
 };
 pub use import_map::ImportMap;
 pub use resolver::{
-    BodyOwner, LocalRef, NameResolution, ParamOwner, ParamRef, Resolution, Resolver,
-    StaticLookup, StaticMemberResolution, TypeResolution,
+    BodyOwner, LocalRef, NameResolution, ParamOwner, ParamRef, Resolution, Resolver, StaticLookup,
+    StaticMemberResolution, TypeResolution,
 };
 pub use scopes::{
     build_scopes, build_scopes_for_item_tree, ItemTreeScopeBuildResult, ScopeBuildResult,

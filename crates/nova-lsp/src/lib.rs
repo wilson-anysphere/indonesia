@@ -455,23 +455,25 @@ pub fn diagnostics_with_extensions(
     let mut diagnostics = nova_ide::file_diagnostics_lsp(db.as_ref(), file);
 
     let text = db.file_content(file);
-    let extension_diagnostics = extensions.diagnostics(cancel, file).into_iter().map(|d| {
-        lsp_types::Diagnostic {
-            range: d
-                .span
-                .map(|span| span_to_lsp_range(text, span.start, span.end))
-                .unwrap_or_else(zero_range),
-            severity: Some(match d.severity {
-                nova_ext::Severity::Error => lsp_types::DiagnosticSeverity::ERROR,
-                nova_ext::Severity::Warning => lsp_types::DiagnosticSeverity::WARNING,
-                nova_ext::Severity::Info => lsp_types::DiagnosticSeverity::INFORMATION,
-            }),
-            code: Some(lsp_types::NumberOrString::String(d.code.to_string())),
-            source: Some("nova".into()),
-            message: d.message,
-            ..lsp_types::Diagnostic::default()
-        }
-    });
+    let extension_diagnostics =
+        extensions
+            .diagnostics(cancel, file)
+            .into_iter()
+            .map(|d| lsp_types::Diagnostic {
+                range: d
+                    .span
+                    .map(|span| span_to_lsp_range(text, span.start, span.end))
+                    .unwrap_or_else(zero_range),
+                severity: Some(match d.severity {
+                    nova_ext::Severity::Error => lsp_types::DiagnosticSeverity::ERROR,
+                    nova_ext::Severity::Warning => lsp_types::DiagnosticSeverity::WARNING,
+                    nova_ext::Severity::Info => lsp_types::DiagnosticSeverity::INFORMATION,
+                }),
+                code: Some(lsp_types::NumberOrString::String(d.code.to_string())),
+                source: Some("nova".into()),
+                message: d.message,
+                ..lsp_types::Diagnostic::default()
+            });
 
     diagnostics.extend(extension_diagnostics);
     diagnostics

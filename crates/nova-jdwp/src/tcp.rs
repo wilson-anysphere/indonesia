@@ -4,8 +4,9 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use crate::{
-    FrameId, JdwpClient, JdwpError, JdwpEvent, JdwpValue, JdwpVariable, ObjectId, ObjectKindPreview,
-    ObjectPreview, ObjectRef, StackFrameInfo, StepKind, StopReason, StoppedEvent, ThreadId, ThreadInfo,
+    FrameId, JdwpClient, JdwpError, JdwpEvent, JdwpValue, JdwpVariable, ObjectId,
+    ObjectKindPreview, ObjectPreview, ObjectRef, StackFrameInfo, StepKind, StopReason,
+    StoppedEvent, ThreadId, ThreadInfo,
 };
 
 const ERROR_INVALID_OBJECT: u16 = 20;
@@ -532,7 +533,11 @@ impl TcpJdwpClient {
         type_id: u64,
         method_id: u64,
     ) -> Result<&[VariableInfo], JdwpError> {
-        if !self.cache.variable_tables.contains_key(&(type_id, method_id)) {
+        if !self
+            .cache
+            .variable_tables
+            .contains_key(&(type_id, method_id))
+        {
             let mut body = Vec::new();
             write_id(&mut body, self.id_sizes.reference_type_id, type_id);
             write_id(&mut body, self.id_sizes.method_id, method_id);
@@ -555,7 +560,9 @@ impl TcpJdwpClient {
                     slot,
                 });
             }
-            self.cache.variable_tables.insert((type_id, method_id), vars);
+            self.cache
+                .variable_tables
+                .insert((type_id, method_id), vars);
         }
 
         Ok(self
@@ -1044,8 +1051,11 @@ impl JdwpClient for TcpJdwpClient {
             (var.slot, var.signature.clone())
         };
 
-        let mut values =
-            self.stack_frame_get_values(context.thread_id, frame_id, &[(slot, signature.as_str())])?;
+        let mut values = self.stack_frame_get_values(
+            context.thread_id,
+            frame_id,
+            &[(slot, signature.as_str())],
+        )?;
 
         let value = values
             .pop()

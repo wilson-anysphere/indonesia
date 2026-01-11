@@ -16,9 +16,9 @@ use std::sync::{Arc, RwLock};
 
 use bytes::Bytes;
 use nova_remote_proto::v3::{
-    self, Capabilities, CompressionAlgo, HandshakeReject, Notification, ProtocolVersion, RejectCode,
-    Request, Response, RouterWelcome, RpcError as ProtoRpcError, RpcErrorCode, RpcPayload,
-    RpcResult, SupportedVersions, WireFrame, WorkerHello,
+    self, Capabilities, CompressionAlgo, HandshakeReject, Notification, ProtocolVersion,
+    RejectCode, Request, Response, RouterWelcome, RpcError as ProtoRpcError, RpcErrorCode,
+    RpcPayload, RpcResult, SupportedVersions, WireFrame, WorkerHello,
 };
 use nova_remote_proto::{Revision, WorkerId};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -91,10 +91,10 @@ pub enum RpcError {
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
-type RequestHandler =
-    Arc<dyn Fn(RequestContext, Request) -> BoxFuture<Result<Response, ProtoRpcError>> + Send + Sync>;
-type NotificationHandler =
-    Arc<dyn Fn(Notification) -> BoxFuture<()> + Send + Sync + 'static>;
+type RequestHandler = Arc<
+    dyn Fn(RequestContext, Request) -> BoxFuture<Result<Response, ProtoRpcError>> + Send + Sync,
+>;
+type NotificationHandler = Arc<dyn Fn(Notification) -> BoxFuture<()> + Send + Sync + 'static>;
 type CancelHandler = Arc<dyn Fn(RequestId) + Send + Sync + 'static>;
 
 /// A lightweight cancellation token for incoming requests.
@@ -262,23 +262,23 @@ impl RpcConnection {
             });
         };
 
-        let chosen_capabilities = match negotiate_capabilities(&cfg.capabilities, &hello.capabilities)
-        {
-            Ok(caps) => caps,
-            Err(err) => {
-                let reject = HandshakeReject {
-                    code: RejectCode::InvalidRequest,
-                    message: err.to_string(),
-                };
-                let _ = write_wire_frame(
-                    &mut stream,
-                    cfg.pre_handshake_max_frame_len,
-                    &WireFrame::Reject(reject),
-                )
-                .await;
-                return Err(err);
-            }
-        };
+        let chosen_capabilities =
+            match negotiate_capabilities(&cfg.capabilities, &hello.capabilities) {
+                Ok(caps) => caps,
+                Err(err) => {
+                    let reject = HandshakeReject {
+                        code: RejectCode::InvalidRequest,
+                        message: err.to_string(),
+                    };
+                    let _ = write_wire_frame(
+                        &mut stream,
+                        cfg.pre_handshake_max_frame_len,
+                        &WireFrame::Reject(reject),
+                    )
+                    .await;
+                    return Err(err);
+                }
+            };
 
         let welcome = RouterWelcome {
             worker_id: cfg.worker_id,
@@ -346,13 +346,13 @@ impl RpcConnection {
                 Ok((conn, welcome))
             }
             WireFrame::Reject(reject) => Err(RpcTransportError::HandshakeFailed {
-                message: format!("handshake rejected (code={:?}): {}", reject.code, reject.message),
+                message: format!(
+                    "handshake rejected (code={:?}): {}",
+                    reject.code, reject.message
+                ),
             }),
             other => Err(RpcTransportError::HandshakeFailed {
-                message: format!(
-                    "unexpected handshake frame: {}",
-                    wire_frame_type(&other)
-                ),
+                message: format!("unexpected handshake frame: {}", wire_frame_type(&other)),
             }),
         }
     }
@@ -410,7 +410,8 @@ impl RpcConnection {
             pending.insert(request_id, tx);
         }
 
-        if let Err(err) = send_rpc_payload(&self.inner, request_id, RpcPayload::Request(request)).await
+        if let Err(err) =
+            send_rpc_payload(&self.inner, request_id, RpcPayload::Request(request)).await
         {
             let mut pending = self.inner.pending.lock().await;
             pending.remove(&request_id);
@@ -613,7 +614,10 @@ fn sanitize_capabilities(caps: &mut Capabilities) {
     }
 }
 
-fn negotiate_capabilities(router: &Capabilities, worker: &Capabilities) -> Result<Capabilities, RpcTransportError> {
+fn negotiate_capabilities(
+    router: &Capabilities,
+    worker: &Capabilities,
+) -> Result<Capabilities, RpcTransportError> {
     let max_frame_len = router.max_frame_len.min(worker.max_frame_len);
     let max_packet_len = router.max_packet_len.min(worker.max_packet_len);
     let supports_cancel = router.supports_cancel && worker.supports_cancel;
@@ -623,7 +627,9 @@ fn negotiate_capabilities(router: &Capabilities, worker: &Capabilities) -> Resul
         .supported_compression
         .iter()
         .copied()
-        .filter(|algo| *algo != CompressionAlgo::Unknown && worker.supported_compression.contains(algo))
+        .filter(|algo| {
+            *algo != CompressionAlgo::Unknown && worker.supported_compression.contains(algo)
+        })
         .collect();
 
     if supported_compression.is_empty() {
@@ -684,11 +690,10 @@ async fn read_wire_frame(
     // Reserve fallibly so allocation failure surfaces as an error instead of aborting the process.
     let len_usize = len as usize;
     let mut buf = Vec::new();
-    buf.try_reserve_exact(len_usize).map_err(|err| {
-        RpcTransportError::AllocationFailed {
+    buf.try_reserve_exact(len_usize)
+        .map_err(|err| RpcTransportError::AllocationFailed {
             message: format!("allocate frame buffer ({len} bytes): {err}"),
-        }
-    })?;
+        })?;
     buf.resize(len_usize, 0);
     stream.read_exact(&mut buf).await?;
     v3::decode_wire_frame(&buf).map_err(|err| RpcTransportError::DecodeError {
@@ -929,9 +934,10 @@ async fn process_packet(
     }
 
     let decoded = maybe_decompress(&inner.capabilities, compression, &data)?;
-    let payload = v3::decode_rpc_payload(&decoded).map_err(|err| RpcTransportError::DecodeError {
-        message: err.to_string(),
-    })?;
+    let payload =
+        v3::decode_rpc_payload(&decoded).map_err(|err| RpcTransportError::DecodeError {
+            message: err.to_string(),
+        })?;
     handle_payload(inner.clone(), request_id, payload).await
 }
 
@@ -1066,9 +1072,10 @@ async fn send_rpc_payload(
         return Err(RpcTransportError::ConnectionClosed);
     }
 
-    let uncompressed = v3::encode_rpc_payload(&payload).map_err(|err| RpcTransportError::EncodeError {
-        message: err.to_string(),
-    })?;
+    let uncompressed =
+        v3::encode_rpc_payload(&payload).map_err(|err| RpcTransportError::EncodeError {
+            message: err.to_string(),
+        })?;
     let max_packet_len = inner.capabilities.max_packet_len as usize;
     if uncompressed.len() > max_packet_len {
         return Err(RpcTransportError::PacketTooLarge {
@@ -1077,7 +1084,11 @@ async fn send_rpc_payload(
         });
     }
 
-    let (compression, wire_bytes) = maybe_compress(&inner.capabilities, inner.compression_threshold, &uncompressed)?;
+    let (compression, wire_bytes) = maybe_compress(
+        &inner.capabilities,
+        inner.compression_threshold,
+        &uncompressed,
+    )?;
 
     if wire_bytes.len() > max_packet_len {
         return Err(RpcTransportError::PacketTooLarge {
@@ -1092,9 +1103,10 @@ async fn send_rpc_payload(
         compression,
         data: wire_bytes.clone(),
     };
-    let encoded_packet = v3::encode_wire_frame(&packet_frame).map_err(|err| RpcTransportError::EncodeError {
-        message: err.to_string(),
-    })?;
+    let encoded_packet =
+        v3::encode_wire_frame(&packet_frame).map_err(|err| RpcTransportError::EncodeError {
+            message: err.to_string(),
+        })?;
 
     if encoded_packet.len() <= inner.capabilities.max_frame_len as usize {
         inner
@@ -1107,9 +1119,7 @@ async fn send_rpc_payload(
 
     if !inner.capabilities.supports_chunking {
         return Err(RpcTransportError::FrameTooLarge {
-            len: encoded_packet
-                .len()
-                .min(u32::MAX as usize) as u32,
+            len: encoded_packet.len().min(u32::MAX as usize) as u32,
             max: inner.capabilities.max_frame_len,
         });
     }
@@ -1139,9 +1149,10 @@ async fn send_rpc_payload(
                 last,
                 data: bytes.slice(offset..offset + take).to_vec(),
             };
-            let encoded = v3::encode_wire_frame(&frame).map_err(|err| RpcTransportError::EncodeError {
-                message: err.to_string(),
-            })?;
+            let encoded =
+                v3::encode_wire_frame(&frame).map_err(|err| RpcTransportError::EncodeError {
+                    message: err.to_string(),
+                })?;
             if encoded.len() <= max_frame_len {
                 break encoded;
             }
@@ -1210,7 +1221,10 @@ fn maybe_compress(
     let mut out = Vec::new();
     out.try_reserve_exact(uncompressed.len()).map_err(|err| {
         RpcTransportError::AllocationFailed {
-            message: format!("allocate packet buffer ({} bytes): {err}", uncompressed.len()),
+            message: format!(
+                "allocate packet buffer ({} bytes): {err}",
+                uncompressed.len()
+            ),
         }
     })?;
     out.extend_from_slice(uncompressed);
@@ -1259,7 +1273,9 @@ fn maybe_decompress(
                 })
             }
         }
-        CompressionAlgo::Unknown => Err(RpcTransportError::UnsupportedCompression { algo: compression }),
+        CompressionAlgo::Unknown => {
+            Err(RpcTransportError::UnsupportedCompression { algo: compression })
+        }
     }
 }
 
@@ -1267,15 +1283,18 @@ fn maybe_decompress(
 fn decompress_zstd_with_limit(data: &[u8], limit: usize) -> Result<Vec<u8>, RpcTransportError> {
     use std::io::Read;
 
-    let mut decoder = zstd::stream::read::Decoder::new(data).map_err(|err| RpcTransportError::DecodeError {
-        message: format!("create zstd decoder: {err}"),
-    })?;
+    let mut decoder =
+        zstd::stream::read::Decoder::new(data).map_err(|err| RpcTransportError::DecodeError {
+            message: format!("create zstd decoder: {err}"),
+        })?;
     let mut out = Vec::new();
     let mut buf = [0u8; 8192];
     loop {
-        let n = decoder.read(&mut buf).map_err(|err| RpcTransportError::DecodeError {
-            message: format!("read zstd stream: {err}"),
-        })?;
+        let n = decoder
+            .read(&mut buf)
+            .map_err(|err| RpcTransportError::DecodeError {
+                message: format!("read zstd stream: {err}"),
+            })?;
         if n == 0 {
             break;
         }
@@ -1285,12 +1304,13 @@ fn decompress_zstd_with_limit(data: &[u8], limit: usize) -> Result<Vec<u8>, RpcT
                 max: limit,
             });
         }
-        out.try_reserve(n).map_err(|err| RpcTransportError::AllocationFailed {
-            message: format!(
-                "allocate decompression buffer ({} bytes): {err}",
-                out.len() + n
-            ),
-        })?;
+        out.try_reserve(n)
+            .map_err(|err| RpcTransportError::AllocationFailed {
+                message: format!(
+                    "allocate decompression buffer ({} bytes): {err}",
+                    out.len() + n
+                ),
+            })?;
         out.extend_from_slice(&buf[..n]);
     }
     Ok(out)

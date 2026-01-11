@@ -250,10 +250,9 @@ mod tests {
 
         let diags = db.syntax_feature_diagnostics(file);
         assert!(!diags.is_empty());
-        assert!(
-            diags.iter()
-                .all(|diag| diag.code == "JAVA_FEATURE_SWITCH_EXPRESSIONS")
-        );
+        assert!(diags
+            .iter()
+            .all(|diag| diag.code == "JAVA_FEATURE_SWITCH_EXPRESSIONS"));
 
         db.set_project_config(
             ProjectId::from_raw(0),

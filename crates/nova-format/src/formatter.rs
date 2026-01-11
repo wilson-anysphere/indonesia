@@ -1730,7 +1730,9 @@ fn write_token(
 
                 // Prevent sequences of dot tokens (e.g. `. . .`) from collapsing into the `...`
                 // ellipsis token on the next parse, which can otherwise change spacing decisions.
-                if matches!(punct, Punct::Dot) && matches!(state.last_sig, Some(SigToken::Punct(Punct::Dot))) {
+                if matches!(punct, Punct::Dot)
+                    && matches!(state.last_sig, Some(SigToken::Punct(Punct::Dot)))
+                {
                     state.ensure_space();
                 }
 

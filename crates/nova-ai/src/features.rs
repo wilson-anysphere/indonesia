@@ -123,7 +123,11 @@ impl NovaAi {
             .await
     }
 
-    pub async fn code_review(&self, diff: &str, cancel: CancellationToken) -> Result<String, AiError> {
+    pub async fn code_review(
+        &self,
+        diff: &str,
+        cancel: CancellationToken,
+    ) -> Result<String, AiError> {
         let diff = self
             .client
             .sanitize_snippet(&CodeSnippet::ad_hoc(diff))

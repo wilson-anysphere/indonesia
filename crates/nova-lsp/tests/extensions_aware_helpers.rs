@@ -71,8 +71,11 @@ class A {
     );
 
     let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
-    let mut extensions =
-        IdeExtensions::new(Arc::clone(&db), Arc::new(NovaConfig::default()), ProjectId::new(0));
+    let mut extensions = IdeExtensions::new(
+        Arc::clone(&db),
+        Arc::new(NovaConfig::default()),
+        ProjectId::new(0),
+    );
     extensions
         .registry_mut()
         .register_completion_provider(Arc::new(TestCompletionProvider {
@@ -95,12 +98,8 @@ class A {
         "expected built-in String member completion; got {built_in:?}"
     );
 
-    let out = nova_lsp::completion_with_extensions(
-        &extensions,
-        CancellationToken::new(),
-        file,
-        position,
-    );
+    let out =
+        nova_lsp::completion_with_extensions(&extensions, CancellationToken::new(), file, position);
 
     assert_eq!(&out[..built_in.len()], built_in.as_slice());
     assert_eq!(
@@ -129,8 +128,11 @@ class A {
     );
 
     let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
-    let mut extensions =
-        IdeExtensions::new(Arc::clone(&db), Arc::new(NovaConfig::default()), ProjectId::new(0));
+    let mut extensions = IdeExtensions::new(
+        Arc::clone(&db),
+        Arc::new(NovaConfig::default()),
+        ProjectId::new(0),
+    );
     extensions
         .registry_mut()
         .register_diagnostic_provider(Arc::new(TestDiagnosticProvider {
@@ -165,4 +167,3 @@ class A {
         vec!["from-a", "from-b"],
     );
 }
-

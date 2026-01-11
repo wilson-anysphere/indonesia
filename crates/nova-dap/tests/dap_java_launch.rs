@@ -82,7 +82,8 @@ async fn dap_can_launch_a_jvm_and_forward_output() {
 
     let (client, server_stream) = tokio::io::duplex(64 * 1024);
     let (server_read, server_write) = tokio::io::split(server_stream);
-    let server_task = tokio::spawn(async move { wire_server::run(server_read, server_write).await });
+    let server_task =
+        tokio::spawn(async move { wire_server::run(server_read, server_write).await });
 
     let (client_read, client_write) = tokio::io::split(client);
     let mut reader = DapReader::new(client_read);
@@ -153,4 +154,3 @@ async fn dap_can_launch_a_jvm_and_forward_output() {
 
     server_task.await.unwrap().unwrap();
 }
-

@@ -637,10 +637,14 @@ fn read_saved_at_millis(path: &Path) -> Option<u64> {
 
     let file = std::fs::File::open(path).ok()?;
     let mut reader = std::io::BufReader::new(file);
-    let (schema_version, _query_schema_version, nova_version, saved_at_millis): (u32, u32, String, u64) =
-        bincode_options_limited()
-            .deserialize_from(&mut reader)
-            .ok()?;
+    let (schema_version, _query_schema_version, nova_version, saved_at_millis): (
+        u32,
+        u32,
+        String,
+        u64,
+    ) = bincode_options_limited()
+        .deserialize_from(&mut reader)
+        .ok()?;
 
     if schema_version != DERIVED_CACHE_SCHEMA_VERSION {
         return None;

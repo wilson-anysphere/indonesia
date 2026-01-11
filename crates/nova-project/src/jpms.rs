@@ -169,7 +169,12 @@ fn module_candidate_from_module_path_entry(path: &Path) -> Option<ModuleCandidat
         .read("module-info.class")
         .ok()
         .flatten()
-        .or_else(|| archive.read("META-INF/versions/9/module-info.class").ok().flatten())
+        .or_else(|| {
+            archive
+                .read("META-INF/versions/9/module-info.class")
+                .ok()
+                .flatten()
+        })
         .or_else(|| archive.read("classes/module-info.class").ok().flatten())
     {
         if let Ok(info) = parse_module_info_class(&bytes) {

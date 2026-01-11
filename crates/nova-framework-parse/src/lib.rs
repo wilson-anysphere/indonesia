@@ -397,14 +397,20 @@ pub fn annotation_string_value_span(
     let mut i = idx + key.len();
 
     // Skip whitespace between key and '='.
-    i += haystack[i..].bytes().take_while(|b| b.is_ascii_whitespace()).count();
+    i += haystack[i..]
+        .bytes()
+        .take_while(|b| b.is_ascii_whitespace())
+        .count();
     if i >= haystack.len() || !haystack[i..].starts_with('=') {
         return None;
     }
     i += 1;
 
     // Skip whitespace between '=' and opening quote.
-    i += haystack[i..].bytes().take_while(|b| b.is_ascii_whitespace()).count();
+    i += haystack[i..]
+        .bytes()
+        .take_while(|b| b.is_ascii_whitespace())
+        .count();
     if i >= haystack.len() || !haystack[i..].starts_with('"') {
         return None;
     }
@@ -417,7 +423,10 @@ pub fn annotation_string_value_span(
 
     Some((
         value,
-        Span::new(annotation.span.start + start_in_ann, annotation.span.start + end_in_ann),
+        Span::new(
+            annotation.span.start + start_in_ann,
+            annotation.span.start + end_in_ann,
+        ),
     ))
 }
 
@@ -490,8 +499,8 @@ mod tests {
 
     #[test]
     fn does_not_split_commas_inside_strings() {
-        let ann =
-            parse_annotation_text("@X(value = \"a,b\", name=\"c\")", Span::new(0, 0)).expect("annotation");
+        let ann = parse_annotation_text("@X(value = \"a,b\", name=\"c\")", Span::new(0, 0))
+            .expect("annotation");
         assert_eq!(ann.args.get("value").map(String::as_str), Some("a,b"));
         assert_eq!(ann.args.get("name").map(String::as_str), Some("c"));
     }
@@ -522,8 +531,8 @@ mod tests {
 
     #[test]
     fn preserves_class_literals() {
-        let ann =
-            parse_annotation_text("@X(targetEntity = Foo.class)", Span::new(0, 0)).expect("annotation");
+        let ann = parse_annotation_text("@X(targetEntity = Foo.class)", Span::new(0, 0))
+            .expect("annotation");
         assert_eq!(
             ann.args.get("targetEntity").map(String::as_str),
             Some("Foo.class")

@@ -193,7 +193,8 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let map = stats.map_mut(kind);
-        map.entry(id.to_string()).or_insert_with(ProviderStats::default);
+        map.entry(id.to_string())
+            .or_insert_with(ProviderStats::default);
     }
 
     fn record_provider_call(
@@ -1236,7 +1237,12 @@ mod tests {
             .register_diagnostic_provider(Arc::new(FastProvider))
             .unwrap();
 
-        let out = registry.diagnostics(ctx(), DiagnosticParams { file: FileId::from_raw(1) });
+        let out = registry.diagnostics(
+            ctx(),
+            DiagnosticParams {
+                file: FileId::from_raw(1),
+            },
+        );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].message, "fast");
 

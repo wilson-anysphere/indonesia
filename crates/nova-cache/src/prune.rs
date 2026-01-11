@@ -893,14 +893,18 @@ fn derived_entry_saved_at_millis(path: &Path, report: &mut PruneReport) -> Optio
     // (fixed-int, little-endian). Use the same config here; mixing bincode
     // encodings can lead to bogus lengths and OOMs on corrupted data.
     let mut reader = std::io::BufReader::new(file);
-    let (schema_version, _query_schema_version, nova_version, saved_at_millis): (u32, u32, String, u64) =
-        match bincode_options_limited().deserialize_from(&mut reader) {
-            Ok(value) => value,
-            Err(err) => {
-                report.push_error(path, "decode_query_entry_header", err);
-                return None;
-            }
-        };
+    let (schema_version, _query_schema_version, nova_version, saved_at_millis): (
+        u32,
+        u32,
+        String,
+        u64,
+    ) = match bincode_options_limited().deserialize_from(&mut reader) {
+        Ok(value) => value,
+        Err(err) => {
+            report.push_error(path, "decode_query_entry_header", err);
+            return None;
+        }
+    };
 
     if schema_version != crate::derived_cache::DERIVED_CACHE_SCHEMA_VERSION {
         return None;

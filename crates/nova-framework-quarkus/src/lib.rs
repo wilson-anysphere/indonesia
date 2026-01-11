@@ -12,8 +12,8 @@ mod config;
 pub use applicability::{
     is_quarkus_applicable, is_quarkus_applicable_with_classpath, is_quarkus_applicable_with_db,
 };
-pub use cdi::{CDI_AMBIGUOUS_CODE, CDI_CIRCULAR_CODE, CDI_UNSATISFIED_CODE};
 pub use cdi::{CdiAnalysis, CdiAnalysisWithSources, CdiModel, SourceDiagnostic, SourceSpan};
+pub use cdi::{CDI_AMBIGUOUS_CODE, CDI_CIRCULAR_CODE, CDI_UNSATISFIED_CODE};
 pub use config::{collect_config_property_names, config_property_completions};
 
 use nova_core::ProjectId;

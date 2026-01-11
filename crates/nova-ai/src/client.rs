@@ -26,7 +26,11 @@ use crate::providers::in_process_llama::InProcessLlamaProvider;
 
 #[async_trait]
 pub trait LlmClient: Send + Sync {
-    async fn chat(&self, request: ChatRequest, cancel: CancellationToken) -> Result<String, AiError>;
+    async fn chat(
+        &self,
+        request: ChatRequest,
+        cancel: CancellationToken,
+    ) -> Result<String, AiError>;
 
     async fn chat_stream(
         &self,
@@ -95,7 +99,9 @@ impl AiClient {
         if config.privacy.local_only {
             match &provider_kind {
                 AiProviderKind::InProcessLlama => {}
-                AiProviderKind::Ollama | AiProviderKind::OpenAiCompatible | AiProviderKind::Http => {
+                AiProviderKind::Ollama
+                | AiProviderKind::OpenAiCompatible
+                | AiProviderKind::Http => {
                     validate_local_only_url(&config.provider.url)?;
                 }
                 _ => {
@@ -636,39 +642,41 @@ impl LlmClient for AiClient {
             );
         }
 
-        let inner = match tokio::time::timeout(remaining, self.provider.chat_stream(request, cancel)).await {
-            Ok(result) => match result {
-                Ok(stream) => stream,
-                Err(err) => {
+        let inner =
+            match tokio::time::timeout(remaining, self.provider.chat_stream(request, cancel)).await
+            {
+                Ok(result) => match result {
+                    Ok(stream) => stream,
+                    Err(err) => {
+                        if self.audit_enabled {
+                            audit::log_llm_error(
+                                request_id,
+                                self.provider_label,
+                                &self.model,
+                                &err.to_string(),
+                                started_at.elapsed(),
+                                /*retry_count=*/ 0,
+                                /*stream=*/ true,
+                            );
+                        }
+                        return Err(err);
+                    }
+                },
+                Err(_) => {
                     if self.audit_enabled {
                         audit::log_llm_error(
                             request_id,
                             self.provider_label,
                             &self.model,
-                            &err.to_string(),
+                            &AiError::Timeout.to_string(),
                             started_at.elapsed(),
                             /*retry_count=*/ 0,
                             /*stream=*/ true,
                         );
                     }
-                    return Err(err);
+                    return Err(AiError::Timeout);
                 }
-            },
-            Err(_) => {
-                if self.audit_enabled {
-                    audit::log_llm_error(
-                        request_id,
-                        self.provider_label,
-                        &self.model,
-                        &AiError::Timeout.to_string(),
-                        started_at.elapsed(),
-                        /*retry_count=*/ 0,
-                        /*stream=*/ true,
-                    );
-                }
-                return Err(AiError::Timeout);
-            }
-        };
+            };
 
         let audit_enabled = self.audit_enabled;
         let provider_label = self.provider_label;
@@ -754,16 +762,18 @@ impl LlmClient for AiClient {
                     return Err(AiError::Timeout);
                 }
 
-                let out = tokio::time::timeout(remaining, self.provider.list_models(cancel.clone()))
-                    .await;
+                let out =
+                    tokio::time::timeout(remaining, self.provider.list_models(cancel.clone()))
+                        .await;
                 let out = match out {
                     Ok(res) => res,
                     Err(_) => Err(AiError::Timeout),
                 };
                 drop(permit);
 
-                let should_backoff =
-                    out.as_ref().is_err_and(|err| attempt < self.retry.max_retries && self.should_retry(err));
+                let should_backoff = out
+                    .as_ref()
+                    .is_err_and(|err| attempt < self.retry.max_retries && self.should_retry(err));
                 (out, should_backoff)
             };
 

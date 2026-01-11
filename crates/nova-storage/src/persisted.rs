@@ -530,5 +530,8 @@ fn env_flag_enabled(key: &str) -> bool {
         return false;
     };
     let value = value.to_string_lossy();
-    matches!(value.as_ref(), "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON")
+    matches!(
+        value.as_ref(),
+        "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"
+    )
 }

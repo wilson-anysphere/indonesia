@@ -213,10 +213,22 @@ fn derived_artifact_cache_gc_respects_ttl() {
     };
 
     cache
-        .store("ttl_query", query_schema_version, &args1, &inputs, &Value { answer: 1 })
+        .store(
+            "ttl_query",
+            query_schema_version,
+            &args1,
+            &inputs,
+            &Value { answer: 1 },
+        )
         .unwrap();
     cache
-        .store("ttl_query", query_schema_version, &args2, &inputs, &Value { answer: 2 })
+        .store(
+            "ttl_query",
+            query_schema_version,
+            &args2,
+            &inputs,
+            &Value { answer: 2 },
+        )
         .unwrap();
 
     let query_dir = temp.path().join("ttl_query");

@@ -55,6 +55,9 @@ public class Test {
     assert_eq!(d0.file, "Test.java");
     assert!(d0.line > 0);
     assert!(d0.column > 0);
-    assert!(d0.kind.starts_with("compiler.err."), "unexpected kind: {}", d0.kind);
+    assert!(
+        d0.kind.starts_with("compiler.err."),
+        "unexpected kind: {}",
+        d0.kind
+    );
 }
-

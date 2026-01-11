@@ -43,7 +43,10 @@ where
 }
 
 fn base_config(kind: AiProviderKind, url: Url, model: &str) -> AiConfig {
-    let local_only = matches!(kind, AiProviderKind::Ollama | AiProviderKind::OpenAiCompatible);
+    let local_only = matches!(
+        kind,
+        AiProviderKind::Ollama | AiProviderKind::OpenAiCompatible
+    );
     AiConfig {
         provider: AiProviderConfig {
             kind: kind.clone(),

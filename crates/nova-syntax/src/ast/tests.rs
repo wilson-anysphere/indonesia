@@ -11,7 +11,10 @@ fn typed_casts_smoke() {
 
     let root = parse.syntax();
     let unit = CompilationUnit::cast(root.clone()).expect("CompilationUnit cast");
-    assert!(ClassDeclaration::cast(root).is_none(), "root is not a class decl");
+    assert!(
+        ClassDeclaration::cast(root).is_none(),
+        "root is not a class decl"
+    );
 
     let class = unit
         .type_declarations()

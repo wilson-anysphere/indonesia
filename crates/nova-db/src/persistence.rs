@@ -369,7 +369,13 @@ impl Persistence {
             return;
         };
 
-        match cache.store(query_name, query_schema_version, args, input_fingerprints, value) {
+        match cache.store(
+            query_name,
+            query_schema_version,
+            args,
+            input_fingerprints,
+            value,
+        ) {
             Ok(()) => {
                 self.inner
                     .stats
@@ -404,7 +410,8 @@ impl Persistence {
         Args: Serialize,
         F: FnOnce() -> T,
     {
-        if let Some(hit) = self.load_derived(query_name, query_schema_version, args, input_fingerprints)
+        if let Some(hit) =
+            self.load_derived(query_name, query_schema_version, args, input_fingerprints)
         {
             return hit;
         }

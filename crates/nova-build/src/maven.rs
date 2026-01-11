@@ -432,7 +432,8 @@ impl MavenBuild {
             format!("-Doutput={}", effective_pom.display()),
             "help:effective-pom".to_string(),
         ];
-        let (program, args, output) = self.run(project_root, module_relative, &effective_pom_args)?;
+        let (program, args, output) =
+            self.run(project_root, module_relative, &effective_pom_args)?;
         if !output.status.success() {
             return Err(BuildError::CommandFailed {
                 tool: "maven",
@@ -656,7 +657,9 @@ pub fn parse_maven_effective_pom_annotation_processing(
     };
     let mut test = AnnotationProcessingConfig {
         enabled: true,
-        generated_sources_dir: Some(module_root.join("target/generated-test-sources/test-annotations")),
+        generated_sources_dir: Some(
+            module_root.join("target/generated-test-sources/test-annotations"),
+        ),
         ..Default::default()
     };
 
@@ -770,7 +773,11 @@ fn apply_maven_compiler_config(
         }
         if extracted.is_empty() {
             if let Some(text) = processors.text().map(str::trim).filter(|s| !s.is_empty()) {
-                extracted.extend(text.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+                extracted.extend(
+                    text.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty()),
+                );
             }
         }
         main.processors.extend(extracted.iter().cloned());
@@ -801,7 +808,13 @@ fn apply_maven_compiler_config(
                 continue;
             }
 
-            if let Some(jar) = maven_jar_path(&repo, &group_id, &artifact_id, &version, classifier.as_deref()) {
+            if let Some(jar) = maven_jar_path(
+                &repo,
+                &group_id,
+                &artifact_id,
+                &version,
+                classifier.as_deref(),
+            ) {
                 main.processor_path.push(jar.clone());
                 test.processor_path.push(jar);
             }
@@ -855,10 +868,14 @@ fn augment_from_compiler_args(config: &mut AnnotationProcessingConfig) {
     };
 
     let mut seen_processors = std::collections::HashSet::new();
-    config.processors.retain(|p| seen_processors.insert(p.clone()));
+    config
+        .processors
+        .retain(|p| seen_processors.insert(p.clone()));
 
     let mut seen_paths = std::collections::HashSet::new();
-    config.processor_path.retain(|p| seen_paths.insert(p.clone()));
+    config
+        .processor_path
+        .retain(|p| seen_paths.insert(p.clone()));
 }
 
 fn resolve_maven_path(value: &str, module_root: &Path) -> Option<PathBuf> {
@@ -879,28 +896,22 @@ fn find_maven_compiler_plugin<'a, 'i>(
 ) -> Option<roxmltree::Node<'a, 'i>> {
     // Prefer `<build><plugins>`; fall back to pluginManagement if needed.
     if let Some(plugins) = child_element(&build, "plugins") {
-        if let Some(plugin) = plugins
-            .children()
-            .find(|n| {
-                n.is_element()
-                    && n.has_tag_name("plugin")
-                    && child_text(&n, "artifactId").as_deref() == Some("maven-compiler-plugin")
-            })
-        {
+        if let Some(plugin) = plugins.children().find(|n| {
+            n.is_element()
+                && n.has_tag_name("plugin")
+                && child_text(&n, "artifactId").as_deref() == Some("maven-compiler-plugin")
+        }) {
             return Some(plugin);
         }
     }
 
     if let Some(pm) = child_element(&build, "pluginManagement") {
         if let Some(plugins) = child_element(&pm, "plugins") {
-            if let Some(plugin) = plugins
-                .children()
-                .find(|n| {
-                    n.is_element()
-                        && n.has_tag_name("plugin")
-                        && child_text(&n, "artifactId").as_deref() == Some("maven-compiler-plugin")
-                })
-            {
+            if let Some(plugin) = plugins.children().find(|n| {
+                n.is_element()
+                    && n.has_tag_name("plugin")
+                    && child_text(&n, "artifactId").as_deref() == Some("maven-compiler-plugin")
+            }) {
                 return Some(plugin);
             }
         }

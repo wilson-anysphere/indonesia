@@ -171,7 +171,11 @@ fn module_path_class_directories_with_multi_release_module_info_are_named_module
     let dir = tmp.path().join("mr-exploded-module");
     fs::create_dir_all(dir.join("META-INF/versions/9")).unwrap();
     fs::create_dir_all(dir.join("com/example/api")).unwrap();
-    fs::write(dir.join("META-INF/versions/9/module-info.class"), module_info).unwrap();
+    fs::write(
+        dir.join("META-INF/versions/9/module-info.class"),
+        module_info,
+    )
+    .unwrap();
     fs::write(dir.join("com/example/api/Api.class"), api_class).unwrap();
 
     let index = ModuleAwareClasspathIndex::build_module_path_with_deps_store(

@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use nova_framework_parse::{clean_type, parse_annotation_text, parse_class_literal, ParsedAnnotation};
+use nova_framework_parse::{
+    clean_type, parse_annotation_text, parse_class_literal, ParsedAnnotation,
+};
 use nova_syntax::{parse_java, SyntaxKind, SyntaxNode, SyntaxToken};
 use nova_types::{Diagnostic, Span};
 

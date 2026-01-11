@@ -94,4 +94,3 @@ async fn unix_socket_enforces_auth_token_when_configured() -> anyhow::Result<()>
     router.shutdown().await?;
     Ok(())
 }
-

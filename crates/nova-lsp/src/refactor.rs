@@ -1,8 +1,8 @@
+use crate::text_pos::TextPos;
 use lsp_types::{
     CodeAction, CodeActionDisabled, CodeActionKind, CodeActionOrCommand, Position, Range, Uri,
     WorkspaceEdit,
 };
-use crate::text_pos::TextPos;
 use nova_index::Index;
 use nova_index::SymbolId;
 use nova_refactor::{

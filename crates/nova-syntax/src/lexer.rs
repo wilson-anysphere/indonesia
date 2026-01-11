@@ -33,10 +33,11 @@ impl TextMap {
     fn original_offset(&self, processed: usize) -> usize {
         match self {
             TextMap::Identity => processed,
-            TextMap::Translated(map) => map
-                .get(processed)
-                .copied()
-                .unwrap_or_else(|| map.last().copied().unwrap_or(0)) as usize,
+            TextMap::Translated(map) => {
+                map.get(processed)
+                    .copied()
+                    .unwrap_or_else(|| map.last().copied().unwrap_or(0)) as usize
+            }
         }
     }
 }
@@ -357,7 +358,9 @@ impl<'a> Lexer<'a> {
                                     if matches!(self.peek_char(), Some('0'..='7')) {
                                         self.bump_char();
                                         // Third digit (optional), only if the first digit was 0..3.
-                                        if first <= '3' && matches!(self.peek_char(), Some('0'..='7')) {
+                                        if first <= '3'
+                                            && matches!(self.peek_char(), Some('0'..='7'))
+                                        {
                                             self.bump_char();
                                         }
                                     }
@@ -1119,7 +1122,13 @@ fn translate_unicode_escapes(input: &str) -> (Cow<'_, str>, TextMap) {
     (Cow::Owned(out), TextMap::Translated(map))
 }
 
-fn append_mapped_char(out: &mut String, map: &mut Vec<u32>, ch: char, span_start: usize, span_end: usize) {
+fn append_mapped_char(
+    out: &mut String,
+    map: &mut Vec<u32>,
+    ch: char,
+    span_start: usize,
+    span_end: usize,
+) {
     debug_assert_eq!(map.len(), out.len() + 1);
     debug_assert_eq!(map.last().copied().unwrap_or(0) as usize, span_start);
 
@@ -1157,7 +1166,7 @@ fn parse_unicode_escape(bytes: &[u8], mut i: usize, has_backslash: bool) -> Opti
 
     let mut value: u16 = 0;
     for _ in 0..4 {
-        let digit = hex_value(*bytes.get(i)? )?;
+        let digit = hex_value(*bytes.get(i)?)?;
         value = value.wrapping_mul(16).wrapping_add(digit);
         i += 1;
     }

@@ -145,7 +145,11 @@ impl<'a> Resolver<'a> {
     /// - If multiple imports introduce different members for the same name, the
     ///   result is ambiguous.
     #[must_use]
-    pub fn resolve_static_imports_detailed(&self, imports: &ImportMap, name: &Name) -> StaticLookup {
+    pub fn resolve_static_imports_detailed(
+        &self,
+        imports: &ImportMap,
+        name: &Name,
+    ) -> StaticLookup {
         // 1) Explicit single static member imports (shadow star imports).
         let mut candidates = Vec::<StaticMemberId>::new();
         for import in &imports.static_single {

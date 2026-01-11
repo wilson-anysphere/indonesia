@@ -53,8 +53,12 @@ public class A {
     let snapshot = RefactorWorkspaceSnapshot::build(&uri, &overlays).expect("build snapshot");
 
     assert_eq!(snapshot.files().len(), 2);
-    assert!(snapshot.files().contains_key(&FileId::new(a_uri_string.clone())));
-    assert!(snapshot.files().contains_key(&FileId::new(b_uri_string.clone())));
+    assert!(snapshot
+        .files()
+        .contains_key(&FileId::new(a_uri_string.clone())));
+    assert!(snapshot
+        .files()
+        .contains_key(&FileId::new(b_uri_string.clone())));
 
     let a_text = snapshot
         .db()

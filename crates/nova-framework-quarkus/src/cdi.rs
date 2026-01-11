@@ -199,13 +199,7 @@ fn parse_class_declaration(
 
     if is_bean {
         let mut class_deps = Vec::new();
-        parse_class_body_for_injections(
-            body,
-            source_idx,
-            source,
-            injections,
-            &mut class_deps,
-        );
+        parse_class_body_for_injections(body, source_idx, source, injections, &mut class_deps);
 
         beans.push(Bean {
             name: class_name.clone(),
@@ -948,8 +942,8 @@ fn find_keyword_top_level(haystack: &str, keyword: &str) -> Option<usize> {
 
         if depth == 0 && haystack[i..].starts_with(keyword) {
             let before_ok = i == 0 || !is_ident_continue(bytes[i - 1] as char);
-            let after_ok = i + kw.len() >= bytes.len()
-                || !is_ident_continue(bytes[i + kw.len()] as char);
+            let after_ok =
+                i + kw.len() >= bytes.len() || !is_ident_continue(bytes[i + kw.len()] as char);
             if before_ok && after_ok {
                 return Some(i);
             }
