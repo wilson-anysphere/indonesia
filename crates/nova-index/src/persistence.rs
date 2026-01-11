@@ -440,6 +440,36 @@ pub fn load_index_view(
     }))
 }
 
+/// Loads indexes as a zero-copy view backed by validated `rkyv` archives, using
+/// a fast per-file fingerprint based on file metadata (size + mtime).
+///
+/// This avoids hashing full file contents before deciding whether persisted
+/// indexes are reusable. It is best-effort: modifications that preserve both
+/// file size and mtime may be missed.
+pub fn load_index_view_fast(
+    cache_dir: &CacheDir,
+    project_root: impl AsRef<Path>,
+    files: Vec<PathBuf>,
+) -> Result<Option<ProjectIndexesView>, IndexPersistenceError> {
+    let Some(archives) = load_index_archives_fast(cache_dir, project_root, files)? else {
+        return Ok(None);
+    };
+
+    let invalidated_files = archives
+        .invalidated_files
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+
+    Ok(Some(ProjectIndexesView {
+        symbols: archives.symbols,
+        references: archives.references,
+        inheritance: archives.inheritance,
+        annotations: archives.annotations,
+        invalidated_files,
+        overlay: ProjectIndexes::default(),
+    }))
+}
+
 pub fn load_indexes_fast(
     cache_dir: &CacheDir,
     project_root: impl AsRef<Path>,
