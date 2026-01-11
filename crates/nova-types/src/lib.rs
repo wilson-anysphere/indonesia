@@ -843,6 +843,82 @@ impl TypeStore {
         Type::class(*def, new_args)
     }
 
+    /// Reserve (or reuse) a stable [`ClassId`] for `binary_name`.
+    ///
+    /// External type loaders (e.g. reading `.class` files or JDK stubs) often need a
+    /// stable id for a class *before* they have parsed its full body. This enables:
+    ///
+    /// - Building cyclic graphs (mutually-referential types) without infinite recursion.
+    /// - Interning ids early while loading referenced super classes / interfaces.
+    ///
+    /// If the class has not been seen before, this inserts a conservative placeholder
+    /// [`ClassDef`] (kind = [`ClassKind::Class`], no supertypes, no methods, no type
+    /// params) and returns its id. If it already exists, returns the existing id.
+    pub fn intern_class_id(&mut self, binary_name: &str) -> ClassId {
+        if let Some(id) = self.class_by_name.get(binary_name).copied() {
+            return id;
+        }
+
+        self.add_class(ClassDef {
+            name: binary_name.to_string(),
+            kind: ClassKind::Class,
+            type_params: vec![],
+            super_class: None,
+            interfaces: vec![],
+            methods: vec![],
+        })
+    }
+
+    /// Overwrite the existing class definition at `id`.
+    ///
+    /// This is intended to pair with [`TypeStore::intern_class_id`]: reserve ids for
+    /// a set of binary names first, then later populate/replace those placeholders
+    /// with fully parsed class definitions.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` is out of bounds, or if `def.name` does not match the name
+    /// originally associated with `id`.
+    pub fn define_class(&mut self, id: ClassId, def: ClassDef) {
+        let slot = self
+            .classes
+            .get_mut(id.0 as usize)
+            .unwrap_or_else(|| panic!("define_class: invalid ClassId {:?}", id));
+        let expected_name = slot.name.clone();
+
+        assert!(
+            def.name == expected_name,
+            "define_class: attempted to define {:?} with name {:?}, but id is reserved for {:?}",
+            id,
+            def.name,
+            expected_name
+        );
+        assert!(
+            self.class_by_name.get(&expected_name).copied() == Some(id),
+            "define_class: TypeStore invariant violation: class_by_name[{:?}] did not point at {:?}",
+            expected_name,
+            id
+        );
+
+        *slot = def;
+    }
+
+    /// Add a new class definition, overwriting an existing one if present.
+    ///
+    /// This is useful when importing types from external sources (classpath/JDK stubs),
+    /// where the same binary name may be encountered multiple times at different
+    /// fidelity levels (e.g. a minimal stub first, followed by a fully parsed class).
+    ///
+    /// Returns the stable [`ClassId`] for the class.
+    pub fn upsert_class(&mut self, def: ClassDef) -> ClassId {
+        if let Some(id) = self.class_by_name.get(&def.name).copied() {
+            self.define_class(id, def);
+            id
+        } else {
+            self.add_class(def)
+        }
+    }
+
     pub fn add_class(&mut self, mut def: ClassDef) -> ClassId {
         let id = ClassId(self.classes.len() as u32);
         if self.class_by_name.contains_key(&def.name) {
