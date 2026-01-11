@@ -669,7 +669,7 @@ Protocol v3 is **not wire-compatible** with the legacy lockstep protocol current
 `nova_remote_proto::PROTOCOL_VERSION`).
 
 - Legacy (lockstep): length-prefixed stream of `legacy_v2::RpcMessage` enums encoded via a
-  fixed-width, length-checked binary codec (lockstep request/response).
+  custom length-delimited, length-checked binary codec with explicit hard limits (lockstep request/response).
 - v3 (this document): length-prefixed stream of CBOR `WireFrame` envelopes, with negotiation + multiplexing.
 
 The planned rollout is a coordinated upgrade of router and worker. If mixed-version support is
