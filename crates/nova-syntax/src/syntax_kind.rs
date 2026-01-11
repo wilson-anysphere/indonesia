@@ -312,6 +312,10 @@ pub enum SyntaxKind {
 
     /// Root node produced by [`crate::parse_expression`].
     ExpressionRoot,
+    /// Wrapper node for a single entry inside a module body.
+    ///
+    /// Kept at the end of the enum to preserve stable `SyntaxKind` discriminants
+    /// for existing persisted syntax artifacts.
     ModuleDirective,
 
     // --- Java 21+ nodes (grammar-complete surface area) ---
