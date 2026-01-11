@@ -16,16 +16,25 @@ export interface NovaLspArgsOptions {
   workspaceRoot?: string | null;
 }
 
+export function resolveNovaConfigPath(
+  options: Pick<NovaLspArgsOptions, 'configPath' | 'workspaceRoot'> = {},
+): string | undefined {
+  const trimmedConfigPath = options.configPath?.trim();
+  if (!trimmedConfigPath) {
+    return undefined;
+  }
+
+  const workspaceRoot = options.workspaceRoot?.trim();
+  return workspaceRoot && !path.isAbsolute(trimmedConfigPath)
+    ? path.join(workspaceRoot, trimmedConfigPath)
+    : trimmedConfigPath;
+}
+
 export function buildNovaLspArgs(options: NovaLspArgsOptions = {}): string[] {
   const args: string[] = ['--stdio'];
 
-  const trimmedConfigPath = options.configPath?.trim();
-  if (trimmedConfigPath) {
-    const workspaceRoot = options.workspaceRoot?.trim();
-    const resolvedConfigPath =
-      workspaceRoot && !path.isAbsolute(trimmedConfigPath)
-        ? path.join(workspaceRoot, trimmedConfigPath)
-        : trimmedConfigPath;
+  const resolvedConfigPath = resolveNovaConfigPath(options);
+  if (resolvedConfigPath) {
     args.push('--config', resolvedConfigPath);
   }
 

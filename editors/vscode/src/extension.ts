@@ -4,8 +4,7 @@ import * as path from 'path';
 import type { TextDocumentFilter as LspTextDocumentFilter } from 'vscode-languageserver-protocol';
 import { getCompletionContextId, requestMoreCompletions } from './aiCompletionMore';
 import { ServerManager, type NovaServerSettings } from './serverManager';
-import type { DocumentSelector as ProtocolDocumentSelector } from 'vscode-languageserver-protocol';
-import { buildNovaLspArgs } from './lspArgs';
+import { buildNovaLspArgs, resolveNovaConfigPath } from './lspArgs';
 
 let client: LanguageClient | undefined;
 let clientStart: Promise<void> | undefined;
@@ -84,13 +83,19 @@ function clearAiCompletionCache(): void {
   lastCompletionDocumentUri = undefined;
 }
 
-function readLspArgs(): string[] {
+function readLspLaunchConfig(): { args: string[]; env: NodeJS.ProcessEnv } {
   const config = vscode.workspace.getConfiguration('nova');
   const configPath = config.get<string | null>('lsp.configPath', null);
   const extraArgs = config.get<string[]>('lsp.extraArgs', []);
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
 
-  return buildNovaLspArgs({ configPath, extraArgs, workspaceRoot });
+  const resolvedConfigPath = resolveNovaConfigPath({ configPath, workspaceRoot });
+  return {
+    args: buildNovaLspArgs({ configPath: resolvedConfigPath ?? null, extraArgs, workspaceRoot: null }),
+    // `nova-config` already supports `NOVA_CONFIG_PATH`; set it when a config
+    // path is configured so users don't have to manually export env vars.
+    env: resolvedConfigPath ? { ...process.env, NOVA_CONFIG_PATH: resolvedConfigPath } : process.env,
+  };
 }
 
 interface BugReportResponse {
@@ -259,7 +264,12 @@ export async function activate(context: vscode.ExtensionContext) {
 
   async function startLanguageClient(serverCommand: string): Promise<void> {
     currentServerCommand = serverCommand;
-    const serverOptions: ServerOptions = { command: serverCommand, args: readLspArgs() };
+    const launchConfig = readLspLaunchConfig();
+    const serverOptions: ServerOptions = {
+      command: serverCommand,
+      args: launchConfig.args,
+      options: { env: launchConfig.env },
+    };
     client = new LanguageClient('nova', 'Nova Java Language Server', serverOptions, clientOptions);
     // vscode-languageclient v9+ starts asynchronously.
     clientStart = client.start();
