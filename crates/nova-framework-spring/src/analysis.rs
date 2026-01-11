@@ -846,15 +846,19 @@ fn parse_bean_method(node: Node<'_>, source_idx: usize, source: &str) -> Option<
         .or_else(|| infer_method_return_type_node(node))?;
     let ty = simplify_type(node_text(source, return_type_node));
 
-    let explicit_name = bean_ann
+    let explicit_names = bean_ann
         .args
         .get("name")
         .or_else(|| bean_ann.args.get("value"))
-        .and_then(|raw| parse_string_list(raw).into_iter().next())
-        .filter(|s| !s.is_empty());
-    let name = explicit_name.unwrap_or_else(|| method_name.clone());
+        .map(|raw| parse_string_list(raw))
+        .unwrap_or_default();
+    let (name, aliases) = if explicit_names.is_empty() {
+        (method_name.clone(), Vec::new())
+    } else {
+        (explicit_names[0].clone(), explicit_names[1..].to_vec())
+    };
 
-    let qualifiers = annotations
+    let mut qualifiers = annotations
         .iter()
         .filter(|a| a.simple_name == "Qualifier")
         .filter_map(|a| {
@@ -865,6 +869,10 @@ fn parse_bean_method(node: Node<'_>, source_idx: usize, source: &str) -> Option<
         })
         .filter(|q| !q.is_empty())
         .collect::<Vec<_>>();
+    // Treat additional `@Bean(name={...})` entries as aliases (qualifier matches).
+    qualifiers.extend(aliases);
+    qualifiers.sort();
+    qualifiers.dedup();
 
     let primary = annotations.iter().any(|a| a.simple_name == "Primary");
     let profiles = extract_profiles(&annotations);

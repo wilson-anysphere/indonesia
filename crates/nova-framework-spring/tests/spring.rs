@@ -129,6 +129,49 @@ fn bean_method_param_missing_dependency_reports_diagnostic() {
 }
 
 #[test]
+fn bean_method_name_array_alias_matches_qualifier() {
+    let config = r#"
+        import org.springframework.context.annotation.Bean;
+        import org.springframework.context.annotation.Configuration;
+
+        @Configuration
+        class Config {
+            @Bean(name={"fooBean","fooAlias"})
+            Foo foo() { return null; }
+        }
+
+        class Foo {}
+    "#;
+    let consumer = r#"
+        import org.springframework.beans.factory.annotation.Autowired;
+        import org.springframework.beans.factory.annotation.Qualifier;
+        import org.springframework.stereotype.Component;
+
+        @Component
+        class Consumer {
+            @Autowired
+            @Qualifier("fooAlias")
+            Foo foo;
+        }
+    "#;
+
+    let analysis = analyze_java_sources(&[config, consumer]);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "unexpected diagnostics: {:#?}",
+        analysis.diagnostics
+    );
+
+    let inj_idx = analysis
+        .model
+        .injections
+        .iter()
+        .position(|i| i.owner_class == "Consumer" && i.ty == "Foo")
+        .expect("missing Foo injection");
+    assert_eq!(analysis.model.injection_candidates[inj_idx].len(), 1);
+}
+
+#[test]
 fn no_bean_diagnostic_triggers() {
     let bar = r#"
         import org.springframework.stereotype.Component;
