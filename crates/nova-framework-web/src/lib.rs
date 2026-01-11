@@ -54,6 +54,8 @@ pub fn extract_http_endpoints_in_dir(
     let project_root = project_root.as_ref();
     let mut java_files = Vec::new();
     collect_java_files(project_root, &mut java_files)?;
+    java_files.sort();
+    java_files.dedup();
 
     let mut endpoints = Vec::new();
     for file in java_files {
@@ -78,6 +80,8 @@ pub fn extract_jaxrs_endpoints_in_dir(
     let project_root = project_root.as_ref();
     let mut java_files = Vec::new();
     collect_java_files(project_root, &mut java_files)?;
+    java_files.sort();
+    java_files.dedup();
 
     let mut endpoints = Vec::new();
     for file in java_files {
@@ -182,7 +186,7 @@ pub fn extract_spring_mvc_endpoints(sources: &[(&str, Option<PathBuf>)]) -> Vec<
 
 fn extract_spring_mvc_endpoints_from_source(source: &str, file: Option<PathBuf>) -> Vec<Endpoint> {
     let method_sig_re = Regex::new(
-        r#"^\s*(?:public|protected|private|static|final|synchronized|abstract|default|\s)+\s*[\w<>\[\].$]+\s+(\w+)\s*\("#,
+        r#"^\s*(?:(?:public|protected|private|static|final|synchronized|abstract|default)\s+)*[A-Za-z0-9_<>\[\].$,@?&\s,]+?\s+[A-Za-z_][A-Za-z0-9_]*\s*\("#,
     )
     .unwrap();
 
@@ -340,7 +344,7 @@ pub fn extract_micronaut_endpoints(sources: &[(&str, Option<PathBuf>)]) -> Vec<E
 
 fn extract_micronaut_endpoints_from_source(source: &str, file: Option<PathBuf>) -> Vec<Endpoint> {
     let method_sig_re = Regex::new(
-        r#"^\s*(?:public|protected|private|static|final|synchronized|abstract|default|\s)+\s*[\w<>\[\].$]+\s+(\w+)\s*\("#,
+        r#"^\s*(?:(?:public|protected|private|static|final|synchronized|abstract|default)\s+)*[A-Za-z0-9_<>\[\].$,@?&\s,]+?\s+[A-Za-z_][A-Za-z0-9_]*\s*\("#,
     )
     .unwrap();
 
@@ -447,6 +451,9 @@ fn join_paths(class_path: Option<&str>, method_path: Option<&str>) -> String {
         if !mp.is_empty() {
             if !path.ends_with('/') && !mp.starts_with('/') {
                 path.push('/');
+            }
+            if path.ends_with('/') && mp.starts_with('/') {
+                path.pop();
             }
             path.push_str(mp);
         }
@@ -642,6 +649,14 @@ fn collect_java_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()>
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
+            // Ignore common noise directories.
+            let ignore = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|name| matches!(name, ".git" | "target" | "build" | "out"));
+            if ignore {
+                continue;
+            }
             collect_java_files(&path, out)?;
         } else if path.extension().and_then(|e| e.to_str()) == Some("java") {
             out.push(path);

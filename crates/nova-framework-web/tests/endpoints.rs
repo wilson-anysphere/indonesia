@@ -85,6 +85,27 @@ public class UserController
 }
 
 #[test]
+fn spring_mvc_extraction_handles_generic_return_types_and_slash_normalization() {
+    let src = r#"import org.springframework.web.bind.annotation.*;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/")
+public class UserController {
+    @GetMapping("/users")
+    public Map<String, Object> list() { return null; }
+}
+"#;
+
+    let endpoints = extract_spring_mvc_endpoints(&[(src, Some(PathBuf::from("UserController.java")))]);
+    assert_eq!(endpoints.len(), 1);
+    assert_eq!(endpoints[0].path, "/api/users");
+    assert_eq!(endpoints[0].methods, vec!["GET".to_string()]);
+    assert_eq!(endpoints[0].handler.file, Some(PathBuf::from("UserController.java")));
+    assert_eq!(endpoints[0].handler.line, 8);
+}
+
+#[test]
 fn micronaut_extraction_controller_and_method_mappings() {
     let src = r#"import io.micronaut.http.annotation.*;
 
