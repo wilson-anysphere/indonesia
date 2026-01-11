@@ -365,6 +365,14 @@ Receivers decode a packet as:
 2. If `compression != "none"`, decompress `data` to obtain CBOR bytes.
 3. Decode CBOR bytes as a `RpcPayload`.
 
+Size limits (MUST):
+
+- If `compression = "none"`, the receiver MUST reject the packet if `data.len() > chosen_capabilities.max_packet_len`.
+- If `compression = "zstd"`:
+  - the receiver MUST reject the packet if `data.len() > chosen_capabilities.max_packet_len`, and
+  - the receiver MUST bound decompression output to `chosen_capabilities.max_packet_len` bytes and
+    reject the packet if decompression would exceed that limit.
+
 ### 5.2 `RpcPayload` schema
 
 `WireFrame::Packet.data` (after optional decompression) is a CBOR document encoding:
