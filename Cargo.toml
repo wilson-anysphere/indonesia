@@ -52,6 +52,7 @@ members = [
     "crates/nova-properties",
     "crates/nova-refactor",
     "crates/nova-remote-proto",
+    "crates/nova-remote-rpc",
     "crates/nova-resolve",
     "crates/nova-router",
     "crates/nova-scheduler",

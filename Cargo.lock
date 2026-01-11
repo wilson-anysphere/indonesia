@@ -4011,6 +4011,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nova-remote-rpc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "serde",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zstd 0.13.3",
+]
+
+[[package]]
 name = "nova-resolve"
 version = "0.1.0"
 dependencies = [
