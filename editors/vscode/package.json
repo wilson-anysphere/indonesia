@@ -120,7 +120,7 @@
         "nova.download.baseUrl": {
           "type": "string",
           "default": "https://github.com/wilson-anysphere/indonesia/releases/download",
-          "description": "Base URL used to download release assets. The extension downloads ${baseUrl}/${releaseTag}/<asset>."
+          "description": "GitHub Releases download base URL (e.g. https://github.com/<owner>/<repo>/releases/download). Nova uses this to locate the repository and download matching nova-lsp/nova-dap assets."
         },
         "nova.download.allowPrerelease": {
           "type": "boolean",

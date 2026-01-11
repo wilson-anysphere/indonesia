@@ -149,7 +149,10 @@ These settings control managed downloads for both `nova-lsp` and `nova-dap`:
 - `nova.download.allowPrerelease` (boolean): allow selecting pre-releases when `releaseTag` is `latest`.
 - `nova.download.allowVersionMismatch` (boolean): allow binaries whose `--version` output doesn’t match the extension version.
 
-If you hit GitHub rate limits in the VS Code extension host, you can set `GITHUB_TOKEN`/`GH_TOKEN` before launching VS Code so Nova can fetch release metadata and checksums.
+If you hit GitHub rate limits (or need auth for GitHub Enterprise Server), you can set one of these environment variables before launching VS Code:
+
+- Public GitHub: `GITHUB_TOKEN` or `GH_TOKEN`
+- Custom GitHub hosts: `NOVA_GITHUB_TOKEN`
 
 ### LSP
 

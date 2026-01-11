@@ -1,4 +1,4 @@
-import * as vscode from 'vscode';
+import type * as vscode from 'vscode';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execFile } from 'node:child_process';
@@ -86,6 +86,10 @@ export async function findOnPath(command: string): Promise<string | undefined> {
 }
 
 export async function openInstallDocs(context: vscode.ExtensionContext): Promise<void> {
+  // Avoid a hard dependency on the `vscode` module so this file can be unit tested with plain Node.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const vscode = require('vscode') as typeof import('vscode');
+
   const readmeUri = vscode.Uri.joinPath(context.extensionUri, 'README.md');
   try {
     await vscode.commands.executeCommand('markdown.showPreview', readmeUri);
