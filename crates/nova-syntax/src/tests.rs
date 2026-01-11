@@ -746,6 +746,32 @@ fn feature_gate_records_version_matrix() {
 }
 
 #[test]
+fn feature_gate_modules_version_matrix() {
+    let input = "module com.example.mod { }";
+
+    let java8 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel::JAVA_8,
+        },
+    );
+    assert_eq!(java8.result.errors, Vec::new());
+    assert_eq!(
+        java8.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec!["JAVA_FEATURE_MODULES"]
+    );
+
+    let java11 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel::JAVA_11,
+        },
+    );
+    assert_eq!(java11.result.errors, Vec::new());
+    assert!(java11.diagnostics.is_empty());
+}
+
+#[test]
 fn feature_gate_text_blocks_version_matrix() {
     let input = r#"class Foo { String s = """hi
 there"""; }"#;

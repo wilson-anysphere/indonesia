@@ -6,6 +6,7 @@ use crate::{SyntaxKind, SyntaxNode, SyntaxToken};
 pub(crate) fn feature_gate_diagnostics(root: &SyntaxNode, level: JavaLanguageLevel) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
+    gate_modules(root, level, &mut diagnostics);
     gate_records(root, level, &mut diagnostics);
     gate_sealed_classes(root, level, &mut diagnostics);
     gate_text_blocks(root, level, &mut diagnostics);
@@ -16,6 +17,26 @@ pub(crate) fn feature_gate_diagnostics(root: &SyntaxNode, level: JavaLanguageLev
     gate_var_local_inference(root, level, &mut diagnostics);
 
     diagnostics
+}
+
+fn gate_modules(root: &SyntaxNode, level: JavaLanguageLevel, out: &mut Vec<Diagnostic>) {
+    if level.is_enabled(JavaFeature::Modules) {
+        return;
+    }
+
+    for node in root
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::ModuleDeclaration)
+    {
+        let Some(module_kw) = node
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .find(|t| t.kind() == SyntaxKind::ModuleKw)
+        else {
+            continue;
+        };
+        out.push(feature_error(level, JavaFeature::Modules, &module_kw));
+    }
 }
 
 fn gate_records(root: &SyntaxNode, level: JavaLanguageLevel, out: &mut Vec<Diagnostic>) {
