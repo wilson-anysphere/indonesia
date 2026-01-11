@@ -179,6 +179,16 @@ export async function activate(context: vscode.ExtensionContext) {
       fileEvents: fileWatcher,
     },
     middleware: {
+      sendRequest: async (type, param, token, next) => {
+        try {
+          return await next(type, param, token);
+        } catch (err) {
+          if (typeof type === 'string' && type.startsWith('nova/') && type !== 'nova/bugReport' && isSafeModeError(err)) {
+            setSafeModeEnabled?.(true);
+          }
+          throw err;
+        }
+      },
       provideCompletionItem: async (document, position, completionContext, token, next) => {
         const result = await next(document, position, completionContext, token);
 
