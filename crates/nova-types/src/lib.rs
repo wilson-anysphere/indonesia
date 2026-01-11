@@ -872,8 +872,9 @@ impl TypeStore {
     /// - Interning ids early while loading referenced super classes / interfaces.
     ///
     /// If the class has not been seen before, this inserts a conservative placeholder
-    /// [`ClassDef`] (kind = [`ClassKind::Class`], no supertypes, no methods, no type
-    /// params) and returns its id. If it already exists, returns the existing id.
+    /// [`ClassDef`] (kind = [`ClassKind::Class`], no supertypes, no fields, no constructors,
+    /// no methods, no type params) and returns its id. If it already exists, returns the
+    /// existing id.
     pub fn intern_class_id(&mut self, binary_name: &str) -> ClassId {
         if let Some(id) = self.class_by_name.get(binary_name).copied() {
             return id;
