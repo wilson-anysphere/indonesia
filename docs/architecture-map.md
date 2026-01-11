@@ -12,6 +12,9 @@ It is meant to answer, concretely:
 For the stable spec of Nova’s custom `nova/*` LSP methods, see
 [`protocol-extensions.md`](protocol-extensions.md).
 
+For practical guidance on running tests locally, updating fixtures/snapshots, and understanding CI
+gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
+
 ## Maturity levels
 
 - **scaffolding**: early skeletons; APIs and boundaries are still in flux and may not be wired into binaries.
