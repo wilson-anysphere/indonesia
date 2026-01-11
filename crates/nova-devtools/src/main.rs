@@ -347,7 +347,7 @@ USAGE:
 COMMANDS:
   check-deps             Validate workspace crate dependency edges against ADR 0007 layering rules
   check-layers           Validate crate-layers.toml integrity (workspace coverage, unknown crates, layer refs)
-  check-architecture-map Validate docs/architecture-map.md coverage for the workspace crates
+  check-architecture-map Validate docs/architecture-map.md coverage for crates/ directory crates
   graph-deps             Emit a GraphViz/DOT dependency graph annotated by layer (see --help)
 
 OPTIONS:
