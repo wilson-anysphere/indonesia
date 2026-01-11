@@ -8,8 +8,9 @@ use lsp_types::{
 };
 
 use nova_refactor::{
-    workspace_edit_to_lsp_document_changes_with_uri_mapper, FileId as RefactorFileId, RefactoringEdit,
-    TextDatabase,
+    workspace_edit_to_lsp_document_changes_with_uri_mapper, FileId as RefactorFileId,
+    FileOp as RefactorFileOp, RefactoringEdit, TextDatabase, TextRange,
+    WorkspaceEdit as RefactorWorkspaceEdit, WorkspaceTextEdit,
 };
 
 pub fn client_supports_file_operations(capabilities: &ClientCapabilities) -> bool {
@@ -123,6 +124,14 @@ pub fn workspace_edit_from_refactor(
             change_annotations: None,
         }
     } else if can_create(capabilities) && can_delete(capabilities) {
+        if let Some(edit) = try_workspace_edit_from_refactor_with_create_delete_support(
+            root_uri,
+            original_files,
+            edit,
+        ) {
+            return edit;
+        }
+
         let mut ops: Vec<DocumentChangeOperation> = Vec::new();
 
         for mv in &edit.file_moves {
@@ -235,6 +244,61 @@ fn try_workspace_edit_from_refactor_with_rename_support(
         .collect();
 
     let canonical = edit.to_workspace_edit(&original_files).ok()?;
+    let db = TextDatabase::new(original_files.into_iter().map(|(path, text)| {
+        (
+            RefactorFileId::new(path.to_string_lossy().into_owned()),
+            text,
+        )
+    }));
+
+    workspace_edit_to_lsp_document_changes_with_uri_mapper(&db, &canonical, |file| {
+        Ok(join_uri(root_uri, Path::new(&file.0)))
+    })
+    .ok()
+}
+
+fn try_workspace_edit_from_refactor_with_create_delete_support(
+    root_uri: &Uri,
+    original_files: &HashMap<PathBuf, String>,
+    edit: &RefactoringEdit,
+) -> Option<WorkspaceEdit> {
+    // Convert the legacy move refactoring edit into Nova's canonical `WorkspaceEdit` representation
+    // using Create+Delete operations (for clients without Rename support), then reuse the shared
+    // `workspace_edit_to_lsp_document_changes_*` helper for UTF-16 correct ranges.
+    let mut canonical = RefactorWorkspaceEdit {
+        file_ops: Vec::new(),
+        text_edits: Vec::new(),
+    };
+
+    for mv in &edit.file_moves {
+        // Ensure the file exists so we can compute pre-op file state (used for UTF-16 range
+        // conversion and to avoid emitting invalid DeleteFile operations).
+        let _ = original_files.get(&mv.old_path)?;
+
+        canonical.file_ops.push(RefactorFileOp::Create {
+            file: RefactorFileId::new(mv.new_path.to_string_lossy().into_owned()),
+            contents: mv.new_contents.clone(),
+        });
+        canonical.file_ops.push(RefactorFileOp::Delete {
+            file: RefactorFileId::new(mv.old_path.to_string_lossy().into_owned()),
+        });
+    }
+
+    for fe in &edit.file_edits {
+        let old_contents = original_files.get(&fe.path)?;
+        canonical.text_edits.push(WorkspaceTextEdit::replace(
+            RefactorFileId::new(fe.path.to_string_lossy().into_owned()),
+            TextRange::new(0, old_contents.len()),
+            fe.new_contents.clone(),
+        ));
+    }
+
+    canonical.normalize().ok()?;
+
+    let original_files: BTreeMap<PathBuf, String> = original_files
+        .iter()
+        .map(|(path, text)| (path.clone(), text.clone()))
+        .collect();
     let db = TextDatabase::new(original_files.into_iter().map(|(path, text)| {
         (
             RefactorFileId::new(path.to_string_lossy().into_owned()),
