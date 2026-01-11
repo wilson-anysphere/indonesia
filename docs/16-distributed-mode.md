@@ -317,6 +317,25 @@ authorization + DoS hardening), see
 [ADR 0008 — Distributed mode security](adr/0008-distributed-mode-security.md). The current
 implementation does **not** meet those requirements and should only be used on trusted networks.
 
+## Observability (logging & crash reports)
+
+Distributed mode uses the same observability stack as the main LSP/DAP binaries:
+
+- **Structured logs** are emitted via `tracing` (rather than `eprintln!`) and respect `RUST_LOG`
+  (merged with `NovaConfig.logging.level` when a host initializes tracing).
+- When `nova-router` **spawns local workers**, it captures each worker’s stdout/stderr and re-emits
+  each line as a router log event with `target="nova.worker.output"` and `shard_id=<id>`. This makes
+  worker logs visible in one place without requiring access to the worker process directly.
+- **Panics** in both router and worker processes are captured by the shared `nova-bugreport` panic
+  hook and appended to a persistent JSONL crash log (`crashes.jsonl`), in addition to being logged
+  via `tracing`:
+  - Linux: `${XDG_STATE_HOME:-$HOME/.local/state}/nova/crashes.jsonl`
+  - macOS: `$HOME/Library/Logs/nova/crashes.jsonl`
+  - Windows: `%LOCALAPPDATA%\\Nova\\crashes.jsonl`
+
+If you embed `nova-router` outside of `nova-lsp`, call `nova_router::init_observability(&config,
+notifier)` early during startup so router logs/panics are captured consistently.
+
 ## Performance characteristics & caveats
 
 Distributed mode currently prioritizes correctness and simplicity over throughput:
