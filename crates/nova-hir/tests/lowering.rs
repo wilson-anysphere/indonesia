@@ -1,5 +1,7 @@
 use nova_hir::hir::{Body, Expr, ExprId, LiteralKind, Stmt};
+use nova_hir::lowering::lower_body;
 use nova_hir::queries::{body, constructor_body, initializer_body, item_tree, HirDatabase};
+use nova_syntax::java::parse_block;
 use nova_types::Span;
 use nova_vfs::FileId;
 use std::sync::Arc;
@@ -559,4 +561,50 @@ class Foo {
         method_id_by_name(&tree1, file, "bar"),
         method_id_by_name(&tree2, file, "bar")
     );
+}
+
+#[test]
+fn hir_lowering_preserves_method_references_and_class_literals() {
+    let block = parse_block(
+        "{var c = Foo.class; var r = Foo::bar; var n = Foo::new; var p = int.class;}",
+        0,
+    );
+    let body = lower_body(&block);
+
+    let stmts = match &body.stmts[body.root] {
+        Stmt::Block { statements, .. } => statements,
+        other => panic!("expected root block, got {other:?}"),
+    };
+    assert_eq!(stmts.len(), 4);
+
+    let init_expr = |stmt| match &body.stmts[stmt] {
+        Stmt::Let {
+            initializer: Some(expr),
+            ..
+        } => *expr,
+        other => panic!("expected let with initializer, got {other:?}"),
+    };
+
+    match &body.exprs[init_expr(stmts[0])] {
+        Expr::ClassLiteral { .. } => {}
+        other => panic!("expected class literal, got {other:?}"),
+    }
+
+    match &body.exprs[init_expr(stmts[1])] {
+        Expr::MethodReference { name, .. } => assert_eq!(name, "bar"),
+        other => panic!("expected method reference, got {other:?}"),
+    }
+
+    match &body.exprs[init_expr(stmts[2])] {
+        Expr::ConstructorReference { .. } => {}
+        other => panic!("expected constructor reference, got {other:?}"),
+    }
+
+    match &body.exprs[init_expr(stmts[3])] {
+        Expr::ClassLiteral { ty, .. } => match &body.exprs[*ty] {
+            Expr::Name { name, .. } => assert_eq!(name, "int"),
+            other => panic!("expected primitive name, got {other:?}"),
+        },
+        other => panic!("expected class literal, got {other:?}"),
+    }
 }
