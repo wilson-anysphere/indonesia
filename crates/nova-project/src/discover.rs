@@ -97,9 +97,10 @@ pub fn load_project(root: impl AsRef<Path>) -> Result<ProjectConfig, ProjectErro
 pub fn load_project_with_workspace_config(
     root: impl AsRef<Path>,
 ) -> Result<ProjectConfig, ProjectError> {
-    let workspace_root = crate::workspace_config::canonicalize_workspace_root(root)?;
-    let (nova_config, nova_config_path) =
-        crate::workspace_config::load_nova_config(&workspace_root)?;
+    let start_path = crate::workspace_config::canonicalize_workspace_root(root)?;
+    let workspace_root = workspace_root(&start_path)
+        .ok_or(ProjectError::UnknownProjectType { root: start_path })?;
+    let (nova_config, nova_config_path) = crate::workspace_config::load_nova_config(&workspace_root)?;
     let options = LoadOptions {
         nova_config,
         nova_config_path,
@@ -113,7 +114,9 @@ pub fn load_project_with_options(
     root: impl AsRef<Path>,
     options: &LoadOptions,
 ) -> Result<ProjectConfig, ProjectError> {
-    let workspace_root = crate::workspace_config::canonicalize_workspace_root(root)?;
+    let start_path = crate::workspace_config::canonicalize_workspace_root(root)?;
+    let workspace_root = workspace_root(&start_path)
+        .ok_or(ProjectError::UnknownProjectType { root: start_path })?;
     load_project_from_workspace_root(&workspace_root, options)
 }
 
@@ -183,20 +186,166 @@ fn detect_build_system(root: &Path) -> Result<BuildSystem, ProjectError> {
         return Ok(BuildSystem::Gradle);
     }
 
-    // Fallback: "simple project" = any Java sources under `src/`.
-    let has_java_sources = root.join("src").is_dir()
-        && walkdir::WalkDir::new(root.join("src"))
-            .into_iter()
-            .filter_map(Result::ok)
-            .any(|entry| entry.path().extension().is_some_and(|ext| ext == "java"));
-
-    if has_java_sources {
+    // Fallback: "simple project" = `src/` folder exists.
+    if root.join("src").is_dir() {
         return Ok(BuildSystem::Simple);
     }
 
     Err(ProjectError::UnknownProjectType {
         root: root.to_path_buf(),
     })
+}
+
+/// Discover the workspace root for a given path.
+///
+/// `start` may be either a directory or a file path within a workspace.
+/// The search is deterministic and stops at the filesystem root.
+///
+/// Build system heuristics:
+/// - Bazel: the nearest ancestor with a `WORKSPACE`, `WORKSPACE.bazel`, or `MODULE.bazel` file.
+/// - Maven: walk upward looking for `pom.xml` and prefer the outermost aggregator pom (pom with
+///   `<modules>`). If no aggregator is found, fall back to the nearest `pom.xml`.
+/// - Gradle: walk upward looking for `settings.gradle(.kts)`; if not found, fall back to the
+///   nearest directory containing `build.gradle(.kts)`.
+/// - Simple: if no build system markers are found, fall back to the nearest directory containing
+///   `src/`.
+pub fn workspace_root(start: impl AsRef<Path>) -> Option<PathBuf> {
+    let start = start.as_ref();
+    let start_dir = if start.is_file() {
+        start.parent()?
+    } else {
+        start
+    };
+
+    let bazel_root = bazel_workspace_root(start_dir);
+    let maven_root = maven_workspace_root(start_dir);
+    let gradle_root = gradle_workspace_root(start_dir);
+
+    // Prefer "real" build systems (Bazel/Maven/Gradle). `Simple` is a last resort, because many
+    // non-Java projects also contain a `src/` directory.
+    pick_best_workspace_root(&[
+        (BuildSystem::Bazel, bazel_root),
+        (BuildSystem::Maven, maven_root),
+        (BuildSystem::Gradle, gradle_root),
+    ])
+    .or_else(|| simple_workspace_root(start_dir))
+}
+
+fn pick_best_workspace_root(candidates: &[(BuildSystem, Option<PathBuf>)]) -> Option<PathBuf> {
+    fn priority(system: BuildSystem) -> u8 {
+        match system {
+            BuildSystem::Bazel => 0,
+            BuildSystem::Maven => 1,
+            BuildSystem::Gradle => 2,
+            BuildSystem::Simple => 3,
+        }
+    }
+
+    candidates
+        .iter()
+        .filter_map(|(system, root)| root.as_ref().map(|root| (*system, root)))
+        .max_by(|(a_sys, a_root), (b_sys, b_root)| {
+            a_root
+                .components()
+                .count()
+                .cmp(&b_root.components().count())
+                // If the root is the same depth (likely the same directory), pick a stable
+                // precedence order.
+                .then_with(|| priority(*b_sys).cmp(&priority(*a_sys)))
+        })
+        .map(|(_, root)| root.to_path_buf())
+}
+
+fn maven_workspace_root(start: &Path) -> Option<PathBuf> {
+    let mut dir = start;
+    let mut nearest_pom = None;
+    let mut outermost_aggregator = None;
+
+    loop {
+        let pom = dir.join("pom.xml");
+        if pom.is_file() {
+            if nearest_pom.is_none() {
+                nearest_pom = Some(dir.to_path_buf());
+            }
+            if pom_has_modules(&pom) {
+                outermost_aggregator = Some(dir.to_path_buf());
+            }
+        }
+
+        let Some(parent) = dir.parent() else {
+            break;
+        };
+        if parent == dir {
+            break;
+        }
+        dir = parent;
+    }
+
+    outermost_aggregator.or(nearest_pom)
+}
+
+fn pom_has_modules(pom_path: &Path) -> bool {
+    let Ok(contents) = std::fs::read_to_string(pom_path) else {
+        return false;
+    };
+    let Ok(doc) = roxmltree::Document::parse(&contents) else {
+        return false;
+    };
+
+    doc.root()
+        .descendants()
+        .any(|node| node.is_element() && node.tag_name().name() == "modules")
+}
+
+fn gradle_workspace_root(start: &Path) -> Option<PathBuf> {
+    let mut dir = start;
+    let mut nearest_build = None;
+
+    loop {
+        if has_gradle_settings(dir) {
+            return Some(dir.to_path_buf());
+        }
+
+        if nearest_build.is_none() && has_gradle_build(dir) {
+            nearest_build = Some(dir.to_path_buf());
+        }
+
+        let Some(parent) = dir.parent() else {
+            break;
+        };
+        if parent == dir {
+            break;
+        }
+        dir = parent;
+    }
+
+    nearest_build
+}
+
+fn has_gradle_settings(dir: &Path) -> bool {
+    dir.join("settings.gradle").is_file() || dir.join("settings.gradle.kts").is_file()
+}
+
+fn has_gradle_build(dir: &Path) -> bool {
+    dir.join("build.gradle").is_file() || dir.join("build.gradle.kts").is_file()
+}
+
+fn simple_workspace_root(start: &Path) -> Option<PathBuf> {
+    let mut dir = start;
+    loop {
+        if dir.join("src").is_dir() {
+            return Some(dir.to_path_buf());
+        }
+
+        let Some(parent) = dir.parent() else {
+            break;
+        };
+        if parent == dir {
+            break;
+        }
+        dir = parent;
+    }
+    None
 }
 
 /// Walk upwards from `start` to find the Bazel workspace root.

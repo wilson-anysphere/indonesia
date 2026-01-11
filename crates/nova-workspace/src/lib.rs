@@ -1097,38 +1097,5 @@ pub use live::{
     WorkspaceConfig as LiveWorkspaceConfig,
 };
 fn find_project_root(start: &Path) -> PathBuf {
-    if let Some(bazel_root) = nova_project::bazel_workspace_root(start) {
-        return bazel_root;
-    }
-
-    let mut current = start;
-    loop {
-        if looks_like_project_root(current) {
-            return current.to_path_buf();
-        }
-        let Some(parent) = current.parent() else {
-            return start.to_path_buf();
-        };
-        if parent == current {
-            return start.to_path_buf();
-        }
-        current = parent;
-    }
-}
-
-fn looks_like_project_root(dir: &Path) -> bool {
-    if dir.join("pom.xml").is_file() {
-        return true;
-    }
-    if dir.join("build.gradle").is_file()
-        || dir.join("build.gradle.kts").is_file()
-        || dir.join("settings.gradle").is_file()
-        || dir.join("settings.gradle.kts").is_file()
-    {
-        return true;
-    }
-    if dir.join("src").is_dir() {
-        return true;
-    }
-    false
+    nova_project::workspace_root(start).unwrap_or_else(|| start.to_path_buf())
 }

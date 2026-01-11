@@ -20,7 +20,7 @@ mod workspace_config;
 pub use discover::BazelLoadOptions;
 pub use discover::{
     bazel_workspace_root, is_bazel_workspace, load_project, load_project_with_options,
-    load_project_with_workspace_config, reload_project, LoadOptions, ProjectError,
+    load_project_with_workspace_config, reload_project, workspace_root, LoadOptions, ProjectError,
 };
 pub use model::*;
 
