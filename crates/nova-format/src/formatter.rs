@@ -796,6 +796,7 @@ pub(crate) fn format_java_with_indent(
     let tokens = tokenize(tree, source);
     let paren_info = analyze_parens(&tokens, source, config);
     let mut state = FormatState::new(config, source, initial_indent);
+    let mut verbatim_from: Option<usize> = None;
 
     for idx in 0..tokens.len() {
         let tok = &tokens[idx];
@@ -809,11 +810,44 @@ pub(crate) fn format_java_with_indent(
 
         let next = FormatState::next_non_trivia(&tokens, idx + 1);
         write_token(&mut state, &tokens, &paren_info, idx, tok, next);
+
+        // If we hit an unterminated literal, stop formatting and preserve the rest of the file
+        // verbatim. This keeps the formatter idempotent on malformed input (subsequent passes would
+        // otherwise change the lexer error spans and reformat differently).
+        match tok {
+            Token::StringLiteral(span) if is_unterminated_string_literal(span.text(source)) => {
+                verbatim_from = Some(span.end);
+                break;
+            }
+            Token::CharLiteral(span) if is_unterminated_char_literal(span.text(source)) => {
+                verbatim_from = Some(span.end);
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(offset) = verbatim_from {
+        state.out.push_str(&source[offset..]);
     }
 
     finalize_output(&mut state.out, config, input_has_final_newline);
 
     state.out
+}
+
+fn is_unterminated_string_literal(text: &str) -> bool {
+    if !text.starts_with('"') {
+        return false;
+    }
+    if text.starts_with("\"\"\"") {
+        return !text.ends_with("\"\"\"");
+    }
+    !text.ends_with('"')
+}
+
+fn is_unterminated_char_literal(text: &str) -> bool {
+    text.starts_with('\'') && !text.ends_with('\'')
 }
 
 fn finalize_output(out: &mut String, config: &FormatConfig, input_has_final_newline: bool) {
@@ -904,9 +938,14 @@ fn tokenize(tree: &SyntaxTree, source: &str) -> Vec<Token> {
                 i += 1;
             }
             SyntaxKind::Punctuation => {
-                let (punct, consumed) = merge_punct(&raw, i, source);
-                out.push(Token::Punct(punct));
-                i += consumed;
+                // `nova_syntax::parse` is built on the full lexer and preserves multi-character
+                // punctuation in a single `Punctuation` token (e.g. `->`, `::`, `>>=`, `...`).
+                // The formatter tokenizes punctuation based on the full token text rather than
+                // attempting to merge adjacent single-char tokens.
+                for punct in puncts_from_text(tok.text(source)) {
+                    out.push(Token::Punct(punct));
+                }
+                i += 1;
             }
             _ => {
                 // The token-level parser only produces the above kinds.
@@ -918,45 +957,70 @@ fn tokenize(tree: &SyntaxTree, source: &str) -> Vec<Token> {
     out
 }
 
-fn merge_punct(tokens: &[nova_syntax::GreenToken], idx: usize, source: &str) -> (Punct, usize) {
-    let ch = tokens[idx].text(source).chars().next().unwrap_or('\0');
-    let next_ch = |offset: usize| -> Option<char> {
-        tokens
-            .get(idx + offset)
-            .and_then(|t| (t.kind == SyntaxKind::Punctuation).then_some(t.text(source)))
-            .and_then(|s| s.chars().next())
-    };
+fn puncts_from_text(text: &str) -> Vec<Punct> {
+    if let Some(p) = punct_from_text(text) {
+        return vec![p];
+    }
 
-    let punct = match (ch, next_ch(1), next_ch(2), next_ch(3)) {
-        ('.', Some('.'), Some('.'), _) => (Punct::Ellipsis, 3),
-        (':', Some(':'), _, _) => (Punct::DoubleColon, 2),
-        ('-', Some('>'), _, _) => (Punct::Arrow, 2),
-        ('=', Some('='), _, _) => (Punct::EqEq, 2),
-        ('!', Some('='), _, _) => (Punct::BangEq, 2),
-        ('&', Some('&'), _, _) => (Punct::AmpAmp, 2),
-        ('|', Some('|'), _, _) => (Punct::PipePipe, 2),
-        ('+', Some('+'), _, _) => (Punct::PlusPlus, 2),
-        ('-', Some('-'), _, _) => (Punct::MinusMinus, 2),
-        ('<', Some('='), _, _) => (Punct::LessEq, 2),
-        ('>', Some('='), _, _) => (Punct::GreaterEq, 2),
-        ('+', Some('='), _, _) => (Punct::PlusEq, 2),
-        ('-', Some('='), _, _) => (Punct::MinusEq, 2),
-        ('*', Some('='), _, _) => (Punct::StarEq, 2),
-        ('/', Some('='), _, _) => (Punct::SlashEq, 2),
-        ('%', Some('='), _, _) => (Punct::PercentEq, 2),
-        ('&', Some('='), _, _) => (Punct::AmpEq, 2),
-        ('|', Some('='), _, _) => (Punct::PipeEq, 2),
-        ('^', Some('='), _, _) => (Punct::CaretEq, 2),
-        ('<', Some('<'), Some('='), _) => (Punct::LeftShiftEq, 3),
-        ('>', Some('>'), Some('>'), Some('=')) => (Punct::UnsignedRightShiftEq, 4),
-        ('>', Some('>'), Some('>'), _) => (Punct::UnsignedRightShift, 3),
-        ('>', Some('>'), Some('='), _) => (Punct::RightShiftEq, 3),
-        ('>', Some('>'), _, _) => (Punct::RightShift, 2),
-        ('<', Some('<'), _, _) => (Punct::LeftShift, 2),
-        _ => (punct_from_char(ch), 1),
-    };
+    // Fallback: split unknown multi-byte punctuation tokens into single-char puncts to keep the
+    // formatter lossless and deterministic on recovery input.
+    text.chars().map(punct_from_char).collect()
+}
 
-    punct
+fn punct_from_text(text: &str) -> Option<Punct> {
+    Some(match text {
+        "{" => Punct::LBrace,
+        "}" => Punct::RBrace,
+        "(" => Punct::LParen,
+        ")" => Punct::RParen,
+        "[" => Punct::LBracket,
+        "]" => Punct::RBracket,
+        ";" => Punct::Semicolon,
+        "," => Punct::Comma,
+        "." => Punct::Dot,
+        "..." => Punct::Ellipsis,
+        "@" => Punct::At,
+        "?" => Punct::Question,
+        ":" => Punct::Colon,
+        "::" => Punct::DoubleColon,
+        "->" => Punct::Arrow,
+        "+" => Punct::Plus,
+        "-" => Punct::Minus,
+        "*" => Punct::Star,
+        "/" => Punct::Slash,
+        "%" => Punct::Percent,
+        "~" => Punct::Tilde,
+        "!" => Punct::Bang,
+        "=" => Punct::Eq,
+        "==" => Punct::EqEq,
+        "!=" => Punct::BangEq,
+        "<" => Punct::Less,
+        "<=" => Punct::LessEq,
+        ">" => Punct::Greater,
+        ">=" => Punct::GreaterEq,
+        "&" => Punct::Amp,
+        "&&" => Punct::AmpAmp,
+        "&=" => Punct::AmpEq,
+        "|" => Punct::Pipe,
+        "||" => Punct::PipePipe,
+        "|=" => Punct::PipeEq,
+        "^" => Punct::Caret,
+        "^=" => Punct::CaretEq,
+        "++" => Punct::PlusPlus,
+        "--" => Punct::MinusMinus,
+        "+=" => Punct::PlusEq,
+        "-=" => Punct::MinusEq,
+        "*=" => Punct::StarEq,
+        "/=" => Punct::SlashEq,
+        "%=" => Punct::PercentEq,
+        "<<" => Punct::LeftShift,
+        ">>" => Punct::RightShift,
+        ">>>" => Punct::UnsignedRightShift,
+        "<<=" => Punct::LeftShiftEq,
+        ">>=" => Punct::RightShiftEq,
+        ">>>=" => Punct::UnsignedRightShiftEq,
+        _ => return None,
+    })
 }
 
 fn punct_from_char(ch: char) -> Punct {

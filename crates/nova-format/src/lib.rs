@@ -16,6 +16,8 @@ pub use comments::{Comment, CommentKind, CommentStore, TokenKey};
 pub use nova_core::LineIndex;
 
 mod formatter;
+mod java_ast;
+pub use java_ast::{edits_for_formatting_ast, format_java_ast};
 
 pub mod doc;
 
@@ -179,6 +181,9 @@ pub enum FormatError {
 }
 
 /// Format an entire Java source file.
+///
+/// This is the legacy, token-only formatter. It is kept temporarily to support range/on-type
+/// formatting while the AST-aware formatter (`format_java_ast`) lands.
 pub fn format_java(tree: &SyntaxTree, source: &str, config: &FormatConfig) -> String {
     let input_has_final_newline = source.ends_with('\n');
     format_java_with_indent(tree, source, config, 0, input_has_final_newline)

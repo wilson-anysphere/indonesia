@@ -12,6 +12,21 @@ use std::collections::HashMap;
 use nova_core::{TextRange, TextSize};
 use nova_syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 
+fn is_synthetic_missing(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::MissingSemicolon
+            | SyntaxKind::MissingRParen
+            | SyntaxKind::MissingRBrace
+            | SyntaxKind::MissingRBracket
+            | SyntaxKind::MissingGreater
+    )
+}
+
+fn is_significant_token(kind: SyntaxKind) -> bool {
+    !kind.is_trivia() && !is_synthetic_missing(kind)
+}
+
 /// Stable identifier for a token used as a comment anchor.
 ///
 /// We intentionally key by text range rather than holding on to rowan token handles.
@@ -104,7 +119,7 @@ impl CommentStore {
         let mut last_sig: Option<usize> = None;
         for (idx, tok) in tokens.iter().enumerate() {
             prev_sig_before[idx] = last_sig;
-            if !tok.kind.is_trivia() {
+            if is_significant_token(tok.kind) {
                 last_sig = Some(idx);
             }
         }
@@ -113,7 +128,7 @@ impl CommentStore {
         let mut next_sig: Option<usize> = None;
         for idx in (0..tokens.len()).rev() {
             next_sig_after[idx] = next_sig;
-            if !tokens[idx].kind.is_trivia() {
+            if is_significant_token(tokens[idx].kind) {
                 next_sig = Some(idx);
             }
         }

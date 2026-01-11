@@ -1,13 +1,15 @@
 use insta::assert_snapshot;
 use nova_core::{apply_text_edits, LineIndex, Position, Range};
-use nova_format::{edits_for_range_formatting, format_java, FormatConfig, IndentStyle};
-use nova_syntax::parse;
+use nova_format::{
+    edits_for_range_formatting, format_java, format_java_ast, FormatConfig, IndentStyle,
+};
+use nova_syntax::{parse, parse_java};
 use pretty_assertions::assert_eq;
 
 #[test]
 fn formats_basic_class() {
     let input = r#"
-class  Foo{
+ class  Foo{
 public static void main(String[]args){
 System.out.println("hi"); // comment
 if(true){System.out.println("x");}
@@ -15,8 +17,8 @@ if(true){System.out.println("x");}
 }
 "#;
 
-    let tree = parse(input);
-    let formatted = format_java(&tree, input, &FormatConfig::default());
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
 
     assert_snapshot!(
         formatted,
@@ -36,8 +38,8 @@ class Foo {
 #[test]
 fn formats_broken_syntax_best_effort() {
     let input = "class A{void m(){if(true){System.out.println(\"x\"); // oops\n";
-    let tree = parse(input);
-    let formatted = format_java(&tree, input, &FormatConfig::default());
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
 
     assert_snapshot!(
         formatted,
@@ -53,8 +55,8 @@ class A {
 #[test]
 fn formats_doc_comments() {
     let input = "class Foo{\n/** docs */void m(){}\n}\n";
-    let tree = parse(input);
-    let formatted = format_java(&tree, input, &FormatConfig::default());
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
 
     assert_snapshot!(
         formatted,
@@ -63,6 +65,99 @@ class Foo {
     /** docs */
     void m() {
     }
+}
+"###
+    );
+}
+
+#[test]
+fn formats_package_imports_and_class() {
+    let input = "package  foo.bar;\nimport java.util.List;import java.util.Map;\npublic class  Foo{}\n";
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+package foo.bar;
+
+import java.util.List;
+import java.util.Map;
+
+public class Foo {
+}
+"###
+    );
+}
+
+#[test]
+fn formats_static_import_grouping() {
+    let input = "import java.util.List;\nimport java.util.Map;\nimport static java.util.Collections.emptyList;\nimport static java.util.Collections.singletonList;\nclass Foo{}\n";
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+import java.util.List;
+import java.util.Map;
+
+import static java.util.Collections.emptyList;
+import static java.util.Collections.singletonList;
+
+class Foo {
+}
+"###
+    );
+}
+
+#[test]
+fn formats_record_declaration() {
+    let input = "package foo;\npublic record  Point( int x,int y){}\n";
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+package foo;
+
+public record Point(int x, int y) {
+}
+"###
+    );
+}
+
+#[test]
+fn formats_enum_with_constants_and_members() {
+    let input = "enum  Color{RED,GREEN,BLUE;int code; void m(){}}\n";
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+enum Color {
+    RED, GREEN, BLUE;
+    int code;
+    void m() {
+    }
+}
+"###
+    );
+}
+
+#[test]
+fn formats_annotation_type_declaration() {
+    let input = "public @interface  MyAnno{String value();}\n";
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+public @interface MyAnno {
+    String value();
 }
 "###
     );
