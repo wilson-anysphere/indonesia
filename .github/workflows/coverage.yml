@@ -12,6 +12,11 @@ on:
     - cron: "0 3 * * 0"
   push:
     branches: [main]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - crates/**
+      - .github/workflows/coverage.yml
 
 permissions:
   contents: read
@@ -115,6 +120,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: coverage
+          retention-days: 14
           if-no-files-found: error
           path: |
             lcov.info
