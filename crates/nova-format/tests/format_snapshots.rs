@@ -771,6 +771,19 @@ class Foo {
 }
 
 #[test]
+fn pretty_normalizes_header_whitespace() {
+    let input = "class  Foo{int x;}\n";
+    let edits = edits_for_document_formatting_with_strategy(
+        input,
+        &FormatConfig::default(),
+        FormatStrategy::JavaPrettyAst,
+    );
+    let formatted = apply_text_edits(input, &edits).unwrap();
+
+    assert_eq!(formatted, "class Foo {\n    int x;\n}\n");
+}
+
+#[test]
 fn pretty_indents_after_existing_newlines_inside_block() {
     let input = "class Foo{int x;\nint y;}\n";
     let edits = edits_for_document_formatting_with_strategy(

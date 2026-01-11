@@ -49,16 +49,20 @@ impl<'a> JavaPrettyFormatter<'a> {
 
         let header_start = u32::from(decl.text_range().start());
         let header_end = u32::from(l_brace.text_range().start());
-        // For the header we want to avoid trailing whitespace before `{` so the formatter doesn't
-        // preserve awkward `class Foo  {` spacing.
-        let header = header_text_trimmed(self.source, header_start, header_end).map_or_else(
-            || fallback::byte_range(self.source, header_start, header_end),
-            Doc::text,
-        );
+        let header = self
+            .print_verbatim_tokens(decl, header_start, header_end, true)
+            .unwrap_or_else(|| fallback::byte_range(self.source, header_start, header_end));
 
         let body_doc = self.print_brace_body(&body, &l_brace, &r_brace);
+        let trailer_start = u32::from(r_brace.text_range().end());
+        let trailer_end = u32::from(decl.text_range().end());
+        let trailer = if trailer_start < trailer_end {
+            fallback::byte_range(self.source, trailer_start, trailer_end)
+        } else {
+            Doc::nil()
+        };
 
-        Doc::concat([header, print::space(), body_doc])
+        Doc::concat([header, print::space(), body_doc, trailer])
     }
 
     fn print_brace_body(
@@ -69,7 +73,7 @@ impl<'a> JavaPrettyFormatter<'a> {
     ) -> Doc<'a> {
         let inner_start = u32::from(l_brace.text_range().end());
         let inner_end = u32::from(r_brace.text_range().start());
-        let inner = self.print_verbatim_tokens(body, inner_start, inner_end);
+        let inner = self.print_verbatim_tokens(body, inner_start, inner_end, false);
         if inner.is_none() {
             return Doc::concat([Doc::text("{"), Doc::hardline(), Doc::text("}")]);
         }
@@ -83,7 +87,13 @@ impl<'a> JavaPrettyFormatter<'a> {
         ])
     }
 
-    fn print_verbatim_tokens(&self, node: &SyntaxNode, start: u32, end: u32) -> Option<Doc<'a>> {
+    fn print_verbatim_tokens(
+        &self,
+        node: &SyntaxNode,
+        start: u32,
+        end: u32,
+        preserve_leading_line_breaks: bool,
+    ) -> Option<Doc<'a>> {
         if start >= end {
             return None;
         }
@@ -109,16 +119,21 @@ impl<'a> JavaPrettyFormatter<'a> {
 
             match tok.kind() {
                 SyntaxKind::Whitespace => {
+                    let breaks = crate::comment_printer::count_line_breaks(tok.text());
                     if !has_content {
+                        if preserve_leading_line_breaks && breaks > 0 {
+                            let new_ws = PendingWs::Hardlines(breaks.min(2) as usize);
+                            pending_ws = Some(pending_ws.map_or(new_ws, |ws| ws.merge(new_ws)));
+                        }
                         continue;
                     }
 
-                    let breaks = crate::comment_printer::count_line_breaks(tok.text());
-                    pending_ws = Some(if breaks == 0 {
+                    let new_ws = if breaks == 0 {
                         PendingWs::Space
                     } else {
                         PendingWs::Hardlines(breaks.min(2) as usize)
-                    });
+                    };
+                    pending_ws = Some(pending_ws.map_or(new_ws, |ws| ws.merge(new_ws)));
                 }
                 _ => {
                     if let Some(ws) = pending_ws.take() {
@@ -149,6 +164,15 @@ enum PendingWs {
 }
 
 impl PendingWs {
+    fn merge(self, other: PendingWs) -> PendingWs {
+        match (self, other) {
+            (Self::Hardlines(a), Self::Hardlines(b)) => Self::Hardlines(a.max(b)),
+            (Self::Hardlines(a), Self::Space) => Self::Hardlines(a),
+            (Self::Space, Self::Hardlines(b)) => Self::Hardlines(b),
+            (Self::Space, Self::Space) => Self::Space,
+        }
+    }
+
     fn flush<'a>(self, out: &mut Vec<Doc<'a>>) {
         match self {
             Self::Space => out.push(Doc::text(" ")),
@@ -159,15 +183,6 @@ impl PendingWs {
             }
         }
     }
-}
-
-fn header_text_trimmed<'a>(source: &'a str, start: u32, end: u32) -> Option<&'a str> {
-    let start = start as usize;
-    let end = end as usize;
-    let start = start.min(source.len());
-    let end = end.min(source.len());
-    let slice = source.get(start..end)?;
-    Some(slice.trim_end_matches(|c: char| matches!(c, ' ' | '\t' | '\n' | '\r')))
 }
 
 fn find_braces(body: &SyntaxNode) -> Option<(nova_syntax::SyntaxToken, nova_syntax::SyntaxToken)> {
