@@ -29,6 +29,7 @@ For ADR authoring conventions, see: [`docs/adr/README.md`](adr/README.md).
 5. [0005 — Persistence formats and compatibility policy](adr/0005-persistence-formats.md)
 6. [0006 — Path/URI normalization and virtual document schemes](adr/0006-uri-normalization.md)
 7. [0007 — Crate boundaries and dependency policy](adr/0007-crate-boundaries-and-dependencies.md)
+8. [0008 — Distributed mode security (router↔worker)](adr/0008-distributed-mode-security.md)
 
 ## Where to look in code
 
