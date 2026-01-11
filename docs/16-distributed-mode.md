@@ -76,6 +76,8 @@ Distributed mode uses the cache directory as a **best-effort warm start** mechan
 - **Persisted:** the per-shard `ShardIndex` (symbols + a few counters), stored as
   `shard_<id>.bin` under `--cache-dir`.
 - **Not persisted:** the shard’s full file contents / in-memory `path -> text` map.
+- Cache entries are versioned and are ignored if the Nova version or router↔worker protocol version
+  changes (workers will cold-start and rebuild the index).
 
 ### Router startup behavior
 
@@ -186,6 +188,9 @@ for local testing.
 This mode is best thought of as: **router stays close to the filesystem; workers are compute-only**.
 Workers do not need direct access to the project checkout because the router sends full file
 contents over RPC.
+
+By default, the router allows at most **one active worker per shard**. A second connection claiming
+the same `shard_id` is rejected.
 
 TLS support is feature-gated (`--features tls`) and expects PEM files on both ends.
 

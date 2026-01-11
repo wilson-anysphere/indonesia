@@ -134,6 +134,15 @@ Common failures:
 
 - **Authentication failed**: if the router expects an auth token and the worker’s `--auth-token`
   does not match, the router will send an `Error` and close the connection.
+- **mTLS required / shard authorization failed** (remote TLS deployments): if the router is
+  configured to require a client certificate identity and/or uses a shard-scoped certificate
+  allowlist, it may reject the worker with an `Error` message like:
+  - `mTLS client certificate required`
+  - `shard authorization failed`
+- **Unknown shard / duplicate worker**: the router will reject connections for unknown shard IDs or
+  when a shard already has an active worker:
+  - `unknown shard <id>`
+  - `shard <id> already has a connected worker`
 - **Version mismatch**: if the worker and router are built from incompatible versions, the worker
   may fail with an `unexpected router hello` message (protocol version mismatch).
 
