@@ -12,8 +12,10 @@
 //! The APIs here are intended for the upcoming AST-aware formatter; they are kept small and
 //! deterministic so comment placement remains stable across formatting passes.
 
+use std::collections::HashMap;
+
 use nova_core::TextSize;
-use nova_syntax::SyntaxNode;
+use nova_syntax::{SyntaxKind, SyntaxNode};
 
 use crate::comment_printer::{fmt_comment, FmtCtx};
 use crate::doc::Doc;
@@ -26,6 +28,8 @@ use crate::{Comment, CommentKind, CommentStore, TokenKey};
 pub struct JavaComments<'a> {
     source: &'a str,
     store: CommentStore,
+    sig_tokens: Vec<TokenKey>,
+    sig_index: HashMap<TokenKey, usize>,
     /// Set when trailing comments emitted an extra blank line after a token.
     ///
     /// The next call to [`take_leading_doc`](Self::take_leading_doc) will clear this flag and
@@ -40,9 +44,25 @@ impl<'a> JavaComments<'a> {
     pub fn new(root: &SyntaxNode, source: &'a str) -> Self {
         let store = CommentStore::new(root, source);
 
+        let sig_tokens: Vec<TokenKey> = root
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .filter(|tok| is_significant_token(tok.kind()))
+            .map(|tok| TokenKey::from(tok.text_range()))
+            .collect();
+
+        let sig_index = sig_tokens
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(idx, key)| (key, idx))
+            .collect();
+
         Self {
             source,
             store,
+            sig_tokens,
+            sig_index,
             suppress_next_leading_blank_line: false,
         }
     }
@@ -69,7 +89,7 @@ impl<'a> JavaComments<'a> {
         }
 
         let ctx = FmtCtx::new(indent);
-        self.fmt_trailing_comments(&ctx, &comments)
+        self.fmt_trailing_comments(&ctx, token, &comments)
     }
 
     pub fn assert_drained(&self) {
@@ -126,8 +146,30 @@ impl<'a> JavaComments<'a> {
 
         Doc::concat(parts)
     }
+}
 
-    fn fmt_trailing_comments(&mut self, ctx: &FmtCtx, comments: &[Comment]) -> Doc<'a> {
+fn is_synthetic_missing(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::MissingSemicolon
+            | SyntaxKind::MissingRParen
+            | SyntaxKind::MissingRBrace
+            | SyntaxKind::MissingRBracket
+            | SyntaxKind::MissingGreater
+    )
+}
+
+fn is_significant_token(kind: SyntaxKind) -> bool {
+    !kind.is_trivia() && !is_synthetic_missing(kind)
+}
+
+impl<'a> JavaComments<'a> {
+    fn next_sig(&self, token: TokenKey) -> Option<TokenKey> {
+        let idx = self.sig_index.get(&token).copied()?;
+        self.sig_tokens.get(idx + 1).copied()
+    }
+
+    fn fmt_trailing_comments(&mut self, ctx: &FmtCtx, token: TokenKey, comments: &[Comment]) -> Doc<'a> {
         let mut parts: Vec<Doc<'a>> = Vec::new();
 
         for (idx, comment) in comments.iter().enumerate() {
@@ -141,6 +183,10 @@ impl<'a> JavaComments<'a> {
                         Doc::text(" "),
                         Doc::text(text),
                     ])));
+                    // `//` comments always terminate the line; force the containing group to break
+                    // so any following `Doc::line()` is rendered as a newline (and flushes the
+                    // suffix in the correct position).
+                    parts.push(Doc::break_parent());
                 }
                 _ => {
                     parts.push(fmt_comment(ctx, comment, self.source));
@@ -168,13 +214,26 @@ impl<'a> JavaComments<'a> {
                 continue;
             }
 
-            if comment.blank_line_after {
+            let boundary_start = self.trailing_boundary_start(token);
+            if has_blank_line_between(self.source, comment.text_range.end(), boundary_start) {
                 parts.push(Doc::hardline());
                 self.suppress_next_leading_blank_line = true;
             }
         }
 
         Doc::concat(parts)
+    }
+
+    fn trailing_boundary_start(&self, token: TokenKey) -> TextSize {
+        let Some(next_sig) = self.next_sig(token) else {
+            return TextSize::from(self.source.len() as u32);
+        };
+
+        self.store
+            .peek_leading(next_sig)
+            .first()
+            .map(|c| c.text_range.start())
+            .unwrap_or_else(|| TextSize::from(next_sig.start))
     }
 }
 

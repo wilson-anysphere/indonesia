@@ -92,6 +92,27 @@ fn trailing_line_comment_has_exactly_one_space_before_slash_slash() {
 }
 
 #[test]
+fn trailing_line_comment_forces_group_to_break() {
+    let input = "class Foo { void m() { int x=1; // c\nint y=2; } }";
+    let parsed = parse_java(input);
+    let root = parsed.syntax();
+
+    let tokens = collect_tokens(&root);
+    let semi = nth_token(&tokens, SyntaxKind::Semicolon, 0);
+
+    let mut comments = JavaComments::new(&root, input);
+    let trailing = comments.take_trailing_doc(TokenKey::from(&semi), 0);
+
+    // If trailing `//` comments are represented as pure `line_suffix` docs, the `Doc::line()`
+    // would be rendered as a space in flat mode and the suffix would flush at end-of-doc (too
+    // late). Emitting a `break_parent` ensures the group breaks and flushes the suffix before the
+    // newline.
+    let doc = Doc::concat([Doc::text("int x=1;"), trailing, Doc::line(), Doc::text("int")]).group();
+    assert_eq!(print(doc, PrintConfig::default()), "int x=1; // c\nint");
+    comments.assert_drained();
+}
+
+#[test]
 fn line_suffix_does_not_affect_group_fitting() {
     let doc = Doc::concat([
         Doc::concat([Doc::text("a"), Doc::line(), Doc::text("b")]).group(),
@@ -138,5 +159,31 @@ fn blank_line_between_trailing_and_leading_comments_is_not_duplicated() {
         print(doc, PrintConfig::default()),
         "int x=1; // t\n\n// leading\nint"
     );
+    comments.assert_drained();
+}
+
+#[test]
+fn blank_line_after_leading_comment_is_not_pulled_before_it() {
+    let input = "class Foo { void m() { int x=1; // t\n// leading\n\nint y=2; } }";
+    let parsed = parse_java(input);
+    let root = parsed.syntax();
+
+    let tokens = collect_tokens(&root);
+    let semi = nth_token(&tokens, SyntaxKind::Semicolon, 0);
+    let next_int = nth_token(&tokens, SyntaxKind::IntKw, 1);
+
+    let mut comments = JavaComments::new(&root, input);
+    let trailing = comments.take_trailing_doc(TokenKey::from(&semi), 0);
+    let leading = comments.take_leading_doc(TokenKey::from(&next_int), 0);
+
+    let doc = Doc::concat([
+        Doc::text("int x=1;"),
+        trailing,
+        Doc::hardline(),
+        leading,
+        Doc::text("int"),
+    ]);
+
+    assert_eq!(print(doc, PrintConfig::default()), "int x=1; // t\n// leading\n\nint");
     comments.assert_drained();
 }
