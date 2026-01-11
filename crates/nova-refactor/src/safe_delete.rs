@@ -179,6 +179,16 @@ fn safe_delete_method(
                 if usage.file == target.file && ranges_overlap(usage.range, target.decl_range) {
                     continue;
                 }
+                if usage.kind == UsageKind::Override {
+                    if let Some(sym) = index.symbols().iter().find(|sym| {
+                        sym.kind == SymbolKind::Method
+                            && sym.file == usage.file
+                            && sym.name_range == usage.range
+                    }) {
+                        edits.push(delete_range_workspace_edit(&usage.file, sym.decl_range));
+                        continue;
+                    }
+                }
                 if let Some(text) = index.file_text(&usage.file) {
                     if let Some(range) = best_effort_delete_usage(text, usage.range) {
                         edits.push(delete_range_workspace_edit(&usage.file, range));
@@ -497,6 +507,16 @@ pub fn safe_delete_delete_anyway_edit(
     for usage in &report.usages {
         if usage.file == target.file && ranges_overlap(usage.range, target.decl_range) {
             continue;
+        }
+        if usage.kind == UsageKind::Override {
+            if let Some(sym) = index.symbols().iter().find(|sym| {
+                sym.kind == SymbolKind::Method
+                    && sym.file == usage.file
+                    && sym.name_range == usage.range
+            }) {
+                edits.push(delete_range_workspace_edit(&usage.file, sym.decl_range));
+                continue;
+            }
         }
         if let Some(text) = index.file_text(&usage.file) {
             let delete_range = best_effort_delete_usage(text, usage.range).unwrap_or(usage.range);
