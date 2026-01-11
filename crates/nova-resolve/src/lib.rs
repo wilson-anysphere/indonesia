@@ -8,12 +8,17 @@
 //! (Salsa-style): all derived data structures are pure functions of input HIR
 //! (or of the file text via `nova-hir`'s HIR queries).
 
+pub mod def_map;
+pub mod ids;
 pub mod jpms;
 pub mod jpms_env;
 pub mod members;
 pub mod scopes;
 pub mod type_ref;
+pub mod types;
 
+pub use def_map::{DefMap, DefMapError, Import};
+pub use ids::{DefWithBodyId, ParamId, TypeDefId};
 pub use members::{complete_member_names, resolve_method_call, CallKind};
 mod diagnostics;
 mod import_map;
@@ -28,3 +33,4 @@ pub use resolver::{
     StaticMemberResolution, TypeResolution,
 };
 pub use scopes::{build_scopes, ScopeBuildResult, ScopeData, ScopeGraph, ScopeId, ScopeKind};
+pub use types::{TypeDef, TypeKind};

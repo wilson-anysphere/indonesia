@@ -4044,6 +4044,7 @@ dependencies = [
  "nova-jdk",
  "nova-modules",
  "nova-project",
+ "nova-syntax",
  "nova-types",
  "tempfile",
  "thiserror 1.0.69",

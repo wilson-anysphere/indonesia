@@ -276,10 +276,10 @@ impl<'a, 'idx> Parser<'a, 'idx> {
             if let Some(Resolution::Type(owner)) =
                 self.resolver.resolve_name(self.scopes, self.scope, &first)
             {
-                let owner_name = match owner {
+                let owner_name = match &owner {
                     TypeResolution::External(ty) => Some(ty.as_str()),
                     TypeResolution::Source(item) => {
-                        self.scopes.type_name(item).map(|t| t.as_str())
+                        self.scopes.type_name(*item).map(|t| t.as_str())
                     }
                 };
 

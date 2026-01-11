@@ -281,8 +281,10 @@ impl<'a> ScopeBuilder<'a> {
         let class_scope = self.alloc_scope(Some(parent), ScopeKind::Class { item });
         self.class_scopes.insert(item, class_scope);
 
+        let members: Vec<Member> = self.item_members(item).to_vec();
+
         // Populate member namespaces.
-        for member in self.item_members(item) {
+        for member in &members {
             match *member {
                 Member::Field(id) => {
                     let field = self.tree.field(id);
@@ -315,7 +317,7 @@ impl<'a> ScopeBuilder<'a> {
         }
 
         // Build nested members (bodies + nested types).
-        for member in self.item_members(item) {
+        for member in &members {
             match *member {
                 Member::Method(id) => {
                     self.build_method_scopes(db, class_scope, id);

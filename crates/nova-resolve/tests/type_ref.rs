@@ -260,7 +260,7 @@ fn unresolved_nested_type_uses_binary_guess_from_imported_outer() {
 
     let file = FileId::from_raw(0);
     let mut db = TestDb::default();
-    db.set_file_text(file, "import java.util.Map; class C {}");
+    db.set_file_text(file, "import java.util.Map;\nclass C {}\n");
     let scopes = build_scopes(&db, file);
     let resolver = Resolver::new(&jdk).with_classpath(&index);
 
