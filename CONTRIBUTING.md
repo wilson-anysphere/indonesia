@@ -37,7 +37,39 @@ cargo run -p nova-dap -- --version
 ### Tests
 
 ```bash
+# CI-equivalent default suite (fast, no network)
 cargo test
+```
+
+More detailed guidance (fixtures, snapshots, ignored suites, CI mapping) lives in:
+`docs/14-testing-infrastructure.md`.
+
+#### Golden / fixture updates (`BLESS=1`)
+
+Some tests compare Nova’s output against on-disk “golden” expectations (parser snapshots, refactor
+before/after fixtures). To update those expectations:
+
+```bash
+BLESS=1 cargo test -p nova-syntax parse_class_snapshot
+BLESS=1 cargo test -p nova-refactor
+```
+
+#### `javac` differential tests (ignored)
+
+Requires a JDK (`javac` on `PATH`):
+
+```bash
+cargo test -p nova-types --test javac_differential -- --ignored
+```
+
+#### Real-project tests (ignored; requires `test-projects/` fixtures)
+
+```bash
+./scripts/run-real-project-tests.sh
+
+# or run directly after cloning fixtures:
+cargo test -p nova-project --test real_projects -- --include-ignored
+cargo test -p nova-cli --test real_projects -- --include-ignored
 ```
 
 ### Format & lint

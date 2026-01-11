@@ -1,10 +1,13 @@
 # 14 - Testing Strategy
 
-[← Back to Main Document](../AGENTS.md) | [Previous: AI Augmentation](13-ai-augmentation.md)
+[← Back to Main Document](../AGENTS.md) | [Previous: AI Augmentation](13-ai-augmentation.md) | [Testing Infrastructure](14-testing-infrastructure.md)
 
 ## Overview
 
 A language server is only as good as its correctness. Nova requires comprehensive testing to ensure reliability across the vast complexity of Java and its ecosystem.
+
+For the **operational** guide (what tests exist today, where fixtures live, how to update snapshots, and which CI workflows enforce what), see:
+→ [`14-testing-infrastructure.md`](14-testing-infrastructure.md)
 
 ---
 
@@ -582,57 +585,13 @@ mod real_project_tests {
 
 ## Continuous Integration
 
-```yaml
-# .github/workflows/test.yml
-name: Test Suite
+Nova’s CI is implemented in GitHub Actions workflows under `.github/workflows/`:
 
-on: [push, pull_request]
+- `ci.yml` — format (`cargo fmt`), lint (`cargo clippy`), and `cargo test` for the full workspace.
+- `perf.yml` — criterion-based performance regression guard.
 
-jobs:
-  unit-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run unit tests
-        run: cargo test --lib
-        
-  integration-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run integration tests
-        run: cargo test --test '*'
-        
-  lsp-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run LSP protocol tests
-        run: cargo test --features lsp-tests
-        
-  benchmarks:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run benchmarks
-        run: cargo bench --no-run # Just compile to catch regressions
-        
-  fuzz:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run fuzz tests (limited)
-        run: cargo +nightly fuzz run fuzz_parser -- -max_total_time=60
-        
-  real-projects:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Clone test projects
-        run: ./scripts/clone-test-projects.sh
-      - name: Run real project tests
-        run: cargo test -- --include-ignored
-```
+The CI surface area is intentionally documented separately from strategy; see:
+→ [`14-testing-infrastructure.md`](14-testing-infrastructure.md)
 
 ---
 

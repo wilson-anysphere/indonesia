@@ -14,6 +14,7 @@
 //! ```
 
 use std::collections::{BTreeMap, HashMap};
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -84,8 +85,64 @@ pub fn assert_fixture_transformed(
 ) {
     let mut files = load_fixture_dir(before);
     transform(&mut files);
+
+    if !after.exists() {
+        if bless_enabled() {
+            bless_fixture_dir(after, &files);
+            return;
+        }
+        panic!(
+            "missing expected fixture dir {} (run with `BLESS=1` to write it)",
+            after.display()
+        );
+    }
+
     let expected = load_fixture_dir(after);
-    assert_eq!(files, expected);
+    if files != expected {
+        if bless_enabled() {
+            bless_fixture_dir(after, &files);
+            return;
+        }
+        assert_eq!(files, expected);
+    }
+}
+
+fn bless_enabled() -> bool {
+    let Ok(val) = env::var("BLESS") else {
+        return false;
+    };
+    let val = val.trim().to_ascii_lowercase();
+    !(val.is_empty() || val == "0" || val == "false")
+}
+
+fn bless_fixture_dir(dir: &Path, files: &BTreeMap<PathBuf, String>) {
+    if dir.exists() {
+        fs::remove_dir_all(dir).unwrap_or_else(|err| {
+            panic!(
+                "failed to remove existing fixture dir {}: {err}",
+                dir.display()
+            )
+        });
+    }
+    fs::create_dir_all(dir)
+        .unwrap_or_else(|err| panic!("failed to create fixture dir {}: {err}", dir.display()));
+
+    for (rel, text) in files {
+        assert!(
+            rel.components()
+                .all(|c| !matches!(c, std::path::Component::ParentDir)),
+            "fixture paths must not contain '..': {}",
+            rel.display()
+        );
+        let path = dir.join(rel);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap_or_else(|err| {
+                panic!("failed to create fixture dir {}: {err}", parent.display())
+            });
+        }
+        fs::write(&path, text)
+            .unwrap_or_else(|err| panic!("failed to write fixture {}: {err}", path.display()));
+    }
 }
 
 // -----------------------------------------------------------------------------

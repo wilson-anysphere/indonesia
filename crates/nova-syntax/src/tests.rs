@@ -2,6 +2,14 @@ use pretty_assertions::assert_eq;
 
 use crate::{lex, parse_java, parse_java_with_options, JavaLanguageLevel, ParseOptions, SyntaxKind};
 
+fn bless_enabled() -> bool {
+    let Ok(val) = std::env::var("BLESS") else {
+        return false;
+    };
+    let val = val.trim().to_ascii_lowercase();
+    !(val.is_empty() || val == "0" || val == "false")
+}
+
 fn dump_tokens(input: &str) -> Vec<(SyntaxKind, String)> {
     lex(input)
         .into_iter()
@@ -69,7 +77,15 @@ fn parse_class_snapshot() {
     assert_eq!(result.errors, Vec::new());
 
     let actual = crate::parser::debug_dump(&result.syntax());
-    let expected = include_str!("snapshots/parse_class.tree");
+    let snapshot_path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/snapshots/parse_class.tree");
+
+    if bless_enabled() {
+        std::fs::write(&snapshot_path, &actual).expect("write blessed snapshot");
+        return;
+    }
+
+    let expected = std::fs::read_to_string(&snapshot_path).expect("read snapshot");
     assert_eq!(actual, expected);
 }
 

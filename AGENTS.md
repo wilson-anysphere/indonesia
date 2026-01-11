@@ -81,6 +81,7 @@ Binding architectural choices (libraries, core patterns, invariants) are tracked
 ### Part V: Advanced Capabilities
 - **[13 - AI Augmentation](docs/13-ai-augmentation.md)** - Machine learning integration for intelligent features
 - **[14 - Testing Strategy](docs/14-testing-strategy.md)** - Comprehensive testing and quality assurance
+- **[14 - Testing Infrastructure](docs/14-testing-infrastructure.md)** - How to run tests locally, update fixtures/snapshots, and what CI enforces
 
 ### Part VI: Project Organization
 - **[15 - Work Breakdown](docs/15-work-breakdown.md)** - Suggested organization and phasing

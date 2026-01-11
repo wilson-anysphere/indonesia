@@ -7,6 +7,16 @@ Clone them with:
 ./scripts/clone-test-projects.sh
 ```
 
+Run the ignored “real project” test suites with:
+```bash
+./scripts/run-real-project-tests.sh
+```
+
+Best-effort helper to compile the fixtures with their build toolchain (sanity-check your local JDK/Maven):
+```bash
+./scripts/javac-validate.sh
+```
+
 Pinned revisions are recorded in `pins.toml` (single source of truth).
 
 To clone/update only a subset of fixtures:
