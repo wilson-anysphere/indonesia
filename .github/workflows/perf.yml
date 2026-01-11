@@ -71,10 +71,13 @@ jobs:
 
       - name: Prepare baseline from artifact
         if: github.event_name == 'pull_request'
+        env:
+          BASELINE_RUN_ID: ${{ steps.baseline-run.outputs.run_id }}
         run: |
           set -euxo pipefail
           if [ -f baseline/perf-current.json ]; then
             cp baseline/perf-current.json perf-base.json
+            echo "BASELINE_SOURCE=perf-baseline-main (run-id ${BASELINE_RUN_ID})" >> "${GITHUB_ENV}"
           fi
 
       - name: Bench (baseline)
@@ -82,9 +85,13 @@ jobs:
         run: |
           set -euxo pipefail
           if [ -f "${GITHUB_WORKSPACE}/perf-base.json" ]; then
+            if [ -z "${BASELINE_SOURCE:-}" ]; then
+              echo "BASELINE_SOURCE=existing perf-base.json" >> "${GITHUB_ENV}"
+            fi
             echo "perf-base.json already present; skipping baseline bench."
             exit 0
           fi
+          echo "BASELINE_SOURCE=benched base commit via git worktree" >> "${GITHUB_ENV}"
           git worktree add /tmp/nova-perf-base ${{ github.event.pull_request.base.sha }}
           pushd /tmp/nova-perf-base
           cargo bench -p nova-core --bench critical_paths
@@ -119,6 +126,14 @@ jobs:
           # - exit nonzero when regressions exceed thresholds
           #
           # Additionally: write a machine-readable JSON report when supported.
+          {
+            echo "### Perf comparison"
+            echo ""
+            echo "- Baseline SHA: \`${{ github.event.pull_request.base.sha }}\`"
+            echo "- Current SHA: \`${{ github.sha }}\`"
+            echo "- Baseline source: ${BASELINE_SOURCE:-unknown}"
+            echo ""
+          } >> "${GITHUB_STEP_SUMMARY}"
           status=0
 
           # Determine which JSON output mode the CLI supports.
