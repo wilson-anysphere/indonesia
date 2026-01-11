@@ -250,6 +250,12 @@ pub struct TargetClasspathResult {
     pub source: Option<String>,
     #[serde(default)]
     pub target_version: Option<String>,
+    #[serde(default)]
+    pub release: Option<String>,
+    #[serde(default)]
+    pub output_dir: Option<String>,
+    #[serde(default)]
+    pub enable_preview: bool,
 }
 
 pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::Value> {
@@ -294,6 +300,9 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
             source_roots: info.source_roots,
             source: info.source,
             target_version: info.target,
+            release: info.release,
+            output_dir: info.output_dir,
+            enable_preview: info.enable_preview,
         };
         serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
     } else {
@@ -371,6 +380,9 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
                 .collect(),
             source: Some(config.java.source.0.to_string()),
             target_version: Some(config.java.target.0.to_string()),
+            release: None,
+            output_dir: None,
+            enable_preview: false,
         };
         serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
     }

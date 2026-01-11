@@ -25,6 +25,15 @@ pub struct JavaCompileInfo {
     /// `--target` / `-target` version if present.
     #[serde(default)]
     pub target: Option<String>,
+    /// `--release` version if present.
+    #[serde(default)]
+    pub release: Option<String>,
+    /// `-d` output directory if present.
+    #[serde(default)]
+    pub output_dir: Option<String>,
+    /// Whether `--enable-preview` is passed.
+    #[serde(default)]
+    pub enable_preview: bool,
 }
 
 /// Parse a textproto `aquery` output and return all `Javac` actions.
@@ -139,6 +148,11 @@ pub fn extract_java_compile_info(action: &JavacAction) -> JavaCompileInfo {
                     info.module_path = split_path_list(mp);
                 }
             }
+            "--release" => {
+                if let Some(v) = it.next() {
+                    info.release = Some(v.clone());
+                }
+            }
             "--source" | "-source" => {
                 if let Some(v) = it.next() {
                     info.source = Some(v.clone());
@@ -148,6 +162,14 @@ pub fn extract_java_compile_info(action: &JavacAction) -> JavaCompileInfo {
                 if let Some(v) = it.next() {
                     info.target = Some(v.clone());
                 }
+            }
+            "-d" => {
+                if let Some(v) = it.next() {
+                    info.output_dir = Some(v.clone());
+                }
+            }
+            "--enable-preview" => {
+                info.enable_preview = true;
             }
             "-sourcepath" | "--source-path" => {
                 if let Some(v) = it.next() {
@@ -159,6 +181,16 @@ pub fn extract_java_compile_info(action: &JavacAction) -> JavaCompileInfo {
                 }
             }
             other => {
+                if let Some(release) = other.strip_prefix("--release=") {
+                    info.release = Some(release.to_string());
+                    continue;
+                }
+
+                if let Some(output_dir) = other.strip_prefix("-d=") {
+                    info.output_dir = Some(output_dir.to_string());
+                    continue;
+                }
+
                 if other.ends_with(".java") {
                     if let Some(parent) = other.rsplit_once('/') {
                         source_roots.insert(parent.0.to_string());

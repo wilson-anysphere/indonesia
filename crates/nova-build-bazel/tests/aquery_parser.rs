@@ -15,6 +15,11 @@ action {
   arguments: "bazel-out/k8-fastbuild/bin/java/com/example/libhello.jar:external/junit/junit.jar"
   arguments: "--module-path"
   arguments: "external/modules"
+  arguments: "--release"
+  arguments: "21"
+  arguments: "--enable-preview"
+  arguments: "-d"
+  arguments: "bazel-out/k8-fastbuild/bin/java/com/example/_javac/hello/classes"
   arguments: "--source"
   arguments: "17"
   arguments: "--target"
@@ -39,6 +44,12 @@ action {
         ]
     );
     assert_eq!(info.module_path, vec!["external/modules".to_string()]);
+    assert_eq!(info.release.as_deref(), Some("21"));
+    assert_eq!(
+        info.output_dir.as_deref(),
+        Some("bazel-out/k8-fastbuild/bin/java/com/example/_javac/hello/classes")
+    );
+    assert!(info.enable_preview);
     assert_eq!(info.source.as_deref(), Some("17"));
     assert_eq!(info.target.as_deref(), Some("17"));
     assert_eq!(info.source_roots, vec!["java/com/example".to_string()]);
