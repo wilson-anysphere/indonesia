@@ -231,7 +231,7 @@ fn spring_fixture_config_completions_and_diagnostics_snapshot() {
     assert_snapshot!(
         diag_lines.join("\n"),
         @r###"
-SPRING_DEPRECATED_CONFIG_KEY Warning Deprecated Spring configuration key 'spring.main.banner-mode'
+SPRING_DEPRECATED_CONFIG_KEY Warning Deprecated Spring configuration key 'spring.main.banner-mode'; use 'spring.main.banner-mode2'
 SPRING_UNKNOWN_CONFIG_KEY Warning Unknown Spring configuration key 'unknown.key'
 "###
     );

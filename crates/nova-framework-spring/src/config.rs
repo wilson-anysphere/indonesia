@@ -209,10 +209,19 @@ pub fn diagnostics_for_config_file(
             continue;
         };
 
-        if prop.deprecation.is_some() {
+        if let Some(deprecation) = prop.deprecation.as_ref() {
+            let mut message =
+                format!("Deprecated Spring configuration key '{}'", entry.key);
+            if let Some(replacement) = deprecation
+                .replacement
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+            {
+                message.push_str(&format!("; use '{replacement}'"));
+            }
             diagnostics.push(Diagnostic::warning(
                 SPRING_DEPRECATED_CONFIG_KEY,
-                format!("Deprecated Spring configuration key '{}'", entry.key),
+                message,
                 Some(entry.key_span),
             ));
         }
