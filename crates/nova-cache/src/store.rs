@@ -181,7 +181,9 @@ async fn open_unique_tmp_file(dest: &Path) -> io::Result<(PathBuf, tokio::fs::Fi
 }
 
 #[cfg(feature = "s3")]
-async fn sync_parent_dir_best_effort(dest: &Path) {
+fn sync_parent_dir_best_effort(dest: &Path) {
+    // Best-effort durability: after publishing a new file via rename, fsync the directory entry
+    // so the rename survives a crash/power loss.
     #[cfg(unix)]
     if let Some(parent) = dest.parent() {
         let parent = if parent.as_os_str().is_empty() {
@@ -189,11 +191,7 @@ async fn sync_parent_dir_best_effort(dest: &Path) {
         } else {
             parent
         };
-        let parent = parent.to_path_buf();
-        let _ = tokio::task::spawn_blocking(move || {
-            std::fs::File::open(parent).and_then(|dir| dir.sync_all())
-        })
-        .await;
+        let _ = std::fs::File::open(parent).and_then(|dir| dir.sync_all());
     }
 
     #[cfg(not(unix))]
@@ -246,7 +244,7 @@ async fn stream_async_read_to_path(
 
         match tokio::fs::rename(&tmp_path, dest).await {
             Ok(()) => {
-                sync_parent_dir_best_effort(dest).await;
+                sync_parent_dir_best_effort(dest);
                 Ok(copied)
             }
             Err(err) => {
@@ -257,7 +255,7 @@ async fn stream_async_read_to_path(
                 {
                     let _ = tokio::fs::remove_file(dest).await;
                     if tokio::fs::rename(&tmp_path, dest).await.is_ok() {
-                        sync_parent_dir_best_effort(dest).await;
+                        sync_parent_dir_best_effort(dest);
                         return Ok(copied);
                     }
                 }
@@ -280,7 +278,7 @@ async fn stream_async_read_to_path(
                     return Err(err.into());
                 }
                 let _ = tokio::fs::remove_file(&tmp_path).await;
-                sync_parent_dir_best_effort(dest).await;
+                sync_parent_dir_best_effort(dest);
                 Ok(copied)
             }
         }
