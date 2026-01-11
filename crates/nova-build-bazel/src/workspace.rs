@@ -20,7 +20,7 @@ const AQUERY_DIRECT_TEMPLATE: &str = r#"mnemonic("Javac", TARGET)"#;
 const AQUERY_DEPS_TEMPLATE: &str = r#"mnemonic("Javac", deps(TARGET))"#;
 const BUILDFILES_QUERY_TEMPLATE: &str = "buildfiles(deps(TARGET))";
 const LOADFILES_QUERY_TEMPLATE: &str = "loadfiles(deps(TARGET))";
-const TEXTPROTO_PARSER_VERSION: &str = "aquery-textproto-streaming-v3";
+const TEXTPROTO_PARSER_VERSION: &str = "aquery-textproto-streaming-v4";
 
 fn compile_info_expr_version_hex() -> String {
     // Keep this in sync with the query expressions above; changes should invalidate cached compile
