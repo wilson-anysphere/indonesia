@@ -12,6 +12,11 @@ Run the ignored “real project” test suites with:
 ./scripts/run-real-project-tests.sh
 ```
 
+For CI-like behavior (and to reduce peak memory), run with a single test thread:
+```bash
+RUST_TEST_THREADS=1 ./scripts/run-real-project-tests.sh
+```
+
 To focus on a subset of fixtures (matches `clone-test-projects.sh`):
 ```bash
 ./scripts/run-real-project-tests.sh --only guava,spring-petclinic
