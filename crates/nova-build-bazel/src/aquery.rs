@@ -76,6 +76,7 @@ struct AqueryTextprotoStreamingParser<R: BufRead> {
     mnemonic: Option<String>,
     owner: Option<String>,
     arguments: Vec<String>,
+    collect_arguments: bool,
     done: bool,
 }
 
@@ -89,6 +90,7 @@ impl<R: BufRead> AqueryTextprotoStreamingParser<R> {
             mnemonic: None,
             owner: None,
             arguments: Vec::new(),
+            collect_arguments: true,
             done: false,
         }
     }
@@ -131,6 +133,7 @@ impl<R: BufRead> Iterator for AqueryTextprotoStreamingParser<R> {
                     self.mnemonic = None;
                     self.owner = None;
                     self.arguments.clear();
+                    self.collect_arguments = true;
 
                     if self.depth <= 0 {
                         // Malformed (or single-line) action block. Reset and keep scanning.
@@ -144,11 +147,19 @@ impl<R: BufRead> Iterator for AqueryTextprotoStreamingParser<R> {
             let trimmed = trimmed_start.trim();
             if self.depth == 1 {
                 if let Some(value) = parse_quoted_field(trimmed, "mnemonic:") {
+                    self.collect_arguments = value == "Javac";
+                    if !self.collect_arguments {
+                        // Avoid retaining (potentially huge) argument vectors for actions we're
+                        // going to discard anyway.
+                        self.arguments.clear();
+                    }
                     self.mnemonic = Some(value);
                 } else if let Some(value) = parse_quoted_field(trimmed, "owner:") {
                     self.owner = Some(value);
                 } else if let Some(value) = parse_quoted_field(trimmed, "arguments:") {
-                    self.arguments.push(value);
+                    if self.collect_arguments {
+                        self.arguments.push(value);
+                    }
                 }
             }
 
