@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use nova_cache::{CacheConfig, CacheDir, CacheMetadata, Fingerprint, ProjectSnapshot};
 use nova_index::{
-    load_sharded_index_archives_fast, save_sharded_indexes, shard_id_for_path, CandidateStrategy,
-    ProjectIndexes, SearchStats, SearchSymbol, SymbolLocation, SymbolSearchIndex,
+    load_sharded_index_archives_from_fast_snapshot, save_sharded_indexes, shard_id_for_path,
+    CandidateStrategy, ProjectIndexes, SearchStats, SearchSymbol, SymbolLocation, SymbolSearchIndex,
     DEFAULT_SHARD_COUNT,
 };
 use nova_project::ProjectError;
@@ -185,8 +185,10 @@ impl Workspace {
     pub fn index_and_write_cache(&self) -> Result<IndexReport> {
         let shard_count = DEFAULT_SHARD_COUNT;
         let (snapshot, cache_dir, mut shards, metrics) = self.build_indexes()?;
-        save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards)
-            .context("failed to persist indexes")?;
+        if metrics.files_invalidated > 0 {
+            save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards)
+                .context("failed to persist indexes")?;
+        }
         self.write_cache_perf(&cache_dir, &metrics)?;
         Ok(IndexReport {
             root: snapshot.project_root().to_path_buf(),
@@ -209,8 +211,7 @@ impl Workspace {
         // ------------------------------------------------------------------
 
         let snapshot_start = Instant::now();
-        let stamp_snapshot =
-            ProjectSnapshot::new_fast(&self.root, files.clone()).with_context(|| {
+        let stamp_snapshot = ProjectSnapshot::new_fast(&self.root, files).with_context(|| {
                 format!(
                     "failed to build file stamp snapshot for {}",
                     self.root.display()
@@ -233,13 +234,9 @@ impl Workspace {
         // Load persisted sharded indexes based on the stamp snapshot. This avoids hashing
         // full file contents before deciding whether the cache is reusable.
         let shard_count = DEFAULT_SHARD_COUNT;
-        let loaded = load_sharded_index_archives_fast(
-            &cache_dir,
-            stamp_snapshot.project_root(),
-            files,
-            shard_count,
-        )
-        .context("failed to load cached indexes")?;
+        let loaded =
+            load_sharded_index_archives_from_fast_snapshot(&cache_dir, &stamp_snapshot, shard_count)
+                .context("failed to load cached indexes")?;
 
         let (mut shards, mut invalidated_files) = match loaded {
             Some(loaded) => {
@@ -645,8 +642,10 @@ impl Workspace {
         // and persisting the updated indexes into the on-disk cache.
         let shard_count = DEFAULT_SHARD_COUNT;
         let (snapshot, cache_dir, mut shards, metrics) = self.build_indexes()?;
-        save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards)
-            .context("failed to persist indexes")?;
+        if metrics.files_invalidated > 0 {
+            save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards)
+                .context("failed to persist indexes")?;
+        }
         self.write_cache_perf(&cache_dir, &metrics)?;
 
         const WORKSPACE_SYMBOL_LIMIT: usize = 200;

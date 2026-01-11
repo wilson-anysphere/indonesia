@@ -1950,15 +1950,14 @@ pub fn load_sharded_index_archives(
     }))
 }
 
-/// Fast variant of [`load_sharded_index_archives`] that uses per-file metadata
-/// fingerprints (size + mtime) instead of hashing file contents.
+/// Loads sharded index archives using a precomputed "fast" snapshot where each file fingerprint
+/// is derived from file metadata (size + mtime).
 ///
-/// This is intended for warm-start validation when callers want to avoid reading
-/// the full contents of every file.
-pub fn load_sharded_index_archives_fast(
+/// This is useful for callers that already paid the cost to stat all files (e.g. to report
+/// metrics) and want to avoid re-statting them inside [`load_sharded_index_archives_fast`].
+pub fn load_sharded_index_archives_from_fast_snapshot(
     cache_dir: &CacheDir,
-    project_root: impl AsRef<Path>,
-    files: Vec<PathBuf>,
+    fast_snapshot: &ProjectSnapshot,
     shard_count: u32,
 ) -> Result<Option<LoadedShardedIndexArchives>, IndexPersistenceError> {
     if shard_count == 0 {
@@ -1976,13 +1975,7 @@ pub fn load_sharded_index_archives_fast(
     if !metadata.is_compatible() {
         return Ok(None);
     }
-
-    let current_snapshot = match ProjectSnapshot::new_fast(project_root, files) {
-        Ok(value) => value,
-        Err(_) => return Ok(None),
-    };
-
-    if &metadata.project_hash != current_snapshot.project_hash() {
+    if &metadata.project_hash != fast_snapshot.project_hash() {
         return Ok(None);
     }
 
@@ -2006,12 +1999,12 @@ pub fn load_sharded_index_archives_fast(
     }
 
     let mut invalidated: BTreeSet<String> = metadata
-        .diff_files_fast(&current_snapshot)
+        .diff_files_fast(fast_snapshot)
         .into_iter()
         .collect();
 
     if !missing_shards.is_empty() {
-        for path in current_snapshot.file_fingerprints().keys() {
+        for path in fast_snapshot.file_fingerprints().keys() {
             if missing_shards.contains(&shard_id_for_path(path, shard_count)) {
                 invalidated.insert(path.clone());
             }
@@ -2023,6 +2016,32 @@ pub fn load_sharded_index_archives_fast(
         invalidated_files: invalidated.into_iter().collect(),
         missing_shards,
     }))
+}
+
+/// Fast variant of [`load_sharded_index_archives`] that uses per-file metadata
+/// fingerprints (size + mtime) instead of hashing file contents.
+///
+/// This is intended for warm-start validation when callers want to avoid reading
+/// the full contents of every file.
+pub fn load_sharded_index_archives_fast(
+    cache_dir: &CacheDir,
+    project_root: impl AsRef<Path>,
+    files: Vec<PathBuf>,
+    shard_count: u32,
+) -> Result<Option<LoadedShardedIndexArchives>, IndexPersistenceError> {
+    if shard_count == 0 {
+        return Err(IndexPersistenceError::InvalidShardCount { shard_count });
+    }
+
+    let metadata_path = cache_dir.metadata_path();
+    if !metadata_path.exists() && !cache_dir.metadata_bin_path().exists() {
+        return Ok(None);
+    }
+    let current_snapshot = match ProjectSnapshot::new_fast(project_root, files) {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    load_sharded_index_archives_from_fast_snapshot(cache_dir, &current_snapshot, shard_count)
 }
 
 pub fn load_sharded_index_view(
