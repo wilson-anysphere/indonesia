@@ -265,20 +265,8 @@ fn full_document_range(contents: &str) -> lsp_types::Range {
 }
 
 fn end_position(contents: &str) -> lsp_types::Position {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
-    for ch in contents.chars() {
-        if ch == '\n' {
-            line += 1;
-            col_utf16 = 0;
-            continue;
-        }
-        col_utf16 += ch.len_utf16() as u32;
-    }
-    lsp_types::Position {
-        line,
-        character: col_utf16,
-    }
+    crate::text_pos::lsp_position(contents, contents.len())
+        .unwrap_or_else(|| lsp_types::Position::new(0, 0))
 }
 
 #[cfg(test)]

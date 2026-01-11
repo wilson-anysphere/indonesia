@@ -42,64 +42,13 @@ pub fn execute(source: &str, args: ExtractMethodCommandArgs) -> Result<Workspace
 }
 
 fn offset_to_position(text: &str, offset: usize) -> lsp_types::Position {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
-    let mut idx = 0;
-
-    for ch in text.chars() {
-        if idx >= offset {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            col_utf16 = 0;
-        } else {
-            col_utf16 += ch.len_utf16() as u32;
-        }
-        idx += ch.len_utf8();
+    let mut clamped = offset.min(text.len());
+    while clamped > 0 && !text.is_char_boundary(clamped) {
+        clamped -= 1;
     }
-
-    lsp_types::Position {
-        line,
-        character: col_utf16,
-    }
+    crate::text_pos::lsp_position(text, clamped).unwrap_or_else(|| lsp_types::Position::new(0, 0))
 }
 
 fn position_to_offset(text: &str, pos: lsp_types::Position) -> Option<usize> {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
-    let mut idx = 0;
-
-    for ch in text.chars() {
-        if line == pos.line && col_utf16 == pos.character {
-            return Some(idx);
-        }
-
-        if ch == '\n' {
-            if line == pos.line {
-                if col_utf16 == pos.character {
-                    return Some(idx);
-                }
-                return None;
-            }
-            line += 1;
-            col_utf16 = 0;
-            idx += 1;
-            continue;
-        }
-
-        if line == pos.line {
-            col_utf16 += ch.len_utf16() as u32;
-            if col_utf16 > pos.character {
-                return None;
-            }
-        }
-        idx += ch.len_utf8();
-    }
-
-    if line == pos.line && col_utf16 == pos.character {
-        Some(idx)
-    } else {
-        None
-    }
+    crate::text_pos::byte_offset(text, pos)
 }
