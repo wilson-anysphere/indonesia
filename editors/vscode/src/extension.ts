@@ -5,6 +5,7 @@ import type { TextDocumentFilter as LspTextDocumentFilter } from 'vscode-languag
 import { getCompletionContextId, requestMoreCompletions } from './aiCompletionMore';
 import { ServerManager, type NovaServerSettings } from './serverManager';
 import type { DocumentSelector as ProtocolDocumentSelector } from 'vscode-languageserver-protocol';
+import { buildNovaLspArgs } from './lspArgs';
 
 let client: LanguageClient | undefined;
 let clientStart: Promise<void> | undefined;
@@ -66,6 +67,30 @@ interface RunResponse {
   summary: { total: number; passed: number; failed: number; skipped: number };
 }
 
+function isAiEnabled(): boolean {
+  return vscode.workspace.getConfiguration('nova').get<boolean>('ai.enabled', true);
+}
+
+function isAiCompletionsEnabled(): boolean {
+  return vscode.workspace.getConfiguration('nova').get<boolean>('aiCompletions.enabled', true);
+}
+
+function clearAiCompletionCache(): void {
+  aiItemsByContextId.clear();
+  aiRequestsInFlight.clear();
+  lastCompletionContextId = undefined;
+  lastCompletionDocumentUri = undefined;
+}
+
+function readLspArgs(): string[] {
+  const config = vscode.workspace.getConfiguration('nova');
+  const configPath = config.get<string | null>('lsp.configPath', null);
+  const extraArgs = config.get<string[]>('lsp.extraArgs', []);
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
+
+  return buildNovaLspArgs({ configPath, extraArgs, workspaceRoot });
+}
+
 export async function activate(context: vscode.ExtensionContext) {
   const serverOutput = vscode.window.createOutputChannel('Nova Server');
   context.subscriptions.push(serverOutput);
@@ -111,7 +136,7 @@ export async function activate(context: vscode.ExtensionContext) {
       provideCompletionItem: async (document, position, completionContext, token, next) => {
         const result = await next(document, position, completionContext, token);
 
-        if (!client || aiRefreshInProgress) {
+        if (!client || aiRefreshInProgress || !isAiEnabled() || !isAiCompletionsEnabled()) {
           return result;
         }
 
@@ -147,6 +172,10 @@ export async function activate(context: vscode.ExtensionContext) {
             }
 
             if (token.isCancellationRequested) {
+              return;
+            }
+
+            if (!isAiEnabled() || !isAiCompletionsEnabled()) {
               return;
             }
 
@@ -210,7 +239,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
   async function startLanguageClient(serverCommand: string): Promise<void> {
     currentServerCommand = serverCommand;
-    const serverOptions: ServerOptions = { command: serverCommand, args: ['--stdio'] };
+    const serverOptions: ServerOptions = { command: serverCommand, args: readLspArgs() };
     client = new LanguageClient('nova', 'Nova Java Language Server', serverOptions, clientOptions);
     // vscode-languageclient v9+ starts asynchronously.
     clientStart = client.start();
@@ -428,8 +457,7 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.languages.registerCompletionItemProvider(documentSelector, {
       provideCompletionItems: (document) => {
-        const enabled = vscode.workspace.getConfiguration('nova').get<boolean>('aiCompletions.enabled', true);
-        if (!enabled) {
+        if (!isAiEnabled() || !isAiCompletionsEnabled()) {
           return undefined;
         }
 
@@ -594,13 +622,51 @@ export async function activate(context: vscode.ExtensionContext) {
 
   ensureClientStarted = ensureLanguageClientStarted;
 
+  let restartPromptInFlight: Promise<void> | undefined;
+  const promptRestartLanguageServer = () => {
+    if (restartPromptInFlight || !client) {
+      return;
+    }
+
+    restartPromptInFlight = (async () => {
+      try {
+        const choice = await vscode.window.showInformationMessage(
+          'Nova: language server settings changed. Restart nova-lsp to apply changes.',
+          'Restart',
+        );
+        if (choice === 'Restart') {
+          await stopLanguageClient();
+          await ensureLanguageClientStarted({ promptForInstall: false });
+        }
+      } finally {
+        restartPromptInFlight = undefined;
+      }
+    })();
+  };
+
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration('nova.server.path')) {
+      const serverPathChanged = event.affectsConfiguration('nova.server.path');
+      if (serverPathChanged) {
         void ensureLanguageClientStarted({ promptForInstall: false }).catch((err) => {
           const message = err instanceof Error ? err.message : String(err);
           serverOutput.appendLine(`Failed to restart nova-lsp: ${message}`);
         });
+      }
+
+      if (
+        !serverPathChanged &&
+        (event.affectsConfiguration('nova.lsp.configPath') || event.affectsConfiguration('nova.lsp.extraArgs'))
+      ) {
+        promptRestartLanguageServer();
+      }
+
+      if (
+        event.affectsConfiguration('nova.ai.enabled') ||
+        event.affectsConfiguration('nova.aiCompletions.enabled') ||
+        event.affectsConfiguration('nova.aiCompletions.maxItems')
+      ) {
+        clearAiCompletionCache();
       }
     }),
   );

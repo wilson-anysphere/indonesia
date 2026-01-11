@@ -32,7 +32,7 @@ export interface RequestMoreCompletionsOptions {
 
   /**
    * Enable Nova AI multi-token completions via `nova/completion/more`.
-   * Defaults to `nova.aiCompletions.enabled` (or `true` when vscode is unavailable).
+   * Defaults to `nova.ai.enabled` AND `nova.aiCompletions.enabled` (or `true` when vscode is unavailable).
    */
   enabled?: boolean;
 
@@ -85,9 +85,11 @@ function getConfigFromVscode(): Partial<ResolvedRequestOptions> {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const vscode = require('vscode') as typeof import('vscode');
     const config = vscode.workspace.getConfiguration('nova');
+    const aiEnabled = config.get<boolean>('ai.enabled', true);
+    const completionsEnabled = config.get<boolean>('aiCompletions.enabled', true);
 
     return {
-      enabled: config.get<boolean>('aiCompletions.enabled', true),
+      enabled: aiEnabled && completionsEnabled,
       maxItems: config.get<number>('aiCompletions.maxItems', 5),
       requestTimeoutMs: config.get<number>('aiCompletions.requestTimeoutMs', 1000),
       pollIntervalMs: config.get<number>('aiCompletions.pollIntervalMs', 50),
@@ -100,7 +102,7 @@ function getConfigFromVscode(): Partial<ResolvedRequestOptions> {
 function resolveRequestOptions(options: RequestMoreCompletionsOptions): ResolvedRequestOptions {
   const config = getConfigFromVscode();
 
-  const enabled = options.enabled ?? config.enabled ?? true;
+  const enabled = (config.enabled ?? true) && (options.enabled ?? true);
   const maxItems = options.maxItems ?? config.maxItems ?? 5;
   const requestTimeoutMs = options.requestTimeoutMs ?? config.requestTimeoutMs ?? 1000;
   const pollIntervalMs = options.pollIntervalMs ?? config.pollIntervalMs ?? 50;

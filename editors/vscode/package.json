@@ -87,6 +87,27 @@
           "default": "https://github.com/wilson-anysphere/indonesia",
           "description": "GitHub repository URL (or \"owner/repo\") to download nova-lsp releases from."
         },
+        "nova.lsp.configPath": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Path to a Nova TOML config file to pass to nova-lsp via --config."
+        },
+        "nova.lsp.extraArgs": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Additional command-line arguments to pass to nova-lsp."
+        },
+        "nova.ai.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Master toggle for Nova AI features. When disabled, the extension will not request or surface AI completions."
+        },
         "nova.aiCompletions.enabled": {
           "type": "boolean",
           "default": true,
@@ -117,7 +138,7 @@
     "sync-version": "node scripts/sync-version.mjs",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "node -e \"require('fs').rmSync('out', { recursive: true, force: true })\" && npm run compile && node --test out/__tests__/aiCompletionMore.node.js && vitest run",
+    "test": "node -e \"require('fs').rmSync('out', { recursive: true, force: true })\" && npm run compile && node --test out/__tests__/aiCompletionMore.node.js out/__tests__/lspArgs.node-test.js && vitest run",
     "vscode:prepublish": "npm run compile",
     "package": "npm run sync-version && npm run compile && node scripts/ensure-dist.mjs && vsce package --skip-license --out dist/nova.vsix"
   },
