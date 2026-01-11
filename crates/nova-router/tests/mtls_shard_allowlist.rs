@@ -23,6 +23,17 @@ fn sha256_fingerprint_hex(der: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+fn openssl_style_fingerprint(fp_hex: &str) -> String {
+    let mut out = String::new();
+    for (idx, pair) in fp_hex.as_bytes().chunks(2).enumerate() {
+        if idx > 0 {
+            out.push(':');
+        }
+        out.push_str(std::str::from_utf8(pair).expect("hex bytes"));
+    }
+    out
+}
+
 fn load_certs(pem: &[u8]) -> anyhow::Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
     let mut reader = BufReader::new(Cursor::new(pem));
     Ok(rustls_pemfile::certs(&mut reader)
@@ -190,7 +201,13 @@ async fn mtls_shard_allowlist_scopes_workers_by_cert_fingerprint() -> anyhow::Re
 
     let addr = pick_unused_tcp_addr()?;
     let mut shards = HashMap::new();
-    shards.insert(0 as ShardId, vec![client_a_fp.clone()]);
+    shards.insert(
+        0 as ShardId,
+        vec![format!(
+            "SHA256 Fingerprint={}",
+            openssl_style_fingerprint(&client_a_fp.to_uppercase())
+        )],
+    );
     shards.insert(1 as ShardId, vec![client_b_fp.clone()]);
 
     let config = DistributedRouterConfig {
@@ -207,7 +224,8 @@ async fn mtls_shard_allowlist_scopes_workers_by_cert_fingerprint() -> anyhow::Re
         max_inflight_handshakes: nova_router::DEFAULT_MAX_INFLIGHT_HANDSHAKES,
         max_worker_connections: nova_router::DEFAULT_MAX_WORKER_CONNECTIONS,
         tls_client_cert_fingerprint_allowlist: TlsClientCertFingerprintAllowlist {
-            global: vec![client_c_fp.clone()],
+            // Global allowlist also accepts colon-separated OpenSSL formatting.
+            global: vec![openssl_style_fingerprint(&client_c_fp.to_uppercase())],
             shards,
         },
         spawn_workers: false,
