@@ -6,7 +6,6 @@ use serde_json::json;
 use std::fs;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
-use std::str::FromStr;
 use tempfile::TempDir;
 
 use support::{read_response_with_id, write_jsonrpc_message};
@@ -29,7 +28,7 @@ class C {
     let (source, selection) = extract_range(fixture);
     fs::write(&file_path, &source).expect("write file");
 
-    let uri = Uri::from_str(&format!("file://{}", file_path.to_string_lossy())).expect("uri");
+    let uri = Uri::from_file_path(&file_path).expect("uri");
     let range = Range {
         start: offset_to_position(&source, selection.start),
         end: offset_to_position(&source, selection.end),

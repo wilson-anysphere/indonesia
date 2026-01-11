@@ -765,9 +765,10 @@ fn stdio_server_handles_generated_sources_request() {
         .and_then(|v| v.as_array())
         .expect("roots array");
     assert!(roots.iter().any(|root| {
-        root.get("path")
-            .and_then(|v| v.as_str())
-            .is_some_and(|p| p.contains("target/generated-sources/annotations"))
+        root.get("path").and_then(|v| v.as_str()).is_some_and(|p| {
+            p.replace('\\', "/")
+                .contains("target/generated-sources/annotations")
+        })
     }));
 
     write_jsonrpc_message(
