@@ -318,7 +318,10 @@ v3 `Reject(unsupported_version, \"router only supports legacy_v2 protocol\")`.
 Notes:
 
 - The handshake timeout is currently **5s**.
-- The router limits concurrent pending handshakes (currently **128**) to avoid accept-loop stalls.
+- The router limits concurrent pending handshakes (default **128**; configurable via
+  `DistributedRouterConfig.max_inflight_handshakes`) to avoid accept-loop stalls.
+- The router limits active worker connections (default **1024**; configurable via
+  `DistributedRouterConfig.max_worker_connections`).
 - The router enforces per-RPC timeouts: **30s** to write a request to a worker, and **10min** waiting
   for a response.
 
