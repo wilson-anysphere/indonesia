@@ -24,6 +24,10 @@ cargo +nightly install cargo-fuzz --locked
 
 All commands below are run from the repository root.
 
+> Note: the first `cargo fuzz` run can take a while because the toolchain builds the Rust standard
+> library with the selected fuzzing settings. Subsequent runs reuse `fuzz/target/` and are much
+> faster.
+
 ### Parse Java (syntax)
 
 ```bash
