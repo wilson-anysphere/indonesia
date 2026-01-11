@@ -168,3 +168,11 @@ In v3, the router may reject the initial handshake with `Reject { code, message 
   SAN on the router certificate.
 - For mTLS, ensure `--tls-client-cert` / `--tls-client-key` are valid and the router trusts the
   client CA (and any shard-scoping policy allows the worker identity).
+
+### Debug logging
+
+`nova-worker` and the router use `tracing`/`RUST_LOG` filtering (via `nova-config`). Useful settings:
+
+- `RUST_LOG=nova_worker=debug` (worker-side connection + handshake logs)
+- `RUST_LOG=nova_router=debug` (router-side connection + handshake logs)
+- `RUST_LOG=nova.remote_rpc=trace` (packet-level logs for the v3 implementation, when enabled)

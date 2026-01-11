@@ -266,6 +266,19 @@ nova-worker \
   --auth-token-file ./shard-0.token
 ```
 
+#### Debugging connection issues
+
+To debug router↔worker connections, enable `tracing` logs via `RUST_LOG`:
+
+- `RUST_LOG=nova_router=debug` (router-side accept/handshake/authorization logs)
+- `RUST_LOG=nova_worker=debug` (worker-side connect/handshake logs)
+
+Look for messages like:
+
+- `timed out waiting for WorkerHello`
+- `tls accept timed out`
+- `dropping incoming … connection: too many pending handshakes`
+
 For the intended “secure remote mode” requirements (TLS + authentication + shard-scoped
 authorization + DoS hardening), see
 [ADR 0008 — Distributed mode security](adr/0008-distributed-mode-security.md). The current
