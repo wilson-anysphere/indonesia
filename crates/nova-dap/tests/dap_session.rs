@@ -705,104 +705,51 @@ async fn dap_emits_output_for_expression_value_on_step() {
     caps[22] = true;
     let jdwp = MockJdwpServer::spawn_with_capabilities(caps).await.unwrap();
 
-    let (client, server_stream) = tokio::io::duplex(64 * 1024);
-    let (server_read, server_write) = tokio::io::split(server_stream);
-    let server_task = tokio::spawn(async move { wire_server::run(server_read, server_write).await });
+    let (client, server_task) = spawn_wire_server();
+    client.initialize_handshake().await;
+    client.attach("127.0.0.1", jdwp.addr().port()).await;
 
-    let (client_read, client_write) = tokio::io::split(client);
-    let mut reader = DapReader::new(client_read);
-    let mut writer = DapWriter::new(client_write);
+    let thread_id = client.first_thread_id().await;
 
-    send_request(&mut writer, 1, "initialize", json!({})).await;
-    let init_resp = read_response(&mut reader, 1).await;
-    assert!(init_resp
-        .get("success")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false));
-    let initialized = read_next(&mut reader).await;
-    assert_eq!(
-        initialized.get("event").and_then(|v| v.as_str()),
-        Some("initialized")
-    );
-
-    send_request(
-        &mut writer,
-        2,
-        "attach",
-        json!({
-            "host": "127.0.0.1",
-            "port": jdwp.addr().port()
-        }),
-    )
-    .await;
-    let attach_resp = read_response(&mut reader, 2).await;
-    assert!(attach_resp
-        .get("success")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false));
-
-    send_request(&mut writer, 3, "threads", json!({})).await;
-    let threads_resp = read_response(&mut reader, 3).await;
-    let thread_id = threads_resp
-        .pointer("/body/threads/0/id")
-        .and_then(|v| v.as_i64())
-        .unwrap();
-
-    // Issue a step-over request and expect:
-    //  - an `output` event for the expression value
-    //  - a `stopped` event (reason=step)
-    send_request(&mut writer, 4, "next", json!({ "threadId": thread_id })).await;
-
-    let mut resp = None;
-    let mut output_evt = None;
-    let mut stopped_evt = None;
-    for _ in 0..50 {
-        let msg = read_next(&mut reader).await;
-        if msg.get("type").and_then(|v| v.as_str()) == Some("response")
-            && msg.get("request_seq").and_then(|v| v.as_i64()) == Some(4)
-        {
-            resp = Some(msg);
-        } else if msg.get("type").and_then(|v| v.as_str()) == Some("event")
-            && msg.get("event").and_then(|v| v.as_str()) == Some("output")
-        {
-            output_evt = Some(msg);
-        } else if msg.get("type").and_then(|v| v.as_str()) == Some("event")
-            && msg.get("event").and_then(|v| v.as_str()) == Some("stopped")
-        {
-            stopped_evt = Some(msg);
-        }
-
-        if resp.is_some() && output_evt.is_some() && stopped_evt.is_some() {
-            break;
-        }
-    }
-
-    let resp = resp.expect("expected next response");
+    let req_seq = client.send_request("next", json!({ "threadId": thread_id })).await;
+    let resp = client.wait_for_response(req_seq).await;
     assert!(resp
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
 
-    let output_evt = output_evt.expect("expected output event");
-    assert!(output_evt
-        .pointer("/body/output")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .contains("Expression value:"));
+    // Issue a step-over request and expect:
+    //  - an `output` event for the expression value
+    //  - a `stopped` event (reason=step)
+    let output_evt = client
+        .wait_for_event_matching(
+            "output(Expression value)",
+            Duration::from_secs(5),
+            |msg| {
+                msg.get("type").and_then(|v| v.as_str()) == Some("event")
+                    && msg.get("event").and_then(|v| v.as_str()) == Some("output")
+                    && msg
+                        .pointer("/body/output")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .contains("Expression value:")
+            },
+        )
+        .await;
 
-    let stopped_evt = stopped_evt.expect("expected stopped event");
-    assert_eq!(
-        stopped_evt.pointer("/body/reason").and_then(|v| v.as_str()),
-        Some("step")
-    );
+    let stopped_evt = client
+        .wait_for_event_matching("stopped(step)", Duration::from_secs(5), |msg| {
+            msg.get("type").and_then(|v| v.as_str()) == Some("event")
+                && msg.get("event").and_then(|v| v.as_str()) == Some("stopped")
+                && msg.pointer("/body/reason").and_then(|v| v.as_str()) == Some("step")
+        })
+        .await;
 
     // The output should be emitted before the stop notification (mirrors legacy UX).
     let output_seq = output_evt.get("seq").and_then(|v| v.as_i64()).unwrap_or(0);
     let stopped_seq = stopped_evt.get("seq").and_then(|v| v.as_i64()).unwrap_or(0);
     assert!(output_seq < stopped_seq);
 
-    send_request(&mut writer, 5, "disconnect", json!({})).await;
-    let _disc_resp = read_response(&mut reader, 5).await;
-
+    client.disconnect().await;
     server_task.await.unwrap().unwrap();
 }

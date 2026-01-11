@@ -33,9 +33,8 @@ async fn transcript_attach_breakpoints_continue_stop_disconnect() {
                  "supportsExceptionBreakpoints": true,
                  "supportsExceptionInfoRequest": true,
                  "supportsConditionalBreakpoints": true,
-             })),
+              })),
          ),
-        tr::event("initialized", None),
         tr::request(
             "attach",
             json!({
@@ -44,6 +43,7 @@ async fn transcript_attach_breakpoints_continue_stop_disconnect() {
             }),
         ),
         tr::response("attach", true, None),
+        tr::event("initialized", None),
         tr::request(
             "setBreakpoints",
             json!({
@@ -129,9 +129,8 @@ async fn transcript_step_sequences() {
                  "supportsExceptionBreakpoints": true,
                  "supportsExceptionInfoRequest": true,
                  "supportsConditionalBreakpoints": true,
-             })),
+              })),
          ),
-        tr::event("initialized", None),
         tr::request(
             "attach",
             json!({
@@ -140,6 +139,7 @@ async fn transcript_step_sequences() {
             }),
         ),
         tr::response("attach", true, None),
+        tr::event("initialized", None),
         tr::request(
             "setBreakpoints",
             json!({
@@ -278,9 +278,8 @@ async fn transcript_cancel_delayed_request() {
                  "supportsExceptionBreakpoints": true,
                  "supportsExceptionInfoRequest": true,
                  "supportsConditionalBreakpoints": true,
-             })),
+              })),
          ),
-        tr::event("initialized", None),
         tr::request(
             "attach",
             json!({
@@ -289,6 +288,7 @@ async fn transcript_cancel_delayed_request() {
             }),
         ),
         tr::response("attach", true, None),
+        tr::event("initialized", None),
         tr::request("threads", json!({})),
         tr::request("cancel", json!({ "requestId": tr::ignore() })),
         tr::response("cancel", true, None),

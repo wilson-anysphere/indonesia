@@ -252,7 +252,6 @@ impl DapClient {
     pub async fn initialize_handshake(&self) -> Value {
         let resp = self.request("initialize", json!({})).await;
         assert_success(&resp, "initialize");
-        let _ = self.wait_for_event("initialized").await;
         resp
     }
 
@@ -267,6 +266,9 @@ impl DapClient {
             )
             .await;
         assert_success(&resp, "attach");
+        // The wire server emits the DAP `initialized` event after the debug session is
+        // launched/attached (not immediately after `initialize`).
+        let _ = self.wait_for_event("initialized").await;
         resp
     }
 
