@@ -3,7 +3,6 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 use std::path::Path;
 
-use blake3;
 use memmap2::{Mmap, MmapOptions};
 use nova_core::Endian;
 use rkyv::Deserialize;

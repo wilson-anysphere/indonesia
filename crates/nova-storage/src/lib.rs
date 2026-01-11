@@ -146,4 +146,72 @@ mod tests {
             other => panic!("unexpected error: {other:?}"),
         }
     }
+
+    #[test]
+    fn corrupted_compressed_payload_is_hash_mismatch() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("sample.bin");
+
+        let value = Sample {
+            a: 456,
+            b: "hello".to_string(),
+            values: vec![1, 2, 3, 4],
+        };
+
+        write_archive_atomic(
+            &path,
+            ArtifactKind::AstArtifacts,
+            1,
+            &value,
+            Compression::Zstd,
+        )
+        .unwrap();
+
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(bytes.len() > HEADER_LEN);
+
+        let mut header = StorageHeader::decode(&bytes[..HEADER_LEN]).unwrap();
+        assert_eq!(header.compression, Compression::Zstd);
+
+        let payload_offset = header.payload_offset as usize;
+        let payload_len = header.payload_len as usize;
+        let compressed_payload = &bytes[payload_offset..payload_offset + payload_len];
+
+        let mut uncompressed = zstd::bulk::decompress(
+            compressed_payload,
+            header.uncompressed_len.try_into().unwrap(),
+        )
+        .unwrap();
+
+        // Corrupt a byte in a `u64` value so `rkyv` validation still succeeds, and the
+        // content hash is what reliably detects the corruption.
+        let mut aligned = rkyv::util::AlignedVec::with_capacity(uncompressed.len());
+        aligned.extend_from_slice(&uncompressed);
+        let archived = rkyv::check_archived_root::<Sample>(&aligned).unwrap();
+
+        let element_ptr = &archived.values[0] as *const u64 as *const u8;
+        let payload_ptr = aligned.as_ptr();
+        let offset = unsafe { element_ptr.offset_from(payload_ptr) as usize };
+        uncompressed[offset] ^= 0x01;
+
+        let mut aligned_corrupted = rkyv::util::AlignedVec::with_capacity(uncompressed.len());
+        aligned_corrupted.extend_from_slice(&uncompressed);
+        assert!(rkyv::check_archived_root::<Sample>(&aligned_corrupted).is_ok());
+
+        let compressed_corrupted = zstd::bulk::compress(&uncompressed, 0).unwrap();
+        header.payload_len = compressed_corrupted.len() as u64;
+
+        let mut output = Vec::with_capacity(HEADER_LEN + compressed_corrupted.len());
+        output.extend_from_slice(&header.encode());
+        output.extend_from_slice(&compressed_corrupted);
+        std::fs::write(&path, &output).unwrap();
+
+        let err = PersistedArchive::<Sample>::open(&path, ArtifactKind::AstArtifacts, 1).unwrap_err();
+        match err {
+            StorageError::HashMismatch { expected, found } => {
+                assert_ne!(expected, found);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
 }
