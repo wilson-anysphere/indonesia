@@ -1,0 +1,57 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace " "
+      MethodDeclaration
+        Modifiers
+        VoidKw "void"
+        Whitespace " "
+        Identifier "m"
+        ParameterList
+          LParen "("
+          Parameter
+            Modifiers
+            Type
+              PrimitiveType
+                IntKw "int"
+              Whitespace " "
+            Identifier "x"
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          Whitespace " "
+          SwitchStatement
+            SwitchKw "switch"
+            Whitespace " "
+            LParen "("
+            NameExpression
+              Identifier "x"
+            RParen ")"
+            SwitchBlock
+              Whitespace " "
+              SwitchGroup
+                SwitchLabel
+                  CaseKw "case"
+                  Whitespace " "
+                  CaseLabelElement
+                    LiteralExpression
+                      IntLiteral "1"
+                  Colon ":"
+                Whitespace " "
+                BreakStatement
+                  BreakKw "break"
+                  Semicolon ";"
+                Whitespace " "
+              RBrace "}"
+          Whitespace " "
+          RBrace "}"
+      Whitespace "\n"
+      MissingRBrace ""
+  Eof ""

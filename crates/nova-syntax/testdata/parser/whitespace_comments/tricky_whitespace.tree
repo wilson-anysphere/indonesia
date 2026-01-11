@@ -1,0 +1,29 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace "\t"
+    Identifier "Foo"
+    Whitespace "\t"
+    ClassBody
+      LBrace "{"
+      Whitespace "\n\t"
+      FieldDeclaration
+        Modifiers
+        Type
+          PrimitiveType
+            IntKw "int"
+          Whitespace "\t"
+        VariableDeclaratorList
+          VariableDeclarator
+            Identifier "x"
+            Whitespace "\t"
+            Eq "="
+            Whitespace "\t"
+            LiteralExpression
+              IntLiteral "1"
+        Semicolon ";"
+      Whitespace "\n"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

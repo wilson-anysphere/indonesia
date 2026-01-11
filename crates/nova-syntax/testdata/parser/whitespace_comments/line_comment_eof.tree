@@ -1,0 +1,14 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      RBrace "}"
+  Whitespace " "
+  LineComment "// trailing"
+  Whitespace "\n"
+  Eof ""

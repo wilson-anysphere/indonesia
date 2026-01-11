@@ -1,0 +1,35 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace " "
+      FieldDeclaration
+        Modifiers
+        Type
+          NamedType
+            Identifier "java"
+            Dot "."
+            Identifier "util"
+            Dot "."
+            Identifier "List"
+            TypeArguments
+              Less "<"
+              TypeArgument
+                Type
+                  NamedType
+                    Identifier "String"
+              Greater ">"
+          Whitespace " "
+        VariableDeclaratorList
+          VariableDeclarator
+            Identifier "xs"
+        Semicolon ";"
+      Whitespace " "
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

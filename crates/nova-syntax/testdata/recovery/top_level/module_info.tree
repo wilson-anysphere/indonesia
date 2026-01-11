@@ -1,0 +1,25 @@
+CompilationUnit
+  ModuleDeclaration
+    ModuleKw "module"
+    Name
+      Whitespace " "
+      Identifier "foo"
+      Dot "."
+      Identifier "bar"
+      Whitespace " "
+    ModuleBody
+      LBrace "{"
+      Whitespace "\n  "
+      ModuleDirective
+        RequiresDirective
+          RequiresKw "requires"
+          Whitespace " "
+          Name
+            Identifier "java"
+            Dot "."
+            Identifier "base"
+          Semicolon ";"
+      Whitespace "\n"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

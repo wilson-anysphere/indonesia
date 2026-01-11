@@ -1,0 +1,48 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace " "
+      FieldDeclaration
+        Modifiers
+        Type
+          NamedType
+            Identifier "Map"
+            TypeArguments
+              Less "<"
+              TypeArgument
+                Type
+                  NamedType
+                    Identifier "String"
+              Comma ","
+              Whitespace " "
+              TypeArgument
+                Type
+                  NamedType
+                    Identifier "java"
+                    Dot "."
+                    Identifier "util"
+                    Dot "."
+                    Identifier "List"
+                    TypeArguments
+                      Less "<"
+                      TypeArgument
+                        Type
+                          NamedType
+                            Identifier "Integer"
+                      Greater ">"
+              Greater ">"
+          Whitespace " "
+        VariableDeclaratorList
+          VariableDeclarator
+            Identifier "m"
+        Semicolon ";"
+      Whitespace " "
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

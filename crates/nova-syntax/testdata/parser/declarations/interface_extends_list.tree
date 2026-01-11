@@ -1,0 +1,24 @@
+CompilationUnit
+  InterfaceDeclaration
+    Modifiers
+    InterfaceKw "interface"
+    Whitespace " "
+    Identifier "I"
+    Whitespace " "
+    ExtendsClause
+      ExtendsKw "extends"
+      Whitespace " "
+      Type
+        NamedType
+          Identifier "A"
+      Comma ","
+      Whitespace " "
+      Type
+        NamedType
+          Identifier "B"
+          Whitespace " "
+    InterfaceBody
+      LBrace "{"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

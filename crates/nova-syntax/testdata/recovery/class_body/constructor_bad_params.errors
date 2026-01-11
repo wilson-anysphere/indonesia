@@ -1,0 +1,3 @@
+2:8: expected parameter type, found LBrace `{`
+2:8: expected parameter name, found LBrace `{`
+2:8: expected `)`, found LBrace `{`

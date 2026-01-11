@@ -1,0 +1,48 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace " "
+      MethodDeclaration
+        Modifiers
+        VoidKw "void"
+        Whitespace " "
+        Identifier "m"
+        ParameterList
+          LParen "("
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          Whitespace " "
+          LocalVariableDeclarationStatement
+            Modifiers
+            Type
+              PrimitiveType
+                IntKw "int"
+              Whitespace " "
+            VariableDeclaratorList
+              VariableDeclarator
+                Identifier "x"
+                Whitespace " "
+                Eq "="
+                Whitespace " "
+                BinaryExpression
+                  LiteralExpression
+                    IntLiteral "1"
+                  Whitespace " "
+                  Plus "+"
+                  Whitespace " "
+                  Error
+            Semicolon ";"
+          Whitespace " "
+          RBrace "}"
+      Whitespace " "
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

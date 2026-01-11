@@ -1,0 +1,29 @@
+CompilationUnit
+  InterfaceDeclaration
+    Modifiers
+    InterfaceKw "interface"
+    Whitespace " "
+    Identifier "I"
+    Whitespace " "
+    ImplementsClause
+      ImplementsKw "implements"
+      Whitespace " "
+      Type
+        NamedType
+          Identifier "A"
+          Whitespace " "
+    InterfaceBody
+      LBrace "{"
+      RBrace "}"
+  Whitespace " "
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

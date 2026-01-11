@@ -1,0 +1,2 @@
+1:40: expected `{` after switch, found CaseKw `case`
+2:1: expected `}` to close class body, found end of file

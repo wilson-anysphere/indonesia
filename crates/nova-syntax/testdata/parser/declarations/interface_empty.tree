@@ -1,0 +1,12 @@
+CompilationUnit
+  InterfaceDeclaration
+    Modifiers
+    InterfaceKw "interface"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    InterfaceBody
+      LBrace "{"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

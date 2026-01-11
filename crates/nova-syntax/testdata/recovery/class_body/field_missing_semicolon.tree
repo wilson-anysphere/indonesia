@@ -1,0 +1,55 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace "\n  "
+      FieldDeclaration
+        Modifiers
+        Type
+          PrimitiveType
+            IntKw "int"
+          Whitespace " "
+        VariableDeclaratorList
+          VariableDeclarator
+            Identifier "x"
+            Whitespace " "
+            Eq "="
+            Whitespace " "
+            LiteralExpression
+              IntLiteral "1"
+            Whitespace "\n  "
+        MissingSemicolon ""
+      FieldDeclaration
+        Modifiers
+        Type
+          PrimitiveType
+            IntKw "int"
+          Whitespace " "
+        VariableDeclaratorList
+          VariableDeclarator
+            Identifier "y"
+            Whitespace " "
+            Eq "="
+            Whitespace " "
+            LiteralExpression
+              IntLiteral "2"
+        Semicolon ";"
+      Whitespace "\n"
+      RBrace "}"
+  Whitespace "\n"
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Bar"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

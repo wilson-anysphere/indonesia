@@ -1,0 +1,77 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace "\n  "
+      MethodDeclaration
+        Modifiers
+        Type
+          PrimitiveType
+            IntKw "int"
+          Whitespace " "
+        Identifier "m"
+        ParameterList
+          LParen "("
+          Parameter
+            Modifiers
+            Type
+              PrimitiveType
+                IntKw "int"
+              Whitespace " "
+            Identifier "x"
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          Whitespace "\n    "
+          ReturnStatement
+            ReturnKw "return"
+            Whitespace " "
+            SwitchExpression
+              SwitchKw "switch"
+              Whitespace " "
+              LParen "("
+              NameExpression
+                Identifier "x"
+              RParen ")"
+              SwitchBlock
+                Whitespace " "
+                LBrace "{"
+                Whitespace "\n      "
+                SwitchRule
+                  SwitchLabel
+                    CaseKw "case"
+                    Whitespace " "
+                    CaseLabelElement
+                      LiteralExpression
+                        IntLiteral "1"
+                      Whitespace " "
+                    Arrow "->"
+                  Whitespace " "
+                  LiteralExpression
+                    IntLiteral "10"
+                  Semicolon ";"
+                Whitespace "\n      "
+                SwitchRule
+                  SwitchLabel
+                    DefaultKw "default"
+                    Whitespace " "
+                    Arrow "->"
+                  Whitespace " "
+                  LiteralExpression
+                    IntLiteral "0"
+                  Semicolon ";"
+                Whitespace "\n    "
+                RBrace "}"
+            Semicolon ";"
+          Whitespace "\n  "
+          RBrace "}"
+      Whitespace "\n"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

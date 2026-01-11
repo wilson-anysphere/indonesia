@@ -1,0 +1,52 @@
+CompilationUnit
+  AnnotationTypeDeclaration
+    Modifiers
+    At "@"
+    InterfaceKw "interface"
+    Whitespace " "
+    Identifier "A"
+    AnnotationBody
+      Whitespace " "
+      LBrace "{"
+      Whitespace " "
+      MethodDeclaration
+        Modifiers
+        Type
+          PrimitiveType
+            IntKw "int"
+          Whitespace " "
+        Identifier "value"
+        ParameterList
+          LParen "("
+          RParen ")"
+        Whitespace " "
+        DefaultValue
+          DefaultKw "default"
+          Whitespace " "
+        Semicolon ";"
+      Whitespace " "
+      MethodDeclaration
+        Modifiers
+        Type
+          PrimitiveType
+            IntKw "int"
+          Whitespace " "
+        Identifier "other"
+        ParameterList
+          LParen "("
+          RParen ")"
+        Semicolon ";"
+      Whitespace " "
+      RBrace "}"
+  Whitespace " "
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

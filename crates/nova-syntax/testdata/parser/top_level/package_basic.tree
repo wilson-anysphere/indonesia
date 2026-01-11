@@ -1,0 +1,21 @@
+CompilationUnit
+  PackageDeclaration
+    PackageKw "package"
+    Name
+      Whitespace " "
+      Identifier "com"
+      Dot "."
+      Identifier "example"
+    Semicolon ";"
+  Whitespace "\n"
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

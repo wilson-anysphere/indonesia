@@ -1,0 +1,24 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace " "
+      Error
+        Modifiers
+        Type
+          PrimitiveType
+            IntKw "int"
+        LBracket "["
+        Whitespace " "
+        Identifier "xs"
+        Semicolon ";"
+        Whitespace " "
+        RBrace "}"
+        Whitespace "\n"
+      MissingRBrace ""
+  Eof ""

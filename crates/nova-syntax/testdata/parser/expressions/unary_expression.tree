@@ -1,0 +1,62 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace " "
+      MethodDeclaration
+        Modifiers
+        Type
+          PrimitiveType
+            IntKw "int"
+          Whitespace " "
+        Identifier "m"
+        ParameterList
+          LParen "("
+          Parameter
+            Modifiers
+            Type
+              PrimitiveType
+                IntKw "int"
+              Whitespace " "
+            Identifier "a"
+          Comma ","
+          Whitespace " "
+          Parameter
+            Modifiers
+            Type
+              PrimitiveType
+                IntKw "int"
+              Whitespace " "
+            Identifier "b"
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          Whitespace " "
+          ReturnStatement
+            ReturnKw "return"
+            Whitespace " "
+            BinaryExpression
+              UnaryExpression
+                Minus "-"
+                NameExpression
+                  Identifier "a"
+                  Whitespace " "
+              Plus "+"
+              Whitespace " "
+              UnaryExpression
+                Tilde "~"
+                NameExpression
+                  Identifier "b"
+            Semicolon ";"
+          Whitespace " "
+          RBrace "}"
+      Whitespace " "
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

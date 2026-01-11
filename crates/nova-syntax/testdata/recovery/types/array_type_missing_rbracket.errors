@@ -1,0 +1,2 @@
+1:16: expected member name, found LBracket `[`
+2:1: expected `}` to close class body, found end of file

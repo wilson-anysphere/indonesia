@@ -1,0 +1,31 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace "\n  "
+      ConstructorDeclaration
+        Modifiers
+        Identifier "Foo"
+        ParameterList
+          LParen "("
+          Whitespace " "
+          Parameter
+            Modifiers
+          MissingRParen ""
+        Block
+          LBrace "{"
+          Whitespace " "
+          ReturnStatement
+            ReturnKw "return"
+            Semicolon ";"
+          Whitespace " "
+          RBrace "}"
+      Whitespace "\n"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

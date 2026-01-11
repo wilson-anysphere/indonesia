@@ -1,0 +1,28 @@
+CompilationUnit
+  RecordDeclaration
+    Modifiers
+    RecordKw "record"
+    Whitespace " "
+    Identifier "R"
+    ParameterList
+      LParen "("
+      Parameter
+        Modifiers
+        Type
+          PrimitiveType
+            IntKw "int"
+          Whitespace " "
+        Identifier "x"
+      RParen ")"
+    Whitespace " "
+    ImplementsKw "implements"
+    Type
+      Whitespace " "
+      NamedType
+        Identifier "I"
+        Whitespace " "
+    RecordBody
+      LBrace "{"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

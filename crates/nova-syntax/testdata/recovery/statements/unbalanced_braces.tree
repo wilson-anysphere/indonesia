@@ -1,0 +1,42 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace "\n  "
+      MethodDeclaration
+        Modifiers
+        VoidKw "void"
+        Whitespace " "
+        Identifier "m"
+        ParameterList
+          LParen "("
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          Whitespace "\n    "
+          IfStatement
+            IfKw "if"
+            Whitespace " "
+            LParen "("
+            LiteralExpression
+              TrueKw "true"
+            RParen ")"
+            Whitespace " "
+            Block
+              LBrace "{"
+              Whitespace "\n      "
+              ReturnStatement
+                ReturnKw "return"
+                Semicolon ";"
+              Whitespace "\n    "
+              RBrace "}"
+            Whitespace "\n"
+          MissingRBrace ""
+      MissingRBrace ""
+  Eof ""

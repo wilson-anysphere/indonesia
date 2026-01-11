@@ -1,0 +1,45 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+      SealedKw "sealed"
+      Whitespace " "
+    ClassKw "class"
+    Whitespace " "
+    Identifier "C"
+    Whitespace " "
+    PermitsClause
+      PermitsKw "permits"
+      Whitespace " "
+      Type
+        NamedType
+          Identifier "A"
+      Comma ","
+      Whitespace " "
+      Type
+        NamedType
+          Identifier "B"
+          Whitespace " "
+    ClassBody
+      LBrace "{"
+      RBrace "}"
+  Whitespace "\n"
+  InterfaceDeclaration
+    Modifiers
+      SealedKw "sealed"
+      Whitespace " "
+    InterfaceKw "interface"
+    Whitespace " "
+    Identifier "I"
+    Whitespace " "
+    PermitsClause
+      PermitsKw "permits"
+      Whitespace " "
+      Type
+        NamedType
+          Identifier "A"
+          Whitespace " "
+    InterfaceBody
+      LBrace "{"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

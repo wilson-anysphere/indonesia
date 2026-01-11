@@ -1,0 +1,31 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace " "
+      FieldDeclaration
+        Modifiers
+        Type
+          NamedType
+            Identifier "List"
+            TypeArguments
+              Less "<"
+              TypeArgument
+                Type
+                  NamedType
+                    Identifier "String"
+                    Whitespace " "
+              MissingGreater ""
+        VariableDeclaratorList
+          VariableDeclarator
+            Identifier "x"
+        Semicolon ";"
+      Whitespace " "
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

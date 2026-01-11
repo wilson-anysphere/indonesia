@@ -1,0 +1,2 @@
+/** A doc. */
+class Foo {}

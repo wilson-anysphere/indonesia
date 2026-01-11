@@ -1,0 +1,18 @@
+CompilationUnit
+  DocComment "/** doc */"
+  Whitespace "\n"
+  PackageDeclaration
+    Annotation
+      At "@"
+      Name
+        Identifier "Deprecated"
+        Whitespace " "
+    PackageKw "package"
+    Name
+      Whitespace " "
+      Identifier "com"
+      Dot "."
+      Identifier "example"
+    Semicolon ";"
+  Whitespace "\n"
+  Eof ""

@@ -1,0 +1,109 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace "\n  "
+      MethodDeclaration
+        Modifiers
+        VoidKw "void"
+        Whitespace " "
+        Identifier "m"
+        ParameterList
+          LParen "("
+          Parameter
+            Modifiers
+            Type
+              PrimitiveType
+                IntKw "int"
+              Whitespace " "
+            Identifier "x"
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          Whitespace "\n    "
+          SwitchStatement
+            SwitchKw "switch"
+            Whitespace " "
+            LParen "("
+            NameExpression
+              Identifier "x"
+            RParen ")"
+            SwitchBlock
+              Whitespace " "
+              LBrace "{"
+              Whitespace "\n      "
+              SwitchRule
+                SwitchLabel
+                  CaseKw "case"
+                  Whitespace " "
+                  CaseLabelElement
+                    LiteralExpression
+                      IntLiteral "1"
+                    Whitespace " "
+                  Arrow "->"
+                Whitespace " "
+                Block
+                  LBrace "{"
+                  Whitespace " "
+                  ReturnStatement
+                    ReturnKw "return"
+                    Semicolon ";"
+                  Whitespace " "
+                  RBrace "}"
+              Whitespace "\n      "
+              SwitchRule
+                SwitchLabel
+                  CaseKw "case"
+                  Whitespace " "
+                  CaseLabelElement
+                    LiteralExpression
+                      IntLiteral "2"
+                    Whitespace " "
+                  Arrow "->"
+                Whitespace " "
+                ExpressionStatement
+                  MethodCallExpression
+                    NameExpression
+                      Identifier "foo"
+                    ArgumentList
+                      LParen "("
+                      RParen ")"
+                  Semicolon ";"
+              Whitespace "\n      "
+              SwitchRule
+                SwitchLabel
+                  DefaultKw "default"
+                  Whitespace " "
+                  Arrow "->"
+                Whitespace " "
+                Block
+                  LBrace "{"
+                  Whitespace " "
+                  RBrace "}"
+              Whitespace "\n    "
+              RBrace "}"
+          Whitespace "\n  "
+          RBrace "}"
+      Whitespace "\n  "
+      MethodDeclaration
+        Modifiers
+        VoidKw "void"
+        Whitespace " "
+        Identifier "foo"
+        ParameterList
+          LParen "("
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          RBrace "}"
+      Whitespace "\n"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

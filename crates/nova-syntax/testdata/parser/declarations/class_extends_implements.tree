@@ -1,0 +1,31 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ExtendsClause
+      ExtendsKw "extends"
+      Whitespace " "
+      Type
+        NamedType
+          Identifier "Bar"
+          Whitespace " "
+    ImplementsClause
+      ImplementsKw "implements"
+      Whitespace " "
+      Type
+        NamedType
+          Identifier "Baz"
+      Comma ","
+      Whitespace " "
+      Type
+        NamedType
+          Identifier "Qux"
+          Whitespace " "
+    ClassBody
+      LBrace "{"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

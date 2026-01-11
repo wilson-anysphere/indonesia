@@ -1,0 +1,21 @@
+CompilationUnit
+  EmptyDeclaration
+    Modifiers
+    Semicolon ";"
+  Whitespace "\n"
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace "\n  "
+      EmptyDeclaration
+        Modifiers
+        Semicolon ";"
+      Whitespace "\n"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

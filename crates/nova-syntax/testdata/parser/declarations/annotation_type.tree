@@ -1,0 +1,26 @@
+CompilationUnit
+  AnnotationTypeDeclaration
+    Modifiers
+    At "@"
+    InterfaceKw "interface"
+    Whitespace " "
+    Identifier "Foo"
+    AnnotationBody
+      Whitespace " "
+      LBrace "{"
+      Whitespace " "
+      MethodDeclaration
+        Modifiers
+        Type
+          PrimitiveType
+            IntKw "int"
+          Whitespace " "
+        Identifier "value"
+        ParameterList
+          LParen "("
+          RParen ")"
+        Semicolon ";"
+      Whitespace " "
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

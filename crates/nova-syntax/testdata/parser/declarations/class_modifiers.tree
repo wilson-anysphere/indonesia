@@ -1,0 +1,21 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+      Annotation
+        At "@"
+        Name
+          Identifier "Deprecated"
+          Whitespace "\n"
+      PublicKw "public"
+      Whitespace " "
+      FinalKw "final"
+      Whitespace " "
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

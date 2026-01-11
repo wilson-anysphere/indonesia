@@ -1,0 +1,28 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace " "
+      Error
+        Modifiers
+        IfKw "if"
+        Whitespace " "
+        LParen "("
+        TrueKw "true"
+        RParen ")"
+        Whitespace " "
+      InitializerBlock
+        Modifiers
+        Block
+          LBrace "{"
+          Whitespace " "
+          RBrace "}"
+      Whitespace " "
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

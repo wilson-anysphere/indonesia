@@ -2464,6 +2464,11 @@ impl<'a> Parser<'a> {
 
         // Prefix / primary.
         match self.current() {
+            SyntaxKind::SwitchKw => {
+                // Java switch expressions share the same surface syntax as switch statements, but
+                // appear in expression position.
+                self.parse_switch_expression(checkpoint);
+            }
             SyntaxKind::IntLiteral
             | SyntaxKind::LongLiteral
             | SyntaxKind::FloatLiteral
@@ -2500,9 +2505,6 @@ impl<'a> Parser<'a> {
                     self.parse_argument_list();
                 }
                 self.builder.finish_node();
-            }
-            SyntaxKind::SwitchKw => {
-                self.parse_switch_expression(checkpoint);
             }
             SyntaxKind::Plus
             | SyntaxKind::Minus
@@ -2620,6 +2622,23 @@ impl<'a> Parser<'a> {
                             .start_node_at(checkpoint, SyntaxKind::FieldAccessExpression.into());
                         self.bump();
                         self.bump();
+                        self.builder.finish_node();
+                        continue;
+                    }
+                    break;
+                }
+                SyntaxKind::DoubleColon => {
+                    if min_bp > 120 {
+                        break;
+                    }
+                    if matches!(self.nth(1), Some(k) if k.is_identifier_like() || k == SyntaxKind::NewKw) {
+                        // Method reference (`Foo::bar`, `Foo::new`). We represent this using
+                        // `FieldAccessExpression` for now; downstream passes can distinguish
+                        // the punctuator token.
+                        self.builder
+                            .start_node_at(checkpoint, SyntaxKind::FieldAccessExpression.into());
+                        self.bump(); // ::
+                        self.bump(); // identifier / `new`
                         self.builder.finish_node();
                         continue;
                     }
@@ -3473,10 +3492,10 @@ fn can_start_expression(kind: SyntaxKind) -> bool {
             | SyntaxKind::UsesKw
             | SyntaxKind::ProvidesKw
             | SyntaxKind::WithKw
+            | SyntaxKind::SwitchKw
             | SyntaxKind::ThisKw
             | SyntaxKind::SuperKw
             | SyntaxKind::NewKw
-            | SyntaxKind::SwitchKw
             | SyntaxKind::LParen
             | SyntaxKind::IntLiteral
             | SyntaxKind::LongLiteral
@@ -3540,6 +3559,7 @@ fn infix_binding_power(op: SyntaxKind) -> Option<(u8, u8, SyntaxKind)> {
 // --- debug helpers used by tests ---
 
 #[cfg(test)]
+#[allow(dead_code)]
 pub fn debug_dump(node: &SyntaxNode) -> String {
     fn go(node: &SyntaxNode, indent: usize, out: &mut String) {
         use std::fmt::Write;

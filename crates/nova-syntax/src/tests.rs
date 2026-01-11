@@ -8,14 +8,6 @@ use crate::{
     RequiresDirective, SyntaxKind, TextEdit, TextRange, UsesDirective,
 };
 
-fn bless_enabled() -> bool {
-    let Ok(val) = std::env::var("BLESS") else {
-        return false;
-    };
-    let val = val.trim().to_ascii_lowercase();
-    !(val.is_empty() || val == "0" || val == "false")
-}
-
 fn dump_tokens(input: &str) -> Vec<(SyntaxKind, String)> {
     lex(input)
         .into_iter()
@@ -484,25 +476,6 @@ fn parse_java_surfaces_lexer_errors_as_parse_errors() {
 }
 
 #[test]
-fn parse_class_snapshot() {
-    let input = "class Foo {\n  int x = 1;\n  Foo() { return; }\n  int add(int a, int b) { return a + b; }\n}\n";
-    let result = parse_java(input);
-    assert_eq!(result.errors, Vec::new());
-
-    let actual = crate::parser::debug_dump(&result.syntax());
-    let snapshot_path =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/snapshots/parse_class.tree");
-
-    if bless_enabled() {
-        std::fs::write(&snapshot_path, &actual).expect("write blessed snapshot");
-        return;
-    }
-
-    let expected = std::fs::read_to_string(&snapshot_path).expect("read snapshot");
-    assert_eq!(actual, expected);
-}
-
-#[test]
 fn parse_expression_smoke() {
     let result = parse_java_expression("1 + 2 * 3");
     assert_eq!(result.errors, Vec::new());
@@ -700,212 +673,6 @@ fn cache_parse_detects_doc_comments() {
 }
 
 #[test]
-fn parse_annotation_type_declaration() {
-    let input = "@interface Foo { int value(); }";
-    let result = parse_java(input);
-    assert_eq!(result.errors, Vec::new());
-
-    let has_annotation_type = result
-        .syntax()
-        .descendants()
-        .any(|n| n.kind() == SyntaxKind::AnnotationTypeDeclaration);
-    assert!(has_annotation_type);
-}
-
-#[test]
-fn parse_interface_extends_list() {
-    let input = "interface I extends A, B {}";
-    let result = parse_java(input);
-    assert_eq!(result.errors, Vec::new());
-
-    let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
-    assert!(kinds.contains(&SyntaxKind::InterfaceDeclaration));
-    assert!(kinds.contains(&SyntaxKind::ExtendsClause));
-}
-
-#[test]
-fn parser_recovers_after_interface_implements_header() {
-    let input = "interface I implements A {} class Foo {}";
-    let result = parse_java(input);
-    assert!(!result.errors.is_empty(), "expected at least one error");
-
-    let type_count = result
-        .syntax()
-        .children()
-        .filter(|n| {
-            matches!(
-                n.kind(),
-                SyntaxKind::InterfaceDeclaration | SyntaxKind::ClassDeclaration
-            )
-        })
-        .count();
-    assert_eq!(type_count, 2);
-}
-
-#[test]
-fn parse_generic_method_type_parameters() {
-    let input = "class Foo { <T extends @A java.util.List<java.util.List<String>>> T id(T t) { return t; } <U> Foo(U u) { } }";
-    let result = parse_java(input);
-    assert_eq!(result.errors, Vec::new());
-
-    let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
-    assert!(kinds.contains(&SyntaxKind::TypeParameters));
-    assert!(kinds.contains(&SyntaxKind::MethodDeclaration));
-    assert!(kinds.contains(&SyntaxKind::ConstructorDeclaration));
-}
-
-#[test]
-fn parse_varargs_parameter() {
-    let input = "class Foo { void m(String @A ... args) {} }";
-    let result = parse_java(input);
-    assert_eq!(result.errors, Vec::new());
-
-    let ellipsis_count = result
-        .syntax()
-        .descendants_with_tokens()
-        .filter_map(|e| e.into_token())
-        .filter(|t| t.kind() == SyntaxKind::Ellipsis)
-        .count();
-    assert_eq!(ellipsis_count, 1);
-}
-
-#[test]
-fn parse_annotation_element_default_value() {
-    let input = r#"
-@interface A {
-  int value() default 1;
-  String[] names() default {"a", "b"};
-  B ann() default @B(xs = {1, 2});
-  int other();
- }
-"#;
-    let result = parse_java(input);
-    assert_eq!(result.errors, Vec::new());
-
-    let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
-    assert!(kinds.contains(&SyntaxKind::DefaultValue));
-
-    let annotation_decl = result
-        .syntax()
-        .descendants()
-        .find(|n| n.kind() == SyntaxKind::AnnotationTypeDeclaration)
-        .expect("expected annotation type declaration");
-    let method_count = annotation_decl
-        .descendants()
-        .filter(|n| n.kind() == SyntaxKind::MethodDeclaration)
-        .count();
-    assert_eq!(method_count, 4);
-}
-
-#[test]
-fn parse_permits_clause() {
-    let input = "sealed class C permits A, B {} sealed interface I permits A {}";
-    let result = parse_java(input);
-    assert_eq!(result.errors, Vec::new());
-
-    let permits_count = result
-        .syntax()
-        .descendants()
-        .filter(|n| n.kind() == SyntaxKind::PermitsClause)
-        .count();
-    assert_eq!(permits_count, 2);
-}
-
-#[test]
-fn parser_recovers_after_bad_annotation_default() {
-    let input = "@interface A { int value() default ; int other(); } class Foo {}";
-    let result = parse_java(input);
-    assert!(!result.errors.is_empty(), "expected at least one error");
-
-    let type_count = result
-        .syntax()
-        .children()
-        .filter(|n| {
-            matches!(
-                n.kind(),
-                SyntaxKind::AnnotationTypeDeclaration | SyntaxKind::ClassDeclaration
-            )
-        })
-        .count();
-    assert_eq!(type_count, 2);
-}
-
-#[test]
-fn parse_try_with_resources_and_multi_catch() {
-    let input = r#"
-class Foo {
-  void m() {
-    try (var x = open(); y) {
-      throw new RuntimeException();
-    } catch (IOException | RuntimeException e) {
-      return;
-    } finally {
-      assert true;
-    }
-  }
-}
-"#;
-
-    let result = parse_java(input);
-    assert_eq!(result.errors, Vec::new());
-
-    let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
-    assert!(kinds.contains(&SyntaxKind::TryStatement));
-    assert!(kinds.contains(&SyntaxKind::ResourceSpecification));
-    assert!(kinds.contains(&SyntaxKind::Resource));
-    assert!(kinds.contains(&SyntaxKind::CatchClause));
-    assert!(kinds.contains(&SyntaxKind::FinallyClause));
-}
-
-#[test]
-fn parse_package_declaration_with_annotations() {
-    let input = "/** doc */ @Deprecated package com.example;\nclass Foo {}";
-    let result = parse_java(input);
-    assert_eq!(result.errors, Vec::new());
-
-    let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
-    assert!(kinds.contains(&SyntaxKind::PackageDeclaration));
-    assert!(kinds.contains(&SyntaxKind::Annotation));
-    assert!(kinds.contains(&SyntaxKind::ClassDeclaration));
-}
-
-#[test]
-fn parse_postfix_increment_decrement() {
-    let input = "class Foo { void m() { int i = 0; i++; ++i; i--; --i; } }";
-    let result = parse_java(input);
-    assert_eq!(result.errors, Vec::new());
-
-    let plus_plus = result
-        .syntax()
-        .descendants_with_tokens()
-        .filter_map(|e| e.into_token())
-        .filter(|t| t.kind() == SyntaxKind::PlusPlus)
-        .count();
-    let minus_minus = result
-        .syntax()
-        .descendants_with_tokens()
-        .filter_map(|e| e.into_token())
-        .filter(|t| t.kind() == SyntaxKind::MinusMinus)
-        .count();
-
-    assert_eq!(plus_plus, 2);
-    assert_eq!(minus_minus, 2);
-}
-
-#[test]
-fn parse_class_literal_in_annotation_argument() {
-    let input = "class Foo { @Anno(targetEntity = Post.class) int x; }";
-    let result = parse_java(input);
-    assert_eq!(result.errors, Vec::new());
-
-    let has_class_literal = result
-        .syntax()
-        .descendants()
-        .any(|n| n.kind() == SyntaxKind::FieldAccessExpression);
-    assert!(has_class_literal);
-}
-
-#[test]
 fn parse_expression_parses_binary_expression() {
     let result = parse_expression("a + b");
     assert_eq!(result.errors, Vec::new());
@@ -937,25 +704,6 @@ fn parse_expression_parses_method_call_and_array_access() {
     let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
     assert!(kinds.contains(&SyntaxKind::MethodCallExpression));
     assert!(kinds.contains(&SyntaxKind::ArrayAccessExpression));
-}
-
-#[test]
-fn parse_expression_snapshot() {
-    let input = "foo(bar[0])";
-    let result = parse_expression(input);
-    assert_eq!(result.errors, Vec::new());
-
-    let actual = crate::parser::debug_dump(&result.syntax());
-    let snapshot_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("src/snapshots/parse_expression.tree");
-
-    if bless_enabled() {
-        std::fs::write(&snapshot_path, &actual).expect("write blessed snapshot");
-        return;
-    }
-
-    let expected = std::fs::read_to_string(&snapshot_path).expect("read snapshot");
-    assert_eq!(actual, expected);
 }
 
 #[test]

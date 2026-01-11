@@ -1,0 +1,55 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace " "
+      MethodDeclaration
+        Modifiers
+        VoidKw "void"
+        Whitespace " "
+        Identifier "m"
+        ParameterList
+          LParen "("
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          Whitespace " "
+          LocalVariableDeclarationStatement
+            Modifiers
+            Type
+              NamedType
+                Identifier "Runnable"
+                Whitespace " "
+            VariableDeclaratorList
+              VariableDeclarator
+                Identifier "r"
+                Whitespace " "
+                Eq "="
+                Whitespace " "
+                LambdaExpression
+                  LParen "("
+                  RParen ")"
+                  Whitespace " "
+                  Arrow "->"
+                  Whitespace " "
+                  Block
+                    LBrace "{"
+                    Whitespace " "
+                    ReturnStatement
+                      ReturnKw "return"
+                      Semicolon ";"
+                    Whitespace " "
+                    RBrace "}"
+            Semicolon ";"
+          Whitespace " "
+          RBrace "}"
+      Whitespace " "
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

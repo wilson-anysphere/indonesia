@@ -1,0 +1,24 @@
+CompilationUnit
+  ImportDeclaration
+    ImportKw "import"
+    Whitespace " "
+    Name
+      Identifier "java"
+      Dot "."
+      Identifier "util"
+      Dot "."
+      Identifier "List"
+    Semicolon ";"
+  Whitespace "\n"
+  ImportDeclaration
+    ImportKw "import"
+    Whitespace " "
+    Name
+      Identifier "java"
+      Dot "."
+      Identifier "util"
+      Dot "."
+      Identifier "Map"
+    Semicolon ";"
+  Whitespace "\n"
+  Eof ""

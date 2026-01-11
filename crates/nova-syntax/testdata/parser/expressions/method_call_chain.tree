@@ -1,0 +1,54 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace " "
+      MethodDeclaration
+        Modifiers
+        VoidKw "void"
+        Whitespace " "
+        Identifier "m"
+        ParameterList
+          LParen "("
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          Whitespace " "
+          ExpressionStatement
+            FieldAccessExpression
+              MethodCallExpression
+                FieldAccessExpression
+                  MethodCallExpression
+                    NameExpression
+                      Identifier "obj"
+                      Dot "."
+                      Identifier "foo"
+                    ArgumentList
+                      LParen "("
+                      LiteralExpression
+                        IntLiteral "1"
+                      Comma ","
+                      Whitespace " "
+                      LiteralExpression
+                        IntLiteral "2"
+                      RParen ")"
+                  Dot "."
+                  Identifier "bar"
+                ArgumentList
+                  LParen "("
+                  RParen ")"
+              Dot "."
+              Identifier "baz"
+            Semicolon ";"
+          Whitespace " "
+          RBrace "}"
+      Whitespace " "
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

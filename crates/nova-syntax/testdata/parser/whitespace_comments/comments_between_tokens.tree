@@ -1,0 +1,34 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    BlockComment "/*c1*/"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace " "
+      BlockComment "/*c2*/"
+      Whitespace " "
+      FieldDeclaration
+        Modifiers
+        Type
+          PrimitiveType
+            IntKw "int"
+          Whitespace " "
+        VariableDeclaratorList
+          VariableDeclarator
+            Identifier "x"
+            BlockComment "/*c3*/"
+            Eq "="
+            BlockComment "/*c4*/"
+            LiteralExpression
+              IntLiteral "1"
+        Semicolon ";"
+      Whitespace " "
+      BlockComment "/*c5*/"
+      Whitespace " "
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""
