@@ -1,4 +1,5 @@
 use nova_testing::schema::TestDiscoverResponse;
+use nova_index::Index;
 use pretty_assertions::assert_eq;
 use serde::Deserialize;
 use serde_json::json;
@@ -34,6 +35,12 @@ struct LspTextEdit {
     new_text: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct LspWorkspaceEdit {
+    #[serde(default)]
+    changes: std::collections::HashMap<String, Vec<LspTextEdit>>,
+}
+
 fn apply_lsp_text_edits(original: &str, edits: &[LspTextEdit]) -> String {
     if edits.is_empty() {
         return original.to_string();
@@ -53,6 +60,12 @@ fn apply_lsp_text_edits(original: &str, edits: &[LspTextEdit]) -> String {
         .collect();
 
     nova_core::apply_text_edits(original, &core_edits).expect("apply edits")
+}
+
+fn utf16_position(text: &str, offset: usize) -> nova_core::Position {
+    let index = nova_core::LineIndex::new(text);
+    let offset = nova_core::TextSize::from(u32::try_from(offset).expect("offset fits in u32"));
+    index.position(text, offset)
 }
 
 #[test]
@@ -254,6 +267,120 @@ fn stdio_server_handles_document_formatting_request() {
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
     );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
+fn stdio_server_handles_change_signature_request() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // 1) initialize
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+
+    // 2) didOpen
+    let uri = "file:///A.java";
+    let source = concat!(
+        "class A {\n",
+        "    int sum(int a, int b) {\n",
+        "        return a + b;\n",
+        "    }\n",
+        "\n",
+        "    void test() {\n",
+        "        int 𝒂 = sum(1, 2);\n",
+        "    }\n",
+        "}\n",
+    );
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": source
+                }
+            }
+        }),
+    );
+
+    // Compute the target id the same way the server will (from an Index snapshot).
+    let mut files = std::collections::BTreeMap::new();
+    files.insert(uri.to_string(), source.to_string());
+    let index = Index::new(files);
+    let target = index.find_method("A", "sum").expect("method exists").id.0;
+
+    // 3) changeSignature request
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/refactor/changeSignature",
+            "params": {
+                "target": target,
+                "new_name": null,
+                "parameters": [
+                    { "Existing": { "old_index": 1, "new_name": null, "new_type": null } },
+                    { "Existing": { "old_index": 0, "new_name": null, "new_type": null } }
+                ],
+                "new_return_type": null,
+                "new_throws": null,
+                "propagate_hierarchy": "None"
+            }
+        }),
+    );
+
+    let resp = read_response_with_id(&mut stdout, 2);
+    let result = resp.get("result").cloned().expect("result");
+    let edit: LspWorkspaceEdit = serde_json::from_value(result).expect("decode edit");
+    let edits = edit.changes.get(uri).expect("edits for uri");
+
+    let call_offset = source.find("sum(1, 2)").expect("call exists");
+    let call_end = call_offset + "sum(1, 2)".len();
+    let expected_start = utf16_position(source, call_offset);
+    let expected_end = utf16_position(source, call_end);
+
+    let call_edit = edits
+        .iter()
+        .find(|edit| edit.new_text == "sum(2, 1)")
+        .expect("call edit");
+    assert_eq!(call_edit.range.start.line, expected_start.line);
+    assert_eq!(call_edit.range.start.character, expected_start.character);
+    assert_eq!(call_edit.range.end.line, expected_end.line);
+    assert_eq!(call_edit.range.end.character, expected_end.character);
+
+    let updated = apply_lsp_text_edits(source, edits);
+    assert!(updated.contains("int sum(int b, int a)"));
+    assert!(updated.contains("sum(2, 1)"));
+
+    // shutdown + exit
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }));
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);

@@ -1205,7 +1205,7 @@ VS Code extension expects:
 
 ---
 
-### `nova/refactor/changeSignature` (reserved; not implemented)
+### `nova/refactor/changeSignature` (experimental)
 
 - **Kind:** request
 - **Stability:** experimental
