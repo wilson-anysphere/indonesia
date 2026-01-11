@@ -498,6 +498,7 @@ fn render_enum(out: &mut String, grammar: &Grammar, enm: &EnumDef) {
     use std::fmt::Write;
 
     let _ = writeln!(out, "#[derive(Debug, Clone, PartialEq, Eq)]");
+    let _ = writeln!(out, "#[non_exhaustive]");
     let _ = writeln!(out, "pub enum {} {{", enm.name);
     for var in &enm.variants {
         let _ = writeln!(out, "    {var}({var}),");

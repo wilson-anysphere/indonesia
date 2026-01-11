@@ -3192,25 +3192,6 @@ impl ClassMemberFragment {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Error {
-    syntax: SyntaxNode,
-}
-
-impl AstNode for Error {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::Error
-    }
-
-    fn cast(syntax: SyntaxNode) -> Option<Self> {
-        Self::can_cast(syntax.kind()).then_some(Self { syntax })
-    }
-
-    fn syntax(&self) -> &SyntaxNode {
-        &self.syntax
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleDeclaration {
     syntax: SyntaxNode,
 }
@@ -3495,6 +3476,7 @@ impl ProvidesDirective {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TypeDeclaration {
     ClassDeclaration(ClassDeclaration),
     InterfaceDeclaration(InterfaceDeclaration),
@@ -3543,6 +3525,7 @@ impl AstNode for TypeDeclaration {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ClassMember {
     FieldDeclaration(FieldDeclaration),
     MethodDeclaration(MethodDeclaration),
@@ -3607,18 +3590,19 @@ impl AstNode for ClassMember {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Statement {
     Block(Block),
     LabeledStatement(LabeledStatement),
     IfStatement(IfStatement),
     SwitchStatement(SwitchStatement),
+    YieldStatement(YieldStatement),
     ForStatement(ForStatement),
     WhileStatement(WhileStatement),
     DoWhileStatement(DoWhileStatement),
     SynchronizedStatement(SynchronizedStatement),
     TryStatement(TryStatement),
     AssertStatement(AssertStatement),
-    YieldStatement(YieldStatement),
     ReturnStatement(ReturnStatement),
     ThrowStatement(ThrowStatement),
     BreakStatement(BreakStatement),
@@ -3635,13 +3619,13 @@ impl AstNode for Statement {
             || LabeledStatement::can_cast(kind)
             || IfStatement::can_cast(kind)
             || SwitchStatement::can_cast(kind)
+            || YieldStatement::can_cast(kind)
             || ForStatement::can_cast(kind)
             || WhileStatement::can_cast(kind)
             || DoWhileStatement::can_cast(kind)
             || SynchronizedStatement::can_cast(kind)
             || TryStatement::can_cast(kind)
             || AssertStatement::can_cast(kind)
-            || YieldStatement::can_cast(kind)
             || ReturnStatement::can_cast(kind)
             || ThrowStatement::can_cast(kind)
             || BreakStatement::can_cast(kind)
@@ -3662,13 +3646,13 @@ impl AstNode for Statement {
         if let Some(it) = LabeledStatement::cast(syntax.clone()) { return Some(Self::LabeledStatement(it)); }
         if let Some(it) = IfStatement::cast(syntax.clone()) { return Some(Self::IfStatement(it)); }
         if let Some(it) = SwitchStatement::cast(syntax.clone()) { return Some(Self::SwitchStatement(it)); }
+        if let Some(it) = YieldStatement::cast(syntax.clone()) { return Some(Self::YieldStatement(it)); }
         if let Some(it) = ForStatement::cast(syntax.clone()) { return Some(Self::ForStatement(it)); }
         if let Some(it) = WhileStatement::cast(syntax.clone()) { return Some(Self::WhileStatement(it)); }
         if let Some(it) = DoWhileStatement::cast(syntax.clone()) { return Some(Self::DoWhileStatement(it)); }
         if let Some(it) = SynchronizedStatement::cast(syntax.clone()) { return Some(Self::SynchronizedStatement(it)); }
         if let Some(it) = TryStatement::cast(syntax.clone()) { return Some(Self::TryStatement(it)); }
         if let Some(it) = AssertStatement::cast(syntax.clone()) { return Some(Self::AssertStatement(it)); }
-        if let Some(it) = YieldStatement::cast(syntax.clone()) { return Some(Self::YieldStatement(it)); }
         if let Some(it) = ReturnStatement::cast(syntax.clone()) { return Some(Self::ReturnStatement(it)); }
         if let Some(it) = ThrowStatement::cast(syntax.clone()) { return Some(Self::ThrowStatement(it)); }
         if let Some(it) = BreakStatement::cast(syntax.clone()) { return Some(Self::BreakStatement(it)); }
@@ -3687,13 +3671,13 @@ impl AstNode for Statement {
             Self::LabeledStatement(it) => it.syntax(),
             Self::IfStatement(it) => it.syntax(),
             Self::SwitchStatement(it) => it.syntax(),
+            Self::YieldStatement(it) => it.syntax(),
             Self::ForStatement(it) => it.syntax(),
             Self::WhileStatement(it) => it.syntax(),
             Self::DoWhileStatement(it) => it.syntax(),
             Self::SynchronizedStatement(it) => it.syntax(),
             Self::TryStatement(it) => it.syntax(),
             Self::AssertStatement(it) => it.syntax(),
-            Self::YieldStatement(it) => it.syntax(),
             Self::ReturnStatement(it) => it.syntax(),
             Self::ThrowStatement(it) => it.syntax(),
             Self::BreakStatement(it) => it.syntax(),
@@ -3707,6 +3691,7 @@ impl AstNode for Statement {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Expression {
     LiteralExpression(LiteralExpression),
     NameExpression(NameExpression),
@@ -3819,6 +3804,7 @@ impl AstNode for Expression {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum LambdaBody {
     Block(Block),
     Expression(Expression),
@@ -3851,6 +3837,7 @@ impl AstNode for LambdaBody {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SwitchRuleBody {
     Block(Block),
     Statement(Statement),
@@ -3887,6 +3874,7 @@ impl AstNode for SwitchRuleBody {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ModuleDirectiveKind {
     RequiresDirective(RequiresDirective),
     ExportsDirective(ExportsDirective),

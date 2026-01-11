@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use nova_syntax::TextEdit;
 
 const SMALL_JAVA: &str = include_str!("../../nova-core/benches/fixtures/small.java");
 const MEDIUM_JAVA: &str = include_str!("../../nova-core/benches/fixtures/medium.java");
@@ -46,10 +47,10 @@ fn bench_parse_java(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_parse_java_incremental(c: &mut Criterion) {
+fn bench_reparse_java(c: &mut Criterion) {
     let large_java = large_java_source();
 
-    let mut group = c.benchmark_group("syntax_parse_java_incremental");
+    let mut group = c.benchmark_group("syntax_reparse_java");
     group.measurement_time(Duration::from_secs(2));
     group.warm_up_time(Duration::from_secs(1));
     group.sample_size(20);
@@ -65,23 +66,28 @@ fn bench_parse_java_incremental(c: &mut Criterion) {
             .find('{')
             .map(|idx| idx + 1)
             .expect("fixture must contain a class body");
-        let input = (src, insert_at);
+        let edit = TextEdit::insert(insert_at as u32, INSERT);
+        let edited = splice_insert(src, insert_at, INSERT);
+        let old_parse = nova_syntax::parse_java(black_box(src));
 
-        group.bench_with_input(
-            BenchmarkId::from_parameter(id),
-            &input,
-            |b, &(src, insert_at)| {
-                b.iter(|| {
-                    black_box(nova_syntax::parse_java(black_box(src)));
-                    let edited = splice_insert(src, insert_at, INSERT);
-                    black_box(nova_syntax::parse_java(black_box(edited.as_str())));
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("full", id), &edited, |b, edited| {
+            b.iter(|| black_box(nova_syntax::parse_java(black_box(edited.as_str()))))
+        });
+
+        group.bench_with_input(BenchmarkId::new("incremental", id), &edited, |b, edited| {
+            b.iter(|| {
+                black_box(nova_syntax::reparse_java(
+                    black_box(&old_parse),
+                    black_box(src),
+                    black_box(edit.clone()),
+                    black_box(edited.as_str()),
+                ))
+            })
+        });
     }
 
     group.finish();
 }
 
-criterion_group!(benches, bench_parse_java, bench_parse_java_incremental);
+criterion_group!(benches, bench_parse_java, bench_reparse_java);
 criterion_main!(benches);

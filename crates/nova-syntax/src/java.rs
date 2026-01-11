@@ -1236,8 +1236,10 @@ fn is_expression_kind(kind: SyntaxKind) -> bool {
             | SyntaxKind::ConstructorReferenceExpression
             | SyntaxKind::UnaryExpression
             | SyntaxKind::BinaryExpression
+            | SyntaxKind::InstanceofExpression
             | SyntaxKind::AssignmentExpression
             | SyntaxKind::ConditionalExpression
+            | SyntaxKind::SwitchExpression
             | SyntaxKind::LambdaExpression
             | SyntaxKind::CastExpression
             | SyntaxKind::Error

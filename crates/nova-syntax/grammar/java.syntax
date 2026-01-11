@@ -37,17 +37,17 @@ ClassMember =
   | AnnotationTypeDeclaration
 
 Statement =
-     Block
+      Block
   | LabeledStatement
   | IfStatement
   | SwitchStatement
+  | YieldStatement
   | ForStatement
   | WhileStatement
   | DoWhileStatement
   | SynchronizedStatement
   | TryStatement
   | AssertStatement
-  | YieldStatement
   | ReturnStatement
   | ThrowStatement
   | BreakStatement
@@ -59,27 +59,27 @@ Statement =
 
 Expression =
        LiteralExpression
-    | NameExpression
-    | ThisExpression
-    | SuperExpression
-    | ParenthesizedExpression
-    | NewExpression
-    | ArrayCreationExpression
-    | MethodCallExpression
-    | FieldAccessExpression
-    | ArrayAccessExpression
-    | ClassLiteralExpression
-    | MethodReferenceExpression
-    | ConstructorReferenceExpression
-    | UnaryExpression
-    | BinaryExpression
-    | InstanceofExpression
-    | AssignmentExpression
-    | ConditionalExpression
-    | SwitchExpression
-    | LambdaExpression
-    | CastExpression
-    | ArrayInitializer
+     | NameExpression
+     | ThisExpression
+     | SuperExpression
+     | ParenthesizedExpression
+     | NewExpression
+     | ArrayCreationExpression
+     | MethodCallExpression
+     | FieldAccessExpression
+     | ArrayAccessExpression
+     | ClassLiteralExpression
+     | MethodReferenceExpression
+     | ConstructorReferenceExpression
+     | UnaryExpression
+     | BinaryExpression
+     | InstanceofExpression
+     | AssignmentExpression
+     | ConditionalExpression
+     | SwitchExpression
+     | LambdaExpression
+     | CastExpression
+     | ArrayInitializer
 
 LambdaBody = Block | Expression
 
@@ -606,8 +606,6 @@ BlockFragment {
 ClassMemberFragment {
   member: ClassMember?
 }
-
-Error {}
 
 ModuleDeclaration {
   modifiers: Modifiers?

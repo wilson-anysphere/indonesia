@@ -66,23 +66,22 @@ impl super::FieldDeclaration {
     }
 }
 
-impl super::SwitchStatement {
-    pub fn labels(&self) -> impl Iterator<Item = super::SwitchLabel> + '_ {
+impl super::SwitchBlock {
+    /// Returns all [`SwitchLabel`] nodes in source order, regardless of whether they came from a
+    /// traditional `case ...:` group or an arrow `case ... ->` rule.
+    pub fn labels_in_source_order(&self) -> impl Iterator<Item = super::SwitchLabel> {
         let mut out = Vec::new();
-        let Some(block) = self.block() else {
-            return out.into_iter();
-        };
 
-        // `parse_switch_block` currently wraps labels inside `SwitchGroup`/`SwitchRule` nodes, so
-        // `SwitchLabel` is not a direct child of the `SwitchBlock`.
-        for child in block.syntax().children() {
+        for child in self.syntax().children() {
             match child.kind() {
-                SyntaxKind::SwitchGroup | SyntaxKind::SwitchRule => {
-                    out.extend(child.children().filter_map(super::SwitchLabel::cast));
+                SyntaxKind::SwitchGroup => {
+                    if let Some(group) = super::SwitchGroup::cast(child) {
+                        out.extend(group.labels());
+                    }
                 }
-                SyntaxKind::SwitchLabel => {
-                    if let Some(label) = super::SwitchLabel::cast(child) {
-                        out.push(label);
+                SyntaxKind::SwitchRule => {
+                    if let Some(rule) = super::SwitchRule::cast(child) {
+                        out.extend(rule.labels());
                     }
                 }
                 _ => {}
@@ -93,17 +92,33 @@ impl super::SwitchStatement {
     }
 }
 
+impl super::SwitchStatement {
+    pub fn labels(&self) -> impl Iterator<Item = super::SwitchLabel> {
+        self.block()
+            .into_iter()
+            .flat_map(|block| block.labels_in_source_order())
+    }
+}
+
+impl super::SwitchExpression {
+    pub fn labels(&self) -> impl Iterator<Item = super::SwitchLabel> {
+        self.block()
+            .into_iter()
+            .flat_map(|block| block.labels_in_source_order())
+    }
+}
+
 impl super::SwitchLabel {
     pub fn is_case(&self) -> bool {
-        support::token(self.syntax(), SyntaxKind::CaseKw).is_some()
+        self.case_kw().is_some()
     }
 
     pub fn is_default(&self) -> bool {
-        support::token(self.syntax(), SyntaxKind::DefaultKw).is_some()
+        self.default_kw().is_some()
     }
 
     pub fn has_arrow(&self) -> bool {
-        support::token(self.syntax(), SyntaxKind::Arrow).is_some()
+        self.arrow_token().is_some()
     }
 
     pub fn expressions(&self) -> impl Iterator<Item = super::Expression> + '_ {
