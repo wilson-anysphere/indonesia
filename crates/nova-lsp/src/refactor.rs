@@ -2,13 +2,13 @@ use lsp_types::{
     CodeAction, CodeActionDisabled, CodeActionKind, CodeActionOrCommand, Position, Range, Uri,
     WorkspaceEdit,
 };
-use nova_core::{LineIndex, Position as CorePosition, TextSize};
+use nova_core::{LineIndex, Position as CorePosition};
 use nova_index::Index;
 use nova_index::SymbolId;
 use nova_refactor::{
     change_signature as refactor_change_signature, convert_to_record, safe_delete, workspace_edit_to_lsp,
-    ChangeSignature, ConvertToRecordError, ConvertToRecordOptions, SafeDeleteMode, SafeDeleteOutcome,
-    SafeDeleteTarget,
+    ChangeSignature, ConvertToRecordError, ConvertToRecordOptions, FileId, SafeDeleteMode,
+    SafeDeleteOutcome, SafeDeleteTarget, TextDatabase, WorkspaceEdit as RefactorWorkspaceEdit,
 };
 use schemars::schema::RootSchema;
 use schemars::schema_for;
@@ -180,31 +180,17 @@ pub fn convert_to_record_code_action(
     let file = uri.to_string();
     match convert_to_record(&file, source, offset, ConvertToRecordOptions::default()) {
         Ok(edit) => {
-            let start = TextSize::from(u32::try_from(edit.range.start).ok()?);
-            let end = TextSize::from(u32::try_from(edit.range.end).ok()?);
-            let start = line_index.position(source, start);
-            let end = line_index.position(source, end);
-            let range = Range::new(
-                Position::new(start.line, start.character),
-                Position::new(end.line, end.character),
-            );
-
-            let mut changes = std::collections::HashMap::new();
-            changes.insert(
-                uri.clone(),
-                vec![lsp_types::TextEdit {
-                    range,
-                    new_text: edit.replacement,
-                }],
-            );
+            // Convert legacy (safe-delete style) `TextEdit` into Nova's canonical `WorkspaceEdit`
+            // and then reuse the shared LSP conversion helper for UTF-16 correctness.
+            let file_id = FileId::new(file.clone());
+            let db = TextDatabase::new([(file_id, source.to_string())]);
+            let edit = RefactorWorkspaceEdit::new(vec![edit.into()]);
+            let lsp_edit = workspace_edit_to_lsp(&db, &edit).ok()?;
 
             Some(CodeActionOrCommand::CodeAction(CodeAction {
                 title: "Convert to record".to_string(),
                 kind: Some(CodeActionKind::REFACTOR_REWRITE),
-                edit: Some(WorkspaceEdit {
-                    changes: Some(changes),
-                    ..WorkspaceEdit::default()
-                }),
+                edit: Some(lsp_edit),
                 is_preferred: Some(true),
                 ..CodeAction::default()
             }))
