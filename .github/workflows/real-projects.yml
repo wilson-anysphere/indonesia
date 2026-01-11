@@ -2,6 +2,11 @@ name: Real project fixtures
 
 on:
   workflow_dispatch:
+    inputs:
+      only:
+        description: "Comma-separated fixture names to run (optional, e.g. guava,spring-petclinic)"
+        required: false
+        default: ""
   schedule:
     # Offset from other nightly workflows (e.g. fuzz.yml) to avoid running all heavy jobs at once.
     - cron: "0 4 * * *"
@@ -50,6 +55,8 @@ jobs:
           key: test-projects-${{ runner.os }}-${{ hashFiles('test-projects/pins.toml') }}
 
       - name: Run real project tests
+        env:
+          NOVA_TEST_PROJECTS: ${{ github.event.inputs.only }}
         run: |
           set -euxo pipefail
           mkdir -p real-project-logs
