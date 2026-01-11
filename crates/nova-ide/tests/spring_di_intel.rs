@@ -159,6 +159,43 @@ class FooImpl2 implements Foo {}
 }
 
 #[test]
+fn spring_qualifier_completion_includes_explicit_qualifier_values() {
+    let consumer_path = PathBuf::from("/spring-qualifier-explicit/src/main/java/Consumer.java");
+    let consumer_text = r#"import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.stereotype.Component;
+
+interface Foo {}
+
+@Component
+class Consumer {
+  @Autowired @Qualifier("<|>") Foo foo;
+}
+"#;
+
+    let foo_impl = (
+        PathBuf::from("/spring-qualifier-explicit/src/main/java/FooImpl.java"),
+        r#"import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.stereotype.Component;
+
+@Component
+@Qualifier("specialFoo")
+class FooImpl implements Foo {}
+"#
+        .to_string(),
+    );
+
+    let (db, file, pos) = fixture_multi(consumer_path, consumer_text, vec![foo_impl]);
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+
+    assert!(
+        labels.contains(&"specialFoo"),
+        "expected qualifier completions to include explicit qualifier values; got {labels:?}"
+    );
+}
+
+#[test]
 fn spring_goto_definition_from_injection_jumps_to_component() {
     let consumer_path = PathBuf::from("/spring-nav/src/main/java/Consumer.java");
     let consumer_text = r#"import org.springframework.beans.factory.annotation.Autowired;
