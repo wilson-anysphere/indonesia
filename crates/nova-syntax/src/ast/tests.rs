@@ -1,7 +1,7 @@
 use crate::ast::{
     AstNode, BlockFragment, CastExpression, ClassDeclaration, ClassMember, ClassMemberFragment,
     CompilationUnit, Expression, ExpressionFragment, FieldDeclaration, ModuleDirectiveKind,
-    Statement, StatementFragment, SwitchRuleBody, TypeDeclaration,
+    NewExpression, Statement, StatementFragment, SwitchRuleBody, TypeDeclaration,
 };
 use crate::SyntaxKind;
 use crate::{
@@ -1010,6 +1010,31 @@ fn type_use_annotations_are_attached_to_types() {
         .map(|anno| anno.name().unwrap().text())
         .collect();
     assert_eq!(cast_annotations, vec!["C".to_string()]);
+}
+
+#[test]
+fn new_expression_anonymous_class_body_is_accessible() {
+    let src = r#"
+        class Foo {
+          Object f = new Object() { int x; };
+        }
+    "#;
+
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let new_expr = parse
+        .syntax()
+        .descendants()
+        .find_map(NewExpression::cast)
+        .expect("expected a new expression");
+    let body = new_expr.class_body().expect("expected anonymous class body");
+
+    assert!(
+        body.members()
+            .any(|m| matches!(m, ClassMember::FieldDeclaration(_))),
+        "expected a field declaration member in anonymous class"
+    );
 }
 
 #[test]

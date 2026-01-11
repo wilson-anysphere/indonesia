@@ -3237,6 +3237,10 @@ impl<'a> Parser<'a> {
             self.builder
                 .start_node_at(checkpoint, SyntaxKind::NewExpression.into());
             self.parse_argument_list();
+            // Anonymous class instance creation: `new T(...) { ... }`.
+            if self.at(SyntaxKind::LBrace) {
+                self.parse_class_body(SyntaxKind::ClassBody);
+            }
             self.builder.finish_node();
             return;
         }

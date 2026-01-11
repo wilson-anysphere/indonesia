@@ -463,6 +463,7 @@ ParenthesizedExpression {
 NewExpression {
   ty: Type?
   arguments: ArgumentList?
+  class_body: ClassBody?
 }
 
 ArrayCreationExpression {

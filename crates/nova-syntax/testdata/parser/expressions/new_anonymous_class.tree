@@ -1,0 +1,82 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace "\n  "
+      FieldDeclaration
+        Modifiers
+        Type
+          NamedType
+            Identifier "Object"
+            Whitespace " "
+        VariableDeclaratorList
+          VariableDeclarator
+            Identifier "f"
+            Whitespace " "
+            Eq "="
+            Whitespace " "
+            NewExpression
+              NewKw "new"
+              Type
+                Whitespace " "
+                NamedType
+                  Identifier "Object"
+              ArgumentList
+                LParen "("
+                RParen ")"
+              Whitespace " "
+              ClassBody
+                LBrace "{"
+                Whitespace "\n    "
+                FieldDeclaration
+                  Modifiers
+                  Type
+                    PrimitiveType
+                      IntKw "int"
+                    Whitespace " "
+                  VariableDeclaratorList
+                    VariableDeclarator
+                      Identifier "x"
+                  Semicolon ";"
+                Whitespace "\n\n    "
+                MethodDeclaration
+                  Modifiers
+                    Annotation
+                      At "@"
+                      Name
+                        Identifier "Override"
+                        Whitespace "\n    "
+                    PublicKw "public"
+                    Whitespace " "
+                  Type
+                    NamedType
+                      Identifier "String"
+                      Whitespace " "
+                  Identifier "toString"
+                  ParameterList
+                    LParen "("
+                    RParen ")"
+                  Whitespace " "
+                  Block
+                    LBrace "{"
+                    Whitespace "\n      "
+                    ReturnStatement
+                      ReturnKw "return"
+                      Whitespace " "
+                      LiteralExpression
+                        StringLiteral "\"ok\""
+                      Semicolon ";"
+                    Whitespace "\n    "
+                    RBrace "}"
+                Whitespace "\n  "
+                RBrace "}"
+        Semicolon ";"
+      Whitespace "\n"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""
