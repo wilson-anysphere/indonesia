@@ -557,7 +557,7 @@ mod disk_cache_tests {
         let forged = ForgedPersistedQueryValue {
             schema_version: nova_cache::QUERY_DISK_CACHE_SCHEMA_VERSION,
             nova_version: nova_core::NOVA_VERSION.to_string(),
-            saved_at_millis: 0,
+            saved_at_millis: nova_cache::now_millis(),
             key: "key2".to_string(),
             key_fingerprint: fingerprint,
             value: b"value2".to_vec(),

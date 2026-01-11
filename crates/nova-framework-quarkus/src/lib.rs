@@ -12,8 +12,8 @@ mod config;
 pub use applicability::{
     is_quarkus_applicable, is_quarkus_applicable_with_classpath, is_quarkus_applicable_with_db,
 };
-pub use cdi::{CdiAnalysis, CdiModel};
 pub use cdi::{CDI_AMBIGUOUS_CODE, CDI_CIRCULAR_CODE, CDI_UNSATISFIED_CODE};
+pub use cdi::{CdiAnalysis, CdiAnalysisWithSources, CdiModel, SourceDiagnostic, SourceSpan};
 pub use config::{collect_config_property_names, config_property_completions};
 
 use nova_core::ProjectId;
@@ -59,6 +59,14 @@ pub struct AnalysisResult {
     pub config_properties: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct AnalysisResultWithSpans {
+    pub cdi: CdiModel,
+    pub diagnostics: Vec<SourceDiagnostic>,
+    pub endpoints: Vec<nova_framework_web::Endpoint>,
+    pub config_properties: Vec<String>,
+}
+
 /// Analyze a set of Java sources for Quarkus-relevant framework features.
 pub fn analyze_java_sources(sources: &[&str]) -> AnalysisResult {
     let CdiAnalysis { model, diagnostics } = cdi::analyze_cdi(sources);
@@ -69,6 +77,21 @@ pub fn analyze_java_sources(sources: &[&str]) -> AnalysisResult {
     AnalysisResult {
         cdi: model,
         diagnostics,
+        endpoints,
+        config_properties,
+    }
+}
+
+/// Like [`analyze_java_sources`], but retains source indices for diagnostics.
+pub fn analyze_java_sources_with_spans(sources: &[&str]) -> AnalysisResultWithSpans {
+    let cdi = cdi::analyze_cdi_with_sources(sources);
+
+    let endpoints = nova_framework_web::extract_jaxrs_endpoints(sources);
+    let config_properties = config::collect_config_property_names(sources, &[]);
+
+    AnalysisResultWithSpans {
+        cdi: cdi.model,
+        diagnostics: cdi.diagnostics,
         endpoints,
         config_properties,
     }

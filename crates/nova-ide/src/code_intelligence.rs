@@ -253,6 +253,185 @@ fn looks_like_spring_source(text: &str) -> bool {
 }
 
 // -----------------------------------------------------------------------------
+// Quarkus applicability (best-effort)
+// -----------------------------------------------------------------------------
+
+fn is_quarkus_project(db: &dyn Database, file: FileId, java_sources: &[&str]) -> bool {
+    let Some(path) = db.file_path(file) else {
+        return false;
+    };
+
+    let root = if path.exists() {
+        framework_cache::project_root_for_path(path)
+    } else {
+        // Best-effort fallback for in-memory DB fixtures: if the file path has a
+        // `src/` segment, treat its parent as the project root.
+        let dir = if path.is_file() {
+            path.parent().unwrap_or(path)
+        } else {
+            path
+        };
+        dir.ancestors()
+            .find_map(|ancestor| {
+                if ancestor.file_name().and_then(|n| n.to_str()) == Some("src") {
+                    ancestor.parent().map(Path::to_path_buf)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| dir.to_path_buf())
+    };
+
+    if let Some(config) = framework_cache::project_config(&root) {
+        let dep_strings: Vec<String> = config
+            .dependencies
+            .iter()
+            .map(|d| format!("{}:{}", d.group_id, d.artifact_id))
+            .collect();
+        let dep_refs: Vec<&str> = dep_strings.iter().map(String::as_str).collect();
+
+        let classpath: Vec<&Path> = config
+            .classpath
+            .iter()
+            .map(|e| e.path.as_path())
+            .chain(config.module_path.iter().map(|e| e.path.as_path()))
+            .collect();
+
+        return nova_framework_quarkus::is_quarkus_applicable_with_classpath(
+            &dep_refs,
+            classpath.as_slice(),
+            java_sources,
+        );
+    }
+
+    nova_framework_quarkus::is_quarkus_applicable(&[], java_sources)
+}
+
+fn workspace_java_sources<'a>(db: &'a dyn Database) -> (Vec<FileId>, Vec<&'a str>) {
+    let mut files = Vec::new();
+    let mut sources = Vec::new();
+
+    for file_id in db.all_file_ids() {
+        let Some(path) = db.file_path(file_id) else {
+            continue;
+        };
+        if path.extension().and_then(|e| e.to_str()) == Some("java") {
+            files.push(file_id);
+            sources.push(db.file_content(file_id));
+        }
+    }
+
+    (files, sources)
+}
+
+fn workspace_application_property_files<'a>(db: &'a dyn Database) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    for file_id in db.all_file_ids() {
+        let Some(path) = db.file_path(file_id) else {
+            continue;
+        };
+        if is_spring_properties_file(path) {
+            out.push(db.file_content(file_id));
+        }
+    }
+    out
+}
+
+fn quarkus_config_property_prefix(text: &str, offset: usize) -> Option<String> {
+    let bytes = text.as_bytes();
+    if offset > bytes.len() {
+        return None;
+    }
+
+    // Find the opening quote for the string literal containing the cursor.
+    let mut start_quote = None;
+    let mut i = offset;
+    while i > 0 {
+        i -= 1;
+        if bytes[i] == b'"' && !is_escaped_quote(bytes, i) {
+            start_quote = Some(i);
+            break;
+        }
+    }
+    let start_quote = start_quote?;
+
+    // Find the closing quote.
+    let mut end_quote = None;
+    let mut j = start_quote + 1;
+    while j < bytes.len() {
+        if bytes[j] == b'"' && !is_escaped_quote(bytes, j) {
+            end_quote = Some(j);
+            break;
+        }
+        j += 1;
+    }
+    let end_quote = end_quote?;
+
+    if !(start_quote < offset && offset <= end_quote) {
+        return None;
+    }
+
+    // Ensure we're completing the `name = "..."` argument.
+    let mut k = start_quote;
+    while k > 0 && (bytes[k - 1] as char).is_ascii_whitespace() {
+        k -= 1;
+    }
+    if k == 0 || bytes[k - 1] != b'=' {
+        return None;
+    }
+    k -= 1;
+    while k > 0 && (bytes[k - 1] as char).is_ascii_whitespace() {
+        k -= 1;
+    }
+    let mut ident_start = k;
+    while ident_start > 0 && is_ident_continue(bytes[ident_start - 1] as char) {
+        ident_start -= 1;
+    }
+    let ident = text.get(ident_start..k)?;
+    if ident != "name" {
+        return None;
+    }
+
+    // Ensure the nearest preceding annotation is `@ConfigProperty`.
+    let before_ident = &text[..ident_start];
+    let at_idx = before_ident.rfind('@')?;
+    let after_at = &before_ident[at_idx + 1..];
+
+    let mut ann_end = 0usize;
+    for (idx, ch) in after_at.char_indices() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.' {
+            ann_end = idx + ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    if ann_end == 0 {
+        return None;
+    }
+    let ann = &after_at[..ann_end];
+    let simple = ann.rsplit('.').next().unwrap_or(ann);
+    if simple != "ConfigProperty" {
+        return None;
+    }
+
+    Some(text[start_quote + 1..offset].to_string())
+}
+
+fn is_escaped_quote(bytes: &[u8], idx: usize) -> bool {
+    let mut backslashes = 0usize;
+    let mut i = idx;
+    while i > 0 {
+        i -= 1;
+        if bytes[i] == b'\\' {
+            backslashes += 1;
+        } else {
+            break;
+        }
+    }
+    backslashes % 2 == 1
+}
+
+// -----------------------------------------------------------------------------
 // Diagnostics
 // -----------------------------------------------------------------------------
 
@@ -357,7 +536,26 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
         diagnostics.extend(crate::dagger_intel::diagnostics_for_file(db, file));
     }
 
-    // 6) Micronaut framework diagnostics (DI + validation).
+    // 6) Quarkus CDI diagnostics (best-effort, workspace-scoped).
+    if db
+        .file_path(file)
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
+        && is_quarkus_project(db, file, &[text])
+    {
+        let (java_files, java_sources) = workspace_java_sources(db);
+        if let Some(source_idx) = java_files.iter().position(|id| *id == file) {
+            let analysis = nova_framework_quarkus::analyze_java_sources_with_spans(&java_sources);
+            diagnostics.extend(
+                analysis
+                    .diagnostics
+                    .into_iter()
+                    .filter(|d| d.source == source_idx)
+                    .map(|d| d.diagnostic),
+            );
+        }
+    }
+
+    // 7) Micronaut framework diagnostics (DI + validation).
     if let Some(path) = db
         .file_path(file)
         .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
@@ -510,6 +708,32 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
                     text,
                     offset,
                     &analysis.config_keys,
+                );
+                if !items.is_empty() {
+                    return decorate_completions(
+                        text,
+                        prefix_start,
+                        offset,
+                        spring_completions_to_lsp(items),
+                    );
+                }
+            }
+        }
+    }
+
+    // Quarkus `@ConfigProperty(name="...")` completions inside Java source.
+    if db
+        .file_path(file)
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
+    {
+        if let Some(prefix) = quarkus_config_property_prefix(text, offset) {
+            let (_java_files, java_sources) = workspace_java_sources(db);
+            let property_files = workspace_application_property_files(db);
+            if is_quarkus_project(db, file, &java_sources) {
+                let items = nova_framework_quarkus::config_property_completions(
+                    &prefix,
+                    &java_sources,
+                    &property_files,
                 );
                 if !items.is_empty() {
                     return decorate_completions(

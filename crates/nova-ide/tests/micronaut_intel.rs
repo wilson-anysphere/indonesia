@@ -47,7 +47,7 @@ fn fixture_multi(
 fn micronaut_diagnostics_include_missing_bean() {
     let java_path = PathBuf::from("/workspace/src/main/java/Foo.java");
     let java_text = r#"
-import io.micronaut.context.annotation.Singleton;
+ import io.micronaut.context.annotation.Singleton;
 import jakarta.inject.Inject;
 
 @Singleton

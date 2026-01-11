@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
-use nova_types::{Diagnostic, Severity};
-use regex::Regex;
+use nova_types::{Diagnostic, Severity, Span};
+use tree_sitter::{Node, Parser, Tree};
 
 pub const CDI_UNSATISFIED_CODE: &str = "QUARKUS_CDI_UNSATISFIED_DEPENDENCY";
 pub const CDI_AMBIGUOUS_CODE: &str = "QUARKUS_CDI_AMBIGUOUS_DEPENDENCY";
@@ -11,6 +11,25 @@ pub const CDI_CIRCULAR_CODE: &str = "QUARKUS_CDI_CIRCULAR_DEPENDENCY";
 pub struct CdiAnalysis {
     pub model: CdiModel,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Like [`CdiAnalysis`], but retains the source index for each diagnostic.
+#[derive(Debug, Clone)]
+pub struct CdiAnalysisWithSources {
+    pub model: CdiModel,
+    pub diagnostics: Vec<SourceDiagnostic>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SourceSpan {
+    pub source: usize,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceDiagnostic {
+    pub source: usize,
+    pub diagnostic: Diagnostic,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -46,12 +65,14 @@ struct Bean {
     qualifiers: Qualifiers,
     kind: BeanKind,
     dependencies: Vec<InjectionPoint>,
+    location: SourceSpan,
 }
 
 #[derive(Clone, Debug)]
 struct InjectionPoint {
     required_type: String,
     qualifiers: Qualifiers,
+    location: SourceSpan,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -67,6 +88,19 @@ impl Qualifiers {
 }
 
 pub fn analyze_cdi(sources: &[&str]) -> CdiAnalysis {
+    let analysis = analyze_cdi_with_sources(sources);
+    let diagnostics = analysis
+        .diagnostics
+        .iter()
+        .map(|sd| sd.diagnostic.clone())
+        .collect();
+    CdiAnalysis {
+        model: analysis.model,
+        diagnostics,
+    }
+}
+
+pub fn analyze_cdi_with_sources(sources: &[&str]) -> CdiAnalysisWithSources {
     let index = build_index(sources);
     let diagnostics = compute_diagnostics(&index);
 
@@ -74,11 +108,15 @@ pub fn analyze_cdi(sources: &[&str]) -> CdiAnalysis {
         beans: index
             .beans
             .iter()
-            .map(|bean| CdiBean {
-                name: bean.name.clone(),
-                kind: bean.kind.clone(),
-                provided_types: bean.provided_types.iter().cloned().collect(),
-                qualifiers: format_qualifiers(&bean.qualifiers),
+            .map(|bean| {
+                let mut provided_types: Vec<String> = bean.provided_types.iter().cloned().collect();
+                provided_types.sort();
+                CdiBean {
+                    name: bean.name.clone(),
+                    kind: bean.kind.clone(),
+                    provided_types,
+                    qualifiers: format_qualifiers(&bean.qualifiers),
+                }
             })
             .collect(),
         injection_points: index
@@ -91,7 +129,7 @@ pub fn analyze_cdi(sources: &[&str]) -> CdiAnalysis {
             .collect(),
     };
 
-    CdiAnalysis { model, diagnostics }
+    CdiAnalysisWithSources { model, diagnostics }
 }
 
 struct CdiIndex {
@@ -100,158 +138,328 @@ struct CdiIndex {
 }
 
 fn build_index(sources: &[&str]) -> CdiIndex {
-    let class_re = Regex::new(
-        r#"^\s*(?:public|protected|private|abstract|final|static|\s)*\s*(class|interface)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:extends\s+([A-Za-z0-9_$.<>]+))?\s*(?:implements\s+([^{]+))?\s*\{?"#,
-    )
-    .unwrap();
-    let field_re = Regex::new(
-        r#"^\s*(?:(?:public|protected|private|static|final|transient|volatile)\s+)*([^;=]+?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;)"#,
-    )
-    .unwrap();
-    let producer_method_re = Regex::new(
-        r#"^\s*(?:(?:public|protected|private|static|final|synchronized|abstract|default)\s+)*([\w<>\[\].$]+)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("#,
-    )
-    .unwrap();
-
     let mut beans = Vec::new();
     let mut injections = Vec::new();
 
-    for src in sources {
-        let mut pending_annotations: Vec<(String, Option<String>)> = Vec::new();
-        let mut class_name = None::<String>;
-        let mut class_qualifiers = Qualifiers::default();
-        let mut class_provided_types = HashSet::new();
-        let mut class_is_bean = false;
-        let mut class_dependencies: Vec<InjectionPoint> = Vec::new();
-
-        let mut brace_depth: i32 = 0;
-        let mut in_class = false;
-
-        for raw_line in src.lines() {
-            let line_no_comment = raw_line.split("//").next().unwrap_or(raw_line);
-            let mut line = line_no_comment;
-
-            line = consume_leading_annotations(line, &mut pending_annotations);
-            if line.trim().is_empty() {
-                continue;
+    for (source_idx, src) in sources.iter().enumerate() {
+        let Ok(tree) = parse_java(src) else {
+            continue;
+        };
+        let root = tree.root_node();
+        visit_nodes(root, &mut |node| {
+            if node.kind() == "class_declaration" {
+                parse_class_declaration(node, source_idx, src, &mut beans, &mut injections);
             }
-
-            if class_name.is_none() {
-                if let Some(cap) = class_re.captures(line) {
-                    class_name = Some(cap[2].to_string());
-                    class_provided_types.insert(cap[2].to_string());
-                    if let Some(extends) = cap.get(3) {
-                        class_provided_types.insert(simple_name(extends.as_str()));
-                    }
-                    if let Some(implements) = cap.get(4) {
-                        for iface in implements.as_str().split(',') {
-                            let iface = iface.trim();
-                            if iface.is_empty() {
-                                continue;
-                            }
-                            let iface = iface.split_whitespace().next().unwrap_or(iface);
-                            class_provided_types.insert(simple_name(iface));
-                        }
-                    }
-
-                    class_qualifiers = parse_qualifiers(&pending_annotations);
-                    class_is_bean = is_bean_class(&pending_annotations);
-                    pending_annotations.clear();
-                    in_class = true;
-                }
-            } else if in_class && brace_depth == 1 {
-                let member_qualifiers = parse_qualifiers(&pending_annotations);
-                let has_inject = pending_annotations.iter().any(|(n, _)| n == "Inject");
-                let has_produces = pending_annotations.iter().any(|(n, _)| n == "Produces");
-
-                if has_inject {
-                    if let Some(cap) = field_re.captures(line) {
-                        let ty = simple_name(cap[1].trim());
-                        let ip = InjectionPoint {
-                            required_type: ty,
-                            qualifiers: member_qualifiers.clone(),
-                        };
-                        injections.push(ip.clone());
-                        class_dependencies.push(ip);
-                    } else if line.contains('(') {
-                        for (ty, qualifiers) in parse_parameter_types(line) {
-                            let ip = InjectionPoint {
-                                required_type: ty,
-                                qualifiers,
-                            };
-                            injections.push(ip.clone());
-                            class_dependencies.push(ip);
-                        }
-                    }
-                }
-
-                if has_produces {
-                    if let Some(cap) = producer_method_re.captures(line) {
-                        let return_ty = simple_name(cap[1].trim());
-                        let mut qualifiers = class_qualifiers.clone();
-                        qualifiers.named = qualifiers.named.or(member_qualifiers.named);
-                        qualifiers.custom.extend(member_qualifiers.custom);
-                        beans.push(Bean {
-                            name: format!(
-                                "{}::{}",
-                                class_name.as_deref().unwrap_or("<unknown>"),
-                                &cap[2]
-                            ),
-                            provided_types: HashSet::from([return_ty]),
-                            qualifiers,
-                            kind: BeanKind::ProducerMethod,
-                            dependencies: Vec::new(),
-                        });
-                    }
-                }
-
-                pending_annotations.clear();
-            }
-
-            brace_depth += count_braces(line);
-        }
-
-        if class_is_bean {
-            let name = class_name.unwrap_or_else(|| "<unknown>".to_string());
-            beans.push(Bean {
-                name,
-                provided_types: class_provided_types,
-                qualifiers: class_qualifiers,
-                kind: BeanKind::Class,
-                dependencies: class_dependencies,
-            });
-        }
+        });
     }
 
     CdiIndex { beans, injections }
 }
 
-fn compute_diagnostics(index: &CdiIndex) -> Vec<Diagnostic> {
+fn parse_class_declaration(
+    node: Node<'_>,
+    source_idx: usize,
+    source: &str,
+    beans: &mut Vec<Bean>,
+    injections: &mut Vec<InjectionPoint>,
+) {
+    let modifiers = modifier_node(node);
+    let class_annotations = modifiers
+        .map(|m| collect_annotations(m, source))
+        .unwrap_or_default();
+
+    let name_node = node
+        .child_by_field_name("name")
+        .or_else(|| find_named_child(node, "identifier"));
+    let Some(name_node) = name_node else {
+        return;
+    };
+    let class_name = node_text(source, name_node).to_string();
+    let class_span = Span::new(name_node.start_byte(), name_node.end_byte());
+
+    let body = node
+        .child_by_field_name("body")
+        .or_else(|| find_named_child(node, "class_body"));
+    let Some(body) = body else {
+        return;
+    };
+
+    let header = &source[node.start_byte()..body.start_byte()];
+    let (super_class, interfaces) = parse_supertypes_from_header(header);
+
+    let mut provided_types = HashSet::new();
+    provided_types.insert(class_name.clone());
+    if let Some(super_class) = super_class {
+        provided_types.insert(super_class);
+    }
+    provided_types.extend(interfaces);
+
+    let class_qualifiers = parse_qualifiers(&class_annotations);
+    let is_bean = is_bean_class(&class_annotations);
+
+    if is_bean {
+        let mut class_deps = Vec::new();
+        parse_class_body_for_injections(
+            body,
+            source_idx,
+            source,
+            injections,
+            &mut class_deps,
+        );
+
+        beans.push(Bean {
+            name: class_name.clone(),
+            kind: BeanKind::Class,
+            provided_types,
+            qualifiers: class_qualifiers.clone(),
+            dependencies: class_deps,
+            location: SourceSpan {
+                source: source_idx,
+                span: class_span,
+            },
+        });
+    }
+
+    parse_class_body_for_producers(
+        body,
+        source_idx,
+        source,
+        &class_name,
+        &class_qualifiers,
+        beans,
+    );
+}
+
+fn parse_class_body_for_injections(
+    body: Node<'_>,
+    source_idx: usize,
+    source: &str,
+    injections: &mut Vec<InjectionPoint>,
+    deps: &mut Vec<InjectionPoint>,
+) {
+    let mut cursor = body.walk();
+    for child in body.named_children(&mut cursor) {
+        match child.kind() {
+            "field_declaration" => {
+                let points = parse_field_injections(child, source_idx, source);
+                for ip in points {
+                    injections.push(ip.clone());
+                    deps.push(ip);
+                }
+            }
+            "constructor_declaration" => {
+                let points = parse_constructor_injections(child, source_idx, source);
+                for ip in points {
+                    injections.push(ip.clone());
+                    deps.push(ip);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn parse_field_injections(node: Node<'_>, source_idx: usize, source: &str) -> Vec<InjectionPoint> {
+    let Some(modifiers) = modifier_node(node) else {
+        return Vec::new();
+    };
+    let annotations = collect_annotations(modifiers, source);
+    if !annotations.iter().any(|a| a.simple_name == "Inject") {
+        return Vec::new();
+    }
+
+    let ty_node = node
+        .child_by_field_name("type")
+        .or_else(|| infer_field_type_node(node));
+    let required_type = ty_node
+        .map(|n| simplify_type(node_text(source, n)))
+        .unwrap_or_default();
+
+    let qualifiers = parse_qualifiers(&annotations);
+
+    let mut out = Vec::new();
+    let mut cursor = node.walk();
+    for declarator in node.named_children(&mut cursor) {
+        if declarator.kind() != "variable_declarator" {
+            continue;
+        }
+        let name_node = declarator
+            .child_by_field_name("name")
+            .or_else(|| find_named_child(declarator, "identifier"));
+        let Some(name_node) = name_node else {
+            continue;
+        };
+        let span = Span::new(name_node.start_byte(), name_node.end_byte());
+        out.push(InjectionPoint {
+            required_type: required_type.clone(),
+            qualifiers: qualifiers.clone(),
+            location: SourceSpan {
+                source: source_idx,
+                span,
+            },
+        });
+    }
+
+    out
+}
+
+fn parse_constructor_injections(
+    node: Node<'_>,
+    source_idx: usize,
+    source: &str,
+) -> Vec<InjectionPoint> {
+    let modifiers = modifier_node(node);
+    let annotations = modifiers
+        .map(|m| collect_annotations(m, source))
+        .unwrap_or_default();
+    if !annotations.iter().any(|a| a.simple_name == "Inject") {
+        return Vec::new();
+    }
+
+    let params = node
+        .child_by_field_name("parameters")
+        .or_else(|| find_named_child(node, "formal_parameters"));
+    let Some(params) = params else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    let mut cursor = params.walk();
+    for child in params.named_children(&mut cursor) {
+        if child.kind() != "formal_parameter" {
+            continue;
+        }
+        if let Some(ip) = parse_constructor_param_injection(child, source_idx, source) {
+            out.push(ip);
+        }
+    }
+    out
+}
+
+fn parse_constructor_param_injection(
+    node: Node<'_>,
+    source_idx: usize,
+    source: &str,
+) -> Option<InjectionPoint> {
+    let name_node = node
+        .child_by_field_name("name")
+        .or_else(|| find_named_child(node, "identifier"))?;
+    let span = Span::new(name_node.start_byte(), name_node.end_byte());
+
+    let ty_node = node
+        .child_by_field_name("type")
+        .or_else(|| infer_param_type_node(node))?;
+    let required_type = simplify_type(node_text(source, ty_node));
+
+    let qualifiers = modifier_node(node)
+        .map(|m| parse_qualifiers(&collect_annotations(m, source)))
+        .unwrap_or_default();
+
+    Some(InjectionPoint {
+        required_type,
+        qualifiers,
+        location: SourceSpan {
+            source: source_idx,
+            span,
+        },
+    })
+}
+
+fn parse_class_body_for_producers(
+    body: Node<'_>,
+    source_idx: usize,
+    source: &str,
+    class_name: &str,
+    class_qualifiers: &Qualifiers,
+    beans: &mut Vec<Bean>,
+) {
+    let mut cursor = body.walk();
+    for child in body.named_children(&mut cursor) {
+        if child.kind() != "method_declaration" {
+            continue;
+        }
+
+        let modifiers = modifier_node(child);
+        let annotations = modifiers
+            .map(|m| collect_annotations(m, source))
+            .unwrap_or_default();
+        if !annotations.iter().any(|a| a.simple_name == "Produces") {
+            continue;
+        }
+
+        let name_node = child
+            .child_by_field_name("name")
+            .or_else(|| find_named_child(child, "identifier"));
+        let Some(name_node) = name_node else {
+            continue;
+        };
+        let method_name = node_text(source, name_node).to_string();
+        let method_span = Span::new(name_node.start_byte(), name_node.end_byte());
+
+        let return_ty_node = child
+            .child_by_field_name("type")
+            .or_else(|| infer_method_return_type_node(child));
+        let return_ty = return_ty_node
+            .map(|n| simplify_type(node_text(source, n)))
+            .unwrap_or_default();
+
+        let member_qualifiers = parse_qualifiers(&annotations);
+        let mut qualifiers = class_qualifiers.clone();
+        if member_qualifiers.named.is_some() {
+            qualifiers.named = member_qualifiers.named.clone();
+        }
+        qualifiers.custom.extend(member_qualifiers.custom);
+
+        let mut provided_types = HashSet::new();
+        if !return_ty.is_empty() {
+            provided_types.insert(return_ty);
+        }
+
+        beans.push(Bean {
+            name: format!("{class_name}::{method_name}"),
+            kind: BeanKind::ProducerMethod,
+            provided_types,
+            qualifiers,
+            dependencies: Vec::new(),
+            location: SourceSpan {
+                source: source_idx,
+                span: method_span,
+            },
+        });
+    }
+}
+
+fn compute_diagnostics(index: &CdiIndex) -> Vec<SourceDiagnostic> {
     let mut diagnostics = Vec::new();
 
     for ip in &index.injections {
         let matches = resolve_injection(index, ip);
         if matches.is_empty() {
-            diagnostics.push(Diagnostic::error(
-                CDI_UNSATISFIED_CODE,
-                format!("Unsatisfied dependency: {}", ip.required_type),
-                None,
-            ));
-        } else if matches.len() > 1 {
-            diagnostics.push(Diagnostic::error(
-                CDI_AMBIGUOUS_CODE,
-                format!(
-                    "Ambiguous dependency: {} ({} candidates)",
-                    ip.required_type,
-                    matches.len()
+            diagnostics.push(SourceDiagnostic {
+                source: ip.location.source,
+                diagnostic: Diagnostic::error(
+                    CDI_UNSATISFIED_CODE,
+                    format!("Unsatisfied dependency: {}", ip.required_type),
+                    Some(ip.location.span),
                 ),
-                None,
-            ));
+            });
+        } else if matches.len() > 1 {
+            diagnostics.push(SourceDiagnostic {
+                source: ip.location.source,
+                diagnostic: Diagnostic::error(
+                    CDI_AMBIGUOUS_CODE,
+                    format!(
+                        "Ambiguous dependency: {} ({} candidates)",
+                        ip.required_type,
+                        matches.len()
+                    ),
+                    Some(ip.location.span),
+                ),
+            });
         }
     }
 
     diagnostics.extend(detect_circular_dependencies(index));
-
     diagnostics
 }
 
@@ -281,12 +489,15 @@ fn qualifiers_match(bean: &Qualifiers, required: &Qualifiers) -> bool {
     required.custom.is_subset(&bean.custom)
 }
 
-fn detect_circular_dependencies(index: &CdiIndex) -> Vec<Diagnostic> {
+fn detect_circular_dependencies(index: &CdiIndex) -> Vec<SourceDiagnostic> {
     let class_beans: Vec<&Bean> = index
         .beans
         .iter()
         .filter(|b| matches!(b.kind, BeanKind::Class))
         .collect();
+    if class_beans.is_empty() {
+        return Vec::new();
+    }
 
     let mut bean_by_name: HashMap<&str, usize> = HashMap::new();
     for (idx, bean) in class_beans.iter().enumerate() {
@@ -296,54 +507,28 @@ fn detect_circular_dependencies(index: &CdiIndex) -> Vec<Diagnostic> {
     let mut edges: Vec<Vec<usize>> = vec![Vec::new(); class_beans.len()];
     for (idx, bean) in class_beans.iter().enumerate() {
         for dep in &bean.dependencies {
-            let matches = resolve_injection(index, dep);
-            let target = matches
+            let matches: Vec<&Bean> = resolve_injection(index, dep)
                 .into_iter()
-                .find(|b| matches!(b.kind, BeanKind::Class));
-            if let Some(target) = target {
-                if let Some(&target_idx) = bean_by_name.get(target.name.as_str()) {
-                    edges[idx].push(target_idx);
-                }
+                .filter(|b| matches!(b.kind, BeanKind::Class))
+                .collect();
+            if matches.len() != 1 {
+                continue;
+            }
+            let target = matches[0];
+            if let Some(&target_idx) = bean_by_name.get(target.name.as_str()) {
+                edges[idx].push(target_idx);
             }
         }
+    }
+
+    let cycles = find_cycles(&edges);
+    if cycles.is_empty() {
+        return Vec::new();
     }
 
     let mut diagnostics = Vec::new();
-    let mut state = vec![0u8; class_beans.len()]; // 0=unvisited,1=visiting,2=done
-    let mut stack = Vec::new();
+    let mut seen = HashSet::<Vec<usize>>::new();
 
-    fn dfs(
-        node: usize,
-        edges: &[Vec<usize>],
-        state: &mut [u8],
-        stack: &mut Vec<usize>,
-        cycles: &mut Vec<Vec<usize>>,
-    ) {
-        state[node] = 1;
-        stack.push(node);
-
-        for &next in &edges[node] {
-            if state[next] == 0 {
-                dfs(next, edges, state, stack, cycles);
-            } else if state[next] == 1 {
-                if let Some(pos) = stack.iter().position(|n| *n == next) {
-                    cycles.push(stack[pos..].to_vec());
-                }
-            }
-        }
-
-        stack.pop();
-        state[node] = 2;
-    }
-
-    let mut cycles = Vec::new();
-    for node in 0..class_beans.len() {
-        if state[node] == 0 {
-            dfs(node, &edges, &mut state, &mut stack, &mut cycles);
-        }
-    }
-
-    let mut seen = HashSet::new();
     for cycle in cycles {
         let canonical = canonical_cycle(&cycle);
         if !seen.insert(canonical.clone()) {
@@ -356,15 +541,59 @@ fn detect_circular_dependencies(index: &CdiIndex) -> Vec<Diagnostic> {
             .collect();
         let msg = format!("Circular dependency detected: {}", names.join(" -> "));
 
-        diagnostics.push(Diagnostic {
-            severity: Severity::Warning,
-            code: CDI_CIRCULAR_CODE.into(),
-            message: msg,
-            span: None,
-        });
+        for idx in canonical {
+            let bean = class_beans[idx];
+            diagnostics.push(SourceDiagnostic {
+                source: bean.location.source,
+                diagnostic: Diagnostic {
+                    severity: Severity::Warning,
+                    code: CDI_CIRCULAR_CODE.into(),
+                    message: msg.clone(),
+                    span: Some(bean.location.span),
+                },
+            });
+        }
     }
 
     diagnostics
+}
+
+fn find_cycles(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    fn dfs(
+        node: usize,
+        edges: &[Vec<usize>],
+        state: &mut [u8],
+        stack: &mut Vec<usize>,
+        out: &mut Vec<Vec<usize>>,
+    ) {
+        state[node] = 1;
+        stack.push(node);
+
+        for &next in &edges[node] {
+            if state[next] == 0 {
+                dfs(next, edges, state, stack, out);
+            } else if state[next] == 1 {
+                if let Some(pos) = stack.iter().position(|n| *n == next) {
+                    out.push(stack[pos..].to_vec());
+                }
+            }
+        }
+
+        stack.pop();
+        state[node] = 2;
+    }
+
+    let mut out = Vec::new();
+    let mut state = vec![0u8; edges.len()];
+    let mut stack = Vec::new();
+
+    for node in 0..edges.len() {
+        if state[node] == 0 {
+            dfs(node, edges, &mut state, &mut stack, &mut out);
+        }
+    }
+
+    out
 }
 
 fn canonical_cycle(cycle: &[usize]) -> Vec<usize> {
@@ -385,12 +614,12 @@ fn canonical_cycle(cycle: &[usize]) -> Vec<usize> {
     best
 }
 
-fn parse_qualifiers(annotations: &[(String, Option<String>)]) -> Qualifiers {
+fn parse_qualifiers(annotations: &[ParsedAnnotation]) -> Qualifiers {
     let mut q = Qualifiers::default();
-    for (name, args) in annotations {
-        match name.as_str() {
+    for ann in annotations {
+        match ann.simple_name.as_str() {
             "Named" => {
-                q.named = args.as_deref().and_then(extract_first_string_literal);
+                q.named = ann.args.get("value").cloned().filter(|s| !s.is_empty());
             }
             n if is_non_qualifier_annotation(n) => {}
             n => {
@@ -406,17 +635,10 @@ fn format_qualifiers(qualifiers: &Qualifiers) -> Vec<String> {
     if let Some(name) = &qualifiers.named {
         out.push(format!("Named({name})"));
     }
-    for qual in &qualifiers.custom {
-        out.push(qual.clone());
-    }
+    let mut custom: Vec<_> = qualifiers.custom.iter().cloned().collect();
+    custom.sort();
+    out.extend(custom);
     out
-}
-
-fn extract_first_string_literal(args: &str) -> Option<String> {
-    let start = args.find('"')?;
-    let rest = &args[start + 1..];
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
 }
 
 fn is_non_qualifier_annotation(name: &str) -> bool {
@@ -441,10 +663,10 @@ fn is_non_qualifier_annotation(name: &str) -> bool {
     )
 }
 
-fn is_bean_class(annotations: &[(String, Option<String>)]) -> bool {
-    annotations.iter().any(|(name, _)| {
+fn is_bean_class(annotations: &[ParsedAnnotation]) -> bool {
+    annotations.iter().any(|ann| {
         matches!(
-            name.as_str(),
+            ann.simple_name.as_str(),
             "ApplicationScoped"
                 | "Singleton"
                 | "RequestScoped"
@@ -455,133 +677,289 @@ fn is_bean_class(annotations: &[(String, Option<String>)]) -> bool {
     })
 }
 
-fn parse_parameter_types(signature_line: &str) -> Vec<(String, Qualifiers)> {
-    let start = match signature_line.find('(') {
-        Some(s) => s,
-        None => return Vec::new(),
-    };
-    let end = match signature_line[start + 1..].find(')') {
-        Some(e) => start + 1 + e,
-        None => return Vec::new(),
-    };
-    let params = &signature_line[start + 1..end];
-    if params.trim().is_empty() {
-        return Vec::new();
-    }
+// -----------------------------------------------------------------------------
+// tree-sitter-java helpers (local copy; keep CDI analysis self-contained)
+// -----------------------------------------------------------------------------
 
-    params
-        .split(',')
-        .filter_map(|raw| {
-            let raw = raw.trim();
-            if raw.is_empty() {
-                return None;
-            }
-
-            // Extract inline parameter qualifiers like @Named("foo").
-            let mut annotations = Vec::new();
-            let mut rest = raw;
-            while let Some(stripped) = rest.trim_start().strip_prefix('@') {
-                // Consume annotation name.
-                let mut chars = stripped.chars();
-                let mut name = String::new();
-                while let Some(c) = chars.next() {
-                    if c.is_alphanumeric() || c == '_' || c == '.' {
-                        name.push(c);
-                    } else {
-                        break;
-                    }
-                }
-                let name_simple = name.rsplit('.').next().unwrap_or(&name).to_string();
-                let remaining = &stripped[name.len()..];
-                let (args, after) = if remaining.trim_start().starts_with('(') {
-                    if let Some(close) = remaining.find(')') {
-                        (
-                            Some(remaining[1..close].trim().to_string()),
-                            &remaining[close + 1..],
-                        )
-                    } else {
-                        (None, remaining)
-                    }
-                } else {
-                    (None, remaining)
-                };
-                annotations.push((name_simple, args));
-                rest = after;
-            }
-
-            let qualifiers = parse_qualifiers(&annotations);
-            let tokens: Vec<&str> = rest.split_whitespace().collect();
-            if tokens.len() < 2 {
-                return None;
-            }
-            let ty = simple_name(tokens[0]);
-            Some((ty, qualifiers))
-        })
-        .collect()
+fn parse_java(source: &str) -> Result<Tree, String> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(tree_sitter_java::language())
+        .map_err(|_| "tree-sitter-java language load failed".to_string())?;
+    parser
+        .parse(source, None)
+        .ok_or_else(|| "tree-sitter failed to produce a syntax tree".to_string())
 }
 
-fn consume_leading_annotations<'a>(
-    mut line: &'a str,
-    pending: &mut Vec<(String, Option<String>)>,
-) -> &'a str {
-    loop {
-        let trimmed = line.trim_start();
-        if !trimmed.starts_with('@') {
-            return line;
+fn visit_nodes<'a, F: FnMut(Node<'a>)>(node: Node<'a>, f: &mut F) {
+    f(node);
+    if node.child_count() == 0 {
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        visit_nodes(child, f);
+    }
+}
+
+fn find_named_child<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
+    // Avoid the `named_children` iterator here: in tree-sitter 0.20 its cursor
+    // borrow must outlive `'a`, which doesn't work for a local cursor variable.
+    for idx in 0..node.named_child_count() {
+        let child = node.named_child(idx)?;
+        if child.kind() == kind {
+            return Some(child);
         }
+    }
+    None
+}
 
-        // Find end of annotation token.
-        let mut idx = 1usize;
-        let bytes = trimmed.as_bytes();
-        while idx < bytes.len()
-            && (bytes[idx].is_ascii_alphanumeric() || bytes[idx] == b'_' || bytes[idx] == b'.')
-        {
-            idx += 1;
+fn node_text<'a>(source: &'a str, node: Node<'_>) -> &'a str {
+    &source[node.byte_range()]
+}
+
+fn modifier_node(node: Node<'_>) -> Option<Node<'_>> {
+    node.child_by_field_name("modifiers")
+        .or_else(|| find_named_child(node, "modifiers"))
+}
+
+fn infer_field_type_node<'a>(node: Node<'a>) -> Option<Node<'a>> {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            k if k == "modifiers" || k.ends_with("annotation") => continue,
+            "variable_declarator" => break,
+            _ => return Some(child),
         }
+    }
+    None
+}
 
-        let full_name = &trimmed[1..idx];
-        let name = full_name
-            .rsplit('.')
-            .next()
-            .unwrap_or(full_name)
-            .to_string();
-        let mut rest = &trimmed[idx..];
+fn infer_param_type_node<'a>(node: Node<'a>) -> Option<Node<'a>> {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            k if k == "modifiers" || k.ends_with("annotation") => continue,
+            "identifier" => break,
+            _ => return Some(child),
+        }
+    }
+    None
+}
 
-        rest = rest.trim_start();
-        let args = if rest.starts_with('(') {
-            if let Some(close) = rest.find(')') {
-                let inner = rest[1..close].trim();
-                rest = &rest[close + 1..];
-                if inner.is_empty() {
-                    None
-                } else {
-                    Some(inner.to_string())
-                }
-            } else {
-                None
+fn infer_method_return_type_node<'a>(node: Node<'a>) -> Option<Node<'a>> {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            k if k == "modifiers" || k.ends_with("annotation") => continue,
+            "identifier" => break,
+            _ => return Some(child),
+        }
+    }
+    None
+}
+
+fn simplify_type(raw: &str) -> String {
+    let raw = raw.trim();
+    let base = strip_generic_args(raw);
+    let base = base.trim_end_matches("[]").trim();
+    base.rsplit('.').next().unwrap_or(base).to_string()
+}
+
+fn strip_generic_args(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut depth = 0u32;
+    for ch in raw.chars() {
+        match ch {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(ch),
+            _ => {}
+        }
+    }
+    out
+}
+
+#[derive(Clone, Debug)]
+struct ParsedAnnotation {
+    simple_name: String,
+    args: HashMap<String, String>,
+}
+
+fn collect_annotations(modifiers: Node<'_>, source: &str) -> Vec<ParsedAnnotation> {
+    let mut anns = Vec::new();
+    let mut cursor = modifiers.walk();
+    for child in modifiers.named_children(&mut cursor) {
+        if child.kind().ends_with("annotation") {
+            if let Some(ann) = parse_annotation(child, source) {
+                anns.push(ann);
             }
-        } else {
-            None
+        }
+    }
+    anns
+}
+
+fn parse_annotation(node: Node<'_>, source: &str) -> Option<ParsedAnnotation> {
+    parse_annotation_text(node_text(source, node))
+}
+
+fn parse_annotation_text(text: &str) -> Option<ParsedAnnotation> {
+    let text = text.trim();
+    if !text.starts_with('@') {
+        return None;
+    }
+    let rest = &text[1..];
+    let (name_part, args_part) = match rest.split_once('(') {
+        Some((name, args)) => (name.trim(), Some(args)),
+        None => (rest.trim(), None),
+    };
+
+    let simple_name = name_part
+        .rsplit('.')
+        .next()
+        .unwrap_or(name_part)
+        .trim()
+        .to_string();
+
+    let mut args = HashMap::new();
+    if let Some(args_part) = args_part {
+        let args_part = args_part.trim_end_matches(')').trim();
+        parse_annotation_args(args_part, &mut args);
+    }
+
+    Some(ParsedAnnotation { simple_name, args })
+}
+
+fn parse_annotation_args(args_part: &str, out: &mut HashMap<String, String>) {
+    for segment in split_top_level_commas(args_part) {
+        let seg = segment.trim();
+        if seg.is_empty() {
+            continue;
+        }
+
+        // Single positional argument => `value`.
+        if !seg.contains('=') {
+            if let Some(value) = parse_literal(seg) {
+                out.insert("value".to_string(), value);
+            }
+            continue;
+        }
+
+        let Some((key, value)) = seg.split_once('=') else {
+            continue;
         };
-
-        pending.push((name, args));
-        line = rest;
-
-        if line.trim_start().is_empty() {
-            return line;
+        let key = key.trim().to_string();
+        let value = value.trim();
+        if let Some(parsed) = parse_literal(value) {
+            out.insert(key, parsed);
         }
     }
 }
 
-fn simple_name(name: &str) -> String {
-    let name = name.trim();
-    let name = name.split('<').next().unwrap_or(name);
-    let name = name.trim_end_matches("[]");
-    name.rsplit('.').next().unwrap_or(name).to_string()
+fn split_top_level_commas(input: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0u32;
+    let mut in_string = false;
+    let mut current = String::new();
+
+    for ch in input.chars() {
+        match ch {
+            '"' => {
+                in_string = !in_string;
+                current.push(ch);
+            }
+            '(' if !in_string => {
+                depth += 1;
+                current.push(ch);
+            }
+            ')' if !in_string => {
+                depth = depth.saturating_sub(1);
+                current.push(ch);
+            }
+            ',' if !in_string && depth == 0 => {
+                out.push(current);
+                current = String::new();
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    out.push(current);
+    out
 }
 
-fn count_braces(line: &str) -> i32 {
-    let open = line.chars().filter(|c| *c == '{').count() as i32;
-    let close = line.chars().filter(|c| *c == '}').count() as i32;
-    open - close
+fn parse_literal(input: &str) -> Option<String> {
+    let input = input.trim();
+    if input.starts_with('"') && input.ends_with('"') && input.len() >= 2 {
+        return Some(input[1..input.len() - 1].to_string());
+    }
+    if input.starts_with('\'') && input.ends_with('\'') && input.len() >= 2 {
+        return Some(input[1..input.len() - 1].to_string());
+    }
+    Some(input.to_string())
+}
+
+fn parse_supertypes_from_header(header: &str) -> (Option<String>, HashSet<String>) {
+    let mut super_class = None;
+    let mut interfaces = HashSet::new();
+
+    if let Some(idx) = find_keyword_top_level(header, "extends") {
+        let after = header[idx + "extends".len()..].trim();
+        let ty = after.split_whitespace().next().unwrap_or("");
+        if !ty.is_empty() {
+            super_class = Some(simplify_type(ty));
+        }
+    }
+
+    if let Some(idx) = find_keyword_top_level(header, "implements") {
+        let after = header[idx + "implements".len()..].trim();
+        let after = after.split('{').next().unwrap_or(after);
+        for part in after.split(',') {
+            let ty = part.trim().split_whitespace().next().unwrap_or("");
+            if !ty.is_empty() {
+                interfaces.insert(simplify_type(ty));
+            }
+        }
+    }
+
+    (super_class, interfaces)
+}
+
+fn find_keyword_top_level(haystack: &str, keyword: &str) -> Option<usize> {
+    let mut depth: u32 = 0;
+    let bytes = haystack.as_bytes();
+    let kw = keyword.as_bytes();
+
+    let mut i = 0usize;
+    while i + kw.len() <= bytes.len() {
+        match bytes[i] {
+            b'<' => {
+                depth += 1;
+                i += 1;
+                continue;
+            }
+            b'>' => {
+                depth = depth.saturating_sub(1);
+                i += 1;
+                continue;
+            }
+            _ => {}
+        }
+
+        if depth == 0 && haystack[i..].starts_with(keyword) {
+            let before_ok = i == 0 || !is_ident_continue(bytes[i - 1] as char);
+            let after_ok = i + kw.len() >= bytes.len()
+                || !is_ident_continue(bytes[i + kw.len()] as char);
+            if before_ok && after_ok {
+                return Some(i);
+            }
+        }
+
+        i += 1;
+    }
+    None
+}
+
+fn is_ident_continue(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'
 }

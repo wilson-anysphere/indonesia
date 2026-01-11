@@ -3739,6 +3739,8 @@ dependencies = [
  "nova-types",
  "pretty_assertions",
  "regex",
+ "tree-sitter",
+ "tree-sitter-java",
  "zip 0.6.6",
 ]
 
@@ -3811,6 +3813,7 @@ dependencies = [
  "nova-framework-jpa",
  "nova-framework-lombok",
  "nova-framework-micronaut",
+ "nova-framework-quarkus",
  "nova-framework-spring",
  "nova-fuzzy",
  "nova-hir",

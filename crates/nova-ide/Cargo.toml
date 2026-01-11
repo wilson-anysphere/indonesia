@@ -39,6 +39,7 @@ nova-framework-jpa = { path = "../nova-framework-jpa" }
 nova-framework-dagger = { path = "../nova-framework-dagger" }
 tree-sitter = "0.20"
 tree-sitter-java = "0.20"
+nova-framework-quarkus = { path = "../nova-framework-quarkus" }
 
 [features]
 ai = ["dep:nova-ai", "dep:tokio", "dep:tokio-util"]
