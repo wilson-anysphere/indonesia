@@ -21,6 +21,7 @@ tree-sitter-java = "0.20"
 criterion = "0.5"
 pretty_assertions = "1.4"
 nova-test-utils = { path = "../nova-test-utils" }
+nova-core = { path = "../nova-core" }
 
 [[bench]]
 name = "refactor"

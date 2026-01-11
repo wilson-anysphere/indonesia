@@ -1,0 +1,336 @@
+use lsp_types::{Range, Uri, WorkspaceEdit};
+use nova_test_utils::extract_range;
+use pretty_assertions::assert_eq;
+use serde_json::json;
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Command, Stdio};
+use std::str::FromStr;
+
+fn lsp_position_utf16(text: &str, offset: usize) -> lsp_types::Position {
+    let index = nova_core::LineIndex::new(text);
+    let pos = index.position(text, nova_core::TextSize::from(offset as u32));
+    lsp_types::Position::new(pos.line, pos.character)
+}
+
+fn lsp_range_utf16(text: &str, start: usize, end: usize) -> Range {
+    Range {
+        start: lsp_position_utf16(text, start),
+        end: lsp_position_utf16(text, end),
+    }
+}
+
+fn apply_lsp_text_edits(original: &str, edits: &[lsp_types::TextEdit]) -> String {
+    if edits.is_empty() {
+        return original.to_string();
+    }
+
+    let index = nova_core::LineIndex::new(original);
+    let core_edits: Vec<nova_core::TextEdit> = edits
+        .iter()
+        .map(|edit| {
+            let range = nova_core::Range::new(
+                nova_core::Position::new(edit.range.start.line, edit.range.start.character),
+                nova_core::Position::new(edit.range.end.line, edit.range.end.character),
+            );
+            let range = index.text_range(original, range).expect("valid lsp range");
+            nova_core::TextEdit::new(range, edit.new_text.clone())
+        })
+        .collect();
+
+    nova_core::apply_text_edits(original, &core_edits).expect("apply edits")
+}
+
+#[test]
+fn stdio_server_rename_is_utf16_correct_with_crlf() {
+    let uri = Uri::from_str("file:///Test.java").unwrap();
+    let source = r#"
+class C {
+    void m() {
+        int x = 0;
+        int /*😀*/foo = x;
+        foo = foo + 1;
+    }
+}
+"#
+    .replace("\n", "\r\n");
+
+    let foo_offset = source.find("foo").expect("foo identifier");
+    let foo_position = lsp_position_utf16(&source, foo_offset);
+
+    // Positions that point inside a surrogate pair should be rejected.
+    let emoji_offset = source.find('😀').expect("emoji in source");
+    let emoji_pos = lsp_position_utf16(&source, emoji_offset);
+    let inside_surrogate = lsp_types::Position::new(emoji_pos.line, emoji_pos.character + 1);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // 1) initialize
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_jsonrpc_response_with_id(&mut stdout, 1);
+
+    // 2) open document (CRLF + surrogate pair)
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "text": source,
+                }
+            }
+        }),
+    );
+
+    // 3) prepareRename inside surrogate pair => null
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/prepareRename",
+            "params": {
+                "textDocument": { "uri": uri },
+                "position": inside_surrogate,
+            }
+        }),
+    );
+    let resp = read_jsonrpc_response_with_id(&mut stdout, 2);
+    assert_eq!(resp.get("result"), Some(&serde_json::Value::Null));
+
+    // 4) rename on identifier after emoji
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "textDocument/rename",
+            "params": {
+                "textDocument": { "uri": uri },
+                "position": foo_position,
+                "newName": "bar"
+            }
+        }),
+    );
+
+    let rename_resp = read_jsonrpc_response_with_id(&mut stdout, 3);
+    let result = rename_resp.get("result").cloned().expect("workspace edit");
+    let edit: WorkspaceEdit = serde_json::from_value(result).expect("decode workspace edit");
+    let changes = edit.changes.expect("changes map");
+    let edits = changes.get(&uri).expect("edits for uri");
+
+    let actual = apply_lsp_text_edits(&source, edits);
+    let expected = source.replace("foo", "bar");
+    assert_eq!(actual, expected);
+
+    // 5) shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_jsonrpc_response_with_id(&mut stdout, 4);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
+fn stdio_server_extract_method_is_utf16_correct_with_crlf() {
+    let uri = Uri::from_str("file:///Test.java").unwrap();
+    let fixture = r#"
+class C {
+    void m(int a) {
+        int b = 1;
+        /*start*/System.out.println("😀" + a + b);/*end*/
+        System.out.println("done");
+    }
+}
+"#
+    .replace("\n", "\r\n");
+
+    let (source, selection) = extract_range(&fixture);
+    let range = lsp_range_utf16(&source, selection.start, selection.end);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // 1) initialize
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_jsonrpc_response_with_id(&mut stdout, 1);
+
+    // 2) open document (CRLF + surrogate pair)
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "text": source,
+                }
+            }
+        }),
+    );
+
+    // 3) request code actions for selection (selection includes emoji)
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": { "uri": uri },
+                "range": range,
+                "context": { "diagnostics": [] }
+            }
+        }),
+    );
+
+    let code_action_resp = read_jsonrpc_response_with_id(&mut stdout, 2);
+    let actions = code_action_resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .expect("code actions array");
+    let extract = actions
+        .iter()
+        .find(|action| {
+            action
+                .pointer("/command/command")
+                .and_then(|v| v.as_str())
+                == Some("nova.extractMethod")
+        })
+        .expect("extract method action");
+
+    let args = extract
+        .pointer("/command/arguments/0")
+        .cloned()
+        .expect("command args");
+
+    // 4) execute the command
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "workspace/executeCommand",
+            "params": {
+                "command": "nova.extractMethod",
+                "arguments": [args]
+            }
+        }),
+    );
+
+    let exec_resp = read_jsonrpc_response_with_id(&mut stdout, 3);
+    let result = exec_resp.get("result").cloned().expect("workspace edit");
+    let edit: WorkspaceEdit = serde_json::from_value(result).expect("decode workspace edit");
+    let changes = edit.changes.expect("changes map");
+    let edits = changes.get(&uri).expect("edits for uri");
+
+    let actual = apply_lsp_text_edits(&source, edits);
+
+    // Build the expected text using the same high-level transformation:
+    // - Replace selection with `extracted(a, b);`
+    // - Insert the extracted method after the enclosing method.
+    let insertion_offset = source
+        .rfind("\r\n}")
+        .expect("newline before class closing brace");
+    let inserted_method = "\n\n    private void extracted(int a, int b) {\n        System.out.println(\"😀\" + a + b);\n    }";
+    let mut expected = source.clone();
+    expected.insert_str(insertion_offset, inserted_method);
+    expected.replace_range(selection.start..selection.end, "extracted(a, b);");
+
+    assert_eq!(actual, expected);
+
+    // 5) shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_jsonrpc_response_with_id(&mut stdout, 4);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+fn write_jsonrpc_message(writer: &mut impl Write, message: &serde_json::Value) {
+    let bytes = serde_json::to_vec(message).expect("serialize");
+    write!(writer, "Content-Length: {}\r\n\r\n", bytes.len()).expect("write header");
+    writer.write_all(&bytes).expect("write body");
+    writer.flush().expect("flush");
+}
+
+fn read_jsonrpc_message(reader: &mut impl BufRead) -> serde_json::Value {
+    let mut content_length: Option<usize> = None;
+
+    loop {
+        let mut line = String::new();
+        let bytes_read = reader.read_line(&mut line).expect("read header line");
+        assert!(bytes_read > 0, "unexpected EOF while reading headers");
+
+        let line = line.trim_end_matches(['\r', '\n']);
+        if line.is_empty() {
+            break;
+        }
+
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("Content-Length") {
+                content_length = value.trim().parse::<usize>().ok();
+            }
+        }
+    }
+
+    let len = content_length.expect("Content-Length header");
+    let mut buf = vec![0u8; len];
+    reader.read_exact(&mut buf).expect("read body");
+    serde_json::from_slice(&buf).expect("parse json")
+}
+
+fn read_jsonrpc_response_with_id(reader: &mut impl BufRead, id: i64) -> serde_json::Value {
+    loop {
+        let msg = read_jsonrpc_message(reader);
+        if msg.get("id").and_then(|v| v.as_i64()) == Some(id) {
+            return msg;
+        }
+    }
+}
+
