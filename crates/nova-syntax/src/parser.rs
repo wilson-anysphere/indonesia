@@ -2101,7 +2101,19 @@ impl<'a> Parser<'a> {
         }
 
         self.expect(SyntaxKind::LParen, "expected `(` in record pattern");
-        while !self.at(SyntaxKind::RParen) && !self.at(SyntaxKind::Eof) {
+        // Recover aggressively if we hit a switch-label boundary before the closing `)`.
+        // This is important for IDE use-cases where users might type `case Point( ->` and we
+        // don't want to consume the `->` (and subsequent tokens) as record pattern components.
+        while !matches!(
+            self.current(),
+            SyntaxKind::RParen
+                | SyntaxKind::Arrow
+                | SyntaxKind::Colon
+                | SyntaxKind::CaseKw
+                | SyntaxKind::DefaultKw
+                | SyntaxKind::RBrace
+                | SyntaxKind::Eof
+        ) {
             if self.at(SyntaxKind::Comma) {
                 self.error_here("expected record pattern component");
                 self.bump();

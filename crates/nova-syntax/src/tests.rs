@@ -1896,6 +1896,47 @@ class Bar {}
 }
 
 #[test]
+fn parser_recovers_after_malformed_record_pattern() {
+    // Regression test: record patterns use a `( ... )` component list; if we hit a switch-label
+    // terminator (`->` / `:`) before seeing the closing `)`, the record-pattern parser must bail
+    // out instead of consuming the rest of the switch (and potentially the rest of the file).
+    let input = r#"
+class Foo {
+  void m(Object o) {
+    switch (o) {
+      case Point( -> {}
+      default -> {}
+    }
+  }
+}
+class Bar {}
+"#;
+
+    let result = parse_java(input);
+    assert!(
+        !result.errors.is_empty(),
+        "expected at least one error for malformed record pattern"
+    );
+
+    // The parser should recover to the `->` label terminator instead of consuming it as part of the
+    // record pattern, so both arms should be parsed as switch rules.
+    let rule_count = result
+        .syntax()
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::SwitchRule)
+        .count();
+    assert_eq!(rule_count, 2);
+
+    let class_count = result
+        .syntax()
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::ClassDeclaration)
+        .count();
+
+    assert_eq!(class_count, 2);
+}
+
+#[test]
 fn java_error_recovery_table() {
     struct Case {
         name: &'static str,
