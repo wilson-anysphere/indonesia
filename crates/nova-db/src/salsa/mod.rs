@@ -995,13 +995,20 @@ impl Database {
         };
 
         let file_fingerprints = snap.project_file_fingerprints(project);
-        let indexes = snap.project_indexes(project);
-        let mut indexes = (*indexes).clone();
+        let snapshot = nova_cache::ProjectSnapshot::from_parts(
+            cache_dir.project_root().to_path_buf(),
+            cache_dir.project_hash().clone(),
+            file_fingerprints.as_ref().clone(),
+        );
 
-        nova_index::save_indexes_with_fingerprints(
+        let shards = snap.project_indexes(project);
+        let mut shards = (*shards).clone();
+
+        nova_index::save_sharded_indexes(
             cache_dir,
-            file_fingerprints.as_ref(),
-            &mut indexes,
+            &snapshot,
+            nova_index::DEFAULT_SHARD_COUNT,
+            &mut shards,
         )
     }
 }

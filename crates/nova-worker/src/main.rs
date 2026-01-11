@@ -10,7 +10,7 @@ use anyhow::{anyhow, Context, Result};
 use nova_bugreport::{install_panic_hook, PanicHookConfig};
 use nova_config::{init_tracing_with_config, NovaConfig};
 use nova_db::salsa::Database as SalsaDatabase;
-use nova_db::{FileId, NovaSemantic, SourceRootId};
+use nova_db::{FileId, NovaHir, SourceRootId};
 use nova_remote_proto::v3::{
     CachedIndexInfo, Capabilities, CompressionAlgo, Notification, ProtocolVersion, Request,
     Response, RpcError as ProtoRpcError, RpcErrorCode, SupportedVersions,
@@ -711,8 +711,8 @@ fn build_symbols(db: &SalsaDatabase, files: &[(String, FileId)]) -> Vec<nova_rem
     let snap = db.snapshot();
     let mut symbols = Vec::new();
     for (path, file_id) in files {
-        let summary = snap.symbol_summary(*file_id);
-        for name in &summary.names {
+        let names = snap.hir_symbol_names(*file_id);
+        for name in names.iter() {
             symbols.push(nova_remote_proto::Symbol {
                 name: name.clone(),
                 path: path.clone(),

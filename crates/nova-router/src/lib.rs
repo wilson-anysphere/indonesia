@@ -2115,7 +2115,7 @@ where
 }
 
 fn index_for_files(shard_id: ShardId, mut files: Vec<FileText>) -> Vec<Symbol> {
-    use nova_db::{FileId, NovaSemantic, SalsaDatabase, SourceRootId};
+    use nova_db::{FileId, NovaHir, SalsaDatabase, SourceRootId};
 
     files.sort_by(|a, b| a.path.cmp(&b.path));
 
@@ -2134,8 +2134,8 @@ fn index_for_files(shard_id: ShardId, mut files: Vec<FileText>) -> Vec<Symbol> {
     let snap = db.snapshot();
     let mut symbols = Vec::new();
     for (file_id, path) in file_ids {
-        let summary = snap.symbol_summary(file_id);
-        for name in &summary.names {
+        let names = snap.hir_symbol_names(file_id);
+        for name in names.iter() {
             symbols.push(Symbol {
                 name: name.clone(),
                 path: path.clone(),

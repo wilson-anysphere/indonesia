@@ -9,8 +9,10 @@ fs2 = "0.4"
 nova-cache = { path = "../nova-cache" }
 nova-core = { path = "../nova-core" }
 nova-fuzzy = { path = "../nova-fuzzy" }
+nova-hir = { path = "../nova-hir" }
 nova-memory = { path = "../nova-memory" }
 nova-project = { path = "../nova-project" }
+nova-syntax = { path = "../nova-syntax" }
 nova-storage = { path = "../nova-storage" }
 rkyv = { version = "0.7", features = ["validation"] }
 serde = { version = "1", features = ["derive"] }

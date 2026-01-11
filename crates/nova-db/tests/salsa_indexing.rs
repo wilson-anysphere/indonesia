@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use nova_cache::CacheConfig;
 use nova_db::{FileId, NovaIndexing, PersistenceConfig, PersistenceMode, ProjectId, SalsaDatabase};
+use nova_index::ProjectIndexes;
 
 fn executions(db: &SalsaDatabase, query_name: &str) -> u64 {
     db.query_stats()
@@ -9,6 +10,22 @@ fn executions(db: &SalsaDatabase, query_name: &str) -> u64 {
         .get(query_name)
         .map(|s| s.executions)
         .unwrap_or(0)
+}
+
+fn has_symbol(shards: &[ProjectIndexes], symbol: &str) -> bool {
+    shards
+        .iter()
+        .any(|shard| shard.symbols.symbols.contains_key(symbol))
+}
+
+fn symbol_locations(shards: &[ProjectIndexes], symbol: &str) -> Vec<nova_index::SymbolLocation> {
+    let mut out = Vec::new();
+    for shard in shards {
+        if let Some(locs) = shard.symbols.symbols.get(symbol) {
+            out.extend(locs.iter().cloned());
+        }
+    }
+    out
 }
 
 #[test]
@@ -38,9 +55,9 @@ fn project_indexes_warm_start_and_invalidation() {
     db1.set_file_text(a, "class A {}".to_string());
     db1.set_file_text(b, "class B {}".to_string());
 
-    let indexes_v1 = db1.with_snapshot(|snap| snap.project_indexes(project).clone());
-    assert!(indexes_v1.symbols.symbols.contains_key("A"));
-    assert!(indexes_v1.symbols.symbols.contains_key("B"));
+    let shards_v1 = db1.with_snapshot(|snap| (*snap.project_indexes(project)).clone());
+    assert!(has_symbol(&shards_v1, "A"));
+    assert!(has_symbol(&shards_v1, "B"));
 
     db1.persist_project_indexes(project).unwrap();
 
@@ -53,25 +70,21 @@ fn project_indexes_warm_start_and_invalidation() {
     db2.set_file_text(b, "class B {}".to_string());
 
     db2.clear_query_stats();
-    let indexes_v2 = db2.with_snapshot(|snap| snap.project_indexes(project).clone());
+    let shards_v2 = db2.with_snapshot(|snap| (*snap.project_indexes(project)).clone());
 
-    assert_eq!(&*indexes_v2, &*indexes_v1);
+    assert_eq!(shards_v2, shards_v1);
     assert_eq!(executions(&db2, "file_index_delta"), 0);
-    assert_eq!(executions(&db2, "parse"), 0);
+    assert_eq!(executions(&db2, "parse_java"), 0);
 
     // Change one file so its fingerprint changes; only that file should be re-indexed.
     db2.clear_query_stats();
     db2.set_file_text(b, "class B { class C {} }".to_string());
-    let indexes_v3 = db2.with_snapshot(|snap| snap.project_indexes(project).clone());
+    let shards_v3 = db2.with_snapshot(|snap| (*snap.project_indexes(project)).clone());
 
     assert_eq!(executions(&db2, "file_index_delta"), 1);
-    assert_eq!(executions(&db2, "parse"), 1);
-    assert!(indexes_v3.symbols.symbols.contains_key("C"));
-    assert!(indexes_v3
-        .symbols
-        .symbols
-        .get("C")
-        .unwrap()
+    assert_eq!(executions(&db2, "parse_java"), 1);
+    assert!(has_symbol(&shards_v3, "C"));
+    assert!(symbol_locations(&shards_v3, "C")
         .iter()
         .all(|loc| loc.file == "B.java"));
 }

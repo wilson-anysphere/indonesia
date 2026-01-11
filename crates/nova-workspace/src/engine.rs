@@ -7,8 +7,9 @@ use nova_config::EffectiveConfig;
 use nova_core::TextEdit;
 use nova_db::persistence::PersistenceConfig;
 use nova_db::salsa;
+use nova_db::NovaIndexing;
 use nova_ide::{DebugConfiguration, Project};
-use nova_index::{ProjectIndexes, SymbolLocation};
+use nova_index::ProjectIndexes;
 use nova_memory::MemoryManager;
 use nova_scheduler::{Cancelled, KeyedDebouncer, PoolKind, Scheduler};
 use nova_types::{CompletionItem, Diagnostic as NovaDiagnostic};
@@ -106,6 +107,8 @@ impl WorkspaceEngine {
         let text_for_db = text.clone();
         let file_id = self.vfs.open_document(path.clone(), text, version);
         self.query_db.set_file_text(file_id, text_for_db);
+        self.query_db
+            .set_file_rel_path(file_id, Arc::new(path.to_string()));
 
         self.publish(WorkspaceEvent::FileChanged { file: path.clone() });
         self.publish_diagnostics(path);
@@ -169,16 +172,11 @@ impl WorkspaceEngine {
             return;
         }
 
-        let files: Vec<VfsPath> = self
-            .vfs
-            .all_file_ids()
-            .into_iter()
-            .filter_map(|id| self.vfs.path_for_id(id))
-            .collect();
+        let files: Vec<FileId> = self.vfs.all_file_ids();
 
         // Coalesce rapid edit bursts (e.g. didChange storms) and cancel in-flight indexing when
         // superseded by a newer request.
-        let vfs = self.vfs.clone();
+        let query_db = self.query_db.clone();
         let indexes_arc = Arc::clone(&self.indexes);
         let subscribers = Arc::clone(&self.subscribers);
         let scheduler = self.scheduler.clone();
@@ -196,12 +194,11 @@ impl WorkspaceEngine {
                 let total = files.len();
                 let mut new_indexes = ProjectIndexes::default();
 
-                for (idx, path) in files.iter().enumerate() {
+                for (idx, file_id) in files.iter().enumerate() {
                     Cancelled::check(ctx.token())?;
 
-                    if let Ok(text) = vfs.read_to_string(path) {
-                        index_symbols(&mut new_indexes, path, &text);
-                    }
+                    let delta = query_db.with_snapshot(|snap| snap.file_index_delta(*file_id));
+                    new_indexes.merge_from((*delta).clone());
 
                     let percentage = if total == 0 {
                         None
@@ -268,41 +265,6 @@ fn publish_to_subscribers(
         .lock()
         .expect("workspace subscriber mutex poisoned");
     subs.retain(|tx| tx.try_send(event.clone()).is_ok());
-}
-
-fn index_symbols(indexes: &mut ProjectIndexes, file: &VfsPath, text: &str) {
-    for (line_no, line) in text.lines().enumerate() {
-        let trimmed = line.trim();
-        let Some((before, after)) = trimmed.split_once("class ") else {
-            continue;
-        };
-        if before
-            .chars()
-            .last()
-            .is_some_and(|c| c.is_alphanumeric() || c == '_')
-        {
-            continue;
-        }
-
-        let name = after
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .trim_matches('{')
-            .trim_matches(';');
-        if name.is_empty() {
-            continue;
-        }
-
-        indexes.symbols.insert(
-            name.to_string(),
-            SymbolLocation {
-                file: file.to_string(),
-                line: line_no as u32,
-                column: 0,
-            },
-        );
-    }
 }
 
 #[cfg(test)]

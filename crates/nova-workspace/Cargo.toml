@@ -24,7 +24,6 @@ nova-syntax = { path = "../nova-syntax" }
 nova-types = { path = "../nova-types" }
 nova-vfs = { path = "../nova-vfs" }
 rowan = "0.15.17"
-regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 walkdir = "2"

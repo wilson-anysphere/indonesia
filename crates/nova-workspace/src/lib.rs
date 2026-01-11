@@ -6,10 +6,10 @@ use nova_index::{
     CandidateStrategy, ProjectIndexes, SearchStats, SearchSymbol, SymbolLocation,
     WorkspaceSymbolSearcher, DEFAULT_SHARD_COUNT,
 };
+use nova_db::{FileId, NovaIndexing, PersistenceConfig, SalsaDatabase};
 use nova_memory::{MemoryBudget, MemoryManager};
 use nova_project::ProjectError;
 use nova_syntax::SyntaxNode;
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs;
@@ -443,19 +443,16 @@ impl Workspace {
         shard_count: u32,
         files_to_index: &[String],
     ) -> Result<(usize, u64, std::collections::BTreeMap<String, Fingerprint>)> {
-        let type_re = Regex::new(
-            r"(?m)^\s*(?:public|protected|private)?\s*(?:abstract\s+|final\s+)?(class|interface|enum|record)\s+([A-Za-z_][A-Za-z0-9_]*)",
-        )?;
-        let method_re = Regex::new(
-            r"(?m)^\s*(?:public|protected|private)?\s*(?:static\s+)?(?:final\s+)?(?:synchronized\s+)?[A-Za-z0-9_<>,\[\]\s]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
-        )?;
-        let annotation_re = Regex::new(r"(?m)@([A-Za-z_][A-Za-z0-9_]*)")?;
+        let db = SalsaDatabase::new_with_persistence(
+            snapshot.project_root(),
+            PersistenceConfig::from_env(),
+        );
 
         let mut files_indexed = 0usize;
         let mut bytes_indexed = 0u64;
         let mut file_fingerprints = std::collections::BTreeMap::new();
 
-        for file in files_to_index {
+        for (idx, file) in files_to_index.iter().enumerate() {
             let shard = shard_id_for_path(file, shard_count) as usize;
             let indexes = &mut shards[shard];
             let full_path = snapshot.project_root().join(file);
@@ -465,44 +462,12 @@ impl Workspace {
             bytes_indexed += content.len() as u64;
             file_fingerprints.insert(file.clone(), Fingerprint::from_bytes(content.as_bytes()));
 
-            for cap in type_re.captures_iter(&content) {
-                let m = cap.get(2).expect("regex capture");
-                let (line, column) = line_col_at(&content, m.start());
-                indexes.symbols.insert(
-                    m.as_str(),
-                    SymbolLocation {
-                        file: file.clone(),
-                        line: as_u32(line),
-                        column: as_u32(column),
-                    },
-                );
-            }
+            let file_id = FileId::from_raw(idx as u32);
+            db.set_file_text(file_id, content);
+            db.set_file_rel_path(file_id, Arc::new(file.clone()));
 
-            for cap in method_re.captures_iter(&content) {
-                let m = cap.get(1).expect("regex capture");
-                let (line, column) = line_col_at(&content, m.start());
-                indexes.symbols.insert(
-                    m.as_str(),
-                    SymbolLocation {
-                        file: file.clone(),
-                        line: as_u32(line),
-                        column: as_u32(column),
-                    },
-                );
-            }
-
-            for cap in annotation_re.captures_iter(&content) {
-                let m = cap.get(1).expect("regex capture");
-                let (line, column) = line_col_at(&content, m.start().saturating_sub(1));
-                indexes.annotations.insert(
-                    format!("@{}", m.as_str()),
-                    nova_index::AnnotationLocation {
-                        file: file.clone(),
-                        line: as_u32(line),
-                        column: as_u32(column),
-                    },
-                );
-            }
+            let delta = db.with_snapshot(|snap| snap.file_index_delta(file_id));
+            indexes.merge_from((*delta).clone());
         }
 
         Ok((files_indexed, bytes_indexed, file_fingerprints))
@@ -1265,10 +1230,6 @@ fn line_col_at(text: &str, byte_idx: usize) -> (usize, usize) {
     }
 
     (line, col)
-}
-
-fn as_u32(value: usize) -> u32 {
-    u32::try_from(value).unwrap_or(u32::MAX)
 }
 
 fn count_symbols(shards: &[ProjectIndexes]) -> usize {
