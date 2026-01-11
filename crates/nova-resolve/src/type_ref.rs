@@ -1,307 +1,553 @@
-//! Lightweight parser for Java type references.
+//! Java source type reference parsing + name resolution.
 //!
-//! This module is intentionally small and best-effort: it is used by IDE-facing
-//! layers that need to turn textual type references (as they appear in source)
-//! into a structural [`nova_types::Type`] so generics/arrays/wildcards are not
-//! lost.
-//!
-//! The parser performs name resolution via [`crate::Resolver`] + scope graph so
-//! that `String` becomes `java.lang.String`, `Map.Entry` resolves through an
-//! imported `Map`, etc.
-//!
-//! # Supported grammar (best-effort)
-//! - primitives + `void`
-//! - simple/qualified names (`String`, `java.util.List`, `Map.Entry`)
-//! - generic args: `Foo<Bar, Baz>`
-//! - wildcards: `?`, `? extends T`, `? super T`
-//! - arrays: suffix `[]` repeated
-//!
-//! The parser is whitespace-tolerant and returns [`Type::Unknown`] on malformed
-//! input rather than erroring.
+//! Nova's early syntax layer (`nova-syntax`) stores type references as a raw
+//! (often whitespace-stripped) string. This module turns those strings into
+//! `nova_types::Type` by parsing Java type syntax and then resolving names
+//! through `nova_resolve::Resolver` + the scope graph.
+
+use std::collections::HashMap;
+use std::ops::Range;
 
 use nova_core::QualifiedName;
-use nova_types::{ClassDef, ClassId, ClassKind, PrimitiveType, Type, WildcardBound};
+use nova_types::{Diagnostic, PrimitiveType, Span, Type, TypeEnv, TypeVarId, WildcardBound};
 
 use crate::{Resolver, ScopeGraph, ScopeId};
 
-/// Interns/looks up classes by binary name so the parser can always produce a
-/// [`Type::Class`], even for types that are not yet fully modelled by the
-/// database.
-pub trait ClassInterner {
-    fn intern_class(&mut self, binary_name: &str) -> ClassId;
+#[derive(Debug, Clone)]
+pub struct ResolvedType {
+    pub ty: Type,
+    pub diagnostics: Vec<Diagnostic>,
 }
 
-impl ClassInterner for nova_types::TypeStore {
-    fn intern_class(&mut self, binary_name: &str) -> ClassId {
-        if let Some(id) = self.class_id(binary_name) {
-            return id;
-        }
-
-        // Best-effort: create a stub class definition so we can refer to it via
-        // `Type::Class`. The semantic/type-checking layers treat missing class
-        // information gracefully, so this is safe for IDE features.
-        self.add_class(ClassDef {
-            name: binary_name.to_string(),
-            kind: ClassKind::Class,
-            type_params: Vec::new(),
-            super_class: None,
-            interfaces: Vec::new(),
-            fields: Vec::new(),
-            constructors: Vec::new(),
-            methods: Vec::new(),
-        })
-    }
-}
-
-/// Parse a Java type reference using `resolver` for name resolution.
+/// Parse + resolve a Java source type reference from `text`.
 ///
-/// `scope` should be the scope in which the type is written (so imports and
-/// enclosing types are considered).
+/// The parser is intentionally whitespace-insensitive. It is designed to work
+/// on `nova_syntax::ast::TypeRef.text`, which is currently whitespace-stripped.
 ///
-/// This function is best-effort and returns [`Type::Unknown`] on invalid input.
-pub fn parse_type_ref<I: ClassInterner>(
-    text: &str,
-    resolver: &Resolver<'_>,
+/// Diagnostics are best-effort:
+/// - Parse errors use `code = "invalid-type-ref"`.
+/// - Unresolved names use `code = "unresolved-type"`.
+pub fn resolve_type_ref_text<'idx>(
+    resolver: &Resolver<'idx>,
     scopes: &ScopeGraph,
     scope: ScopeId,
-    interner: &mut I,
-) -> Type {
-    let mut p = Parser {
-        input: text,
-        bytes: text.as_bytes(),
-        pos: 0,
-        resolver,
-        scopes,
-        scope,
-        interner,
-    };
-
-    let ty = p.parse_type();
-    // Consume trailing whitespace to avoid surprising `Unknown` on well-formed
-    // types with trailing spaces.
-    p.skip_ws();
-    if p.pos < p.bytes.len() {
-        // Best-effort: ignore trailing garbage.
-        return ty;
+    env: &dyn TypeEnv,
+    type_vars: &HashMap<String, TypeVarId>,
+    text: &str,
+    base_span: Option<Span>,
+) -> ResolvedType {
+    let mut parser = Parser::new(resolver, scopes, scope, env, type_vars, text, base_span);
+    let ty = parser.parse_type_ref();
+    ResolvedType {
+        ty,
+        diagnostics: parser.diagnostics,
     }
-    ty
 }
 
-struct Parser<'a, 'r, I> {
-    input: &'a str,
-    bytes: &'a [u8],
-    pos: usize,
-    resolver: &'r Resolver<'r>,
-    scopes: &'r ScopeGraph,
+struct Parser<'a, 'idx> {
+    resolver: &'a Resolver<'idx>,
+    scopes: &'a ScopeGraph,
     scope: ScopeId,
-    interner: &'r mut I,
+    env: &'a dyn TypeEnv,
+    type_vars: &'a HashMap<String, TypeVarId>,
+    text: &'a str,
+    pos: usize,
+    diagnostics: Vec<Diagnostic>,
+    base_span: Option<Span>,
 }
 
-impl<'a, 'r, I: ClassInterner> Parser<'a, 'r, I> {
-    fn parse_type(&mut self) -> Type {
+impl<'a, 'idx> Parser<'a, 'idx> {
+    fn new(
+        resolver: &'a Resolver<'idx>,
+        scopes: &'a ScopeGraph,
+        scope: ScopeId,
+        env: &'a dyn TypeEnv,
+        type_vars: &'a HashMap<String, TypeVarId>,
+        text: &'a str,
+        base_span: Option<Span>,
+    ) -> Self {
+        Self {
+            resolver,
+            scopes,
+            scope,
+            env,
+            type_vars,
+            text,
+            pos: 0,
+            diagnostics: Vec::new(),
+            base_span,
+        }
+    }
+
+    fn parse_type_ref(&mut self) -> Type {
+        let ty = self.parse_type();
+
         self.skip_ws();
+        if !self.is_eof() {
+            let start = self.pos;
+            // Consume the rest so we don't risk loops in callers that re-use `pos`.
+            self.pos = self.text.len();
+            self.push_error(
+                "invalid-type-ref",
+                "unexpected trailing tokens in type reference",
+                start..self.pos,
+            );
+        }
 
-        let mut ty = if self.peek_byte() == Some(b'?') {
-            self.parse_wildcard()
-        } else {
-            self.parse_named_or_primitive()
-        };
-
-        ty = self.parse_array_suffix(ty);
         ty
     }
 
-    fn parse_wildcard(&mut self) -> Type {
-        self.bump(); // '?'
+    fn parse_type(&mut self) -> Type {
         self.skip_ws();
-
-        if self.eat_keyword("extends") {
-            let bound = self.parse_type();
-            return Type::Wildcard(WildcardBound::Extends(Box::new(bound)));
+        let start = self.pos;
+        if self.is_eof() {
+            self.push_error("invalid-type-ref", "expected a type", start..start);
+            return Type::Unknown;
         }
 
-        if self.eat_keyword("super") {
-            let bound = self.parse_type();
-            return Type::Wildcard(WildcardBound::Super(Box::new(bound)));
+        // In nested contexts (type args), certain chars indicate "no type here".
+        if self.is_stop_char() {
+            self.push_error("invalid-type-ref", "expected a type", start..start);
+            return Type::Unknown;
         }
 
-        Type::Wildcard(WildcardBound::Unbounded)
+        let mut ty = if self.consume_char('?') {
+            self.parse_wildcard_type(start)
+        } else {
+            self.parse_non_wildcard_type()
+        };
+
+        ty = self.parse_suffixes(ty, start);
+        ty
     }
 
-    fn parse_named_or_primitive(&mut self) -> Type {
-        let Some(path) = self.parse_qualified_ident() else {
+    fn parse_wildcard_type(&mut self, start: usize) -> Type {
+        // `?`, `? extends T`, `? super T`
+        self.skip_ws();
+
+        let bound = if self.consume_keyword_glued("extends") {
+            self.skip_ws();
+            let b = self.parse_type();
+            WildcardBound::Extends(Box::new(b))
+        } else if self.consume_keyword_glued("super") {
+            self.skip_ws();
+            let b = self.parse_type();
+            WildcardBound::Super(Box::new(b))
+        } else {
+            WildcardBound::Unbounded
+        };
+
+        let span = start..self.pos;
+        let out = Type::Wildcard(bound);
+
+        // `void` is never valid as wildcard bound (JLS), but we can spot the
+        // common error `? extends void`.
+        if let Type::Wildcard(WildcardBound::Extends(b) | WildcardBound::Super(b)) = &out {
+            if matches!(b.as_ref(), Type::Void) {
+                self.push_error(
+                    "invalid-type-ref",
+                    "`void` cannot be used as a wildcard bound",
+                    span,
+                );
+            }
+        }
+
+        out
+    }
+
+    fn parse_non_wildcard_type(&mut self) -> Type {
+        let Some((ident, ident_range)) = self.parse_ident() else {
+            // Error recovery: consume one char so we always make progress.
+            let err_start = self.pos;
+            self.bump_char();
+            self.push_error(
+                "invalid-type-ref",
+                "expected an identifier or primitive type",
+                err_start..self.pos,
+            );
             return Type::Unknown;
         };
 
-        // Primitive / void are always a single token (no dots).
-        if !path.contains('.') {
-            if let Some(prim) = primitive_from_str(path) {
-                return Type::Primitive(prim);
+        if let Some(prim) = primitive_from_str(&ident) {
+            // Primitives cannot have type arguments.
+            if self.peek_non_ws_char() == Some('<') {
+                self.push_error(
+                    "invalid-type-ref",
+                    "primitive types cannot have type arguments",
+                    ident_range.clone(),
+                );
+                // Attempt to skip the `<...>` so we can continue parsing suffixes.
+                self.skip_angle_group();
             }
-            if path == "void" {
-                return Type::Void;
-            }
+            return Type::Primitive(prim);
         }
 
-        let mut ty = self.resolve_class_type(path, Vec::new());
-
-        self.skip_ws();
-        if self.peek_byte() == Some(b'<') {
-            let args = self.parse_type_arguments();
-            if let Type::Class(class) = &mut ty {
-                class.args = args;
+        if ident == "void" {
+            // Parseable everywhere for resilience; we only error on syntactically
+            // impossible constructs like `void[]` or `List<void>`.
+            if self.peek_non_ws_char() == Some('<') {
+                self.push_error(
+                    "invalid-type-ref",
+                    "`void` cannot have type arguments",
+                    ident_range.clone(),
+                );
+                self.skip_angle_group();
             }
+            return Type::Void;
         }
 
-        ty
-    }
-
-    fn resolve_class_type(&mut self, path: &str, args: Vec<Type>) -> Type {
-        let qn = QualifiedName::from_dotted(path);
-
-        let class_id = if let Some(resolved) =
-            self.resolver
-                .resolve_qualified_type_in_scope(self.scopes, self.scope, &qn)
-        {
-            self.interner.intern_class(resolved.as_str())
-        } else {
-            // Best-effort: keep the textual name if resolution fails.
-            self.interner.intern_class(path)
-        };
-
-        Type::class(class_id, args)
-    }
-
-    fn parse_type_arguments(&mut self) -> Vec<Type> {
-        if !self.eat_byte(b'<') {
-            return Vec::new();
-        }
-
-        let mut args = Vec::new();
+        // Qualified name (dot-separated).
+        let mut segments = vec![ident];
+        let mut name_range = ident_range;
         loop {
             self.skip_ws();
-            if self.eat_byte(b'>') {
+            // `...` is a varargs suffix, not a qualified name separator.
+            if self.rest().starts_with("...") {
+                break;
+            }
+            if !self.consume_char('.') {
+                break;
+            }
+            self.skip_ws();
+            let Some((seg, seg_range)) = self.parse_ident() else {
+                self.push_error(
+                    "invalid-type-ref",
+                    "expected identifier after `.`",
+                    self.pos..self.pos,
+                );
+                break;
+            };
+            name_range.end = seg_range.end;
+            segments.push(seg);
+        }
+
+        // Type arguments apply to the last segment (`List<String>`).
+        let args = if self.consume_char('<') {
+            self.parse_type_args()
+        } else {
+            Vec::new()
+        };
+
+        self.resolve_named_type(segments, args, name_range)
+    }
+
+    fn resolve_named_type(
+        &mut self,
+        segments: Vec<String>,
+        args: Vec<Type>,
+        name_range: Range<usize>,
+    ) -> Type {
+        let dotted = segments.join(".");
+        let qname = QualifiedName::from_dotted(&dotted);
+
+        if let Some(type_name) = self
+            .resolver
+            .resolve_qualified_type_in_scope(self.scopes, self.scope, &qname)
+        {
+            let resolved_name = type_name.as_str();
+            if let Some(class_id) = self.env.lookup_class(resolved_name) {
+                return Type::class(class_id, args);
+            }
+
+            // No class definition in the env; drop args (best effort).
+            return Type::Named(resolved_name.to_string());
+        }
+
+        // Fall back to in-scope type variables (only for simple names).
+        if segments.len() == 1 {
+            if let Some(tv) = self.type_vars.get(&segments[0]) {
+                if !args.is_empty() {
+                    self.push_error(
+                        "invalid-type-ref",
+                        "type variables cannot have type arguments",
+                        name_range.clone(),
+                    );
+                }
+                return Type::TypeVar(*tv);
+            }
+        }
+
+        self.diagnostics.push(Diagnostic::error(
+            "unresolved-type",
+            format!("unresolved type `{dotted}`"),
+            self.anchor_span(name_range),
+        ));
+
+        // Best effort: keep the original spelling.
+        Type::Named(dotted)
+    }
+
+    fn parse_type_args(&mut self) -> Vec<Type> {
+        let mut args = Vec::new();
+
+        loop {
+            self.skip_ws();
+            if self.consume_char('>') {
+                if args.is_empty() {
+                    self.push_error(
+                        "invalid-type-ref",
+                        "expected at least one type argument",
+                        self.pos.saturating_sub(1)..self.pos,
+                    );
+                }
                 break;
             }
 
-            args.push(self.parse_type());
-            self.skip_ws();
-
-            if self.eat_byte(b',') {
-                continue;
+            if self.is_eof() {
+                self.push_error(
+                    "invalid-type-ref",
+                    "unterminated type argument list (missing `>`)",
+                    self.pos..self.pos,
+                );
+                break;
             }
 
-            // End of args list (best-effort).
+            let arg = self.parse_type();
+            // `void` is never allowed as a type argument.
+            if matches!(arg, Type::Void) {
+                self.push_error(
+                    "invalid-type-ref",
+                    "`void` cannot be used as a type argument",
+                    self.pos.saturating_sub(4)..self.pos, // best-effort
+                );
+            }
+            args.push(arg);
+
             self.skip_ws();
-            let _ = self.eat_byte(b'>');
-            break;
+            if self.consume_char(',') {
+                continue;
+            }
+            if self.consume_char('>') {
+                break;
+            }
+
+            if self.is_eof() {
+                self.push_error(
+                    "invalid-type-ref",
+                    "unterminated type argument list (missing `>`)",
+                    self.pos..self.pos,
+                );
+                break;
+            }
+
+            // Error recovery: skip until `,` or `>` (but don't consume the terminator).
+            self.push_error(
+                "invalid-type-ref",
+                "expected `,` or `>` in type argument list",
+                self.pos..self.pos,
+            );
+            self.skip_until(|ch| ch == ',' || ch == '>');
         }
 
         args
     }
 
-    fn parse_array_suffix(&mut self, mut ty: Type) -> Type {
+    fn parse_suffixes(&mut self, mut ty: Type, type_start: usize) -> Type {
         loop {
             self.skip_ws();
-            if !self.eat_byte(b'[') {
-                break;
+            if self.consume_str("[]") {
+                // `void[]` is syntactically impossible.
+                if matches!(ty, Type::Void) {
+                    self.push_error(
+                        "invalid-type-ref",
+                        "`void` cannot be an array element type",
+                        type_start..self.pos,
+                    );
+                    ty = Type::Unknown;
+                } else {
+                    ty = Type::Array(Box::new(ty));
+                }
+                continue;
             }
-            self.skip_ws();
-            if !self.eat_byte(b']') {
-                break;
+
+            if self.consume_str("...") {
+                // Varargs are represented as an extra array dimension.
+                if matches!(ty, Type::Void) {
+                    self.push_error(
+                        "invalid-type-ref",
+                        "`void` cannot be a varargs element type",
+                        type_start..self.pos,
+                    );
+                    ty = Type::Unknown;
+                } else {
+                    ty = Type::Array(Box::new(ty));
+                }
+                continue;
             }
-            ty = Type::Array(Box::new(ty));
+
+            break;
         }
+
         ty
     }
 
-    fn parse_qualified_ident(&mut self) -> Option<&'a str> {
-        self.skip_ws();
-        let start = self.pos;
+    // --- lexing helpers ------------------------------------------------------
 
-        if !self.peek_byte().is_some_and(is_ident_start) {
-            return None;
-        }
+    fn is_eof(&self) -> bool {
+        self.pos >= self.text.len()
+    }
 
-        self.bump();
-        while self.peek_byte().is_some_and(is_ident_continue) {
-            self.bump();
-        }
+    fn rest(&self) -> &str {
+        &self.text[self.pos..]
+    }
 
-        loop {
-            if self.peek_byte() != Some(b'.') {
-                break;
+    fn peek_char(&self) -> Option<char> {
+        self.rest().chars().next()
+    }
+
+    fn peek_non_ws_char(&self) -> Option<char> {
+        let mut idx = self.pos;
+        while idx < self.text.len() {
+            let ch = self.text[idx..].chars().next()?;
+            if !ch.is_whitespace() {
+                return Some(ch);
             }
-
-            // Lookahead: require an identifier after the dot.
-            let dot = self.pos;
-            self.bump(); // '.'
-
-            if !self.peek_byte().is_some_and(is_ident_start) {
-                // Roll back if this isn't actually a qualified identifier.
-                self.pos = dot;
-                break;
-            }
-
-            self.bump();
-            while self.peek_byte().is_some_and(is_ident_continue) {
-                self.bump();
-            }
+            idx += ch.len_utf8();
         }
+        None
+    }
 
-        Some(&self.input[start..self.pos])
+    fn bump_char(&mut self) -> Option<char> {
+        let ch = self.peek_char()?;
+        self.pos += ch.len_utf8();
+        Some(ch)
     }
 
     fn skip_ws(&mut self) {
-        while self.peek_byte().is_some_and(|b| b.is_ascii_whitespace()) {
-            self.pos += 1;
+        while let Some(ch) = self.peek_char() {
+            if ch.is_whitespace() {
+                self.bump_char();
+            } else {
+                break;
+            }
         }
     }
 
-    fn peek_byte(&self) -> Option<u8> {
-        self.bytes.get(self.pos).copied()
-    }
-
-    fn bump(&mut self) -> Option<u8> {
-        let b = self.peek_byte()?;
-        self.pos += 1;
-        Some(b)
-    }
-
-    fn eat_byte(&mut self, expected: u8) -> bool {
-        if self.peek_byte() == Some(expected) {
-            self.pos += 1;
+    fn consume_char(&mut self, expected: char) -> bool {
+        self.skip_ws();
+        if self.peek_char() == Some(expected) {
+            self.bump_char();
             true
         } else {
             false
         }
     }
 
-    fn eat_keyword(&mut self, kw: &str) -> bool {
-        let rest = &self.input[self.pos..];
-        if !rest.starts_with(kw) {
-            return false;
+    fn consume_str(&mut self, s: &str) -> bool {
+        self.skip_ws();
+        if self.rest().starts_with(s) {
+            self.pos += s.len();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn consume_keyword_glued(&mut self, kw: &str) -> bool {
+        // This intentionally does *not* require a token boundary. `TypeRef.text`
+        // is whitespace-stripped, so `? extends T` becomes `?extendsT`.
+        self.skip_ws();
+        if self.rest().starts_with(kw) {
+            self.pos += kw.len();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn parse_ident(&mut self) -> Option<(String, Range<usize>)> {
+        self.skip_ws();
+        let start = self.pos;
+        let mut chars = self.rest().char_indices();
+        let (_, first) = chars.next()?;
+
+        if !is_ident_start(first) {
+            return None;
         }
 
-        let end = self.pos + kw.len();
-        let boundary_ok =
-            end >= self.bytes.len() || !self.bytes.get(end).copied().is_some_and(is_ident_continue);
-        if !boundary_ok {
-            return false;
+        let mut end = start + first.len_utf8();
+        for (idx, ch) in chars {
+            if is_ident_part(ch) {
+                end = start + idx + ch.len_utf8();
+            } else {
+                break;
+            }
         }
 
         self.pos = end;
-        self.skip_ws();
-        true
+        Some((self.text[start..end].to_string(), start..end))
     }
-}
 
-fn is_ident_start(b: u8) -> bool {
-    matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'$')
-}
+    fn is_stop_char(&self) -> bool {
+        matches!(self.peek_char(), Some('>') | Some(',') | Some(')'))
+    }
 
-fn is_ident_continue(b: u8) -> bool {
-    is_ident_start(b) || matches!(b, b'0'..=b'9')
+    // --- error recovery helpers ---------------------------------------------
+
+    fn skip_until(&mut self, mut predicate: impl FnMut(char) -> bool) {
+        while let Some(ch) = self.peek_char() {
+            if predicate(ch) {
+                break;
+            }
+            self.bump_char();
+        }
+    }
+
+    fn skip_angle_group(&mut self) {
+        // Called when we see `<` at the current position (after skipping ws).
+        self.skip_ws();
+        if self.peek_char() != Some('<') {
+            return;
+        }
+        let start = self.pos;
+        self.bump_char(); // '<'
+        let mut depth = 1usize;
+        while let Some(ch) = self.peek_char() {
+            match ch {
+                '<' => {
+                    depth += 1;
+                    self.bump_char();
+                }
+                '>' => {
+                    depth = depth.saturating_sub(1);
+                    self.bump_char();
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {
+                    self.bump_char();
+                }
+            }
+        }
+        if depth != 0 {
+            self.push_error(
+                "invalid-type-ref",
+                "unterminated type argument list (missing `>`)",
+                start..self.pos,
+            );
+        }
+    }
+
+    // --- diagnostics ---------------------------------------------------------
+
+    fn push_error(&mut self, code: &'static str, message: impl Into<String>, range: Range<usize>) {
+        self.diagnostics
+            .push(Diagnostic::error(code, message, self.anchor_span(range)));
+    }
+
+    fn anchor_span(&self, range: Range<usize>) -> Option<Span> {
+        let base = self.base_span?;
+        let mut start = base.start.saturating_add(range.start);
+        let mut end = base.start.saturating_add(range.end);
+        if end > base.end {
+            end = base.end;
+        }
+        if start > end {
+            start = end;
+        }
+        Some(Span::new(start, end))
+    }
 }
 
 fn primitive_from_str(s: &str) -> Option<PrimitiveType> {
@@ -317,3 +563,12 @@ fn primitive_from_str(s: &str) -> Option<PrimitiveType> {
         _ => return None,
     })
 }
+
+fn is_ident_start(ch: char) -> bool {
+    ch == '_' || ch == '$' || ch.is_ascii_alphabetic()
+}
+
+fn is_ident_part(ch: char) -> bool {
+    is_ident_start(ch) || ch.is_ascii_digit()
+}
+
