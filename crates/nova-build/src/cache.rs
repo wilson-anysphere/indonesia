@@ -1,4 +1,4 @@
-use crate::{BuildSystemKind, Result};
+use crate::{BuildSystemKind, JavaCompileConfig, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -55,6 +55,8 @@ impl BuildFileFingerprint {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CachedModuleData {
     pub classpath: Option<Vec<PathBuf>>,
+    #[serde(default)]
+    pub java_compile_config: Option<JavaCompileConfig>,
     pub diagnostics: Option<Vec<CachedDiagnostic>>,
 }
 

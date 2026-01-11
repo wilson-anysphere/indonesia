@@ -12,7 +12,9 @@ mod maven;
 pub use cache::{BuildCache, BuildFileFingerprint};
 pub use gradle::{parse_gradle_classpath_output, GradleBuild, GradleConfig};
 pub use javac::{parse_javac_diagnostics, JavacDiagnosticFormat};
-pub use maven::{parse_maven_classpath_output, MavenBuild, MavenConfig};
+pub use maven::{
+    parse_maven_classpath_output, parse_maven_evaluate_scalar_output, MavenBuild, MavenConfig,
+};
 
 use nova_core::Diagnostic;
 use std::path::{Path, PathBuf};
@@ -61,6 +63,136 @@ pub struct Classpath {
 impl Classpath {
     pub fn new(entries: Vec<PathBuf>) -> Self {
         Self { entries }
+    }
+}
+
+/// Java compile + test configuration for a single build module.
+///
+/// This is intended to be sufficiently complete for IDE-like use cases (classpath,
+/// source roots, output directories, language level) while still being cheap to
+/// compute via build tool integration.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct JavaCompileConfig {
+    pub compile_classpath: Vec<PathBuf>,
+    pub test_classpath: Vec<PathBuf>,
+    /// Best-effort module path. When unavailable, this will be empty.
+    pub module_path: Vec<PathBuf>,
+    pub main_source_roots: Vec<PathBuf>,
+    pub test_source_roots: Vec<PathBuf>,
+    pub main_output_dir: Option<PathBuf>,
+    pub test_output_dir: Option<PathBuf>,
+    pub source: Option<String>,
+    pub target: Option<String>,
+    pub release: Option<String>,
+    /// Best-effort preview flag (e.g. `--enable-preview`).
+    pub enable_preview: bool,
+}
+
+impl Default for JavaCompileConfig {
+    fn default() -> Self {
+        Self {
+            compile_classpath: Vec::new(),
+            test_classpath: Vec::new(),
+            module_path: Vec::new(),
+            main_source_roots: Vec::new(),
+            test_source_roots: Vec::new(),
+            main_output_dir: None,
+            test_output_dir: None,
+            source: None,
+            target: None,
+            release: None,
+            enable_preview: false,
+        }
+    }
+}
+
+impl JavaCompileConfig {
+    /// Best-effort union of multiple module configurations.
+    ///
+    /// Useful for multi-module Maven projects where the root POM is an aggregator
+    /// (`<packaging>pom</packaging>`) and does not itself represent a compilable
+    /// module. Callers that need per-module correctness should prefer the
+    /// per-module configs.
+    pub fn union(configs: impl IntoIterator<Item = JavaCompileConfig>) -> JavaCompileConfig {
+        let mut iter = configs.into_iter();
+        let Some(first) = iter.next() else {
+            return JavaCompileConfig::default();
+        };
+
+        let mut out = first;
+        let mut output_dir_candidate = out.main_output_dir.clone();
+        let mut test_output_dir_candidate = out.test_output_dir.clone();
+        let mut source_candidate = out.source.clone();
+        let mut target_candidate = out.target.clone();
+        let mut release_candidate = out.release.clone();
+
+        let mut seen_compile = std::collections::HashSet::new();
+        let mut seen_test = std::collections::HashSet::new();
+        let mut seen_module = std::collections::HashSet::new();
+        let mut seen_main_src = std::collections::HashSet::new();
+        let mut seen_test_src = std::collections::HashSet::new();
+
+        out.compile_classpath
+            .retain(|p| seen_compile.insert(p.clone()));
+        out.test_classpath.retain(|p| seen_test.insert(p.clone()));
+        out.module_path.retain(|p| seen_module.insert(p.clone()));
+        out.main_source_roots
+            .retain(|p| seen_main_src.insert(p.clone()));
+        out.test_source_roots
+            .retain(|p| seen_test_src.insert(p.clone()));
+
+        for cfg in iter {
+            for p in cfg.compile_classpath {
+                if seen_compile.insert(p.clone()) {
+                    out.compile_classpath.push(p);
+                }
+            }
+            for p in cfg.test_classpath {
+                if seen_test.insert(p.clone()) {
+                    out.test_classpath.push(p);
+                }
+            }
+            for p in cfg.module_path {
+                if seen_module.insert(p.clone()) {
+                    out.module_path.push(p);
+                }
+            }
+            for p in cfg.main_source_roots {
+                if seen_main_src.insert(p.clone()) {
+                    out.main_source_roots.push(p);
+                }
+            }
+            for p in cfg.test_source_roots {
+                if seen_test_src.insert(p.clone()) {
+                    out.test_source_roots.push(p);
+                }
+            }
+
+            if output_dir_candidate != cfg.main_output_dir {
+                output_dir_candidate = None;
+            }
+            if test_output_dir_candidate != cfg.test_output_dir {
+                test_output_dir_candidate = None;
+            }
+            if source_candidate != cfg.source {
+                source_candidate = None;
+            }
+            if target_candidate != cfg.target {
+                target_candidate = None;
+            }
+            if release_candidate != cfg.release {
+                release_candidate = None;
+            }
+
+            out.enable_preview |= cfg.enable_preview;
+        }
+
+        out.main_output_dir = output_dir_candidate;
+        out.test_output_dir = test_output_dir_candidate;
+        out.source = source_candidate;
+        out.target = target_candidate;
+        out.release = release_candidate;
+        out
     }
 }
 
@@ -121,6 +253,15 @@ impl BuildManager {
         module_relative: Option<&Path>,
     ) -> Result<BuildResult> {
         self.maven.build(project_root, module_relative, &self.cache)
+    }
+
+    pub fn java_compile_config_maven(
+        &self,
+        project_root: &Path,
+        module_relative: Option<&Path>,
+    ) -> Result<JavaCompileConfig> {
+        self.maven
+            .java_compile_config(project_root, module_relative, &self.cache)
     }
 
     pub fn classpath_gradle(

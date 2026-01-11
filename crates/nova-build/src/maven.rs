@@ -1,5 +1,5 @@
 use crate::cache::{BuildCache, BuildFileFingerprint};
-use crate::{BuildError, BuildResult, BuildSystemKind, Classpath, Result};
+use crate::{BuildError, BuildResult, BuildSystemKind, Classpath, JavaCompileConfig, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -63,6 +63,9 @@ impl MavenBuild {
         )? {
             if let Some(entries) = cached.classpath {
                 return Ok(Classpath::new(entries));
+            }
+            if let Some(cfg) = cached.java_compile_config {
+                return Ok(Classpath::new(cfg.compile_classpath));
             }
         }
 
@@ -136,6 +139,190 @@ impl MavenBuild {
         Ok(Classpath::new(entries))
     }
 
+    pub fn java_compile_config(
+        &self,
+        project_root: &Path,
+        module_relative: Option<&Path>,
+        cache: &BuildCache,
+    ) -> Result<JavaCompileConfig> {
+        let pom_files = collect_maven_build_files(project_root)?;
+        let fingerprint = BuildFileFingerprint::from_files(project_root, pom_files.clone())?;
+        let module_key = module_relative
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "<root>".to_string());
+
+        if let Some(cached) = cache.get_module(
+            project_root,
+            BuildSystemKind::Maven,
+            &fingerprint,
+            &module_key,
+        )? {
+            if let Some(cfg) = cached.java_compile_config {
+                return Ok(cfg);
+            }
+        }
+
+        // Multi-module root: union module configs instead of using the aggregator POM.
+        if module_relative.is_none() {
+            let modules = discover_maven_modules(project_root, &pom_files);
+            if !modules.is_empty() {
+                let mut configs = Vec::new();
+                for module in modules {
+                    configs.push(self.java_compile_config(project_root, Some(&module), cache)?);
+                }
+
+                let cfg = JavaCompileConfig::union(configs);
+                cache.update_module(
+                    project_root,
+                    BuildSystemKind::Maven,
+                    &fingerprint,
+                    &module_key,
+                    |m| {
+                        m.classpath = Some(cfg.compile_classpath.clone());
+                        m.java_compile_config = Some(cfg.clone());
+                    },
+                )?;
+
+                return Ok(cfg);
+            }
+        }
+
+        let compile_output =
+            self.run(project_root, module_relative, &self.config.classpath_args)?;
+        if !compile_output.status.success() {
+            return Err(BuildError::CommandFailed {
+                tool: "maven",
+                code: compile_output.status.code(),
+                output: combine_output(&compile_output),
+            });
+        }
+        let mut compile_classpath = parse_maven_classpath_output(&combine_output(&compile_output));
+
+        let mut test_classpath = self.evaluate_path_list(
+            project_root,
+            module_relative,
+            "project.testClasspathElements",
+        )?;
+
+        let main_source_roots =
+            self.evaluate_path_list(project_root, module_relative, "project.compileSourceRoots")?;
+
+        let test_source_roots = {
+            let roots = self.evaluate_path_list(
+                project_root,
+                module_relative,
+                "project.testCompileSourceRoots",
+            )?;
+            if roots.is_empty() {
+                self.evaluate_path_list(project_root, module_relative, "project.testSourceRoots")?
+            } else {
+                roots
+            }
+        };
+
+        let main_output_dir = self
+            .evaluate_scalar_best_effort(
+                project_root,
+                module_relative,
+                "project.build.outputDirectory",
+            )?
+            .map(PathBuf::from)
+            .or_else(|| {
+                let rel = module_relative.unwrap_or_else(|| Path::new(""));
+                if rel.as_os_str().is_empty() {
+                    Some(project_root.join("target").join("classes"))
+                } else {
+                    Some(project_root.join(rel).join("target").join("classes"))
+                }
+            });
+
+        let test_output_dir = self
+            .evaluate_scalar_best_effort(
+                project_root,
+                module_relative,
+                "project.build.testOutputDirectory",
+            )?
+            .map(PathBuf::from)
+            .or_else(|| {
+                let rel = module_relative.unwrap_or_else(|| Path::new(""));
+                if rel.as_os_str().is_empty() {
+                    Some(project_root.join("target").join("test-classes"))
+                } else {
+                    Some(project_root.join(rel).join("target").join("test-classes"))
+                }
+            });
+
+        let release = self.evaluate_scalar_best_effort(
+            project_root,
+            module_relative,
+            "maven.compiler.release",
+        )?;
+        let source = self.evaluate_scalar_best_effort(
+            project_root,
+            module_relative,
+            "maven.compiler.source",
+        )?;
+        let target = self.evaluate_scalar_best_effort(
+            project_root,
+            module_relative,
+            "maven.compiler.target",
+        )?;
+
+        let enable_preview = self.evaluate_contains_best_effort(
+            project_root,
+            module_relative,
+            "maven.compiler.compilerArgs",
+            "--enable-preview",
+        )? || self.evaluate_contains_best_effort(
+            project_root,
+            module_relative,
+            "maven.compiler.compilerArgument",
+            "--enable-preview",
+        )?;
+
+        // Best-effort: ensure output dirs are represented on the appropriate classpaths.
+        if let Some(out_dir) = &main_output_dir {
+            if !compile_classpath.iter().any(|p| p == out_dir) {
+                compile_classpath.insert(0, out_dir.clone());
+            }
+            if !test_classpath.iter().any(|p| p == out_dir) {
+                test_classpath.insert(0, out_dir.clone());
+            }
+        }
+        if let Some(out_dir) = &test_output_dir {
+            if !test_classpath.iter().any(|p| p == out_dir) {
+                test_classpath.insert(0, out_dir.clone());
+            }
+        }
+
+        let cfg = JavaCompileConfig {
+            compile_classpath,
+            test_classpath,
+            module_path: Vec::new(),
+            main_source_roots,
+            test_source_roots,
+            main_output_dir,
+            test_output_dir,
+            source,
+            target,
+            release,
+            enable_preview,
+        };
+
+        cache.update_module(
+            project_root,
+            BuildSystemKind::Maven,
+            &fingerprint,
+            &module_key,
+            |m| {
+                m.classpath = Some(cfg.compile_classpath.clone());
+                m.java_compile_config = Some(cfg.clone());
+            },
+        )?;
+
+        Ok(cfg)
+    }
+
     pub fn build(
         &self,
         project_root: &Path,
@@ -199,41 +386,102 @@ impl MavenBuild {
         cmd.args(args);
         Ok(cmd.output()?)
     }
+
+    fn evaluate_path_list(
+        &self,
+        project_root: &Path,
+        module_relative: Option<&Path>,
+        expression: &str,
+    ) -> Result<Vec<PathBuf>> {
+        let output = self.run_help_evaluate_raw(project_root, module_relative, expression)?;
+        Ok(parse_maven_classpath_output(&output))
+    }
+
+    fn evaluate_scalar_best_effort(
+        &self,
+        project_root: &Path,
+        module_relative: Option<&Path>,
+        expression: &str,
+    ) -> Result<Option<String>> {
+        match self.run_help_evaluate_raw(project_root, module_relative, expression) {
+            Ok(output) => Ok(parse_maven_evaluate_scalar_output(&output)),
+            Err(BuildError::CommandFailed { .. }) => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
+
+    fn evaluate_contains_best_effort(
+        &self,
+        project_root: &Path,
+        module_relative: Option<&Path>,
+        expression: &str,
+        needle: &str,
+    ) -> Result<bool> {
+        match self.run_help_evaluate_raw(project_root, module_relative, expression) {
+            Ok(output) => Ok(output.contains(needle)),
+            Err(BuildError::CommandFailed { .. }) => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
+
+    fn run_help_evaluate_raw(
+        &self,
+        project_root: &Path,
+        module_relative: Option<&Path>,
+        expression: &str,
+    ) -> Result<String> {
+        let args = vec![
+            "-q".to_string(),
+            "-DforceStdout".to_string(),
+            format!("-Dexpression={expression}"),
+            "help:evaluate".to_string(),
+        ];
+        let output = self.run(project_root, module_relative, &args)?;
+        if !output.status.success() {
+            return Err(BuildError::CommandFailed {
+                tool: "maven",
+                code: output.status.code(),
+                output: combine_output(&output),
+            });
+        }
+        Ok(combine_output(&output))
+    }
 }
 
 pub fn parse_maven_classpath_output(output: &str) -> Vec<PathBuf> {
-    let trimmed = output.trim();
     let mut entries: Vec<PathBuf> = Vec::new();
 
-    // `help:evaluate` often returns either a bracketed list or newline-separated
-    // elements.
-    if trimmed.starts_with('[') && trimmed.ends_with(']') && trimmed.len() >= 2 {
-        let inner = &trimmed[1..trimmed.len() - 1];
-        for part in inner.split(',') {
-            let s = part.trim().trim_matches('"');
-            if !s.is_empty() {
+    // `help:evaluate` output may be noisy even with `-q`; in practice we see
+    // `[INFO]` preambles, warning lines, and downloads printed ahead of the actual
+    // evaluated value.
+    for line in output.lines() {
+        let line = line.trim();
+        if line.is_empty() || is_maven_noise_line(line) || is_maven_null_value(line) {
+            continue;
+        }
+
+        // `help:evaluate` often returns either a bracketed list or
+        // newline-separated elements. Importantly, the bracketed list may appear
+        // on a single line even when the overall output contains other lines.
+        if line.starts_with('[') && line.ends_with(']') && line.len() >= 2 {
+            let inner = &line[1..line.len() - 1];
+            for part in inner.split(',') {
+                let s = part.trim().trim_matches('"');
+                if s.is_empty() || is_maven_null_value(s) {
+                    continue;
+                }
                 entries.push(PathBuf::from(s));
             }
+            continue;
         }
-    } else {
-        for line in trimmed.lines() {
-            let line = line.trim();
-            if line.is_empty()
-                || line.starts_with("[INFO]")
-                || line.starts_with("[WARNING]")
-                || line.starts_with("[ERROR]")
-            {
-                continue;
-            }
 
-            // Some Maven invocations print a single classpath line separated by
-            // the platform-specific path separator.
-            let split: Vec<_> = std::env::split_paths(line).collect();
-            if split.len() > 1 {
-                entries.extend(split);
-            } else {
-                entries.push(PathBuf::from(line));
-            }
+        // Some Maven invocations print a single classpath line separated by the
+        // platform-specific path separator.
+        let split: Vec<_> = std::env::split_paths(line).collect();
+        if split.len() > 1 {
+            entries.extend(split);
+        } else {
+            entries.push(PathBuf::from(line));
         }
     }
 
@@ -241,6 +489,39 @@ pub fn parse_maven_classpath_output(output: &str) -> Vec<PathBuf> {
     let mut seen = std::collections::HashSet::new();
     entries.retain(|p| seen.insert(p.clone()));
     entries
+}
+
+pub fn parse_maven_evaluate_scalar_output(output: &str) -> Option<String> {
+    let mut last = None;
+    for line in output.lines() {
+        let line = line.trim();
+        if line.is_empty() || is_maven_noise_line(line) || is_maven_null_value(line) {
+            continue;
+        }
+        last = Some(line.trim_matches('"').to_string());
+    }
+    last
+}
+
+fn is_maven_noise_line(line: &str) -> bool {
+    line.starts_with("[INFO]")
+        || line.starts_with("[WARNING]")
+        || line.starts_with("[ERROR]")
+        || line.starts_with("[DEBUG]")
+        || line.starts_with("Picked up JAVA_TOOL_OPTIONS")
+        || line.starts_with("Picked up _JAVA_OPTIONS")
+}
+
+fn is_maven_null_value(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    lower == "null"
+        || lower == "[]"
+        || lower.contains("null object")
+        || lower.contains("invalid expression")
 }
 
 fn combine_output(output: &std::process::Output) -> String {
