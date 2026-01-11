@@ -18,6 +18,7 @@ mod metadata;
 mod pack;
 mod path;
 mod shard_index;
+mod prune;
 mod store;
 mod util;
 
@@ -34,5 +35,6 @@ pub use pack::{
 };
 pub use path::{normalize_inputs_map, normalize_rel_path};
 pub use shard_index::{load_shard_index, save_shard_index, shard_cache_path};
+pub use prune::{prune_cache, PruneError, PrunePolicy, PruneReport};
 pub use store::{store_for_url, CacheStore, HttpStore, LocalStore};
 pub use util::{atomic_write, now_millis, BINCODE_PAYLOAD_LIMIT_BYTES};
