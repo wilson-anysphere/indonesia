@@ -67,6 +67,10 @@ impl JdwpWriter {
         self.buf.extend_from_slice(s.as_bytes());
     }
 
+    pub fn write_bytes(&mut self, bytes: &[u8]) {
+        self.buf.extend_from_slice(bytes);
+    }
+
     pub fn write_id(&mut self, id: u64, size: usize) {
         let be = id.to_be_bytes();
         self.buf.extend_from_slice(&be[8 - size..]);
@@ -210,6 +214,13 @@ impl<'a> JdwpReader<'a> {
         self.pos += len;
         String::from_utf8(bytes.to_vec())
             .map_err(|e| JdwpError::Protocol(format!("invalid utf-8 string: {e}")))
+    }
+
+    pub fn read_bytes(&mut self, len: usize) -> Result<&'a [u8]> {
+        self.require(len)?;
+        let bytes = &self.buf[self.pos..self.pos + len];
+        self.pos += len;
+        Ok(bytes)
     }
 
     pub fn read_id(&mut self, size: usize) -> Result<u64> {

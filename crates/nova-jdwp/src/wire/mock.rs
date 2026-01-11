@@ -1,7 +1,8 @@
 use std::{
+    collections::BTreeSet,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{
-        atomic::{AtomicI32, AtomicU32, Ordering},
+        atomic::{AtomicI32, AtomicU16, AtomicU32, Ordering},
         Arc,
     },
 };
@@ -14,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     codec::{encode_command, encode_reply, JdwpReader, JdwpWriter, HANDSHAKE, HEADER_LEN},
-    types::{JdwpIdSizes, Location},
+    types::{JdwpIdSizes, Location, ObjectId, ReferenceTypeId},
 };
 
 /// A tiny JDWP server used for unit/integration testing.
@@ -24,6 +25,7 @@ use super::{
 pub struct MockJdwpServer {
     addr: SocketAddr,
     shutdown: CancellationToken,
+    state: Arc<State>,
 }
 
 impl MockJdwpServer {
@@ -35,16 +37,33 @@ impl MockJdwpServer {
 
         let state = Arc::new(State::default());
         let task_shutdown = shutdown.clone();
+        let task_state = state.clone();
 
         tokio::spawn(async move {
-            let _ = run(listener, state, task_shutdown).await;
+            let _ = run(listener, task_state, task_shutdown).await;
         });
 
-        Ok(Self { addr, shutdown })
+        Ok(Self {
+            addr,
+            shutdown,
+            state,
+        })
     }
 
     pub fn addr(&self) -> SocketAddr {
         self.addr
+    }
+
+    pub fn set_redefine_classes_error_code(&self, code: u16) {
+        self.state.redefine_classes_error_code.store(code, Ordering::Relaxed);
+    }
+
+    pub async fn redefine_classes_calls(&self) -> Vec<RedefineClassesCall> {
+        self.state.redefine_classes_calls.lock().await.clone()
+    }
+
+    pub async fn pinned_object_ids(&self) -> BTreeSet<ObjectId> {
+        self.state.pinned_object_ids.lock().await.clone()
     }
 }
 
@@ -54,12 +73,30 @@ impl Drop for MockJdwpServer {
     }
 }
 
-#[derive(Default)]
 struct State {
     next_request_id: AtomicI32,
     next_packet_id: AtomicU32,
     breakpoint_request: tokio::sync::Mutex<Option<i32>>,
     step_request: tokio::sync::Mutex<Option<i32>>,
+    redefine_classes_error_code: AtomicU16,
+    redefine_classes_calls: tokio::sync::Mutex<Vec<RedefineClassesCall>>,
+    pinned_object_ids: tokio::sync::Mutex<BTreeSet<ObjectId>>,
+    last_classes_by_signature: tokio::sync::Mutex<Option<String>>,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            next_request_id: AtomicI32::new(0),
+            next_packet_id: AtomicU32::new(0),
+            breakpoint_request: tokio::sync::Mutex::new(None),
+            step_request: tokio::sync::Mutex::new(None),
+            redefine_classes_error_code: AtomicU16::new(0),
+            redefine_classes_calls: tokio::sync::Mutex::new(Vec::new()),
+            pinned_object_ids: tokio::sync::Mutex::new(BTreeSet::new()),
+            last_classes_by_signature: tokio::sync::Mutex::new(None),
+        }
+    }
 }
 
 impl State {
@@ -72,9 +109,16 @@ impl State {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RedefineClassesCall {
+    pub class_count: u32,
+    pub classes: Vec<(ReferenceTypeId, Vec<u8>)>,
+}
+
 const THREAD_ID: u64 = 0x1001;
 const FRAME_ID: u64 = 0x2001;
 const CLASS_ID: u64 = 0x3001;
+const FOO_CLASS_ID: u64 = 0x3002;
 const METHOD_ID: u64 = 0x4001;
 const OBJECT_ID: u64 = 0x5001;
 const OBJECT_CLASS_ID: u64 = 0x6001;
@@ -166,7 +210,7 @@ async fn handle_packet(
     let sizes = id_sizes;
     let mut r = JdwpReader::new(&packet.payload);
 
-    let reply_payload = match (packet.command_set, packet.command) {
+    let (reply_error_code, reply_payload) = match (packet.command_set, packet.command) {
         // VirtualMachine.IDSizes
         (1, 7) => {
             let mut w = JdwpWriter::new();
@@ -175,7 +219,7 @@ async fn handle_packet(
             w.write_u32(sizes.object_id as u32);
             w.write_u32(sizes.reference_type_id as u32);
             w.write_u32(sizes.frame_id as u32);
-            w.into_vec()
+            (0, w.into_vec())
         }
         // VirtualMachine.CapabilitiesNew
         (1, 17) => {
@@ -184,14 +228,39 @@ async fn handle_packet(
             for _ in 0..32 {
                 w.write_bool(false);
             }
-            w.into_vec()
+            (0, w.into_vec())
         }
         // VirtualMachine.AllThreads
         (1, 4) => {
             let mut w = JdwpWriter::new();
             w.write_u32(1);
             w.write_object_id(THREAD_ID, sizes);
-            w.into_vec()
+            (0, w.into_vec())
+        }
+        // VirtualMachine.ClassesBySignature
+        (1, 2) => {
+            let signature = r.read_string().unwrap_or_default();
+            *state.last_classes_by_signature.lock().await = Some(signature.clone());
+
+            let mut w = JdwpWriter::new();
+            match signature.as_str() {
+                "LMain;" => {
+                    w.write_u32(1);
+                    w.write_u8(1); // class
+                    w.write_reference_type_id(CLASS_ID, sizes);
+                    w.write_u32(1);
+                }
+                "Lcom/example/Foo;" => {
+                    w.write_u32(1);
+                    w.write_u8(1); // class
+                    w.write_reference_type_id(FOO_CLASS_ID, sizes);
+                    w.write_u32(1);
+                }
+                _ => {
+                    w.write_u32(0);
+                }
+            }
+            (0, w.into_vec())
         }
         // VirtualMachine.AllClasses
         (1, 3) => {
@@ -201,18 +270,38 @@ async fn handle_packet(
             w.write_reference_type_id(CLASS_ID, sizes);
             w.write_string("LMain;");
             w.write_u32(1);
-            w.into_vec()
+            (0, w.into_vec())
+        }
+        // VirtualMachine.RedefineClasses
+        (1, 18) => {
+            let class_count = r.read_u32().unwrap_or(0);
+            let mut classes = Vec::with_capacity(class_count as usize);
+            for _ in 0..class_count {
+                let type_id = r.read_reference_type_id(sizes).unwrap_or(0);
+                let len = r.read_u32().unwrap_or(0) as usize;
+                let bytes = r.read_bytes(len).unwrap_or(&[]).to_vec();
+                classes.push((type_id, bytes));
+            }
+
+            state
+                .redefine_classes_calls
+                .lock()
+                .await
+                .push(RedefineClassesCall { class_count, classes });
+
+            let err = state.redefine_classes_error_code.load(Ordering::Relaxed);
+            (err, Vec::new())
         }
         // VirtualMachine.Resume
         (1, 9) => {
-            Vec::new()
+            (0, Vec::new())
         }
         // ThreadReference.Name
         (11, 1) => {
             let _thread_id = r.read_object_id(sizes).unwrap_or(0);
             let mut w = JdwpWriter::new();
             w.write_string("main");
-            w.into_vec()
+            (0, w.into_vec())
         }
         // ThreadReference.Frames
         (11, 6) => {
@@ -223,21 +312,21 @@ async fn handle_packet(
             w.write_u32(1);
             w.write_id(FRAME_ID, sizes.frame_id);
             w.write_location(&default_location(), sizes);
-            w.into_vec()
+            (0, w.into_vec())
         }
         // ReferenceType.SourceFile
         (2, 7) => {
             let _class_id = r.read_reference_type_id(sizes).unwrap_or(0);
             let mut w = JdwpWriter::new();
             w.write_string("Main.java");
-            w.into_vec()
+            (0, w.into_vec())
         }
         // ReferenceType.Signature
         (2, 1) => {
             let _class_id = r.read_reference_type_id(sizes).unwrap_or(0);
             let mut w = JdwpWriter::new();
             w.write_string("LMain;");
-            w.into_vec()
+            (0, w.into_vec())
         }
         // ReferenceType.Methods
         (2, 5) => {
@@ -248,7 +337,7 @@ async fn handle_packet(
             w.write_string("main");
             w.write_string("()V");
             w.write_u32(1);
-            w.into_vec()
+            (0, w.into_vec())
         }
         // ReferenceType.Fields (for object inspection)
         (2, 4) => {
@@ -263,7 +352,7 @@ async fn handle_packet(
             } else {
                 w.write_u32(0);
             }
-            w.into_vec()
+            (0, w.into_vec())
         }
         // Method.LineTable
         (6, 1) => {
@@ -275,7 +364,7 @@ async fn handle_packet(
             w.write_u32(1);
             w.write_u64(0);
             w.write_i32(3);
-            w.into_vec()
+            (0, w.into_vec())
         }
         // Method.VariableTable
         (6, 2) => {
@@ -299,7 +388,7 @@ async fn handle_packet(
             w.write_u32(10);
             w.write_u32(1);
 
-            w.into_vec()
+            (0, w.into_vec())
         }
         // StackFrame.GetValues
         (16, 1) => {
@@ -329,14 +418,14 @@ async fn handle_packet(
                     }
                 }
             }
-            w.into_vec()
+            (0, w.into_vec())
         }
         // ObjectReference.ReferenceType
         (9, 1) => {
             let _object_id = r.read_object_id(sizes).unwrap_or(0);
             let mut w = JdwpWriter::new();
             w.write_reference_type_id(OBJECT_CLASS_ID, sizes);
-            w.into_vec()
+            (0, w.into_vec())
         }
         // ObjectReference.GetValues
         (9, 2) => {
@@ -351,7 +440,26 @@ async fn handle_packet(
                 w.write_u8(b'I');
                 w.write_i32(7);
             }
-            w.into_vec()
+            (0, w.into_vec())
+        }
+        // ObjectReference.DisableCollection
+        (9, 7) => {
+            let object_id = r.read_object_id(sizes).unwrap_or(0);
+            state.pinned_object_ids.lock().await.insert(object_id);
+            (0, Vec::new())
+        }
+        // ObjectReference.EnableCollection
+        (9, 8) => {
+            let object_id = r.read_object_id(sizes).unwrap_or(0);
+            state.pinned_object_ids.lock().await.remove(&object_id);
+            (0, Vec::new())
+        }
+        // StringReference.Value
+        (10, 1) => {
+            let _object_id = r.read_object_id(sizes).unwrap_or(0);
+            let mut w = JdwpWriter::new();
+            w.write_string("mock string");
+            (0, w.into_vec())
         }
         // EventRequest.Set
         (15, 1) => {
@@ -391,7 +499,7 @@ async fn handle_packet(
             }
             let mut w = JdwpWriter::new();
             w.write_i32(request_id);
-            w.into_vec()
+            (0, w.into_vec())
         }
         // EventRequest.Clear
         (15, 2) => {
@@ -412,7 +520,7 @@ async fn handle_packet(
                 }
                 _ => {}
             }
-            Vec::new()
+            (0, Vec::new())
         }
         _ => {
             // Unknown command: reply with a generic error.
@@ -423,8 +531,10 @@ async fn handle_packet(
         }
     };
 
-    socket.write_all(&encode_reply(packet.id, 0, &reply_payload)).await?;
-    if packet.command_set == 1 && packet.command == 9 {
+    socket
+        .write_all(&encode_reply(packet.id, reply_error_code, &reply_payload))
+        .await?;
+    if reply_error_code == 0 && packet.command_set == 1 && packet.command == 9 {
         // After a resume, immediately emit a stop event if a request is configured.
         let breakpoint_request = { *state.breakpoint_request.lock().await };
         let step_request = { *state.step_request.lock().await };

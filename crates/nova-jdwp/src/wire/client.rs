@@ -261,6 +261,66 @@ impl JdwpClient {
         Ok(classes)
     }
 
+    /// VirtualMachine.ClassesBySignature (1, 2)
+    pub async fn classes_by_signature(&self, signature: &str) -> Result<Vec<ClassInfo>> {
+        let mut w = JdwpWriter::new();
+        w.write_string(signature);
+        let payload = self.send_command_raw(1, 2, w.into_vec()).await?;
+        let sizes = self.id_sizes().await;
+        let mut r = JdwpReader::new(&payload);
+
+        let count = r.read_u32()? as usize;
+        let signature = signature.to_string();
+        let mut classes = Vec::with_capacity(count);
+        for _ in 0..count {
+            classes.push(ClassInfo {
+                ref_type_tag: r.read_u8()?,
+                type_id: r.read_reference_type_id(&sizes)?,
+                signature: signature.clone(),
+                status: r.read_u32()?,
+            });
+        }
+        Ok(classes)
+    }
+
+    /// VirtualMachine.RedefineClasses (1, 18)
+    ///
+    /// Payload encoding follows the JDWP spec:
+    /// - `u32 classCount`
+    /// - repeated `referenceTypeId`, `u32 bytecodeLen`, `byte[bytecodeLen]`
+    pub async fn redefine_classes(&self, classes: &[(ReferenceTypeId, Vec<u8>)]) -> Result<()> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_u32(classes.len() as u32);
+        for (type_id, bytecode) in classes {
+            w.write_reference_type_id(*type_id, &sizes);
+            w.write_u32(bytecode.len() as u32);
+            w.write_bytes(bytecode);
+        }
+        let _ = self.send_command_raw(1, 18, w.into_vec()).await?;
+        Ok(())
+    }
+
+    /// Convenience wrapper for `VirtualMachine.RedefineClasses` that resolves a reference type by name.
+    ///
+    /// `com.example.Foo` is translated to the JDWP signature `Lcom/example/Foo;`.
+    /// Returns an error when the class is not currently loaded in the target JVM.
+    pub async fn redefine_class_by_name(&self, class_name: &str, bytecode: &[u8]) -> Result<()> {
+        let signature = class_name_to_signature(class_name);
+        let infos = self.classes_by_signature(&signature).await?;
+        if infos.is_empty() {
+            return Err(JdwpError::Protocol(format!(
+                "class {class_name} is not loaded in target JVM"
+            )));
+        }
+
+        let classes: Vec<(ReferenceTypeId, Vec<u8>)> = infos
+            .into_iter()
+            .map(|info| (info.type_id, bytecode.to_vec()))
+            .collect();
+        self.redefine_classes(&classes).await
+    }
+
     pub async fn reference_type_source_file(&self, class_id: ReferenceTypeId) -> Result<String> {
         let sizes = self.id_sizes().await;
         let mut w = JdwpWriter::new();
@@ -421,6 +481,34 @@ impl JdwpClient {
         Ok(values)
     }
 
+    /// StringReference.Value (10, 1)
+    pub async fn string_reference_value(&self, object_id: ObjectId) -> Result<String> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_object_id(object_id, &sizes);
+        let payload = self.send_command_raw(10, 1, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        r.read_string()
+    }
+
+    /// ObjectReference.DisableCollection (9, 7)
+    pub async fn object_reference_disable_collection(&self, object_id: ObjectId) -> Result<()> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_object_id(object_id, &sizes);
+        let _ = self.send_command_raw(9, 7, w.into_vec()).await?;
+        Ok(())
+    }
+
+    /// ObjectReference.EnableCollection (9, 8)
+    pub async fn object_reference_enable_collection(&self, object_id: ObjectId) -> Result<()> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_object_id(object_id, &sizes);
+        let _ = self.send_command_raw(9, 8, w.into_vec()).await?;
+        Ok(())
+    }
+
     pub async fn array_reference_length(&self, array_id: ObjectId) -> Result<i32> {
         let sizes = self.id_sizes().await;
         let mut w = JdwpWriter::new();
@@ -485,6 +573,14 @@ impl JdwpClient {
         let _ = self.send_command_raw(15, 2, w.into_vec()).await?;
         Ok(())
     }
+}
+
+fn class_name_to_signature(class_name: &str) -> String {
+    if class_name.starts_with('L') && class_name.ends_with(';') {
+        return class_name.to_string();
+    }
+    let internal = class_name.replace('.', "/");
+    format!("L{internal};")
 }
 
 #[derive(Debug)]
