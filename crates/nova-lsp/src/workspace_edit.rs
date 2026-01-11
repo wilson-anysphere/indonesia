@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use lsp_types::{
@@ -7,7 +7,10 @@ use lsp_types::{
     TextEdit, Uri, WorkspaceEdit,
 };
 
-use nova_refactor::RefactoringEdit;
+use nova_refactor::{
+    workspace_edit_to_lsp_document_changes_with_uri_mapper, FileId as RefactorFileId, RefactoringEdit,
+    TextDatabase,
+};
 
 pub fn client_supports_file_operations(capabilities: &ClientCapabilities) -> bool {
     can_rename(capabilities) || (can_create(capabilities) && can_delete(capabilities))
@@ -62,6 +65,12 @@ pub fn workspace_edit_from_refactor(
     capabilities: &ClientCapabilities,
 ) -> WorkspaceEdit {
     if can_rename(capabilities) {
+        if let Some(edit) =
+            try_workspace_edit_from_refactor_with_rename_support(root_uri, original_files, edit)
+        {
+            return edit;
+        }
+
         let mut ops: Vec<DocumentChangeOperation> = Vec::new();
 
         for mv in &edit.file_moves {
@@ -207,6 +216,36 @@ pub fn workspace_edit_from_refactor(
             change_annotations: None,
         }
     }
+}
+
+fn try_workspace_edit_from_refactor_with_rename_support(
+    root_uri: &Uri,
+    original_files: &HashMap<PathBuf, String>,
+    edit: &RefactoringEdit,
+) -> Option<WorkspaceEdit> {
+    // Convert the legacy move refactoring edit into Nova's canonical `WorkspaceEdit` representation
+    // and then reuse the shared `workspace_edit_to_lsp_document_changes_*` helper for UTF-16 correct
+    // ranges.
+    //
+    // If conversion fails for any reason (missing original file, invalid ranges), fall back to the
+    // legacy implementation.
+    let original_files: BTreeMap<PathBuf, String> = original_files
+        .iter()
+        .map(|(path, text)| (path.clone(), text.clone()))
+        .collect();
+
+    let canonical = edit.to_workspace_edit(&original_files).ok()?;
+    let db = TextDatabase::new(original_files.into_iter().map(|(path, text)| {
+        (
+            RefactorFileId::new(path.to_string_lossy().into_owned()),
+            text,
+        )
+    }));
+
+    workspace_edit_to_lsp_document_changes_with_uri_mapper(&db, &canonical, |file| {
+        Ok(join_uri(root_uri, Path::new(&file.0)))
+    })
+    .ok()
 }
 
 pub(crate) fn join_uri(root: &Uri, path: &Path) -> Uri {
