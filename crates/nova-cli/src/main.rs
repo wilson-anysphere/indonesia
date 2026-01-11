@@ -288,7 +288,7 @@ struct BugReportArgs {
     #[arg(long)]
     out: Option<PathBuf>,
 
-    /// Also write a `.tar.zst` archive alongside the output directory.
+    /// Also write a `.zip` archive alongside the output directory.
     #[arg(long)]
     archive: bool,
 
