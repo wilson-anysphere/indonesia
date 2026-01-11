@@ -5,6 +5,19 @@ use nova_core::{LineIndex, Position as CorePosition, TextRange, TextSize};
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PatchApplyConfig {
+    pub allow_new_files: bool,
+}
+
+impl Default for PatchApplyConfig {
+    fn default() -> Self {
+        Self {
+            allow_new_files: false,
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct VirtualWorkspace {
     files: BTreeMap<String, String>,
@@ -30,13 +43,25 @@ impl VirtualWorkspace {
     }
 
     pub fn apply_patch(&self, patch: &Patch) -> Result<AppliedPatch, PatchApplyError> {
+        self.apply_patch_with_config(patch, &PatchApplyConfig::default())
+    }
+
+    pub fn apply_patch_with_config(
+        &self,
+        patch: &Patch,
+        config: &PatchApplyConfig,
+    ) -> Result<AppliedPatch, PatchApplyError> {
         match patch {
-            Patch::Json(patch) => self.apply_json_patch(patch),
-            Patch::UnifiedDiff(diff) => self.apply_unified_diff(diff),
+            Patch::Json(patch) => self.apply_json_patch(patch, config),
+            Patch::UnifiedDiff(diff) => self.apply_unified_diff(diff, config),
         }
     }
 
-    fn apply_json_patch(&self, patch: &JsonPatch) -> Result<AppliedPatch, PatchApplyError> {
+    fn apply_json_patch(
+        &self,
+        patch: &JsonPatch,
+        config: &PatchApplyConfig,
+    ) -> Result<AppliedPatch, PatchApplyError> {
         let mut out = self.clone();
         let mut touched_ranges: BTreeMap<String, Vec<TextRange>> = BTreeMap::new();
         let mut created_files = BTreeSet::new();
@@ -46,6 +71,9 @@ impl VirtualWorkspace {
         for op in &patch.ops {
             match op {
                 JsonPatchOp::Create { file, text } => {
+                    if !config.allow_new_files {
+                        return Err(PatchApplyError::MissingFile { file: file.clone() });
+                    }
                     if out.files.contains_key(file) {
                         return Err(PatchApplyError::FileAlreadyExists { file: file.clone() });
                     }
@@ -105,7 +133,11 @@ impl VirtualWorkspace {
         })
     }
 
-    fn apply_unified_diff(&self, diff: &UnifiedDiffPatch) -> Result<AppliedPatch, PatchApplyError> {
+    fn apply_unified_diff(
+        &self,
+        diff: &UnifiedDiffPatch,
+        config: &PatchApplyConfig,
+    ) -> Result<AppliedPatch, PatchApplyError> {
         let mut out = self.clone();
         let mut touched_ranges: BTreeMap<String, Vec<TextRange>> = BTreeMap::new();
         let mut created_files = BTreeSet::new();
@@ -116,6 +148,9 @@ impl VirtualWorkspace {
             let (op, source_path, target_path) = classify_unified_diff_file(file)?;
             match op {
                 UnifiedDiffFileOp::Create => {
+                    if !config.allow_new_files {
+                        return Err(PatchApplyError::MissingFile { file: target_path });
+                    }
                     if out.files.contains_key(&target_path) {
                         return Err(PatchApplyError::FileAlreadyExists { file: target_path });
                     }

@@ -5,8 +5,10 @@ use nova_ai::patch::{parse_structured_patch, Patch, PatchParseError};
 use nova_ai::provider::{AiProvider, AiProviderError};
 use nova_ai::{enforce_code_edit_policy, CodeEditPolicyError};
 use nova_config::AiPrivacyConfig;
-use nova_ai::safety::{enforce_no_new_imports, enforce_patch_safety, PatchSafetyConfig, SafetyError};
-use nova_ai::workspace::{AppliedPatch, PatchApplyError, VirtualWorkspace};
+use nova_ai::safety::{
+    enforce_no_new_imports, enforce_patch_safety, PatchSafetyConfig, SafetyError,
+};
+use nova_ai::workspace::{AppliedPatch, PatchApplyConfig, PatchApplyError, VirtualWorkspace};
 use nova_core::{LineIndex, TextRange};
 use nova_ide::diagnostics::{Diagnostic, DiagnosticKind, DiagnosticSeverity, DiagnosticsEngine};
 use nova_ide::format::Formatter;
@@ -167,7 +169,12 @@ pub fn run_code_generation(
 
         enforce_patch_safety(&patch, workspace, &config.safety)?;
 
-        let applied = match workspace.apply_patch(&patch) {
+        let applied = match workspace.apply_patch_with_config(
+            &patch,
+            &PatchApplyConfig {
+                allow_new_files: config.safety.allow_new_files,
+            },
+        ) {
             Ok(applied) => applied,
             Err(err) => {
                 if config.allow_repair && attempt < config.max_repair_attempts {
@@ -222,6 +229,7 @@ fn build_prompt(
     out.push_str("JSON schema:\n");
     out.push_str("{\"edits\":[{\"file\":\"path\",\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":0}},\"text\":\"...\"}],\"ops\":[{\"op\":\"create\",\"file\":\"path\",\"text\":\"...\"},{\"op\":\"delete\",\"file\":\"path\"},{\"op\":\"rename\",\"from\":\"old\",\"to\":\"new\"}]}\n");
     out.push_str("Alternatively you may return a unified diff starting with \"---\"/\"+++\" and \"@@\" hunks.\n");
+    out.push_str("Paths must be workspace-relative and use forward slashes (/).\n");
 
     out.push_str(&format!(
         "\nSafety limits: max_files={}, max_total_inserted_chars={}, max_total_deleted_chars={}.\n",
@@ -229,11 +237,22 @@ fn build_prompt(
         config.safety.max_total_inserted_chars,
         config.safety.max_total_deleted_chars
     ));
+    if !config.safety.allowed_path_prefixes.is_empty() {
+        out.push_str("Allowed path prefixes:\n");
+        for prefix in &config.safety.allowed_path_prefixes {
+            out.push_str(&format!("- {prefix}\n"));
+        }
+    }
     if !config.safety.excluded_path_prefixes.is_empty() {
         out.push_str("Excluded path prefixes:\n");
         for prefix in &config.safety.excluded_path_prefixes {
             out.push_str(&format!("- {prefix}\n"));
         }
+    }
+    if !config.safety.allow_new_files {
+        out.push_str(
+            "Do not create new files; only edit files that already exist in the workspace.\n",
+        );
     }
     if config.safety.no_new_imports {
         out.push_str("Do not add new import statements.\n");

@@ -70,8 +70,18 @@ impl<'a> AiCodeActionExecutor<'a> {
                     insert_range,
                     workspace,
                 );
-                let result =
-                    run_code_generation(self.provider, workspace, &prompt, &self.config, &self.privacy, cancel)?;
+                let mut config = self.config.clone();
+                if config.safety.allowed_path_prefixes.is_empty() {
+                    config.safety.allowed_path_prefixes = vec![file.clone()];
+                }
+                let result = run_code_generation(
+                    self.provider,
+                    workspace,
+                    &prompt,
+                    &config,
+                    &self.privacy,
+                    cancel,
+                )?;
                 Ok(CodeActionOutcome::AppliedEdits(result.formatted_workspace))
             }
             AiCodeAction::GenerateTest { file, insert_range } => {
@@ -81,8 +91,18 @@ impl<'a> AiCodeActionExecutor<'a> {
                     insert_range,
                     workspace,
                 );
-                let result =
-                    run_code_generation(self.provider, workspace, &prompt, &self.config, &self.privacy, cancel)?;
+                let mut config = self.config.clone();
+                if config.safety.allowed_path_prefixes.is_empty() {
+                    config.safety.allowed_path_prefixes = vec![file.clone()];
+                }
+                let result = run_code_generation(
+                    self.provider,
+                    workspace,
+                    &prompt,
+                    &config,
+                    &self.privacy,
+                    cancel,
+                )?;
                 Ok(CodeActionOutcome::AppliedEdits(result.formatted_workspace))
             }
         }

@@ -14,6 +14,11 @@ pub struct PatchSafetyConfig {
     pub max_hunks_per_file: usize,
     pub max_edit_span_chars: usize,
 
+    /// Optional allowlist of relative path prefixes that patches may touch.
+    ///
+    /// When empty, all (valid) relative paths are allowed.
+    pub allowed_path_prefixes: Vec<String>,
+
     /// Paths that should never be modified (simple prefix match).
     pub excluded_path_prefixes: Vec<String>,
 
@@ -28,6 +33,11 @@ pub struct PatchSafetyConfig {
     /// Extensions that are always rejected.
     pub denied_file_extensions: Vec<String>,
 
+    /// Whether patches are allowed to create files that are not already present in the workspace.
+    ///
+    /// This defaults to `false` for safety.
+    pub allow_new_files: bool,
+
     pub no_new_imports: bool,
 }
 
@@ -39,6 +49,7 @@ impl Default for PatchSafetyConfig {
             max_total_deleted_chars: 20_000,
             max_hunks_per_file: 50,
             max_edit_span_chars: 20_000,
+            allowed_path_prefixes: Vec::new(),
             excluded_path_prefixes: Vec::new(),
             excluded_path_globs: Vec::new(),
             allowed_file_extensions: vec![
@@ -52,6 +63,7 @@ impl Default for PatchSafetyConfig {
                 ".md".into(),
             ],
             denied_file_extensions: Vec::new(),
+            allow_new_files: false,
             no_new_imports: false,
         }
     }
@@ -79,12 +91,16 @@ pub enum SafetyError {
     },
     #[error("patch attempted to edit excluded path '{path}'")]
     ExcludedPath { path: String },
+    #[error("patch attempted to edit path outside the allowed prefixes '{path}'")]
+    NotAllowedPath { path: String },
     #[error("patch attempted to use non-relative path '{path}'")]
     NonRelativePath { path: String },
     #[error("patch attempted to edit disallowed file extension '{extension}' for '{path}'")]
     DisallowedFileExtension { path: String, extension: String },
     #[error("invalid excluded_paths glob {pattern:?}: {error}")]
     InvalidExcludedGlob { pattern: String, error: String },
+    #[error("patch attempted to create a new file '{file}', but new files are not allowed")]
+    NewFileNotAllowed { file: String },
     #[error("patch introduces new imports in '{file}': {imports:?}")]
     NewImports { file: String, imports: Vec<String> },
 }
@@ -99,6 +115,7 @@ pub fn enforce_patch_safety(
     let denied_exts: BTreeSet<String> = config.denied_file_extensions.iter().cloned().collect();
 
     let mut files = BTreeSet::new();
+    let mut new_files = BTreeSet::new();
     let mut inserted_chars = 0usize;
     let mut deleted_chars = 0usize;
 
@@ -111,6 +128,7 @@ pub fn enforce_patch_safety(
                     JsonPatchOp::Create { file, text } => {
                         validate_path(file, config, &excluded_globs, &allowed_exts, &denied_exts)?;
                         files.insert(file.clone());
+                        new_files.insert(file.clone());
                         inserted_chars = inserted_chars.saturating_add(text.len());
                         let span = text.len();
                         if span > config.max_edit_span_chars {
@@ -162,6 +180,9 @@ pub fn enforce_patch_safety(
                     &denied_exts,
                 )?;
                 files.insert(edit.file.clone());
+                if workspace.get(&edit.file).is_none() && !virtual_files.contains_key(&edit.file) {
+                    new_files.insert(edit.file.clone());
+                }
                 inserted_chars = inserted_chars.saturating_add(edit.text.len());
 
                 let count = edits_per_file.entry(edit.file.clone()).or_default();
@@ -231,6 +252,9 @@ pub fn enforce_patch_safety(
                     )?;
                     files.insert(file.new_path.clone());
                 }
+                if file.old_path == "/dev/null" && file.new_path != "/dev/null" {
+                    new_files.insert(file.new_path.clone());
+                }
 
                 if file.hunks.len() > config.max_hunks_per_file {
                     return Err(SafetyError::TooManyHunks {
@@ -292,6 +316,12 @@ pub fn enforce_patch_safety(
             chars: deleted_chars,
             max: config.max_total_deleted_chars,
         });
+    }
+
+    if !config.allow_new_files {
+        if let Some(file) = new_files.into_iter().next() {
+            return Err(SafetyError::NewFileNotAllowed { file });
+        }
     }
 
     Ok(())
@@ -363,6 +393,7 @@ fn validate_path(
     allowed_exts: &BTreeSet<String>,
     denied_exts: &BTreeSet<String>,
 ) -> Result<(), SafetyError> {
+    let path = normalize_patch_path(path);
     if path.starts_with('/') || path.starts_with('\\') || path.contains('\\') {
         return Err(SafetyError::NonRelativePath {
             path: path.to_string(),
@@ -372,6 +403,21 @@ fn validate_path(
     // Disallow traversal and drive letters / URI schemes.
     if path.split('/').any(|segment| segment == "..") || path.contains(':') {
         return Err(SafetyError::NonRelativePath {
+            path: path.to_string(),
+        });
+    }
+
+    if config
+        .allowed_path_prefixes
+        .iter()
+        .any(|prefix| !prefix.is_empty())
+        && !config
+            .allowed_path_prefixes
+            .iter()
+            .filter(|prefix| !prefix.is_empty())
+            .any(|prefix| path_matches_prefix(path, prefix))
+    {
+        return Err(SafetyError::NotAllowedPath {
             path: path.to_string(),
         });
     }
@@ -415,6 +461,21 @@ fn validate_path(
     }
 
     Ok(())
+}
+
+fn normalize_patch_path(path: &str) -> &str {
+    // Patches are expected to already use forward slashes (`/`) as separators. We do not attempt
+    // to normalize Windows backslashes (`\`) because failing closed is safer than trying to guess
+    // intent (e.g. UNC paths like `\\server\\share` or device paths like `\\\\?\\C:\\...`).
+    path
+}
+
+fn path_matches_prefix(path: &str, prefix: &str) -> bool {
+    let prefix = prefix.strip_suffix('/').unwrap_or(prefix);
+    let Some(rest) = path.strip_prefix(prefix) else {
+        return false;
+    };
+    rest.is_empty() || rest.starts_with('/')
 }
 
 fn resolve_virtual_file<'a>(
