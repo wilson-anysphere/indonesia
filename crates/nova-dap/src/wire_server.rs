@@ -216,6 +216,7 @@ async fn handle_request_inner(
                 "supportsCancelRequest": true,
                 "supportsSetVariable": false,
                 "supportsStepBack": false,
+                "supportsExceptionBreakpoints": true,
                 "supportsExceptionInfoRequest": true,
                 "exceptionBreakpointFilters": [
                     { "filter": "caught", "label": "Caught Exceptions", "default": false },

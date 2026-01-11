@@ -29,6 +29,13 @@ pub enum DebuggerError {
 
 pub type Result<T> = std::result::Result<T, DebuggerError>;
 
+/// JDWP suspend policy used for stop events (breakpoints, stepping, exceptions).
+///
+/// We use `EVENT_THREAD` so only the thread that triggered the event is suspended.
+/// The wire DAP server reports `stopped.body.allThreadsStopped = false` for these
+/// events.
+const JDWP_SUSPEND_POLICY_EVENT_THREAD: u8 = 1;
+
 #[derive(Debug, Clone)]
 pub struct AttachArgs {
     pub host: IpAddr,
@@ -454,7 +461,7 @@ impl Debugger {
                             cancel,
                             self.jdwp.event_request_set(
                                 2,
-                                1,
+                                JDWP_SUSPEND_POLICY_EVENT_THREAD,
                                 vec![EventModifier::LocationOnly { location }],
                             ),
                         )
@@ -568,7 +575,7 @@ impl Debugger {
             cancel,
             self.jdwp.event_request_set(
                 1,
-                1,
+                JDWP_SUSPEND_POLICY_EVENT_THREAD,
                 vec![EventModifier::Step {
                     thread,
                     size: 1, // line
@@ -592,7 +599,7 @@ impl Debugger {
             .jdwp
             .event_request_set(
                 4,
-                1,
+                JDWP_SUSPEND_POLICY_EVENT_THREAD,
                 vec![EventModifier::ExceptionOnly {
                     exception_or_null: 0,
                     caught,
@@ -1043,7 +1050,7 @@ impl Debugger {
             if let Some(location) = self.location_for_line(&cancel, &class, line).await? {
                 if let Ok(request_id) = self
                     .jdwp
-                    .event_request_set(2, 1, vec![EventModifier::LocationOnly { location }])
+                    .event_request_set(2, JDWP_SUSPEND_POLICY_EVENT_THREAD, vec![EventModifier::LocationOnly { location }])
                     .await
                 {
                     entries.push(BreakpointEntry { request_id });
