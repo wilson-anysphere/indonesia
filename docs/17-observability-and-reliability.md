@@ -49,6 +49,19 @@ include_backtrace = true
 buffer_lines = 5000
 ```
 
+### Supplying config (standalone binaries vs embedders)
+
+Nova’s logging “knobs” are part of `NovaConfig`, but the standalone binaries in this repository
+snapshot (`nova-lsp`, `nova-dap`) currently start with `NovaConfig::default()` and do not load a
+TOML config file themselves.
+
+Practical implications:
+
+- **To change verbosity in the standalone binaries, use `RUST_LOG`.**
+- Settings like `logging.json`, `logging.buffer_lines`, and the file-backed AI audit log generally
+  require an embedding application (editor plugin/host) to construct a `NovaConfig` and call the
+  appropriate init hook (for example `nova_lsp::hardening::init(&config, ...)`).
+
 ### Environment variables
 
 Nova uses `tracing_subscriber::EnvFilter`, so the standard `RUST_LOG` environment variable can be
@@ -107,6 +120,18 @@ Privacy implications:
 - Audit logs are **not** automatically included in Nova’s bug report bundles. If you attach them to
   a bug report, review them first.
 
+#### `NOVA_AI_AUDIT_LOGGING` (logs prompts/results into normal logs)
+
+Separately from the dedicated `nova.ai.audit` file channel, Nova’s cloud-backed AI wiring (used by
+`nova-lsp` when configured via `NOVA_AI_PROVIDER=...`) supports:
+
+- `NOVA_AI_AUDIT_LOGGING=1|true`
+
+When enabled, Nova logs **prompts and model responses** at `INFO` level via regular tracing events.
+Because Nova’s bug report bundles include recent logs (`logs.txt`), enabling this may cause prompts
+and completions to be captured in bug reports. Enable only when you explicitly want that level of
+visibility and you can safely share the resulting logs.
+
 ---
 
 ## Safe mode
@@ -127,7 +152,8 @@ Safe mode can be entered by Nova’s hardened request wrapper (`nova-lsp` custom
     safe mode on timeouts (because build/test/debug integration can legitimately be slow)
 
 Separately, Nova may **degrade** behavior under memory pressure (reduced indexing, capped
-completions, etc). That is not “safe mode” (see [Metrics](#metrics)).
+completions, etc). This is Nova’s “overload” response and is distinct from safe mode (see
+[Metrics](#metrics)).
 
 ### What still works in safe mode?
 
