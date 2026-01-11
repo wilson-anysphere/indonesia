@@ -1,17 +1,19 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
+mod context;
 mod debouncer;
 mod progress;
 mod scheduler;
 mod task;
 mod watchdog;
 
+pub use context::RequestContext;
 pub use debouncer::{KeyedDebouncedHandle, KeyedDebouncer};
 pub use progress::{Progress, ProgressEvent, ProgressId, ProgressReceiver, ProgressSender};
 pub use scheduler::{PoolKind, Scheduler, SchedulerConfig};
 pub use task::{AsyncTask, BlockingTask};
-pub use watchdog::{Watchdog, WatchdogError};
+pub use watchdog::{run_with_timeout, Watchdog};
 
 pub use tokio_util::sync::CancellationToken;
 
@@ -37,45 +39,34 @@ impl Cancelled {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RunWithTimeoutError {
-    Timeout,
+pub enum TaskError {
+    DeadlineExceeded(Duration),
     Cancelled,
-    Panic,
+    Panicked,
 }
 
-/// Runs `f` on a dedicated thread and waits up to `timeout` for it to finish.
-///
-/// If the timeout elapses, `cancel_token` is cancelled before returning. Extensions are expected
-/// to cooperate by periodically checking the token.
-pub fn run_with_timeout<T, F>(
-    timeout: Duration,
-    cancel_token: CancellationToken,
-    f: F,
-) -> Result<T, RunWithTimeoutError>
-where
-    T: Send + 'static,
-    F: FnOnce() -> T + Send + 'static,
-{
-    if cancel_token.is_cancelled() {
-        return Err(RunWithTimeoutError::Cancelled);
-    }
-
-    let (tx, rx) = std::sync::mpsc::channel::<std::thread::Result<T>>();
-    std::thread::spawn(move || {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-        let _ = tx.send(result);
-    });
-
-    match rx.recv_timeout(timeout) {
-        Ok(Ok(value)) => Ok(value),
-        Ok(Err(_payload)) => Err(RunWithTimeoutError::Panic),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            cancel_token.cancel();
-            Err(RunWithTimeoutError::Timeout)
+impl std::fmt::Display for TaskError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TaskError::DeadlineExceeded(dur) => {
+                write!(f, "request exceeded deadline of {dur:?}")
+            }
+            TaskError::Cancelled => write!(f, "request was cancelled"),
+            TaskError::Panicked => write!(f, "request panicked"),
         }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(RunWithTimeoutError::Panic),
     }
 }
+
+impl std::error::Error for TaskError {}
+
+impl From<Cancelled> for TaskError {
+    fn from(_: Cancelled) -> Self {
+        TaskError::Cancelled
+    }
+}
+
+/// Backwards-compatible alias for older call sites.
+pub type WatchdogError = TaskError;
 
 /// A generic per-category debounce helper.
 ///

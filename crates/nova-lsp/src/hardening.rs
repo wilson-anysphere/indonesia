@@ -13,7 +13,7 @@ use nova_bugreport::{
     PanicHookConfig, PerfStats,
 };
 use nova_config::{global_log_buffer, init_tracing_with_config, NovaConfig};
-use nova_scheduler::{Watchdog, WatchdogError};
+use nova_scheduler::{CancellationToken, Watchdog, WatchdogError};
 use serde::Deserialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -131,8 +131,9 @@ pub fn run_with_watchdog(
 ) -> Result<serde_json::Value> {
     let deadline = deadline_for_method(method);
     let watchdog = watchdog();
+    let cancel = CancellationToken::new();
 
-    match watchdog.run_with_deadline(deadline, move || handler(params)) {
+    match watchdog.run_with_deadline(deadline, cancel, move |_token| handler(params)) {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(err)) => Err(err),
         Err(WatchdogError::DeadlineExceeded(duration)) => {

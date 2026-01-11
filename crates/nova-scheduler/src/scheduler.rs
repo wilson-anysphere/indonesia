@@ -1,12 +1,13 @@
-use std::{collections::HashMap, future::Future, sync::Arc, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 
-use parking_lot::Mutex;
 use rayon::ThreadPool;
 use tokio::runtime::Runtime;
 use tokio::sync::{broadcast, oneshot};
 
-use crate::{task::AsyncTask, task::BlockingTask, CancellationToken, Cancelled, ProgressSender};
-use nova_core::RequestId;
+use crate::{
+    task::AsyncTask, task::BlockingTask, CancellationToken, Cancelled, ProgressSender, RequestContext,
+    TaskError,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PoolKind {
@@ -47,7 +48,6 @@ struct SchedulerInner {
     io_runtime: Option<Runtime>,
     io_handle: tokio::runtime::Handle,
     progress: ProgressSender,
-    requests: Mutex<HashMap<RequestId, CancellationToken>>,
 }
 
 impl Scheduler {
@@ -83,7 +83,6 @@ impl Scheduler {
                 io_runtime: Some(io_runtime),
                 io_handle,
                 progress,
-                requests: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -116,7 +115,6 @@ impl Scheduler {
                 io_runtime: None,
                 io_handle,
                 progress,
-                requests: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -144,9 +142,17 @@ impl Scheduler {
         F: FnOnce(CancellationToken) -> Result<T, Cancelled> + Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
+        if token.is_cancelled() {
+            let _ = tx.send(Err(TaskError::Cancelled));
+            return BlockingTask::new(token, rx);
+        }
+
         let token_for_job = token.clone();
         let job = move || {
-            let _ = tx.send(f(token_for_job));
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(token_for_job)))
+                .map_err(|_| TaskError::Panicked)
+                .and_then(|result| result.map_err(TaskError::from));
+            let _ = tx.send(result);
         };
 
         match pool {
@@ -208,30 +214,79 @@ impl Scheduler {
         F: FnOnce(CancellationToken) -> Fut + Send + 'static,
         Fut: Future<Output = Result<T, Cancelled>> + Send + 'static,
     {
+        if token.is_cancelled() {
+            let handle = self.io_handle().spawn(async { Err(TaskError::Cancelled) });
+            return AsyncTask::new(token, handle);
+        }
+
         let token_for_fut = token.clone();
-        let handle = self
-            .io_handle()
-            .spawn(async move { f(token_for_fut).await });
+        let handle = self.io_handle().spawn(async move {
+            f(token_for_fut).await.map_err(TaskError::from)
+        });
         AsyncTask::new(token, handle)
     }
 
-    pub fn register_request(&self, request_id: RequestId) -> CancellationToken {
-        let token = CancellationToken::new();
-        self.inner.requests.lock().insert(request_id, token.clone());
-        token
+    pub fn request_context(&self, request_id: impl Into<nova_core::RequestId>) -> RequestContext {
+        RequestContext::new(
+            request_id.into(),
+            CancellationToken::new(),
+            None,
+            self.progress(),
+        )
     }
 
-    pub fn cancel_request(&self, request_id: &RequestId) -> bool {
-        let requests = self.inner.requests.lock();
-        let Some(token) = requests.get(request_id) else {
-            return false;
-        };
-        token.cancel();
-        true
+    pub fn request_context_with_token(
+        &self,
+        request_id: impl Into<nova_core::RequestId>,
+        token: CancellationToken,
+    ) -> RequestContext {
+        RequestContext::new(request_id.into(), token, None, self.progress())
     }
 
-    pub fn finish_request(&self, request_id: &RequestId) {
-        self.inner.requests.lock().remove(request_id);
+    pub fn spawn_blocking_on_ctx<T, F>(
+        &self,
+        pool: PoolKind,
+        ctx: &RequestContext,
+        f: F,
+    ) -> BlockingTask<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(RequestContext) -> Result<T, Cancelled> + Send + 'static,
+    {
+        ctx.ensure_deadline_timer(self.io_handle());
+        let task_ctx = ctx.child();
+        let token = task_ctx.token().clone();
+
+        self.spawn_blocking_on(pool, token, move |_token| f(task_ctx))
+    }
+
+    pub fn spawn_compute_ctx<T, F>(&self, ctx: &RequestContext, f: F) -> BlockingTask<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(RequestContext) -> Result<T, Cancelled> + Send + 'static,
+    {
+        self.spawn_blocking_on_ctx(PoolKind::Compute, ctx, f)
+    }
+
+    pub fn spawn_background_ctx<T, F>(&self, ctx: &RequestContext, f: F) -> BlockingTask<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(RequestContext) -> Result<T, Cancelled> + Send + 'static,
+    {
+        self.spawn_blocking_on_ctx(PoolKind::Background, ctx, f)
+    }
+
+    pub fn spawn_io_ctx<T, F, Fut>(&self, ctx: &RequestContext, f: F) -> AsyncTask<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(RequestContext) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T, Cancelled>> + Send + 'static,
+    {
+        ctx.ensure_deadline_timer(self.io_handle());
+        let task_ctx = ctx.child();
+        let token = task_ctx.token().clone();
+
+        self.spawn_io_with_token(token, move |_token| f(task_ctx))
     }
 
     pub fn default_diagnostics_delay() -> Duration {

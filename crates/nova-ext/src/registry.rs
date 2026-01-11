@@ -4,7 +4,7 @@ use crate::traits::{
     DiagnosticProvider, InlayHintParams, InlayHintProvider, NavigationParams, NavigationProvider,
 };
 use crate::types::{CodeAction, InlayHint, NavigationTarget};
-use nova_scheduler::{run_with_timeout, RunWithTimeoutError};
+use nova_scheduler::{run_with_timeout, TaskError};
 use nova_types::{CompletionItem, Diagnostic};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -176,7 +176,7 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
             match run_with_timeout(
                 self.options.diagnostic_timeout,
                 provider_cancel,
-                move || provider.provide_diagnostics(provider_ctx, params),
+                move |_token| provider.provide_diagnostics(provider_ctx, params),
             ) {
                 Ok(mut diagnostics) => {
                     diagnostics.truncate(self.options.max_diagnostics_per_provider);
@@ -186,8 +186,8 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
                         break;
                     }
                 }
-                Err(RunWithTimeoutError::Cancelled) => break,
-                Err(RunWithTimeoutError::Timeout | RunWithTimeoutError::Panic) => continue,
+                Err(TaskError::Cancelled) => break,
+                Err(TaskError::DeadlineExceeded(_) | TaskError::Panicked) => continue,
             }
         }
 
@@ -215,7 +215,7 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
             match run_with_timeout(
                 self.options.completion_timeout,
                 provider_cancel,
-                move || provider.provide_completions(provider_ctx, params),
+                move |_token| provider.provide_completions(provider_ctx, params),
             ) {
                 Ok(mut completions) => {
                     completions.truncate(self.options.max_completions_per_provider);
@@ -225,8 +225,8 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
                         break;
                     }
                 }
-                Err(RunWithTimeoutError::Cancelled) => break,
-                Err(RunWithTimeoutError::Timeout | RunWithTimeoutError::Panic) => continue,
+                Err(TaskError::Cancelled) => break,
+                Err(TaskError::DeadlineExceeded(_) | TaskError::Panicked) => continue,
             }
         }
 
@@ -254,7 +254,7 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
             match run_with_timeout(
                 self.options.code_action_timeout,
                 provider_cancel,
-                move || provider.provide_code_actions(provider_ctx, params),
+                move |_token| provider.provide_code_actions(provider_ctx, params),
             ) {
                 Ok(mut actions) => {
                     actions.truncate(self.options.max_code_actions_per_provider);
@@ -264,8 +264,8 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
                         break;
                     }
                 }
-                Err(RunWithTimeoutError::Cancelled) => break,
-                Err(RunWithTimeoutError::Timeout | RunWithTimeoutError::Panic) => continue,
+                Err(TaskError::Cancelled) => break,
+                Err(TaskError::DeadlineExceeded(_) | TaskError::Panicked) => continue,
             }
         }
 
@@ -293,7 +293,7 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
             match run_with_timeout(
                 self.options.navigation_timeout,
                 provider_cancel,
-                move || provider.provide_navigation(provider_ctx, params),
+                move |_token| provider.provide_navigation(provider_ctx, params),
             ) {
                 Ok(mut targets) => {
                     targets.truncate(self.options.max_navigation_targets_per_provider);
@@ -303,8 +303,8 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
                         break;
                     }
                 }
-                Err(RunWithTimeoutError::Cancelled) => break,
-                Err(RunWithTimeoutError::Timeout | RunWithTimeoutError::Panic) => continue,
+                Err(TaskError::Cancelled) => break,
+                Err(TaskError::DeadlineExceeded(_) | TaskError::Panicked) => continue,
             }
         }
 
@@ -332,7 +332,7 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
             match run_with_timeout(
                 self.options.inlay_hint_timeout,
                 provider_cancel,
-                move || provider.provide_inlay_hints(provider_ctx, params),
+                move |_token| provider.provide_inlay_hints(provider_ctx, params),
             ) {
                 Ok(mut hints) => {
                     hints.truncate(self.options.max_inlay_hints_per_provider);
@@ -342,8 +342,8 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
                         break;
                     }
                 }
-                Err(RunWithTimeoutError::Cancelled) => break,
-                Err(RunWithTimeoutError::Timeout | RunWithTimeoutError::Panic) => continue,
+                Err(TaskError::Cancelled) => break,
+                Err(TaskError::DeadlineExceeded(_) | TaskError::Panicked) => continue,
             }
         }
 

@@ -1,29 +1,62 @@
 use lsp_types::NumberOrString;
 use nova_core::RequestId;
-use nova_scheduler::{CancellationToken, Scheduler};
+use nova_scheduler::{CancellationToken, ProgressSender, RequestContext, Scheduler};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
 pub struct RequestCancellation {
-    scheduler: Scheduler,
+    progress: ProgressSender,
+    tokens: Arc<Mutex<HashMap<RequestId, CancellationToken>>>,
 }
 
 impl RequestCancellation {
     pub fn new(scheduler: Scheduler) -> Self {
-        Self { scheduler }
+        Self {
+            progress: scheduler.progress(),
+            tokens: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     pub fn register(&self, id: NumberOrString) -> CancellationToken {
-        self.scheduler.register_request(request_id_from_lsp(id))
+        let request_id = request_id_from_lsp(id);
+        let token = CancellationToken::new();
+        self.tokens
+            .lock()
+            .expect("request cancellation mutex poisoned")
+            .insert(request_id, token.clone());
+        token
+    }
+
+    pub fn register_context(&self, id: NumberOrString) -> RequestContext {
+        let request_id = request_id_from_lsp(id);
+        let token = CancellationToken::new();
+        self.tokens
+            .lock()
+            .expect("request cancellation mutex poisoned")
+            .insert(request_id.clone(), token.clone());
+        RequestContext::new(request_id, token, None, self.progress.clone())
     }
 
     pub fn cancel(&self, id: NumberOrString) -> bool {
         let request_id = request_id_from_lsp(id);
-        self.scheduler.cancel_request(&request_id)
+        let guard = self
+            .tokens
+            .lock()
+            .expect("request cancellation mutex poisoned");
+        let Some(token) = guard.get(&request_id) else {
+            return false;
+        };
+        token.cancel();
+        true
     }
 
     pub fn finish(&self, id: NumberOrString) {
         let request_id = request_id_from_lsp(id);
-        self.scheduler.finish_request(&request_id);
+        self.tokens
+            .lock()
+            .expect("request cancellation mutex poisoned")
+            .remove(&request_id);
     }
 }
 

@@ -1,5 +1,7 @@
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use crate::{CancellationToken, TaskError};
 
 /// A best-effort watchdog that bounds request latency.
 ///
@@ -20,25 +22,17 @@ impl Watchdog {
         Self
     }
 
-    pub fn run_with_deadline<F, T>(&self, deadline: Duration, func: F) -> Result<T, WatchdogError>
+    pub fn run_with_deadline<F, T>(
+        &self,
+        deadline: Duration,
+        cancel: CancellationToken,
+        func: F,
+    ) -> Result<T, TaskError>
     where
-        F: FnOnce() -> T + Send + 'static,
+        F: FnOnce(CancellationToken) -> T + Send + 'static,
         T: Send + 'static,
     {
-        let (tx, rx) = mpsc::channel();
-
-        std::thread::spawn(move || {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(func))
-                .map_err(|_| WatchdogError::Panicked);
-            let _ = tx.send(result);
-        });
-
-        match rx.recv_timeout(deadline) {
-            Ok(Ok(value)) => Ok(value),
-            Ok(Err(err)) => Err(err),
-            Err(mpsc::RecvTimeoutError::Timeout) => Err(WatchdogError::DeadlineExceeded(deadline)),
-            Err(mpsc::RecvTimeoutError::Disconnected) => Err(WatchdogError::Cancelled),
-        }
+        run_with_timeout(deadline, cancel, func)
     }
 }
 
@@ -48,26 +42,55 @@ impl Default for Watchdog {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum WatchdogError {
-    DeadlineExceeded(Duration),
-    Cancelled,
-    Panicked,
-}
+/// Runs `f` on a dedicated worker thread and waits up to `timeout` for it to finish.
+///
+/// If the timeout elapses, `cancel_token` is cancelled before returning. The worker thread cannot
+/// be forcibly terminated, so callers should treat timeouts as a serious signal and degrade future
+/// work. The closure is expected to cooperate by periodically checking the token.
+pub fn run_with_timeout<T, F>(
+    timeout: Duration,
+    cancel_token: CancellationToken,
+    f: F,
+) -> Result<T, TaskError>
+where
+    T: Send + 'static,
+    F: FnOnce(CancellationToken) -> T + Send + 'static,
+{
+    if cancel_token.is_cancelled() {
+        return Err(TaskError::Cancelled);
+    }
 
-impl std::fmt::Display for WatchdogError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            WatchdogError::DeadlineExceeded(dur) => {
-                write!(f, "request exceeded deadline of {dur:?}")
-            }
-            WatchdogError::Cancelled => write!(f, "request was cancelled"),
-            WatchdogError::Panicked => write!(f, "request panicked"),
+    let (tx, rx) = mpsc::channel::<Result<T, TaskError>>();
+    let token_for_task = cancel_token.clone();
+    std::thread::spawn(move || {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(token_for_task)))
+            .map_err(|_| TaskError::Panicked);
+        let _ = tx.send(result);
+    });
+
+    let start = Instant::now();
+    let deadline = start + timeout;
+    let poll_interval = Duration::from_millis(5);
+
+    loop {
+        if cancel_token.is_cancelled() {
+            return Err(TaskError::Cancelled);
+        }
+
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            cancel_token.cancel();
+            return Err(TaskError::DeadlineExceeded(timeout));
+        }
+
+        match rx.recv_timeout(remaining.min(poll_interval)) {
+            Ok(Ok(value)) => return Ok(value),
+            Ok(Err(err)) => return Err(err),
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Err(TaskError::Panicked),
         }
     }
 }
-
-impl std::error::Error for WatchdogError {}
 
 #[cfg(test)]
 mod tests {
@@ -78,13 +101,17 @@ mod tests {
     fn watchdog_cancels_long_running_tasks() {
         let watchdog = Watchdog::new();
         let start = Instant::now();
+        let token = CancellationToken::new();
 
-        let result = watchdog.run_with_deadline(Duration::from_millis(50), || {
-            std::thread::sleep(Duration::from_millis(200));
+        let result = watchdog.run_with_deadline(Duration::from_millis(50), token.clone(), |token| {
+            while !token.is_cancelled() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
             42_u32
         });
 
-        assert!(matches!(result, Err(WatchdogError::DeadlineExceeded(_))));
+        assert!(matches!(result, Err(TaskError::DeadlineExceeded(_))));
+        assert!(token.is_cancelled());
         assert!(start.elapsed() < Duration::from_millis(150));
     }
 }

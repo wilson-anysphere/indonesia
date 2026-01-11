@@ -12,7 +12,7 @@ use nova_fuzzy::{FuzzyMatcher, MatchScore, TrigramIndex, TrigramIndexBuilder};
 use nova_remote_proto::{
     FileText, RpcMessage, ScoredSymbol, ShardId, ShardIndex, Symbol, WorkerId, WorkerStats,
 };
-use nova_scheduler::{CancellationToken, Cancelled, Scheduler, SchedulerConfig};
+use nova_scheduler::{CancellationToken, Cancelled, Scheduler, SchedulerConfig, TaskError};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::process::Command;
@@ -358,7 +358,11 @@ impl InProcessRouter {
                 });
             let symbols = match task.join().await {
                 Ok(symbols) => symbols,
-                Err(Cancelled) => return Ok(()),
+                Err(TaskError::Cancelled) => return Ok(()),
+                Err(TaskError::Panicked) => return Err(anyhow!("indexing task panicked")),
+                Err(TaskError::DeadlineExceeded(_)) => {
+                    return Err(anyhow!("indexing task exceeded deadline"))
+                }
             };
             indexes.insert(
                 shard_id as ShardId,
@@ -419,7 +423,11 @@ impl InProcessRouter {
             });
         let symbols = match task.join().await {
             Ok(symbols) => symbols,
-            Err(Cancelled) => return Ok(()),
+            Err(TaskError::Cancelled) => return Ok(()),
+            Err(TaskError::Panicked) => return Err(anyhow!("indexing task panicked")),
+            Err(TaskError::DeadlineExceeded(_)) => {
+                return Err(anyhow!("indexing task exceeded deadline"))
+            }
         };
 
         if token.is_cancelled() {

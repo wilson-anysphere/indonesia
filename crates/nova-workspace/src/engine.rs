@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
 
 use async_channel::{Receiver, Sender};
 use nova_config::EffectiveConfig;
@@ -7,7 +8,7 @@ use nova_core::TextEdit;
 use nova_db::salsa;
 use nova_ide::{DebugConfiguration, Project};
 use nova_index::{ProjectIndexes, SymbolLocation};
-use nova_scheduler::Scheduler;
+use nova_scheduler::{Cancelled, KeyedDebouncer, PoolKind, Scheduler};
 use nova_types::{CompletionItem, Diagnostic as NovaDiagnostic};
 use nova_vfs::{
     ChangeEvent, ContentChange, DocumentError, FileId, FileSystem, LocalFs, Vfs, VfsPath,
@@ -46,6 +47,7 @@ pub(crate) struct WorkspaceEngine {
 
     config: RwLock<EffectiveConfig>,
     scheduler: Scheduler,
+    index_debouncer: KeyedDebouncer<&'static str>,
     subscribers: Arc<Mutex<Vec<Sender<WorkspaceEvent>>>>,
 
     project: RwLock<Option<Project>>,
@@ -53,12 +55,20 @@ pub(crate) struct WorkspaceEngine {
 
 impl WorkspaceEngine {
     pub fn new() -> Self {
+        let scheduler = Scheduler::default();
+        let index_debouncer = KeyedDebouncer::new(
+            scheduler.clone(),
+            PoolKind::Background,
+            // Match the default LSP diagnostics debounce so edits "win" over background work.
+            Duration::from_millis(200),
+        );
         Self {
             vfs: Vfs::new(LocalFs::new()),
             query_db: salsa::Database::new(),
             indexes: Arc::new(Mutex::new(ProjectIndexes::default())),
             config: RwLock::new(EffectiveConfig::default()),
-            scheduler: Scheduler::default(),
+            scheduler,
+            index_debouncer,
             subscribers: Arc::new(Mutex::new(Vec::new())),
             project: RwLock::new(None),
         }
@@ -145,19 +155,41 @@ impl WorkspaceEngine {
             .filter_map(|id| self.vfs.path_for_id(id))
             .collect();
 
-        self.publish(WorkspaceEvent::Status(WorkspaceStatus::IndexingStarted));
-
+        // Coalesce rapid edit bursts (e.g. didChange storms) and cancel in-flight indexing when
+        // superseded by a newer request.
         let vfs = self.vfs.clone();
         let indexes_arc = Arc::clone(&self.indexes);
         let subscribers = Arc::clone(&self.subscribers);
-        self.scheduler.spawn_background(move |_| {
+        let scheduler = self.scheduler.clone();
+
+        self.index_debouncer.debounce("workspace-index", move |token| {
+            let ctx = scheduler.request_context_with_token("workspace/indexing", token);
+            let progress = ctx.progress().start("Indexing workspace");
+
+            publish_to_subscribers(
+                &subscribers,
+                WorkspaceEvent::Status(WorkspaceStatus::IndexingStarted),
+            );
+
             let total = files.len();
             let mut new_indexes = ProjectIndexes::default();
 
             for (idx, path) in files.iter().enumerate() {
+                Cancelled::check(ctx.token())?;
+
                 if let Ok(text) = vfs.read_to_string(path) {
                     index_symbols(&mut new_indexes, path, &text);
                 }
+
+                let percentage = if total == 0 {
+                    None
+                } else {
+                    Some(((idx + 1) * 100 / total).min(100) as u32)
+                };
+                progress.report(
+                    Some(format!("{}/{}", idx + 1, total)),
+                    percentage,
+                );
                 publish_to_subscribers(
                     &subscribers,
                     WorkspaceEvent::IndexProgress(IndexProgress {
@@ -169,6 +201,7 @@ impl WorkspaceEngine {
 
             *indexes_arc.lock().expect("workspace indexes lock poisoned") = new_indexes;
 
+            progress.finish(Some("Done".to_string()));
             publish_to_subscribers(
                 &subscribers,
                 WorkspaceEvent::Status(WorkspaceStatus::IndexingReady),

@@ -29,7 +29,7 @@ pub enum ProgressEvent {
 
 pub type ProgressReceiver = broadcast::Receiver<ProgressEvent>;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ProgressSender {
     tx: broadcast::Sender<ProgressEvent>,
     next_id: Arc<AtomicU64>,
