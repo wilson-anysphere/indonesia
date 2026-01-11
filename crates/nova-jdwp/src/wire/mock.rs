@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeSet, HashMap},
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{
-        atomic::{AtomicI32, AtomicU16, AtomicU32, Ordering},
+        atomic::{AtomicI32, AtomicU16, AtomicU32, AtomicUsize, Ordering},
         Arc,
     },
     time::Duration,
@@ -50,6 +50,14 @@ pub struct MockJdwpServerConfig {
     ///
     /// Example: `Main.java`
     pub source_file: String,
+    /// Maximum number of breakpoint events to emit after a `VirtualMachine.Resume`.
+    ///
+    /// This bounds the mock's automatic stop-event behavior so DAP tests that
+    /// auto-resume ignored breakpoint hits (e.g. logpoints/conditions) don't
+    /// end up in an infinite resume/stop loop.
+    pub breakpoint_events: usize,
+    /// Maximum number of single-step events to emit after a `VirtualMachine.Resume`.
+    pub step_events: usize,
 }
 
 impl Default for MockJdwpServerConfig {
@@ -59,6 +67,10 @@ impl Default for MockJdwpServerConfig {
             capabilities: vec![false; 32],
             class_signature: "LMain;".to_string(),
             source_file: "Main.java".to_string(),
+            // Preserve historical behavior: keep emitting stop events after every resume
+            // unless tests opt into a finite budget via `spawn_with_config`.
+            breakpoint_events: usize::MAX,
+            step_events: usize::MAX,
         }
     }
 }
@@ -72,7 +84,7 @@ pub struct DelayedReply {
 
 impl MockJdwpServer {
     pub async fn spawn() -> std::io::Result<Self> {
-        Self::spawn_with_config(MockJdwpServerConfig::default()).await
+        Self::spawn_with_config(Default::default()).await
     }
 
     pub async fn spawn_with_capabilities(capabilities: Vec<bool>) -> std::io::Result<Self> {
@@ -200,6 +212,8 @@ struct State {
     last_classes_by_signature: tokio::sync::Mutex<Option<String>>,
     delayed_replies: HashMap<(u8, u8), Duration>,
     capabilities: Vec<bool>,
+    breakpoint_events_remaining: AtomicUsize,
+    step_events_remaining: AtomicUsize,
 }
 
 impl Default for State {
@@ -210,6 +224,9 @@ impl Default for State {
 
 impl State {
     fn new(config: MockJdwpServerConfig) -> Self {
+        let breakpoint_events = config.breakpoint_events;
+        let step_events = config.step_events;
+
         let mut delayed_replies = HashMap::new();
         for entry in &config.delayed_replies {
             delayed_replies.insert((entry.command_set, entry.command), entry.delay);
@@ -242,6 +259,8 @@ impl State {
             last_classes_by_signature: tokio::sync::Mutex::new(None),
             delayed_replies,
             capabilities,
+            breakpoint_events_remaining: AtomicUsize::new(breakpoint_events),
+            step_events_remaining: AtomicUsize::new(step_events),
         }
     }
 
@@ -255,6 +274,22 @@ impl State {
 
     fn reply_delay(&self, command_set: u8, command: u8) -> Option<Duration> {
         self.delayed_replies.get(&(command_set, command)).copied()
+    }
+
+    fn take_breakpoint_event(&self) -> bool {
+        self.breakpoint_events_remaining
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+    }
+
+    fn take_step_event(&self) -> bool {
+        self.step_events_remaining
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
     }
 }
 
@@ -1296,6 +1331,10 @@ fn make_stop_event_packet(
     exception_request: Option<MockExceptionRequest>,
 ) -> Option<Vec<u8>> {
     if let (Some(step_request), Some(method_exit_request)) = (step_request, method_exit_request) {
+        if !state.take_step_event() {
+            return None;
+        }
+
         let mut w = JdwpWriter::new();
         w.write_u8(1); // suspend policy: event thread
         w.write_u32(2); // event count
@@ -1320,13 +1359,33 @@ fn make_stop_event_packet(
         return Some(encode_command(packet_id, 64, 100, &payload));
     }
 
-    let (kind, request_id) = if let Some(request_id) = breakpoint_request {
-        (2, request_id)
-    } else if let Some(request_id) = step_request {
-        (1, request_id)
-    } else if let Some(request) = exception_request {
-        (4, request.request_id)
-    } else {
+    let mut kind = None;
+    let mut request_id = 0;
+
+    if let Some(id) = breakpoint_request {
+        if state.take_breakpoint_event() {
+            kind = Some(2);
+            request_id = id;
+        }
+    }
+
+    if kind.is_none() {
+        if let Some(id) = step_request {
+            if state.take_step_event() {
+                kind = Some(1);
+                request_id = id;
+            }
+        }
+    }
+
+    if kind.is_none() {
+        if let Some(request) = exception_request {
+            kind = Some(4);
+            request_id = request.request_id;
+        }
+    }
+
+    let Some(kind) = kind else {
         return None;
     };
 
