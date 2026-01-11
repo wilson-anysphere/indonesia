@@ -2027,8 +2027,12 @@ fn module_directive_missing_semicolon_recovers_to_next_directive() {
     let module = unit.module_declaration().unwrap();
     let body = module.body().unwrap();
     let directives: Vec<_> = body.directives().collect();
-    assert!(directives.iter().any(|n| n.kind() == SyntaxKind::RequiresDirective));
-    assert!(directives.iter().any(|n| n.kind() == SyntaxKind::ExportsDirective));
+    assert!(directives
+        .iter()
+        .any(|n| n.kind() == SyntaxKind::RequiresDirective));
+    assert!(directives
+        .iter()
+        .any(|n| n.kind() == SyntaxKind::ExportsDirective));
 }
 
 #[test]

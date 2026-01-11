@@ -20,7 +20,10 @@ pub enum VfsPath {
     /// and the binary name it was decompiled as.
     ///
     /// Canonical URI form: `nova:///decompiled/<hash>/<binary-name>.java`.
-    Decompiled { content_hash: String, binary_name: String },
+    Decompiled {
+        content_hash: String,
+        binary_name: String,
+    },
     /// A generic URI string that an external implementation can resolve.
     Uri(String),
 }
@@ -257,9 +260,7 @@ fn normalize_local_path(path: &Path) -> PathBuf {
 }
 
 fn normalize_decompiled_segment(segment: String) -> String {
-    segment
-        .trim_matches(|c| c == '/' || c == '\\')
-        .to_string()
+    segment.trim_matches(|c| c == '/' || c == '\\').to_string()
 }
 
 fn normalize_decompiled_binary_name(binary_name: String) -> String {

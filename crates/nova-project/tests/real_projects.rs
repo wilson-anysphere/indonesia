@@ -136,9 +136,8 @@ fn spring_petclinic_smoke() {
         "src/main/java/org/springframework/samples/petclinic/PetClinicApplication.java",
     );
 
-    let app_file = root.join(
-        "src/main/java/org/springframework/samples/petclinic/PetClinicApplication.java",
-    );
+    let app_file =
+        root.join("src/main/java/org/springframework/samples/petclinic/PetClinicApplication.java");
     assert!(app_file.is_file(), "expected {app_file:?} to exist");
     assert_parses(&ws, &app_file);
     assert_diagnostics(&ws, &app_file);
@@ -224,4 +223,3 @@ fn maven_resolver_smoke() {
     assert_parses(&ws, &repo_system);
     assert_diagnostics(&ws, &repo_system);
 }
-

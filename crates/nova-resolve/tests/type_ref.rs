@@ -259,8 +259,15 @@ fn resolves_generics_wildcards_arrays_and_nested_closing_angles() {
     );
 
     // Wildcard keywords should still parse when whitespace is stripped.
-    let ty =
-        resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "List<?extendsString>", None);
+    let ty = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "List<?extendsString>",
+        None,
+    );
     assert_eq!(ty.diagnostics, Vec::new());
     assert_eq!(
         ty.ty,

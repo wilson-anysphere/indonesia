@@ -371,7 +371,11 @@ pub async fn generate_patch(
     }
 }
 
-fn build_prompt(base: &str, config: &CodeGenerationConfig, feedback: Option<&ErrorFeedback>) -> String {
+fn build_prompt(
+    base: &str,
+    config: &CodeGenerationConfig,
+    feedback: Option<&ErrorFeedback>,
+) -> String {
     let mut out = String::new();
     out.push_str(base);
     out.push_str("\n\nReturn ONLY a structured patch.\n");
@@ -507,7 +511,10 @@ fn validate_patch(
                     });
                 }
                 DiagnosticKind::Type => {
-                    if touched.iter().any(|range| ranges_intersect(*range, diag.range)) {
+                    if touched
+                        .iter()
+                        .any(|range| ranges_intersect(*range, diag.range))
+                    {
                         new_type_errors += 1;
                         let position =
                             LineIndex::new(after_text).position(after_text, diag.range.start());
@@ -540,7 +547,8 @@ fn validate_patch(
             ))
     });
 
-    if new_syntax_errors > config.max_new_syntax_errors || new_type_errors > config.max_new_type_errors
+    if new_syntax_errors > config.max_new_syntax_errors
+        || new_type_errors > config.max_new_type_errors
     {
         return Err(ErrorReport {
             summary: format!(

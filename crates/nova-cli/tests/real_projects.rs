@@ -111,7 +111,9 @@ fn index_and_query_symbols(root: &Path, query: &str, expected_file_contains: &st
                 locs.iter().any(|loc| {
                     loc.get("file")
                         .and_then(|file| file.as_str())
-                        .is_some_and(|file| file.replace('\\', "/").contains(&expected_file_contains))
+                        .is_some_and(|file| {
+                            file.replace('\\', "/").contains(&expected_file_contains)
+                        })
                 })
             })
     });
