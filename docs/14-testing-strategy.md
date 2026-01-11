@@ -453,8 +453,9 @@ bench suites:
 - `crates/nova-refactor/benches/refactor.rs` (`cargo bench -p nova-refactor --bench refactor`)
 - `crates/nova-classpath/benches/index.rs` (`cargo bench -p nova-classpath --bench index`)
 
-Benchmark thresholds live in `perf/thresholds.toml`; runtime snapshot thresholds live in
-`perf/runtime-thresholds.toml`. For operational details, see [`perf/README.md`](../perf/README.md) and
+Benchmark thresholds live in `perf/thresholds.toml`. Runtime snapshot thresholds live in
+`perf/runtime-thresholds.toml` (used by `nova perf compare-runtime`; not currently a CI gate). For operational
+details, see [`perf/README.md`](../perf/README.md) and
 [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 
 ```rust

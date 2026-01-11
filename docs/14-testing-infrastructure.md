@@ -431,8 +431,8 @@ NOVA_REAL_PROJECT=spring-petclinic,maven-resolver ./scripts/clone-test-projects.
   - `crates/nova-refactor/benches/refactor.rs`
   - `crates/nova-classpath/benches/index.rs`
 - Threshold configs:
-  - `perf/thresholds.toml` (bench comparisons)
-  - `perf/runtime-thresholds.toml` (runtime snapshot comparisons)
+  - `perf/thresholds.toml` (bench comparisons; enforced by CI)
+  - `perf/runtime-thresholds.toml` (runtime snapshot comparisons via `nova perf compare-runtime`; not currently a CI gate)
 - CI workflow: `.github/workflows/perf.yml`
 
 **Run locally (benchmark):**
