@@ -635,6 +635,45 @@ mod tests {
     }
 
     #[test]
+    fn hir_whitespace_edit_early_cutoff_preserves_structural_name_queries() {
+        let mut db = RootDatabase::default();
+        let file = FileId::from_raw(1);
+
+        db.set_file_exists(file, true);
+        db.set_file_content(
+            file,
+            Arc::new("class Foo { int x; void bar() {} }".to_string()),
+        );
+
+        let first = db.hir_symbol_names(file);
+        assert_eq!(
+            &*first,
+            &["Foo".to_string(), "x".to_string(), "bar".to_string()]
+        );
+
+        assert_eq!(executions(&db, "java_parse"), 1);
+        assert_eq!(executions(&db, "hir_item_tree"), 1);
+        assert_eq!(executions(&db, "hir_symbol_names"), 1);
+
+        // Leading whitespace shifts spans throughout the file but should not force
+        // recomputation of downstream name-only queries.
+        db.set_file_content(
+            file,
+            Arc::new("  class Foo { int x; void bar() {} }".to_string()),
+        );
+        let second = db.hir_symbol_names(file);
+
+        assert_eq!(&*second, &*first);
+        assert_eq!(executions(&db, "java_parse"), 2);
+        assert_eq!(executions(&db, "hir_item_tree"), 2);
+        assert_eq!(
+            executions(&db, "hir_symbol_names"),
+            1,
+            "dependent query should be reused due to early-cutoff"
+        );
+    }
+
+    #[test]
     fn snapshots_are_consistent_across_concurrent_reads() {
         let mut db = RootDatabase::default();
         let file = FileId::from_raw(1);
