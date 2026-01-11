@@ -3,8 +3,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
+
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Error)]
 pub enum CacheError {
@@ -180,19 +185,70 @@ impl BuildCache {
             fs::create_dir_all(parent)?;
         }
 
-        let tmp_path = path.with_extension("json.tmp");
         let bytes = serde_json::to_vec_pretty(data).map_err(|e| CacheError::Json {
             path: path.clone(),
             source: e,
         })?;
-        fs::write(&tmp_path, bytes).map_err(|source| CacheError::Write {
-            path: tmp_path.clone(),
-            source,
-        })?;
-        fs::rename(&tmp_path, &path).map_err(|source| CacheError::Write {
-            path: path.clone(),
-            source,
-        })?;
+
+        let parent = path
+            .parent()
+            .ok_or_else(|| CacheError::Write {
+                path: path.clone(),
+                source: io::Error::new(io::ErrorKind::Other, "path has no parent"),
+            })?;
+        let (tmp_path, mut file) =
+            open_unique_tmp_file(&path, parent).map_err(|source| CacheError::Write {
+                path: path.clone(),
+                source,
+            })?;
+
+        if let Err(source) = file.write_all(&bytes) {
+            drop(file);
+            let _ = fs::remove_file(&tmp_path);
+            return Err(CacheError::Write {
+                path: tmp_path.clone(),
+                source,
+            }
+            .into());
+        }
+        drop(file);
+
+        const MAX_RENAME_ATTEMPTS: usize = 1024;
+        let rename_result = (|| -> io::Result<()> {
+            let mut attempts = 0usize;
+            loop {
+                match fs::rename(&tmp_path, &path) {
+                    Ok(()) => return Ok(()),
+                    Err(err) if err.kind() == io::ErrorKind::AlreadyExists || path.exists() => {
+                        // On Windows, `rename` doesn't overwrite. Under concurrent writers,
+                        // multiple `remove + rename` sequences can race; retry until we win.
+                        match fs::remove_file(&path) {
+                            Ok(()) => {}
+                            Err(remove_err) if remove_err.kind() == io::ErrorKind::NotFound => {}
+                            Err(remove_err) => return Err(remove_err),
+                        }
+
+                        attempts += 1;
+                        if attempts >= MAX_RENAME_ATTEMPTS {
+                            return Err(err);
+                        }
+
+                        continue;
+                    }
+                    Err(err) => return Err(err),
+                }
+            }
+        })();
+
+        if let Err(source) = rename_result {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(CacheError::Write {
+                path: path.clone(),
+                source,
+            }
+            .into());
+        }
+
         Ok(())
     }
 
@@ -246,5 +302,29 @@ impl BuildCache {
         self.project_dir(project_root)
             .join(kind_dir)
             .join(format!("{}.json", fingerprint.digest))
+    }
+}
+
+fn open_unique_tmp_file(dest: &Path, parent: &Path) -> io::Result<(PathBuf, fs::File)> {
+    let file_name = dest.file_name().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::Other, "destination path has no file name")
+    })?;
+    let pid = std::process::id();
+
+    loop {
+        let counter = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let mut tmp_name = file_name.to_os_string();
+        tmp_name.push(format!(".tmp.{pid}.{counter}"));
+        let tmp_path = parent.join(tmp_name);
+
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)
+        {
+            Ok(file) => return Ok((tmp_path, file)),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
     }
 }

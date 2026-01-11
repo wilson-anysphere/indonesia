@@ -5,8 +5,13 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fs,
+    io,
+    io::Write,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
+
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildFileDigest {
@@ -76,18 +81,46 @@ impl BazelCache {
             fs::create_dir_all(parent)?;
         }
         let data = serde_json::to_string_pretty(self)?;
-        let tmp_path = path.with_extension("json.tmp");
-        fs::write(&tmp_path, data)?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "path has no parent"))?;
+
+        let (tmp_path, mut file) = open_unique_tmp_file(path, parent)?;
+        if let Err(err) = file.write_all(data.as_bytes()) {
+            drop(file);
+            let _ = fs::remove_file(&tmp_path);
+            return Err(err.into());
+        }
+        drop(file);
+
         // `rename` is best-effort atomic on Unix. If it fails because the
         // destination exists (Windows), fall back to remove+rename.
-        match fs::rename(&tmp_path, path) {
-            Ok(()) => {}
-            Err(_) if path.exists() => {
-                let _ = fs::remove_file(path);
-                fs::rename(&tmp_path, path)?;
+        const MAX_RENAME_ATTEMPTS: usize = 1024;
+        let rename_result = (|| -> io::Result<()> {
+            let mut attempts = 0usize;
+            loop {
+                match fs::rename(&tmp_path, path) {
+                    Ok(()) => return Ok(()),
+                    Err(err) if err.kind() == io::ErrorKind::AlreadyExists || path.exists() => {
+                        let _ = fs::remove_file(path);
+
+                        attempts += 1;
+                        if attempts >= MAX_RENAME_ATTEMPTS {
+                            return Err(err);
+                        }
+
+                        continue;
+                    }
+                    Err(err) => return Err(err),
+                }
             }
-            Err(err) => return Err(err.into()),
+        })();
+
+        if let Err(err) = rename_result {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(err.into());
         }
+
         Ok(())
     }
 }
@@ -103,4 +136,28 @@ pub fn digest_file(path: &Path) -> Result<BuildFileDigest> {
 
 fn hash_to_hex(hash: Hash) -> String {
     hash.to_hex().to_string()
+}
+
+fn open_unique_tmp_file(dest: &Path, parent: &Path) -> io::Result<(PathBuf, fs::File)> {
+    let file_name = dest.file_name().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::Other, "destination path has no file name")
+    })?;
+    let pid = std::process::id();
+
+    loop {
+        let counter = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let mut tmp_name = file_name.to_os_string();
+        tmp_name.push(format!(".tmp.{pid}.{counter}"));
+        let tmp_path = parent.join(tmp_name);
+
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)
+        {
+            Ok(file) => return Ok((tmp_path, file)),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
 }
