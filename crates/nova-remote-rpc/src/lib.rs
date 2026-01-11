@@ -27,6 +27,32 @@ use tokio::sync::{mpsc, oneshot, watch, Mutex};
 
 pub type RequestId = u64;
 
+/// Result of a router-side handshake admission hook.
+#[derive(Debug, Clone)]
+pub enum RouterAdmission {
+    Accept { worker_id: WorkerId, revision: Revision },
+    Reject(HandshakeReject),
+}
+
+/// A router-initiated request that has been sent but not yet completed.
+pub struct PendingCall {
+    request_id: RequestId,
+    rx: oneshot::Receiver<Result<Response, RpcError>>,
+}
+
+impl PendingCall {
+    pub fn request_id(&self) -> RequestId {
+        self.request_id
+    }
+
+    pub async fn wait(self) -> Result<Response, RpcError> {
+        match self.rx.await {
+            Ok(res) => res,
+            Err(_) => Err(RpcError::Transport(RpcTransportError::ConnectionClosed)),
+        }
+    }
+}
+
 /// Which side of the connection we are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RpcRole {
@@ -270,17 +296,71 @@ impl RpcConnection {
     /// `WireFrame::Reject(reject)` to the peer and returns
     /// [`RpcTransportError::HandshakeFailed`].
     pub async fn handshake_as_router_with_config_and_admit<S, F>(
-        mut stream: S,
-        mut cfg: RouterConfig,
+        stream: S,
+        cfg: RouterConfig,
         admit_fn: F,
     ) -> Result<(Self, RouterWelcome), RpcTransportError>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-        F: FnOnce(&WorkerHello) -> Result<(), HandshakeReject>,
+        F: FnOnce(&WorkerHello) -> Result<(), HandshakeReject> + Send,
+    {
+        let worker_id = cfg.worker_id;
+        let revision = cfg.revision;
+        let (conn, welcome, _hello) = Self::handshake_as_router_with_config_and_admission(
+            stream,
+            cfg,
+            move |hello| {
+                std::future::ready(match admit_fn(hello) {
+                    Ok(()) => RouterAdmission::Accept { worker_id, revision },
+                    Err(reject) => RouterAdmission::Reject(reject),
+                })
+            },
+        )
+        .await?;
+        Ok((conn, welcome))
+    }
+
+    pub async fn handshake_as_router_with_config_and_admission<S, F, Fut>(
+        mut stream: S,
+        mut cfg: RouterConfig,
+        admission: F,
+    ) -> Result<(Self, RouterWelcome, WorkerHello), RpcTransportError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        F: FnOnce(&WorkerHello) -> Fut + Send,
+        Fut: Future<Output = RouterAdmission> + Send,
     {
         sanitize_capabilities(&mut cfg.capabilities);
 
-        let hello = match read_wire_frame(&mut stream, cfg.pre_handshake_max_frame_len).await? {
+        let hello_frame_bytes = read_frame_payload(&mut stream, cfg.pre_handshake_max_frame_len).await?;
+        let frame = match v3::decode_wire_frame(&hello_frame_bytes) {
+            Ok(frame) => frame,
+            Err(v3_err) => {
+                if let Ok(msg) = nova_remote_proto::decode_message(&hello_frame_bytes) {
+                    if matches!(msg, nova_remote_proto::legacy_v2::RpcMessage::WorkerHello { .. }) {
+                        let legacy_err = nova_remote_proto::legacy_v2::RpcMessage::Error {
+                            message: "router only supports v3".into(),
+                        };
+                        if let Ok(payload) = nova_remote_proto::encode_message(&legacy_err) {
+                            let _ = write_frame_payload(
+                                &mut stream,
+                                cfg.pre_handshake_max_frame_len,
+                                &payload,
+                            )
+                            .await;
+                        }
+                        return Err(RpcTransportError::HandshakeFailed {
+                            message: "router only supports v3".into(),
+                        });
+                    }
+                }
+                return Err(RpcTransportError::DecodeError {
+                    message: v3_err.to_string(),
+                });
+            }
+        };
+
+        let hello = match frame {
             WireFrame::Hello(hello) => hello,
             other => {
                 return Err(RpcTransportError::HandshakeFailed {
@@ -344,16 +424,26 @@ impl RpcConnection {
                 }
             };
 
-        if let Err(reject) = admit_fn(&hello) {
-            let reject_frame = WireFrame::Reject(reject.clone());
-            let _ =
-                write_wire_frame(&mut stream, cfg.pre_handshake_max_frame_len, &reject_frame).await;
-            return Err(RpcTransportError::HandshakeFailed {
-                message: format!(
-                    "handshake rejected (code={:?}): {}",
-                    reject.code, reject.message
-                ),
-            });
+        match admission(&hello).await {
+            RouterAdmission::Accept { worker_id, revision } => {
+                cfg.worker_id = worker_id;
+                cfg.revision = revision;
+            }
+            RouterAdmission::Reject(reject) => {
+                let reject_frame = WireFrame::Reject(reject.clone());
+                let _ = write_wire_frame(
+                    &mut stream,
+                    cfg.pre_handshake_max_frame_len,
+                    &reject_frame,
+                )
+                .await;
+                return Err(RpcTransportError::HandshakeFailed {
+                    message: format!(
+                        "handshake rejected (code={:?}): {}",
+                        reject.code, reject.message
+                    ),
+                });
+            }
         }
 
         let welcome = RouterWelcome {
@@ -379,7 +469,7 @@ impl RpcConnection {
             cfg.compression_threshold,
             welcome.clone(),
         );
-        Ok((conn, welcome))
+        Ok((conn, welcome, hello))
     }
 
     pub async fn handshake_as_worker<S>(
@@ -531,7 +621,7 @@ impl RpcConnection {
         *self.inner.cancel_handler.write().unwrap() = Some(Arc::new(handler));
     }
 
-    pub async fn call(&self, request: Request) -> Result<Response, RpcError> {
+    pub async fn start_call(&self, request: Request) -> Result<PendingCall, RpcError> {
         if let Some(err) = self.inner.is_closed().await {
             return Err(RpcError::Transport(err));
         }
@@ -551,10 +641,11 @@ impl RpcConnection {
             return Err(RpcError::Transport(err));
         }
 
-        match rx.await {
-            Ok(res) => res,
-            Err(_) => Err(RpcError::Transport(RpcTransportError::ConnectionClosed)),
-        }
+        Ok(PendingCall { request_id, rx })
+    }
+
+    pub async fn call(&self, request: Request) -> Result<Response, RpcError> {
+        self.start_call(request).await?.wait().await
     }
 
     pub async fn notify(&self, notification: Notification) -> Result<(), RpcTransportError> {
@@ -788,6 +879,14 @@ async fn write_wire_frame(
     let payload = v3::encode_wire_frame(frame).map_err(|err| RpcTransportError::EncodeError {
         message: err.to_string(),
     })?;
+    write_frame_payload(stream, max_frame_len, &payload).await
+}
+
+async fn write_frame_payload(
+    stream: &mut (impl AsyncWrite + Unpin),
+    max_frame_len: u32,
+    payload: &[u8],
+) -> Result<(), RpcTransportError> {
     let len: u32 = payload
         .len()
         .try_into()
@@ -803,7 +902,7 @@ async fn write_wire_frame(
     }
 
     stream.write_u32_le(len).await?;
-    stream.write_all(&payload).await?;
+    stream.write_all(payload).await?;
     stream.flush().await?;
     Ok(())
 }
@@ -812,6 +911,16 @@ async fn read_wire_frame(
     stream: &mut (impl AsyncRead + Unpin),
     max_frame_len: u32,
 ) -> Result<WireFrame, RpcTransportError> {
+    let buf = read_frame_payload(stream, max_frame_len).await?;
+    v3::decode_wire_frame(&buf).map_err(|err| RpcTransportError::DecodeError {
+        message: err.to_string(),
+    })
+}
+
+async fn read_frame_payload(
+    stream: &mut (impl AsyncRead + Unpin),
+    max_frame_len: u32,
+) -> Result<Vec<u8>, RpcTransportError> {
     let len = stream.read_u32_le().await?;
     if len > max_frame_len {
         return Err(RpcTransportError::FrameTooLarge {
@@ -824,7 +933,8 @@ async fn read_wire_frame(
     if len_usize == 0 {
         // `decode_wire_frame` will (correctly) reject empty frames, but we should not allocate an
         // attacker-controlled buffer for the length prefix alone.
-        return v3::decode_wire_frame(&[]).map_err(|err| RpcTransportError::DecodeError {
+        let err = v3::decode_wire_frame(&[]).unwrap_err();
+        return Err(RpcTransportError::DecodeError {
             message: err.to_string(),
         });
     }
@@ -863,9 +973,7 @@ async fn read_wire_frame(
         stream.read_exact(&mut buf[start..]).await?;
     }
 
-    v3::decode_wire_frame(&buf).map_err(|err| RpcTransportError::DecodeError {
-        message: err.to_string(),
-    })
+    Ok(buf)
 }
 
 async fn write_loop<W: AsyncWrite + Unpin + Send + 'static>(

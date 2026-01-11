@@ -2,6 +2,7 @@ use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
+use nova_remote_proto::legacy_v2::RpcMessage;
 use nova_remote_proto::v3::{Capabilities, ProtocolVersion, SupportedVersions};
 use nova_router::{
     DistributedRouterConfig, ListenAddr, QueryRouter, SourceRoot, TcpListenAddr, WorkspaceLayout,
@@ -81,6 +82,68 @@ async fn router_handles_v3_hello_or_rejects_with_clear_error() -> Result<()> {
             assert_eq!(welcome.shard_id, 0);
         }
         other => return Err(anyhow!("expected v3 Welcome/Reject frame, got {other:?}")),
+    }
+
+    router.shutdown().await.context("shutdown router")?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v3_router_rejects_v2_hello_with_clear_error() -> Result<()> {
+    let tmp = tempfile::tempdir().context("create temp dir")?;
+    let cache_dir = tmp.path().join("cache");
+    tokio::fs::create_dir_all(&cache_dir)
+        .await
+        .context("create cache dir")?;
+
+    let root = tmp.path().join("root");
+    tokio::fs::create_dir_all(&root)
+        .await
+        .context("create source root")?;
+
+    let addr = reserve_tcp_addr()?;
+    let config = DistributedRouterConfig {
+        listen_addr: ListenAddr::Tcp(TcpListenAddr::Plain(addr)),
+        worker_command: PathBuf::from("unused"),
+        cache_dir,
+        auth_token: None,
+        allow_insecure_tcp: false,
+        max_rpc_bytes: nova_router::DEFAULT_MAX_RPC_BYTES,
+        max_inflight_handshakes: nova_router::DEFAULT_MAX_INFLIGHT_HANDSHAKES,
+        max_worker_connections: nova_router::DEFAULT_MAX_WORKER_CONNECTIONS,
+        #[cfg(feature = "tls")]
+        tls_client_cert_fingerprint_allowlist: Default::default(),
+        spawn_workers: false,
+    };
+    let layout = WorkspaceLayout {
+        source_roots: vec![SourceRoot { path: root }],
+    };
+    let router = QueryRouter::new_distributed(config, layout)
+        .await
+        .context("start distributed router")?;
+
+    let mut stream = connect_with_retries(addr).await?;
+
+    let hello = RpcMessage::WorkerHello {
+        shard_id: 0,
+        auth_token: None,
+        has_cached_index: false,
+    };
+
+    let payload = nova_remote_proto::encode_message(&hello).context("encode v2 hello")?;
+    write_len_prefixed(&mut stream, &payload).await?;
+
+    let response = read_len_prefixed(&mut stream).await?;
+    let msg = nova_remote_proto::decode_message(&response).context("decode v2 error")?;
+
+    match msg {
+        RpcMessage::Error { message } => {
+            assert!(
+                message.contains("router only supports v3"),
+                "unexpected error message: {message:?}"
+            );
+        }
+        other => return Err(anyhow!("expected v2 Error message, got {other:?}")),
     }
 
     router.shutdown().await.context("shutdown router")?;

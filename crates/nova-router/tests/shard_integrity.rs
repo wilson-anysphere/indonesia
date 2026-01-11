@@ -37,15 +37,13 @@ async fn read_rpc(stream: &mut (impl AsyncRead + Unpin)) -> Result<RpcMessage> {
 #[cfg(unix)]
 async fn connect_unix_with_retry(socket_path: &Path) -> Result<UnixStream> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    let mut last_err = None;
     loop {
         match UnixStream::connect(socket_path).await {
             Ok(stream) => return Ok(stream),
             Err(err) => {
-                last_err = Some(err);
                 if tokio::time::Instant::now() >= deadline {
                     return Err(anyhow!(
-                        "timed out connecting to router at {socket_path:?}: {last_err:?}"
+                        "timed out connecting to router at {socket_path:?}: {err}"
                     ));
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;

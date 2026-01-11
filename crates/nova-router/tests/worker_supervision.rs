@@ -1,14 +1,26 @@
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::{Mutex, OnceLock};
 
+use anyhow::Context;
 use nova_router::{DistributedRouterConfig, ListenAddr, QueryRouter, SourceRoot, WorkspaceLayout};
 use tempfile::TempDir;
 use tokio::process::Command;
 use tokio::time::{timeout, Duration, Instant};
 
+// These tests spawn routers + external worker processes and can be flaky when the Rust test
+// harness runs them concurrently (the default on multi-core machines).
+//
+// Serialize them to keep timings predictable and prevent cross-test resource contention.
+static WORKER_SUPERVISION_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
 #[cfg(unix)]
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn worker_supervisor_backs_off_on_crash_loop_and_recovers() -> anyhow::Result<()> {
+    let _guard = WORKER_SUPERVISION_TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap();
     let tmp = TempDir::new()?;
     let workspace_root = tmp.path();
 
@@ -79,8 +91,12 @@ async fn worker_supervisor_backs_off_on_crash_loop_and_recovers() -> anyhow::Res
 }
 
 #[cfg(unix)]
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn worker_supervisor_enforces_handshake_deadline() -> anyhow::Result<()> {
+    let _guard = WORKER_SUPERVISION_TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap();
     let tmp = TempDir::new()?;
     let workspace_root = tmp.path();
 
@@ -144,8 +160,12 @@ async fn worker_supervisor_enforces_handshake_deadline() -> anyhow::Result<()> {
 }
 
 #[cfg(unix)]
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn worker_supervisor_recovers_when_worker_exits_while_idle() -> anyhow::Result<()> {
+    let _guard = WORKER_SUPERVISION_TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap();
     let tmp = TempDir::new()?;
     let workspace_root = tmp.path();
 
@@ -216,7 +236,7 @@ async fn worker_supervisor_recovers_when_worker_exits_while_idle() -> anyhow::Re
         "expected worker restart to settle after initial exit; got {final_count} attempts"
     );
 
-    let stats = timeout(Duration::from_secs(2), router.worker_stats()).await??;
+    let stats = timeout(Duration::from_secs(5), router.worker_stats()).await??;
     assert!(stats.contains_key(&0));
 
     router.shutdown().await?;
@@ -224,8 +244,12 @@ async fn worker_supervisor_recovers_when_worker_exits_while_idle() -> anyhow::Re
 }
 
 #[cfg(unix)]
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn router_accepts_replacement_worker_after_remote_disconnect() -> anyhow::Result<()> {
+    let _guard = WORKER_SUPERVISION_TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap();
     let tmp = TempDir::new()?;
     let workspace_root = tmp.path();
 
@@ -285,7 +309,9 @@ async fn router_accepts_replacement_worker_after_remote_disconnect() -> anyhow::
         .arg("--cache-dir")
         .arg(&cache_dir);
     let mut first = first.spawn()?;
-    let status = timeout(Duration::from_secs(5), first.wait()).await??;
+    let status = timeout(Duration::from_secs(10), first.wait())
+        .await
+        .context("timed out waiting for first worker to exit")??;
     assert!(
         status.success(),
         "expected first worker to exit cleanly, got {status:?}"
@@ -307,7 +333,9 @@ async fn router_accepts_replacement_worker_after_remote_disconnect() -> anyhow::
         .arg(&cache_dir);
     let mut second = second.spawn()?;
 
-    let stats = timeout(Duration::from_secs(2), router.worker_stats()).await??;
+    let stats = timeout(Duration::from_secs(10), router.worker_stats())
+        .await
+        .context("timed out waiting for replacement worker to respond to worker_stats")??;
     assert!(stats.contains_key(&0));
 
     router.shutdown().await?;

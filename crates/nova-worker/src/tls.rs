@@ -2,12 +2,20 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::Once;
 
 use anyhow::{anyhow, Context, Result};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 
 use crate::TlsArgs;
+
+fn ensure_crypto_provider_installed() {
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
 
 pub async fn connect(
     stream: TcpStream,
@@ -31,6 +39,7 @@ pub async fn connect(
 }
 
 fn build_config(cfg: &TlsArgs) -> Result<rustls::ClientConfig> {
+    ensure_crypto_provider_installed();
     let mut roots = rustls::RootCertStore::empty();
     for cert in load_certs(&cfg.ca_cert)? {
         roots.add(cert).context("add root cert")?;

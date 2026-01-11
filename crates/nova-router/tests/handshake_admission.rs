@@ -13,11 +13,7 @@ mod remote_rpc_util;
 
 async fn complete_handshake(addr: std::net::SocketAddr) -> anyhow::Result<()> {
     let conn = remote_rpc_util::connect_and_handshake_worker(
-        || async {
-            Ok(TcpStream::connect(addr)
-                .await
-                .map_err(anyhow::Error::from)?)
-        },
+        || async { Ok(TcpStream::connect(addr).await.map_err(anyhow::Error::from)?) },
         0,
         None,
     )

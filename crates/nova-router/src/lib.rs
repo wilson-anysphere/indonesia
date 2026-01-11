@@ -9,16 +9,15 @@ use anyhow::{anyhow, Context};
 use nova_bugreport::{install_panic_hook, PanicHookConfig};
 use nova_config::{init_tracing_with_config, NovaConfig};
 use nova_fuzzy::{FuzzyMatcher, MatchScore, TrigramIndex, TrigramIndexBuilder};
-use nova_remote_proto::{
-    transport, FileText, RpcMessage, ScoredSymbol, ShardId, ShardIndex, Symbol, WorkerId,
-    WorkerStats,
-};
+use nova_remote_proto::v3::{HandshakeReject, Notification, RejectCode, Request, Response};
+use nova_remote_proto::{FileText, ShardId, ShardIndex, Symbol, WorkerId, WorkerStats};
+use nova_remote_rpc::{PendingCall, RpcConnection, RouterAdmission, RouterConfig as RpcRouterConfig};
 use nova_scheduler::{CancellationToken, Cancelled, Scheduler, SchedulerConfig, TaskError};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
 use tokio::net::TcpListener;
 use tokio::process::Command;
-use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify, OwnedSemaphorePermit, RwLock, Semaphore};
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::sync::{watch, Mutex, Notify, OwnedSemaphorePermit, RwLock, Semaphore};
+use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration, Instant};
 use tracing::{error, info, warn};
 
@@ -59,6 +58,7 @@ const FALLBACK_SCAN_LIMIT: usize = 50_000;
 const MAX_CONCURRENT_HANDSHAKES: usize = 128;
 const WORKER_RPC_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 const WORKER_RPC_READ_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const WORKER_SHUTDOWN_RPC_TIMEOUT: Duration = Duration::from_secs(2);
 
 const WORKER_RESTART_BACKOFF_INITIAL: Duration = Duration::from_millis(50);
 const WORKER_RESTART_BACKOFF_MAX: Duration = Duration::from_secs(5);
@@ -636,6 +636,8 @@ struct RouterState {
     next_worker_id: AtomicU32,
     global_revision: AtomicU64,
     shards: Mutex<HashMap<ShardId, ShardState>>,
+    shard_indexes: Mutex<HashMap<ShardId, ShardIndex>>,
+    global_symbols: RwLock<GlobalSymbolIndex>,
     notify: Notify,
     handshake_semaphore: Arc<Semaphore>,
     connection_semaphore: Arc<Semaphore>,
@@ -652,47 +654,7 @@ struct ShardState {
 struct WorkerHandle {
     shard_id: ShardId,
     worker_id: WorkerId,
-    tx: mpsc::UnboundedSender<WorkerRequest>,
-}
-
-struct WorkerRequest {
-    message: RpcMessage,
-    reply: Option<oneshot::Sender<Result<RpcMessage>>>,
-}
-
-impl WorkerHandle {
-    async fn request(&self, message: RpcMessage) -> Result<RpcMessage> {
-        let (tx, rx) = oneshot::channel();
-        self.tx
-            .send(WorkerRequest {
-                message,
-                reply: Some(tx),
-            })
-            .map_err(|_| {
-                anyhow!(
-                    "worker {} (shard {}) disconnected",
-                    self.worker_id,
-                    self.shard_id
-                )
-            })?;
-        rx.await.context("worker response channel closed")?
-    }
-
-    fn notify(&self, message: RpcMessage) -> Result<()> {
-        self.tx
-            .send(WorkerRequest {
-                message,
-                reply: None,
-            })
-            .map_err(|_| {
-                anyhow!(
-                    "worker {} (shard {}) disconnected",
-                    self.worker_id,
-                    self.shard_id
-                )
-            })?;
-        Ok(())
-    }
+    conn: RpcConnection,
 }
 
 impl DistributedRouter {
@@ -740,6 +702,8 @@ impl DistributedRouter {
             next_worker_id: AtomicU32::new(1),
             global_revision: AtomicU64::new(0),
             shards: Mutex::new(shards),
+            shard_indexes: Mutex::new(HashMap::new()),
+            global_symbols: RwLock::new(GlobalSymbolIndex::default()),
             notify: Notify::new(),
             handshake_semaphore,
             connection_semaphore,
@@ -813,18 +777,18 @@ impl DistributedRouter {
         }
 
         for (shard_id, worker, files) in results {
-            let resp = worker
-                .request(RpcMessage::IndexShard { revision, files })
-                .await?;
+            let resp =
+                worker_call(&worker, Request::IndexShard { revision, files }).await?;
             match resp {
-                RpcMessage::ShardIndexInfo(info) => {
-                    if info.shard_id != shard_id {
+                Response::ShardIndex(index) => {
+                    if index.shard_id != shard_id {
                         self.disconnect_worker(&worker).await;
                         return Err(anyhow!(
-                            "worker returned index info for wrong shard {} (expected {shard_id})",
-                            info.shard_id
+                            "worker returned index for wrong shard {} (expected {shard_id})",
+                            index.shard_id
                         ));
                     }
+                    apply_shard_index(self.state.clone(), index).await;
                 }
                 other => return Err(anyhow!("unexpected worker response: {other:?}")),
             }
@@ -850,18 +814,17 @@ impl DistributedRouter {
             text,
         };
 
-        let resp = worker
-            .request(RpcMessage::UpdateFile { revision, file })
-            .await?;
+        let resp = worker_call(&worker, Request::UpdateFile { revision, file }).await?;
         match resp {
-            RpcMessage::ShardIndexInfo(info) => {
-                if info.shard_id != shard_id {
+            Response::ShardIndex(index) => {
+                if index.shard_id != shard_id {
                     self.disconnect_worker(&worker).await;
                     return Err(anyhow!(
-                        "worker returned index info for wrong shard {} (expected {shard_id})",
-                        info.shard_id
+                        "worker returned index for wrong shard {} (expected {shard_id})",
+                        index.shard_id
                     ));
                 }
+                apply_shard_index(self.state.clone(), index).await;
                 Ok(())
             }
             other => Err(anyhow!("unexpected worker response: {other:?}")),
@@ -874,9 +837,9 @@ impl DistributedRouter {
         let mut stats = HashMap::new();
         for shard_id in shard_ids {
             let worker = wait_for_worker(self.state.clone(), shard_id).await?;
-            let resp = worker.request(RpcMessage::GetWorkerStats).await?;
+            let resp = worker_call(&worker, Request::GetWorkerStats).await?;
             match resp {
-                RpcMessage::WorkerStats(ws) => {
+                Response::WorkerStats(ws) => {
                     if ws.shard_id != worker.shard_id {
                         self.disconnect_worker(&worker).await;
                         return Err(anyhow!(
@@ -894,89 +857,44 @@ impl DistributedRouter {
     }
 
     async fn workspace_symbols(&self, query: &str) -> Vec<Symbol> {
-        let workers: Vec<(ShardId, WorkerHandle)> = {
-            let guard = self.state.shards.lock().await;
-            guard
-                .iter()
-                .filter_map(|(shard_id, shard)| shard.worker.clone().map(|w| (*shard_id, w)))
-                .collect()
-        };
-
-        if workers.is_empty() {
-            return Vec::new();
-        }
-
-        let mut tasks = JoinSet::new();
-        let query = query.to_string();
-        for (shard_id, worker) in workers {
-            let query = query.clone();
-            let worker_id = worker.worker_id;
-            tasks.spawn(async move {
-                let resp = worker
-                    .request(RpcMessage::SearchSymbols {
-                        query,
-                        limit: WORKSPACE_SYMBOL_LIMIT as u32,
-                    })
-                    .await;
-                (shard_id, worker_id, resp)
-            });
-        }
-
-        let mut merged = Vec::new();
-        while let Some(res) = tasks.join_next().await {
-            match res {
-                Ok((_, _, Ok(RpcMessage::SearchSymbolsResult { items }))) => {
-                    merged.extend(items);
-                }
-                Ok((shard_id, worker_id, Ok(RpcMessage::Error { message }))) => {
-                    warn!(
-                        shard_id,
-                        worker_id,
-                        message = %message,
-                        "worker returned error for symbol search"
-                    );
-                }
-                Ok((shard_id, worker_id, Ok(other))) => {
-                    warn!(
-                        shard_id,
-                        worker_id,
-                        response = ?other,
-                        "unexpected worker response for symbol search"
-                    );
-                }
-                Ok((shard_id, worker_id, Err(err))) => {
-                    warn!(shard_id, worker_id, error = ?err, "symbol search request failed");
-                }
-                Err(err) => {
-                    error!(error = ?err, "symbol search task failed");
-                }
-            }
-        }
-
-        if query.is_empty() {
-            merged.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.path.cmp(&b.path)));
-        } else {
-            merged.sort_by(|a, b| scored_symbol_cmp(a, b));
-        }
-        merged.dedup_by(|a, b| a.name == b.name && a.path == b.path);
-        merged
-            .into_iter()
-            .take(WORKSPACE_SYMBOL_LIMIT)
-            .map(|s| Symbol {
-                name: s.name,
-                path: s.path,
-            })
-            .collect()
+        let guard = self.state.global_symbols.read().await;
+        guard.search(query, WORKSPACE_SYMBOL_LIMIT)
     }
 
     async fn shutdown(&self) -> Result<()> {
         let _ = self.shutdown_tx.send(true);
 
-        {
+        let worker_conns: Vec<RpcConnection> = {
             let guard = self.state.shards.lock().await;
-            for worker in guard.values().filter_map(|s| s.worker.as_ref()) {
-                let _ = worker.notify(RpcMessage::Shutdown);
-            }
+            guard
+                .values()
+                .filter_map(|s| s.worker.as_ref().map(|w| w.conn.clone()))
+                .collect()
+        };
+
+        let mut shutdown_tasks = Vec::new();
+        for conn in worker_conns {
+            shutdown_tasks.push(tokio::spawn(async move {
+                // Best-effort: ask the worker to shut down and wait for the response so the
+                // request has definitely made it onto the wire before we close the transport.
+                //
+                // Closing immediately after `start_call()` is racy: the write loop may observe
+                // the shutdown signal first and drop queued frames, leaving workers hung until
+                // their own watchdogs/firewalls kick in.
+                if let Ok(Ok(pending)) =
+                    timeout(WORKER_RPC_WRITE_TIMEOUT, conn.start_call(Request::Shutdown)).await
+                {
+                    let _ = timeout(WORKER_SHUTDOWN_RPC_TIMEOUT, pending.wait()).await;
+                }
+
+                let _ = conn.shutdown().await;
+            }));
+        }
+
+        // Drive the tasks to completion before returning so external processes (e.g. test
+        // fixtures) can observe a bounded shutdown.
+        for task in shutdown_tasks {
+            let _ = task.await;
         }
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1007,7 +925,7 @@ impl DistributedRouter {
     async fn disconnect_worker(&self, worker: &WorkerHandle) {
         // Treat shard mismatches as a protocol violation and sever the connection so it cannot
         // keep returning poisoned cross-shard responses.
-        let _ = worker.notify(RpcMessage::Shutdown);
+        let _ = worker.conn.shutdown().await;
 
         let mut guard = self.state.shards.lock().await;
         if let Some(shard) = guard.get_mut(&worker.shard_id) {
@@ -1025,14 +943,6 @@ impl DistributedRouter {
         drop(guard);
         self.state.notify.notify_waiters();
     }
-}
-
-fn scored_symbol_cmp(a: &ScoredSymbol, b: &ScoredSymbol) -> std::cmp::Ordering {
-    b.rank_key
-        .cmp(&a.rank_key)
-        .then_with(|| a.name.len().cmp(&b.name.len()))
-        .then_with(|| a.name.cmp(&b.name))
-        .then_with(|| a.path.cmp(&b.path))
 }
 
 async fn wait_for_worker(state: Arc<RouterState>, shard_id: ShardId) -> Result<WorkerHandle> {
@@ -1055,6 +965,57 @@ async fn wait_for_worker(state: Arc<RouterState>, shard_id: ShardId) -> Result<W
     })
     .await
     .context("timed out waiting for worker")?
+}
+
+async fn apply_shard_index(state: Arc<RouterState>, index: ShardIndex) {
+    let indexes_snapshot = {
+        let mut guard = state.shard_indexes.lock().await;
+        guard.insert(index.shard_id, index);
+        guard.clone()
+    };
+
+    let symbols = build_global_symbols(indexes_snapshot.values());
+    write_global_symbols(&state.global_symbols, symbols).await;
+}
+
+async fn worker_call(worker: &WorkerHandle, request: Request) -> Result<Response> {
+    let pending: PendingCall = match timeout(WORKER_RPC_WRITE_TIMEOUT, worker.conn.start_call(request)).await {
+        Ok(Ok(pending)) => pending,
+        Ok(Err(err)) => {
+            return Err(anyhow!(err)).with_context(|| {
+                format!(
+                    "send request to worker {} (shard {})",
+                    worker.worker_id, worker.shard_id
+                )
+            })
+        }
+        Err(_) => {
+            let _ = worker.conn.shutdown().await;
+            return Err(anyhow!(
+                "timed out writing request to worker {} (shard {})",
+                worker.worker_id,
+                worker.shard_id
+            ));
+        }
+    };
+
+    match timeout(WORKER_RPC_READ_TIMEOUT, pending.wait()).await {
+        Ok(Ok(resp)) => Ok(resp),
+        Ok(Err(err)) => Err(anyhow!(err)).with_context(|| {
+            format!(
+                "receive response from worker {} (shard {})",
+                worker.worker_id, worker.shard_id
+            )
+        }),
+        Err(_) => {
+            let _ = worker.conn.shutdown().await;
+            Err(anyhow!(
+                "timed out waiting for response from worker {} (shard {})",
+                worker.worker_id,
+                worker.shard_id
+            ))
+        }
+    }
 }
 
 async fn accept_loop(
@@ -1341,243 +1302,180 @@ impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
 
 async fn handle_new_connection(
     state: Arc<RouterState>,
-    mut stream: BoxedStream,
+    stream: BoxedStream,
     identity: WorkerIdentity,
     connection_permit: OwnedSemaphorePermit,
 ) -> Result<()> {
+    let max_rpc_bytes = state
+        .config
+        .max_rpc_bytes
+        .min(nova_remote_proto::MAX_MESSAGE_BYTES)
+        .max(1);
+    let max_rpc_len: u32 = max_rpc_bytes.try_into().unwrap_or(u32::MAX);
+
+    let mut cfg = RpcRouterConfig::default();
+    cfg.expected_auth_token = state.config.auth_token.clone();
+    cfg.pre_handshake_max_frame_len = MAX_HELLO_BYTES
+        .try_into()
+        .unwrap_or(nova_remote_rpc::DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN);
+    cfg.capabilities.max_frame_len = max_rpc_len;
+    cfg.capabilities.max_packet_len = max_rpc_len;
+
+    let reservation = Arc::new(tokio::sync::Mutex::new(None::<(ShardId, WorkerId)>));
+    let reservation_hook = reservation.clone();
+
+    let admission_state = state.clone();
+    let admission_identity = identity.clone();
     #[cfg(not(feature = "tls"))]
-    let _ = &identity;
+    let _ = &admission_identity;
 
-    let payload = timeout(
+    let handshake = timeout(
         WORKER_HANDSHAKE_TIMEOUT,
-        transport::read_payload_limited(&mut stream, MAX_HELLO_BYTES),
-    )
-    .await
-    .context("timed out waiting for WorkerHello")??;
-    let hello = match nova_remote_proto::decode_message(&payload) {
-        Ok(message) => message,
-        Err(v2_err) => {
-            if let Ok(frame) = nova_remote_proto::v3::decode_wire_frame(&payload) {
-                if matches!(frame, nova_remote_proto::v3::WireFrame::Hello(_)) {
-                    let reject = nova_remote_proto::v3::WireFrame::Reject(
-                        nova_remote_proto::v3::HandshakeReject {
-                            code: nova_remote_proto::v3::RejectCode::UnsupportedVersion,
-                            message: "router only supports legacy_v2 protocol".into(),
-                        },
-                    );
-                    if let Ok(bytes) = nova_remote_proto::v3::encode_wire_frame(&reject) {
-                        let _ = timeout(
-                            WORKER_HANDSHAKE_TIMEOUT,
-                            transport::write_payload(&mut stream, &bytes),
-                        )
-                        .await;
+        RpcConnection::handshake_as_router_with_config_and_admission(
+            stream,
+            cfg,
+            move |hello| {
+                let shard_id = hello.shard_id;
+                let reservation_hook = reservation_hook.clone();
+                let admission_state = admission_state.clone();
+                let admission_identity = admission_identity.clone();
+                #[cfg(not(feature = "tls"))]
+                let _ = &admission_identity;
+                async move {
+                    #[cfg(feature = "tls")]
+                    {
+                        let allowlist = &admission_state.config.tls_client_cert_fingerprint_allowlist;
+                        let shard_allowlist = allowlist.shards.get(&shard_id);
+                        let enforce_allowlist =
+                            !allowlist.global.is_empty() || shard_allowlist.is_some();
+
+                        if enforce_allowlist {
+                            let Some(fingerprint) =
+                                admission_identity.tls_client_cert_fingerprint()
+                            else {
+                                return RouterAdmission::Reject(HandshakeReject {
+                                    code: RejectCode::Unauthorized,
+                                    message: "shard authorization failed".into(),
+                                });
+                            };
+
+                            let is_allowed = allowlist
+                                .global
+                                .iter()
+                                .any(|allowed| allowed.eq_ignore_ascii_case(fingerprint))
+                                || shard_allowlist.is_some_and(|entries| {
+                                    entries.iter().any(|allowed| {
+                                        allowed.eq_ignore_ascii_case(fingerprint)
+                                    })
+                                });
+
+                            if !is_allowed {
+                                return RouterAdmission::Reject(HandshakeReject {
+                                    code: RejectCode::Unauthorized,
+                                    message: "shard authorization failed".into(),
+                                });
+                            }
+                        }
                     }
-                    return Err(anyhow!(
-                        "received v3 worker hello; this router only supports legacy_v2"
-                    ));
-                }
-            }
-            return Err(v2_err).context("decode legacy_v2 worker hello");
-        }
-    };
-    let (shard_id, auth_token, has_cached_index) = match hello {
-        RpcMessage::WorkerHello {
-            shard_id,
-            auth_token,
-            has_cached_index,
-        } => (shard_id, auth_token, has_cached_index),
-        other => return Err(anyhow!("expected WorkerHello, got {other:?}")),
-    };
 
-    if let Some(expected) = state.config.auth_token.as_ref() {
-        if auth_token.as_deref() != Some(expected.as_str()) {
-            warn!(shard_id, "worker authentication failed");
-            timeout(
-                WORKER_HANDSHAKE_TIMEOUT,
-                transport::write_message(
-                    &mut stream,
-                    &RpcMessage::Error {
-                        message: "authentication failed".into(),
-                    },
-                ),
-            )
-            .await
-            .ok();
-            return Err(anyhow!("worker authentication failed for shard {shard_id}"));
-        }
-    }
+                    let mut guard = admission_state.shards.lock().await;
+                    let Some(shard) = guard.get_mut(&shard_id) else {
+                        return RouterAdmission::Reject(HandshakeReject {
+                            code: RejectCode::InvalidRequest,
+                            message: format!("unknown shard {shard_id}"),
+                        });
+                    };
 
-    #[cfg(feature = "tls")]
-    {
-        let allowlist = &state.config.tls_client_cert_fingerprint_allowlist;
-        let shard_allowlist = allowlist.shards.get(&shard_id);
-        let enforce_allowlist = !allowlist.global.is_empty() || shard_allowlist.is_some();
+                    if shard.worker.is_some() || shard.pending_worker.is_some() {
+                        return RouterAdmission::Reject(HandshakeReject {
+                            code: RejectCode::InvalidRequest,
+                            message: format!("shard {shard_id} already has a connected worker"),
+                        });
+                    }
 
-        if enforce_allowlist {
-            let Some(fingerprint) = identity.tls_client_cert_fingerprint() else {
-                timeout(
-                    WORKER_HANDSHAKE_TIMEOUT,
-                    transport::write_message(
-                        &mut stream,
-                        &RpcMessage::Error {
-                            message: "mTLS client certificate required".into(),
-                        },
-                    ),
-                )
-                .await
-                .ok();
-                return Err(anyhow!("shard {shard_id} requires mTLS client identity"));
-            };
-
-            let is_allowed = allowlist
-                .global
-                .iter()
-                .any(|allowed| allowed.eq_ignore_ascii_case(fingerprint))
-                || shard_allowlist.is_some_and(|entries| {
-                    entries
-                        .iter()
-                        .any(|allowed| allowed.eq_ignore_ascii_case(fingerprint))
-                });
-
-            if !is_allowed {
-                timeout(
-                    WORKER_HANDSHAKE_TIMEOUT,
-                    transport::write_message(
-                        &mut stream,
-                        &RpcMessage::Error {
-                            message: "shard authorization failed".into(),
-                        },
-                    ),
-                )
-                .await
-                .ok();
-                return Err(anyhow!(
-                    "worker mTLS fingerprint {fingerprint} is not authorized for shard {shard_id}"
-                ));
-            }
-        }
-    }
-
-    {
-        let known_shard = {
-            let guard = state.shards.lock().await;
-            guard.contains_key(&shard_id)
-        };
-        if !known_shard {
-            timeout(
-                WORKER_HANDSHAKE_TIMEOUT,
-                transport::write_message(
-                    &mut stream,
-                    &RpcMessage::Error {
-                        message: format!("unknown shard {shard_id}"),
-                    },
-                ),
-            )
-            .await
-            .ok();
-            return Err(anyhow!("worker connected for unknown shard {shard_id}"));
-        }
-    }
-
-    let worker_id: WorkerId = state.next_worker_id.fetch_add(1, Ordering::SeqCst);
-
-    // Reserve the shard for this handshake before sending RouterHello. This prevents a race where
-    // two concurrent connections could both receive RouterHello and fight for shard ownership.
-    #[derive(Debug)]
-    enum ReservationFailure {
-        UnknownShard,
-        AlreadyHasWorker,
-    }
-
-    let reservation_failure = {
-        let mut guard = state.shards.lock().await;
-        match guard.get_mut(&shard_id) {
-            None => Some(ReservationFailure::UnknownShard),
-            Some(shard) => {
-                if shard.worker.is_some() || shard.pending_worker.is_some() {
-                    Some(ReservationFailure::AlreadyHasWorker)
-                } else {
+                    let worker_id: WorkerId =
+                        admission_state.next_worker_id.fetch_add(1, Ordering::SeqCst);
                     shard.pending_worker = Some(worker_id);
-                    None
+                    *reservation_hook.lock().await = Some((shard_id, worker_id));
+
+                    let revision = admission_state.global_revision.load(Ordering::SeqCst);
+                    RouterAdmission::Accept { worker_id, revision }
                 }
-            }
-        }
-    };
-
-    if let Some(failure) = reservation_failure {
-        let (message, err) = match failure {
-            ReservationFailure::UnknownShard => (
-                format!("unknown shard {shard_id}"),
-                anyhow!("worker connected for unknown shard {shard_id}"),
-            ),
-            ReservationFailure::AlreadyHasWorker => (
-                format!("shard {shard_id} already has a connected worker"),
-                anyhow!("worker already connected for shard {shard_id}"),
-            ),
-        };
-        timeout(
-            WORKER_HANDSHAKE_TIMEOUT,
-            transport::write_message(&mut stream, &RpcMessage::Error { message }),
-        )
-        .await
-        .ok();
-        return Err(err);
-    }
-
-    // Send RouterHello while the reservation is held.
-    let send_hello = timeout(
-        WORKER_HANDSHAKE_TIMEOUT,
-        transport::write_message(
-            &mut stream,
-            &RpcMessage::RouterHello {
-                worker_id,
-                shard_id,
-                revision: state.global_revision.load(Ordering::SeqCst),
-                protocol_version: nova_remote_proto::PROTOCOL_VERSION,
             },
         ),
     )
     .await;
 
-    let send_hello = match send_hello {
-        Ok(res) => res,
-        Err(_) => {
-            let mut guard = state.shards.lock().await;
-            if let Some(shard) = guard.get_mut(&shard_id) {
-                if shard.pending_worker == Some(worker_id) {
-                    shard.pending_worker = None;
+    let (conn, welcome, hello) = match handshake {
+        Ok(Ok(res)) => res,
+        Ok(Err(err)) => {
+            if let Some((shard_id, worker_id)) = reservation.lock().await.take() {
+                let mut guard = state.shards.lock().await;
+                if let Some(shard) = guard.get_mut(&shard_id) {
+                    if shard.pending_worker == Some(worker_id) {
+                        shard.pending_worker = None;
+                    }
                 }
+                state.notify.notify_waiters();
             }
-            state.notify.notify_waiters();
-            return Err(anyhow!("timed out sending RouterHello"));
+            return Err(anyhow!(err));
+        }
+        Err(_) => {
+            if let Some((shard_id, worker_id)) = reservation.lock().await.take() {
+                let mut guard = state.shards.lock().await;
+                if let Some(shard) = guard.get_mut(&shard_id) {
+                    if shard.pending_worker == Some(worker_id) {
+                        shard.pending_worker = None;
+                    }
+                }
+                state.notify.notify_waiters();
+            }
+            return Err(anyhow!("timed out waiting for worker handshake"));
         }
     };
 
-    if let Err(err) = send_hello {
-        let mut guard = state.shards.lock().await;
-        if let Some(shard) = guard.get_mut(&shard_id) {
-            if shard.pending_worker == Some(worker_id) {
-                shard.pending_worker = None;
+    let shard_id = welcome.shard_id;
+    let worker_id = welcome.worker_id;
+    let has_cached_index = hello.cached_index_info.is_some();
+
+    {
+        let notif_state = state.clone();
+        let notif_conn = conn.clone();
+        conn.set_notification_handler(move |notification| {
+            let notif_state = notif_state.clone();
+            let notif_conn = notif_conn.clone();
+            async move {
+                match notification {
+                    Notification::CachedIndex(index) => {
+                        if index.shard_id != shard_id {
+                            warn!(
+                                shard_id,
+                                worker_id,
+                                reported_shard_id = index.shard_id,
+                                "worker sent cached index for wrong shard; closing connection"
+                            );
+                            let _ = notif_conn.shutdown().await;
+                            return;
+                        }
+                        apply_shard_index(notif_state, index).await;
+                    }
+                    Notification::Unknown => {}
+                }
             }
-        }
-        state.notify.notify_waiters();
-        return Err(err);
+        });
     }
 
-    let (tx, rx) = mpsc::unbounded_channel::<WorkerRequest>();
     let handle = WorkerHandle {
         shard_id,
         worker_id,
-        tx,
+        conn: conn.clone(),
     };
 
-    // Finalize the reservation now that RouterHello is on the wire.
+    // Finalize the reservation now that the welcome frame is on the wire.
     {
         let mut guard = state.shards.lock().await;
         let Some(shard) = guard.get_mut(&shard_id) else {
-            return Err(anyhow!(
-                "BUG: shard {shard_id} disappeared during handshake"
-            ));
+            return Err(anyhow!("BUG: shard {shard_id} disappeared during handshake"));
         };
 
         if shard.pending_worker != Some(worker_id) {
@@ -1591,16 +1489,11 @@ async fn handle_new_connection(
 
     info!(shard_id, worker_id, has_cached_index, "worker connected");
 
-    let max_rpc_bytes = state
-        .config
-        .max_rpc_bytes
-        .min(nova_remote_proto::MAX_MESSAGE_BYTES)
-        .max(1);
-
     let cleanup_state = state.clone();
+    let cleanup_conn = conn.clone();
     tokio::spawn(async move {
         let _connection_permit = connection_permit;
-        let _ = worker_connection_loop(worker_id, shard_id, stream, rx, max_rpc_bytes).await;
+        let _ = cleanup_conn.wait_closed().await;
         info!(shard_id, worker_id, "worker connection closed");
         let mut guard = cleanup_state.shards.lock().await;
         if let Some(shard) = guard.get_mut(&shard_id) {
@@ -1610,6 +1503,9 @@ async fn handle_new_connection(
                 .is_some_and(|w| w.worker_id == worker_id)
             {
                 shard.worker = None;
+            }
+            if shard.pending_worker == Some(worker_id) {
+                shard.pending_worker = None;
             }
         }
         cleanup_state.notify.notify_waiters();
@@ -1643,111 +1539,19 @@ async fn handle_new_connection(
             };
 
             let revision = refresh_state.global_revision.load(Ordering::SeqCst);
-            let _ = refresh_handle.notify(RpcMessage::LoadFiles { revision, files });
+            let resp = worker_call(&refresh_handle, Request::LoadFiles { revision, files }).await;
+            if let Err(err) = resp {
+                warn!(
+                    shard_id,
+                    worker_id = refresh_handle.worker_id,
+                    error = ?err,
+                    "failed to rehydrate worker file map"
+                );
+            }
         });
     }
 
     state.notify.notify_waiters();
-    Ok(())
-}
-
-async fn worker_connection_loop(
-    worker_id: WorkerId,
-    shard_id: ShardId,
-    mut stream: BoxedStream,
-    mut rx: mpsc::UnboundedReceiver<WorkerRequest>,
-    max_rpc_bytes: usize,
-) -> Result<()> {
-    loop {
-        let req = tokio::select! {
-            req = rx.recv() => {
-                let Some(req) = req else {
-                    break;
-                };
-                req
-            }
-            // If the worker disconnects while no router RPCs are in flight, we'd otherwise never
-            // notice because the protocol is request-driven (the worker doesn't send unsolicited
-            // messages).
-            //
-            // That can leave `shard.worker` set even though the socket is closed, and because the
-            // accept loop rejects a second worker connection for a shard, the router can get stuck
-            // until some RPC attempt fails and triggers cleanup.
-            //
-            // Reading a single byte is enough to detect EOF. Seeing a byte here is unexpected and
-            // indicates a protocol violation (legacy_v2 has no worker→router unsolicited messages),
-            // so we log and drop the connection.
-            res = stream.read_u8() => {
-                match res {
-                    Ok(byte) => {
-                        warn!(
-                            shard_id,
-                            worker_id,
-                            byte,
-                            "received unexpected byte from worker while idle; closing connection"
-                        );
-                    }
-                    Err(_) => {}
-                }
-                break;
-            }
-        };
-
-        let message = req.message;
-
-        let write_res = match timeout(
-            WORKER_RPC_WRITE_TIMEOUT,
-            transport::write_message(&mut stream, &message),
-        )
-        .await
-        {
-            Ok(res) => res
-                .with_context(|| format!("write request to worker {worker_id} (shard {shard_id})")),
-            Err(_) => Err(anyhow!(
-                "timed out writing request to worker {worker_id} (shard {shard_id})"
-            )),
-        };
-        if let Err(err) = write_res {
-            if let Some(reply) = req.reply {
-                let _ = reply.send(Err(err));
-            }
-            break;
-        }
-
-        if matches!(message, RpcMessage::Shutdown) {
-            if let Some(reply) = req.reply {
-                let _ = reply.send(Ok(RpcMessage::Shutdown));
-            }
-            break;
-        }
-
-        let read_res = match timeout(
-            WORKER_RPC_READ_TIMEOUT,
-            transport::read_message_limited(&mut stream, max_rpc_bytes),
-        )
-        .await
-        {
-            Ok(res) => res.with_context(|| {
-                format!("read response from worker {worker_id} (shard {shard_id})")
-            }),
-            Err(_) => Err(anyhow!(
-                "timed out waiting for response from worker {worker_id} (shard {shard_id})"
-            )),
-        };
-        match read_res {
-            Ok(resp) => {
-                if let Some(reply) = req.reply {
-                    let _ = reply.send(Ok(resp));
-                }
-            }
-            Err(err) => {
-                if let Some(reply) = req.reply {
-                    let _ = reply.send(Err(err));
-                }
-                break;
-            }
-        }
-    }
     Ok(())
 }
 

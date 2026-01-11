@@ -2,11 +2,19 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Once;
 
 use anyhow::{anyhow, Context, Result};
 use sha2::Digest;
 use tokio::net::TcpStream;
 use tokio_rustls::TlsAcceptor;
+
+fn ensure_crypto_provider_installed() {
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
 
 #[derive(Clone)]
 pub struct TlsServerConfig {
@@ -25,6 +33,7 @@ pub struct TlsServerConfig {
 
 impl TlsServerConfig {
     pub fn from_pem_files(cert_path: impl Into<PathBuf>, key_path: impl Into<PathBuf>) -> Self {
+        ensure_crypto_provider_installed();
         Self {
             cert_path: cert_path.into(),
             key_path: key_path.into(),
@@ -41,6 +50,7 @@ impl TlsServerConfig {
     }
 
     fn build(&self) -> Result<Arc<rustls::ServerConfig>> {
+        ensure_crypto_provider_installed();
         let certs = load_certs(&self.cert_path)?;
         let key = load_private_key(&self.key_path)?;
 
