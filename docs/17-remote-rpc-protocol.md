@@ -128,8 +128,15 @@ Within a negotiated major protocol version:
   variants decode to the `*_::Unknown` catch-all variants in the schema below.
 
 Unknown variants are still generally **not actionable**; receivers SHOULD treat them as an
-unsupported-feature condition and close the connection (or return a structured error response if
-possible).
+unsupported-feature condition and either ignore them (when safe) or fail the connection/request.
+
+Recommended handling:
+
+- **During handshake:** if an unknown/unsupported frame is received, the router SHOULD reject with
+  `Reject(code="invalid_request", ...)` and close the connection.
+- **After handshake:** unknown `WireFrame` variants SHOULD be ignored/dropped.
+- For `RpcPayload::Request(Request::Unknown)`, the responder SHOULD return
+  `RpcPayload::Response(RpcResult::Err { error: { code: "invalid_request", .. }})`.
 
 ### 3.3 CBOR decode safety / allocation hardening (MUST)
 
