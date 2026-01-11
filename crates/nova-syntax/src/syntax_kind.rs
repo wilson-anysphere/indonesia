@@ -12,6 +12,18 @@ pub const SYNTAX_SCHEMA_VERSION: u32 = 2;
 ///
 /// This enum is intentionally "fat": having a stable set of kinds is a
 /// prerequisite for typed AST wrappers and downstream semantic analysis.
+///
+/// # Stability / Persistence
+///
+/// `SyntaxKind` is persisted as a `u16` in Nova's caches (see ADR0002). The
+/// numeric discriminant of every variant is therefore part of the cache schema.
+///
+/// **Invariant:** do not reorder, renumber, or delete existing variants.
+/// Only append new variants immediately before [`SyntaxKind::__Last`].
+///
+/// If an incompatible change is ever required (reordering/removal), the cache
+/// schema version must be bumped so persisted data is not interpreted with the
+/// wrong discriminants.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize_repr, Deserialize_repr,
 )]
@@ -297,8 +309,120 @@ pub enum SyntaxKind {
     ExpressionRoot,
     ModuleDirective,
 
+    // --- Java 21+ nodes (grammar-complete surface area) ---
+    //
+    // NOTE: New variants must be appended immediately before `__Last`.
+    // See the stability notes on `SyntaxKind` for details.
+
+    // Compilation unit variants / modules (JPMS).
+    ModuleCompilationUnit,
+    ModuleDirectiveList,
+
+    // Additional type parameters & bounds.
+    TypeParameterBound,
+    AdditionalBound,
+
+    // Type compositions.
+    IntersectionType,
+    UnionType,
+
+    // Additional declaration clauses.
+    ThrowsClause,
+
+    // Methods / constructors.
+    MethodHeader,
+    MethodBody,
+    ConstructorBody,
+    ExplicitConstructorInvocation,
+    ReceiverParameter,
+    VarargsParameter,
+
+    // Lambdas.
+    LambdaParameters,
+    LambdaParameterList,
+    LambdaParameter,
+    LambdaBody,
+
+    // Records.
+    RecordHeader,
+    RecordComponentList,
+    RecordComponent,
+    CompactConstructorDeclaration,
+
+    // Annotation type elements and values.
+    AnnotationElementDeclaration,
+    AnnotationElementValuePairList,
+    AnnotationElementValuePair,
+    AnnotationElementValueArrayInitializer,
+
+    // Variable declarators / initializers.
+    VariableDeclaratorId,
+    VariableInitializer,
+    ArrayInitializerList,
+
+    // Additional type grammar needed for Java 8+ type annotations and arrays.
+    AnnotatedType,
+    ArrayType,
+    ClassOrInterfaceType,
+    ClassType,
+    InterfaceType,
+    TypeVariable,
+    Dims,
+    Dim,
+    AnnotatedDim,
+    DimExprs,
+    DimExpr,
+    WildcardBounds,
+    WildcardExtendsBound,
+    WildcardSuperBound,
+    InferredTypeArguments,
+
+    // Statements.
+    YieldStatement,
+    BasicForStatement,
+    EnhancedForStatement,
+    ForInit,
+    ForCondition,
+    ForUpdate,
+    EnhancedForControl,
+    LocalClassDeclaration,
+    LocalClassDeclarationStatement,
+
+    // Switch (statement + expression) and pattern matching.
+    SwitchExpression,
+    SwitchRule,
+    SwitchRuleBody,
+    SwitchBlockStatementGroup,
+    CaseLabel,
+    DefaultLabel,
+    CaseLabelElementList,
+
+    // Expressions.
+    InstanceofExpression,
+    ClassLiteralExpression,
+    MethodReferenceExpression,
+    ConstructorReferenceExpression,
+    ClassInstanceCreationExpression,
+    AnonymousClassBody,
+    ArrayCreationExpression,
+    PostfixExpression,
+    PrefixExpression,
+    ExplicitGenericInvocationExpression,
+
+    // Pattern details (record patterns, constants, etc).
+    RecordPatternComponentList,
+    RecordPatternComponent,
+    ParenthesizedPattern,
+    ConstantPattern,
+    NullPattern,
+    UnnamedPattern,
+
     __Last,
 }
+
+// Compile-time sanity check: if this ever fails, we've likely added an
+// unreasonable amount of kinds or accidentally broken the `__Last` sentinel.
+const _: [(); 1] = [(); (SyntaxKind::__Last as u16 <= 4096) as usize];
 
 impl SyntaxKind {
     pub fn is_trivia(self) -> bool {
@@ -336,6 +460,114 @@ impl SyntaxKind {
 
     pub fn is_identifier_like(self) -> bool {
         self == SyntaxKind::Identifier || self.is_contextual_keyword()
+    }
+
+    pub fn is_keyword(self) -> bool {
+        // Keep this fast without having to enumerate every keyword.
+        let raw = self as u16;
+        (SyntaxKind::AbstractKw as u16..=SyntaxKind::WhileKw as u16).contains(&raw)
+            || matches!(self, SyntaxKind::TrueKw | SyntaxKind::FalseKw | SyntaxKind::NullKw)
+            || self.is_contextual_keyword()
+    }
+
+    pub fn is_modifier_keyword(self) -> bool {
+        matches!(
+            self,
+            SyntaxKind::PublicKw
+                | SyntaxKind::ProtectedKw
+                | SyntaxKind::PrivateKw
+                | SyntaxKind::AbstractKw
+                | SyntaxKind::StaticKw
+                | SyntaxKind::FinalKw
+                | SyntaxKind::NativeKw
+                | SyntaxKind::SynchronizedKw
+                | SyntaxKind::TransientKw
+                | SyntaxKind::VolatileKw
+                | SyntaxKind::StrictfpKw
+                | SyntaxKind::DefaultKw
+                | SyntaxKind::SealedKw
+                | SyntaxKind::NonSealedKw
+        )
+    }
+
+    pub fn is_literal(self) -> bool {
+        matches!(
+            self,
+            SyntaxKind::Number
+                | SyntaxKind::IntLiteral
+                | SyntaxKind::LongLiteral
+                | SyntaxKind::FloatLiteral
+                | SyntaxKind::DoubleLiteral
+                | SyntaxKind::CharLiteral
+                | SyntaxKind::StringLiteral
+                | SyntaxKind::TextBlock
+                | SyntaxKind::TrueKw
+                | SyntaxKind::FalseKw
+                | SyntaxKind::NullKw
+        )
+    }
+
+    pub fn is_operator(self) -> bool {
+        matches!(
+            self,
+            SyntaxKind::Plus
+                | SyntaxKind::Minus
+                | SyntaxKind::Star
+                | SyntaxKind::Slash
+                | SyntaxKind::Percent
+                | SyntaxKind::Tilde
+                | SyntaxKind::Bang
+                | SyntaxKind::Eq
+                | SyntaxKind::EqEq
+                | SyntaxKind::BangEq
+                | SyntaxKind::Less
+                | SyntaxKind::LessEq
+                | SyntaxKind::Greater
+                | SyntaxKind::GreaterEq
+                | SyntaxKind::Amp
+                | SyntaxKind::AmpAmp
+                | SyntaxKind::AmpEq
+                | SyntaxKind::Pipe
+                | SyntaxKind::PipePipe
+                | SyntaxKind::PipeEq
+                | SyntaxKind::Caret
+                | SyntaxKind::CaretEq
+                | SyntaxKind::PlusPlus
+                | SyntaxKind::MinusMinus
+                | SyntaxKind::PlusEq
+                | SyntaxKind::MinusEq
+                | SyntaxKind::StarEq
+                | SyntaxKind::SlashEq
+                | SyntaxKind::PercentEq
+                | SyntaxKind::LeftShift
+                | SyntaxKind::RightShift
+                | SyntaxKind::UnsignedRightShift
+                | SyntaxKind::LeftShiftEq
+                | SyntaxKind::RightShiftEq
+                | SyntaxKind::UnsignedRightShiftEq
+                | SyntaxKind::Question
+                | SyntaxKind::Colon
+                | SyntaxKind::Arrow
+                | SyntaxKind::InstanceofKw
+        )
+    }
+
+    pub fn is_separator(self) -> bool {
+        matches!(
+            self,
+            SyntaxKind::LParen
+                | SyntaxKind::RParen
+                | SyntaxKind::LBrace
+                | SyntaxKind::RBrace
+                | SyntaxKind::LBracket
+                | SyntaxKind::RBracket
+                | SyntaxKind::Semicolon
+                | SyntaxKind::Comma
+                | SyntaxKind::Dot
+                | SyntaxKind::Ellipsis
+                | SyntaxKind::At
+                | SyntaxKind::DoubleColon
+        )
     }
 
     pub fn from_keyword(text: &str) -> Option<SyntaxKind> {
@@ -403,6 +635,7 @@ impl SyntaxKind {
             "record" => SyntaxKind::RecordKw,
             "sealed" => SyntaxKind::SealedKw,
             "permits" => SyntaxKind::PermitsKw,
+            "non-sealed" => SyntaxKind::NonSealedKw,
             "when" => SyntaxKind::WhenKw,
             "module" => SyntaxKind::ModuleKw,
             "open" => SyntaxKind::OpenKw,

@@ -30,6 +30,38 @@ fn dump_non_trivia(input: &str) -> Vec<(SyntaxKind, String)> {
 }
 
 #[test]
+fn syntax_kind_raw_roundtrip_is_total_for_valid_range() {
+    use rowan::Language;
+
+    const MAX_KINDS: u16 = 4096;
+    assert!(
+        SyntaxKind::__Last as u16 <= MAX_KINDS,
+        "SyntaxKind::__Last={} exceeded MAX_KINDS={}",
+        SyntaxKind::__Last as u16,
+        MAX_KINDS
+    );
+
+    for raw in 0..(SyntaxKind::__Last as u16) {
+        let kind = <crate::JavaLanguage as Language>::kind_from_raw(rowan::SyntaxKind(raw));
+        assert_eq!(
+            <crate::JavaLanguage as Language>::kind_to_raw(kind).0,
+            raw,
+            "failed roundtrip for raw={raw}"
+        );
+    }
+}
+
+#[test]
+fn syntax_kind_helper_classification_smoke_test() {
+    assert!(SyntaxKind::ClassKw.is_keyword());
+    assert!(SyntaxKind::PublicKw.is_modifier_keyword());
+    assert!(SyntaxKind::IntLiteral.is_literal());
+    assert!(SyntaxKind::PlusEq.is_operator());
+    assert!(SyntaxKind::LParen.is_separator());
+    assert!(!SyntaxKind::Whitespace.is_keyword());
+}
+
+#[test]
 fn lexer_trivia_and_literals() {
     let input = "/** doc */ var x = 0xFF + 1_000; String t = \"\"\"\nhi\nthere\n\"\"\";";
     let tokens = dump_tokens(input);
@@ -62,6 +94,61 @@ fn lexer_trivia_and_literals() {
     ];
 
     assert_eq!(tokens, expected);
+}
+
+#[test]
+fn lexer_covers_java21_operators_separators_and_selected_previews() {
+    // This test is intentionally lexing-focused: it ensures we don't fall back to
+    // `SyntaxKind::Error` for common Java 21 constructs as we grow the parser.
+    let input = r#"
+@Deprecated
+class Foo<T extends java.io.Serializable & Comparable<T>> permits Bar, Baz {
+  void m(int... xs) {
+    int i = 0;
+    i += 1; i -= 1; i *= 1; i /= 1; i %= 1;
+    i &= 1; i |= 1; i ^= 1;
+    i <<= 1; i >>= 1; i >>>= 1;
+    int j = i << 1 >> 1 >>> 1;
+    boolean b = i < 1 || i > 1 && i == 1 && i != 2;
+    int k = b ? 1 : 2;
+    Runnable r = () -> { };
+    var ref = String::valueOf;
+    int[] arr = new int[] { 1, 2, 3 };
+    int[][] arr2 = new int[1][2];
+    int sw = switch (i) {
+      case 1, 2 -> 1;
+      case String s when s.length() > 0 -> 2;
+      default -> { yield 3; }
+    };
+  }
+}
+module com.example.foo {
+  requires transitive java.base;
+  exports com.example.foo to com.example.bar, com.example.baz;
+}
+"#;
+
+    let tokens = lex(input);
+    let kinds: Vec<_> = tokens.iter().map(|t| t.kind).collect();
+
+    assert!(
+        !kinds.contains(&SyntaxKind::Error),
+        "unexpected error token while lexing: {kinds:?}"
+    );
+
+    // Spot-check some "easy to miss" operators/separators.
+    assert!(kinds.contains(&SyntaxKind::UnsignedRightShiftEq));
+    assert!(kinds.contains(&SyntaxKind::DoubleColon));
+    assert!(kinds.contains(&SyntaxKind::Ellipsis));
+    assert!(kinds.contains(&SyntaxKind::Arrow));
+    assert!(kinds.contains(&SyntaxKind::At));
+
+    // Spot-check restricted keywords used by newer language features.
+    assert!(kinds.contains(&SyntaxKind::PermitsKw));
+    assert!(kinds.contains(&SyntaxKind::WhenKw));
+    assert!(kinds.contains(&SyntaxKind::YieldKw));
+    assert!(kinds.contains(&SyntaxKind::ModuleKw));
+    assert!(kinds.contains(&SyntaxKind::TransitiveKw));
 }
 
 #[test]
