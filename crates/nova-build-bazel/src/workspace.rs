@@ -34,6 +34,9 @@ const TEXTPROTO_PARSER_VERSION: &str = "aquery-textproto-streaming-v7";
 fn compile_info_expr_version_hex() -> String {
     // Keep this in sync with the query expressions above; changes should invalidate cached compile
     // info even if file digests happen to remain the same.
+    //
+    // We hash the *values* of the query strings directly instead of building a big `concat!`
+    // string because `concat!` only accepts literals.
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"java_targets_query=");
     hasher.update(JAVA_TARGETS_QUERY.as_bytes());
@@ -62,7 +65,6 @@ fn compile_info_expr_version_hex() -> String {
     hasher.update(b"query_deps=");
     hasher.update(DEPS_QUERY_TEMPLATE.as_bytes());
     hasher.update(b"\n");
-
     hasher.update(b"textproto_parser=");
     hasher.update(TEXTPROTO_PARSER_VERSION.as_bytes());
     hasher.update(b"\n");
