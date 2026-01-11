@@ -789,6 +789,9 @@ pub fn save_sharded_indexes(
     let shards_root = indexes_dir.join(SHARDS_DIR_NAME);
     std::fs::create_dir_all(&shards_root)?;
 
+    let shard_count_changed =
+        read_shard_manifest(&shards_root).is_some_and(|value| value != shard_count);
+
     // Write/update shard manifest so loads can treat shard-count changes as a cache miss.
     write_shard_manifest(&shards_root, shard_count)?;
 
@@ -798,15 +801,22 @@ pub fn save_sharded_indexes(
         .ok()
         .filter(|m| m.is_compatible() && &m.project_hash == snapshot.project_hash());
 
-    let mut shards_to_write = match &previous_metadata {
-        Some(metadata) => affected_shards(&metadata.diff_files(snapshot), shard_count),
-        None => (0..shard_count).collect(),
+    let mut shards_to_write = if shard_count_changed {
+        // Existing shards were written with a different modulo space, so they are not reusable.
+        (0..shard_count).collect()
+    } else {
+        match &previous_metadata {
+            Some(metadata) => affected_shards(&metadata.diff_files(snapshot), shard_count),
+            None => (0..shard_count).collect(),
+        }
     };
 
-    // Also rewrite shards that are missing/corrupt on disk (best-effort recovery).
-    for shard_id in 0..shard_count {
-        if !shard_on_disk_is_healthy(&shards_root, shard_id) {
-            shards_to_write.insert(shard_id);
+    if !shard_count_changed {
+        // Also rewrite shards that are missing/corrupt on disk (best-effort recovery).
+        for shard_id in 0..shard_count {
+            if !shard_on_disk_is_healthy(&shards_root, shard_id) {
+                shards_to_write.insert(shard_id);
+            }
         }
     }
 
@@ -918,12 +928,108 @@ pub fn load_sharded_index_archives(
     }))
 }
 
+/// Fast variant of [`load_sharded_index_archives`] that uses per-file metadata
+/// fingerprints (size + mtime) instead of hashing file contents.
+///
+/// This is intended for warm-start validation when callers want to avoid reading
+/// the full contents of every file.
+pub fn load_sharded_index_archives_fast(
+    cache_dir: &CacheDir,
+    project_root: impl AsRef<Path>,
+    files: Vec<PathBuf>,
+    shard_count: u32,
+) -> Result<Option<LoadedShardedIndexArchives>, IndexPersistenceError> {
+    if shard_count == 0 {
+        return Err(IndexPersistenceError::InvalidShardCount { shard_count });
+    }
+
+    let metadata_path = cache_dir.metadata_path();
+    if !metadata_path.exists() {
+        return Ok(None);
+    }
+    let metadata = match CacheMetadata::load(metadata_path) {
+        Ok(metadata) => metadata,
+        Err(_) => return Ok(None),
+    };
+    if !metadata.is_compatible() {
+        return Ok(None);
+    }
+
+    let current_snapshot = match ProjectSnapshot::new_fast(project_root, files) {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+
+    if &metadata.project_hash != current_snapshot.project_hash() {
+        return Ok(None);
+    }
+
+    let shards_root = cache_dir.indexes_dir().join(SHARDS_DIR_NAME);
+    match read_shard_manifest(&shards_root) {
+        Some(value) if value == shard_count => {}
+        _ => return Ok(None),
+    }
+
+    let mut shards = Vec::with_capacity(shard_count as usize);
+    let mut missing_shards = BTreeSet::new();
+
+    for shard_id in 0..shard_count {
+        let shard_dir = shard_dir(&shards_root, shard_id);
+        let Some(shard_archives) = load_shard_archives(&shard_dir) else {
+            shards.push(None);
+            missing_shards.insert(shard_id);
+            continue;
+        };
+        shards.push(Some(shard_archives));
+    }
+
+    let mut invalidated: BTreeSet<String> = metadata
+        .diff_files_fast(&current_snapshot)
+        .into_iter()
+        .collect();
+
+    if !missing_shards.is_empty() {
+        for path in current_snapshot.file_fingerprints().keys() {
+            if missing_shards.contains(&shard_id_for_path(path, shard_count)) {
+                invalidated.insert(path.clone());
+            }
+        }
+    }
+
+    Ok(Some(LoadedShardedIndexArchives {
+        shards,
+        invalidated_files: invalidated.into_iter().collect(),
+        missing_shards,
+    }))
+}
+
 pub fn load_sharded_index_view(
     cache_dir: &CacheDir,
     current_snapshot: &ProjectSnapshot,
     shard_count: u32,
 ) -> Result<Option<LoadedShardedIndexView>, IndexPersistenceError> {
     let Some(archives) = load_sharded_index_archives(cache_dir, current_snapshot, shard_count)?
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(LoadedShardedIndexView {
+        view: ShardedIndexView {
+            shards: archives.shards,
+        },
+        invalidated_files: archives.invalidated_files,
+        missing_shards: archives.missing_shards,
+    }))
+}
+
+pub fn load_sharded_index_view_fast(
+    cache_dir: &CacheDir,
+    project_root: impl AsRef<Path>,
+    files: Vec<PathBuf>,
+    shard_count: u32,
+) -> Result<Option<LoadedShardedIndexView>, IndexPersistenceError> {
+    let Some(archives) =
+        load_sharded_index_archives_fast(cache_dir, project_root, files, shard_count)?
     else {
         return Ok(None);
     };

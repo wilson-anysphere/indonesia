@@ -1,8 +1,8 @@
 use nova_cache::{CacheConfig, CacheDir, ProjectSnapshot};
 use nova_index::{
-    affected_shards, load_sharded_index_archives, load_sharded_index_view, save_sharded_indexes,
-    shard_id_for_path, AnnotationLocation, InheritanceEdge, ProjectIndexes, ReferenceLocation,
-    SymbolLocation,
+    affected_shards, load_sharded_index_archives, load_sharded_index_archives_fast,
+    load_sharded_index_view, save_sharded_indexes, shard_id_for_path, AnnotationLocation,
+    InheritanceEdge, ProjectIndexes, ReferenceLocation, SymbolLocation,
 };
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -255,4 +255,123 @@ fn corrupt_shard_is_partial_cache_miss() {
             .collect::<BTreeSet<_>>(),
         expected_invalidated
     );
+}
+
+#[test]
+fn sharded_save_rewrites_all_shards_when_shard_count_changes() {
+    let shard_count_v1 = 16;
+    let shard_count_v2 = 32;
+
+    let temp = tempfile::tempdir().unwrap();
+    let project_root = temp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    let file = (0..1000u32)
+        .map(|idx| format!("File{idx}.java"))
+        .find(|name| shard_id_for_path(name, shard_count_v2) >= shard_count_v1)
+        .expect("expected to find a filename that moves shards when shard_count changes");
+
+    let full_path = project_root.join(&file);
+    std::fs::write(&full_path, "class A {}").unwrap();
+
+    let snapshot = ProjectSnapshot::new(&project_root, vec![PathBuf::from(&file)]).unwrap();
+    let cache_dir = CacheDir::new(
+        &project_root,
+        CacheConfig {
+            cache_root_override: Some(temp.path().join("cache-root")),
+        },
+    )
+    .unwrap();
+
+    let mut shards_v1 = empty_shards(shard_count_v1);
+    shards_v1[shard_id_for_path(&file, shard_count_v1) as usize]
+        .symbols
+        .insert(
+            "A",
+            SymbolLocation {
+                file: file.clone(),
+                line: 1,
+                column: 1,
+            },
+        );
+    save_sharded_indexes(&cache_dir, &snapshot, shard_count_v1, shards_v1).unwrap();
+
+    let mut shards_v2 = empty_shards(shard_count_v2);
+    shards_v2[shard_id_for_path(&file, shard_count_v2) as usize]
+        .symbols
+        .insert(
+            "A",
+            SymbolLocation {
+                file: file.clone(),
+                line: 1,
+                column: 1,
+            },
+        );
+    save_sharded_indexes(&cache_dir, &snapshot, shard_count_v2, shards_v2.clone()).unwrap();
+
+    let loaded = load_sharded_index_archives(&cache_dir, &snapshot, shard_count_v2)
+        .unwrap()
+        .unwrap();
+    assert!(loaded.missing_shards.is_empty());
+    assert!(loaded.invalidated_files.is_empty());
+
+    for (idx, shard_archives) in loaded.shards.into_iter().enumerate() {
+        let shard_archives = shard_archives.expect("all shards present after full rewrite");
+        let owned = ProjectIndexes {
+            symbols: shard_archives.symbols.to_owned().unwrap(),
+            references: shard_archives.references.to_owned().unwrap(),
+            inheritance: shard_archives.inheritance.to_owned().unwrap(),
+            annotations: shard_archives.annotations.to_owned().unwrap(),
+        };
+        assert_eq!(owned, shards_v2[idx]);
+    }
+}
+
+#[test]
+fn sharded_fast_load_does_not_read_project_file_contents() {
+    let shard_count = 16;
+
+    let temp = tempfile::tempdir().unwrap();
+    let project_root = temp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    let a = project_root.join("A.java");
+    std::fs::write(&a, "class A {}").unwrap();
+
+    let snapshot = ProjectSnapshot::new(&project_root, vec![PathBuf::from("A.java")]).unwrap();
+    let cache_dir = CacheDir::new(
+        &project_root,
+        CacheConfig {
+            cache_root_override: Some(temp.path().join("cache-root")),
+        },
+    )
+    .unwrap();
+
+    let mut shards = empty_shards(shard_count);
+    let shard_a = shard_id_for_path("A.java", shard_count) as usize;
+    shards[shard_a].symbols.insert(
+        "A",
+        SymbolLocation {
+            file: "A.java".to_string(),
+            line: 1,
+            column: 1,
+        },
+    );
+    save_sharded_indexes(&cache_dir, &snapshot, shard_count, shards).unwrap();
+
+    // Replace the file with a directory. Reading contents would now fail, but metadata access
+    // should still work.
+    std::fs::remove_file(&a).unwrap();
+    std::fs::create_dir_all(&a).unwrap();
+    assert!(std::fs::read(&a).is_err());
+
+    let loaded = load_sharded_index_archives_fast(
+        &cache_dir,
+        &project_root,
+        vec![PathBuf::from("A.java")],
+        shard_count,
+    )
+    .unwrap();
+
+    assert!(loaded.is_some());
 }
