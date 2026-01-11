@@ -214,7 +214,9 @@ fn lexer_numeric_literals_invalid_forms_produce_errors() {
 fn lexer_reports_unterminated_literals_and_comments() {
     for (input, expected_msg) in [
         ("\"unterminated", "unterminated string literal"),
+        ("\"hello \\\n", "unterminated string literal"),
         ("'x", "unterminated character literal"),
+        ("'\\\n", "unterminated character literal"),
         ("\"\"\"unterminated", "unterminated text block"),
         ("/* unterminated", "unterminated block comment"),
     ] {

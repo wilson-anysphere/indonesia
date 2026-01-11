@@ -249,9 +249,20 @@ impl<'a> Lexer<'a> {
                 }
                 '\\' => {
                     self.bump_char();
-                    // Escape sequence: consume next char if present.
-                    if !self.is_eof() {
-                        self.bump_char();
+                    // Escape sequence: consume next char if present, but do not swallow line
+                    // terminators (Java does not support C-style `\\\n` line continuations in
+                    // string literals).
+                    match self.peek_char() {
+                        Some('\n' | '\r') | None => {
+                            self.errors.push(LexError {
+                                message: "unterminated string literal".to_string(),
+                                range: TextRange::new(start, self.pos),
+                            });
+                            return SyntaxKind::Error;
+                        }
+                        Some(_) => {
+                            self.bump_char();
+                        }
                     }
                 }
                 '\n' | '\r' => {
@@ -285,8 +296,17 @@ impl<'a> Lexer<'a> {
                 }
                 '\\' => {
                     self.bump_char();
-                    if !self.is_eof() {
-                        self.bump_char();
+                    match self.peek_char() {
+                        Some('\n' | '\r') | None => {
+                            self.errors.push(LexError {
+                                message: "unterminated character literal".to_string(),
+                                range: TextRange::new(start, self.pos),
+                            });
+                            return SyntaxKind::Error;
+                        }
+                        Some(_) => {
+                            self.bump_char();
+                        }
                     }
                 }
                 '\n' | '\r' => {
