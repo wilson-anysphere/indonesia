@@ -1385,9 +1385,19 @@ mod tests {
 
     #[test]
     fn path_from_uri_decodes_percent_encoding() {
-        let uri = "file:///tmp/My%20File.java";
-        let path = path_from_uri(uri).expect("path");
-        assert_eq!(path, PathBuf::from("/tmp/My File.java"));
+        #[cfg(not(windows))]
+        {
+            let uri = "file:///tmp/My%20File.java";
+            let path = path_from_uri(uri).expect("path");
+            assert_eq!(path, PathBuf::from("/tmp/My File.java"));
+        }
+
+        #[cfg(windows)]
+        {
+            let uri = "file:///C:/tmp/My%20File.java";
+            let path = path_from_uri(uri).expect("path");
+            assert_eq!(path, PathBuf::from(r"C:\tmp\My File.java"));
+        }
     }
 
     #[test]
