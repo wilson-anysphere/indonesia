@@ -1,6 +1,7 @@
 use nova_cache::{CacheConfig, CacheDir, ProjectSnapshot};
 use nova_index::{
-    load_index_view, save_indexes, AnnotationLocation, ProjectIndexes, SymbolLocation,
+    load_index_view, save_indexes, AnnotationLocation, ProjectIndexes, ReferenceLocation,
+    SymbolLocation,
 };
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -42,6 +43,14 @@ fn index_view_filters_invalidated_files_without_materializing() {
                 column: 1,
             },
         );
+        indexes.references.insert(
+            "Foo",
+            ReferenceLocation {
+                file: file.to_string(),
+                line: 1,
+                column: 1,
+            },
+        );
         indexes.annotations.insert(
             "@Deprecated",
             AnnotationLocation {
@@ -57,6 +66,7 @@ fn index_view_filters_invalidated_files_without_materializing() {
     let view_v1 = load_index_view(&cache_dir, &snapshot_v1).unwrap().unwrap();
     assert!(view_v1.invalidated_files.is_empty());
     assert_eq!(view_v1.symbol_locations("Foo").count(), 2);
+    assert_eq!(view_v1.reference_locations("Foo").count(), 2);
     assert_eq!(view_v1.annotation_locations("@Deprecated").count(), 2);
 
     // Change a file so its fingerprint changes; A.java entries should be filtered.
@@ -84,5 +94,10 @@ fn index_view_filters_invalidated_files_without_materializing() {
         .map(|loc| loc.file.as_str())
         .collect();
     assert_eq!(annotation_files, vec!["B.java"]);
-}
 
+    let reference_files: Vec<&str> = view_v2
+        .reference_locations("Foo")
+        .map(|loc| loc.file.as_str())
+        .collect();
+    assert_eq!(reference_files, vec!["B.java"]);
+}

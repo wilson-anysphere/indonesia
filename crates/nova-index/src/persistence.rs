@@ -1,6 +1,6 @@
 use crate::indexes::{
-    AnnotationIndex, ArchivedAnnotationLocation, ArchivedSymbolLocation, InheritanceIndex,
-    ProjectIndexes, ReferenceIndex, SymbolIndex,
+    AnnotationIndex, ArchivedAnnotationLocation, ArchivedReferenceLocation, ArchivedSymbolLocation,
+    InheritanceIndex, ProjectIndexes, ReferenceIndex, SymbolIndex,
 };
 use nova_cache::{CacheDir, CacheMetadata, ProjectSnapshot};
 use std::collections::BTreeSet;
@@ -100,6 +100,25 @@ impl ProjectIndexesView {
             .archived()
             .annotations
             .get(name)
+            .into_iter()
+            .flat_map(move |locations| {
+                locations
+                    .iter()
+                    .filter(move |loc| !invalidated_files.contains(loc.file.as_str()))
+            })
+    }
+
+    /// Returns reference locations for `symbol`, filtering out any locations
+    /// that come from invalidated files.
+    pub fn reference_locations<'a>(
+        &'a self,
+        symbol: &'a str,
+    ) -> impl Iterator<Item = &'a ArchivedReferenceLocation> + 'a {
+        let invalidated_files = &self.invalidated_files;
+        self.references
+            .archived()
+            .references
+            .get(symbol)
             .into_iter()
             .flat_map(move |locations| {
                 locations
