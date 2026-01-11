@@ -7,8 +7,8 @@ use nova_index::Index;
 use nova_index::SymbolId;
 use nova_refactor::{
     change_signature as refactor_change_signature, convert_to_record, safe_delete, workspace_edit_to_lsp,
-    ChangeSignature, ConvertToRecordError, ConvertToRecordOptions, FileId, SafeDeleteMode,
-    SafeDeleteOutcome, SafeDeleteTarget, TextDatabase,
+    ChangeSignature, ConvertToRecordError, ConvertToRecordOptions, SafeDeleteMode, SafeDeleteOutcome,
+    SafeDeleteTarget,
 };
 use schemars::schema::RootSchema;
 use schemars::schema_for;
@@ -93,18 +93,7 @@ pub fn change_signature_workspace_edit(
     change: &ChangeSignature,
 ) -> Result<WorkspaceEdit, String> {
     let edit = refactor_change_signature(index, change).map_err(|err| err.to_string())?;
-
-    // `workspace_edit_to_lsp` needs file contents to map byte offsets to LSP UTF-16 positions.
-    // Until Nova's real semantic database is available in the LSP layer, we use a lightweight
-    // text-backed database shipped with `nova-refactor`.
-    let db = TextDatabase::new(
-        index
-            .files()
-            .iter()
-            .map(|(file, text)| (FileId::new(file.clone()), text.clone())),
-    );
-
-    workspace_edit_to_lsp(&db, &edit).map_err(|err| err.to_string())
+    workspace_edit_to_lsp(index, &edit).map_err(|err| err.to_string())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

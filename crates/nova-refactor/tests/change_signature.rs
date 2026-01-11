@@ -1,7 +1,7 @@
 use nova_index::{Index, SymbolKind};
 use nova_refactor::{
     apply_text_edits, change_signature, workspace_edit_to_lsp, ChangeSignature, ChangeSignatureConflict,
-    FileId, FileOp, HierarchyPropagation, ParameterOperation, TextDatabase, WorkspaceEdit, WorkspaceTextEdit,
+    FileOp, HierarchyPropagation, ParameterOperation, WorkspaceEdit, WorkspaceTextEdit,
 };
 use nova_types::MethodId;
 use pretty_assertions::assert_eq;
@@ -466,8 +466,7 @@ fn unicode_identifiers_round_trip_to_utf16_lsp_positions() {
     };
 
     let edit = change_signature(&index, &change).expect("refactor succeeds");
-    let db = TextDatabase::new([(FileId::new("file:///A.java"), source.to_string())]);
-    let lsp_edit = workspace_edit_to_lsp(&db, &edit).expect("convert to lsp");
+    let lsp_edit = workspace_edit_to_lsp(&index, &edit).expect("convert to lsp");
 
     let uri: lsp_types::Uri = "file:///A.java".parse().unwrap();
     let changes = lsp_edit.changes.expect("changes");
