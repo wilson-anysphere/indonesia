@@ -1,0 +1,68 @@
+name: Real project fixtures
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  real-projects:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      CARGO_TERM_COLOR: never
+      RUST_BACKTRACE: "1"
+      RUST_TEST_THREADS: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+          components: rustfmt, clippy
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cache test projects
+        uses: actions/cache@v4
+        with:
+          path: test-projects
+          key: test-projects-${{ runner.os }}-${{ hashFiles('test-projects/pins.toml') }}
+
+      - name: Run real project tests
+        run: |
+          set -euxo pipefail
+          mkdir -p real-project-logs
+          ./scripts/run-real-project-tests.sh 2>&1 | tee real-project-logs/run-real-project-tests.log
+
+      - name: javac validate (best-effort)
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euxo pipefail
+          mkdir -p real-project-logs
+          ./scripts/javac-validate.sh 2>&1 | tee real-project-logs/javac-validate.log
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-project-logs
+          if-no-files-found: warn
+          path: |
+            real-project-logs/*.log
+            test-projects/pins.toml
