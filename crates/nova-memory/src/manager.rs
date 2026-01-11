@@ -70,7 +70,7 @@ impl MemoryManager {
     }
 
     /// Subscribe to memory pressure events.
-    pub fn subscribe(&self, listener: Arc<dyn Fn(MemoryEvent) + Send + Sync>) {
+    pub fn subscribe(&self, listener: MemoryEventListener) {
         self.inner.listeners.lock().unwrap().push(listener);
     }
 

@@ -12,6 +12,7 @@ bsp = []
 anyhow = "1"
 blake3 = "1"
 nova-core = { path = "../nova-core" }
+nova-process = { path = "../nova-process" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

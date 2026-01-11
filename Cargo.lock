@@ -3334,6 +3334,7 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "nova-core",
+ "nova-process",
  "nova-project",
  "serde",
  "serde_json",
@@ -3349,6 +3350,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "nova-core",
+ "nova-process",
  "serde",
  "serde_json",
  "tempfile",
@@ -3927,6 +3929,13 @@ dependencies = [
  "serde_json",
  "toml",
  "walkdir",
+]
+
+[[package]]
+name = "nova-process"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

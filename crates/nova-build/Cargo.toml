@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 nova-core = { path = "../nova-core" }
+nova-process = { path = "../nova-process" }
 nova-project = { path = "../nova-project" }
 
 serde = { version = "1.0", features = ["derive"] }

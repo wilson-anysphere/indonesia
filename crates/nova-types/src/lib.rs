@@ -893,7 +893,6 @@ impl TypeStore {
 
         *slot = def;
     }
-
     /// Add a new class definition, overwriting an existing one if present.
     ///
     /// This is useful when importing types from external sources (classpath/JDK stubs),
@@ -924,7 +923,6 @@ impl TypeStore {
         self.classes.push(def);
         id
     }
-
     pub fn class_id(&self, name: &str) -> Option<ClassId> {
         self.lookup_class(name)
     }

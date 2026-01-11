@@ -1,9 +1,9 @@
+use nova_process::{run_command, RunOptions};
 use std::{
-    io::{self, Read},
+    io,
     path::Path,
-    process::{Command, ExitStatus, Stdio},
-    thread,
-    time::{Duration, Instant},
+    process::ExitStatus,
+    time::Duration,
 };
 
 /// Captured output from a command invocation.
@@ -54,88 +54,39 @@ impl Default for DefaultCommandRunner {
 impl CommandRunner for DefaultCommandRunner {
     fn run(&self, cwd: &Path, program: &Path, args: &[String]) -> io::Result<CommandOutput> {
         let command = format_command(program, args);
-        let mut cmd = Command::new(program);
-        cmd.args(args)
-            .current_dir(cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
 
-        let mut child = cmd.spawn().map_err(|err| {
-            io::Error::new(err.kind(), format!("failed to spawn `{command}`: {err}"))
-        })?;
-
-        let mut stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "failed to capture stdout"))?;
-        let mut stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "failed to capture stderr"))?;
-
-        let stdout_handle = thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = stdout.read_to_end(&mut buf);
-            buf
-        });
-        let stderr_handle = thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = stderr.read_to_end(&mut buf);
-            buf
-        });
-
-        let status_result = match self.timeout {
-            None => child.wait(),
-            Some(timeout) => {
-                let start = Instant::now();
-                loop {
-                    if let Some(status) = child.try_wait()? {
-                        break Ok(status);
-                    }
-                    if start.elapsed() >= timeout {
-                        break Err(io::Error::new(
-                            io::ErrorKind::TimedOut,
-                            format!("command `{command}` timed out after {timeout:?}"),
-                        ));
-                    }
-                    thread::sleep(Duration::from_millis(20));
-                }
-            }
+        // Keep process output bounded to avoid OOM when build tools are chatty.
+        const MAX_BYTES: usize = 16 * 1024 * 1024;
+        let opts = RunOptions {
+            timeout: self.timeout,
+            max_bytes: MAX_BYTES,
         };
 
-        if status_result.is_err() {
-            // Best-effort attempt to stop the child. This does not kill the full
-            // process tree, which is why the runner only offers best-effort
-            // timeout semantics.
-            let _ = child.kill();
-            let _ = child.wait();
+        let result = run_command(cwd, program, args, opts)
+            .map_err(|err| io::Error::new(err.kind(), format!("failed to run `{command}`: {err}")))?;
+
+        let stdout = result.output.stdout;
+        let stderr = result.output.stderr;
+
+        if result.timed_out {
+            let timeout = self.timeout.unwrap_or_default();
+            let mut msg = format!("command `{command}` timed out after {timeout:?}");
+            if result.output.truncated {
+                msg.push_str("\n(output truncated)");
+            }
+            if !stdout.is_empty() {
+                msg.push_str("\nstdout:\n");
+                msg.push_str(&stdout);
+            }
+            if !stderr.is_empty() {
+                msg.push_str("\nstderr:\n");
+                msg.push_str(&stderr);
+            }
+            return Err(io::Error::new(io::ErrorKind::TimedOut, msg));
         }
 
-        let stdout_bytes = stdout_handle.join().unwrap_or_else(|_| Vec::new());
-        let stderr_bytes = stderr_handle.join().unwrap_or_else(|_| Vec::new());
-        let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
-        let stderr = String::from_utf8_lossy(&stderr_bytes).to_string();
-
-        let status = match status_result {
-            Ok(status) => status,
-            Err(err) => {
-                // Preserve whatever output we managed to capture.
-                let mut msg = err.to_string();
-                if !stdout.is_empty() {
-                    msg.push_str("\nstdout:\n");
-                    msg.push_str(&stdout);
-                }
-                if !stderr.is_empty() {
-                    msg.push_str("\nstderr:\n");
-                    msg.push_str(&stderr);
-                }
-                return Err(io::Error::new(err.kind(), msg));
-            }
-        };
-
         Ok(CommandOutput {
-            status,
+            status: result.status,
             stdout,
             stderr,
         })

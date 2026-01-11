@@ -51,6 +51,7 @@ members = [
     "crates/nova-bugreport",
     "crates/nova-perf",
     "crates/nova-project",
+    "crates/nova-process",
     "crates/nova-properties",
     "crates/nova-refactor",
     "crates/nova-remote-proto",

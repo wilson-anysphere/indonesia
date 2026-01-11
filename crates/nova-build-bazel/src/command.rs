@@ -1,9 +1,11 @@
 use anyhow::{anyhow, Context, Result};
+use nova_process::{run_command, CommandFailure, CommandSpec, RunOptions};
 use std::{
     io::{self, BufRead, BufReader, Read},
     ops::ControlFlow,
     path::Path,
     process::{Command, Stdio},
+    time::Duration,
 };
 
 #[derive(Debug, Clone)]
@@ -47,24 +49,29 @@ pub struct DefaultCommandRunner;
 
 impl CommandRunner for DefaultCommandRunner {
     fn run(&self, cwd: &Path, program: &str, args: &[&str]) -> Result<CommandOutput> {
-        let output = Command::new(program)
-            .args(args)
-            .current_dir(cwd)
-            .stdin(Stdio::null())
-            .output()
-            .with_context(|| format!("failed to spawn `{program}`"))?;
+        let args: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+        let opts = RunOptions {
+            timeout: Some(Duration::from_secs(55)),
+            max_bytes: 16 * 1024 * 1024,
+        };
 
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        if !output.status.success() {
-            return Err(anyhow!(
-                "`{program} {}` exited with {}.\nstdout:\n{stdout}\nstderr:\n{stderr}",
-                args.join(" "),
-                output.status
-            ));
+        let result = run_command(cwd, Path::new(program), &args, opts)
+            .with_context(|| format!("failed to run `{program}`"))?;
+
+        if result.timed_out || !result.status.success() {
+            let command = CommandSpec::new(cwd, Path::new(program), &args);
+            return Err(anyhow!(CommandFailure::new(
+                command,
+                result.status,
+                result.output,
+                result.timed_out,
+            )));
         }
 
-        Ok(CommandOutput { stdout, stderr })
+        Ok(CommandOutput {
+            stdout: result.output.stdout,
+            stderr: result.output.stderr,
+        })
     }
 
     fn run_with_stdout<R>(

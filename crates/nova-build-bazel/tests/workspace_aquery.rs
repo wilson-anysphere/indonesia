@@ -286,7 +286,7 @@ action {{
     assert_eq!(info.release.as_deref(), Some("21"));
     assert!(info.preview);
     assert_eq!(info.output_dir.as_deref(), Some("out/dir"));
-    // `--release` implies both language level and bytecode target.
+    // `--release` implies both language level and bytecode target; ignore any later explicit flags.
     assert_eq!(info.source.as_deref(), Some("21"));
     assert_eq!(info.target.as_deref(), Some("21"));
     assert_eq!(info.source_roots, vec!["java/com/example".to_string()]);
