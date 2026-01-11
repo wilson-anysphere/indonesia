@@ -435,23 +435,28 @@ impl NovaConfig {
 ///
 /// Discovery order (first match wins):
 /// 1) `NOVA_CONFIG_PATH` env var (if set)
-/// 2) `<workspace>/.nova/config.toml`
-/// 3) `<workspace>/nova.toml`
-/// 4) fallback `NovaConfig::default()`
+/// 2) Walk up from `root` (or `root.parent()` when `root` is a file) looking for:
+///    - `.nova/config.toml`
+///    - `nova.toml`
+/// 3) fallback `NovaConfig::default()`
 pub fn load_for_workspace(root: impl AsRef<Path>) -> Result<NovaConfig, ConfigError> {
     if let Some(path) = std::env::var_os("NOVA_CONFIG_PATH") {
         return NovaConfig::load_from_path(PathBuf::from(path));
     }
 
     let root = root.as_ref();
-    let candidates = [
-        root.join(".nova").join("config.toml"),
-        root.join("nova.toml"),
-    ];
+    let start = if root.is_file() {
+        root.parent().unwrap_or(root)
+    } else {
+        root
+    };
 
-    for path in candidates {
-        if path.is_file() {
-            return NovaConfig::load_from_path(path);
+    for dir in start.ancestors() {
+        let candidates = [dir.join(".nova").join("config.toml"), dir.join("nova.toml")];
+        for candidate in candidates {
+            if candidate.is_file() {
+                return NovaConfig::load_from_path(candidate);
+            }
         }
     }
 

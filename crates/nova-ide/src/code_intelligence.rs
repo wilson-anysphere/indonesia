@@ -9,9 +9,9 @@ use std::path::Path;
 use std::str::FromStr;
 
 use lsp_types::{
-    CompletionItem, CompletionItemKind, DiagnosticSeverity, Hover, HoverContents, InlayHint,
-    InlayHintKind, Location, MarkupContent, MarkupKind, NumberOrString, Position, Range,
-    CallHierarchyItem, SemanticToken, SemanticTokenType, SemanticTokensLegend, SignatureHelp,
+    CallHierarchyItem, CompletionItem, CompletionItemKind, DiagnosticSeverity, Hover,
+    HoverContents, InlayHint, InlayHintKind, Location, MarkupContent, MarkupKind, NumberOrString,
+    Position, Range, SemanticToken, SemanticTokenType, SemanticTokensLegend, SignatureHelp,
     SignatureInformation, SymbolKind, TypeHierarchyItem,
 };
 
@@ -439,10 +439,19 @@ fn general_completions(db: &dyn Database, file: FileId, prefix: &str) -> Vec<Com
 
 fn kind_weight(kind: Option<CompletionItemKind>) -> i32 {
     match kind {
-        Some(CompletionItemKind::METHOD | CompletionItemKind::FUNCTION | CompletionItemKind::CONSTRUCTOR) => 100,
+        Some(
+            CompletionItemKind::METHOD
+            | CompletionItemKind::FUNCTION
+            | CompletionItemKind::CONSTRUCTOR,
+        ) => 100,
         Some(CompletionItemKind::FIELD) => 80,
         Some(CompletionItemKind::VARIABLE) => 70,
-        Some(CompletionItemKind::CLASS | CompletionItemKind::INTERFACE | CompletionItemKind::ENUM | CompletionItemKind::STRUCT) => 60,
+        Some(
+            CompletionItemKind::CLASS
+            | CompletionItemKind::INTERFACE
+            | CompletionItemKind::ENUM
+            | CompletionItemKind::STRUCT,
+        ) => 60,
         Some(CompletionItemKind::SNIPPET) => 50,
         Some(CompletionItemKind::KEYWORD) => 10,
         _ => 0,
@@ -566,7 +575,11 @@ pub fn find_references(
     locations
 }
 
-pub fn outgoing_calls(db: &dyn Database, file: FileId, method_name: &str) -> Vec<CallHierarchyItem> {
+pub fn outgoing_calls(
+    db: &dyn Database,
+    file: FileId,
+    method_name: &str,
+) -> Vec<CallHierarchyItem> {
     let text = db.file_content(file);
     let analysis = analyze(text);
     let uri = file_uri(db, file);
@@ -593,7 +606,11 @@ pub fn outgoing_calls(db: &dyn Database, file: FileId, method_name: &str) -> Vec
     items
 }
 
-pub fn incoming_calls(db: &dyn Database, file: FileId, method_name: &str) -> Vec<CallHierarchyItem> {
+pub fn incoming_calls(
+    db: &dyn Database,
+    file: FileId,
+    method_name: &str,
+) -> Vec<CallHierarchyItem> {
     let text = db.file_content(file);
     let analysis = analyze(text);
     let uri = file_uri(db, file);
@@ -789,12 +806,11 @@ pub fn signature_help(
 
 pub fn inlay_hints(db: &dyn Database, file: FileId, range: Range) -> Vec<InlayHint> {
     let text = db.file_content(file);
-    let Some(start) = position_to_offset(text, range.start) else {
+    let start = position_to_offset(text, range.start).unwrap_or(0);
+    let end = position_to_offset(text, range.end).unwrap_or(text.len());
+    if end < start {
         return Vec::new();
-    };
-    let Some(end) = position_to_offset(text, range.end) else {
-        return Vec::new();
-    };
+    }
     let analysis = analyze(text);
 
     let mut hints = Vec::new();

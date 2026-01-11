@@ -37,7 +37,11 @@ impl<DB: ?Sized + Send + Sync + 'static> IdeExtensions<DB> {
         &mut self.registry
     }
 
-    pub fn diagnostics(&self, cancel: CancellationToken, file: nova_ext::FileId) -> Vec<Diagnostic> {
+    pub fn diagnostics(
+        &self,
+        cancel: CancellationToken,
+        file: nova_ext::FileId,
+    ) -> Vec<Diagnostic> {
         let ctx = ExtensionContext::new(
             Arc::clone(&self.db),
             Arc::clone(&self.config),
@@ -86,8 +90,7 @@ impl<DB: ?Sized + Send + Sync + 'static> IdeExtensions<DB> {
             self.project,
             cancel,
         );
-        self.registry
-            .navigation(ctx, NavigationParams { symbol })
+        self.registry.navigation(ctx, NavigationParams { symbol })
     }
 
     pub fn inlay_hints(&self, cancel: CancellationToken, file: nova_ext::FileId) -> Vec<InlayHint> {
@@ -128,13 +131,14 @@ where
         let text = self.db.file_content(file);
         let offset = crate::text::position_to_offset(text, position).unwrap_or(text.len());
 
-        let extension_items = self.completions(cancel, file, offset).into_iter().map(|item| {
-            lsp_types::CompletionItem {
+        let extension_items = self
+            .completions(cancel, file, offset)
+            .into_iter()
+            .map(|item| lsp_types::CompletionItem {
                 label: item.label,
                 detail: item.detail,
                 ..lsp_types::CompletionItem::default()
-            }
-        });
+            });
 
         completions.extend(extension_items);
         completions
@@ -161,16 +165,12 @@ where
             let selection = crate::text::span_to_lsp_range(source, span);
 
             actions.extend(crate::refactor::extract_member_code_actions(
-                &uri,
-                source,
-                selection,
+                &uri, source, selection,
             ));
 
-            if let Some(action) = crate::code_action::extract_method_code_action(
-                source,
-                uri.clone(),
-                selection,
-            ) {
+            if let Some(action) =
+                crate::code_action::extract_method_code_action(source, uri.clone(), selection)
+            {
                 actions.push(lsp_types::CodeActionOrCommand::CodeAction(action));
             }
 
@@ -284,13 +284,14 @@ impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
         let text = self.db.file_content(file);
         let offset = crate::text::position_to_offset(text, position).unwrap_or(text.len());
 
-        let extension_items = self.completions(cancel, file, offset).into_iter().map(|item| {
-            lsp_types::CompletionItem {
+        let extension_items = self
+            .completions(cancel, file, offset)
+            .into_iter()
+            .map(|item| lsp_types::CompletionItem {
                 label: item.label,
                 detail: item.detail,
                 ..lsp_types::CompletionItem::default()
-            }
-        });
+            });
 
         completions.extend(extension_items);
         completions
@@ -317,16 +318,12 @@ impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
             let selection = crate::text::span_to_lsp_range(source, span);
 
             actions.extend(crate::refactor::extract_member_code_actions(
-                &uri,
-                source,
-                selection,
+                &uri, source, selection,
             ));
 
-            if let Some(action) = crate::code_action::extract_method_code_action(
-                source,
-                uri.clone(),
-                selection,
-            ) {
+            if let Some(action) =
+                crate::code_action::extract_method_code_action(source, uri.clone(), selection)
+            {
                 actions.push(lsp_types::CodeActionOrCommand::CodeAction(action));
             }
 
@@ -431,7 +428,11 @@ mod tests {
         }
 
         fn diagnostics(&self, _db: &dyn Database, _file: nova_ext::FileId) -> Vec<Diagnostic> {
-            vec![Diagnostic::warning("FW", "framework", Some(Span::new(0, 1)))]
+            vec![Diagnostic::warning(
+                "FW",
+                "framework",
+                Some(Span::new(0, 1)),
+            )]
         }
 
         fn completions(
@@ -500,7 +501,8 @@ mod tests {
         let db: Arc<dyn Database + Send + Sync> = Arc::new(db);
         let mut ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), project);
 
-        let analyzer = FrameworkAnalyzerAdapter::new("framework.test", FrameworkTestAnalyzer).into_arc();
+        let analyzer =
+            FrameworkAnalyzerAdapter::new("framework.test", FrameworkTestAnalyzer).into_arc();
         ide.registry_mut()
             .register_diagnostic_provider(analyzer.clone())
             .unwrap();
@@ -548,7 +550,11 @@ mod tests {
                 _ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
                 _params: DiagnosticParams,
             ) -> Vec<Diagnostic> {
-                vec![Diagnostic::warning("EXT", "extension diagnostic", Some(Span::new(0, 1)))]
+                vec![Diagnostic::warning(
+                    "EXT",
+                    "extension diagnostic",
+                    Some(Span::new(0, 1)),
+                )]
             }
         }
 
@@ -605,7 +611,9 @@ class A {
             .unwrap();
 
         let diags = ide.all_diagnostics(CancellationToken::new(), diagnostics_file);
-        assert!(diags.iter().any(|d| d.message.contains("Cannot resolve symbol 'baz'")));
+        assert!(diags
+            .iter()
+            .any(|d| d.message.contains("Cannot resolve symbol 'baz'")));
         assert!(diags.iter().any(|d| d.message == "extension diagnostic"));
 
         // `s.` is on line 4 (0-based; account for leading newline in fixture).
@@ -683,7 +691,7 @@ class A {
 
     #[test]
     fn combines_builtin_and_extension_inlay_hints() {
-        use nova_db::RootDatabase;
+        use nova_db::InMemoryFileStore;
 
         struct ExtraInlayHintProvider;
         impl InlayHintProvider<dyn nova_db::Database + Send + Sync> for ExtraInlayHintProvider {
@@ -703,7 +711,7 @@ class A {
             }
         }
 
-        let mut db = RootDatabase::new();
+        let mut db = InMemoryFileStore::new();
         let file = db.file_id_for_path(PathBuf::from("/inlay_hints.java"));
         db.set_file_text(
             file,
