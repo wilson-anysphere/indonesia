@@ -169,10 +169,78 @@ def check_protocol_extensions() -> list[str]:
     return errors
 
 
+def check_perf_docs() -> list[str]:
+    """Ensure perf-related docs stay in sync with `.github/workflows/perf.yml`.
+
+    The perf workflow is the source of truth for which Criterion bench suites are gated in CI.
+    We intentionally keep the implementation lightweight (regex scanning) to avoid adding
+    new Python dependencies (e.g. YAML parsers) to CI.
+    """
+
+    workflow_path = REPO_ROOT / ".github" / "workflows" / "perf.yml"
+    if not workflow_path.exists():
+        return []
+
+    workflow = read_text(workflow_path)
+    # Match `cargo bench` lines that specify a package + bench name.
+    bench_re = re.compile(
+        r"^\s*cargo bench[^\n]*\s-p\s+([^\s]+)[^\n]*\s--bench\s+([^\s]+)",
+        flags=re.MULTILINE,
+    )
+    suites = sorted(set(bench_re.findall(workflow)))
+    if not suites:
+        return [
+            "expected .github/workflows/perf.yml to contain `cargo bench -p <crate> --bench <name>` invocations"
+        ]
+
+    # Docs we expect to mention the CI-gated suite.
+    # - Strategy doc should reference the concrete bench file paths for readers.
+    # - Infrastructure doc should include both the file paths and local-equivalent commands.
+    docs_require_paths = [
+        REPO_ROOT / "docs" / "14-testing-strategy.md",
+        REPO_ROOT / "docs" / "14-testing-infrastructure.md",
+    ]
+    # perf/README is the operational reference; it should include runnable commands.
+    perf_readme = REPO_ROOT / "perf" / "README.md"
+
+    errors: list[str] = []
+
+    for crate, bench in suites:
+        bench_path = f"crates/{crate}/benches/{bench}.rs"
+        bench_file = REPO_ROOT / bench_path
+        if not bench_file.exists():
+            errors.append(
+                f".github/workflows/perf.yml references `cargo bench -p {crate} --bench {bench}` but {bench_path} does not exist"
+            )
+
+        for doc_path in docs_require_paths:
+            if not doc_path.exists():
+                errors.append(f"expected {doc_path.relative_to(REPO_ROOT)} to exist")
+                continue
+            doc = read_text(doc_path)
+            if bench_path not in doc:
+                errors.append(
+                    f"{doc_path.relative_to(REPO_ROOT)} does not mention {bench_path} (CI perf gate includes `cargo bench -p {crate} --bench {bench}`)"
+                )
+
+        if not perf_readme.exists():
+            errors.append("expected perf/README.md to exist")
+        else:
+            perf_doc = read_text(perf_readme)
+            expected_command = f"cargo bench -p {crate} --bench {bench}"
+            if expected_command not in perf_doc:
+                errors.append(
+                    f"perf/README.md does not include `{expected_command}` (CI perf gate includes it)"
+                )
+
+    return errors
+
+
 def main() -> int:
     errors: list[str] = []
     errors.extend(check_architecture_map())
     errors.extend(check_protocol_extensions())
+    errors.extend(check_perf_docs())
 
     if errors:
         for err in errors:
