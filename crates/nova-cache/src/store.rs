@@ -33,6 +33,12 @@ impl CacheStore for LocalStore {
             });
         }
 
+        if let Some(parent) = dest.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+
         std::fs::copy(&path, dest)?;
         Ok(())
     }
@@ -46,6 +52,12 @@ impl CacheStore for HttpStore {
         let response = ureq::get(url).call().map_err(|err| CacheError::Http {
             message: err.to_string(),
         })?;
+
+        if let Some(parent) = dest.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
 
         let mut reader = response.into_reader();
         let mut file = File::create(dest)?;
