@@ -24,7 +24,10 @@ mod persisted;
 mod write;
 
 pub use header::{ArtifactKind, Compression, StorageHeader, HEADER_LEN};
-pub use persisted::{CheckableArchived, PersistedArchive, StorageError};
+pub use persisted::{
+    CheckableArchived, PersistedArchive, StorageError, MAX_PAYLOAD_LEN_BYTES,
+    MAX_UNCOMPRESSED_LEN_BYTES,
+};
 pub use write::{
     write_archive_atomic, write_archive_atomic_with_options, WriteArchiveOptions, WriteCompression,
 };
@@ -32,8 +35,39 @@ pub use write::{
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
     use std::io::{Seek, SeekFrom, Write};
-    use std::sync::{Arc, Barrier};
+    use std::sync::{Arc, Barrier, Mutex};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        prev: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let prev = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, prev }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let prev = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.prev.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     #[derive(Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
     #[archive(check_bytes)]
@@ -130,6 +164,12 @@ mod tests {
 
     #[test]
     fn corrupted_payload_is_hash_mismatch() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _hash_guard = EnvVarGuard::set("NOVA_STORAGE_VALIDATE_HASH", "1");
+        // Ensure size-related env vars from the environment don't make this test flaky.
+        let _payload_guard = EnvVarGuard::remove("NOVA_STORAGE_MAX_PAYLOAD_LEN_BYTES");
+        let _uncompressed_guard = EnvVarGuard::remove("NOVA_STORAGE_MAX_UNCOMPRESSED_LEN_BYTES");
+
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("sample.bin");
 
@@ -252,6 +292,10 @@ mod tests {
 
     #[test]
     fn oversized_decompressed_len_is_error() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _payload_guard = EnvVarGuard::remove("NOVA_STORAGE_MAX_PAYLOAD_LEN_BYTES");
+        let _uncompressed_guard = EnvVarGuard::remove("NOVA_STORAGE_MAX_UNCOMPRESSED_LEN_BYTES");
+
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("sample.bin");
 
@@ -277,7 +321,7 @@ mod tests {
         //   payload_len @ 40..48
         //   uncompressed_len @ 48..56
         const UNCOMPRESSED_LEN_OFFSET: u64 = 48;
-        let oversized = crate::persisted::MAX_DECOMPRESSED_BYTES + 1;
+        let oversized = MAX_UNCOMPRESSED_LEN_BYTES + 1;
         let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
         file.seek(SeekFrom::Start(UNCOMPRESSED_LEN_OFFSET)).unwrap();
         file.write_all(&oversized.to_le_bytes()).unwrap();
@@ -286,9 +330,10 @@ mod tests {
         let err =
             PersistedArchive::<Sample>::open(&path, ArtifactKind::AstArtifacts, 1).unwrap_err();
         match err {
-            StorageError::OversizedPayload { payload_len, cap } => {
-                assert_eq!(payload_len, oversized);
-                assert_eq!(cap, crate::persisted::MAX_DECOMPRESSED_BYTES);
+            StorageError::TooLarge { kind, bytes, limit } => {
+                assert_eq!(kind, "uncompressed payload");
+                assert_eq!(bytes, oversized);
+                assert_eq!(limit, MAX_UNCOMPRESSED_LEN_BYTES);
             }
             other => panic!("unexpected error: {other:?}"),
         }
@@ -403,4 +448,3 @@ mod tests {
         );
     }
 }
-

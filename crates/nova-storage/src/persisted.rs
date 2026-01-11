@@ -17,18 +17,22 @@ use crate::header::{ArtifactKind, Compression, StorageHeader, HEADER_LEN};
 /// Treating unexpectedly-large cache files as a miss is preferable to risking an OOM.
 pub(crate) const MAX_MMAP_FALLBACK_BYTES: u64 = 256 * 1024 * 1024; // 256 MiB
 
-/// Maximum number of bytes a compressed artifact is allowed to decompress to.
+/// Default maximum number of bytes an artifact payload may occupy on disk.
+///
+/// This is a safety limit to prevent corrupted headers from requesting huge
+/// allocations or mappings.
+///
+/// Can be overridden via `NOVA_STORAGE_MAX_PAYLOAD_LEN_BYTES`.
+pub const MAX_PAYLOAD_LEN_BYTES: u64 = 1024 * 1024 * 1024; // 1 GiB
+
+/// Default maximum number of bytes a compressed artifact is allowed to decompress to.
 ///
 /// This bounds `zstd::bulk::decompress*` output allocations based on the header's
 /// `uncompressed_len` field. Corrupted or adversarial cache files must not be able to
 /// trigger multi-gigabyte allocations.
-pub(crate) const MAX_DECOMPRESSED_BYTES: u64 = 512 * 1024 * 1024; // 512 MiB
-
-/// Maximum payload length (archived bytes) accepted for any artifact.
 ///
-/// Even when memory-mapped, very large payloads can cause pathological validation / access
-/// patterns. This cap provides a conservative upper bound that degrades to a cache miss.
-pub(crate) const MAX_PAYLOAD_BYTES: u64 = 1024 * 1024 * 1024; // 1 GiB
+/// Can be overridden via `NOVA_STORAGE_MAX_UNCOMPRESSED_LEN_BYTES`.
+pub const MAX_UNCOMPRESSED_LEN_BYTES: u64 = 512 * 1024 * 1024; // 512 MiB
 
 /// Trait alias for archived roots that can be validated with `rkyv`.
 ///
@@ -50,6 +54,12 @@ pub enum StorageError {
     Io(#[from] std::io::Error),
     #[error("invalid header: {0}")]
     InvalidHeader(&'static str),
+    #[error("{kind} too large: {bytes} bytes (limit {limit} bytes)")]
+    TooLarge {
+        kind: &'static str,
+        bytes: u64,
+        limit: u64,
+    },
     #[error("incompatible artifact kind: expected {expected:?}, found {found:?}")]
     WrongArtifact {
         expected: ArtifactKind,
@@ -232,10 +242,12 @@ where
     }
 
     fn checked_payload_len(header: &StorageHeader) -> Result<usize, StorageError> {
-        if header.payload_len > MAX_PAYLOAD_BYTES {
-            return Err(StorageError::OversizedPayload {
-                payload_len: header.payload_len,
-                cap: MAX_PAYLOAD_BYTES,
+        let limit = max_payload_len_bytes();
+        if header.payload_len > limit {
+            return Err(StorageError::TooLarge {
+                kind: "payload",
+                bytes: header.payload_len,
+                limit,
             });
         }
         header
@@ -430,10 +442,12 @@ fn decompress(
     payload: &[u8],
     uncompressed_len: u64,
 ) -> Result<rkyv::util::AlignedVec, StorageError> {
-    if uncompressed_len > MAX_DECOMPRESSED_BYTES {
-        return Err(StorageError::OversizedPayload {
-            payload_len: uncompressed_len,
-            cap: MAX_DECOMPRESSED_BYTES,
+    let limit = max_uncompressed_len_bytes();
+    if uncompressed_len > limit {
+        return Err(StorageError::TooLarge {
+            kind: "uncompressed payload",
+            bytes: uncompressed_len,
+            limit,
         });
     }
     let len: usize = uncompressed_len
@@ -462,6 +476,19 @@ fn aligned_bytes(bytes: &[u8]) -> rkyv::util::AlignedVec {
 }
 
 fn verify_payload_hash(header: &StorageHeader, payload: &[u8]) -> Result<(), StorageError> {
+    let should_validate = match header.compression {
+        // Compressed artifacts already require a full decompression into memory,
+        // so validating the content hash is a cheap extra integrity check.
+        Compression::Zstd => true,
+        // For uncompressed (typically mmap-backed) artifacts, allow opting into
+        // hashing via env var since it requires touching the full payload.
+        Compression::None => env_flag_enabled("NOVA_STORAGE_VALIDATE_HASH"),
+    };
+
+    if !should_validate {
+        return Ok(());
+    }
+
     let found = content_hash(payload);
     if found != header.content_hash {
         return Err(StorageError::HashMismatch {
@@ -488,4 +515,25 @@ fn read_file_with_cap(mut file: File, cap: u64) -> Result<Vec<u8>, StorageError>
         });
     }
     Ok(bytes)
+}
+
+fn max_payload_len_bytes() -> u64 {
+    env_u64("NOVA_STORAGE_MAX_PAYLOAD_LEN_BYTES").unwrap_or(MAX_PAYLOAD_LEN_BYTES)
+}
+
+fn max_uncompressed_len_bytes() -> u64 {
+    env_u64("NOVA_STORAGE_MAX_UNCOMPRESSED_LEN_BYTES").unwrap_or(MAX_UNCOMPRESSED_LEN_BYTES)
+}
+
+fn env_u64(key: &str) -> Option<u64> {
+    let value = std::env::var(key).ok()?;
+    value.parse::<u64>().ok()
+}
+
+fn env_flag_enabled(key: &str) -> bool {
+    let Some(value) = std::env::var_os(key) else {
+        return false;
+    };
+    let value = value.to_string_lossy();
+    matches!(value.as_ref(), "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON")
 }
