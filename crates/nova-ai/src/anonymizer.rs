@@ -8,6 +8,15 @@ pub struct CodeAnonymizerOptions {
 
     /// Redact string literals that look sensitive (tokens/keys/passwords).
     pub redact_sensitive_strings: bool,
+
+    /// Redact suspiciously long numeric literals (IDs, hashes).
+    pub redact_numeric_literals: bool,
+
+    /// Strip comment bodies (line and block comments).
+    ///
+    /// When enabled, the anonymizer preserves the comment delimiters (`//`, `/* */`)
+    /// but drops the comment content so secrets do not leak through comments.
+    pub strip_or_redact_comments: bool,
 }
 
 impl Default for CodeAnonymizerOptions {
@@ -15,6 +24,8 @@ impl Default for CodeAnonymizerOptions {
         Self {
             anonymize_identifiers: true,
             redact_sensitive_strings: true,
+            redact_numeric_literals: true,
+            strip_or_redact_comments: false,
         }
     }
 }
@@ -53,27 +64,47 @@ impl CodeAnonymizer {
             match ch {
                 // Line comment
                 '/' if chars.peek() == Some(&'/') => {
-                    out.push('/');
-                    out.push('/');
                     chars.next();
-                    while let Some(c) = chars.next() {
-                        out.push(c);
-                        if c == '\n' {
-                            break;
+                    if self.options.strip_or_redact_comments {
+                        out.push_str("// [REDACTED]");
+                        while let Some(c) = chars.next() {
+                            if c == '\n' {
+                                out.push('\n');
+                                break;
+                            }
+                        }
+                    } else {
+                        out.push('/');
+                        out.push('/');
+                        while let Some(c) = chars.next() {
+                            out.push(c);
+                            if c == '\n' {
+                                break;
+                            }
                         }
                     }
                 }
                 // Block comment
                 '/' if chars.peek() == Some(&'*') => {
-                    out.push('/');
-                    out.push('*');
                     chars.next();
-                    while let Some(c) = chars.next() {
-                        out.push(c);
-                        if c == '*' && chars.peek() == Some(&'/') {
-                            out.push('/');
-                            chars.next();
-                            break;
+                    if self.options.strip_or_redact_comments {
+                        out.push_str("/* [REDACTED] */");
+                        while let Some(c) = chars.next() {
+                            if c == '*' && chars.peek() == Some(&'/') {
+                                chars.next();
+                                break;
+                            }
+                        }
+                    } else {
+                        out.push('/');
+                        out.push('*');
+                        while let Some(c) = chars.next() {
+                            out.push(c);
+                            if c == '*' && chars.peek() == Some(&'/') {
+                                out.push('/');
+                                chars.next();
+                                break;
+                            }
                         }
                     }
                 }
@@ -148,6 +179,80 @@ impl CodeAnonymizer {
                         out.push_str(&anon);
                     } else {
                         out.push_str(&ident);
+                    }
+                }
+                // Numeric literal (decimal)
+                c if c.is_ascii_digit() => {
+                    let mut raw = String::new();
+                    raw.push(c);
+
+                    let mut digits = 1usize;
+
+                    // Hex literal: 0x...
+                    if c == '0' && matches!(chars.peek(), Some(&'x') | Some(&'X')) {
+                        raw.push(chars.next().expect("peeked above"));
+                        let mut hex_digits = 0usize;
+                        while let Some(&next) = chars.peek() {
+                            if next.is_ascii_hexdigit() {
+                                raw.push(next);
+                                chars.next();
+                                hex_digits += 1;
+                            } else if next == '_' {
+                                raw.push(next);
+                                chars.next();
+                            } else {
+                                break;
+                            }
+                        }
+
+                        let suffix = match chars.peek().copied() {
+                            Some('l' | 'L' | 'f' | 'F' | 'd' | 'D') => chars.next(),
+                            _ => None,
+                        };
+
+                        if self.options.redact_numeric_literals && hex_digits >= 16 {
+                            out.push_str("0xREDACTED");
+                            if let Some(suffix) = suffix {
+                                out.push(suffix);
+                            }
+                        } else {
+                            if let Some(suffix) = suffix {
+                                raw.push(suffix);
+                            }
+                            out.push_str(&raw);
+                        }
+                        continue;
+                    }
+
+                    while let Some(&next) = chars.peek() {
+                        if next.is_ascii_digit() {
+                            raw.push(next);
+                            chars.next();
+                            digits += 1;
+                        } else if next == '_' {
+                            raw.push(next);
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if self.options.redact_numeric_literals && digits >= 16 {
+                        out.push('0');
+                        if let Some(&suffix) = chars.peek() {
+                            if matches!(suffix, 'l' | 'L' | 'f' | 'F' | 'd' | 'D') {
+                                out.push(suffix);
+                                chars.next();
+                            }
+                        }
+                    } else {
+                        if let Some(&suffix) = chars.peek() {
+                            if matches!(suffix, 'l' | 'L' | 'f' | 'F' | 'd' | 'D') {
+                                raw.push(suffix);
+                                chars.next();
+                            }
+                        }
+                        out.push_str(&raw);
                     }
                 }
                 other => out.push(other),
@@ -243,6 +348,12 @@ fn is_java_keyword(ident: &str) -> bool {
             | "void"
             | "volatile"
             | "while"
+            // Newer keywords / reserved identifiers.
+            | "var"
+            | "record"
+            | "sealed"
+            | "permits"
+            | "yield"
             // Literal values
             | "true"
             | "false"
@@ -362,4 +473,33 @@ fn is_mostly_alnum_or_symbols(s: &str) -> bool {
 
     // Avoid redacting natural language strings; require the vast majority to be "token-like".
     total > 0 && good * 100 / total >= 95
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strips_comment_bodies_when_enabled() {
+        let code = r#"
+            class Foo {
+                // apiKey=sk-verysecretstringthatislong
+                /* password=hunter2 */
+                void m() {}
+            }
+        "#;
+
+        let mut anonymizer = CodeAnonymizer::new(CodeAnonymizerOptions {
+            anonymize_identifiers: false,
+            redact_sensitive_strings: false,
+            redact_numeric_literals: false,
+            strip_or_redact_comments: true,
+        });
+
+        let out = anonymizer.anonymize(code);
+        assert!(out.contains("// [REDACTED]"));
+        assert!(out.contains("/* [REDACTED] */"));
+        assert!(!out.contains("sk-verysecret"), "{out}");
+        assert!(!out.contains("hunter2"), "{out}");
+    }
 }

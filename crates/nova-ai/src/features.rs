@@ -23,15 +23,20 @@ impl NovaAi {
         code_context: &CodeSnippet,
         cancel: CancellationToken,
     ) -> Result<String, AiError> {
-        let context = self
-            .client
-            .sanitize_snippet(code_context)
-            .unwrap_or_else(|| "[code context omitted due to excluded_paths]".to_string());
+        let context = if code_context
+            .path
+            .as_deref()
+            .is_some_and(|path| self.client.is_excluded_path(path))
+        {
+            "[code context omitted due to excluded_paths]".to_string()
+        } else {
+            code_context.content.clone()
+        };
 
         let user_prompt = format!(
             "Explain this Java compiler/runtime error to a developer.\n\n\
              Error:\n{error_message}\n\n\
-             Code context:\n{context}\n\n\
+             Code context:\n```java\n{context}\n```\n\n\
              Provide:\n\
              1) What the error means\n\
              2) Why it happened\n\
@@ -58,18 +63,19 @@ impl NovaAi {
         class_context: &CodeSnippet,
         cancel: CancellationToken,
     ) -> Result<String, AiError> {
-        let context = self
-            .client
-            .sanitize_snippet(class_context)
-            .unwrap_or_else(|| "[class context omitted due to excluded_paths]".to_string());
-        let method_signature = self
-            .client
-            .sanitize_snippet(&CodeSnippet::ad_hoc(method_signature))
-            .unwrap_or_else(|| "[method signature omitted due to excluded_paths]".to_string());
+        let context = if class_context
+            .path
+            .as_deref()
+            .is_some_and(|path| self.client.is_excluded_path(path))
+        {
+            "[class context omitted due to excluded_paths]".to_string()
+        } else {
+            class_context.content.clone()
+        };
 
         let user_prompt = format!(
-            "Given the following Java class context:\n{context}\n\n\
-             Implement the method:\n{method_signature}\n\n\
+            "Given the following Java class context:\n```java\n{context}\n```\n\n\
+             Implement the method:\n```java\n{method_signature}\n```\n\n\
              Return ONLY the method body (no signature), wrapped in braces.\n"
         );
 
@@ -93,14 +99,19 @@ impl NovaAi {
         test_framework: Option<&str>,
         cancel: CancellationToken,
     ) -> Result<String, AiError> {
-        let code = self
-            .client
-            .sanitize_snippet(method_or_class)
-            .unwrap_or_else(|| "[code omitted due to excluded_paths]".to_string());
+        let code = if method_or_class
+            .path
+            .as_deref()
+            .is_some_and(|path| self.client.is_excluded_path(path))
+        {
+            "[code omitted due to excluded_paths]".to_string()
+        } else {
+            method_or_class.content.clone()
+        };
 
         let framework = test_framework.unwrap_or("JUnit 5");
         let user_prompt = format!(
-            "Generate {framework} tests for the following Java code:\n\n{code}\n\n\
+            "Generate {framework} tests for the following Java code:\n\n```java\n{code}\n```\n\n\
              Include:\n\
              - Normal cases\n\
              - Edge cases\n\
@@ -126,10 +137,7 @@ impl NovaAi {
         diff: &str,
         cancel: CancellationToken,
     ) -> Result<String, AiError> {
-        let diff = self
-            .client
-            .sanitize_snippet(&CodeSnippet::ad_hoc(diff))
-            .unwrap_or_else(|| "[diff omitted due to excluded_paths]".to_string());
+        let diff = diff.to_string();
 
         let review = self
             .client
@@ -138,9 +146,9 @@ impl NovaAi {
                     messages: vec![
                         ChatMessage::system("You are a senior Java engineer doing code review."),
                         ChatMessage::user(format!(
-                        "Review this code change:\n\n{diff}\n\n\
-                         Consider correctness, performance, security, maintainability, and tests.\n"
-                    )),
+                        "Review this code change:\n\n```diff\n{diff}\n```\n\n\
+                          Consider correctness, performance, security, maintainability, and tests.\n"
+                     )),
                     ],
                     max_tokens: None,
                 },

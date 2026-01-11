@@ -62,6 +62,7 @@ impl MultiTokenCompletionProvider for CloudMultiTokenCompletionProvider {
         &'a self,
         prompt: String,
         max_items: usize,
+        cancel: CancellationToken,
     ) -> BoxFuture<'a, Result<Vec<MultiTokenCompletion>, AiProviderError>> {
         Box::pin(async move {
             let max_items = max_items.clamp(0, 32);
@@ -71,9 +72,6 @@ impl MultiTokenCompletionProvider for CloudMultiTokenCompletionProvider {
  
             let sanitized_prompt = sanitize_prompt(&prompt, &self.privacy);
             let full_prompt = format!("{sanitized_prompt}\n\n{}", json_instructions(max_items));
- 
-            let cancel = CancellationToken::new();
-            let _guard = cancel.clone().drop_guard();
  
             let response = self
                 .llm
@@ -129,6 +127,8 @@ fn anonymize_prompt_context(prompt: &str) -> String {
     let mut anonymizer = crate::anonymizer::CodeAnonymizer::new(crate::CodeAnonymizerOptions {
         anonymize_identifiers: true,
         redact_sensitive_strings: false,
+        redact_numeric_literals: false,
+        strip_or_redact_comments: true,
     });
  
     let mut out = String::with_capacity(prompt.len());

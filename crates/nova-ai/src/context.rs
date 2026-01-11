@@ -1,4 +1,5 @@
-use crate::privacy::{redact_suspicious_literals, CodeAnonymizer, PrivacyMode};
+use crate::anonymizer::{CodeAnonymizer, CodeAnonymizerOptions};
+use crate::privacy::PrivacyMode;
 use std::ops::Range;
 
 #[derive(Debug, Clone)]
@@ -14,19 +15,22 @@ impl ContextBuilder {
         let mut out = String::new();
         let mut truncated = false;
 
-        let mut anonymizer = if req.privacy.anonymize_identifiers {
-            Some(CodeAnonymizer::new())
-        } else {
-            None
+        let options = CodeAnonymizerOptions {
+            anonymize_identifiers: req.privacy.anonymize_identifiers,
+            redact_sensitive_strings: req.privacy.redaction.redact_string_literals,
+            redact_numeric_literals: req.privacy.redaction.redact_numeric_literals,
+            // When we're anonymizing identifiers, comment contents are likely to
+            // contain project-specific identifiers and secrets; strip them.
+            strip_or_redact_comments: req.privacy.anonymize_identifiers,
         };
+        let mut anonymizer = CodeAnonymizer::new(options);
 
         // Focal code is always included, even if it needs truncation.
         let (section, section_truncated, used) = build_section(
             "Focal code",
             &req.focal_code,
             remaining,
-            &req.privacy,
-            anonymizer.as_mut(),
+            &mut anonymizer,
             /*always_include=*/ true,
         );
         out.push_str(&section);
@@ -39,8 +43,7 @@ impl ContextBuilder {
                 "Enclosing context",
                 enclosing,
                 remaining,
-                &req.privacy,
-                anonymizer.as_mut(),
+                &mut anonymizer,
                 /*always_include=*/ false,
             );
             out.push_str(&section);
@@ -63,8 +66,7 @@ impl ContextBuilder {
                     &title,
                     &symbol.snippet,
                     remaining,
-                    &req.privacy,
-                    anonymizer.as_mut(),
+                    &mut anonymizer,
                     /*always_include=*/ false,
                 );
                 out.push_str(&section);
@@ -79,8 +81,7 @@ impl ContextBuilder {
                     "Doc comments",
                     docs,
                     remaining,
-                    &req.privacy,
-                    anonymizer.as_mut(),
+                    &mut anonymizer,
                     /*always_include=*/ false,
                 );
                 out.push_str(&section);
@@ -96,8 +97,7 @@ impl ContextBuilder {
                     "File",
                     path,
                     remaining,
-                    &req.privacy,
-                    anonymizer.as_mut(),
+                    &mut anonymizer,
                     /*always_include=*/ false,
                 );
                 out.push_str(&section);
@@ -363,8 +363,7 @@ fn build_section(
     title: &str,
     raw_content: &str,
     remaining: usize,
-    privacy: &PrivacyMode,
-    mut anonymizer: Option<&mut CodeAnonymizer>,
+    anonymizer: &mut CodeAnonymizer,
     always_include: bool,
 ) -> (String, bool, usize) {
     if remaining == 0 && !always_include {
@@ -378,13 +377,7 @@ fn build_section(
         return (String::new(), false, 0);
     }
 
-    let mut content = raw_content.to_string();
-    content = redact_suspicious_literals(&content, &privacy.redaction);
-    if privacy.anonymize_identifiers {
-        if let Some(anonymizer) = anonymizer.as_mut() {
-            content = anonymizer.anonymize(&content);
-        }
-    }
+    let content = anonymizer.anonymize(raw_content);
 
     let allowed_tokens = remaining.saturating_sub(header_tokens);
     let current_tokens = count_tokens(&content);

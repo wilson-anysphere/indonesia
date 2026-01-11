@@ -7,9 +7,10 @@ use crate::{
 };
 use futures::StreamExt;
 use nova_config::{AiConfig, AiProviderKind};
-use url::Host;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
+use url::Host;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
@@ -61,7 +62,12 @@ impl AiClient {
     }
 
     pub fn sanitize_snippet(&self, snippet: &CodeSnippet) -> Option<String> {
-        self.privacy.sanitize_snippet(snippet)
+        let mut session = self.privacy.new_session();
+        self.privacy.sanitize_snippet(&mut session, snippet)
+    }
+
+    pub fn is_excluded_path(&self, path: &Path) -> bool {
+        self.privacy.is_excluded(path)
     }
 
     pub async fn chat(
@@ -73,8 +79,11 @@ impl AiClient {
             request.max_tokens = Some(self.default_max_tokens);
         }
 
+        let mut session = self.privacy.new_session();
         for message in &mut request.messages {
-            let sanitized = self.privacy.sanitize_prompt_text(&message.content);
+            let sanitized = self
+                .privacy
+                .sanitize_prompt_text(&mut session, &message.content);
             message.content = if self.audit_enabled {
                 audit::sanitize_prompt_for_audit(&sanitized)
             } else {
@@ -147,8 +156,11 @@ impl AiClient {
             request.max_tokens = Some(self.default_max_tokens);
         }
 
+        let mut session = self.privacy.new_session();
         for message in &mut request.messages {
-            let sanitized = self.privacy.sanitize_prompt_text(&message.content);
+            let sanitized = self
+                .privacy
+                .sanitize_prompt_text(&mut session, &message.content);
             message.content = if self.audit_enabled {
                 audit::sanitize_prompt_for_audit(&sanitized)
             } else {
@@ -288,6 +300,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use futures::TryStreamExt;
+    use nova_config::AiPrivacyConfig;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
     use tracing::{field::Visit, Event};
@@ -525,5 +538,105 @@ mod tests {
             .expect("completion field present");
         assert!(completion.contains("[REDACTED]"));
         assert!(!completion.contains(secret));
+    }
+
+    #[derive(Default)]
+    struct CapturedRequest {
+        request: Mutex<Option<ChatRequest>>,
+    }
+
+    struct CapturingProvider {
+        captured: Arc<CapturedRequest>,
+    }
+
+    #[async_trait]
+    impl AiProvider for CapturingProvider {
+        async fn chat(
+            &self,
+            request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> Result<String, AiError> {
+            *self.captured.request.lock().unwrap() = Some(request);
+            Ok("ok".to_string())
+        }
+
+        async fn chat_stream(
+            &self,
+            request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> Result<AiStream, AiError> {
+            *self.captured.request.lock().unwrap() = Some(request);
+            let stream = async_stream::try_stream! {
+                yield "ok".to_string();
+            };
+            Ok(Box::pin(stream))
+        }
+
+        async fn list_models(&self, _cancel: CancellationToken) -> Result<Vec<String>, AiError> {
+            Ok(vec![])
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_sanitization_is_stable_across_messages_and_snippets() {
+        let captured = Arc::new(CapturedRequest::default());
+        let provider: Arc<dyn AiProvider> = Arc::new(CapturingProvider {
+            captured: captured.clone(),
+        });
+
+        let privacy_cfg = AiPrivacyConfig {
+            local_only: false,
+            anonymize: Some(true),
+            excluded_paths: Vec::new(),
+            redact_patterns: Vec::new(),
+        };
+        let privacy = PrivacyFilter::new(&privacy_cfg).expect("privacy filter");
+
+        let client = AiClient {
+            provider,
+            semaphore: Arc::new(Semaphore::new(1)),
+            privacy,
+            default_max_tokens: 16,
+            audit_enabled: false,
+            provider_label: "dummy",
+            model: "dummy-model".to_string(),
+        };
+
+        let request = ChatRequest {
+            messages: vec![
+                crate::types::ChatMessage::user(
+                    "Snippet 1:\n```java\nimport java.util.List;\nclass Foo {\n  // secret token\n  java.util.List<String> list = null;\n}\n```\n",
+                ),
+                crate::types::ChatMessage::user("Snippet 2:\n```java\nFoo foo = null;\n```\n"),
+            ],
+            max_tokens: None,
+        };
+
+        let _ = client
+            .chat(request, CancellationToken::new())
+            .await
+            .expect("chat");
+
+        let req = captured
+            .request
+            .lock()
+            .expect("captured request mutex poisoned")
+            .take()
+            .expect("provider should receive request");
+        let msg1 = &req.messages[0].content;
+        let msg2 = &req.messages[1].content;
+
+        // Stdlib fully-qualified names should remain readable.
+        assert!(msg1.contains("java.util.List"), "{msg1}");
+
+        // Identifiers should be anonymized consistently across snippets.
+        assert!(!msg1.contains("Foo"), "{msg1}");
+        assert!(!msg2.contains("Foo"), "{msg2}");
+        assert!(msg1.contains("class id_0"), "{msg1}");
+        assert!(msg2.contains("id_0"), "{msg2}");
+
+        // Comments should be stripped when anonymization is enabled.
+        assert!(msg1.contains("// [REDACTED]"), "{msg1}");
+        assert!(!msg1.contains("secret token"), "{msg1}");
     }
 }

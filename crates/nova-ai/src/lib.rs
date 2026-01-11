@@ -84,6 +84,8 @@ mod tests {
         let mut anonymizer = CodeAnonymizer::new(CodeAnonymizerOptions {
             anonymize_identifiers: true,
             redact_sensitive_strings: true,
+            redact_numeric_literals: true,
+            strip_or_redact_comments: false,
         });
 
         let out1 = anonymizer.anonymize(code);
@@ -114,6 +116,8 @@ mod tests {
         let mut anonymizer = CodeAnonymizer::new(CodeAnonymizerOptions {
             anonymize_identifiers: true,
             redact_sensitive_strings: true,
+            redact_numeric_literals: true,
+            strip_or_redact_comments: false,
         });
 
         let out = anonymizer.anonymize(code);

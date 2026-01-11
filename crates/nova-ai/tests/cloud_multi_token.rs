@@ -6,6 +6,7 @@ use nova_ai::{
 };
 use serde_json::json;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 use url::Url;
  
 fn ctx() -> MultiTokenCompletionContext {
@@ -64,9 +65,9 @@ async fn sends_prompt_with_context_and_parses_raw_json() {
  
     let provider = provider_for_server(&server);
     let prompt = CompletionContextBuilder::new(10_000).build_completion_prompt(&ctx(), 3);
- 
+
     let out = provider
-        .complete_multi_token(prompt, 3)
+        .complete_multi_token(prompt, 3, CancellationToken::new())
         .await
         .expect("provider call succeeds");
  
@@ -93,9 +94,9 @@ async fn parses_json_wrapped_in_fenced_block() {
  
     let provider = provider_for_server(&server);
     let prompt = CompletionContextBuilder::new(10_000).build_completion_prompt(&ctx(), 3);
- 
+
     let out = provider
-        .complete_multi_token(prompt, 3)
+        .complete_multi_token(prompt, 3, CancellationToken::new())
         .await
         .expect("provider call succeeds");
  
@@ -117,9 +118,9 @@ async fn invalid_json_gracefully_degrades_to_empty() {
  
     let provider = provider_for_server(&server);
     let prompt = CompletionContextBuilder::new(10_000).build_completion_prompt(&ctx(), 3);
- 
+
     let out = provider
-        .complete_multi_token(prompt, 3)
+        .complete_multi_token(prompt, 3, CancellationToken::new())
         .await
         .expect("provider call succeeds");
  
