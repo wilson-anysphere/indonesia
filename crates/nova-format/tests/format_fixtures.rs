@@ -206,6 +206,15 @@ fn snapshot_annotation_array_values() {
 }
 
 #[test]
+fn snapshot_initializer_blocks() {
+    let input = include_str!("fixtures/instance_initializer_block.java");
+    let config = FormatConfig::default();
+    let formatted = format_with_config(input, &config);
+    assert_snapshot!("instance_initializer_block", formatted);
+    assert_idempotent("instance_initializer_block", input, &config);
+}
+
+#[test]
 fn on_type_formatting_triggers_inside_argument_lists() {
     let input = "class A {\n    void m() {\nfoo(1,2);\n    }\n}\n";
     let tree = parse(input);

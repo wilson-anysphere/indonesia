@@ -1740,12 +1740,19 @@ fn is_inline_brace_open(state: &FormatState<'_>, prev: Option<SigToken>) -> bool
         return true;
     }
 
-    matches!(
-        prev,
-        Some(SigToken::Punct(
-            Punct::Eq | Punct::Comma | Punct::LParen | Punct::LBracket | Punct::LBrace
-        ))
-    )
+    let inside_inline = matches!(
+        state.brace_stack.last(),
+        Some(BraceCtx {
+            kind: BraceKind::Inline
+        })
+    );
+
+    match prev {
+        Some(SigToken::Punct(Punct::Eq | Punct::LParen | Punct::LBracket)) => true,
+        Some(SigToken::Punct(Punct::Comma)) => inside_inline,
+        Some(SigToken::Punct(Punct::LBrace)) => inside_inline,
+        _ => false,
+    }
 }
 
 fn has_generic_close_ahead(tokens: &[Token], l_angle_idx: usize) -> bool {
