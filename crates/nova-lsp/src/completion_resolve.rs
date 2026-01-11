@@ -43,7 +43,19 @@ pub fn resolve_completion_item(mut item: CompletionItem, document_text: &str) ->
     }
 
     match item.additional_text_edits.as_mut() {
-        Some(existing) => existing.append(&mut new_edits),
+        Some(existing) => {
+            // `completionItem/resolve` may be called multiple times by clients; avoid producing
+            // duplicate edits when we've already resolved this item once.
+            for edit in new_edits.drain(..) {
+                if existing
+                    .iter()
+                    .any(|existing| existing.range == edit.range && existing.new_text == edit.new_text)
+                {
+                    continue;
+                }
+                existing.push(edit);
+            }
+        }
         None => item.additional_text_edits = Some(new_edits),
     }
 
@@ -153,6 +165,30 @@ mod tests {
             edits[0].range,
             Range::new(Position::new(1, 0), Position::new(1, 0))
         );
+        assert_eq!(edits[0].new_text, "import java.util.stream.Collectors;\n");
+    }
+
+    #[test]
+    fn completion_item_resolve_is_idempotent() {
+        let context_id: CompletionContextId = "1".parse().expect("context id");
+        let item = NovaCompletionItem::ai(
+            "collect".to_string(),
+            "collect(Collectors.toList())".to_string(),
+            MultiTokenInsertTextFormat::PlainText,
+            vec![AdditionalEdit::AddImport {
+                path: "java.util.stream.Collectors".to_string(),
+            }],
+            0.9,
+        );
+
+        let lsp_item = to_lsp_completion_item(item, &context_id);
+        let document_text = "package com.example;\n\nclass Foo {}\n";
+
+        let once = resolve_completion_item(lsp_item, document_text);
+        let twice = resolve_completion_item(once, document_text);
+
+        let edits = twice.additional_text_edits.expect("additional edits");
+        assert_eq!(edits.len(), 1);
         assert_eq!(edits[0].new_text, "import java.util.stream.Collectors;\n");
     }
 }
