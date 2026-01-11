@@ -1,8 +1,8 @@
 use insta::assert_snapshot;
 use nova_core::{apply_text_edits, LineIndex, Position, Range};
 use nova_format::{
-    edits_for_formatting, edits_for_formatting_ast, edits_for_range_formatting, format_java,
-    format_java_ast, FormatConfig, IndentStyle,
+    edits_for_formatting, edits_for_formatting_ast, edits_for_on_type_formatting,
+    edits_for_range_formatting, format_java, format_java_ast, FormatConfig, IndentStyle,
 };
 use nova_syntax::{parse, parse_java};
 use pretty_assertions::assert_eq;
@@ -395,4 +395,24 @@ fn preserves_crlf_line_endings_for_full_ast_formatting() {
     let out = apply_text_edits(input, &edits).unwrap();
     assert_eq!(out, formatted);
     assert_crlf_only(&out);
+}
+
+#[test]
+fn on_type_formatting_preserves_crlf_line_endings() {
+    let input = "class Foo {\r\nvoid m(){\r\nint x=1;\r\n}\r\n}\r\n";
+    let tree = parse(input);
+    let index = LineIndex::new(input);
+
+    let line_end = index.line_end(2).unwrap();
+    let position = index.position(input, line_end);
+
+    let edits = edits_for_on_type_formatting(&tree, input, position, ';', &FormatConfig::default())
+        .unwrap();
+    let out = apply_text_edits(input, &edits).unwrap();
+
+    assert_crlf_only(&out);
+    assert_eq!(
+        out,
+        "class Foo {\r\nvoid m(){\r\n        int x=1;\r\n}\r\n}\r\n"
+    );
 }
