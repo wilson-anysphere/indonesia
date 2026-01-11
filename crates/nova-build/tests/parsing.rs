@@ -95,6 +95,27 @@ fn fingerprint_changes_on_gradle_wrapper_edit() {
 }
 
 #[test]
+fn fingerprint_ignores_misplaced_gradle_wrapper_properties() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+
+    std::fs::write(root.join("build.gradle"), "plugins { id 'java' }\n").unwrap();
+
+    // Only `gradle/wrapper/gradle-wrapper.properties` should affect the fingerprint.
+    let misplaced = root.join("gradle-wrapper.properties");
+    std::fs::write(&misplaced, "distributionUrl=foo\n").unwrap();
+
+    let fp1 = BuildFileFingerprint::from_files(&root, collect_gradle_build_files(&root).unwrap())
+        .unwrap();
+    std::fs::write(&misplaced, "distributionUrl=bar\n").unwrap();
+    let fp2 = BuildFileFingerprint::from_files(&root, collect_gradle_build_files(&root).unwrap())
+        .unwrap();
+
+    assert_eq!(fp1.digest, fp2.digest);
+}
+
+#[test]
 fn parses_maven_classpath_bracket_list() {
     let out = r#"[/a/b/c.jar, /d/e/f.jar]"#;
     let cp = parse_maven_classpath_output(out);

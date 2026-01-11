@@ -347,9 +347,13 @@ fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf
             | "settings.gradle.kts"
             | "gradle.properties"
             | "gradlew"
-            | "gradlew.bat"
-            | "gradle-wrapper.properties" => {
+            | "gradlew.bat" => {
                 out.push(path);
+            }
+            "gradle-wrapper.properties" => {
+                if path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.properties")) {
+                    out.push(path);
+                }
             }
             _ => {}
         }
