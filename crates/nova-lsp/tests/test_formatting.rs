@@ -62,6 +62,46 @@ fn lsp_document_formatting_returns_valid_edits() {
 }
 
 #[test]
+fn lsp_document_formatting_respects_tabs_indentation() {
+    let text = "class Foo{void m(){int x=1;}}\n";
+    let params = serde_json::json!({
+        "textDocument": { "uri": "file:///test/Foo.java" },
+        "options": { "tabSize": 4, "insertSpaces": false }
+    });
+
+    let value =
+        nova_lsp::handle_formatting_request(nova_lsp::DOCUMENT_FORMATTING_METHOD, params, text)
+            .unwrap();
+    let edits: Vec<TextEdit> = serde_json::from_value(value).unwrap();
+    let formatted = apply_edits(text, &edits);
+
+    assert_eq!(
+        formatted,
+        "class Foo {\n\tvoid m() {\n\t\tint x = 1;\n\t}\n}\n"
+    );
+}
+
+#[test]
+fn lsp_document_formatting_respects_insert_final_newline() {
+    let text = "class Foo{void m(){int x=1;}}";
+    let params = serde_json::json!({
+        "textDocument": { "uri": "file:///test/Foo.java" },
+        "options": { "tabSize": 4, "insertSpaces": true, "insertFinalNewline": true }
+    });
+
+    let value =
+        nova_lsp::handle_formatting_request(nova_lsp::DOCUMENT_FORMATTING_METHOD, params, text)
+            .unwrap();
+    let edits: Vec<TextEdit> = serde_json::from_value(value).unwrap();
+    let formatted = apply_edits(text, &edits);
+
+    assert_eq!(
+        formatted,
+        "class Foo {\n    void m() {\n        int x = 1;\n    }\n}\n"
+    );
+}
+
+#[test]
 fn lsp_range_formatting_replaces_only_selected_range() {
     let text = "class Foo {\n    void a() { int x=1; }\n    void b(){int y=2;}\n}\n";
     let index = nova_core::LineIndex::new(text);

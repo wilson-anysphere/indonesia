@@ -97,14 +97,32 @@ pub fn format_member_insertion(
 #[derive(Debug, Clone)]
 pub struct FormatConfig {
     pub indent_width: usize,
+    pub indent_style: IndentStyle,
     pub max_line_length: usize,
+    /// Whether to always ensure the formatted output ends with a newline.
+    ///
+    /// When `None`, the formatter preserves whether the input ended in a newline.
+    pub insert_final_newline: Option<bool>,
+    /// Whether to trim extra blank lines/newlines at the end of the document.
+    ///
+    /// When `None`, the formatter preserves existing behavior.
+    pub trim_final_newlines: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndentStyle {
+    Spaces,
+    Tabs,
 }
 
 impl Default for FormatConfig {
     fn default() -> Self {
         Self {
             indent_width: 4,
+            indent_style: IndentStyle::Spaces,
             max_line_length: 100,
+            insert_final_newline: None,
+            trim_final_newlines: None,
         }
     }
 }
@@ -157,8 +175,8 @@ pub enum FormatError {
 
 /// Format an entire Java source file.
 pub fn format_java(tree: &SyntaxTree, source: &str, config: &FormatConfig) -> String {
-    let ensure_final_newline = source.ends_with('\n') || source.ends_with("\r\n");
-    format_java_with_indent(tree, source, config, 0, ensure_final_newline)
+    let input_has_final_newline = source.ends_with('\n');
+    format_java_with_indent(tree, source, config, 0, input_has_final_newline)
 }
 
 /// Return minimal edits that transform `source` into its formatted representation.
@@ -194,9 +212,18 @@ pub fn edits_for_range_formatting(
     let indent = indent_level_at(tree, source, range.start());
     let snippet = &source[start..end];
     let snippet_tree = nova_syntax::parse(snippet);
-    let keep_final_newline = snippet.ends_with('\n') || snippet.ends_with("\r\n");
+    let keep_final_newline = snippet.ends_with('\n');
+    let config = if end == source.len() {
+        config.clone()
+    } else {
+        FormatConfig {
+            insert_final_newline: None,
+            trim_final_newlines: None,
+            ..config.clone()
+        }
+    };
     let formatted =
-        format_java_with_indent(&snippet_tree, snippet, config, indent, keep_final_newline);
+        format_java_with_indent(&snippet_tree, snippet, &config, indent, keep_final_newline);
     if formatted == snippet {
         return Ok(Vec::new());
     }
@@ -249,11 +276,7 @@ pub fn edits_for_on_type_formatting(
         indent -= 1;
     }
 
-    let new_line = format!(
-        "{}{}",
-        " ".repeat(indent.saturating_mul(config.indent_width)),
-        content
-    );
+    let new_line = format!("{}{}", indentation_for(config, indent), content);
 
     if new_line == line_text {
         return Ok(Vec::new());
@@ -400,7 +423,14 @@ fn format_java_with_indent(
     source: &str,
     config: &FormatConfig,
     initial_indent: usize,
-    ensure_final_newline: bool,
+    input_has_final_newline: bool,
 ) -> String {
-    formatter::format_java_with_indent(tree, source, config, initial_indent, ensure_final_newline)
+    formatter::format_java_with_indent(tree, source, config, initial_indent, input_has_final_newline)
+}
+
+fn indentation_for(config: &FormatConfig, indent_level: usize) -> String {
+    match config.indent_style {
+        IndentStyle::Spaces => " ".repeat(indent_level.saturating_mul(config.indent_width)),
+        IndentStyle::Tabs => "\t".repeat(indent_level),
+    }
 }

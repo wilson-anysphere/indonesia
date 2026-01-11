@@ -1,4 +1,4 @@
-use crate::FormatConfig;
+use crate::{FormatConfig, IndentStyle};
 use nova_syntax::{SyntaxKind, SyntaxTree};
 use std::fmt;
 
@@ -364,8 +364,15 @@ impl<'a> FormatState<'a> {
 
     fn ensure_newline(&mut self) {
         while matches!(self.out.as_bytes().last(), Some(b' ' | b'\t')) {
-            self.out.pop();
-            self.line_len = self.line_len.saturating_sub(1);
+            match self.out.pop() {
+                Some('\t') => {
+                    self.line_len = self.line_len.saturating_sub(self.config.indent_width);
+                }
+                Some(' ') => {
+                    self.line_len = self.line_len.saturating_sub(1);
+                }
+                Some(_) | None => {}
+            }
         }
         if !self.out.is_empty() && !self.out.ends_with('\n') {
             self.out.push('\n');
@@ -388,15 +395,31 @@ impl<'a> FormatState<'a> {
         self.last_sig = None;
     }
 
-    fn push_spaces(&mut self, count: usize) {
-        if count == 0 {
+    fn push_indent(&mut self, indent_level: usize) {
+        if indent_level == 0 {
             return;
         }
-        self.out.reserve(count);
-        for _ in 0..count {
-            self.out.push(' ');
+
+        match self.config.indent_style {
+            IndentStyle::Spaces => {
+                let count = indent_level.saturating_mul(self.config.indent_width);
+                if count == 0 {
+                    return;
+                }
+                self.out.reserve(count);
+                for _ in 0..count {
+                    self.out.push(' ');
+                }
+                self.line_len += count;
+            }
+            IndentStyle::Tabs => {
+                self.out.reserve(indent_level);
+                for _ in 0..indent_level {
+                    self.out.push('\t');
+                }
+                self.line_len += indent_level.saturating_mul(self.config.indent_width);
+            }
         }
-        self.line_len += count;
     }
 
     fn write_indent(&mut self) {
@@ -404,7 +427,7 @@ impl<'a> FormatState<'a> {
             return;
         }
         let indent_level = self.current_line_indent();
-        self.push_spaces(indent_level.saturating_mul(self.config.indent_width));
+        self.push_indent(indent_level);
         self.at_line_start = false;
     }
 
@@ -412,7 +435,7 @@ impl<'a> FormatState<'a> {
         if !self.at_line_start {
             return;
         }
-        self.push_spaces(indent_level.saturating_mul(self.config.indent_width));
+        self.push_indent(indent_level);
         self.at_line_start = false;
     }
 
@@ -744,7 +767,7 @@ pub(crate) fn format_java_with_indent(
     source: &str,
     config: &FormatConfig,
     initial_indent: usize,
-    ensure_final_newline: bool,
+    input_has_final_newline: bool,
 ) -> String {
     let tokens = tokenize(tree, source);
     let paren_info = analyze_parens(&tokens, source, config);
@@ -764,15 +787,47 @@ pub(crate) fn format_java_with_indent(
         write_token(&mut state, &tokens, &paren_info, idx, tok, next);
     }
 
-    if ensure_final_newline {
-        state.ensure_newline();
-    } else {
-        while matches!(state.out.as_bytes().last(), Some(b' ' | b'\t' | b'\n')) {
-            state.out.pop();
+    finalize_output(&mut state.out, config, input_has_final_newline);
+
+    state.out
+}
+
+fn finalize_output(out: &mut String, config: &FormatConfig, input_has_final_newline: bool) {
+    if config.trim_final_newlines == Some(true) {
+        while matches!(out.as_bytes().last(), Some(b' ' | b'\t' | b'\n')) {
+            out.pop();
         }
     }
 
-    state.out
+    match config.insert_final_newline {
+        Some(true) => {
+            while matches!(out.as_bytes().last(), Some(b' ' | b'\t' | b'\n')) {
+                out.pop();
+            }
+            out.push('\n');
+        }
+        Some(false) => {
+            while matches!(out.as_bytes().last(), Some(b' ' | b'\t' | b'\n')) {
+                out.pop();
+            }
+        }
+        None => {
+            if input_has_final_newline {
+                // Trim trailing indentation/whitespace, but preserve any extra newlines already
+                // present at EOF to keep legacy behavior stable.
+                while matches!(out.as_bytes().last(), Some(b' ' | b'\t')) {
+                    out.pop();
+                }
+                if !out.is_empty() && !out.ends_with('\n') {
+                    out.push('\n');
+                }
+            } else {
+                while matches!(out.as_bytes().last(), Some(b' ' | b'\t' | b'\n')) {
+                    out.pop();
+                }
+            }
+        }
+    }
 }
 
 fn tokenize(tree: &SyntaxTree, source: &str) -> Vec<Token> {

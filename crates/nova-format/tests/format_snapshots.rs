@@ -1,6 +1,6 @@
 use insta::assert_snapshot;
 use nova_core::{apply_text_edits, LineIndex, Position, Range};
-use nova_format::{edits_for_range_formatting, format_java, FormatConfig};
+use nova_format::{edits_for_range_formatting, format_java, FormatConfig, IndentStyle};
 use nova_syntax::parse;
 use pretty_assertions::assert_eq;
 
@@ -88,4 +88,41 @@ fn range_formatting_preserves_outside_text() {
         out,
         "class Foo {\n    void a() { int x=1; }\n    void b() {\n        int y = 2;\n    }\n}\n"
     );
+}
+
+#[test]
+fn formats_with_tabs_indentation() {
+    let input = "class Foo{void m(){int x=1;}}\n";
+    let tree = parse(input);
+    let config = FormatConfig {
+        indent_style: IndentStyle::Tabs,
+        ..FormatConfig::default()
+    };
+    let formatted = format_java(&tree, input, &config);
+
+    assert_eq!(
+        formatted,
+        "class Foo {\n\tvoid m() {\n\t\tint x = 1;\n\t}\n}\n"
+    );
+}
+
+#[test]
+fn respects_final_newline_policies() {
+    let input_no_newline = "class Foo{}";
+    let tree = parse(input_no_newline);
+    let config = FormatConfig {
+        insert_final_newline: Some(true),
+        ..FormatConfig::default()
+    };
+    let formatted = format_java(&tree, input_no_newline, &config);
+    assert_eq!(formatted, "class Foo {\n}\n");
+
+    let input_extra_newlines = "class Foo{/* oops\n\n";
+    let tree = parse(input_extra_newlines);
+    let config = FormatConfig {
+        trim_final_newlines: Some(true),
+        ..FormatConfig::default()
+    };
+    let formatted = format_java(&tree, input_extra_newlines, &config);
+    assert_eq!(formatted, "class Foo {\n    /* oops\n");
 }

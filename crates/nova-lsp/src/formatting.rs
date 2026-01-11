@@ -1,105 +1,32 @@
 use crate::{NovaLspError, Result};
-use nova_core::{LineIndex, Position, Range, TextEdit};
+use lsp_types::{
+    DocumentFormattingParams, DocumentOnTypeFormattingParams, DocumentRangeFormattingParams,
+    FormattingOptions, TextEdit as LspTextEdit,
+};
+use nova_core::{LineIndex, Position, Range, TextEdit as CoreTextEdit};
 use nova_format::{
     edits_for_formatting, edits_for_on_type_formatting, edits_for_range_formatting, FormatConfig,
+    IndentStyle,
 };
 use nova_syntax::parse;
-use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize)]
-struct TextDocumentIdentifier {
-    uri: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct FormattingOptions {
-    #[serde(rename = "tabSize")]
-    tab_size: u32,
-    #[serde(rename = "insertSpaces")]
-    insert_spaces: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct DocumentFormattingParams {
-    #[serde(rename = "textDocument")]
-    text_document: TextDocumentIdentifier,
-    options: FormattingOptions,
-}
-
-#[derive(Debug, Deserialize)]
-struct DocumentRangeFormattingParams {
-    #[serde(rename = "textDocument")]
-    text_document: TextDocumentIdentifier,
-    range: LspRange,
-    options: FormattingOptions,
-}
-
-#[derive(Debug, Deserialize)]
-struct DocumentOnTypeFormattingParams {
-    #[serde(rename = "textDocument")]
-    text_document: TextDocumentIdentifier,
-    position: LspPosition,
-    ch: String,
-    options: FormattingOptions,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct LspPosition {
-    line: u32,
-    character: u32,
-}
-
-impl From<LspPosition> for Position {
-    fn from(value: LspPosition) -> Self {
-        Position::new(value.line, value.character)
-    }
-}
-
-impl From<Position> for LspPosition {
-    fn from(value: Position) -> Self {
-        Self {
-            line: value.line,
-            character: value.character,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct LspRange {
-    start: LspPosition,
-    end: LspPosition,
-}
-
-impl From<LspRange> for Range {
-    fn from(value: LspRange) -> Self {
-        Range::new(value.start.into(), value.end.into())
-    }
-}
-
-impl From<Range> for LspRange {
-    fn from(value: Range) -> Self {
-        Self {
-            start: value.start.into(),
-            end: value.end.into(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct LspTextEdit {
-    range: LspRange,
-    #[serde(rename = "newText")]
-    new_text: String,
-}
-
-fn to_lsp_edits(source: &str, edits: Vec<TextEdit>) -> Vec<LspTextEdit> {
+fn to_lsp_edits(source: &str, edits: Vec<CoreTextEdit>) -> Vec<LspTextEdit> {
     let index = LineIndex::new(source);
     edits
         .into_iter()
         .map(|edit| {
             let range = index.range(source, edit.range);
             LspTextEdit {
-                range: range.into(),
+                range: lsp_types::Range {
+                    start: lsp_types::Position {
+                        line: range.start.line,
+                        character: range.start.character,
+                    },
+                    end: lsp_types::Position {
+                        line: range.end.line,
+                        character: range.end.character,
+                    },
+                },
                 new_text: edit.replacement,
             }
         })
@@ -107,14 +34,20 @@ fn to_lsp_edits(source: &str, edits: Vec<TextEdit>) -> Vec<LspTextEdit> {
 }
 
 fn config_from_lsp(options: &FormattingOptions) -> FormatConfig {
-    let indent = if options.tab_size == 0 {
-        4
-    } else {
-        options.tab_size as usize
+    let indent = match options.tab_size {
+        0 => 4,
+        size => size as usize,
     };
-    let _ = options.insert_spaces;
+    let indent_style = if options.insert_spaces {
+        IndentStyle::Spaces
+    } else {
+        IndentStyle::Tabs
+    };
     FormatConfig {
         indent_width: indent,
+        indent_style,
+        insert_final_newline: options.insert_final_newline,
+        trim_final_newlines: options.trim_final_newlines,
         ..Default::default()
     }
 }
@@ -139,7 +72,10 @@ pub fn handle_range_formatting(params: serde_json::Value, text: &str) -> Result<
         .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
     let _ = req.text_document.uri;
     let config = config_from_lsp(&req.options);
-    let range: Range = req.range.into();
+    let range: Range = Range::new(
+        Position::new(req.range.start.line, req.range.start.character),
+        Position::new(req.range.end.line, req.range.end.character),
+    );
 
     let tree = parse(text);
     let edits = edits_for_range_formatting(&tree, text, range, &config)
@@ -154,9 +90,12 @@ pub fn handle_on_type_formatting(
 ) -> Result<serde_json::Value> {
     let req: DocumentOnTypeFormattingParams = serde_json::from_value(params)
         .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
-    let _ = req.text_document.uri;
+    let _ = req.text_document_position.text_document.uri;
     let config = config_from_lsp(&req.options);
-    let position: Position = req.position.into();
+    let position = Position::new(
+        req.text_document_position.position.line,
+        req.text_document_position.position.character,
+    );
     let ch = req
         .ch
         .chars()
