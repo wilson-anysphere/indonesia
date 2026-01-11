@@ -120,10 +120,35 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         &self,
         target: &str,
     ) -> Result<Vec<crate::cache::BuildFileDigest>> {
-        let Some(build_file) = build_file_for_label(&self.root, target)? else {
-            return Ok(Vec::new());
-        };
-        Ok(vec![digest_file(&build_file)?])
+        let mut paths = bazel_config_files(&self.root);
+
+        if let Some(build_file) = build_file_for_label(&self.root, target)? {
+            paths.push(build_file);
+        }
+
+        paths.sort();
+        paths.dedup();
+
+        let mut digests = Vec::new();
+        for path in paths {
+            if !path.is_file() {
+                continue;
+            }
+            match digest_file(&path) {
+                Ok(digest) => digests.push(digest),
+                Err(err)
+                    if err
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+                {
+                    // Best-effort: if the file disappeared between discovery and digesting,
+                    // ignore it rather than failing the query.
+                }
+                Err(err) => return Err(err),
+            }
+        }
+
+        Ok(digests)
     }
 
     fn ensure_query_hash(&mut self) -> Result<Hash> {
@@ -200,4 +225,34 @@ fn build_file_for_label(workspace_root: &Path, label: &str) -> Result<Option<Pat
     }
 
     Ok(None)
+}
+
+fn bazel_config_files(workspace_root: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    for name in [".bazelrc", ".bazelversion", "MODULE.bazel.lock", "bazelisk.rc"] {
+        let path = workspace_root.join(name);
+        if path.is_file() {
+            paths.push(path);
+        }
+    }
+
+    if let Ok(read_dir) = fs::read_dir(workspace_root) {
+        for entry in read_dir.flatten() {
+            let file_name = entry.file_name();
+            let file_name = file_name.to_string_lossy();
+            if !file_name.starts_with(".bazelrc.") {
+                continue;
+            }
+
+            let path = entry.path();
+            if path.is_file() {
+                paths.push(path);
+            }
+        }
+    }
+
+    paths.sort();
+    paths.dedup();
+    paths
 }

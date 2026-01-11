@@ -585,6 +585,11 @@ fn is_build_file(path: &Path) -> bool {
     };
 
     if name == "pom.xml"
+        || name == ".bazelrc"
+        || name.starts_with(".bazelrc.")
+        || name == ".bazelversion"
+        || name == "MODULE.bazel.lock"
+        || name == "bazelisk.rc"
         || name.starts_with("build.gradle")
         || name.starts_with("settings.gradle")
         || matches!(
@@ -779,6 +784,11 @@ mod tests {
 
         let build_files = [
             root.join("pom.xml"),
+            root.join(".bazelrc"),
+            root.join(".bazelrc.user"),
+            root.join(".bazelversion"),
+            root.join("MODULE.bazel.lock"),
+            root.join("bazelisk.rc"),
             root.join("build.gradle"),
             root.join("build.gradle.kts"),
             root.join("settings.gradle"),
