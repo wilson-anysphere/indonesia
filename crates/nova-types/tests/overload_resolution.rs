@@ -1,6 +1,6 @@
 use nova_types::{
     resolve_method_call, CallKind, ClassDef, ClassKind, MethodCall, MethodDef, MethodResolution,
-    PrimitiveType, Type, TypeEnv, TypeStore, TypeWarning,
+    PrimitiveType, TyContext, Type, TypeEnv, TypeStore, TypeWarning,
 };
 
 use pretty_assertions::assert_eq;
@@ -51,7 +51,8 @@ fn static_vs_instance_call_kind_filtering_and_warning() {
         expected_return: None,
         explicit_type_args: vec![],
     };
-    let MethodResolution::Found(found) = resolve_method_call(&mut env, &call_static) else {
+    let mut ctx = TyContext::new(&env);
+    let MethodResolution::Found(found) = resolve_method_call(&mut ctx, &call_static) else {
         panic!("expected method resolution success");
     };
     assert!(found.is_static);
@@ -66,7 +67,8 @@ fn static_vs_instance_call_kind_filtering_and_warning() {
         expected_return: None,
         explicit_type_args: vec![],
     };
-    let MethodResolution::Found(found) = resolve_method_call(&mut env, &call_instance) else {
+    let mut ctx = TyContext::new(&env);
+    let MethodResolution::Found(found) = resolve_method_call(&mut ctx, &call_instance) else {
         panic!("expected method resolution success");
     };
     assert!(!found.is_static);
@@ -81,7 +83,8 @@ fn static_vs_instance_call_kind_filtering_and_warning() {
         expected_return: None,
         explicit_type_args: vec![],
     };
-    let MethodResolution::Found(found) = resolve_method_call(&mut env, &call_static_via_instance)
+    let mut ctx = TyContext::new(&env);
+    let MethodResolution::Found(found) = resolve_method_call(&mut ctx, &call_static_via_instance)
     else {
         panic!("expected method resolution success");
     };
@@ -143,7 +146,8 @@ fn overriding_removes_obvious_duplicates() {
         explicit_type_args: vec![],
     };
 
-    let MethodResolution::Found(found) = resolve_method_call(&mut env, &call) else {
+    let mut ctx = TyContext::new(&env);
+    let MethodResolution::Found(found) = resolve_method_call(&mut ctx, &call) else {
         panic!("expected method resolution success");
     };
     assert_eq!(found.owner, sub);
@@ -204,7 +208,8 @@ fn tie_breaks_on_conversion_cost() {
         explicit_type_args: vec![],
     };
 
-    let MethodResolution::Found(found) = resolve_method_call(&mut env, &call) else {
+    let mut ctx = TyContext::new(&env);
+    let MethodResolution::Found(found) = resolve_method_call(&mut ctx, &call) else {
         panic!("expected method resolution success");
     };
     assert_eq!(found.params, vec![Type::class(integer, vec![])]);
@@ -247,7 +252,8 @@ fn not_found_includes_useful_diagnostics() {
         expected_return: None,
         explicit_type_args: vec![],
     };
-    let MethodResolution::NotFound(nf) = resolve_method_call(&mut env, &wrong_arity) else {
+    let mut ctx = TyContext::new(&env);
+    let MethodResolution::NotFound(nf) = resolve_method_call(&mut ctx, &wrong_arity) else {
         panic!("expected method resolution failure");
     };
     assert_eq!(nf.candidates.len(), 1);
@@ -269,7 +275,8 @@ fn not_found_includes_useful_diagnostics() {
         expected_return: None,
         explicit_type_args: vec![],
     };
-    let MethodResolution::NotFound(nf) = resolve_method_call(&mut env, &conv_fail) else {
+    let mut ctx = TyContext::new(&env);
+    let MethodResolution::NotFound(nf) = resolve_method_call(&mut ctx, &conv_fail) else {
         panic!("expected method resolution failure");
     };
     assert!(nf.candidates[0].failures.iter().any(|f| matches!(
@@ -318,7 +325,8 @@ fn not_found_reports_inference_bound_failures() {
         explicit_type_args: vec![Type::class(string, vec![])],
     };
 
-    let MethodResolution::NotFound(nf) = resolve_method_call(&mut env, &call) else {
+    let mut ctx = TyContext::new(&env);
+    let MethodResolution::NotFound(nf) = resolve_method_call(&mut ctx, &call) else {
         panic!("expected method resolution failure");
     };
     assert!(nf.candidates[0].failures.iter().any(|f| matches!(

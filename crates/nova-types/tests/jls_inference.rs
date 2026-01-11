@@ -1,5 +1,5 @@
 use nova_types::{
-    resolve_method_call, ClassDef, ClassKind, MethodCall, MethodDef, MethodResolution, Type,
+    resolve_method_call, ClassDef, ClassKind, MethodCall, MethodDef, MethodResolution, TyContext, Type,
     TypeEnv, TypeStore,
 };
 
@@ -40,7 +40,8 @@ fn infer_simple_identity() {
         explicit_type_args: vec![],
     };
 
-    let MethodResolution::Found(res) = resolve_method_call(&mut env, &call) else {
+    let mut ctx = TyContext::new(&env);
+    let MethodResolution::Found(res) = resolve_method_call(&mut ctx, &call) else {
         panic!("expected method resolution success");
     };
     assert_eq!(res.inferred_type_args, vec![Type::class(string, vec![])]);
@@ -84,7 +85,8 @@ fn infer_from_return_context() {
         explicit_type_args: vec![],
     };
 
-    let MethodResolution::Found(res) = resolve_method_call(&mut env, &call) else {
+    let mut ctx = TyContext::new(&env);
+    let MethodResolution::Found(res) = resolve_method_call(&mut ctx, &call) else {
         panic!("expected method resolution success");
     };
     assert_eq!(res.inferred_type_args, vec![Type::class(string, vec![])]);
@@ -126,7 +128,8 @@ fn inferred_type_respects_bounds() {
         explicit_type_args: vec![],
     };
 
-    let MethodResolution::Found(res) = resolve_method_call(&mut env, &call) else {
+    let mut ctx = TyContext::new(&env);
+    let MethodResolution::Found(res) = resolve_method_call(&mut ctx, &call) else {
         panic!("expected method resolution success");
     };
     assert_eq!(res.inferred_type_args, vec![Type::class(integer, vec![])]);

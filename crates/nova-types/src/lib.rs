@@ -19,6 +19,9 @@ use serde::{Deserialize, Serialize};
 
 pub mod java;
 
+pub use java::env::TyContext;
+pub use java::overload::resolve_method_call;
+
 pub use java::format::{
     format_method_signature, format_resolved_method, format_type, MethodSignatureDisplay,
     ResolvedMethodDisplay, TypeDisplay,
@@ -821,84 +824,6 @@ impl TypeStore {
         *slot = def;
     }
 
-    fn add_capture_type_param(
-        &mut self,
-        upper_bounds: Vec<Type>,
-        lower_bound: Option<Type>,
-    ) -> TypeVarId {
-        let id = TypeVarId(self.type_params.len() as u32);
-        self.type_params.push(TypeParamDef {
-            name: format!("CAP#{}", id.0),
-            upper_bounds,
-            lower_bound,
-        });
-        id
-    }
-
-    /// Capture conversion for parameterized types containing wildcards (JLS 5.1.10).
-    ///
-    /// This is a best-effort implementation intended for common IDE scenarios.
-    /// It allocates fresh `TypeVarId`s inside the store to represent capture
-    /// variables.
-    pub fn capture_conversion(&mut self, ty: &Type) -> Type {
-        let Type::Class(ClassType { def, args }) = ty else {
-            return ty.clone();
-        };
-
-        if args.iter().all(|a| !matches!(a, Type::Wildcard(_))) {
-            return ty.clone();
-        }
-
-        let Some(class_def) = self.class(*def) else {
-            return ty.clone();
-        };
-
-        let object = Type::class(self.well_known().object, vec![]);
-        let formal_bounds: Vec<Type> = class_def
-            .type_params
-            .iter()
-            .map(|tp| {
-                self.type_param(*tp)
-                    .and_then(|d| d.upper_bounds.first().cloned())
-                    .unwrap_or_else(|| object.clone())
-            })
-            .collect();
-
-        let mut new_args = Vec::with_capacity(args.len());
-        for (idx, arg) in args.iter().enumerate() {
-            match arg {
-                Type::Wildcard(WildcardBound::Unbounded) => {
-                    let upper = formal_bounds
-                        .get(idx)
-                        .cloned()
-                        .unwrap_or_else(|| object.clone());
-                    let cap = self.add_capture_type_param(vec![upper], None);
-                    new_args.push(Type::TypeVar(cap));
-                }
-                Type::Wildcard(WildcardBound::Extends(upper)) => {
-                    let formal = formal_bounds
-                        .get(idx)
-                        .cloned()
-                        .unwrap_or_else(|| object.clone());
-                    let glb = glb(self, &formal, upper);
-                    let cap = self.add_capture_type_param(vec![glb], None);
-                    new_args.push(Type::TypeVar(cap));
-                }
-                Type::Wildcard(WildcardBound::Super(lower)) => {
-                    let upper = formal_bounds
-                        .get(idx)
-                        .cloned()
-                        .unwrap_or_else(|| object.clone());
-                    let cap = self.add_capture_type_param(vec![upper], Some((**lower).clone()));
-                    new_args.push(Type::TypeVar(cap));
-                }
-                other => new_args.push(other.clone()),
-            }
-        }
-
-        Type::class(*def, new_args)
-    }
-
     /// Reserve (or reuse) a stable [`ClassId`] for `binary_name`.
     ///
     /// External type loaders (e.g. reading `.class` files or JDK stubs) often need a
@@ -976,7 +901,6 @@ impl TypeStore {
             self.add_class(def)
         }
     }
-
     pub fn add_class(&mut self, mut def: ClassDef) -> ClassId {
         let id = ClassId::from_raw(self.classes.len() as u32);
         if self.class_by_name.contains_key(&def.name) {
@@ -2613,7 +2537,7 @@ pub struct MethodCall<'a> {
     pub explicit_type_args: Vec<Type>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedMethod {
     pub owner: ClassId,
     pub name: String,
@@ -2628,7 +2552,7 @@ pub struct ResolvedMethod {
     pub phase: MethodSearchPhase,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MethodCandidate {
     pub owner: ClassId,
     pub name: String,
@@ -2678,13 +2602,13 @@ pub struct MethodCandidateFailure {
     pub reason: MethodCandidateFailureReason,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MethodCandidateDiagnostics {
     pub candidate: MethodCandidate,
     pub failures: Vec<MethodCandidateFailure>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MethodNotFound {
     pub receiver: Type,
     pub name: String,
@@ -2692,31 +2616,22 @@ pub struct MethodNotFound {
     pub candidates: Vec<MethodCandidateDiagnostics>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MethodAmbiguity {
     pub phase: MethodSearchPhase,
     /// Applicable candidates for the selected phase, sorted from "best" to "worst".
     pub candidates: Vec<ResolvedMethod>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MethodResolution {
     Found(ResolvedMethod),
     NotFound(MethodNotFound),
     Ambiguous(MethodAmbiguity),
 }
 
-pub fn resolve_method_call(env: &mut TypeStore, call: &MethodCall<'_>) -> MethodResolution {
-    let mut receiver = call.receiver.clone();
-    if let Type::Named(name) = &receiver {
-        if let Some(id) = env.lookup_class(name) {
-            receiver = Type::class(id, vec![]);
-        }
-    }
-    receiver = env.capture_conversion(&receiver);
-
-    let env_ro: &TypeStore = &*env;
-    let candidates = collect_method_candidates(env_ro, &receiver, call.name);
+fn resolve_method_call_impl(env: &dyn TypeEnv, call: &MethodCall<'_>, receiver: Type) -> MethodResolution {
+    let candidates = collect_method_candidates(env, &receiver, call.name);
 
     if candidates.is_empty() {
         return MethodResolution::NotFound(MethodNotFound {
@@ -2737,11 +2652,11 @@ pub fn resolve_method_call(env: &mut TypeStore, call: &MethodCall<'_>) -> Method
                 .map(|t| substitute(t, &cand.class_subst))
                 .collect::<Vec<_>>();
             let base_return = substitute(&cand.method.return_type, &cand.class_subst);
-            MethodCandidateDiagnostics {
-                candidate: MethodCandidate {
-                    owner: cand.owner,
-                    name: cand.method.name.clone(),
-                    params: base_params,
+        MethodCandidateDiagnostics {
+            candidate: MethodCandidate {
+                owner: cand.owner,
+                name: cand.method.name.clone(),
+                params: base_params,
                     return_type: base_return,
                     is_static: cand.method.is_static,
                     is_varargs: cand.method.is_varargs,
@@ -2769,7 +2684,7 @@ pub fn resolve_method_call(env: &mut TypeStore, call: &MethodCall<'_>) -> Method
                 continue;
             }
 
-            match check_applicability(env_ro, cand, call, phase) {
+            match check_applicability(env, cand, call, phase) {
                 Ok(resolved) => applicable.push(resolved),
                 Err(reason) => diagnostics[idx]
                     .failures
@@ -2782,8 +2697,8 @@ pub fn resolve_method_call(env: &mut TypeStore, call: &MethodCall<'_>) -> Method
         }
 
         let mut ranked = applicable;
-        rank_resolved_methods(env_ro, call, &mut ranked);
-        return match pick_best_method(env_ro, call, &ranked, call.args.len()) {
+        rank_resolved_methods(env, call, &mut ranked);
+        return match pick_best_method(env, call, &ranked, call.args.len()) {
             Some(best_idx) => MethodResolution::Found(ranked.swap_remove(best_idx)),
             None => MethodResolution::Ambiguous(MethodAmbiguity {
                 phase,
@@ -4132,19 +4047,19 @@ pub enum Expr {
     },
 }
 
-pub fn type_of(env: &mut TypeStore, expr: &Expr) -> Type {
+pub fn type_of<'env>(ctx: &mut TyContext<'env>, expr: &Expr) -> Type {
     match expr {
         Expr::Null => Type::Null,
         Expr::Int(_) => Type::Primitive(PrimitiveType::Int),
-        Expr::String(_) => Type::class(env.well_known().string, vec![]),
+        Expr::String(_) => Type::class(ctx.well_known().string, vec![]),
         Expr::MethodCall {
             receiver,
             name,
             args,
             expected_return,
         } => {
-            let recv_ty = type_of(env, receiver);
-            let arg_tys = args.iter().map(|a| type_of(env, a)).collect::<Vec<_>>();
+            let recv_ty = type_of(ctx, receiver);
+            let arg_tys = args.iter().map(|a| type_of(ctx, a)).collect::<Vec<_>>();
             let call = MethodCall {
                 receiver: recv_ty,
                 call_kind: CallKind::Instance,
@@ -4153,7 +4068,7 @@ pub fn type_of(env: &mut TypeStore, expr: &Expr) -> Type {
                 expected_return: expected_return.clone(),
                 explicit_type_args: vec![],
             };
-            match resolve_method_call(env, &call) {
+            match resolve_method_call(ctx, &call) {
                 MethodResolution::Found(m) => m.return_type,
                 _ => Type::Error,
             }
@@ -4283,7 +4198,8 @@ mod tests {
             explicit_type_args: vec![],
         };
 
-        let MethodResolution::Found(found) = resolve_method_call(&mut env, &call) else {
+        let mut ctx = TyContext::new(&env);
+        let MethodResolution::Found(found) = resolve_method_call(&mut ctx, &call) else {
             panic!("expected method to be resolved");
         };
         assert_eq!(found.params, vec![Type::class(string, vec![])]);

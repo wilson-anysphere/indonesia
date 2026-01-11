@@ -1,6 +1,6 @@
 use nova_types::{
-    is_assignable, is_subtype, resolve_method_call, ClassType, MethodCall, MethodResolution, Type,
-    TypeEnv, TypeStore, WildcardBound,
+    is_assignable, is_subtype, resolve_method_call, CallKind, ClassType, MethodCall, MethodResolution, TyContext,
+    Type, TypeEnv, TypeStore, WildcardBound,
 };
 
 use pretty_assertions::assert_eq;
@@ -24,7 +24,7 @@ fn inheritance_type_arg_substitution() {
 
 #[test]
 fn capture_conversion_allocates_capture_vars() {
-    let mut env = TypeStore::with_minimal_jdk();
+    let env = TypeStore::with_minimal_jdk();
     let list = env.class_id("java.util.List").unwrap();
     let integer = env.well_known().integer;
 
@@ -35,7 +35,8 @@ fn capture_conversion_allocates_capture_vars() {
         )))],
     );
 
-    let captured = env.capture_conversion(&list_extends_integer);
+    let mut ctx = TyContext::new(&env);
+    let captured = ctx.capture_conversion(&list_extends_integer);
     let Type::Class(ClassType { args, .. }) = captured else {
         panic!("expected captured class type");
     };
@@ -44,7 +45,7 @@ fn capture_conversion_allocates_capture_vars() {
         panic!("expected captured type var");
     };
 
-    let tv_data = env.type_param(*tv).unwrap();
+    let tv_data = ctx.type_param(*tv).unwrap();
     assert!(tv_data.name.starts_with("CAP#"));
     assert_eq!(tv_data.upper_bounds, vec![Type::class(integer, vec![])]);
     assert_eq!(tv_data.lower_bound, None);
@@ -52,7 +53,7 @@ fn capture_conversion_allocates_capture_vars() {
 
 #[test]
 fn method_resolution_applies_capture_conversion_for_extends_wildcard() {
-    let mut env = TypeStore::with_minimal_jdk();
+    let env = TypeStore::with_minimal_jdk();
     let list = env.class_id("java.util.List").unwrap();
     let string = env.well_known().string;
 
@@ -65,29 +66,27 @@ fn method_resolution_applies_capture_conversion_for_extends_wildcard() {
 
     let call = MethodCall {
         receiver,
-        call_kind: nova_types::CallKind::Instance,
+        call_kind: CallKind::Instance,
         name: "get",
         args: vec![Type::int()],
         expected_return: None,
         explicit_type_args: vec![],
     };
 
-    let MethodResolution::Found(resolved) = resolve_method_call(&mut env, &call) else {
+    let mut ctx = TyContext::new(&env);
+    let MethodResolution::Found(resolved) = resolve_method_call(&mut ctx, &call) else {
         panic!("expected method resolution success");
     };
 
     // `List<? extends String>.get(int)` should return a capture variable `CAP#n` with upper bound `String`.
     let Type::TypeVar(cap) = resolved.return_type.clone() else {
-        panic!(
-            "expected capture type var return, got {:?}",
-            resolved.return_type
-        );
+        panic!("expected capture type var return, got {:?}", resolved.return_type);
     };
-    let cap_data = env.type_param(cap).unwrap();
+    let cap_data = ctx.type_param(cap).unwrap();
     assert_eq!(cap_data.upper_bounds, vec![Type::class(string, vec![])]);
     assert_eq!(cap_data.lower_bound, None);
     assert!(is_assignable(
-        &env,
+        &ctx,
         &resolved.return_type,
         &Type::class(string, vec![])
     ));
@@ -95,7 +94,7 @@ fn method_resolution_applies_capture_conversion_for_extends_wildcard() {
 
 #[test]
 fn method_resolution_applies_capture_conversion_for_super_wildcard() {
-    let mut env = TypeStore::with_minimal_jdk();
+    let env = TypeStore::with_minimal_jdk();
     let list = env.class_id("java.util.List").unwrap();
     let string = env.well_known().string;
     let object = env.well_known().object;
@@ -111,36 +110,35 @@ fn method_resolution_applies_capture_conversion_for_super_wildcard() {
     // `List<? super String>.add(String)` should be applicable (via capture conversion + lower bound).
     let call_ok = MethodCall {
         receiver: receiver.clone(),
-        call_kind: nova_types::CallKind::Instance,
+        call_kind: CallKind::Instance,
         name: "add",
         args: vec![Type::class(string, vec![])],
         expected_return: None,
         explicit_type_args: vec![],
     };
-    let MethodResolution::Found(resolved) = resolve_method_call(&mut env, &call_ok) else {
+    let mut ctx_ok = TyContext::new(&env);
+    let MethodResolution::Found(resolved) = resolve_method_call(&mut ctx_ok, &call_ok) else {
         panic!("expected method resolution success");
     };
 
     let Type::TypeVar(cap) = resolved.params[0].clone() else {
-        panic!(
-            "expected capture type var param, got {:?}",
-            resolved.params[0]
-        );
+        panic!("expected capture type var param, got {:?}", resolved.params[0]);
     };
-    let cap_data = env.type_param(cap).unwrap();
+    let cap_data = ctx_ok.type_param(cap).unwrap();
     assert_eq!(cap_data.lower_bound, Some(Type::class(string, vec![])));
 
     // But `List<? super String>.add(Object)` should not type-check.
     let call_bad = MethodCall {
         receiver,
-        call_kind: nova_types::CallKind::Instance,
+        call_kind: CallKind::Instance,
         name: "add",
         args: vec![Type::class(object, vec![])],
         expected_return: None,
         explicit_type_args: vec![],
     };
+    let mut ctx_bad = TyContext::new(&env);
     assert!(matches!(
-        resolve_method_call(&mut env, &call_bad),
+        resolve_method_call(&mut ctx_bad, &call_bad),
         MethodResolution::NotFound(_) | MethodResolution::Ambiguous(_)
     ));
 }
@@ -206,3 +204,101 @@ fn generic_subtyping_remains_invariant_without_wildcards() {
 
     assert!(!is_subtype(&env, &list_string, &list_object));
 }
+
+#[test]
+fn method_resolution_is_deterministic_across_invocations() {
+    let env = TypeStore::with_minimal_jdk();
+    let list = env.class_id("java.util.List").unwrap();
+    let string = env.well_known().string;
+
+    let receiver = Type::class(
+        list,
+        vec![Type::Wildcard(WildcardBound::Extends(Box::new(Type::class(
+            string,
+            vec![],
+        ))))],
+    );
+
+    let call = MethodCall {
+        receiver,
+        call_kind: CallKind::Instance,
+        name: "get",
+        args: vec![Type::int()],
+        expected_return: None,
+        explicit_type_args: vec![],
+    };
+
+    let mut ctx1 = TyContext::new(&env);
+    let MethodResolution::Found(res1) = resolve_method_call(&mut ctx1, &call) else {
+        panic!("expected method resolution success");
+    };
+
+    let mut ctx2 = TyContext::new(&env);
+    let MethodResolution::Found(res2) = resolve_method_call(&mut ctx2, &call) else {
+        panic!("expected method resolution success");
+    };
+
+    assert_eq!(res1, res2);
+}
+
+#[test]
+fn method_resolution_is_order_independent() {
+    let env = TypeStore::with_minimal_jdk();
+    let list = env.class_id("java.util.List").unwrap();
+    let string = env.well_known().string;
+    let integer = env.well_known().integer;
+
+    let call_string = MethodCall {
+        receiver: Type::class(
+            list,
+            vec![Type::Wildcard(WildcardBound::Extends(Box::new(Type::class(
+                string,
+                vec![],
+            ))))],
+        ),
+        call_kind: CallKind::Instance,
+        name: "get",
+        args: vec![Type::int()],
+        expected_return: None,
+        explicit_type_args: vec![],
+    };
+
+    let call_integer = MethodCall {
+        receiver: Type::class(
+            list,
+            vec![Type::Wildcard(WildcardBound::Extends(Box::new(Type::class(
+                integer,
+                vec![],
+            ))))],
+        ),
+        call_kind: CallKind::Instance,
+        name: "get",
+        args: vec![Type::int()],
+        expected_return: None,
+        explicit_type_args: vec![],
+    };
+
+    // Resolve string-then-integer.
+    let mut ctx_a1 = TyContext::new(&env);
+    let MethodResolution::Found(res_a1) = resolve_method_call(&mut ctx_a1, &call_string) else {
+        panic!("expected method resolution success");
+    };
+    let mut ctx_b1 = TyContext::new(&env);
+    let MethodResolution::Found(res_b1) = resolve_method_call(&mut ctx_b1, &call_integer) else {
+        panic!("expected method resolution success");
+    };
+
+    // Resolve integer-then-string.
+    let mut ctx_b2 = TyContext::new(&env);
+    let MethodResolution::Found(res_b2) = resolve_method_call(&mut ctx_b2, &call_integer) else {
+        panic!("expected method resolution success");
+    };
+    let mut ctx_a2 = TyContext::new(&env);
+    let MethodResolution::Found(res_a2) = resolve_method_call(&mut ctx_a2, &call_string) else {
+        panic!("expected method resolution success");
+    };
+
+    assert_eq!(res_a1, res_a2);
+    assert_eq!(res_b1, res_b2);
+}
+

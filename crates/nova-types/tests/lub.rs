@@ -1,6 +1,6 @@
 use nova_types::{
     lub, resolve_method_call, CallKind, ClassDef, ClassKind, MethodCall, MethodDef,
-    MethodResolution, Type, TypeEnv, TypeStore, WildcardBound,
+    MethodResolution, TyContext, Type, TypeEnv, TypeStore, WildcardBound,
 };
 
 use pretty_assertions::assert_eq;
@@ -90,7 +90,8 @@ fn inference_uses_lub_for_generic_instances() {
         explicit_type_args: vec![],
     };
 
-    let MethodResolution::Found(res) = resolve_method_call(&mut env, &call) else {
+    let mut ctx = TyContext::new(&env);
+    let MethodResolution::Found(res) = resolve_method_call(&mut ctx, &call) else {
         panic!("expected method resolution success");
     };
 

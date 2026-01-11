@@ -1,7 +1,7 @@
 use std::ffi::OsStr;
+use std::io;
 use std::path::PathBuf;
 use std::process::Command;
-use std::io;
 
 use tempfile::TempDir;
 

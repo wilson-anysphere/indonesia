@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use nova_classpath::{ClasspathEntry, ClasspathIndex};
 use nova_types::{
     is_subtype, resolve_method_call, CallKind, ChainTypeProvider, ClassKind, MethodCall, MethodResolution,
-    PrimitiveType, Type, TypeEnv, TypeStore, TypeStoreLoader,
+    PrimitiveType, TyContext, Type, TypeEnv, TypeStore, TypeStoreLoader,
 };
 
 use pretty_assertions::assert_eq;
@@ -68,10 +68,13 @@ fn type_store_loader_bridge_from_classpath_index() {
         expected_return: None,
         explicit_type_args: vec![],
     };
-    let MethodResolution::Found(resolved) = resolve_method_call(loader.store_mut(), &call) else {
-        panic!("expected method resolution success for List<String>.get(int)");
-    };
-    assert_eq!(resolved.return_type, Type::class(string_id, vec![]));
+    {
+        let mut ctx = TyContext::new(loader.store());
+        let MethodResolution::Found(resolved) = resolve_method_call(&mut ctx, &call) else {
+            panic!("expected method resolution success for List<String>.get(int)");
+        };
+        assert_eq!(resolved.return_type, Type::class(string_id, vec![]));
+    }
 
     // --- Load com.example.dep.Foo --------------------------------------------
     let foo_id = loader.ensure_class("com.example.dep.Foo").unwrap();
@@ -150,8 +153,11 @@ fn type_store_loader_bridge_from_classpath_index() {
         expected_return: None,
         explicit_type_args: vec![],
     };
-    let MethodResolution::Found(resolved) = resolve_method_call(loader.store_mut(), &call) else {
-        panic!("expected method resolution success for Foo.id(String)");
-    };
-    assert_eq!(resolved.return_type, Type::class(string_id, vec![]));
+    {
+        let mut ctx = TyContext::new(loader.store());
+        let MethodResolution::Found(resolved) = resolve_method_call(&mut ctx, &call) else {
+            panic!("expected method resolution success for Foo.id(String)");
+        };
+        assert_eq!(resolved.return_type, Type::class(string_id, vec![]));
+    }
 }
