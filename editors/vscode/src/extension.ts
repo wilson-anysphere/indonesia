@@ -793,6 +793,8 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(memoryStatusItem);
 
   let lastMemoryPressure: MemoryPressureLevel | undefined;
+  let warnedHighMemoryPressure = false;
+  let warnedCriticalMemoryPressure = false;
   let lastSafeModeEnabled = false;
   let safeModeWarningInFlight: Promise<void> | undefined;
 
@@ -850,11 +852,29 @@ export async function activate(context: vscode.ExtensionContext) {
     memoryStatusItem.tooltip = formatMemoryTooltip(label, usedBytes, budgetBytes, pct, pressure === 'high' || pressure === 'critical');
 
     if (pressure) {
-      const isHigh = pressure === 'high' || pressure === 'critical';
-      const wasHigh = lastMemoryPressure === 'high' || lastMemoryPressure === 'critical';
+      const prev = lastMemoryPressure;
       lastMemoryPressure = pressure;
 
-      if (isHigh && !wasHigh) {
+      const shouldWarnCritical = pressure === 'critical' && !warnedCriticalMemoryPressure && prev !== 'critical';
+      const shouldWarnHigh =
+        pressure === 'high' &&
+        !warnedHighMemoryPressure &&
+        prev !== 'high' &&
+        prev !== 'critical' &&
+        !shouldWarnCritical;
+
+      if (shouldWarnCritical) {
+        warnedCriticalMemoryPressure = true;
+        warnedHighMemoryPressure = true;
+        const picked = await vscode.window.showWarningMessage(
+          'Nova: memory pressure is Critical. Consider creating a bug report.',
+          'Create Bug Report',
+        );
+        if (picked === 'Create Bug Report') {
+          await vscode.commands.executeCommand(BUG_REPORT_COMMAND);
+        }
+      } else if (shouldWarnHigh) {
+        warnedHighMemoryPressure = true;
         const picked = await vscode.window.showWarningMessage(
           `Nova: memory pressure is ${memoryPressureLabel(pressure)}. Consider creating a bug report.`,
           'Create Bug Report',
@@ -870,6 +890,8 @@ export async function activate(context: vscode.ExtensionContext) {
 
   const resetObservabilityState = () => {
     lastMemoryPressure = undefined;
+    warnedHighMemoryPressure = false;
+    warnedCriticalMemoryPressure = false;
     lastSafeModeEnabled = false;
     updateSafeModeStatus(false);
     memoryStatusItem.text = '$(pulse) Nova Mem: —';
