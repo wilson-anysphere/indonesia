@@ -272,6 +272,107 @@ fn yield_statement_in_switch_expression_block() {
 }
 
 #[test]
+fn switch_rule_body_expression_variant_is_accessible() {
+    let src = "class Foo { int m(int x) { return switch (x) { case 1 -> 10; default -> 0; }; } }";
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let unit = CompilationUnit::cast(parse.syntax()).unwrap();
+    let class = unit
+        .type_declarations()
+        .find_map(|decl| match decl {
+            TypeDeclaration::ClassDeclaration(class) => Some(class),
+            _ => None,
+        })
+        .unwrap();
+    let method = class
+        .body()
+        .unwrap()
+        .members()
+        .find_map(|m| match m {
+            ClassMember::MethodDeclaration(method) => Some(method),
+            _ => None,
+        })
+        .unwrap();
+
+    let ret = method
+        .body()
+        .unwrap()
+        .statements()
+        .find_map(|stmt| match stmt {
+            Statement::ReturnStatement(stmt) => Some(stmt),
+            _ => None,
+        })
+        .unwrap();
+
+    let expr = ret.expression().unwrap();
+    let switch_expr = match expr {
+        Expression::SwitchExpression(it) => it,
+        other => panic!("expected SwitchExpression, got {other:?}"),
+    };
+
+    let block = switch_expr.block().expect("switch expression block");
+    let rule_bodies: Vec<_> = block
+        .rules()
+        .filter_map(|rule| rule.body())
+        .collect();
+    assert_eq!(rule_bodies.len(), 2);
+
+    let texts: Vec<_> = rule_bodies
+        .into_iter()
+        .map(|body| match body {
+            SwitchRuleBody::Expression(expr) => expr.syntax().text().to_string(),
+            other => panic!("expected Expression switch-rule body, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(texts, vec!["10", "0"]);
+}
+
+#[test]
+fn switch_rule_body_statement_variant_is_accessible() {
+    let src = "class Foo { void m(int x) { switch (x) { case 1 -> break; } } }";
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let unit = CompilationUnit::cast(parse.syntax()).unwrap();
+    let class = unit
+        .type_declarations()
+        .find_map(|decl| match decl {
+            TypeDeclaration::ClassDeclaration(class) => Some(class),
+            _ => None,
+        })
+        .unwrap();
+    let method = class
+        .body()
+        .unwrap()
+        .members()
+        .find_map(|m| match m {
+            ClassMember::MethodDeclaration(method) => Some(method),
+            _ => None,
+        })
+        .unwrap();
+
+    let switch = method
+        .body()
+        .unwrap()
+        .statements()
+        .find_map(|stmt| match stmt {
+            Statement::SwitchStatement(stmt) => Some(stmt),
+            _ => None,
+        })
+        .unwrap();
+
+    let block = switch.block().expect("switch block");
+    let rule = block.rules().next().expect("switch rule");
+    let body = rule.body().expect("switch rule body");
+    let stmt = match body {
+        SwitchRuleBody::Statement(stmt) => stmt,
+        other => panic!("expected Statement switch-rule body, got {other:?}"),
+    };
+    assert!(matches!(stmt, Statement::BreakStatement(_)));
+}
+
+#[test]
 fn switch_wildcard_pattern_is_accessible() {
     let src = "class Foo { void m(Object o) { switch (o) { case _ -> {} } } }";
     let parse = parse_java(src);
