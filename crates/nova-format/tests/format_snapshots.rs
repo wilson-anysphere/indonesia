@@ -245,6 +245,35 @@ class Foo {
 }
 
 #[test]
+fn ast_formatting_disambiguates_shift_operators_from_generic_closes() {
+    // When formatting `MAX < MIN >> 1`, the `>>` token is a shift operator. If we mistakenly treat
+    // `<` as starting generics, we'd format it like a generic close and insert a space (`>> 1`).
+    let input = "class Foo{boolean m(int MAX,int MIN){return MAX<MIN>>1;}boolean n(int MAX,int MIN){return MAX<MIN>>>1;}}\n";
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
+
+    assert!(!formatted.contains(">> 1"), "expected shift operator: {formatted}");
+    assert!(
+        !formatted.contains(">>> 1"),
+        "expected unsigned shift operator: {formatted}"
+    );
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+class Foo {
+    boolean m(int MAX, int MIN) {
+        return MAX<MIN>>1;
+    }
+    boolean n(int MAX, int MIN) {
+        return MAX<MIN>>>1;
+    }
+}
+"###
+    );
+}
+
+#[test]
 fn ast_formatting_is_idempotent() {
     fn assert_idempotent(input: &str) {
         let parse = parse_java(input);

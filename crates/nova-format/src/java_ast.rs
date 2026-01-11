@@ -1030,12 +1030,23 @@ fn has_generic_close_ahead(tokens: &[SyntaxToken], l_angle_idx: usize) -> bool {
                 }
             }
             SyntaxKind::RightShift if is_top_level => {
+                // A `>>` token can only act as a generic close when we are at depth >= 2 (nested
+                // type arguments). Treating `>>` as a close at depth 1 would misclassify common
+                // shift expressions like `MAX < MIN >> 1` as generics.
+                if generic_depth < 2 {
+                    return false;
+                }
                 generic_depth = generic_depth.saturating_sub(2);
                 if generic_depth == 0 {
                     return true;
                 }
             }
             SyntaxKind::UnsignedRightShift if is_top_level => {
+                // Same reasoning as `>>`: `>>>` only closes generics when we are nested to at
+                // least depth 3.
+                if generic_depth < 3 {
+                    return false;
+                }
                 generic_depth = generic_depth.saturating_sub(3);
                 if generic_depth == 0 {
                     return true;
