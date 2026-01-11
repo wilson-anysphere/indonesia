@@ -11,6 +11,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// Version of the on-disk AST artifact cache format.
+///
+/// This gates the *wrapper* structs in this module (metadata and per-file
+/// artifact headers). The serialized payload also depends on:
+/// - `nova_syntax::SYNTAX_SCHEMA_VERSION` (syntax artifacts)
+/// - `nova_hir::HIR_SCHEMA_VERSION` (HIR summaries)
+///
+/// See `docs/18-cache-schema-versioning.md` for the intended workflow.
 pub const AST_ARTIFACT_SCHEMA_VERSION: u32 = 4;
 
 /// Persisted, per-file syntax + HIR artifacts used to enable near-instant warm

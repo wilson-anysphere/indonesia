@@ -243,3 +243,6 @@ pub mod item_tree;
 pub mod lowering;
 pub mod module_info;
 pub mod queries;
+
+#[cfg(test)]
+mod tests;

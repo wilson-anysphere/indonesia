@@ -2341,3 +2341,78 @@ fn incremental_edit_creating_unterminated_block_comment_falls_back_to_full_repar
         "expected unterminated comment in fragment to force full reparse"
     );
 }
+
+// ---------------------------------------------------------------------
+// Schema/versioning guardrails
+//
+// The AST artifact cache in `nova-cache` persists `SyntaxKind` values using
+// `serde_repr` (i.e. their `u16` discriminants). A seemingly innocent change to
+// the enum (reordering, inserting a variant in the middle, renaming sentinel
+// variants, etc.) can therefore silently corrupt cached artifacts unless we bump
+// `SYNTAX_SCHEMA_VERSION`.
+//
+// This test is intentionally a *guardrail*, not a hard rule: some changes (e.g.
+// appending new kinds at the end) may be backward-compatible. The goal is simply
+// to force an explicit review whenever the enum shape changes.
+
+fn fnv1a64(mut hash: u64, bytes: &[u8]) -> u64 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x00000100000001B3;
+
+    if hash == 0 {
+        hash = FNV_OFFSET_BASIS;
+    }
+
+    for &b in bytes {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+
+    hash
+}
+
+fn syntax_kind_schema_fingerprint() -> u64 {
+    let mut hash = 0u64;
+
+    let last = SyntaxKind::__Last as u16;
+    hash = fnv1a64(hash, b"nova-syntax::SyntaxKind\n");
+    hash = fnv1a64(hash, &last.to_le_bytes());
+
+    // Hash the Debug representation for each numeric discriminant. This is
+    // deterministic and catches reordering/renaming/insertion changes.
+    for raw in 0..last {
+        let kind = <crate::JavaLanguage as rowan::Language>::kind_from_raw(rowan::SyntaxKind(raw));
+        let name = format!("{kind:?}");
+        hash = fnv1a64(hash, &raw.to_le_bytes());
+        hash = fnv1a64(hash, name.as_bytes());
+        hash = fnv1a64(hash, b"\n");
+    }
+
+    hash
+}
+
+// NOTE: If this fails, update the constant and *consider* bumping
+// `SYNTAX_SCHEMA_VERSION` in `syntax_kind.rs`.
+const EXPECTED_SYNTAX_KIND_SCHEMA_FINGERPRINT: u64 = 0x85a2_2c06_8c5e_6cb8;
+
+#[test]
+fn syntax_kind_schema_fingerprint_guardrail() {
+    let actual = syntax_kind_schema_fingerprint();
+    let expected = EXPECTED_SYNTAX_KIND_SCHEMA_FINGERPRINT;
+
+    assert_eq!(
+        actual,
+        expected,
+        "SyntaxKind schema fingerprint changed.\n\
+\n\
+This is a guardrail for Nova's on-disk AST cache:\n\
+- Review whether this SyntaxKind change affects persisted artifacts.\n\
+- Bump `nova_syntax::SYNTAX_SCHEMA_VERSION` if old caches could decode\n\
+  to the wrong kinds or otherwise become semantically invalid.\n\
+- Update `EXPECTED_SYNTAX_KIND_SCHEMA_FINGERPRINT` in\n\
+  `crates/nova-syntax/src/tests.rs`.\n\
+\n\
+expected: {expected:#018x}\n\
+actual:   {actual:#018x}\n"
+    );
+}

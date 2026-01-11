@@ -3777,6 +3777,7 @@ dependencies = [
 name = "nova-hir"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "nova-core",
  "nova-modules",
  "nova-syntax",

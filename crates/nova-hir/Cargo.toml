@@ -12,3 +12,6 @@ serde = { version = "1", features = ["derive"] }
 serde_repr = "0.1"
 nova-vfs = { path = "../nova-vfs" }
 thiserror = "1.0"
+
+[dev-dependencies]
+bincode = "1"
