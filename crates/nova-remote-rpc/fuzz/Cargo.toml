@@ -1,0 +1,23 @@
+[package]
+name = "nova-remote-rpc-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+nova-remote-proto = { path = "../../nova-remote-proto" }
+nova-remote-rpc = { path = ".." }
+tokio = { version = "1", features = ["io-util", "macros", "rt", "sync", "time"] }
+
+[[bin]]
+name = "v3_framed_transport"
+path = "fuzz_targets/v3_framed_transport.rs"
+test = false
+doc = false
+
+[workspace]
+members = ["."]

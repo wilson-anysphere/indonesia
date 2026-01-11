@@ -485,6 +485,66 @@ async fn reserved_request_id_zero_closes_connection() {
 }
 
 #[tokio::test]
+async fn too_many_inflight_chunked_packets_closes_connection() {
+    let (router_io, mut worker_io) = tokio::io::duplex(64 * 1024);
+
+    let router_task = tokio::spawn(async move {
+        RpcConnection::handshake_as_router(router_io, None)
+            .await
+            .unwrap()
+            .0
+    });
+
+    // Manual worker handshake.
+    write_wire_frame(&mut worker_io, &WireFrame::Hello(hello(None))).await;
+    let frame = read_wire_frame(&mut worker_io, DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN).await;
+    assert!(matches!(frame, WireFrame::Welcome(_)));
+
+    let router = router_task.await.unwrap();
+
+    // `nova-remote-rpc` enforces a cap on the number of concurrently in-flight chunk reassemblies
+    // to prevent a peer from exhausting memory by interleaving many `PacketChunk` streams.
+    //
+    // Keep this value in sync with `MAX_INFLIGHT_CHUNKED_PACKETS` in `nova-remote-rpc`.
+    const MAX_INFLIGHT: usize = 32;
+    for i in 0..=MAX_INFLIGHT {
+        let id = 1 + (i as u64) * 2;
+        write_wire_frame(
+            &mut worker_io,
+            &WireFrame::PacketChunk {
+                id,
+                compression: CompressionAlgo::None,
+                seq: 0,
+                last: false,
+                data: vec![0u8],
+            },
+        )
+        .await;
+    }
+
+    // Router should close the connection.
+    let err = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        worker_io.read_u32_le(),
+    )
+    .await
+    .expect("timed out waiting for router to close")
+    .expect_err("expected EOF after protocol violation");
+    assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
+
+    let err = router
+        .notify(nova_remote_proto::v3::Notification::Unknown)
+        .await
+        .expect_err("expected router to be closed");
+    match err {
+        RpcTransportError::ProtocolViolation { message } => {
+            assert!(message.contains("too many in-flight chunked packets"));
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn cancel_sent_immediately_after_request_is_observed() {
     use std::sync::{Arc, Mutex};
 

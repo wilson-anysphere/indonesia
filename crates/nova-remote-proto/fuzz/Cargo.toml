@@ -17,3 +17,17 @@ path = "fuzz_targets/decode_framed_message.rs"
 test = false
 doc = false
 
+[[bin]]
+name = "decode_v3_wire_frame"
+path = "fuzz_targets/decode_v3_wire_frame.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "decode_v3_rpc_payload"
+path = "fuzz_targets/decode_v3_rpc_payload.rs"
+test = false
+doc = false
+
+[workspace]
+members = ["."]
