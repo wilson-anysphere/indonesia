@@ -23,8 +23,10 @@ When v3 is enabled, the reference implementation (`crates/nova-remote-rpc`) curr
   (`nova_remote_proto::v3::{DEFAULT_MAX_FRAME_LEN, DEFAULT_MAX_PACKET_LEN}`)
 - Compression: prefer `zstd` (negotiated) and compress payloads ≥ **1 KiB** when it produces smaller
   on-wire bytes
-- Chunking: available when negotiated (`supports_chunking=true`); disabled by default
-- Cancellation: disabled by default (`supports_cancel=false`) and not yet handled end-to-end
+- Chunking: available when negotiated (`supports_chunking=true`) and used when a single frame would
+  exceed the negotiated `max_frame_len`
+- Cancellation: available when negotiated (`supports_cancel=true`) and supported end-to-end via
+  `RpcPayload::Cancel` + the structured `cancelled` error code
 - Keepalive: no application-level heartbeat yet
 
 These are internal defaults rather than user-facing CLI knobs.

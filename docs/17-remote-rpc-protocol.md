@@ -13,14 +13,13 @@ It is intended to be implementable without reading Nova’s source code. Where w
 > - `nova-router` and `nova-worker` currently use the legacy lockstep protocol
 >   (`nova_remote_proto::legacy_v2`, length-prefixed binary encoding, lockstep request/response).
 > - The v3 CBOR envelope types/codecs live in `nova_remote_proto::v3`.
-> - A reference v3 transport implementation (handshake + multiplexed calls + per-packet compression)
->   exists in `crates/nova-remote-rpc`, but `nova-router`/`nova-worker` have not migrated yet.
->   `PacketChunk` chunking/reassembly is implemented there but disabled by default
->   (`supports_chunking` defaults to `false`). `Cancel` handling is not yet implemented end-to-end
->   (`supports_cancel` defaults to `false`).
-> - Request IDs are generated with the correct parity (router even / worker odd) in
->   `crates/nova-remote-rpc`, but inbound parity enforcement is not yet implemented; implementations
->   SHOULD still validate parity to detect misbehaving peers.
+> - A reference v3 transport implementation exists in `crates/nova-remote-rpc` (`RpcConnection`),
+>   but `nova-router`/`nova-worker` have not migrated yet.
+>   - `PacketChunk` chunking/reassembly is implemented and supported end-to-end.
+>   - Best-effort `Cancel` handling is implemented end-to-end (incoming `Cancel` updates a per-RPC
+>     cancellation token, and responders may return a structured `cancelled` error).
+> - Request IDs are generated and inbound parity is validated per the parity rule (router even /
+>   worker odd) in `crates/nova-remote-rpc`.
 
 ## Design background
 

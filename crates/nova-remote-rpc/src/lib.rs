@@ -783,12 +783,24 @@ async fn read_loop<R: AsyncRead + Unpin + Send + 'static>(
 
                 match frame {
                     WireFrame::Packet { id, compression, data } => {
+                        if id == 0 {
+                            inner.close(RpcTransportError::ProtocolViolation {
+                                message: "request_id=0 is reserved".into(),
+                            }).await;
+                            break;
+                        }
                         if let Err(err) = process_packet(&inner, id, compression, data).await {
                             inner.close(err).await;
                             break;
                         }
                     }
                     WireFrame::PacketChunk { id, compression, seq, last, data } => {
+                        if id == 0 {
+                            inner.close(RpcTransportError::ProtocolViolation {
+                                message: "request_id=0 is reserved".into(),
+                            }).await;
+                            break;
+                        }
                         if !inner.capabilities.supports_chunking {
                             inner.close(RpcTransportError::ProtocolViolation {
                                 message: "received chunked packet but chunking not negotiated".into(),
@@ -842,6 +854,17 @@ async fn read_loop<R: AsyncRead + Unpin + Send + 'static>(
                             break;
                         }
 
+                        if let Err(err) = entry.buf.try_reserve(data.len()) {
+                            inner
+                                .close(RpcTransportError::AllocationFailed {
+                                    message: format!(
+                                        "allocate chunk reassembly buffer ({} bytes): {err}",
+                                        entry.buf.len().saturating_add(data.len())
+                                    ),
+                                })
+                                .await;
+                            break;
+                        }
                         entry.buf.extend_from_slice(&data);
                         total_bytes += data.len();
 
@@ -875,6 +898,11 @@ async fn process_packet(
     compression: CompressionAlgo,
     data: Vec<u8>,
 ) -> Result<(), RpcTransportError> {
+    if request_id == 0 {
+        return Err(RpcTransportError::ProtocolViolation {
+            message: "request_id=0 is reserved".into(),
+        });
+    }
     if data.len() > inner.capabilities.max_packet_len as usize {
         return Err(RpcTransportError::PacketTooLarge {
             len: data.len(),
@@ -914,6 +942,20 @@ async fn handle_payload(
             Ok(())
         }
         RpcPayload::Request(request) => {
+            // Enforce the parity rule for *incoming* requests so a misbehaving peer cannot collide
+            // IDs with our own outbound calls.
+            let expected_mod = match inner.role {
+                RpcRole::Router => 1, // worker-initiated request IDs are odd
+                RpcRole::Worker => 0, // router-initiated request IDs are even
+            };
+            if request_id % 2 != expected_mod {
+                return Err(RpcTransportError::ProtocolViolation {
+                    message: format!(
+                        "request_id parity violation (id={request_id}): expected id%2={expected_mod} for peer"
+                    ),
+                });
+            }
+
             let handler = inner.request_handler.read().unwrap().clone();
             let inner_clone = inner.clone();
             tokio::spawn(async move {

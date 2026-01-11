@@ -55,7 +55,8 @@ The current v3 reference implementation (`crates/nova-remote-rpc`) defaults to:
   - **64 MiB** max packet (`nova_remote_proto::v3::DEFAULT_MAX_PACKET_LEN`)
 - Compression: offer `zstd` + `none` and compress payloads ≥ **1 KiB** (zstd level 3) when it
   produces smaller on-wire bytes.
-- Chunking: supported when negotiated (`supports_chunking=true`), but disabled by default.
+- Chunking: supported when negotiated (`supports_chunking=true`) and used when a single frame would
+  exceed the negotiated `max_frame_len`.
 - Keepalive: there is no application-level heartbeat yet; idle connections rely on TCP / deployment
   infrastructure.
 
