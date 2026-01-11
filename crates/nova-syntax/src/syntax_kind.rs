@@ -383,7 +383,6 @@ pub enum SyntaxKind {
     InferredTypeArguments,
 
     // Statements.
-    YieldStatement,
     BasicForStatement,
     EnhancedForStatement,
     ForInit,
@@ -394,8 +393,6 @@ pub enum SyntaxKind {
     LocalClassDeclarationStatement,
 
     // Switch (statement + expression) and pattern matching.
-    SwitchExpression,
-    SwitchRule,
     SwitchRuleBody,
     SwitchBlockStatementGroup,
     CaseLabel,
