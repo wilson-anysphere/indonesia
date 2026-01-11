@@ -190,7 +190,7 @@ nova-worker \
   --cache-dir /tmp/nova-cache
 ```
 
-### Remote mode (optional, not hardened)
+### Remote mode (TCP; secure with TLS + authentication)
 
 The router can listen on TCP and accept workers connecting from other machines.
 
@@ -199,9 +199,9 @@ not yet have a way to pass TLS client configuration (CA cert, SNI domain, option
 to locally spawned workers. For TLS remote deployments, set `spawn_workers = false` and start
 workers manually with the appropriate TLS flags.
 
-An authentication token is supported as a stub (a shared secret sent by the worker during the
-initial handshake). Because the token is sent on the wire, remote TCP deployments MUST use TLS
-(`tcp+tls:`) to avoid leaking it.
+An authentication token is supported as a shared secret sent by the worker during the initial
+handshake. Because the token is sent on the wire, remote TCP deployments MUST use TLS (`tcp+tls:`)
+to avoid leaking it.
 
 The token is currently a **single shared secret** for all shards (see
 `DistributedRouterConfig.auth_token`). For shard-scoped authorization, use mTLS + the router’s
@@ -322,8 +322,12 @@ Notes:
 
 For the intended “secure remote mode” requirements (TLS + authentication + shard-scoped
 authorization + DoS hardening), see
-[ADR 0008 — Distributed mode security](adr/0008-distributed-mode-security.md). The current
-implementation does **not** meet those requirements and should only be used on trusted networks.
+[ADR 0008 — Distributed mode security](adr/0008-distributed-mode-security.md).
+
+The current implementation supports the core primitives needed for secure remote mode (TLS, mTLS
+authentication, shard-scoped authorization via client certificate fingerprints, and basic protocol
+DoS hardening). However, remote mode should still be treated as **beta** until additional
+hardening work lands (e.g. fuzzing and rate limiting).
 
 ## Observability (logging & crash reports)
 
