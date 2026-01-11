@@ -17,4 +17,4 @@ cargo metadata --format-version=1 --no-deps --locked >"$tmp"
 cargo run -p nova-devtools -- check-deps --metadata-path "$tmp"
 cargo run -p nova-devtools -- check-layers --metadata-path "$tmp"
 cargo run -p nova-devtools -- check-architecture-map --metadata-path "$tmp" --strict
-
+cargo run -p nova-devtools -- check-protocol-extensions

@@ -125,6 +125,28 @@ fn run() -> anyhow::Result<ExitCode> {
                 ExitCode::from(1)
             })
         }
+        "check-protocol-extensions" => {
+            let opts = parse_check_protocol_extensions_args(args)?;
+            let report =
+                nova_devtools::check_protocol_extensions::check(&opts.doc).with_context(|| {
+                    format!(
+                        "check-protocol-extensions failed using {}",
+                        opts.doc.display()
+                    )
+                })?;
+
+            emit_report(
+                "check-protocol-extensions",
+                opts.json,
+                report.ok,
+                report.diagnostics,
+            )?;
+            Ok(if report.ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            })
+        }
         "-h" | "--help" => {
             print_help();
             Ok(ExitCode::SUCCESS)
@@ -336,6 +358,43 @@ where
     })
 }
 
+#[derive(Debug)]
+struct ProtocolExtensionsArgs {
+    doc: PathBuf,
+    json: bool,
+}
+
+fn parse_check_protocol_extensions_args<I>(mut args: I) -> anyhow::Result<ProtocolExtensionsArgs>
+where
+    I: Iterator<Item = String>,
+{
+    let mut doc = PathBuf::from("docs/protocol-extensions.md");
+    let mut json = false;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--doc" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--doc requires a value"))?;
+                doc = PathBuf::from(value);
+            }
+            "--json" => json = true,
+            "-h" | "--help" => {
+                print_command_help("check-protocol-extensions");
+                std::process::exit(0);
+            }
+            other => {
+                return Err(anyhow!(
+                    "unknown argument {other:?}\n\nRun `nova-devtools check-protocol-extensions --help` for usage."
+                ));
+            }
+        }
+    }
+
+    Ok(ProtocolExtensionsArgs { doc, json })
+}
+
 fn print_help() {
     println!(
         "\
@@ -348,6 +407,7 @@ COMMANDS:
   check-deps             Validate workspace crate dependency edges against ADR 0007 layering rules
   check-layers           Validate crate-layers.toml integrity (workspace coverage, unknown crates, layer refs)
   check-architecture-map Validate docs/architecture-map.md coverage for crates/ directory crates
+  check-protocol-extensions Validate docs/protocol-extensions.md coverage for `nova/*` method constants and VS Code client usage
   graph-deps             Emit a GraphViz/DOT dependency graph annotated by layer (see --help)
 
 OPTIONS:
@@ -406,6 +466,19 @@ OPTIONS:
   --output <path>         Write DOT to a file instead of stdout
   --json                  Write DOT to `--output` (or target/nova-deps.dot) and emit a JSON report
   -h, --help              Print help
+"
+            );
+        }
+        "check-protocol-extensions" => {
+            println!(
+                "\
+USAGE:
+  nova-devtools check-protocol-extensions [--doc <path>] [--json]
+
+OPTIONS:
+  --doc <path>   Path to docs/protocol-extensions.md (default: docs/protocol-extensions.md)
+  --json         Emit machine-readable JSON output
+  -h, --help     Print help
 "
             );
         }

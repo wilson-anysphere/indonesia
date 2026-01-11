@@ -57,6 +57,20 @@ struct CrateSection {
     lines: Vec<String>,
 }
 
+#[derive(Debug)]
+struct ParsedCrateSections {
+    order: Vec<String>,
+    sections: BTreeMap<String, CrateSection>,
+    duplicates: Vec<DuplicateHeading>,
+}
+
+#[derive(Debug, Clone)]
+struct DuplicateHeading {
+    name: String,
+    first_line: usize,
+    second_line: usize,
+}
+
 fn validate_architecture_map(
     doc: &str,
     repo_root: &Path,
@@ -64,14 +78,31 @@ fn validate_architecture_map(
     workspace_crates: &BTreeSet<String>,
     strict: bool,
 ) -> Vec<Diagnostic> {
-    let sections = parse_crate_sections(doc);
+    let parsed = parse_crate_sections(doc);
+    let crates_sorted: Vec<String> = workspace_crates.iter().cloned().collect();
+    let doc_crates_list = parsed.order.clone();
+    let duplicates = parsed.duplicates.clone();
+    let sections = parsed.sections;
     let doc_crates: BTreeSet<String> = sections.keys().cloned().collect();
 
     let mut diagnostics = Vec::new();
 
-    let missing: Vec<String> = workspace_crates.difference(&doc_crates).cloned().collect();
+    for dup in &duplicates {
+        diagnostics.push(
+            Diagnostic::error(
+                "duplicate-crate-section",
+                format!(
+                    "crate heading `{}` is duplicated (lines {} and {})",
+                    dup.name, dup.first_line, dup.second_line
+                ),
+            )
+            .with_file(doc_path.display().to_string())
+            .with_line(dup.second_line),
+        );
+    }
+
+    let mut missing: Vec<String> = workspace_crates.difference(&doc_crates).cloned().collect();
     if !missing.is_empty() {
-        let mut missing = missing;
         missing.sort();
 
         let mut suggestion = String::new();
@@ -97,21 +128,48 @@ fn validate_architecture_map(
         );
     }
 
-    let stale: Vec<String> = doc_crates.difference(workspace_crates).cloned().collect();
+    let mut stale: Vec<String> = doc_crates.difference(workspace_crates).cloned().collect();
     if !stale.is_empty() {
-        let mut stale = stale;
         stale.sort();
         diagnostics.push(
-            Diagnostic::warning(
+            Diagnostic::error(
                 "unknown-crate-section",
                 format!(
-                    "{} contains crate section(s) that are not workspace members: {}",
+                    "{} contains crate section(s) that are not crates/ directory crates: {}",
                     doc_path.display(),
                     stale.join(", ")
                 ),
             )
             .with_file(doc_path.display().to_string()),
         );
+    }
+
+    // Match the existing docs consistency gate: once missing/extra/dupes are resolved, enforce
+    // strictly alphabetical crate headings.
+    if duplicates.is_empty()
+        && missing.is_empty()
+        && stale.is_empty()
+        && doc_crates_list != crates_sorted
+    {
+        for (idx, (actual, expected)) in
+            doc_crates_list.iter().zip(crates_sorted.iter()).enumerate()
+        {
+            if actual != expected {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "crate-heading-order",
+                        format!(
+                            "crate headings are not in alphabetical order: entry {} is `{}` but expected `{}`",
+                            idx + 1,
+                            actual,
+                            expected
+                        ),
+                    )
+                    .with_file(doc_path.display().to_string()),
+                );
+                break;
+            }
+        }
     }
 
     let quick_link_diags = validate_quick_links(doc, repo_root, doc_path, workspace_crates);
@@ -144,22 +202,37 @@ fn validate_architecture_map(
     diagnostics
 }
 
-fn parse_crate_sections(doc: &str) -> BTreeMap<String, CrateSection> {
+fn parse_crate_sections(doc: &str) -> ParsedCrateSections {
     let mut sections: BTreeMap<String, CrateSection> = BTreeMap::new();
     let mut current_name: Option<String> = None;
+    let mut order = Vec::new();
+    let mut duplicates = Vec::new();
 
     for (idx, line) in doc.lines().enumerate() {
         let line_no = idx + 1;
         if let Some(name) = parse_crate_header(line) {
-            current_name = Some(name.clone());
-            sections.insert(
-                name.clone(),
-                CrateSection {
-                    name,
-                    start_line: line_no,
-                    lines: Vec::new(),
-                },
-            );
+            order.push(name.clone());
+            match sections.get(&name) {
+                Some(existing) => {
+                    duplicates.push(DuplicateHeading {
+                        name: name.clone(),
+                        first_line: existing.start_line,
+                        second_line: line_no,
+                    });
+                }
+                None => {
+                    sections.insert(
+                        name.clone(),
+                        CrateSection {
+                            name: name.clone(),
+                            start_line: line_no,
+                            lines: Vec::new(),
+                        },
+                    );
+                }
+            }
+
+            current_name = Some(name);
             continue;
         }
 
@@ -171,7 +244,11 @@ fn parse_crate_sections(doc: &str) -> BTreeMap<String, CrateSection> {
         }
     }
 
-    sections
+    ParsedCrateSections {
+        order,
+        sections,
+        duplicates,
+    }
 }
 
 fn parse_crate_header(line: &str) -> Option<String> {
@@ -460,9 +537,9 @@ mod tests {
     #[test]
     fn parses_crate_sections_from_fixture() {
         let doc = load_fixture("architecture-map-ok.md");
-        let sections = parse_crate_sections(&doc);
-        assert!(sections.contains_key("crate-a"));
-        assert!(sections.contains_key("crate-b"));
+        let parsed = parse_crate_sections(&doc);
+        assert!(parsed.sections.contains_key("crate-a"));
+        assert!(parsed.sections.contains_key("crate-b"));
     }
 
     #[test]

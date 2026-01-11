@@ -48,6 +48,19 @@ Strict mode additionally requires each crate section to include:
 cargo run -p nova-devtools -- check-architecture-map --strict
 ```
 
+### `check-protocol-extensions`
+
+Validates [`docs/protocol-extensions.md`](../../docs/protocol-extensions.md) against:
+
+- `nova/*` method string constants defined by the `nova-lsp` crate
+- `nova/*` method usage in the VS Code client (`editors/vscode`)
+
+This enforces that the protocol extension spec stays in sync with both server + client code.
+
+```
+cargo run -p nova-devtools -- check-protocol-extensions
+```
+
 ### `graph-deps`
 
 Emits a DOT/GraphViz dependency graph annotated by layer.
