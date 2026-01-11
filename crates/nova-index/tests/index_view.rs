@@ -106,3 +106,123 @@ fn index_view_filters_invalidated_files_without_materializing() {
     let reference_files: Vec<&str> = reference_iter.map(|loc| loc.file.as_str()).collect();
     assert_eq!(reference_files, vec!["B.java"]);
 }
+
+#[test]
+fn index_view_filters_deleted_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let project_root = temp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    let a = project_root.join("A.java");
+    let b = project_root.join("B.java");
+    std::fs::write(&a, "class A {}").unwrap();
+    std::fs::write(&b, "class B {}").unwrap();
+
+    let snapshot_v1 = ProjectSnapshot::new(
+        &project_root,
+        vec![PathBuf::from("A.java"), PathBuf::from("B.java")],
+    )
+    .unwrap();
+
+    let cache_dir = CacheDir::new(
+        &project_root,
+        CacheConfig {
+            cache_root_override: Some(temp.path().join("cache-root")),
+        },
+    )
+    .unwrap();
+
+    let mut indexes = ProjectIndexes::default();
+    for file in ["A.java", "B.java"] {
+        indexes.symbols.insert(
+            "Foo",
+            SymbolLocation {
+                file: file.to_string(),
+                line: 1,
+                column: 1,
+            },
+        );
+    }
+    save_indexes(&cache_dir, &snapshot_v1, &indexes).unwrap();
+
+    // Delete B.java; it should be invalidated and filtered out of queries.
+    std::fs::remove_file(&b).unwrap();
+    let snapshot_v2 = ProjectSnapshot::new(&project_root, vec![PathBuf::from("A.java")]).unwrap();
+
+    let view_v2 = load_index_view(&cache_dir, &snapshot_v2).unwrap().unwrap();
+    assert_eq!(
+        view_v2.invalidated_files,
+        BTreeSet::from(["B.java".to_string()])
+    );
+
+    let files: Vec<&str> = view_v2
+        .symbol_locations("Foo")
+        .map(|loc| loc.file.as_str())
+        .collect();
+    assert_eq!(files, vec!["A.java"]);
+}
+
+#[test]
+fn index_view_marks_new_files_invalidated_without_filtering_existing_results() {
+    let temp = tempfile::tempdir().unwrap();
+    let project_root = temp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    let a = project_root.join("A.java");
+    let b = project_root.join("B.java");
+    std::fs::write(&a, "class A {}").unwrap();
+    std::fs::write(&b, "class B {}").unwrap();
+
+    let snapshot_v1 = ProjectSnapshot::new(
+        &project_root,
+        vec![PathBuf::from("A.java"), PathBuf::from("B.java")],
+    )
+    .unwrap();
+
+    let cache_dir = CacheDir::new(
+        &project_root,
+        CacheConfig {
+            cache_root_override: Some(temp.path().join("cache-root")),
+        },
+    )
+    .unwrap();
+
+    let mut indexes = ProjectIndexes::default();
+    for file in ["A.java", "B.java"] {
+        indexes.symbols.insert(
+            "Foo",
+            SymbolLocation {
+                file: file.to_string(),
+                line: 1,
+                column: 1,
+            },
+        );
+    }
+    save_indexes(&cache_dir, &snapshot_v1, &indexes).unwrap();
+
+    // Add C.java (new file): should be marked invalidated, but does not affect
+    // queries into existing persisted results.
+    let c = project_root.join("C.java");
+    std::fs::write(&c, "class C {}").unwrap();
+    let snapshot_v2 = ProjectSnapshot::new(
+        &project_root,
+        vec![
+            PathBuf::from("A.java"),
+            PathBuf::from("B.java"),
+            PathBuf::from("C.java"),
+        ],
+    )
+    .unwrap();
+
+    let view_v2 = load_index_view(&cache_dir, &snapshot_v2).unwrap().unwrap();
+    assert_eq!(
+        view_v2.invalidated_files,
+        BTreeSet::from(["C.java".to_string()])
+    );
+
+    let files: Vec<&str> = view_v2
+        .symbol_locations("Foo")
+        .map(|loc| loc.file.as_str())
+        .collect();
+    assert_eq!(files, vec!["A.java", "B.java"]);
+}
