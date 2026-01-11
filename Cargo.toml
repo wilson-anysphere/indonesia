@@ -57,6 +57,7 @@ members = [
     "crates/nova-test-utils",
     "crates/nova-worker",
     "crates/nova-yaml",
+    "crates/xtask",
 ]
 
 [workspace.package]

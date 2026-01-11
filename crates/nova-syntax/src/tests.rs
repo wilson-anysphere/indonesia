@@ -291,3 +291,107 @@ fn parse_postfix_increment_decrement() {
     assert_eq!(plus_plus, 2);
     assert_eq!(minus_minus, 2);
 }
+
+#[test]
+fn generated_ast_accessors_work() {
+    use crate::{
+        parse_java, AstNode, CompilationUnit, Expression, Statement, TypeDeclaration,
+    };
+
+    let input = r#"
+package com.example;
+import java.util.List;
+
+class Foo {
+  int x = 1;
+  int add(int a, int b) { return a + b; }
+}
+"#;
+
+    let parse = parse_java(input);
+    assert_eq!(parse.errors, Vec::new());
+
+    let unit = CompilationUnit::cast(parse.syntax()).expect("root should be a CompilationUnit");
+    assert!(unit.package().is_some());
+    assert_eq!(unit.imports().count(), 1);
+
+    let class = unit
+        .type_declarations()
+        .find_map(|decl| match decl {
+            TypeDeclaration::ClassDeclaration(it) => Some(it),
+            _ => None,
+        })
+        .expect("expected a class declaration");
+    assert_eq!(class.name_token().unwrap().text(), "Foo");
+
+    let add_method = class
+        .body()
+        .unwrap()
+        .members()
+        .find_map(|member| match member {
+            crate::ClassMember::MethodDeclaration(it) => Some(it),
+            _ => None,
+        })
+        .expect("expected a method");
+    assert_eq!(add_method.name_token().unwrap().text(), "add");
+
+    let params: Vec<_> = add_method
+        .parameter_list()
+        .unwrap()
+        .parameters()
+        .map(|p| p.name_token().unwrap().text().to_string())
+        .collect();
+    assert_eq!(params, vec!["a".to_string(), "b".to_string()]);
+
+    let return_stmt = add_method
+        .body()
+        .unwrap()
+        .statements()
+        .find_map(|stmt| match stmt {
+            Statement::ReturnStatement(it) => Some(it),
+            _ => None,
+        })
+        .expect("expected a return statement");
+
+    let expr = return_stmt.expression().expect("expected a return expression");
+    let binary = match expr {
+        Expression::BinaryExpression(it) => it,
+        other => panic!("expected binary expression, got {other:?}"),
+    };
+
+    assert_eq!(
+        binary
+            .lhs()
+            .unwrap()
+            .syntax()
+            .first_token()
+            .unwrap()
+            .text(),
+        "a"
+    );
+    assert_eq!(
+        binary
+            .rhs()
+            .unwrap()
+            .syntax()
+            .first_token()
+            .unwrap()
+            .text(),
+        "b"
+    );
+}
+
+#[test]
+fn generated_ast_is_up_to_date() {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let grammar_path = manifest_dir.join("grammar/java.syntax");
+    let generated_path = manifest_dir.join("src/ast/generated.rs");
+
+    let expected = xtask::generate_ast(&grammar_path).expect("codegen should succeed");
+    let actual = std::fs::read_to_string(&generated_path).expect("generated.rs should be readable");
+
+    assert_eq!(
+        actual, expected,
+        "generated AST is stale; run `cargo xtask codegen`"
+    );
+}

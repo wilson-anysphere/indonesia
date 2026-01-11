@@ -1,0 +1,394 @@
+# Java syntax tree grammar for `nova-syntax`.
+#
+# This file is the single source of truth for the generated typed AST wrappers in
+# `crates/nova-syntax/src/ast/generated.rs`.
+#
+# Regenerate the wrappers with:
+#   cargo xtask codegen
+#
+# Syntax (very small DSL):
+# - `Foo { ... }` defines a concrete syntax node (must correspond to `SyntaxKind::Foo`).
+# - `Bar = A | B | C` defines a typed union over existing nodes.
+# - Fields:
+#     field: Type     (exactly one, accessor returns `Option<Type>`)
+#     field: Type?    (zero or one, accessor returns `Option<Type>`)
+#     field: Type*    (zero or more, accessor returns an iterator)
+# - `Ident` is a special token class which matches `SyntaxKind::is_identifier_like()`.
+
+TypeDeclaration =
+    ClassDeclaration
+  | InterfaceDeclaration
+  | EnumDeclaration
+  | RecordDeclaration
+  | AnnotationTypeDeclaration
+  | EmptyDeclaration
+
+ClassMember =
+    FieldDeclaration
+  | MethodDeclaration
+  | ConstructorDeclaration
+  | InitializerBlock
+  | EmptyDeclaration
+  | ClassDeclaration
+  | InterfaceDeclaration
+  | EnumDeclaration
+  | RecordDeclaration
+  | AnnotationTypeDeclaration
+
+Statement =
+    Block
+  | LabeledStatement
+  | IfStatement
+  | SwitchStatement
+  | ForStatement
+  | WhileStatement
+  | DoWhileStatement
+  | SynchronizedStatement
+  | TryStatement
+  | AssertStatement
+  | ReturnStatement
+  | ThrowStatement
+  | BreakStatement
+  | ContinueStatement
+  | LocalVariableDeclarationStatement
+  | ExpressionStatement
+  | EmptyStatement
+
+Expression =
+    LiteralExpression
+  | NameExpression
+  | ThisExpression
+  | SuperExpression
+  | ParenthesizedExpression
+  | NewExpression
+  | MethodCallExpression
+  | FieldAccessExpression
+  | ArrayAccessExpression
+  | UnaryExpression
+  | BinaryExpression
+  | AssignmentExpression
+  | ConditionalExpression
+  | LambdaExpression
+  | CastExpression
+
+LambdaBody = Block | Expression
+
+CompilationUnit {
+  package: PackageDeclaration?
+  imports: ImportDeclaration*
+  type_declarations: TypeDeclaration*
+}
+
+PackageDeclaration {
+  annotations: Annotation*
+  name: Name?
+}
+
+ImportDeclaration {
+  name: Name?
+}
+
+Modifiers {
+  annotations: Annotation*
+}
+
+Annotation {
+  name: Name?
+  arguments: ArgumentList?
+}
+
+Name {}
+
+ClassDeclaration {
+  modifiers: Modifiers?
+  name_token: Ident?
+  body: ClassBody?
+}
+
+InterfaceDeclaration {
+  modifiers: Modifiers?
+  name_token: Ident?
+  body: InterfaceBody?
+}
+
+EnumDeclaration {
+  modifiers: Modifiers?
+  name_token: Ident?
+  body: EnumBody?
+}
+
+RecordDeclaration {
+  modifiers: Modifiers?
+  name_token: Ident?
+  parameter_list: ParameterList?
+  body: RecordBody?
+}
+
+AnnotationTypeDeclaration {
+  modifiers: Modifiers?
+  name_token: Ident?
+  body: AnnotationBody?
+}
+
+ClassBody {
+  members: ClassMember*
+}
+
+InterfaceBody {
+  members: ClassMember*
+}
+
+EnumBody {
+  constants: EnumConstant*
+  members: ClassMember*
+}
+
+RecordBody {
+  members: ClassMember*
+}
+
+AnnotationBody {
+  members: ClassMember*
+}
+
+EnumConstant {
+  name_token: Ident?
+  arguments: ArgumentList?
+}
+
+FieldDeclaration {
+  modifiers: Modifiers?
+  ty: Type?
+  declarators: VariableDeclaratorList?
+}
+
+MethodDeclaration {
+  modifiers: Modifiers?
+  name_token: Ident?
+  parameter_list: ParameterList?
+  body: Block?
+}
+
+ConstructorDeclaration {
+  modifiers: Modifiers?
+  name_token: Ident?
+  parameter_list: ParameterList?
+  body: Block?
+}
+
+InitializerBlock {
+  modifiers: Modifiers?
+  body: Block?
+}
+
+EmptyDeclaration {}
+
+ParameterList {
+  parameters: Parameter*
+}
+
+Parameter {
+  modifiers: Modifiers?
+  ty: Type?
+  name_token: Ident?
+}
+
+Block {
+  statements: Statement*
+}
+
+LabeledStatement {
+  label_token: Ident?
+  statement: Statement?
+}
+
+IfStatement {
+  condition: Expression?
+  then_branch: Statement?
+  else_branch: Statement?
+}
+
+SwitchStatement {
+  expression: Expression?
+  block: SwitchBlock?
+}
+
+SwitchBlock {
+  labels: SwitchLabel*
+  statements: Statement*
+}
+
+SwitchLabel {
+  expressions: Expression*
+}
+
+ForStatement {
+  header: ForHeader?
+  body: Statement?
+}
+
+ForHeader {}
+
+WhileStatement {
+  condition: Expression?
+  body: Statement?
+}
+
+DoWhileStatement {
+  body: Statement?
+  condition: Expression?
+}
+
+SynchronizedStatement {
+  expression: Expression?
+  body: Block?
+}
+
+TryStatement {
+  resources: ResourceSpecification?
+  body: Block?
+  catches: CatchClause*
+  finally_clause: FinallyClause?
+}
+
+ResourceSpecification {
+  resources: Resource*
+}
+
+Resource {}
+
+CatchClause {
+  body: Block?
+}
+
+FinallyClause {
+  body: Block?
+}
+
+AssertStatement {
+  condition: Expression?
+  message: Expression?
+}
+
+ReturnStatement {
+  expression: Expression?
+}
+
+ThrowStatement {
+  expression: Expression?
+}
+
+BreakStatement {
+  label_token: Ident?
+}
+
+ContinueStatement {
+  label_token: Ident?
+}
+
+LocalVariableDeclarationStatement {
+  modifiers: Modifiers?
+  ty: Type?
+  declarators: VariableDeclaratorList?
+}
+
+ExpressionStatement {
+  expression: Expression?
+}
+
+EmptyStatement {}
+
+VariableDeclaratorList {
+  declarators: VariableDeclarator*
+}
+
+VariableDeclarator {
+  name_token: Ident?
+  initializer: Expression?
+}
+
+Type {
+  primitive: PrimitiveType?
+  named: NamedType?
+}
+
+PrimitiveType {}
+
+NamedType {
+  type_arguments: TypeArguments?
+}
+
+TypeArguments {
+  arguments: TypeArgument*
+}
+
+TypeArgument {
+  ty: Type?
+  wildcard: WildcardType?
+}
+
+WildcardType {
+  bound: Type?
+}
+
+ArgumentList {
+  arguments: Expression*
+}
+
+LiteralExpression {}
+NameExpression {}
+ThisExpression {}
+SuperExpression {}
+
+ParenthesizedExpression {
+  expression: Expression?
+}
+
+NewExpression {
+  ty: Type?
+  arguments: ArgumentList?
+}
+
+MethodCallExpression {
+  callee: Expression?
+  arguments: ArgumentList?
+}
+
+FieldAccessExpression {
+  expression: Expression?
+  name_token: Ident?
+}
+
+ArrayAccessExpression {
+  array: Expression?
+  index: Expression?
+}
+
+UnaryExpression {
+  operand: Expression?
+}
+
+BinaryExpression {
+  lhs: Expression?
+  rhs: Expression?
+}
+
+AssignmentExpression {
+  lhs: Expression?
+  rhs: Expression?
+}
+
+ConditionalExpression {
+  condition: Expression?
+  then_branch: Expression?
+  else_branch: Expression?
+}
+
+LambdaExpression {
+  body: LambdaBody?
+}
+
+CastExpression {
+  ty: Type?
+  expression: Expression?
+}

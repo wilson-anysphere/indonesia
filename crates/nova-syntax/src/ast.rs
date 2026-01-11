@@ -7,51 +7,56 @@ pub trait AstNode: Sized {
     fn syntax(&self) -> &SyntaxNode;
 }
 
-macro_rules! ast_node {
-    ($name:ident, $kind:path) => {
-        #[derive(Debug, Clone, PartialEq, Eq)]
-        pub struct $name {
-            syntax: SyntaxNode,
-        }
+pub mod support {
+    use crate::ast::AstNode;
+    use crate::parser::{SyntaxNode, SyntaxToken};
+    use crate::syntax_kind::SyntaxKind;
 
-        impl AstNode for $name {
-            fn can_cast(kind: SyntaxKind) -> bool {
-                kind == $kind
-            }
+    pub fn child<N: AstNode>(node: &SyntaxNode) -> Option<N> {
+        node.children().find_map(N::cast)
+    }
 
-            fn cast(syntax: SyntaxNode) -> Option<Self> {
-                Self::can_cast(syntax.kind()).then_some(Self { syntax })
-            }
+    pub fn children<'a, N: AstNode + 'a>(node: &'a SyntaxNode) -> impl Iterator<Item = N> + 'a {
+        node.children().filter_map(N::cast)
+    }
 
-            fn syntax(&self) -> &SyntaxNode {
-                &self.syntax
-            }
-        }
-    };
+    pub fn token(node: &SyntaxNode, kind: SyntaxKind) -> Option<SyntaxToken> {
+        node.children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .find(|tok| tok.kind() == kind)
+    }
+
+    pub fn tokens<'a>(
+        node: &'a SyntaxNode,
+        kind: SyntaxKind,
+    ) -> impl Iterator<Item = SyntaxToken> + 'a {
+        node.children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .filter(move |tok| tok.kind() == kind)
+    }
+
+    /// Returns the first identifier-like token among the node's direct children.
+    pub fn ident_token(node: &SyntaxNode) -> Option<SyntaxToken> {
+        ident_tokens(node).next()
+    }
+
+    pub fn ident_tokens(node: &SyntaxNode) -> impl Iterator<Item = SyntaxToken> + '_ {
+        node.children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .filter(|tok| tok.kind().is_identifier_like())
+    }
 }
 
-ast_node!(CompilationUnit, SyntaxKind::CompilationUnit);
-ast_node!(PackageDeclaration, SyntaxKind::PackageDeclaration);
-ast_node!(ImportDeclaration, SyntaxKind::ImportDeclaration);
-ast_node!(ClassDeclaration, SyntaxKind::ClassDeclaration);
-ast_node!(InterfaceDeclaration, SyntaxKind::InterfaceDeclaration);
-ast_node!(EnumDeclaration, SyntaxKind::EnumDeclaration);
-ast_node!(RecordDeclaration, SyntaxKind::RecordDeclaration);
-ast_node!(AnnotationTypeDeclaration, SyntaxKind::AnnotationTypeDeclaration);
-ast_node!(MethodDeclaration, SyntaxKind::MethodDeclaration);
-ast_node!(FieldDeclaration, SyntaxKind::FieldDeclaration);
+mod generated;
+
+pub use generated::*;
 
 impl CompilationUnit {
-    pub fn package(&self) -> Option<PackageDeclaration> {
-        self.syntax.children().find_map(PackageDeclaration::cast)
-    }
-
-    pub fn imports(&self) -> impl Iterator<Item = ImportDeclaration> + '_ {
-        self.syntax.children().filter_map(ImportDeclaration::cast)
-    }
-
+    /// Compatibility accessor returning the raw syntax nodes for the top-level type declarations.
+    ///
+    /// Prefer [`CompilationUnit::type_declarations`] for typed access.
     pub fn types(&self) -> impl Iterator<Item = SyntaxNode> + '_ {
-        self.syntax.children().filter(|n| {
+        self.syntax().children().filter(|n| {
             matches!(
                 n.kind(),
                 SyntaxKind::ClassDeclaration
