@@ -5,7 +5,7 @@ use nova_classpath::{ClasspathEntry, ClasspathIndex};
 use nova_core::{Name, TypeName};
 use nova_db::{ArcEq, FileId, NovaInputs, NovaResolve, ProjectId, SalsaRootDatabase};
 use nova_jdk::JdkIndex;
-use nova_resolve::Resolution;
+use nova_resolve::{Resolution, TypeResolution};
 
 fn executions(db: &SalsaRootDatabase, query_name: &str) -> u64 {
     db.query_stats()
@@ -46,7 +46,9 @@ class C {}
     let resolved = db.resolve_name(file, scopes.file_scope, Name::from("String"));
     assert_eq!(
         resolved,
-        Some(Resolution::Type(TypeName::from("java.lang.String")))
+        Some(Resolution::Type(TypeResolution::External(TypeName::from(
+            "java.lang.String"
+        ))))
     );
 }
 
@@ -81,12 +83,14 @@ class C {
     let resolved = db.resolve_name(file, scopes.file_scope, Name::from("Foo"));
     assert_eq!(
         resolved,
-        Some(Resolution::Type(TypeName::from("com.example.dep.Foo")))
+        Some(Resolution::Type(TypeResolution::External(TypeName::from(
+            "com.example.dep.Foo"
+        ))))
     );
 }
 
 #[test]
-fn body_only_edit_does_not_recompute_resolution() {
+fn body_only_edit_recomputes_scope_graph() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
 
@@ -118,10 +122,11 @@ class C {
     let first = db.resolve_name(file, file_scope, Name::from("Foo"));
     assert_eq!(
         first,
-        Some(Resolution::Type(TypeName::from("com.example.dep.Foo")))
+        Some(Resolution::Type(TypeResolution::External(TypeName::from(
+            "com.example.dep.Foo"
+        ))))
     );
 
-    assert_eq!(executions(&db, "compilation_unit"), 1);
     assert_eq!(executions(&db, "scope_graph"), 1);
     assert_eq!(executions(&db, "resolve_name"), 1);
 
@@ -146,18 +151,13 @@ class C {
     assert_eq!(second, first);
 
     assert_eq!(
-        executions(&db, "compilation_unit"),
-        2,
-        "compilation_unit must re-run after file text changes"
-    );
-    assert_eq!(
         executions(&db, "scope_graph"),
-        1,
-        "scope graph should be reused due to early-cutoff"
+        2,
+        "scope graph recomputes after file text changes (bodies are included)"
     );
     assert_eq!(
         executions(&db, "resolve_name"),
-        1,
-        "resolve_name should be reused due to early-cutoff"
+        2,
+        "resolve_name recomputes after file text changes"
     );
 }
