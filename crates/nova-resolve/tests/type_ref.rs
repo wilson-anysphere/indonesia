@@ -249,6 +249,38 @@ fn resolves_nested_type_via_imported_outer() {
 }
 
 #[test]
+fn unresolved_nested_type_uses_binary_guess_from_imported_outer() {
+    let jdk = JdkIndex::new();
+    let mut index = TestIndex::default();
+    index.add_type("java.util", "Map");
+    // Intentionally omit `Map$Entry` so scope-based resolution fails.
+
+    let mut unit = CompilationUnit::new(None);
+    unit.imports.push(ImportDecl::TypeSingle {
+        ty: QualifiedName::from_dotted("java.util.Map"),
+        alias: None,
+    });
+    let scopes = build_scopes(&jdk, &unit);
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let ty = resolve_type_ref_text(
+        &resolver,
+        &scopes.scopes,
+        scopes.file_scope,
+        &env,
+        &type_vars,
+        "Map.Entry",
+        None,
+    );
+
+    assert_eq!(ty.ty, Type::Named("java.util.Map$Entry".to_string()));
+    assert!(ty.diagnostics.iter().any(|d| d.code == "unresolved-type"));
+}
+
+#[test]
 fn malformed_inputs_produce_diagnostics_but_do_not_crash() {
     let (jdk, index, scopes, scope) = setup(vec![ImportDecl::TypeStar {
         package: PackageName::from_dotted("java.util"),
@@ -309,4 +341,3 @@ fn falls_back_to_type_variables_when_name_resolution_fails() {
         .iter()
         .any(|d| d.code == "unresolved-type"));
 }
-

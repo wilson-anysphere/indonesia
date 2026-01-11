@@ -8,10 +8,10 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use nova_core::QualifiedName;
+use nova_core::{Name, QualifiedName};
 use nova_types::{Diagnostic, PrimitiveType, Span, Type, TypeEnv, TypeVarId, WildcardBound};
 
-use crate::{Resolver, ScopeGraph, ScopeId};
+use crate::{Resolution, Resolver, ScopeGraph, ScopeId};
 
 #[derive(Debug, Clone)]
 pub struct ResolvedType {
@@ -267,14 +267,31 @@ impl<'a, 'idx> Parser<'a, 'idx> {
             }
         }
 
+        let mut best_guess = dotted.clone();
+        // Best-effort: if the first segment resolves to a type in the current
+        // scope, treat remaining segments as nested class qualifiers and build a
+        // binary-style name (`Outer$Inner`).
+        if segments.len() > 1 {
+            let first = Name::from(segments[0].as_str());
+            if let Some(Resolution::Type(owner)) =
+                self.resolver.resolve_name(self.scopes, self.scope, &first)
+            {
+                let mut candidate = owner.as_str().to_string();
+                for seg in &segments[1..] {
+                    candidate.push('$');
+                    candidate.push_str(seg);
+                }
+                best_guess = candidate;
+            }
+        }
+
         self.diagnostics.push(Diagnostic::error(
             "unresolved-type",
             format!("unresolved type `{dotted}`"),
             self.anchor_span(name_range),
         ));
 
-        // Best effort: keep the original spelling.
-        Type::Named(dotted)
+        Type::Named(best_guess)
     }
 
     fn parse_type_args(&mut self) -> Vec<Type> {
@@ -571,4 +588,3 @@ fn is_ident_start(ch: char) -> bool {
 fn is_ident_part(ch: char) -> bool {
     is_ident_start(ch) || ch.is_ascii_digit()
 }
-
