@@ -548,7 +548,17 @@ async function extractFromTar(opts: ExtractBinaryOptions): Promise<void> {
   const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'nova-lsp-'));
   try {
     const execFileAsync = promisify(execFile);
-    await execFileAsync('tar', [...tarArgs, '-C', tmpRoot]);
+    try {
+      await execFileAsync('tar', [...tarArgs, '-C', tmpRoot]);
+    } catch (err) {
+      const code = (err as { code?: unknown }).code;
+      if (code === 'ENOENT') {
+        throw new Error(
+          'Failed to extract nova-lsp: the `tar` command was not found. Install `tar` (required to unpack .tar.xz releases) or set nova.server.path to a local nova-lsp binary.',
+        );
+      }
+      throw err;
+    }
 
     const extracted = await findFileRecursive(tmpRoot, opts.binaryName);
     if (!extracted) {
