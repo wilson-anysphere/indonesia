@@ -517,7 +517,7 @@ impl<'a> BugReportBuilder<'a> {
                 .format(&time::format_description::well_known::Rfc3339)
                 .unwrap_or_else(|_| "<unknown>".to_owned()),
             timestamp_unix_ms: unix_ms_now(),
-            target_triple: env!("TARGET"),
+            target_triple: env!("NOVA_BUGREPORT_TARGET_TRIPLE"),
             os: std::env::consts::OS,
             arch: std::env::consts::ARCH,
             git_sha: option_env!("GIT_SHA"),
