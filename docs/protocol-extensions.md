@@ -1211,6 +1211,7 @@ VS Code extension expects:
 - **Stability:** experimental
 - **Rust types:** request plan is `crates/nova-refactor/src/change_signature.rs` (`ChangeSignature`,
   `ParameterOperation`, `HierarchyPropagation`)
+- **Implemented in:** `crates/nova-lsp/src/main.rs` (stdio server; see `nova_lsp::CHANGE_SIGNATURE_METHOD`)
 
 This method name exists as a constant (`crates/nova-lsp/src/refactor.rs::CHANGE_SIGNATURE_METHOD`)
 and is handled by the `nova-lsp` stdio server in a best-effort mode (it currently builds a sketch
@@ -1235,11 +1236,16 @@ positions.
 
 #### Response
 
-If/when implemented, the natural response type is a standard LSP `WorkspaceEdit`.
+The response is a standard LSP `WorkspaceEdit`.
 
 Note: the refactoring engine produces Nova's canonical `nova_refactor::WorkspaceEdit` (byte-offset
 text edits). The LSP layer should convert it using `nova_refactor::workspace_edit_to_lsp`, which
 maps offsets to UTF-16 LSP positions.
+
+Notes:
+
+- Today, the stdio server builds a best-effort `nova-index::Index` from **open documents** only, so
+  clients should ensure relevant files are opened/synchronized before calling this endpoint.
 
 #### Errors
 
