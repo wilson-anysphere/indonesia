@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use serde_json::json;
@@ -91,6 +91,13 @@ pub struct Debugger {
     step_request: Option<i32>,
     exception_requests: Vec<i32>,
 
+    /// Mapping from JDWP `ReferenceType.SourceFile` (usually just `Main.java`) to the
+    /// best-effort full path provided by the DAP client.
+    ///
+    /// The JVM typically does not expose absolute source paths over JDWP, but DAP
+    /// clients expect stack frames to contain a resolvable `source.path`. We can
+    /// recover that by remembering the source paths passed to `setBreakpoints`.
+    source_paths: HashMap<String, String>,
     source_cache: HashMap<ReferenceTypeId, String>,
     methods_cache: HashMap<ReferenceTypeId, Vec<MethodInfo>>,
     line_table_cache: HashMap<(ReferenceTypeId, u64), LineTable>,
@@ -111,6 +118,7 @@ impl Debugger {
             class_prepare_request: None,
             step_request: None,
             exception_requests: Vec::new(),
+            source_paths: HashMap::new(),
             source_cache: HashMap::new(),
             methods_cache: HashMap::new(),
             line_table_cache: HashMap::new(),
@@ -161,11 +169,14 @@ impl Debugger {
     }
 
     pub async fn stack_trace(&mut self, dap_thread_id: i64) -> Result<Vec<serde_json::Value>> {
-        let thread = dap_thread_id.try_into().map_err(|_| {
-            DebuggerError::InvalidRequest(format!("invalid threadId {dap_thread_id}"))
-        })?;
+        // Thread ids originate from JDWP `ObjectId` values, which are opaque 64-bit numbers.
+        // Represent them in DAP as `i64` (required by the protocol) using a lossless bit-cast:
+        // `u64 -> i64` and back via `as` preserves the underlying bits even if the sign flips.
+        let thread = dap_thread_id as ThreadId;
 
-        let frames = self.jdwp.frames(thread, 0, 100).await?;
+        // Some JVMs treat an oversized `length` as `INVALID_LENGTH` instead of clamping.
+        // JDWP allows `length = -1` to request all frames starting at `start`.
+        let frames = self.jdwp.frames(thread, 0, -1).await?;
         let mut out = Vec::with_capacity(frames.len());
         for frame in frames {
             let frame_id = self.alloc_frame_handle(thread, &frame);
@@ -173,7 +184,15 @@ impl Debugger {
                 .method_name(frame.location.class_id, frame.location.method_id)
                 .await
                 .unwrap_or_else(|| "frame".to_string());
-            let source = self.source_file(frame.location.class_id).await.ok();
+            let source_name = self.source_file(frame.location.class_id).await.ok();
+            let source = source_name.as_ref().map(|name| {
+                let path = self
+                    .source_paths
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| name.clone());
+                json!({"name": name, "path": path})
+            });
             let line = self
                 .line_number(
                     frame.location.class_id,
@@ -186,7 +205,7 @@ impl Debugger {
             out.push(json!({
                 "id": frame_id,
                 "name": name,
-                "source": source.map(|s| json!({"name": s, "path": s})),
+                "source": source,
                 "line": line,
                 "column": 1
             }));
@@ -239,6 +258,14 @@ impl Debugger {
             .and_then(|s| s.to_str())
             .unwrap_or(source_path)
             .to_string();
+
+        if !source_path.is_empty() {
+            let full_path = std::fs::canonicalize(source_path)
+                .unwrap_or_else(|_| PathBuf::from(source_path))
+                .to_string_lossy()
+                .to_string();
+            self.source_paths.insert(file.clone(), full_path);
+        }
 
         if let Some(existing) = self.breakpoints.remove(&file) {
             for bp in existing {
@@ -308,9 +335,7 @@ impl Debugger {
     }
 
     pub async fn step(&mut self, dap_thread_id: i64, depth: StepDepth) -> Result<()> {
-        let thread: ThreadId = dap_thread_id.try_into().map_err(|_| {
-            DebuggerError::InvalidRequest(format!("invalid threadId {dap_thread_id}"))
-        })?;
+        let thread: ThreadId = dap_thread_id as ThreadId;
 
         if let Some(old) = self.step_request.take() {
             let _ = self.jdwp.event_request_clear(1, old).await;

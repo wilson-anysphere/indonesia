@@ -77,3 +77,14 @@ Once attached:
 - `threads`, `stackTrace`, `scopes`, `variables` read data via JDWP.
 - `evaluate` is best-effort and currently focuses on simple local-variable reads.
 
+## Real JVM integration test (optional)
+
+`nova-dap` includes an end-to-end smoke test that exercises the adapter against a
+real JVM using `java` + `javac`. The test is ignored by default so CI stays
+stable in environments without a JDK.
+
+Run it locally with:
+
+```bash
+cargo test -p nova-dap --features real-jvm-tests --test real_jvm -- --nocapture
+```

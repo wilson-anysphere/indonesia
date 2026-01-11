@@ -36,6 +36,13 @@ tracing = { workspace = true }
 [lib]
 path = "src/lib.rs"
 
+[features]
+# Optional smoke tests that exercise the DAP adapter against a real JVM.
+#
+# These tests are ignored by default and should be enabled explicitly:
+#   cargo test -p nova-dap --features real-jvm-tests
+real-jvm-tests = []
+
 [dev-dependencies]
 tempfile = "3.10.1"
 nova-jdwp = { path = "../nova-jdwp", features = ["wire-test-support"] }

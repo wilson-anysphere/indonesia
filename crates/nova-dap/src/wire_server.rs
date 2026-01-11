@@ -143,28 +143,55 @@ where
                             .get("host")
                             .and_then(|v| v.as_str())
                             .unwrap_or("127.0.0.1");
-                        let port = request
-                            .arguments
-                            .get("port")
-                            .and_then(|v| v.as_u64())
-                            .ok_or_else(|| DebuggerError::InvalidRequest("attach.port is required".to_string()))?;
-                        let host: IpAddr = host
-                            .parse()
-                            .map_err(|e| DebuggerError::InvalidRequest(format!("invalid host {host:?}: {e}")))?;
+                        let port = match request.arguments.get("port").and_then(|v| v.as_u64()) {
+                            Some(port) => port,
+                            None => {
+                                send_response(
+                                    &out_tx,
+                                    &seq,
+                                    &request,
+                                    false,
+                                    None,
+                                    Some("attach.port is required".to_string()),
+                                );
+                                continue;
+                            }
+                        };
 
-                        let dbg = Debugger::attach(AttachArgs { host, port: port as u16 }).await?;
-                        let mut guard = debugger.lock().await;
-                        *guard = Some(dbg);
-                        drop(guard);
+                        let host: IpAddr = match host.parse() {
+                            Ok(host) => host,
+                            Err(err) => {
+                                send_response(
+                                    &out_tx,
+                                    &seq,
+                                    &request,
+                                    false,
+                                    None,
+                                    Some(format!("invalid host {host:?}: {err}")),
+                                );
+                                continue;
+                            }
+                        };
 
-                        spawn_event_task(
-                            debugger.clone(),
-                            out_tx.clone(),
-                            seq.clone(),
-                            terminated_sent.clone(),
-                            terminate_tx.clone(),
-                        );
-                        send_response(&out_tx, &seq, &request, true, None, None);
+                        match Debugger::attach(AttachArgs { host, port: port as u16 }).await {
+                            Ok(dbg) => {
+                                let mut guard = debugger.lock().await;
+                                *guard = Some(dbg);
+                                drop(guard);
+
+                                spawn_event_task(
+                                    debugger.clone(),
+                                    out_tx.clone(),
+                                    seq.clone(),
+                                    terminated_sent.clone(),
+                                    terminate_tx.clone(),
+                                );
+                                send_response(&out_tx, &seq, &request, true, None, None);
+                            }
+                            Err(err) => {
+                                send_response(&out_tx, &seq, &request, false, None, Some(err.to_string()));
+                            }
+                        }
                     }
                     "setBreakpoints" => {
                         let source_path = request
