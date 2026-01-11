@@ -1,6 +1,6 @@
 use nova_memory::{
-    EvictionRequest, EvictionResult, MemoryBudget, MemoryCategory, MemoryEvent, MemoryEvictor,
-    MemoryManager,
+    ComponentUsage, EvictionRequest, EvictionResult, MemoryBudget, MemoryCategory, MemoryEvent,
+    MemoryEvictor, MemoryManager,
 };
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -75,11 +75,11 @@ impl MemoryEvictor for TestEvictor {
 
 #[test]
 fn evicts_over_category_budget_even_under_low_pressure() {
-    let budget = MemoryBudget::from_total(1_000);
+    let budget = MemoryBudget::from_total(1_000_000_000_000);
     let manager = MemoryManager::new(budget);
 
     let cache = TestEvictor::new(&manager, "query_cache", MemoryCategory::QueryCache);
-    cache.set_bytes(500);
+    cache.set_bytes(budget.categories.query_cache + 123);
 
     assert_eq!(manager.pressure(), nova_memory::MemoryPressure::Low);
 
@@ -91,7 +91,7 @@ fn evicts_over_category_budget_even_under_low_pressure() {
 
 #[test]
 fn pressure_event_and_degraded_mode_when_non_evictable_memory_dominates() {
-    let budget = MemoryBudget::from_total(1_000);
+    let budget = MemoryBudget::from_total(1_000_000_000_000);
     let manager = MemoryManager::new(budget);
 
     let events: Arc<Mutex<Vec<MemoryEvent>>> = Arc::new(Mutex::new(Vec::new()));
@@ -103,10 +103,10 @@ fn pressure_event_and_degraded_mode_when_non_evictable_memory_dominates() {
     });
 
     let other = manager.register_tracker("other", MemoryCategory::Other);
-    other.tracker().set_bytes(900);
+    other.tracker().set_bytes(budget.total * 90 / 100);
 
     let cache = TestEvictor::new(&manager, "query_cache", MemoryCategory::QueryCache);
-    cache.set_bytes(200);
+    cache.set_bytes(budget.total * 20 / 100);
 
     let report = manager.enforce();
 
@@ -129,32 +129,81 @@ fn pressure_event_and_degraded_mode_when_non_evictable_memory_dominates() {
 
 #[test]
 fn medium_pressure_scales_targets() {
-    let budget = MemoryBudget::from_total(1_000);
+    let budget = MemoryBudget::from_total(1_000_000_000_000);
     let manager = MemoryManager::new(budget);
 
     let query = TestEvictor::new(&manager, "query_cache", MemoryCategory::QueryCache);
     let trees = TestEvictor::new(&manager, "syntax_trees", MemoryCategory::SyntaxTrees);
-    query.set_bytes(600);
-    trees.set_bytes(200);
+    query.set_bytes(budget.total * 60 / 100);
+    trees.set_bytes(budget.total * 20 / 100);
 
-    // 800/1000 is medium pressure for default thresholds.
+    // 80% usage is medium pressure for default thresholds.
     let report = manager.enforce();
 
-    assert_eq!(query.bytes(), 280);
-    assert_eq!(trees.bytes(), 175);
+    let expected_query = ((budget.categories.query_cache as f64) * 0.70).round() as u64;
+    let expected_trees = ((budget.categories.syntax_trees as f64) * 0.70).round() as u64;
+    assert_eq!(query.bytes(), expected_query);
+    assert_eq!(trees.bytes(), expected_trees);
     assert_eq!(report.pressure, nova_memory::MemoryPressure::Low);
 }
 
 #[test]
 fn synthetic_growth_is_bounded_by_budget() {
-    let budget = MemoryBudget::from_total(1_000);
+    let budget = MemoryBudget::from_total(1_000_000_000_000);
     let manager = MemoryManager::new(budget);
 
     let cache = TestEvictor::new(&manager, "query_cache", MemoryCategory::QueryCache);
 
     for _ in 0..50 {
-        cache.add_bytes(50);
+        cache.add_bytes(budget.categories.query_cache / 2);
         manager.enforce();
         assert!(cache.bytes() <= budget.categories.query_cache);
     }
+}
+
+#[test]
+fn report_detailed_is_sorted_by_bytes_desc() {
+    let budget = MemoryBudget::from_total(1_000_000_000_000);
+    let manager = MemoryManager::new(budget);
+
+    let a = manager.register_tracker("a", MemoryCategory::Other);
+    let b = manager.register_tracker("b", MemoryCategory::QueryCache);
+    let c = manager.register_tracker("c", MemoryCategory::Indexes);
+
+    a.tracker().set_bytes(10);
+    b.tracker().set_bytes(30);
+    c.tracker().set_bytes(20);
+
+    let (_report, components) = manager.report_detailed();
+    assert_eq!(
+        components,
+        vec![
+            ComponentUsage {
+                name: "b".to_string(),
+                category: MemoryCategory::QueryCache,
+                bytes: 30,
+            },
+            ComponentUsage {
+                name: "c".to_string(),
+                category: MemoryCategory::Indexes,
+                bytes: 20,
+            },
+            ComponentUsage {
+                name: "a".to_string(),
+                category: MemoryCategory::Other,
+                bytes: 10,
+            },
+        ]
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn pressure_uses_process_rss_when_higher_than_tracked_usage() {
+    let budget = MemoryBudget::from_total(1);
+    let manager = MemoryManager::new(budget);
+
+    let report = manager.report();
+    assert!(report.rss_bytes.is_some());
+    assert_eq!(report.pressure, nova_memory::MemoryPressure::Critical);
 }

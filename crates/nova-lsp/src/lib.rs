@@ -143,6 +143,8 @@ pub const SAFE_MODE_CHANGED_NOTIFICATION: &str = "nova/safeModeChanged";
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MemoryStatusResponse {
     pub report: nova_memory::MemoryReport,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub top_components: Vec<nova_memory::ComponentUsage>,
 }
 
 pub const SAFE_MODE_STATUS_SCHEMA_VERSION: u32 = 1;

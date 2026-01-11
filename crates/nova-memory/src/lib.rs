@@ -21,6 +21,7 @@ mod degraded;
 mod eviction;
 mod manager;
 mod pressure;
+mod process;
 mod report;
 mod types;
 
@@ -30,5 +31,5 @@ pub use degraded::{BackgroundIndexingMode, DegradedSettings};
 pub use eviction::{EvictionRequest, EvictionResult, MemoryEvictor};
 pub use manager::{MemoryEvent, MemoryManager, MemoryRegistration, MemoryTracker};
 pub use pressure::{MemoryPressure, MemoryPressureThresholds};
-pub use report::MemoryReport;
+pub use report::{ComponentUsage, MemoryReport};
 pub use types::{MemoryBreakdown, MemoryCategory};

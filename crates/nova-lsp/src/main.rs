@@ -705,7 +705,9 @@ fn handle_request(
             // Force an enforcement pass so the response reflects the current
             // pressure state and triggers evictions in registered components.
             let report = state.memory.enforce();
-            let payload = serde_json::to_value(nova_lsp::MemoryStatusResponse { report });
+            let mut top_components = state.memory.report_detailed().1;
+            top_components.truncate(10);
+            let payload = serde_json::to_value(nova_lsp::MemoryStatusResponse { report, top_components });
             Ok(match payload {
                 Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
                 Err(err) => {
@@ -1318,8 +1320,11 @@ fn flush_memory_status_notifications(
     events.clear();
     drop(events);
 
+    let mut top_components = state.memory.report_detailed().1;
+    top_components.truncate(10);
     let params = serde_json::to_value(nova_lsp::MemoryStatusResponse {
         report: last.report,
+        top_components,
     })
     .unwrap_or(serde_json::Value::Null);
     let notification = json!({

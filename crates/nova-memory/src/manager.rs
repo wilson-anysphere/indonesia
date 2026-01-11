@@ -2,7 +2,8 @@ use crate::budget::MemoryBudget;
 use crate::degraded::DegradedSettings;
 use crate::eviction::{EvictionRequest, MemoryEvictor};
 use crate::pressure::{MemoryPressure, MemoryPressureThresholds};
-use crate::report::MemoryReport;
+use crate::process;
+use crate::report::{ComponentUsage, MemoryReport};
 use crate::types::{MemoryBreakdown, MemoryCategory};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,6 +13,7 @@ type MemoryEventListener = Arc<dyn Fn(MemoryEvent) + Send + Sync>;
 type EvictorEntry = (u64, MemoryCategory, Arc<AtomicU64>, Arc<dyn MemoryEvictor>);
 
 struct RegistrationEntry {
+    name: String,
     category: MemoryCategory,
     usage_bytes: Arc<AtomicU64>,
     evictor: Option<Arc<dyn MemoryEvictor>>,
@@ -105,6 +107,7 @@ impl MemoryManager {
         self.inner.registrations.lock().unwrap().insert(
             id,
             RegistrationEntry {
+                name: name.clone(),
                 category,
                 usage_bytes: usage_bytes.clone(),
                 evictor,
@@ -120,10 +123,15 @@ impl MemoryManager {
         }
     }
 
-    /// Current pressure level based on tracked usage (no eviction).
+    /// Current memory pressure level (no eviction).
+    ///
+    /// When supported, process RSS is incorporated as an upper bound over the
+    /// self-reported component totals.
     pub fn pressure(&self) -> MemoryPressure {
         let usage_total = self.usage_breakdown().total();
-        self.pressure_for_total(usage_total)
+        let rss_bytes = process::current_rss_bytes();
+        let effective_total = effective_usage_total(usage_total, rss_bytes);
+        self.pressure_for_total(effective_total)
     }
 
     /// Current degraded settings derived from the last computed pressure.
@@ -134,14 +142,70 @@ impl MemoryManager {
     /// Snapshot of current memory state (no eviction).
     pub fn report(&self) -> MemoryReport {
         let usage = self.usage_breakdown();
-        let pressure = self.pressure_for_total(usage.total());
+        let rss_bytes = process::current_rss_bytes();
+        let effective_total = effective_usage_total(usage.total(), rss_bytes);
+        let pressure = self.pressure_for_total(effective_total);
         let degraded = DegradedSettings::for_pressure(pressure);
         MemoryReport {
             budget: self.inner.budget,
             usage,
+            rss_bytes,
             pressure,
             degraded,
         }
+    }
+
+    /// Snapshot of current memory state (no eviction) plus per-component usage.
+    pub fn report_detailed(&self) -> (MemoryReport, Vec<ComponentUsage>) {
+        let entries: Vec<(String, MemoryCategory, Arc<AtomicU64>)> = {
+            let registrations = self.inner.registrations.lock().unwrap();
+            registrations
+                .values()
+                .map(|entry| {
+                    (
+                        entry.name.clone(),
+                        entry.category,
+                        entry.usage_bytes.clone(),
+                    )
+                })
+                .collect()
+        };
+
+        let mut usage = MemoryBreakdown::default();
+        let mut components = Vec::with_capacity(entries.len());
+        for (name, category, counter) in entries {
+            let bytes = counter.load(Ordering::Relaxed);
+            let prev = usage.get(category);
+            usage.set(category, prev.saturating_add(bytes));
+            components.push(ComponentUsage {
+                name,
+                category,
+                bytes,
+            });
+        }
+
+        components.sort_by(|a, b| {
+            b.bytes
+                .cmp(&a.bytes)
+                .then_with(|| a.name.cmp(&b.name))
+                .then_with(|| category_sort_key(a.category).cmp(&category_sort_key(b.category)))
+        });
+
+        let rss_bytes = process::current_rss_bytes();
+        let effective_total = effective_usage_total(usage.total(), rss_bytes);
+        let pressure = self.pressure_for_total(effective_total);
+        let degraded = DegradedSettings::for_pressure(pressure);
+
+        (
+            MemoryReport {
+                budget: self.inner.budget,
+                usage,
+                rss_bytes,
+                pressure,
+                degraded,
+            },
+            components,
+        )
     }
 
     /// Recompute pressure and attempt eviction if needed.
@@ -150,7 +214,9 @@ impl MemoryManager {
     /// a timer, after large allocations, or before starting expensive work.
     pub fn enforce(&self) -> MemoryReport {
         let before_usage = self.usage_breakdown();
-        let before_pressure = self.pressure_for_total(before_usage.total());
+        let before_rss = process::current_rss_bytes();
+        let before_effective_total = effective_usage_total(before_usage.total(), before_rss);
+        let before_pressure = self.pressure_for_total(before_effective_total);
 
         // Under high pressure, ask evictors to persist cold artifacts first.
         if matches!(
@@ -170,13 +236,16 @@ impl MemoryManager {
     }
 
     fn flush_to_disk_best_effort(&self) {
-        let registrations = self.inner.registrations.lock().unwrap();
-        for entry in registrations.values() {
-            if let Some(evictor) = &entry.evictor {
-                // Best-effort: ignore errors. Persistence is a performance knob,
-                // not correctness.
-                let _ = evictor.flush_to_disk();
-            }
+        let evictors: Vec<Arc<dyn MemoryEvictor>> = {
+            let registrations = self.inner.registrations.lock().unwrap();
+            registrations
+                .values()
+                .filter_map(|entry| entry.evictor.clone())
+                .collect()
+        };
+
+        for evictor in evictors {
+            let _ = evictor.flush_to_disk();
         }
     }
 
@@ -336,6 +405,22 @@ impl MemoryManager {
             breakdown.set(entry.category, prev.saturating_add(bytes));
         }
         breakdown
+    }
+}
+
+fn effective_usage_total(tracked_total: u64, rss_bytes: Option<u64>) -> u64 {
+    rss_bytes
+        .map(|rss| tracked_total.max(rss))
+        .unwrap_or(tracked_total)
+}
+
+fn category_sort_key(category: MemoryCategory) -> u8 {
+    match category {
+        MemoryCategory::QueryCache => 0,
+        MemoryCategory::SyntaxTrees => 1,
+        MemoryCategory::Indexes => 2,
+        MemoryCategory::TypeInfo => 3,
+        MemoryCategory::Other => 4,
     }
 }
 
