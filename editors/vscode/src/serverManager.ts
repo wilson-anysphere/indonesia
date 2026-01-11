@@ -391,14 +391,22 @@ async function fetchReleaseByTag(opts: { fetchImpl: typeof fetch; repo: GitHubRe
 }
 
 async function fetchJson<T>(fetchImpl: typeof fetch, url: string): Promise<T> {
-  const resp = await fetchImpl(url, {
-    headers: {
-      Accept: 'application/vnd.github+json',
-      'User-Agent': 'nova-vscode',
-      'X-GitHub-Api-Version': '2022-11-28',
-    },
-    signal: abortSignalTimeout(20_000),
-  });
+  let resp: Response;
+  try {
+    resp = await fetchImpl(url, {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'nova-vscode',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      signal: abortSignalTimeout(20_000),
+    });
+  } catch (err) {
+    if (isAbortError(err)) {
+      throw new Error(`GitHub API request timed out after 20s: ${url}`);
+    }
+    throw err;
+  }
 
   if (!resp.ok) {
     const extra = await readErrorBody(resp);
@@ -411,12 +419,20 @@ async function fetchJson<T>(fetchImpl: typeof fetch, url: string): Promise<T> {
 }
 
 async function downloadBytes(fetchImpl: typeof fetch, url: string): Promise<ArrayBuffer> {
-  const resp = await fetchImpl(url, {
-    headers: {
-      'User-Agent': 'nova-vscode',
-    },
-    signal: abortSignalTimeout(30_000),
-  });
+  let resp: Response;
+  try {
+    resp = await fetchImpl(url, {
+      headers: {
+        'User-Agent': 'nova-vscode',
+      },
+      signal: abortSignalTimeout(30_000),
+    });
+  } catch (err) {
+    if (isAbortError(err)) {
+      throw new Error(`Download timed out after 30s: ${url}`);
+    }
+    throw err;
+  }
   if (!resp.ok) {
     const extra = await readErrorBody(resp);
     throw new Error(
@@ -521,12 +537,20 @@ async function safeRm(fsImpl: typeof fs, filePath: string): Promise<void> {
 }
 
 async function downloadToFileAndSha256(fetchImpl: typeof fetch, url: string, destPath: string): Promise<string> {
-  const resp = await fetchImpl(url, {
-    headers: {
-      'User-Agent': 'nova-vscode',
-    },
-    signal: abortSignalTimeout(5 * 60_000),
-  });
+  let resp: Response;
+  try {
+    resp = await fetchImpl(url, {
+      headers: {
+        'User-Agent': 'nova-vscode',
+      },
+      signal: abortSignalTimeout(5 * 60_000),
+    });
+  } catch (err) {
+    if (isAbortError(err)) {
+      throw new Error(`Download timed out after 5m: ${url}`);
+    }
+    throw err;
+  }
   if (!resp.ok) {
     const extra = await readErrorBody(resp);
     throw new Error(
@@ -545,7 +569,14 @@ async function downloadToFileAndSha256(fetchImpl: typeof fetch, url: string, des
       },
     });
 
-    await pipeline(nodeReadable, hasher, fsSync.createWriteStream(destPath));
+    try {
+      await pipeline(nodeReadable, hasher, fsSync.createWriteStream(destPath));
+    } catch (err) {
+      if (isAbortError(err)) {
+        throw new Error(`Download timed out after 5m: ${url}`);
+      }
+      throw err;
+    }
     return hash.digest('hex');
   }
 
@@ -565,7 +596,17 @@ function abortSignalTimeout(ms: number): AbortSignal | undefined {
   if (typeof anyAbortSignal.timeout === 'function') {
     return anyAbortSignal.timeout(ms);
   }
-  return undefined;
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), ms);
+  return controller.signal;
+}
+
+function isAbortError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') {
+    return false;
+  }
+  const candidate = err as { name?: unknown; code?: unknown };
+  return candidate.name === 'AbortError' || candidate.code === 'ABORT_ERR';
 }
 
 async function readErrorBody(resp: Response): Promise<string | undefined> {
