@@ -138,14 +138,17 @@ class A {
         .and_then(|v| v.as_u64())
         .expect("target symbol id");
 
-    // 4) request preview via custom method
+    // 4) request preview via executeCommand
     write_jsonrpc_message(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
             "id": 3,
-            "method": "nova/refactor/safeDelete",
-            "params": { "target": target_id, "mode": "safe" }
+            "method": "workspace/executeCommand",
+            "params": {
+                "command": "nova.safeDelete",
+                "arguments": [{ "target": target_id, "mode": "safe" }]
+            }
         }),
     );
     let preview_resp = read_response_with_id(&mut stdout, 3);
@@ -156,14 +159,17 @@ class A {
         Some("nova/refactor/preview")
     );
 
-    // 5) apply via custom method
+    // 5) apply via executeCommand
     write_jsonrpc_message(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
             "id": 4,
-            "method": "nova/refactor/safeDelete",
-            "params": { "target": target_id, "mode": "deleteAnyway" }
+            "method": "workspace/executeCommand",
+            "params": {
+                "command": "nova.safeDelete",
+                "arguments": [{ "target": target_id, "mode": "deleteAnyway" }]
+            }
         }),
     );
     let apply_resp = read_response_with_id(&mut stdout, 4);
