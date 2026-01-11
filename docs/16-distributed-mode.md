@@ -93,7 +93,7 @@ still trigger a real `index_workspace` to refresh results when correctness matte
 When a worker connects, it advertises whether it has a cached shard index:
 
 - Legacy lockstep protocol: `WorkerHello.has_cached_index`
-- v3 protocol: `Hello.cached_index_info`
+- v3 protocol: `WorkerHello.cached_index_info`
 
 If a worker reports a cached index, the router will then send `LoadFiles` with a full on-disk
 snapshot of the shard’s files to **rehydrate** the worker’s in-memory file map.
