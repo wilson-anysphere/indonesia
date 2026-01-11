@@ -17,12 +17,13 @@ fn redact_urls(input: &str) -> String {
     let re = URL_RE.get_or_init(|| {
         // Use a raw string literal with `#` so the pattern can include `"` in the
         // character class without escaping.
-        Regex::new(r#"(?i)\b[a-z][a-z0-9+.-]*://[^\s"'<>]+"#)
-            .expect("URL regex should compile")
+        Regex::new(r#"(?i)\b[a-z][a-z0-9+.-]*://[^\s"'<>]+"#).expect("URL regex should compile")
     });
 
-    re.replace_all(input, |caps: &regex::Captures<'_>| sanitize_url(caps.get(0).unwrap().as_str()))
-        .into_owned()
+    re.replace_all(input, |caps: &regex::Captures<'_>| {
+        sanitize_url(caps.get(0).unwrap().as_str())
+    })
+    .into_owned()
 }
 
 fn redact_bearer_tokens(input: &str) -> String {
@@ -32,18 +33,16 @@ fn redact_bearer_tokens(input: &str) -> String {
             .expect("bearer regex should compile")
     });
 
-    re.replace_all(input, format!("$1{REDACTION}"))
-        .into_owned()
+    re.replace_all(input, format!("$1{REDACTION}")).into_owned()
 }
 
 fn redact_api_keys(input: &str) -> String {
     static SK_RE: OnceLock<Regex> = OnceLock::new();
     static AIZA_RE: OnceLock<Regex> = OnceLock::new();
-    let sk_re = SK_RE
-        .get_or_init(|| Regex::new(r"sk-[A-Za-z0-9]{10,}").expect("sk regex should compile"));
-    let aiza_re = AIZA_RE.get_or_init(|| {
-        Regex::new(r"AIza[0-9A-Za-z\-_]{10,}").expect("aiza regex should compile")
-    });
+    let sk_re =
+        SK_RE.get_or_init(|| Regex::new(r"sk-[A-Za-z0-9]{10,}").expect("sk regex should compile"));
+    let aiza_re = AIZA_RE
+        .get_or_init(|| Regex::new(r"AIza[0-9A-Za-z\-_]{10,}").expect("aiza regex should compile"));
 
     let out = sk_re.replace_all(input, REDACTION);
     aiza_re.replace_all(&out, REDACTION).into_owned()
@@ -58,8 +57,7 @@ fn redact_sensitive_kv_pairs(input: &str) -> String {
         .expect("kv regex should compile")
     });
 
-    re.replace_all(input, format!("$1{REDACTION}"))
-        .into_owned()
+    re.replace_all(input, format!("$1{REDACTION}")).into_owned()
 }
 
 fn sanitize_url(url: &str) -> String {
@@ -69,9 +67,7 @@ fn sanitize_url(url: &str) -> String {
 
     let (scheme, rest) = url.split_at(scheme_idx + 3);
 
-    let authority_end = rest
-        .find(['/', '?', '#'])
-        .unwrap_or_else(|| rest.len());
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or_else(|| rest.len());
     let (authority, tail) = rest.split_at(authority_end);
 
     let authority = if let Some(at_pos) = authority.rfind('@') {
@@ -133,7 +129,6 @@ fn is_sensitive_param(param: &str) -> bool {
         "key" | "token" | "access_token" | "api_key" | "apikey" | "authorization"
     )
 }
-<<<<<<< HEAD
 
 #[cfg(test)]
 mod tests {
@@ -157,5 +152,3 @@ mod tests {
         assert_eq!(out, "Authorization: Bearer <redacted>");
     }
 }
-=======
->>>>>>> a4d9e42 (fix(nova-bugreport): repair raw string regex literals)
