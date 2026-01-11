@@ -457,6 +457,8 @@ mod tests {
     #[derive(Clone, Default)]
     struct DummyProvider;
 
+    const SECRET: &str = "sk-proj-012345678901234567890123456789";
+
     #[async_trait]
     impl AiProvider for DummyProvider {
         async fn chat(
@@ -469,7 +471,7 @@ mod tests {
                 prompt.contains("[REDACTED]"),
                 "expected prompt to be sanitized before sending"
             );
-            Ok("completion sk-012345678901234567890123456789".to_string())
+            Ok(format!("completion {SECRET}"))
         }
 
         async fn chat_stream(
@@ -485,7 +487,7 @@ mod tests {
 
             let stream = async_stream::try_stream! {
                 yield "chunk ".to_string();
-                yield "sk-012345678901234567890123456789".to_string();
+                yield SECRET.to_string();
             };
             Ok(Box::pin(stream))
         }
@@ -531,7 +533,7 @@ mod tests {
         let _guard = tracing::subscriber::set_default(subscriber);
 
         let client = make_test_client(Arc::new(DummyProvider));
-        let secret = "sk-012345678901234567890123456789";
+        let secret = SECRET;
 
         let completion = client
             .chat(
@@ -595,7 +597,7 @@ mod tests {
         let _guard = tracing::subscriber::set_default(subscriber);
 
         let client = make_test_client(Arc::new(DummyProvider));
-        let secret = "sk-012345678901234567890123456789";
+        let secret = SECRET;
 
         let stream = client
             .chat_stream(

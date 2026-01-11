@@ -271,6 +271,8 @@ impl CloudLlmClient {
             req.prompt = audit::sanitize_prompt_for_audit(&req.prompt);
         }
 
+        let provider = provider_label(&self.cfg.provider);
+
         let cache_key = self
             .cache
             .as_ref()
@@ -278,7 +280,6 @@ impl CloudLlmClient {
         if let (Some(cache), Some(key)) = (&self.cache, cache_key) {
             if let Some(hit) = cache.get(key).await {
                 if self.cfg.audit_logging {
-                    let provider = provider_label(&self.cfg.provider);
                     let safe_url = audit::sanitize_url_for_log(&self.cfg.endpoint);
                     audit::log_llm_request(
                         provider,
@@ -308,17 +309,26 @@ impl CloudLlmClient {
             }
         }
 
+        let overall_started_at = Instant::now();
         let mut attempt = 0usize;
 
         loop {
             if cancel.is_cancelled() {
+                if self.cfg.audit_logging {
+                    audit::log_llm_error(
+                        provider,
+                        &self.cfg.model,
+                        "request cancelled",
+                        overall_started_at.elapsed(),
+                        attempt,
+                        /*stream=*/ false,
+                    );
+                }
                 return Err(CloudLlmError::Cancelled);
             }
 
-            let started_at = Instant::now();
             let parts = self.build_request_parts(&req)?;
             let safe_url = audit::sanitize_url_for_log(&parts.url);
-            let provider = provider_label(&self.cfg.provider);
 
             if self.cfg.audit_logging {
                 audit::log_llm_request(
@@ -340,14 +350,70 @@ impl CloudLlmClient {
                 .json(&parts.body);
 
             let response = tokio::select! {
-                _ = cancel.cancelled() => return Err(CloudLlmError::Cancelled),
-                resp = request_builder.send() => resp?,
+                _ = cancel.cancelled() => {
+                    if self.cfg.audit_logging {
+                        audit::log_llm_error(
+                            provider,
+                            &self.cfg.model,
+                            "request cancelled",
+                            overall_started_at.elapsed(),
+                            attempt,
+                            /*stream=*/ false,
+                        );
+                    }
+                    return Err(CloudLlmError::Cancelled);
+                }
+                resp = request_builder.send() => resp,
+            };
+            let response = match response {
+                Ok(resp) => resp,
+                Err(err) => {
+                    if self.cfg.audit_logging {
+                        audit::log_llm_error(
+                            provider,
+                            &self.cfg.model,
+                            &format!("request error to {safe_url}: {err}"),
+                            overall_started_at.elapsed(),
+                            attempt,
+                            /*stream=*/ false,
+                        );
+                    }
+                    return Err(err.into());
+                }
             };
 
             let status = response.status();
             let bytes = tokio::select! {
-                _ = cancel.cancelled() => return Err(CloudLlmError::Cancelled),
-                b = response.bytes() => b?,
+                _ = cancel.cancelled() => {
+                    if self.cfg.audit_logging {
+                        audit::log_llm_error(
+                            provider,
+                            &self.cfg.model,
+                            "request cancelled",
+                            overall_started_at.elapsed(),
+                            attempt,
+                            /*stream=*/ false,
+                        );
+                    }
+                    return Err(CloudLlmError::Cancelled);
+                }
+                b = response.bytes() => b,
+            };
+            let bytes = match bytes {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    if self.cfg.audit_logging {
+                        audit::log_llm_error(
+                            provider,
+                            &self.cfg.model,
+                            &format!("failed to read response bytes from {safe_url}: {err}"),
+                            overall_started_at.elapsed(),
+                            attempt,
+                            /*stream=*/ false,
+                        );
+                    }
+                    return Err(err.into());
+                }
             };
 
             if !status.is_success() {
@@ -363,16 +429,41 @@ impl CloudLlmClient {
                     backoff_sleep(attempt, &self.cfg.retry, &cancel).await?;
                     continue;
                 }
+                if self.cfg.audit_logging {
+                    audit::log_llm_error(
+                        provider,
+                        &self.cfg.model,
+                        &format!("bad status {status} from {safe_url}: {body}"),
+                        overall_started_at.elapsed(),
+                        attempt,
+                        /*stream=*/ false,
+                    );
+                }
                 return Err(CloudLlmError::BadStatus { status, body });
             }
 
-            let completion = parse_completion(&self.cfg.provider, &bytes)?;
+            let completion = match parse_completion(&self.cfg.provider, &bytes) {
+                Ok(completion) => completion,
+                Err(err) => {
+                    if self.cfg.audit_logging {
+                        audit::log_llm_error(
+                            provider,
+                            &self.cfg.model,
+                            &format!("failed to parse response from {safe_url}: {err}"),
+                            overall_started_at.elapsed(),
+                            attempt,
+                            /*stream=*/ false,
+                        );
+                    }
+                    return Err(err);
+                }
+            };
             if self.cfg.audit_logging {
                 audit::log_llm_response(
                     provider,
                     &self.cfg.model,
                     &completion,
-                    started_at.elapsed(),
+                    overall_started_at.elapsed(),
                     attempt,
                     /*stream=*/ false,
                     /*chunk_count=*/ None,
@@ -550,6 +641,80 @@ fn parse_completion(provider: &ProviderKind, bytes: &[u8]) -> Result<String, Clo
 mod tests {
     use super::*;
     use httpmock::prelude::*;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    use tracing::{field::Visit, Event};
+    use tracing_subscriber::{layer::Context, prelude::*, Layer};
+
+    #[derive(Debug, Clone)]
+    struct CapturedEvent {
+        target: String,
+        fields: HashMap<String, String>,
+    }
+
+    #[derive(Clone)]
+    struct CapturingLayer {
+        events: Arc<Mutex<Vec<CapturedEvent>>>,
+    }
+
+    impl<S> Layer<S> for CapturingLayer
+    where
+        S: tracing::Subscriber,
+    {
+        fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+            let mut visitor = FieldVisitor::default();
+            event.record(&mut visitor);
+
+            let captured = CapturedEvent {
+                target: event.metadata().target().to_string(),
+                fields: visitor.fields,
+            };
+            self.events
+                .lock()
+                .expect("events mutex poisoned")
+                .push(captured);
+        }
+    }
+
+    #[derive(Default)]
+    struct FieldVisitor {
+        fields: HashMap<String, String>,
+    }
+
+    impl Visit for FieldVisitor {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.fields
+                .insert(field.name().to_string(), format!("{value:?}"));
+        }
+
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+    }
+
+    fn audit_events(events: &[CapturedEvent]) -> Vec<CapturedEvent> {
+        events
+            .iter()
+            .filter(|event| event.target == nova_config::AI_AUDIT_TARGET)
+            .cloned()
+            .collect()
+    }
 
     #[test]
     fn builds_openai_request() {
@@ -721,5 +886,104 @@ mod tests {
 
         mock.assert();
         assert_eq!(out, "Pong");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn audit_logging_emits_sanitized_events_and_strips_query_params() {
+        let server = MockServer::start();
+
+        let secret = "sk-proj-012345678901234567890123456789";
+        let query_secret = "supersecret";
+        let endpoint = Url::parse(&format!(
+            "{}/complete?token={query_secret}",
+            server.base_url()
+        ))
+        .unwrap();
+
+        let mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/complete")
+                .query_param("token", query_secret)
+                .body_contains("[REDACTED]");
+            then.status(200)
+                .json_body(json!({ "completion": format!("Pong {secret}") }));
+        });
+
+        let events = Arc::new(Mutex::new(Vec::<CapturedEvent>::new()));
+        let layer = CapturingLayer {
+            events: events.clone(),
+        };
+
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let cfg = CloudLlmConfig {
+            provider: ProviderKind::Http,
+            endpoint,
+            api_key: Some("test-api-key".to_string()),
+            model: "default".to_string(),
+            timeout: Duration::from_secs(1),
+            retry: RetryConfig {
+                max_retries: 0,
+                ..RetryConfig::default()
+            },
+            audit_logging: true,
+            cache_enabled: false,
+            cache_max_entries: 256,
+            cache_ttl: Duration::from_secs(300),
+        };
+
+        let client = CloudLlmClient::new(cfg).unwrap();
+        let out = client
+            .generate(
+                GenerateRequest {
+                    prompt: format!("hello {secret}"),
+                    max_tokens: 5,
+                    temperature: 0.2,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        mock.assert();
+        assert!(out.contains(secret), "client returns provider output unchanged");
+
+        let events = events.lock().unwrap();
+        let audit = audit_events(&events);
+
+        let request = audit
+            .iter()
+            .find(|event| event.fields.get("event").map(String::as_str) == Some("llm_request"))
+            .expect("request audit event emitted");
+        let prompt = request.fields.get("prompt").expect("prompt field present");
+        assert!(prompt.contains("[REDACTED]"));
+        assert!(!prompt.contains(secret));
+
+        let endpoint = request
+            .fields
+            .get("endpoint")
+            .expect("endpoint field present");
+        assert!(!endpoint.contains(query_secret));
+        assert!(!endpoint.contains("token="));
+        assert!(!endpoint.contains('?'));
+
+        let response = audit
+            .iter()
+            .find(|event| event.fields.get("event").map(String::as_str) == Some("llm_response"))
+            .expect("response audit event emitted");
+        let completion = response
+            .fields
+            .get("completion")
+            .expect("completion field present");
+        assert!(completion.contains("[REDACTED]"));
+        assert!(!completion.contains(secret));
+
+        for event in audit {
+            for value in event.fields.values() {
+                assert!(!value.contains("test-api-key"));
+                assert!(!value.contains(query_secret));
+            }
+        }
     }
 }

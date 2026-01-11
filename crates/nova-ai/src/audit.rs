@@ -10,13 +10,14 @@ use tracing::info;
 /// credentials.
 fn sanitize_text(text: &str) -> String {
     static OPENAI_KEY_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"\bsk-[A-Za-z0-9]{16,}\b").expect("valid regex"));
+        Lazy::new(|| Regex::new(r"sk-[A-Za-z0-9_-]{16,}").expect("valid regex"));
     static AWS_ACCESS_KEY_RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"\bAKIA[0-9A-Z]{16}\b").expect("valid regex"));
     static GITHUB_TOKEN_RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"\bghp_[A-Za-z0-9]{30,}\b").expect("valid regex"));
-    static BEARER_TOKEN_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(?i)\bbearer\s+[A-Za-z0-9\-._=+/]{16,}\b").expect("valid regex"));
+    static BEARER_TOKEN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)(bearer\s+)[A-Za-z0-9\-._=+/]{16,}").expect("valid regex")
+    });
     static HEADER_VALUE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r"(?i)\b(authorization|x-api-key|api-key)\s*:\s*([^\r\n]+)")
             .expect("valid regex")
@@ -27,7 +28,7 @@ fn sanitize_text(text: &str) -> String {
     static LONG_HEX_RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"\b[0-9a-fA-F]{32,}\b").expect("valid regex"));
     static LONG_BASE64ISH_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"\b[A-Za-z0-9+/=_-]{32,}\b").expect("valid regex"));
+        Lazy::new(|| Regex::new(r"[A-Za-z0-9+/=_-]{32,}").expect("valid regex"));
 
     let mut out = text.to_string();
 
@@ -41,12 +42,14 @@ fn sanitize_text(text: &str) -> String {
             format!("{}[REDACTED]", &caps[1])
         })
         .into_owned();
+    out = BEARER_TOKEN_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| format!("{}[REDACTED]", &caps[1]))
+        .into_owned();
 
     for re in [
         &OPENAI_KEY_RE,
         &AWS_ACCESS_KEY_RE,
         &GITHUB_TOKEN_RE,
-        &BEARER_TOKEN_RE,
         &LONG_HEX_RE,
         &LONG_BASE64ISH_RE,
     ] {
@@ -59,6 +62,9 @@ fn sanitize_text(text: &str) -> String {
 pub(crate) fn sanitize_url_for_log(url: &url::Url) -> String {
     let mut safe = url.clone();
     safe.set_query(None);
+    safe.set_fragment(None);
+    let _ = safe.set_username("");
+    let _ = safe.set_password(None);
     sanitize_text(safe.as_str())
 }
 
