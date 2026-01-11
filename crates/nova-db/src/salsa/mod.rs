@@ -21,29 +21,24 @@
 //! assert!(parse.errors.is_empty());
 //! ```
 
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+mod inputs;
+mod stats;
+mod syntax;
+
+pub use inputs::NovaInputs;
+pub use stats::{HasQueryStats, QueryStat, QueryStats};
+pub use syntax::{NovaSyntax, SyntaxTree};
+
+use std::sync::Arc;
+use std::time::Duration;
 
 use parking_lot::RwLock;
 
-use nova_hir::{item_tree as build_item_tree, ItemTree, SymbolSummary};
 use nova_project::ProjectConfig;
-use nova_syntax::{GreenNode, JavaParseResult, ParseResult};
 
 use crate::{FileId, ProjectId, SourceRootId};
 
-/// The parsed syntax tree type exposed by the database.
-pub type SyntaxTree = GreenNode;
-
-#[cfg(test)]
-static INTERRUPTIBLE_WORK_STARTED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-/// Database functionality needed by query implementations to record timing stats.
-pub trait HasQueryStats {
-    fn record_query_stat(&self, query_name: &'static str, duration: Duration);
-}
+use self::stats::QueryStatsCollector;
 
 /// Runs `f` and catches any Salsa cancellation.
 ///
@@ -55,238 +50,17 @@ where
     ra_salsa::Cancelled::catch(f)
 }
 
-#[ra_salsa::query_group(NovaInputsStorage)]
-pub trait NovaInputs: ra_salsa::Database {
-    /// File content as last provided by the host (e.g. LSP text document sync).
-    #[ra_salsa::input]
-    fn file_content(&self, file: FileId) -> Arc<String>;
-
-    /// Whether a file exists on disk (or in the VFS).
-    #[ra_salsa::input]
-    fn file_exists(&self, file: FileId) -> bool;
-
-    /// Per-project configuration input (classpath, source roots, language level, ...).
-    #[ra_salsa::input]
-    fn project_config(&self, project: ProjectId) -> Arc<ProjectConfig>;
-
-    /// Source root identifier for a file.
-    ///
-    /// This is typically assigned by the workspace/project loader after mapping
-    /// `FileId` to a `ProjectConfig` source root.
-    #[ra_salsa::input]
-    fn source_root(&self, file: FileId) -> SourceRootId;
-}
-
-#[ra_salsa::query_group(NovaSyntaxStorage)]
-pub trait NovaSyntax: NovaInputs + HasQueryStats {
-    /// Parse a file into a syntax tree (memoized and dependency-tracked).
-    fn parse(&self, file: FileId) -> Arc<ParseResult>;
-
-    /// Parse a file using the full-fidelity Rowan-based Java grammar.
-    fn parse_java(&self, file: FileId) -> Arc<JavaParseResult>;
-
-    /// Convenience query that exposes the syntax tree.
-    fn syntax_tree(&self, file: FileId) -> Arc<SyntaxTree>;
-
-    /// Structural, trivia-insensitive per-file summary used by name resolution.
-    ///
-    /// This is the canonical "early-cutoff" demo: whitespace edits re-run `parse`
-    /// but generally keep `item_tree` identical, which avoids recomputing its
-    /// dependents.
-    fn item_tree(&self, file: FileId) -> Arc<ItemTree>;
-
-    /// Further derived query (depends on `item_tree`) used by tests to verify
-    /// early-cutoff.
-    fn symbol_summary(&self, file: FileId) -> Arc<SymbolSummary>;
-
-    /// Dummy downstream query used by tests to validate early-cutoff behavior.
-    fn symbol_count(&self, file: FileId) -> usize;
-
-    /// Debug query used to validate request cancellation behavior.
-    ///
-    /// Real queries (type-checking, indexing, etc.) should periodically call
-    /// `db.unwind_if_cancelled()` while doing expensive work; this query exists
-    /// as a lightweight fixture for that pattern.
-    fn interruptible_work(&self, file: FileId, steps: u32) -> u64;
-}
-
-fn parse(db: &dyn NovaSyntax, file: FileId) -> Arc<ParseResult> {
-    let start = Instant::now();
-
-    #[cfg(feature = "tracing")]
-    let _span = tracing::debug_span!("query", name = "parse", ?file).entered();
-
-    db.unwind_if_cancelled();
-
-    let text = if db.file_exists(file) {
-        db.file_content(file)
-    } else {
-        Arc::new(String::new())
-    };
-
-    let parsed = nova_syntax::parse(text.as_str());
-    let result = Arc::new(parsed);
-    db.record_query_stat("parse", start.elapsed());
-    result
-}
-
-fn parse_java(db: &dyn NovaSyntax, file: FileId) -> Arc<JavaParseResult> {
-    let start = Instant::now();
-
-    #[cfg(feature = "tracing")]
-    let _span = tracing::debug_span!("query", name = "parse_java", ?file).entered();
-
-    db.unwind_if_cancelled();
-
-    let text = if db.file_exists(file) {
-        db.file_content(file)
-    } else {
-        Arc::new(String::new())
-    };
-
-    let parsed = nova_syntax::parse_java(text.as_str());
-    let result = Arc::new(parsed);
-    db.record_query_stat("parse_java", start.elapsed());
-    result
-}
-
-fn syntax_tree(db: &dyn NovaSyntax, file: FileId) -> Arc<SyntaxTree> {
-    let start = Instant::now();
-
-    #[cfg(feature = "tracing")]
-    let _span = tracing::debug_span!("query", name = "syntax_tree", ?file).entered();
-
-    db.unwind_if_cancelled();
-
-    let root = db.parse(file).root.clone();
-    let result = Arc::new(root);
-    db.record_query_stat("syntax_tree", start.elapsed());
-    result
-}
-
-fn item_tree(db: &dyn NovaSyntax, file: FileId) -> Arc<ItemTree> {
-    let start = Instant::now();
-
-    #[cfg(feature = "tracing")]
-    let _span = tracing::debug_span!("query", name = "item_tree", ?file).entered();
-
-    db.unwind_if_cancelled();
-
-    let parse = db.parse(file);
-    let text = if db.file_exists(file) {
-        db.file_content(file)
-    } else {
-        Arc::new(String::new())
-    };
-    let it = build_item_tree(&parse, text.as_str());
-    let result = Arc::new(it);
-    db.record_query_stat("item_tree", start.elapsed());
-    result
-}
-
-fn symbol_summary(db: &dyn NovaSyntax, file: FileId) -> Arc<SymbolSummary> {
-    let start = Instant::now();
-
-    #[cfg(feature = "tracing")]
-    let _span = tracing::debug_span!("query", name = "symbol_summary", ?file).entered();
-
-    db.unwind_if_cancelled();
-
-    let it = db.item_tree(file);
-    let summary = SymbolSummary::from_item_tree(&it);
-    let result = Arc::new(summary);
-    db.record_query_stat("symbol_summary", start.elapsed());
-    result
-}
-
-fn symbol_count(db: &dyn NovaSyntax, file: FileId) -> usize {
-    let start = Instant::now();
-
-    #[cfg(feature = "tracing")]
-    let _span = tracing::debug_span!("query", name = "symbol_count", ?file).entered();
-
-    db.unwind_if_cancelled();
-
-    let count = db.symbol_summary(file).names.len();
-    db.record_query_stat("symbol_count", start.elapsed());
-    count
-}
-
-fn interruptible_work(db: &dyn NovaSyntax, file: FileId, steps: u32) -> u64 {
-    let start = Instant::now();
-
-    #[cfg(feature = "tracing")]
-    let _span = tracing::debug_span!("query", name = "interruptible_work", ?file, steps).entered();
-
-    #[cfg(test)]
-    INTERRUPTIBLE_WORK_STARTED.store(true, std::sync::atomic::Ordering::SeqCst);
-
-    let mut acc: u64 = 0;
-    for i in 0..steps {
-        if i % 256 == 0 {
-            db.unwind_if_cancelled();
-        }
-        acc = acc.wrapping_add(i as u64 ^ file.to_raw() as u64);
-        std::hint::black_box(acc);
-    }
-
-    db.record_query_stat("interruptible_work", start.elapsed());
-    acc
-}
-
 /// Read-only snapshot type for concurrent query execution.
-pub type Snapshot = ra_salsa::Snapshot<QueryDatabase>;
+pub type Snapshot = ra_salsa::Snapshot<RootDatabase>;
 
-/// Lightweight query timing/execution stats.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct QueryStats {
-    pub by_query: BTreeMap<String, QueryStat>,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct QueryStat {
-    pub executions: u64,
-    pub total_time: Duration,
-    pub max_time: Duration,
-}
-
-#[derive(Clone, Default)]
-struct QueryStatsCollector {
-    inner: Arc<Mutex<BTreeMap<String, QueryStat>>>,
-}
-
-impl QueryStatsCollector {
-    fn record(&self, key: String, duration: Duration) {
-        let mut guard = self.inner.lock().expect("query stats mutex poisoned");
-        let entry = guard.entry(key).or_default();
-        entry.executions = entry.executions.saturating_add(1);
-        entry.total_time = entry.total_time.saturating_add(duration);
-        entry.max_time = entry.max_time.max(duration);
-    }
-
-    fn snapshot(&self) -> QueryStats {
-        let guard = self.inner.lock().expect("query stats mutex poisoned");
-        QueryStats {
-            by_query: guard.clone(),
-        }
-    }
-
-    fn clear(&self) {
-        self.inner
-            .lock()
-            .expect("query stats mutex poisoned")
-            .clear();
-    }
-}
-
-/// The concrete Salsa database for Nova.
-#[ra_salsa::database(NovaInputsStorage, NovaSyntaxStorage)]
-pub struct QueryDatabase {
-    storage: ra_salsa::Storage<QueryDatabase>,
+/// The concrete Salsa database for Nova (the ADR 0001 "RootDatabase").
+#[ra_salsa::database(inputs::NovaInputsStorage, syntax::NovaSyntaxStorage)]
+pub struct RootDatabase {
+    storage: ra_salsa::Storage<RootDatabase>,
     stats: QueryStatsCollector,
 }
 
-impl Default for QueryDatabase {
+impl Default for RootDatabase {
     fn default() -> Self {
         Self {
             storage: ra_salsa::Storage::default(),
@@ -295,7 +69,7 @@ impl Default for QueryDatabase {
     }
 }
 
-impl QueryDatabase {
+impl RootDatabase {
     /// Request cancellation for in-flight queries.
     ///
     /// Salsa's cancellation is driven by pending writes: this triggers a
@@ -326,13 +100,13 @@ impl QueryDatabase {
     }
 }
 
-impl HasQueryStats for QueryDatabase {
+impl HasQueryStats for RootDatabase {
     fn record_query_stat(&self, query_name: &'static str, duration: Duration) {
         self.stats.record(query_name.to_string(), duration);
     }
 }
 
-impl ra_salsa::Database for QueryDatabase {
+impl ra_salsa::Database for RootDatabase {
     fn salsa_event(&self, event: ra_salsa::Event) {
         // Coarse-grained instrumentation hook: the salsa macros already emit
         // `tracing::trace_span!` for memoized queries; this is primarily useful
@@ -367,23 +141,23 @@ impl ra_salsa::Database for QueryDatabase {
     }
 }
 
-impl ra_salsa::ParallelDatabase for QueryDatabase {
-    fn snapshot(&self) -> ra_salsa::Snapshot<QueryDatabase> {
-        ra_salsa::Snapshot::new(QueryDatabase {
+impl ra_salsa::ParallelDatabase for RootDatabase {
+    fn snapshot(&self) -> ra_salsa::Snapshot<RootDatabase> {
+        ra_salsa::Snapshot::new(RootDatabase {
             storage: self.storage.snapshot(),
             stats: self.stats.clone(),
         })
     }
 }
 
-/// Thread-safe handle around [`QueryDatabase`].
+/// Thread-safe handle around [`RootDatabase`].
 ///
 /// - Writes are serialized through an internal `RwLock`.
 /// - Reads are expected to happen through snapshots (`Database::snapshot`),
 ///   which can then be freely sent to worker threads.
 #[derive(Clone, Default)]
 pub struct Database {
-    inner: Arc<RwLock<QueryDatabase>>,
+    inner: Arc<RwLock<RootDatabase>>,
 }
 
 impl Database {
@@ -416,7 +190,7 @@ impl Database {
         self.inner.read().clear_query_stats();
     }
 
-    pub fn with_write<T>(&self, f: impl FnOnce(&mut QueryDatabase) -> T) -> T {
+    pub fn with_write<T>(&self, f: impl FnOnce(&mut RootDatabase) -> T) -> T {
         let mut db = self.inner.write();
         f(&mut db)
     }
@@ -460,7 +234,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
 
-    fn executions(db: &QueryDatabase, query_name: &str) -> u64 {
+    fn executions(db: &RootDatabase, query_name: &str) -> u64 {
         db.query_stats()
             .by_query
             .get(query_name)
@@ -470,7 +244,7 @@ mod tests {
 
     #[test]
     fn edit_invalidates_parse() {
-        let mut db = QueryDatabase::default();
+        let mut db = RootDatabase::default();
         let file = FileId::from_raw(1);
 
         db.set_file_exists(file, true);
@@ -489,7 +263,7 @@ mod tests {
 
     #[test]
     fn whitespace_edit_reparses_but_early_cutoff_downstream() {
-        let mut db = QueryDatabase::default();
+        let mut db = RootDatabase::default();
         let file = FileId::from_raw(1);
 
         db.set_file_exists(file, true);
@@ -528,7 +302,7 @@ mod tests {
 
     #[test]
     fn snapshots_are_consistent_across_concurrent_reads() {
-        let mut db = QueryDatabase::default();
+        let mut db = RootDatabase::default();
         let file = FileId::from_raw(1);
 
         db.set_file_exists(file, true);
@@ -549,9 +323,9 @@ mod tests {
 
     #[test]
     fn request_cancellation_unwinds_inflight_queries() {
-        INTERRUPTIBLE_WORK_STARTED.store(false, Ordering::SeqCst);
+        syntax::INTERRUPTIBLE_WORK_STARTED.store(false, Ordering::SeqCst);
 
-        let mut db = QueryDatabase::default();
+        let mut db = RootDatabase::default();
         let file = FileId::from_raw(1);
         db.set_file_exists(file, true);
         db.set_file_content(file, Arc::new("class Foo {}".to_string()));
@@ -561,7 +335,7 @@ mod tests {
             ra_salsa::Cancelled::catch(|| snap.interruptible_work(file, 5_000_000))
         });
 
-        while !INTERRUPTIBLE_WORK_STARTED.load(Ordering::SeqCst) {
+        while !syntax::INTERRUPTIBLE_WORK_STARTED.load(Ordering::SeqCst) {
             std::thread::yield_now();
         }
 

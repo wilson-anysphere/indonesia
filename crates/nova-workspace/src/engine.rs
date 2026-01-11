@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use async_channel::{Receiver, Sender};
 use nova_config::EffectiveConfig;
 use nova_core::TextEdit;
-use nova_db::RootDatabase;
+use nova_db::InMemoryFileStore;
 use nova_ide::{DebugConfiguration, Project};
 use nova_index::{ProjectIndexes, SymbolLocation};
 use nova_scheduler::Scheduler;
@@ -43,7 +43,7 @@ pub(crate) struct WorkspaceEngine {
     file_ids: Mutex<FileIdRegistry>,
     known_files: Mutex<HashSet<VfsPath>>,
 
-    db: Mutex<RootDatabase>,
+    db: Mutex<InMemoryFileStore>,
     indexes: Arc<Mutex<ProjectIndexes>>,
 
     config: RwLock<EffectiveConfig>,
@@ -59,7 +59,7 @@ impl WorkspaceEngine {
             vfs: OverlayFs::new(LocalFs::new()),
             file_ids: Mutex::new(FileIdRegistry::new()),
             known_files: Mutex::new(HashSet::new()),
-            db: Mutex::new(RootDatabase::new()),
+            db: Mutex::new(InMemoryFileStore::new()),
             indexes: Arc::new(Mutex::new(ProjectIndexes::default())),
             config: RwLock::new(EffectiveConfig::default()),
             scheduler: Scheduler::default(),

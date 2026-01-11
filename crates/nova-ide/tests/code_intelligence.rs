@@ -1,9 +1,9 @@
-use nova_db::RootDatabase;
+use nova_db::InMemoryFileStore;
 use nova_ide::{completions, file_diagnostics, find_references, goto_definition};
 use nova_types::Severity;
 use std::path::PathBuf;
 
-fn fixture(text_with_caret: &str) -> (RootDatabase, nova_db::FileId, lsp_types::Position) {
+fn fixture(text_with_caret: &str) -> (InMemoryFileStore, nova_db::FileId, lsp_types::Position) {
     let caret = "<|>";
     let caret_offset = text_with_caret
         .find(caret)
@@ -11,15 +11,15 @@ fn fixture(text_with_caret: &str) -> (RootDatabase, nova_db::FileId, lsp_types::
     let text = text_with_caret.replace(caret, "");
     let pos = offset_to_position(&text, caret_offset);
 
-    let mut db = RootDatabase::new();
+    let mut db = InMemoryFileStore::new();
     let path = PathBuf::from("/test.java");
     let file = db.file_id_for_path(&path);
     db.set_file_text(file, text);
     (db, file, pos)
 }
 
-fn fixture_file(text: &str) -> (RootDatabase, nova_db::FileId) {
-    let mut db = RootDatabase::new();
+fn fixture_file(text: &str) -> (InMemoryFileStore, nova_db::FileId) {
+    let mut db = InMemoryFileStore::new();
     let path = PathBuf::from("/test.java");
     let file = db.file_id_for_path(&path);
     db.set_file_text(file, text.to_string());
@@ -30,7 +30,7 @@ fn fixture_multi(
     primary_path: PathBuf,
     primary_text_with_caret: &str,
     extra_files: Vec<(PathBuf, String)>,
-) -> (RootDatabase, nova_db::FileId, lsp_types::Position) {
+) -> (InMemoryFileStore, nova_db::FileId, lsp_types::Position) {
     let caret = "<|>";
     let caret_offset = primary_text_with_caret
         .find(caret)
@@ -38,7 +38,7 @@ fn fixture_multi(
     let primary_text = primary_text_with_caret.replace(caret, "");
     let pos = offset_to_position(&primary_text, caret_offset);
 
-    let mut db = RootDatabase::new();
+    let mut db = InMemoryFileStore::new();
     let primary_file = db.file_id_for_path(&primary_path);
     db.set_file_text(primary_file, primary_text);
     for (path, text) in extra_files {
@@ -213,7 +213,7 @@ class C {
 #[test]
 fn spring_config_diagnostics_include_duplicate_keys() {
     let config_path = PathBuf::from("/workspace/src/main/resources/application.properties");
-    let mut db = RootDatabase::new();
+    let mut db = InMemoryFileStore::new();
     let file = db.file_id_for_path(&config_path);
     db.set_file_text(file, "server.port=8080\nserver.port=9090\n".to_string());
 

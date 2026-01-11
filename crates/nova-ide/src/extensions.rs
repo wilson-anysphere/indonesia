@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn combines_builtin_and_extension_diagnostics_and_completions() {
-        use nova_db::RootDatabase;
+        use nova_db::InMemoryFileStore;
 
         struct ExtraDiagProvider;
         impl DiagnosticProvider<dyn nova_db::Database + Send + Sync> for ExtraDiagProvider {
@@ -442,7 +442,7 @@ mod tests {
             }
         }
 
-        let mut db = RootDatabase::new();
+        let mut db = InMemoryFileStore::new();
         let diagnostics_file = db.file_id_for_path(PathBuf::from("/diagnostics.java"));
         db.set_file_text(
             diagnostics_file,
@@ -496,7 +496,7 @@ class A {
 
     #[test]
     fn combines_builtin_and_extension_code_actions() {
-        use nova_db::RootDatabase;
+        use nova_db::InMemoryFileStore;
 
         struct ExtraActionProvider;
         impl CodeActionProvider<dyn nova_db::Database + Send + Sync> for ExtraActionProvider {
@@ -516,7 +516,7 @@ class A {
             }
         }
 
-        let mut db = RootDatabase::new();
+        let mut db = InMemoryFileStore::new();
         let file = db.file_id_for_path(PathBuf::from("/actions.java"));
         let source = r#"
 class A {

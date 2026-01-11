@@ -1,5 +1,5 @@
 use lsp_types::{Position, Range};
-use nova_db::RootDatabase;
+use nova_db::InMemoryFileStore;
 use std::path::Path;
 use tempfile::TempDir;
 
@@ -123,7 +123,7 @@ public class CarMapperImpl implements CarMapper {
     let offset = mapper_text.find("carToCarDto").unwrap() + 1;
     let position = offset_to_position(&mapper_text, offset);
 
-    let mut db = RootDatabase::new();
+    let mut db = InMemoryFileStore::new();
     let file_id = db.file_id_for_path(&mapper_path);
     db.set_file_text(file_id, mapper_text);
 
@@ -197,7 +197,7 @@ public class CarMapperImpl implements CarMapper {
     let offset = mapper_text.find("seatCount").unwrap() + 1;
     let position = offset_to_position(&mapper_text, offset);
 
-    let mut db = RootDatabase::new();
+    let mut db = InMemoryFileStore::new();
     let file_id = db.file_id_for_path(&mapper_path);
     db.set_file_text(file_id, mapper_text);
 

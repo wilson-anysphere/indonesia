@@ -1,7 +1,7 @@
 //! Database layer for Nova.
 //!
 //! This crate currently provides:
-//! - [`RootDatabase`]: a small in-memory file store used by `nova-dap`.
+//! - [`InMemoryFileStore`]: a small in-memory file store used by `nova-dap`.
 //! - [`AnalysisDatabase`]: an experimental, non-Salsa cache facade for warm-start
 //!   parsing and per-file structural summaries.
 //! - [`salsa`]: the Salsa-powered incremental query database and snapshot
@@ -23,7 +23,7 @@ use nova_syntax::{parse as syntax_parse, ParseResult};
 
 /// A small in-memory store for file contents keyed by a compact [`FileId`].
 #[derive(Debug, Default)]
-pub struct RootDatabase {
+pub struct InMemoryFileStore {
     next_file_id: u32,
     path_to_file: HashMap<PathBuf, FileId>,
     file_to_path: HashMap<FileId, PathBuf>,
@@ -53,7 +53,7 @@ pub trait Database {
     }
 }
 
-impl RootDatabase {
+impl InMemoryFileStore {
     pub fn new() -> Self {
         Self::default()
     }
@@ -84,7 +84,7 @@ impl RootDatabase {
     }
 }
 
-impl Database for RootDatabase {
+impl Database for InMemoryFileStore {
     fn file_content(&self, file_id: FileId) -> &str {
         self.file_text(file_id).unwrap_or("")
     }
@@ -339,6 +339,6 @@ mod tests {
 pub mod salsa;
 
 pub use salsa::{
-    catch_cancelled, Database as SalsaDatabase, NovaDatabase, NovaInputs, NovaSyntax, QueryDatabase,
-    QueryStat, QueryStats, Snapshot, SyntaxTree,
+    catch_cancelled, Database as SalsaDatabase, NovaDatabase, NovaInputs, NovaSyntax, QueryStat,
+    QueryStats, RootDatabase as SalsaRootDatabase, Snapshot, SyntaxTree,
 };

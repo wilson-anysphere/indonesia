@@ -6,7 +6,7 @@ use crate::session::DebugSession;
 use crate::smart_step_into::enumerate_step_in_targets_in_line;
 use crate::stream_debug::{run_stream_debug, StreamDebugArguments, STREAM_DEBUG_COMMAND};
 use anyhow::Context;
-use nova_db::RootDatabase;
+use nova_db::InMemoryFileStore;
 use nova_project::{AttachConfig, LaunchConfig};
 use nova_jdwp::{JdwpClient, JdwpEvent, TcpJdwpClient};
 use serde::Deserialize;
@@ -23,7 +23,7 @@ struct Outgoing {
 
 pub struct DapServer<C: JdwpClient> {
     next_seq: u64,
-    db: RootDatabase,
+    db: InMemoryFileStore,
     session: DebugSession<C>,
     breakpoints: HashMap<PathBuf, Vec<u32>>,
     thread_ids: HashMap<i64, u64>,
@@ -51,7 +51,7 @@ impl<C: JdwpClient> DapServer<C> {
     pub fn new(jdwp: C) -> Self {
         Self {
             next_seq: 1,
-            db: RootDatabase::new(),
+            db: InMemoryFileStore::new(),
             session: DebugSession::new(jdwp),
             breakpoints: HashMap::new(),
             thread_ids: HashMap::new(),
@@ -129,7 +129,7 @@ impl<C: JdwpClient> DapServer<C> {
     fn recover_after_panic(&mut self) {
         // Best-effort recovery: drop all derived state and restart the semantic DB
         // without taking down the whole adapter process.
-        self.db = RootDatabase::new();
+        self.db = InMemoryFileStore::new();
         self.breakpoints.clear();
         self.thread_ids.clear();
         self.frame_ids.clear();

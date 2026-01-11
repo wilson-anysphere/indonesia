@@ -1,5 +1,5 @@
 use nova_core::Line;
-use nova_db::{FileId, RootDatabase};
+use nova_db::{FileId, InMemoryFileStore};
 use nova_ide::semantics::{collect_breakpoint_sites, BreakpointSite};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,10 +13,10 @@ pub struct ResolvedBreakpoint {
 
 /// Map user-requested breakpoint lines to the closest executable statement start.
 ///
-/// This function is pure and depends only on the `RootDatabase` file text plus
+/// This function is pure and depends only on the `InMemoryFileStore` file text plus
 /// Nova semantic helpers (`nova-ide`).
 pub fn map_line_breakpoints(
-    db: &RootDatabase,
+    db: &InMemoryFileStore,
     file_id: FileId,
     requested_lines: &[Line],
 ) -> Vec<ResolvedBreakpoint> {
@@ -96,7 +96,7 @@ public class Foo {
 }
 "#;
 
-        let mut db = RootDatabase::new();
+        let mut db = InMemoryFileStore::new();
         let file_id = db.file_id_for_path("Foo.java");
         db.set_file_text(file_id, java.to_string());
 
@@ -122,7 +122,7 @@ public class Foo {
   }
 }"#;
 
-        let mut db = RootDatabase::new();
+        let mut db = InMemoryFileStore::new();
         let file_id = db.file_id_for_path("C.java");
         db.set_file_text(file_id, java.to_string());
 
