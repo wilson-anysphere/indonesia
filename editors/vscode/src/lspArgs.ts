@@ -1,3 +1,4 @@
+import * as os from 'node:os';
 import * as path from 'node:path';
 
 export interface NovaLspArgsOptions {
@@ -25,9 +26,18 @@ export function resolveNovaConfigPath(
   }
 
   const workspaceRoot = options.workspaceRoot?.trim();
-  return workspaceRoot && !path.isAbsolute(trimmedConfigPath)
-    ? path.join(workspaceRoot, trimmedConfigPath)
-    : trimmedConfigPath;
+  let candidate = trimmedConfigPath;
+  if (workspaceRoot) {
+    candidate = candidate.replace(/\$\{workspaceFolder\}/g, workspaceRoot);
+  }
+
+  if (candidate === '~') {
+    candidate = os.homedir();
+  } else if (candidate.startsWith('~/') || candidate.startsWith('~\\')) {
+    candidate = path.join(os.homedir(), candidate.slice(2));
+  }
+
+  return workspaceRoot && !path.isAbsolute(candidate) ? path.join(workspaceRoot, candidate) : candidate;
 }
 
 export function buildNovaLspArgs(options: NovaLspArgsOptions = {}): string[] {

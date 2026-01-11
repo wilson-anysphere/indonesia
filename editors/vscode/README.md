@@ -78,8 +78,22 @@ Tests are discovered via `nova/test/discover` and can be run from the Test Explo
 - `nova.server.version` (string | "latest"): version to install (default: "latest").
 - `nova.server.releaseUrl` (string): GitHub repository URL (or "owner/repo") to download releases from.
 
-### AI completions
+### LSP
 
+- `nova.lsp.configPath` (string | null): path to a Nova TOML config file. The extension passes this to `nova-lsp` via:
+  - `--config <path>` (for future compatibility), and
+  - `NOVA_CONFIG_PATH=<path>` (works with current `nova-config` behaviour).
+  Relative paths are resolved against the first workspace folder.
+- `nova.lsp.extraArgs` (string[]): additional CLI arguments appended to `nova-lsp`.
+
+Changing these settings requires restarting the language server; the extension prompts you automatically.
+
+### AI
+
+- `nova.ai.enabled` (boolean): master toggle for AI features. When disabled, the extension:
+  - stops polling `nova/completion/more`
+  - does not surface cached AI completion items
+  - strips `NOVA_AI_*` environment variables from the `nova-lsp` process env
 - `nova.aiCompletions.enabled` (boolean): enable multi-token completion requests.
 
 ## Packaging
