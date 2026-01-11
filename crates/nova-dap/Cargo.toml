@@ -12,6 +12,7 @@ description = "Nova Java debug adapter (DAP)."
 dist = true
 
 [dependencies]
+async-recursion = "1"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

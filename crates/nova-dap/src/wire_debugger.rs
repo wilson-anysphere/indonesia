@@ -1226,6 +1226,7 @@ impl Debugger {
         })
     }
 
+    #[async_recursion::async_recursion]
     async fn format_value_display(
         &mut self,
         cancel: &CancellationToken,

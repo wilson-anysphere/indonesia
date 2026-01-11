@@ -1,18 +1,29 @@
 use std::collections::HashMap;
 
 use super::{
-    types::{FieldInfo, JdwpValue, ObjectId, ReferenceTypeId, Result},
+    types::{FieldInfo, JdwpValue, MethodInfo, ObjectId, ReferenceTypeId, Result},
     JdwpClient,
 };
 
 const ARRAY_PREVIEW_SAMPLE: usize = 3;
 const ARRAY_CHILD_SAMPLE: usize = 25;
+const HASHMAP_SCAN_LIMIT: usize = 64;
+const HASHMAP_CHAIN_LIMIT: usize = 16;
+const FIELD_MODIFIER_STATIC: u32 = 0x0008;
 
 /// JDWP `Error.INVALID_OBJECT` (the object has already been garbage collected).
 pub const ERROR_INVALID_OBJECT: u16 = 20;
 
-/// `Field` modifier bit for `static` fields (ignored in instance inspection).
-const FIELD_MODIFIER_STATIC: u32 = 0x0008;
+/// Per-connection cache for type metadata needed by the inspection layer.
+///
+/// This is intentionally lightweight (no eviction); the number of distinct
+/// reference types encountered during a debug session is usually small.
+#[derive(Debug, Default)]
+pub(crate) struct InspectCache {
+    pub(crate) signatures: HashMap<ReferenceTypeId, String>,
+    pub(crate) fields: HashMap<ReferenceTypeId, Vec<FieldInfo>>,
+    pub(crate) methods: HashMap<ReferenceTypeId, Vec<MethodInfo>>,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObjectPreview {
@@ -53,17 +64,11 @@ pub struct InspectVariable {
 /// implements the object preview and expansion heuristics used by Nova's DAP UI.
 pub struct Inspector {
     jdwp: JdwpClient,
-    signature_cache: HashMap<ReferenceTypeId, String>,
-    fields_cache: HashMap<ReferenceTypeId, Vec<FieldInfo>>,
 }
 
 impl Inspector {
     pub fn new(jdwp: JdwpClient) -> Self {
-        Self {
-            jdwp,
-            signature_cache: HashMap::new(),
-            fields_cache: HashMap::new(),
-        }
+        Self { jdwp }
     }
 
     fn client(&self) -> &JdwpClient {
@@ -72,33 +77,355 @@ impl Inspector {
 
     pub async fn runtime_type_name(&mut self, object_id: ObjectId) -> Result<String> {
         let type_id = self.client().object_reference_reference_type(object_id).await?;
-        let signature = self.signature_for_type(type_id).await?;
+        let signature = self.client().reference_type_signature_cached(type_id).await?;
         Ok(signature_to_type_name(&signature))
     }
 
-    async fn preview_hash_map_entries(
-        &mut self,
-        children: &[InspectVariable],
-    ) -> Option<(usize, Vec<(JdwpValue, JdwpValue)>)> {
-        let size = children.iter().find_map(|v| match (&v.name[..], &v.value) {
+    pub async fn preview_object(&mut self, object_id: ObjectId) -> Result<ObjectPreview> {
+        preview_object(self.client(), object_id).await
+    }
+
+    pub async fn object_children(&mut self, object_id: ObjectId) -> Result<Vec<InspectVariable>> {
+        let children = object_children(self.client(), object_id).await?;
+        Ok(children
+            .into_iter()
+            .map(|(name, value, static_type)| InspectVariable {
+                name,
+                value,
+                static_type,
+            })
+            .collect())
+    }
+}
+
+pub async fn preview_object(jdwp: &JdwpClient, object_id: ObjectId) -> Result<ObjectPreview> {
+    let type_id = jdwp.object_reference_reference_type(object_id).await?;
+    let signature = jdwp.reference_type_signature_cached(type_id).await?;
+    let runtime_type = signature_to_type_name(&signature);
+
+    if signature == "Ljava/lang/String;" {
+        return Ok(ObjectPreview {
+            runtime_type,
+            kind: ObjectKindPreview::String {
+                value: jdwp.string_reference_value(object_id).await?,
+            },
+        });
+    }
+
+    if signature.starts_with('[') {
+        let length = jdwp.array_reference_length(object_id).await?;
+        let length = length.max(0) as usize;
+        let sample_len = length.min(ARRAY_PREVIEW_SAMPLE);
+        let sample = if sample_len == 0 {
+            Vec::new()
+        } else {
+            jdwp.array_reference_get_values(object_id, 0, sample_len as i32)
+                .await?
+        };
+
+        let element_sig = signature.strip_prefix('[').unwrap_or(&signature);
+        let element_type = signature_to_type_name(element_sig);
+        return Ok(ObjectPreview {
+            runtime_type,
+            kind: ObjectKindPreview::Array {
+                element_type,
+                length,
+                sample,
+            },
+        });
+    }
+
+    if is_primitive_wrapper(&runtime_type) {
+        if let Ok(children) = object_children(jdwp, object_id).await {
+            if let Some(value) = children
+                .iter()
+                .find(|(name, ..)| name == "value")
+                .map(|v| v.1.clone())
+            {
+                return Ok(ObjectPreview {
+                    runtime_type,
+                    kind: ObjectKindPreview::PrimitiveWrapper {
+                        value: Box::new(value),
+                    },
+                });
+            }
+        }
+    }
+
+    if runtime_type == "java.util.Optional" {
+        if let Ok(children) = object_children(jdwp, object_id).await {
+            if let Some(value) = children
+                .iter()
+                .find(|(name, ..)| name == "value")
+                .map(|v| v.1.clone())
+            {
+                return Ok(ObjectPreview {
+                    runtime_type,
+                    kind: ObjectKindPreview::Optional {
+                        value: match value {
+                            v if is_null(&v) => None,
+                            other => Some(Box::new(other)),
+                        },
+                    },
+                });
+            }
+        }
+    }
+
+    if runtime_type == "java.util.ArrayList" {
+        if let Ok(children) = object_children(jdwp, object_id).await {
+            let size =
+                children
+                    .iter()
+                    .find_map(|(name, value, _ty)| match (name.as_str(), value) {
+                        ("size", JdwpValue::Int(size)) => Some((*size).max(0) as usize),
+                        _ => None,
+                    });
+            let element_data =
+                children
+                    .iter()
+                    .find_map(|(name, value, _ty)| match (name.as_str(), value) {
+                        ("elementData", JdwpValue::Object { id, .. }) if *id != 0 => Some(*id),
+                        _ => None,
+                    });
+
+            if let Some(size) = size {
+                let sample_len = size.min(ARRAY_PREVIEW_SAMPLE);
+                let sample = match (sample_len, element_data) {
+                    (0, _) => Vec::new(),
+                    (_, Some(array_id)) => jdwp
+                        .array_reference_get_values(array_id, 0, sample_len as i32)
+                        .await
+                        .unwrap_or_default(),
+                    _ => Vec::new(),
+                };
+
+                return Ok(ObjectPreview {
+                    runtime_type,
+                    kind: ObjectKindPreview::List { size, sample },
+                });
+            }
+        }
+    }
+
+    if runtime_type == "java.util.LinkedList" {
+        if let Ok(children) = object_children(jdwp, object_id).await {
+            let size =
+                children
+                    .iter()
+                    .find_map(|(name, value, _ty)| match (name.as_str(), value) {
+                        ("size", JdwpValue::Int(size)) => Some((*size).max(0) as usize),
+                        _ => None,
+                    });
+            let first =
+                children
+                    .iter()
+                    .find_map(|(name, value, _ty)| match (name.as_str(), value) {
+                        ("first", JdwpValue::Object { id, .. }) if *id != 0 => Some(*id),
+                        _ => None,
+                    });
+
+            if let Some(size) = size {
+                let mut sample = Vec::new();
+                let sample_len = size.min(ARRAY_PREVIEW_SAMPLE);
+                let mut node_id = match first {
+                    Some(id) if sample_len > 0 => id,
+                    _ => 0,
+                };
+                for _ in 0..HASHMAP_CHAIN_LIMIT {
+                    if sample.len() >= sample_len {
+                        break;
+                    }
+                    if node_id == 0 {
+                        break;
+                    }
+                    let Ok(node_children) = object_children(jdwp, node_id).await else {
+                        break;
+                    };
+                    let item = node_children
+                        .iter()
+                        .find(|(name, ..)| name == "item")
+                        .map(|v| v.1.clone())
+                        .unwrap_or_else(null_object);
+                    sample.push(item);
+                    node_id = node_children
+                        .iter()
+                        .find_map(|(name, value, _ty)| match (name.as_str(), value) {
+                            ("next", JdwpValue::Object { id, .. }) => Some(*id),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                }
+
+                return Ok(ObjectPreview {
+                    runtime_type,
+                    kind: ObjectKindPreview::List { size, sample },
+                });
+            }
+        }
+    }
+
+    if runtime_type == "java.util.HashMap" {
+        if let Some((size, mut sample)) = hashmap_preview(jdwp, object_id).await {
+            sort_map_sample(jdwp, &mut sample).await;
+            return Ok(ObjectPreview {
+                runtime_type,
+                kind: ObjectKindPreview::Map { size, sample },
+            });
+        }
+    }
+
+    if runtime_type == "java.util.HashSet" {
+        if let Ok(children) = object_children(jdwp, object_id).await {
+            let map_id =
+                children
+                    .iter()
+                    .find_map(|(name, value, _ty)| match (name.as_str(), value) {
+                        ("map", JdwpValue::Object { id, .. }) if *id != 0 => Some(*id),
+                        _ => None,
+                    });
+
+            if let Some(map_id) = map_id {
+                if let Some((size, sample)) = hashmap_preview(jdwp, map_id).await {
+                    let mut keys: Vec<_> = sample.into_iter().map(|(k, _)| k).collect();
+                    sort_set_sample(jdwp, &mut keys).await;
+                    return Ok(ObjectPreview {
+                        runtime_type,
+                        kind: ObjectKindPreview::Set { size, sample: keys },
+                    });
+                }
+            }
+        }
+    }
+
+    if runtime_type.starts_with("java.util.stream.") {
+        return Ok(ObjectPreview {
+            runtime_type,
+            kind: ObjectKindPreview::Stream { size: None },
+        });
+    }
+
+    Ok(ObjectPreview {
+        runtime_type,
+        kind: ObjectKindPreview::Plain,
+    })
+}
+
+pub async fn object_children(
+    jdwp: &JdwpClient,
+    object_id: ObjectId,
+) -> Result<Vec<(String, JdwpValue, Option<String>)>> {
+    let type_id = jdwp.object_reference_reference_type(object_id).await?;
+    let signature = jdwp.reference_type_signature_cached(type_id).await?;
+
+    if signature.starts_with('[') {
+        let length = jdwp.array_reference_length(object_id).await?;
+        let length = length.max(0) as usize;
+        let sample_len = length.min(ARRAY_CHILD_SAMPLE);
+        let element_sig = signature.strip_prefix('[').unwrap_or(&signature);
+        let element_type = signature_to_type_name(element_sig);
+
+        let mut vars = Vec::new();
+        vars.push((
+            "length".to_string(),
+            JdwpValue::Int(length as i32),
+            Some("int".to_string()),
+        ));
+
+        if sample_len > 0 {
+            let values = jdwp
+                .array_reference_get_values(object_id, 0, sample_len as i32)
+                .await?;
+            for (idx, value) in values.into_iter().enumerate() {
+                vars.push((format!("[{idx}]"), value, Some(element_type.clone())));
+            }
+        }
+        return Ok(vars);
+    }
+
+    let fields: Vec<FieldInfo> = jdwp
+        .reference_type_fields_cached(type_id)
+        .await?
+        .into_iter()
+        .filter(|field| field.mod_bits & FIELD_MODIFIER_STATIC == 0)
+        .collect();
+    if fields.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let field_ids: Vec<u64> = fields.iter().map(|f| f.field_id).collect();
+    let values = jdwp
+        .object_reference_get_values(object_id, &field_ids)
+        .await?;
+    Ok(fields
+        .into_iter()
+        .zip(values)
+        .map(|(field, value)| {
+            (
+                field.name,
+                value,
+                Some(signature_to_type_name(&field.signature)),
+            )
+        })
+        .collect())
+}
+
+fn is_null(value: &JdwpValue) -> bool {
+    matches!(value, JdwpValue::Object { id: 0, .. })
+}
+
+fn null_object() -> JdwpValue {
+    JdwpValue::Object { tag: b'L', id: 0 }
+}
+
+fn is_primitive_wrapper(runtime_type: &str) -> bool {
+    matches!(
+        runtime_type,
+        "java.lang.Boolean"
+            | "java.lang.Byte"
+            | "java.lang.Character"
+            | "java.lang.Double"
+            | "java.lang.Float"
+            | "java.lang.Integer"
+            | "java.lang.Long"
+            | "java.lang.Short"
+    )
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum SortKey {
+    Null,
+    Void,
+    Bool(bool),
+    Char(u16),
+    I128(i128),
+    U64(u64),
+    String(String),
+    Object(ObjectId),
+}
+
+async fn hashmap_preview(jdwp: &JdwpClient, object_id: ObjectId) -> Option<(usize, Vec<(JdwpValue, JdwpValue)>)> {
+    let children = object_children(jdwp, object_id).await.ok()?;
+    let size = children
+        .iter()
+        .find_map(|(name, value, _ty)| match (name.as_str(), value) {
             ("size", JdwpValue::Int(size)) => Some((*size).max(0) as usize),
             _ => None,
         })?;
-        let table_id = children.iter().find_map(|v| match (&v.name[..], &v.value) {
+    let table_id = children
+        .iter()
+        .find_map(|(name, value, _ty)| match (name.as_str(), value) {
             ("table", JdwpValue::Object { id, .. }) if *id != 0 => Some(*id),
             _ => None,
-        })?;
+        });
 
-        let mut sample = Vec::new();
-        if let Ok(table_len) = self.client().array_reference_length(table_id).await {
+    let mut sample = Vec::new();
+    if let Some(table_id) = table_id {
+        if let Ok(table_len) = jdwp.array_reference_length(table_id).await {
             let table_len = table_len.max(0) as usize;
-            let scan = table_len.min(64);
+            let scan = table_len.min(HASHMAP_SCAN_LIMIT);
             if scan > 0 {
-                if let Ok(buckets) = self
-                    .client()
-                    .array_reference_get_values(table_id, 0, scan as i32)
-                    .await
-                {
+                if let Ok(buckets) = jdwp.array_reference_get_values(table_id, 0, scan as i32).await {
                     for bucket in buckets {
                         if sample.len() >= ARRAY_PREVIEW_SAMPLE {
                             break;
@@ -109,292 +436,108 @@ impl Inspector {
                         if node_id == 0 {
                             continue;
                         }
-
-                        // Traverse collision chain (bounded).
-                        for _ in 0..16 {
+                        for _ in 0..HASHMAP_CHAIN_LIMIT {
                             if sample.len() >= ARRAY_PREVIEW_SAMPLE {
                                 break;
                             }
-                            let Ok(node_fields) = self.object_children(node_id).await else {
+                            if node_id == 0 {
+                                break;
+                            }
+                            let Ok(node_fields) = object_children(jdwp, node_id).await else {
                                 break;
                             };
                             let key = node_fields
                                 .iter()
-                                .find(|v| v.name == "key")
-                                .map(|v| v.value.clone())
-                                .unwrap_or_else(null_value);
+                                .find(|(name, ..)| name == "key")
+                                .map(|v| v.1.clone())
+                                .unwrap_or_else(null_object);
                             let value = node_fields
                                 .iter()
-                                .find(|v| v.name == "value")
-                                .map(|v| v.value.clone())
-                                .unwrap_or_else(null_value);
+                                .find(|(name, ..)| name == "value")
+                                .map(|v| v.1.clone())
+                                .unwrap_or_else(null_object);
                             sample.push((key, value));
 
-                            match node_fields
+                            node_id = node_fields
                                 .iter()
-                                .find(|v| v.name == "next")
-                                .map(|v| &v.value)
-                            {
-                                Some(JdwpValue::Object { id: next_id, .. }) if *next_id != 0 => {
-                                    node_id = *next_id
-                                }
-                                _ => break,
-                            }
+                                .find_map(|(name, value, _ty)| match (name.as_str(), value) {
+                                    ("next", JdwpValue::Object { id, .. }) => Some(*id),
+                                    _ => None,
+                                })
+                                .unwrap_or(0);
                         }
                     }
                 }
             }
         }
-
-        Some((size, sample))
     }
 
-    pub async fn preview_object(&mut self, object_id: ObjectId) -> Result<ObjectPreview> {
-        let type_id = self.client().object_reference_reference_type(object_id).await?;
-        let signature = self.signature_for_type(type_id).await?;
-        let runtime_type = signature_to_type_name(&signature);
+    Some((size, sample))
+}
 
-        if signature == "Ljava/lang/String;" {
-            return Ok(ObjectPreview {
-                runtime_type,
-                kind: ObjectKindPreview::String {
-                    value: self.client().string_reference_value(object_id).await?,
-                },
-            });
-        }
+async fn sort_key(jdwp: &JdwpClient, value: &JdwpValue) -> SortKey {
+    match value {
+        JdwpValue::Boolean(v) => SortKey::Bool(*v),
+        JdwpValue::Byte(v) => SortKey::I128(i128::from(*v)),
+        JdwpValue::Char(v) => SortKey::Char(*v),
+        JdwpValue::Short(v) => SortKey::I128(i128::from(*v)),
+        JdwpValue::Int(v) => SortKey::I128(i128::from(*v)),
+        JdwpValue::Long(v) => SortKey::I128(i128::from(*v)),
+        JdwpValue::Float(v) => SortKey::U64(v.to_bits().into()),
+        JdwpValue::Double(v) => SortKey::U64(v.to_bits()),
+        JdwpValue::Void => SortKey::Void,
+        JdwpValue::Object { id, .. } => {
+            if *id == 0 {
+                return SortKey::Null;
+            }
 
-        if signature.starts_with('[') {
-            let length = self.client().array_reference_length(object_id).await?.max(0) as usize;
-            let sample_len = length.min(ARRAY_PREVIEW_SAMPLE);
-            let sample = if sample_len == 0 {
-                Vec::new()
-            } else {
-                self.client()
-                    .array_reference_get_values(object_id, 0, sample_len as i32)
-                    .await?
+            let is_string = match jdwp.object_reference_reference_type(*id).await {
+                Ok(type_id) => jdwp
+                    .reference_type_signature_cached(type_id)
+                    .await
+                    .map(|sig| sig == "Ljava/lang/String;")
+                    .unwrap_or(false),
+                Err(_) => false,
             };
 
-            let element_sig = signature.strip_prefix('[').unwrap_or(&signature);
-            let element_type = signature_to_type_name(element_sig);
-            return Ok(ObjectPreview {
-                runtime_type,
-                kind: ObjectKindPreview::Array {
-                    element_type,
-                    length,
-                    sample,
-                },
-            });
-        }
-
-        // Primitive wrapper previews (Integer, Long, etc.) by reading their `value` field.
-        if matches!(
-            runtime_type.as_str(),
-            "java.lang.Boolean"
-                | "java.lang.Byte"
-                | "java.lang.Character"
-                | "java.lang.Double"
-                | "java.lang.Float"
-                | "java.lang.Integer"
-                | "java.lang.Long"
-                | "java.lang.Short"
-        ) {
-            if let Ok(children) = self.object_children(object_id).await {
-                if let Some(value) = children
-                    .iter()
-                    .find(|v| v.name == "value")
-                    .map(|v| v.value.clone())
-                {
-                    return Ok(ObjectPreview {
-                        runtime_type,
-                        kind: ObjectKindPreview::PrimitiveWrapper {
-                            value: Box::new(value),
-                        },
-                    });
+            if is_string {
+                match jdwp.string_reference_value(*id).await {
+                    Ok(value) => SortKey::String(value),
+                    Err(_) => SortKey::Object(*id),
                 }
+            } else {
+                SortKey::Object(*id)
             }
         }
-
-        // Optional preview by reading its `value` field.
-        if runtime_type == "java.util.Optional" {
-            if let Ok(children) = self.object_children(object_id).await {
-                if let Some(value) = children
-                    .iter()
-                    .find(|v| v.name == "value")
-                    .map(|v| v.value.clone())
-                {
-                    return Ok(ObjectPreview {
-                        runtime_type,
-                        kind: ObjectKindPreview::Optional {
-                            value: match value {
-                                JdwpValue::Object { id: 0, .. } => None,
-                                other => Some(Box::new(other)),
-                            },
-                        },
-                    });
-                }
-            }
-        }
-
-        // Collection previews via best-effort field introspection for common JDK implementations.
-        if runtime_type == "java.util.ArrayList" {
-            if let Ok(children) = self.object_children(object_id).await {
-                let size = children.iter().find_map(|v| match (&v.name[..], &v.value) {
-                    ("size", JdwpValue::Int(size)) => Some((*size).max(0) as usize),
-                    _ => None,
-                });
-                let element_data = children.iter().find_map(|v| match (&v.name[..], &v.value) {
-                    ("elementData", JdwpValue::Object { id, .. }) if *id != 0 => Some(*id),
-                    _ => None,
-                });
-
-                if let (Some(size), Some(array_id)) = (size, element_data) {
-                    let sample_len = size.min(ARRAY_PREVIEW_SAMPLE);
-                    let sample = if sample_len == 0 {
-                        Vec::new()
-                    } else if let Ok(values) = self
-                        .client()
-                        .array_reference_get_values(array_id, 0, sample_len as i32)
-                        .await
-                    {
-                        values
-                    } else {
-                        Vec::new()
-                    };
-
-                    return Ok(ObjectPreview {
-                        runtime_type,
-                        kind: ObjectKindPreview::List { size, sample },
-                    });
-                }
-            }
-        }
-
-        if runtime_type == "java.util.HashMap" {
-            if let Ok(children) = self.object_children(object_id).await {
-                if let Some((size, sample)) = self.preview_hash_map_entries(&children).await {
-                    return Ok(ObjectPreview {
-                        runtime_type,
-                        kind: ObjectKindPreview::Map { size, sample },
-                    });
-                }
-            }
-        }
-
-        if runtime_type == "java.util.HashSet" {
-            if let Ok(children) = self.object_children(object_id).await {
-                let map = children.iter().find_map(|v| match (&v.name[..], &v.value) {
-                    ("map", JdwpValue::Object { id, .. }) if *id != 0 => Some(*id),
-                    _ => None,
-                });
-
-                if let Some(map_id) = map {
-                    // Pull the keys out of the backing map's sampled entries.
-                    if let Ok(map_children) = self.object_children(map_id).await {
-                        if let Some((size, sample)) =
-                            self.preview_hash_map_entries(&map_children).await
-                        {
-                            let sample = sample.into_iter().map(|(k, _)| k).collect();
-                            return Ok(ObjectPreview {
-                                runtime_type,
-                                kind: ObjectKindPreview::Set { size, sample },
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(ObjectPreview {
-            runtime_type,
-            kind: ObjectKindPreview::Plain,
-        })
-    }
-
-    pub async fn object_children(&mut self, object_id: ObjectId) -> Result<Vec<InspectVariable>> {
-        let type_id = self.client().object_reference_reference_type(object_id).await?;
-        let signature = self.signature_for_type(type_id).await?;
-
-        if signature.starts_with('[') {
-            let length = self.client().array_reference_length(object_id).await?.max(0) as usize;
-            let sample_len = length.min(ARRAY_CHILD_SAMPLE);
-            let element_sig = signature.strip_prefix('[').unwrap_or(&signature);
-            let element_type = signature_to_type_name(element_sig);
-            let mut vars = Vec::new();
-            vars.push(InspectVariable {
-                name: "length".to_string(),
-                value: JdwpValue::Int(length as i32),
-                static_type: Some("int".to_string()),
-            });
-            if sample_len > 0 {
-                let values = self
-                    .client()
-                    .array_reference_get_values(object_id, 0, sample_len as i32)
-                    .await?;
-                for (idx, value) in values.into_iter().enumerate() {
-                    vars.push(InspectVariable {
-                        name: format!("[{idx}]"),
-                        value,
-                        static_type: Some(element_type.clone()),
-                    });
-                }
-            }
-            return Ok(vars);
-        }
-
-        let fields: Vec<_> = self
-            .fields_for_type(type_id)
-            .await?
-            .into_iter()
-            .filter(|field| field.mod_bits & FIELD_MODIFIER_STATIC == 0)
-            .collect();
-
-        if fields.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let field_ids: Vec<_> = fields.iter().map(|f| f.field_id).collect();
-        let values = self
-            .client()
-            .object_reference_get_values(object_id, &field_ids)
-            .await?;
-
-        Ok(fields
-            .into_iter()
-            .zip(values)
-            .map(|(field, value)| InspectVariable {
-                name: field.name,
-                value,
-                static_type: Some(signature_to_type_name(&field.signature)),
-            })
-            .collect())
-    }
-
-    async fn signature_for_type(&mut self, type_id: ReferenceTypeId) -> Result<String> {
-        if let Some(sig) = self.signature_cache.get(&type_id) {
-            return Ok(sig.clone());
-        }
-
-        let sig = self.client().reference_type_signature(type_id).await?;
-        self.signature_cache.insert(type_id, sig.clone());
-        Ok(sig)
-    }
-
-    async fn fields_for_type(&mut self, type_id: ReferenceTypeId) -> Result<Vec<FieldInfo>> {
-        if let Some(fields) = self.fields_cache.get(&type_id) {
-            return Ok(fields.clone());
-        }
-
-        let fields = self.client().reference_type_fields(type_id).await?;
-        self.fields_cache.insert(type_id, fields.clone());
-        Ok(fields)
     }
 }
 
-fn null_value() -> JdwpValue {
-    JdwpValue::Object { tag: b'L', id: 0 }
+async fn sort_set_sample(jdwp: &JdwpClient, sample: &mut [JdwpValue]) {
+    let mut decorated: Vec<_> = Vec::with_capacity(sample.len());
+    for value in sample.iter() {
+        decorated.push((sort_key(jdwp, value).await, value.clone()));
+    }
+    decorated.sort_by(|(a, _), (b, _)| a.cmp(b));
+    for (dst, (_key, value)) in sample.iter_mut().zip(decorated.into_iter()) {
+        *dst = value;
+    }
 }
 
-fn signature_to_type_name(signature: &str) -> String {
+async fn sort_map_sample(jdwp: &JdwpClient, sample: &mut [(JdwpValue, JdwpValue)]) {
+    let mut decorated = Vec::with_capacity(sample.len());
+    for (k, v) in sample.iter() {
+        decorated.push((
+            (sort_key(jdwp, k).await, sort_key(jdwp, v).await),
+            (k.clone(), v.clone()),
+        ));
+    }
+    decorated.sort_by(|(a, _), (b, _)| a.cmp(b));
+    for (dst, (_key, value)) in sample.iter_mut().zip(decorated.into_iter()) {
+        *dst = value;
+    }
+}
+
+pub fn signature_to_type_name(signature: &str) -> String {
     let mut sig = signature;
     let mut dims = 0usize;
     while let Some(rest) = sig.strip_prefix('[') {
@@ -425,3 +568,4 @@ fn signature_to_type_name(signature: &str) -> String {
     }
     out
 }
+

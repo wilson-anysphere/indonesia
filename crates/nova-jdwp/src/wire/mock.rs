@@ -120,6 +120,22 @@ impl MockJdwpServer {
     pub async fn step_suspend_policy(&self) -> Option<u8> {
         *self.state.step_suspend_policy.lock().await
     }
+
+    pub fn sample_string_id(&self) -> u64 {
+        SAMPLE_STRING_OBJECT_ID
+    }
+
+    pub fn sample_int_array_id(&self) -> u64 {
+        SAMPLE_INT_ARRAY_OBJECT_ID
+    }
+
+    pub fn sample_hashmap_id(&self) -> u64 {
+        SAMPLE_HASHMAP_OBJECT_ID
+    }
+
+    pub fn sample_hashset_id(&self) -> u64 {
+        SAMPLE_HASHSET_OBJECT_ID
+    }
 }
 
 impl Drop for MockJdwpServer {
@@ -131,6 +147,7 @@ impl Drop for MockJdwpServer {
 struct State {
     next_request_id: AtomicI32,
     next_packet_id: AtomicU32,
+    hashmap_bucket_calls: AtomicU32,
     breakpoint_request: tokio::sync::Mutex<Option<i32>>,
     step_request: tokio::sync::Mutex<Option<i32>>,
     thread_start_request: tokio::sync::Mutex<Option<i32>>,
@@ -168,6 +185,7 @@ impl State {
         Self {
             next_request_id: AtomicI32::new(0),
             next_packet_id: AtomicU32::new(0),
+            hashmap_bucket_calls: AtomicU32::new(0),
             breakpoint_request: tokio::sync::Mutex::new(None),
             step_request: tokio::sync::Mutex::new(None),
             thread_start_request: tokio::sync::Mutex::new(None),
@@ -223,6 +241,32 @@ const EXCEPTION_CLASS_ID: u64 = 0x6004;
 const THROWABLE_CLASS_ID: u64 = 0x6005;
 const FIELD_ID: u64 = 0x7001;
 const DETAIL_MESSAGE_FIELD_ID: u64 = 0x7002;
+
+// Sample objects used by `nova-dap`'s wire formatter tests.
+const SAMPLE_STRING_OBJECT_ID: u64 = 0x5101;
+const SAMPLE_INT_ARRAY_OBJECT_ID: u64 = 0x5102;
+const SAMPLE_HASHMAP_OBJECT_ID: u64 = 0x5103;
+const SAMPLE_HASHSET_OBJECT_ID: u64 = 0x5104;
+
+const HASHMAP_TABLE_ARRAY_OBJECT_ID: u64 = 0x5105;
+const HASHMAP_NODE_A_OBJECT_ID: u64 = 0x5106;
+const HASHMAP_NODE_B_OBJECT_ID: u64 = 0x5107;
+
+const HASHMAP_KEY_A_OBJECT_ID: u64 = 0x5108;
+const HASHMAP_KEY_B_OBJECT_ID: u64 = 0x5109;
+
+const HASHMAP_CLASS_ID: u64 = 0x6010;
+const HASHSET_CLASS_ID: u64 = 0x6011;
+const HASHMAP_NODE_CLASS_ID: u64 = 0x6012;
+const HASHMAP_TABLE_ARRAY_CLASS_ID: u64 = 0x6013;
+
+const HASHMAP_FIELD_SIZE_ID: u64 = 0x7010;
+const HASHMAP_FIELD_TABLE_ID: u64 = 0x7011;
+const HASHSET_FIELD_MAP_ID: u64 = 0x7012;
+
+const HASHMAP_NODE_FIELD_KEY_ID: u64 = 0x7013;
+const HASHMAP_NODE_FIELD_VALUE_ID: u64 = 0x7014;
+const HASHMAP_NODE_FIELD_NEXT_ID: u64 = 0x7015;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MockExceptionRequest {
@@ -460,6 +504,10 @@ async fn handle_packet(
                 ARRAY_CLASS_ID => "[I",
                 EXCEPTION_CLASS_ID => "Ljava/lang/RuntimeException;",
                 THROWABLE_CLASS_ID => "Ljava/lang/Throwable;",
+                HASHMAP_CLASS_ID => "Ljava/util/HashMap;",
+                HASHSET_CLASS_ID => "Ljava/util/HashSet;",
+                HASHMAP_NODE_CLASS_ID => "Ljava/util/HashMap$Node;",
+                HASHMAP_TABLE_ARRAY_CLASS_ID => "[Ljava/util/HashMap$Node;",
                 _ => "LObject;",
             };
             w.write_string(sig);
@@ -480,20 +528,60 @@ async fn handle_packet(
         (2, 4) => {
             let class_id = r.read_reference_type_id(sizes).unwrap_or(0);
             let mut w = JdwpWriter::new();
-            if class_id == OBJECT_CLASS_ID {
-                w.write_u32(1);
-                w.write_id(FIELD_ID, sizes.field_id);
-                w.write_string("field");
-                w.write_string("I");
-                w.write_u32(1);
-            } else if class_id == THROWABLE_CLASS_ID {
-                w.write_u32(1);
-                w.write_id(DETAIL_MESSAGE_FIELD_ID, sizes.field_id);
-                w.write_string("detailMessage");
-                w.write_string("Ljava/lang/String;");
-                w.write_u32(0);
-            } else {
-                w.write_u32(0);
+            match class_id {
+                OBJECT_CLASS_ID => {
+                    w.write_u32(1);
+                    w.write_id(FIELD_ID, sizes.field_id);
+                    w.write_string("field");
+                    w.write_string("I");
+                    w.write_u32(1);
+                }
+                THROWABLE_CLASS_ID => {
+                    w.write_u32(1);
+                    w.write_id(DETAIL_MESSAGE_FIELD_ID, sizes.field_id);
+                    w.write_string("detailMessage");
+                    w.write_string("Ljava/lang/String;");
+                    w.write_u32(0);
+                }
+                HASHMAP_CLASS_ID => {
+                    w.write_u32(2);
+                    w.write_id(HASHMAP_FIELD_SIZE_ID, sizes.field_id);
+                    w.write_string("size");
+                    w.write_string("I");
+                    w.write_u32(1);
+
+                    w.write_id(HASHMAP_FIELD_TABLE_ID, sizes.field_id);
+                    w.write_string("table");
+                    w.write_string("[Ljava/util/HashMap$Node;");
+                    w.write_u32(1);
+                }
+                HASHSET_CLASS_ID => {
+                    w.write_u32(1);
+                    w.write_id(HASHSET_FIELD_MAP_ID, sizes.field_id);
+                    w.write_string("map");
+                    w.write_string("Ljava/util/HashMap;");
+                    w.write_u32(1);
+                }
+                HASHMAP_NODE_CLASS_ID => {
+                    w.write_u32(3);
+                    w.write_id(HASHMAP_NODE_FIELD_KEY_ID, sizes.field_id);
+                    w.write_string("key");
+                    w.write_string("Ljava/lang/String;");
+                    w.write_u32(1);
+
+                    w.write_id(HASHMAP_NODE_FIELD_VALUE_ID, sizes.field_id);
+                    w.write_string("value");
+                    w.write_string("Ljava/lang/Object;");
+                    w.write_u32(1);
+
+                    w.write_id(HASHMAP_NODE_FIELD_NEXT_ID, sizes.field_id);
+                    w.write_string("next");
+                    w.write_string("Ljava/util/HashMap$Node;");
+                    w.write_u32(1);
+                }
+                _ => {
+                    w.write_u32(0);
+                }
             }
             (0, w.into_vec())
         }
@@ -603,9 +691,33 @@ async fn handle_packet(
                     w.write_u8(1); // TypeTag.CLASS
                     w.write_reference_type_id(STRING_CLASS_ID, sizes);
                 }
+                SAMPLE_STRING_OBJECT_ID | HASHMAP_KEY_A_OBJECT_ID | HASHMAP_KEY_B_OBJECT_ID => {
+                    w.write_u8(1); // TypeTag.CLASS
+                    w.write_reference_type_id(STRING_CLASS_ID, sizes);
+                }
                 ARRAY_OBJECT_ID => {
                     w.write_u8(3); // TypeTag.ARRAY
                     w.write_reference_type_id(ARRAY_CLASS_ID, sizes);
+                }
+                SAMPLE_INT_ARRAY_OBJECT_ID => {
+                    w.write_u8(3); // TypeTag.ARRAY
+                    w.write_reference_type_id(ARRAY_CLASS_ID, sizes);
+                }
+                SAMPLE_HASHMAP_OBJECT_ID => {
+                    w.write_u8(1); // TypeTag.CLASS
+                    w.write_reference_type_id(HASHMAP_CLASS_ID, sizes);
+                }
+                SAMPLE_HASHSET_OBJECT_ID => {
+                    w.write_u8(1); // TypeTag.CLASS
+                    w.write_reference_type_id(HASHSET_CLASS_ID, sizes);
+                }
+                HASHMAP_TABLE_ARRAY_OBJECT_ID => {
+                    w.write_u8(3); // TypeTag.ARRAY
+                    w.write_reference_type_id(HASHMAP_TABLE_ARRAY_CLASS_ID, sizes);
+                }
+                HASHMAP_NODE_A_OBJECT_ID | HASHMAP_NODE_B_OBJECT_ID => {
+                    w.write_u8(1); // TypeTag.CLASS
+                    w.write_reference_type_id(HASHMAP_NODE_CLASS_ID, sizes);
                 }
                 _ => {
                     // Default to a generic class reference type for unknown object ids.
@@ -626,12 +738,46 @@ async fn handle_packet(
             let mut w = JdwpWriter::new();
             w.write_u32(count as u32);
             for field_id in field_ids {
-                if object_id == EXCEPTION_ID && field_id == DETAIL_MESSAGE_FIELD_ID {
-                    w.write_u8(b's');
-                    w.write_object_id(STRING_OBJECT_ID, sizes);
-                } else {
-                    w.write_u8(b'I');
-                    w.write_i32(7);
+                match (object_id, field_id) {
+                    (EXCEPTION_ID, DETAIL_MESSAGE_FIELD_ID) => {
+                        w.write_u8(b's');
+                        w.write_object_id(STRING_OBJECT_ID, sizes);
+                    }
+                    (SAMPLE_HASHMAP_OBJECT_ID, HASHMAP_FIELD_SIZE_ID) => {
+                        w.write_u8(b'I');
+                        w.write_i32(2);
+                    }
+                    (SAMPLE_HASHMAP_OBJECT_ID, HASHMAP_FIELD_TABLE_ID) => {
+                        w.write_u8(b'[');
+                        w.write_object_id(HASHMAP_TABLE_ARRAY_OBJECT_ID, sizes);
+                    }
+                    (SAMPLE_HASHSET_OBJECT_ID, HASHSET_FIELD_MAP_ID) => {
+                        w.write_u8(b'L');
+                        w.write_object_id(SAMPLE_HASHMAP_OBJECT_ID, sizes);
+                    }
+                    (HASHMAP_NODE_A_OBJECT_ID, HASHMAP_NODE_FIELD_KEY_ID) => {
+                        w.write_u8(b's');
+                        w.write_object_id(HASHMAP_KEY_A_OBJECT_ID, sizes);
+                    }
+                    (HASHMAP_NODE_B_OBJECT_ID, HASHMAP_NODE_FIELD_KEY_ID) => {
+                        w.write_u8(b's');
+                        w.write_object_id(HASHMAP_KEY_B_OBJECT_ID, sizes);
+                    }
+                    (
+                        HASHMAP_NODE_A_OBJECT_ID | HASHMAP_NODE_B_OBJECT_ID,
+                        HASHMAP_NODE_FIELD_VALUE_ID,
+                    )
+                    | (
+                        HASHMAP_NODE_A_OBJECT_ID | HASHMAP_NODE_B_OBJECT_ID,
+                        HASHMAP_NODE_FIELD_NEXT_ID,
+                    ) => {
+                        w.write_u8(b'L');
+                        w.write_object_id(0, sizes);
+                    }
+                    _ => {
+                        w.write_u8(b'I');
+                        w.write_i32(7);
+                    }
                 }
             }
             (0, w.into_vec())
@@ -650,9 +796,21 @@ async fn handle_packet(
         }
         // StringReference.Value
         (10, 1) => {
-            let _object_id = r.read_object_id(sizes).unwrap_or(0);
+            let object_id = r.read_object_id(sizes).unwrap_or(0);
             let mut w = JdwpWriter::new();
-            w.write_string("mock string");
+            let value = match object_id {
+                STRING_OBJECT_ID => "mock string".to_string(),
+                SAMPLE_STRING_OBJECT_ID => {
+                    // Include characters that require escaping and exceed the formatter's default length.
+                    let mut out = "hello\\world\n\"quoted\" and a long tail: ".repeat(3);
+                    out.push_str(&"x".repeat(80));
+                    out
+                }
+                HASHMAP_KEY_A_OBJECT_ID => "a".to_string(),
+                HASHMAP_KEY_B_OBJECT_ID => "b".to_string(),
+                _ => "mock string".to_string(),
+            };
+            w.write_string(&value);
             (0, w.into_vec())
         }
         // ArrayReference.Length
@@ -661,6 +819,8 @@ async fn handle_packet(
             let mut w = JdwpWriter::new();
             let len = match array_id {
                 ARRAY_OBJECT_ID => 3,
+                SAMPLE_INT_ARRAY_OBJECT_ID => 5,
+                HASHMAP_TABLE_ARRAY_OBJECT_ID => 2,
                 _ => 0,
             };
             w.write_i32(len);
@@ -672,15 +832,47 @@ async fn handle_packet(
             let first_index = r.read_i32().unwrap_or(0);
             let length = r.read_i32().unwrap_or(0);
             let mut w = JdwpWriter::new();
-            if array_id == ARRAY_OBJECT_ID {
-                w.write_u8(b'I'); // element tag
-                w.write_u32(length.max(0) as u32);
-                for idx in 0..length.max(0) {
-                    w.write_i32(first_index + idx);
+            match array_id {
+                ARRAY_OBJECT_ID => {
+                    w.write_u8(b'I'); // element tag
+                    w.write_u32(length.max(0) as u32);
+                    for idx in 0..length.max(0) {
+                        w.write_i32(first_index + idx);
+                    }
                 }
-            } else {
-                w.write_u8(b'V');
-                w.write_u32(0);
+                SAMPLE_INT_ARRAY_OBJECT_ID => {
+                    let values = [10i32, 20, 30, 40, 50];
+                    let start = first_index.max(0) as usize;
+                    let req = length.max(0) as usize;
+                    let end = start.saturating_add(req).min(values.len());
+                    let slice = if start < end { &values[start..end] } else { &[] };
+                    w.write_u8(b'I');
+                    w.write_u32(slice.len() as u32);
+                    for value in slice {
+                        w.write_i32(*value);
+                    }
+                }
+                HASHMAP_TABLE_ARRAY_OBJECT_ID => {
+                    let buckets_a = [HASHMAP_NODE_B_OBJECT_ID, HASHMAP_NODE_A_OBJECT_ID];
+                    let buckets_b = [HASHMAP_NODE_A_OBJECT_ID, HASHMAP_NODE_B_OBJECT_ID];
+                    let call = state.hashmap_bucket_calls.fetch_add(1, Ordering::Relaxed);
+                    let buckets = if call % 2 == 0 { &buckets_a } else { &buckets_b };
+
+                    let start = first_index.max(0) as usize;
+                    let req = length.max(0) as usize;
+                    let end = start.saturating_add(req).min(buckets.len());
+                    let slice = if start < end { &buckets[start..end] } else { &[] };
+
+                    w.write_u8(b'L');
+                    w.write_u32(slice.len() as u32);
+                    for object_id in slice {
+                        w.write_object_id(*object_id, sizes);
+                    }
+                }
+                _ => {
+                    w.write_u8(b'V');
+                    w.write_u32(0);
+                }
             }
             (0, w.into_vec())
         }

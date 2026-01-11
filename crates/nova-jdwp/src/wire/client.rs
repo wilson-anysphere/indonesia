@@ -19,6 +19,7 @@ use super::{
     codec::{
         encode_command, signature_to_tag, JdwpReader, JdwpWriter, FLAG_REPLY, HANDSHAKE, HEADER_LEN,
     },
+    inspect::InspectCache,
     types::{
         ClassInfo, FieldInfo, FrameId, FrameInfo, JdwpCapabilitiesNew, JdwpError, JdwpEvent,
         JdwpIdSizes, JdwpValue, LineTable, LineTableEntry, Location, MethodId, MethodInfo,
@@ -61,6 +62,7 @@ struct Inner {
     events: broadcast::Sender<JdwpEvent>,
     shutdown: CancellationToken,
     config: JdwpClientConfig,
+    inspect_cache: Mutex<InspectCache>,
 }
 
 #[derive(Clone)]
@@ -105,6 +107,7 @@ impl JdwpClient {
             events,
             shutdown: CancellationToken::new(),
             config,
+            inspect_cache: Mutex::new(InspectCache::default()),
         });
 
         tokio::spawn(read_loop(reader, inner.clone()));
@@ -368,6 +371,20 @@ impl JdwpClient {
         r.read_string()
     }
 
+    pub(crate) async fn reference_type_signature_cached(&self, class_id: ReferenceTypeId) -> Result<String> {
+        {
+            let cache = self.inner.inspect_cache.lock().await;
+            if let Some(sig) = cache.signatures.get(&class_id) {
+                return Ok(sig.clone());
+            }
+        }
+
+        let sig = self.reference_type_signature(class_id).await?;
+        let mut cache = self.inner.inspect_cache.lock().await;
+        cache.signatures.insert(class_id, sig.clone());
+        Ok(sig)
+    }
+
     pub async fn reference_type_methods(
         &self,
         class_id: ReferenceTypeId,
@@ -387,6 +404,20 @@ impl JdwpClient {
                 mod_bits: r.read_u32()?,
             });
         }
+        Ok(methods)
+    }
+
+    pub(crate) async fn reference_type_methods_cached(&self, class_id: ReferenceTypeId) -> Result<Vec<MethodInfo>> {
+        {
+            let cache = self.inner.inspect_cache.lock().await;
+            if let Some(methods) = cache.methods.get(&class_id) {
+                return Ok(methods.clone());
+            }
+        }
+
+        let methods = self.reference_type_methods(class_id).await?;
+        let mut cache = self.inner.inspect_cache.lock().await;
+        cache.methods.insert(class_id, methods.clone());
         Ok(methods)
     }
 
@@ -524,6 +555,20 @@ impl JdwpClient {
                 mod_bits: r.read_u32()?,
             });
         }
+        Ok(fields)
+    }
+
+    pub(crate) async fn reference_type_fields_cached(&self, class_id: ReferenceTypeId) -> Result<Vec<FieldInfo>> {
+        {
+            let cache = self.inner.inspect_cache.lock().await;
+            if let Some(fields) = cache.fields.get(&class_id) {
+                return Ok(fields.clone());
+            }
+        }
+
+        let fields = self.reference_type_fields(class_id).await?;
+        let mut cache = self.inner.inspect_cache.lock().await;
+        cache.fields.insert(class_id, fields.clone());
         Ok(fields)
     }
 
