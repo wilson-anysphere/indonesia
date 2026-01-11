@@ -28,6 +28,18 @@ pub fn parse_junit_report_str(xml: &str) -> Result<Vec<TestCaseResult>> {
         failure: Option<TestFailure>,
     }
 
+    fn apply_status(case: &mut TempCase, next: TestStatus) {
+        match next {
+            TestStatus::Failed => case.status = TestStatus::Failed,
+            TestStatus::Skipped => {
+                if case.status != TestStatus::Failed {
+                    case.status = TestStatus::Skipped;
+                }
+            }
+            TestStatus::Passed => {}
+        }
+    }
+
     let mut current_case: Option<TempCase> = None;
     let mut in_failure_text = false;
     let mut failure_text = String::new();
@@ -55,7 +67,7 @@ pub fn parse_junit_report_str(xml: &str) -> Result<Vec<TestCaseResult>> {
                 }
                 b"failure" | b"error" => {
                     if let Some(case) = current_case.as_mut() {
-                        case.status = TestStatus::Failed;
+                        apply_status(case, TestStatus::Failed);
                         let mut failure = TestFailure {
                             message: None,
                             kind: None,
@@ -79,7 +91,7 @@ pub fn parse_junit_report_str(xml: &str) -> Result<Vec<TestCaseResult>> {
                 }
                 b"skipped" => {
                     if let Some(case) = current_case.as_mut() {
-                        case.status = TestStatus::Skipped;
+                        apply_status(case, TestStatus::Skipped);
                     }
                 }
                 _ => {}
@@ -115,9 +127,31 @@ pub fn parse_junit_report_str(xml: &str) -> Result<Vec<TestCaseResult>> {
                     };
                     insert_or_merge(&mut cases, item);
                 }
+                b"failure" | b"error" => {
+                    if let Some(case) = current_case.as_mut() {
+                        apply_status(case, TestStatus::Failed);
+                        let mut failure = TestFailure {
+                            message: None,
+                            kind: None,
+                            stack_trace: None,
+                        };
+                        for attr in e.attributes().with_checks(false) {
+                            let attr = attr?;
+                            let key = attr.key.as_ref();
+                            let value = attr.unescape_value()?.to_string();
+                            match key {
+                                b"message" => failure.message = Some(value),
+                                b"type" => failure.kind = Some(value),
+                                _ => {}
+                            }
+                        }
+
+                        case.failure = Some(failure);
+                    }
+                }
                 b"skipped" => {
                     if let Some(case) = current_case.as_mut() {
-                        case.status = TestStatus::Skipped;
+                        apply_status(case, TestStatus::Skipped);
                     }
                 }
                 _ => {}

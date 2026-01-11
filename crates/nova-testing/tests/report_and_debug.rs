@@ -70,6 +70,69 @@ fn normalizes_parameterized_testcase_names() {
 }
 
 #[test]
+fn parses_failure_as_empty_element() {
+    let xml = r#"
+        <testsuite name="com.example.CalculatorTest" tests="1" failures="1" errors="0" skipped="0" time="0.001">
+          <testcase classname="com.example.CalculatorTest" name="emptyFails" time="0.001">
+            <failure message="boom" type="java.lang.AssertionError"/>
+          </testcase>
+        </testsuite>
+    "#;
+
+    let cases = parse_junit_report_str(xml).unwrap();
+    assert_eq!(cases.len(), 1);
+    assert_eq!(cases[0].id, "com.example.CalculatorTest#emptyFails");
+    assert_eq!(cases[0].status, TestStatus::Failed);
+    assert_eq!(cases[0].failure.as_ref().unwrap().message.as_deref(), Some("boom"));
+    assert_eq!(
+        cases[0].failure.as_ref().unwrap().kind.as_deref(),
+        Some("java.lang.AssertionError")
+    );
+    assert_eq!(cases[0].failure.as_ref().unwrap().stack_trace.as_deref(), None);
+}
+
+#[test]
+fn parses_error_as_empty_element() {
+    let xml = r#"
+        <testsuite name="com.example.CalculatorTest" tests="1" failures="0" errors="1" skipped="0" time="0.001">
+          <testcase classname="com.example.CalculatorTest" name="emptyErrors" time="0.001">
+            <error message="boom" type="java.lang.RuntimeException"/>
+          </testcase>
+        </testsuite>
+    "#;
+
+    let cases = parse_junit_report_str(xml).unwrap();
+    assert_eq!(cases.len(), 1);
+    assert_eq!(cases[0].id, "com.example.CalculatorTest#emptyErrors");
+    assert_eq!(cases[0].status, TestStatus::Failed);
+    assert_eq!(cases[0].failure.as_ref().unwrap().message.as_deref(), Some("boom"));
+    assert_eq!(
+        cases[0].failure.as_ref().unwrap().kind.as_deref(),
+        Some("java.lang.RuntimeException")
+    );
+    assert_eq!(cases[0].failure.as_ref().unwrap().stack_trace.as_deref(), None);
+}
+
+#[test]
+fn failure_wins_when_merging_skipped_and_failed_parameterizations() {
+    let xml = r#"
+        <testsuite name="com.example.CalculatorTest" tests="2" failures="1" errors="0" skipped="1" time="0.002">
+          <testcase classname="com.example.CalculatorTest" name="parameterizedFlaky[1]" time="0.001">
+            <skipped/>
+          </testcase>
+          <testcase classname="com.example.CalculatorTest" name="parameterizedFlaky[2]" time="0.001">
+            <failure message="boom" type="java.lang.AssertionError"/>
+          </testcase>
+        </testsuite>
+    "#;
+
+    let cases = parse_junit_report_str(xml).unwrap();
+    assert_eq!(cases.len(), 1);
+    assert_eq!(cases[0].id, "com.example.CalculatorTest#parameterizedFlaky");
+    assert_eq!(cases[0].status, TestStatus::Failed);
+}
+
+#[test]
 fn creates_debug_configuration_for_maven() {
     let root = fixture_root("maven-junit5");
     let cfg =
