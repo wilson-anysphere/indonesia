@@ -55,6 +55,7 @@ pub type Result<T> = std::result::Result<T, DebuggerError>;
 /// The wire DAP server reports `stopped.body.allThreadsStopped = false` for these
 /// events.
 const JDWP_SUSPEND_POLICY_EVENT_THREAD: u8 = 1;
+const JDWP_SUSPEND_POLICY_NONE: u8 = 0;
 
 #[derive(Debug, Clone)]
 pub struct AttachArgs {
@@ -331,6 +332,12 @@ impl Debugger {
         self.jdwp.shutdown_token()
     }
 
+    pub fn breakpoint_is_logpoint(&self, request_id: i32) -> bool {
+        self.breakpoint_metadata
+            .get(&request_id)
+            .is_some_and(|meta| meta.log_message.is_some())
+    }
+
     fn invalidate_handles(&mut self) {
         self.frame_handles.clear();
         self.var_handles.clear();
@@ -583,8 +590,24 @@ impl Debugger {
             check_cancel(cancel)?;
             let spec_line = bp.line;
             let condition = normalize_breakpoint_string(bp.condition);
-            let hit_condition = normalize_breakpoint_string(bp.hit_condition);
+            let mut hit_condition = normalize_breakpoint_string(bp.hit_condition);
             let log_message = normalize_breakpoint_string(bp.log_message);
+
+            let count_modifier = hit_condition
+                .as_deref()
+                .and_then(|raw| raw.parse::<u32>().ok())
+                .filter(|count| *count > 1);
+            if count_modifier.is_some() {
+                // Hit-count breakpoints are handled by JDWP's built-in `Count` filter.
+                // Clear the expression so we don't try to re-evaluate it per event.
+                hit_condition = None;
+            }
+
+            let suspend_policy = if log_message.is_some() {
+                JDWP_SUSPEND_POLICY_NONE
+            } else {
+                JDWP_SUSPEND_POLICY_EVENT_THREAD
+            };
 
             let mut verified = false;
             let mut first_request_id: Option<i32> = None;
@@ -596,12 +619,16 @@ impl Debugger {
                 match self.location_for_line(cancel, class, spec_line).await? {
                     Some(location) => {
                         saw_location = true;
+                        let mut modifiers = vec![EventModifier::LocationOnly { location }];
+                        if let Some(count) = count_modifier {
+                            modifiers.push(EventModifier::Count { count });
+                        }
                         match cancellable_jdwp(
                             cancel,
                             self.jdwp.event_request_set(
                                 2,
-                                JDWP_SUSPEND_POLICY_EVENT_THREAD,
-                                vec![EventModifier::LocationOnly { location }],
+                                suspend_policy,
+                                modifiers,
                             ),
                         )
                         .await
@@ -1404,17 +1431,31 @@ impl Debugger {
         for bp in bps {
             let spec_line = bp.line;
             let condition = normalize_breakpoint_string(bp.condition);
-            let hit_condition = normalize_breakpoint_string(bp.hit_condition);
+            let mut hit_condition = normalize_breakpoint_string(bp.hit_condition);
             let log_message = normalize_breakpoint_string(bp.log_message);
 
+            let count_modifier = hit_condition
+                .as_deref()
+                .and_then(|raw| raw.parse::<u32>().ok())
+                .filter(|count| *count > 1);
+            if count_modifier.is_some() {
+                hit_condition = None;
+            }
+
+            let suspend_policy = if log_message.is_some() {
+                JDWP_SUSPEND_POLICY_NONE
+            } else {
+                JDWP_SUSPEND_POLICY_EVENT_THREAD
+            };
+
             if let Some(location) = self.location_for_line(&cancel, &class, spec_line).await? {
+                let mut modifiers = vec![EventModifier::LocationOnly { location }];
+                if let Some(count) = count_modifier {
+                    modifiers.push(EventModifier::Count { count });
+                }
                 if let Ok(request_id) = self
                     .jdwp
-                    .event_request_set(
-                        2,
-                        JDWP_SUSPEND_POLICY_EVENT_THREAD,
-                        vec![EventModifier::LocationOnly { location }],
-                    )
+                    .event_request_set(2, suspend_policy, modifiers)
                     .await
                 {
                     entries.push(BreakpointEntry {

@@ -846,6 +846,12 @@ fn class_name_to_signature(class_name: &str) -> String {
 
 #[derive(Debug)]
 pub enum EventModifier {
+    /// JDWP `EventRequest` modifier kind 1.
+    ///
+    /// Report the event after it has occurred `count` times.
+    Count {
+        count: u32,
+    },
     ThreadOnly {
         thread: ThreadId,
     },
@@ -870,6 +876,10 @@ pub enum EventModifier {
 impl EventModifier {
     fn encode(self, w: &mut JdwpWriter, sizes: &JdwpIdSizes) {
         match self {
+            EventModifier::Count { count } => {
+                w.write_u8(1);
+                w.write_u32(count);
+            }
             EventModifier::ThreadOnly { thread } => {
                 w.write_u8(3);
                 w.write_object_id(thread, sizes);

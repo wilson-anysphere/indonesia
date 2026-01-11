@@ -2361,14 +2361,21 @@ fn spawn_event_task(
                             Err(_) => breakpoint_disposition = Some(BreakpointDisposition::Stop),
                         }
 
+                        let is_logpoint = dbg.breakpoint_is_logpoint(*request_id);
+
                         // If the breakpoint should not stop execution, resume immediately.
+                        //
+                        // Logpoints are configured with `SuspendPolicy::NONE`, so there is no
+                        // suspension to resume (and resuming could accidentally unpause another
+                        // thread that is stopped in the debugger).
                         if matches!(
                             breakpoint_disposition.as_ref(),
-                            Some(
-                                BreakpointDisposition::Continue | BreakpointDisposition::Log { .. }
-                            )
-                        ) {
-                            let _ = dbg.continue_(&server_shutdown, Some(*thread as i64)).await;
+                            Some(BreakpointDisposition::Continue)
+                        ) && !is_logpoint
+                        {
+                            let _ = dbg
+                                .continue_(&server_shutdown, Some(*thread as i64))
+                                .await;
                         }
                     }
                 }

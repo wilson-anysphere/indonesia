@@ -128,6 +128,10 @@ impl MockJdwpServer {
         *self.state.breakpoint_suspend_policy.lock().await
     }
 
+    pub async fn breakpoint_count_modifier(&self) -> Option<u32> {
+        *self.state.breakpoint_count_modifier.lock().await
+    }
+
     pub async fn step_suspend_policy(&self) -> Option<u8> {
         *self.state.step_suspend_policy.lock().await
     }
@@ -181,6 +185,7 @@ struct State {
     thread_suspend_calls: AtomicU32,
     thread_resume_calls: AtomicU32,
     breakpoint_request: tokio::sync::Mutex<Option<i32>>,
+    breakpoint_count_modifier: tokio::sync::Mutex<Option<u32>>,
     step_request: tokio::sync::Mutex<Option<i32>>,
     method_exit_request: tokio::sync::Mutex<Option<i32>>,
     thread_start_request: tokio::sync::Mutex<Option<i32>>,
@@ -222,6 +227,7 @@ impl State {
             thread_suspend_calls: AtomicU32::new(0),
             thread_resume_calls: AtomicU32::new(0),
             breakpoint_request: tokio::sync::Mutex::new(None),
+            breakpoint_count_modifier: tokio::sync::Mutex::new(None),
             step_request: tokio::sync::Mutex::new(None),
             method_exit_request: tokio::sync::Mutex::new(None),
             thread_start_request: tokio::sync::Mutex::new(None),
@@ -1038,11 +1044,15 @@ async fn handle_packet(
             let event_kind = r.read_u8().unwrap_or(0);
             let suspend_policy = r.read_u8().unwrap_or(0);
             let modifiers = r.read_u32().unwrap_or(0) as usize;
+            let mut count_modifier: Option<u32> = None;
             let mut exception_caught = false;
             let mut exception_uncaught = false;
             for _ in 0..modifiers {
                 let mod_kind = r.read_u8().unwrap_or(0);
                 match mod_kind {
+                    1 => {
+                        count_modifier = Some(r.read_u32().unwrap_or(0));
+                    }
                     3 => {
                         let _thread = r.read_object_id(sizes).unwrap_or(0);
                     }
@@ -1074,6 +1084,7 @@ async fn handle_packet(
                 2 => {
                     *state.breakpoint_request.lock().await = Some(request_id);
                     *state.breakpoint_suspend_policy.lock().await = Some(suspend_policy);
+                    *state.breakpoint_count_modifier.lock().await = count_modifier;
                 }
                 4 => {
                     *state.exception_request.lock().await = Some(MockExceptionRequest {

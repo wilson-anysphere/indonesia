@@ -83,19 +83,19 @@ impl JdwpRedefiner for TcpJdwpClient {
 
 /// Minimal JDWP integration required for hot swapping (async).
 pub trait AsyncJdwpRedefiner {
-    fn redefine_class(
-        &mut self,
-        class_name: &str,
-        bytecode: &[u8],
-    ) -> impl Future<Output = Result<(), JdwpError>> + Send + '_;
+    fn redefine_class<'a>(
+        &'a mut self,
+        class_name: &'a str,
+        bytecode: &'a [u8],
+    ) -> impl Future<Output = Result<(), JdwpError>> + Send + 'a;
 }
 
 impl AsyncJdwpRedefiner for WireJdwpClient {
-    fn redefine_class(
-        &mut self,
-        class_name: &str,
-        bytecode: &[u8],
-    ) -> impl Future<Output = Result<(), JdwpError>> + Send + '_ {
+    fn redefine_class<'a>(
+        &'a mut self,
+        class_name: &'a str,
+        bytecode: &'a [u8],
+    ) -> impl Future<Output = Result<(), JdwpError>> + Send + 'a {
         async move {
             WireJdwpClient::redefine_class_by_name(self, class_name, bytecode)
                 .await

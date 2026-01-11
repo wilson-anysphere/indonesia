@@ -12,7 +12,7 @@ use crate::resolver::{BodyOwner, LocalRef, ParamOwner, ParamRef, Resolution, Typ
 
 pub type ScopeId = usize;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopeGraph {
     scopes: Vec<ScopeData>,
     type_names: HashMap<ItemId, TypeName>,
@@ -36,7 +36,7 @@ impl ScopeGraph {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopeData {
     pub(crate) parent: Option<ScopeId>,
     pub(crate) kind: ScopeKind,
@@ -66,7 +66,7 @@ impl ScopeData {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScopeKind {
     Universe,
     Package {
@@ -97,7 +97,7 @@ pub enum ScopeKind {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopeBuildResult {
     pub scopes: ScopeGraph,
     pub file_scope: ScopeId,

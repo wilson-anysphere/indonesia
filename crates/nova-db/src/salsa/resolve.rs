@@ -57,6 +57,14 @@ impl HirDatabase for dyn NovaResolve {
     }
 }
 
+struct HirDbAdapter<'a>(&'a dyn NovaResolve);
+
+impl HirDatabase for HirDbAdapter<'_> {
+    fn file_text(&self, file: FileId) -> Arc<str> {
+        Arc::from(self.0.file_content(file).as_str())
+    }
+}
+
 fn scope_graph(db: &dyn NovaResolve, file: FileId) -> Arc<nova_resolve::ScopeBuildResult> {
     let start = Instant::now();
 
@@ -64,7 +72,8 @@ fn scope_graph(db: &dyn NovaResolve, file: FileId) -> Arc<nova_resolve::ScopeBui
     let _span = tracing::debug_span!("query", name = "scope_graph", ?file).entered();
 
     cancel::check_cancelled(db);
-    let built = nova_resolve::build_scopes(db, file);
+    let hir_db = HirDbAdapter(db);
+    let built = nova_resolve::build_scopes(&hir_db, file);
 
     let result = Arc::new(built);
     db.record_query_stat("scope_graph", start.elapsed());
