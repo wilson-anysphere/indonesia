@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 
 use crate::{
@@ -70,51 +71,90 @@ impl<'env> TyContext<'env> {
             return ty.clone();
         }
 
-        let Some(class_def) = self.class(*def) else {
-            return ty.clone();
+        let type_params = {
+            let Some(class_def) = self.class(*def) else {
+                return ty.clone();
+            };
+            if class_def.type_params.len() != args.len() {
+                return ty.clone();
+            }
+            class_def.type_params.clone()
         };
 
         let object = Type::class(self.well_known().object, vec![]);
-        let formal_bounds: Vec<Type> = class_def
-            .type_params
-            .iter()
-            .map(|tp| {
-                self.type_param(*tp)
-                    .and_then(|d| d.upper_bounds.first().cloned())
-                    .unwrap_or_else(|| object.clone())
-            })
-            .collect();
 
-        let mut new_args = Vec::with_capacity(args.len());
-        for (idx, arg) in args.iter().enumerate() {
+        // First pass: allocate capture ids for wildcard arguments and build a substitution mapping
+        // from the class's formal type parameters to either the concrete argument or the capture var.
+        let mut subst: HashMap<TypeVarId, Type> = HashMap::with_capacity(type_params.len());
+        let mut capture_ids: Vec<Option<TypeVarId>> = Vec::with_capacity(args.len());
+
+        for (formal, arg) in type_params.iter().copied().zip(args.iter()) {
             match arg {
-                Type::Wildcard(WildcardBound::Unbounded) => {
-                    let upper = formal_bounds
-                        .get(idx)
-                        .cloned()
-                        .unwrap_or_else(|| object.clone());
-                    let cap = self.add_capture_type_param(vec![upper], None);
-                    new_args.push(Type::TypeVar(cap));
+                Type::Wildcard(_) => {
+                    // Placeholder bounds are populated in the second pass.
+                    let cap = self.add_capture_type_param(Vec::new(), None);
+                    subst.insert(formal, Type::TypeVar(cap));
+                    capture_ids.push(Some(cap));
                 }
+                other => {
+                    subst.insert(formal, other.clone());
+                    capture_ids.push(None);
+                }
+            }
+        }
+
+        // Second pass: compute bounds for each capture var, substituting references to the class's
+        // formal type parameters with their captured counterparts. This supports common patterns like
+        // `E extends Enum<E>` (self-referential bounds).
+        for (idx, cap_opt) in capture_ids.iter().enumerate() {
+            let Some(cap) = cap_opt else {
+                continue;
+            };
+            let formal = type_params[idx];
+
+            let mut upper_bounds = self
+                .type_param(formal)
+                .map(|tp| tp.upper_bounds.clone())
+                .unwrap_or_default();
+            if upper_bounds.is_empty() {
+                upper_bounds.push(object.clone());
+            }
+            upper_bounds = upper_bounds
+                .iter()
+                .map(|b| crate::substitute(b, &subst))
+                .collect();
+
+            let mut lower_bound = None;
+            match &args[idx] {
+                Type::Wildcard(WildcardBound::Unbounded) => {}
                 Type::Wildcard(WildcardBound::Extends(upper)) => {
-                    let formal = formal_bounds
-                        .get(idx)
-                        .cloned()
-                        .unwrap_or_else(|| object.clone());
-                    let glb = crate::glb(self, &formal, upper);
-                    let cap = self.add_capture_type_param(vec![glb], None);
-                    new_args.push(Type::TypeVar(cap));
+                    upper_bounds.push(crate::substitute(upper, &subst));
                 }
                 Type::Wildcard(WildcardBound::Super(lower)) => {
-                    let upper = formal_bounds
-                        .get(idx)
-                        .cloned()
-                        .unwrap_or_else(|| object.clone());
-                    let cap = self.add_capture_type_param(vec![upper], Some((**lower).clone()));
-                    new_args.push(Type::TypeVar(cap));
+                    lower_bound = Some(crate::substitute(lower, &subst));
                 }
-                other => new_args.push(other.clone()),
+                _ => {}
             }
+
+            // Remove redundant bounds (`Integer` implies `Object`, etc) for nicer diagnostics and
+            // more stable comparisons.
+            upper_bounds = simplify_upper_bounds(self, upper_bounds);
+
+            if let Some(local_idx) = cap.context_local_index() {
+                if let Some(def) = self.locals.get_mut(local_idx) {
+                    def.upper_bounds = upper_bounds;
+                    def.lower_bound = lower_bound;
+                }
+            }
+        }
+
+        // Build the captured type arguments in the class's formal parameter order.
+        let mut new_args = Vec::with_capacity(args.len());
+        for formal in &type_params {
+            let Some(arg) = subst.get(formal) else {
+                return ty.clone();
+            };
+            new_args.push(arg.clone());
         }
 
         Type::class(*def, new_args)
@@ -136,6 +176,29 @@ impl<'env> TyContext<'env> {
         let receiver = self.capture_conversion(&receiver);
         crate::resolve_field(self, &receiver, name, call_kind)
     }
+}
+
+fn simplify_upper_bounds(env: &dyn TypeEnv, bounds: Vec<Type>) -> Vec<Type> {
+    let mut unique: Vec<Type> = Vec::new();
+    for bound in bounds {
+        if !unique.contains(&bound) {
+            unique.push(bound);
+        }
+    }
+
+    let mut out = Vec::new();
+    'outer: for (idx, bound) in unique.iter().enumerate() {
+        for (jdx, other) in unique.iter().enumerate() {
+            if idx == jdx {
+                continue;
+            }
+            if crate::is_subtype(env, other, bound) {
+                continue 'outer;
+            }
+        }
+        out.push(bound.clone());
+    }
+    out
 }
 
 impl TypeEnv for TyContext<'_> {

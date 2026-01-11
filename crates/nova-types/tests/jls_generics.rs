@@ -1,6 +1,7 @@
 use nova_types::{
     is_assignable, is_subtype, resolve_method_call, CallKind, ClassDef, ClassKind, ClassType,
-    FieldDef, MethodCall, MethodResolution, TyContext, Type, TypeEnv, TypeStore, WildcardBound,
+    FieldDef, MethodCall, MethodResolution, TyContext, Type, TypeEnv, TypeParamDef, TypeStore,
+    WildcardBound,
 };
 
 use pretty_assertions::assert_eq;
@@ -49,6 +50,56 @@ fn capture_conversion_allocates_capture_vars() {
     assert!(tv_data.name.starts_with("CAP#"));
     assert_eq!(tv_data.upper_bounds, vec![Type::class(integer, vec![])]);
     assert_eq!(tv_data.lower_bound, None);
+}
+
+#[test]
+fn capture_conversion_substitutes_self_referential_bounds() {
+    let mut env = TypeStore::with_minimal_jdk();
+    let object = env.well_known().object;
+
+    // Model: `class EnumLike<E extends EnumLike<E>> {}`.
+    //
+    // We need to reserve the class id before defining the self-referential bound.
+    let enum_like = env.intern_class_id("com.example.EnumLike");
+    let e = env.add_type_param("E", vec![Type::class(object, vec![])]);
+    env.define_type_param(
+        e,
+        TypeParamDef {
+            name: "E".to_string(),
+            upper_bounds: vec![Type::class(enum_like, vec![Type::TypeVar(e)])],
+            lower_bound: None,
+        },
+    );
+    env.define_class(
+        enum_like,
+        ClassDef {
+            name: "com.example.EnumLike".to_string(),
+            kind: ClassKind::Class,
+            type_params: vec![e],
+            super_class: Some(Type::class(object, vec![])),
+            interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
+            methods: vec![],
+        },
+    );
+
+    let receiver = Type::class(enum_like, vec![Type::Wildcard(WildcardBound::Unbounded)]);
+    let mut ctx = TyContext::new(&env);
+    let captured = ctx.capture_conversion(&receiver);
+    let Type::Class(ClassType { args, .. }) = captured else {
+        panic!("expected captured class type");
+    };
+    let Type::TypeVar(cap) = &args[0] else {
+        panic!("expected capture var");
+    };
+
+    let cap_def = ctx.type_param(*cap).unwrap();
+    assert_eq!(
+        cap_def.upper_bounds,
+        vec![Type::class(enum_like, vec![Type::TypeVar(*cap)])]
+    );
+    assert_eq!(cap_def.lower_bound, None);
 }
 
 #[test]
