@@ -198,7 +198,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
   const serverManager = new ServerManager(context.globalStorageUri.fsPath, serverOutput);
 
-  registerNovaDebugAdapter(context);
+  registerNovaDebugAdapter(context, { serverManager, output: serverOutput });
   registerNovaDebugConfigurations(context, sendNovaRequest);
   registerNovaHotSwap(context, sendNovaRequest);
 
@@ -629,7 +629,7 @@ export async function activate(context: vscode.ExtensionContext) {
       managedPath: serverManager.getManagedServerPath(),
     });
 
-    const rawDapPath = cfg.get<string | null>('dap.path', null);
+    const rawDapPath = cfg.get<string | null>('dap.path', null) ?? cfg.get<string | null>('debug.adapterPath', null);
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
     const dapPath = resolveNovaConfigPath({ configPath: rawDapPath, workspaceRoot }) ?? null;
     await printBinaryStatusEntry({

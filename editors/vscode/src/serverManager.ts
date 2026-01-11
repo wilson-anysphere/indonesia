@@ -133,7 +133,9 @@ export class ServerManager {
     const settings = opts.settings;
     const repo = parseGitHubRepo(settings.releaseUrl);
     if (!repo) {
-      throw new Error(`Invalid nova.server.releaseUrl: "${settings.releaseUrl}"`);
+      throw new Error(
+        `Invalid GitHub repository (expected URL or "owner/repo"): "${settings.releaseUrl}"`,
+      );
     }
 
     const target = detectNovaTarget({ platform: this.platform, arch: this.arch });

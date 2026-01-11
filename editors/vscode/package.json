@@ -124,7 +124,7 @@
             "null"
           ],
           "default": null,
-          "description": "Override the nova-dap binary path (for future debug adapter integration). Supports ~ and ${workspaceFolder}. Relative paths resolve against the first workspace folder."
+          "description": "Override the nova-dap binary path (debug adapter). Supports ~ and ${workspaceFolder}. Relative paths resolve against the first workspace folder."
         },
         "nova.download.mode": {
           "type": "string",
@@ -199,14 +199,6 @@
           "default": 50,
           "minimum": 1,
           "description": "Base polling interval (ms) for nova/completion/more. Nova uses a short exponential backoff derived from this value."
-        },
-        "nova.debug.adapterPath": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "default": null,
-          "description": "Override the nova-dap binary path. Supports ~ and ${workspaceFolder}. Relative paths resolve against the first workspace folder."
         },
         "nova.debug.host": {
           "type": "string",

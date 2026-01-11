@@ -179,7 +179,7 @@ Changing these settings requires restarting the language server; the extension p
 
 ### Debugging
 
-- `nova.debug.adapterPath` (string | null): override the `nova-dap` binary path. Supports `~` and `${workspaceFolder}`; relative paths are resolved against the first workspace folder.
+- `nova.dap.path` (string | null): override the `nova-dap` binary path. Supports `~` and `${workspaceFolder}`; relative paths are resolved against the first workspace folder. If unset, Nova will look on `$PATH` and then fall back to managed downloads (controlled by `nova.download.mode`).
 - `nova.debug.host` (string): default JDWP host for Nova debug sessions (default: `127.0.0.1`).
 - `nova.debug.port` (number): default JDWP port for Nova debug sessions (default: `5005`).
 - `nova.debug.legacyAdapter` (boolean): run `nova-dap --legacy` (default: false).
