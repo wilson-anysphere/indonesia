@@ -1,56 +1,71 @@
 use crate::{
-    client::AiClient,
+    actions,
+    client::{AiClient, LlmClient},
+    context::{BuiltContext, ContextBuilder, ContextRequest},
     types::{ChatMessage, ChatRequest, CodeSnippet},
     AiError,
 };
 use nova_config::AiConfig;
+use std::{path::Path, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
 pub struct NovaAi {
-    client: AiClient,
+    client: Arc<AiClient>,
+    context_builder: ContextBuilder,
+    max_output_tokens: u32,
 }
 
 impl NovaAi {
     pub fn new(config: &AiConfig) -> Result<Self, AiError> {
         Ok(Self {
-            client: AiClient::from_config(config)?,
+            client: Arc::new(AiClient::from_config(config)?),
+            context_builder: ContextBuilder::new(),
+            max_output_tokens: 512,
         })
+    }
+
+    pub fn with_max_output_tokens(mut self, max: u32) -> Self {
+        self.max_output_tokens = max;
+        self
+    }
+
+    fn maybe_omit_context(&self, ctx: &ContextRequest, built: BuiltContext) -> BuiltContext {
+        let Some(path) = ctx.file_path.as_deref() else {
+            return built;
+        };
+
+        // Best-effort: treat `file_path` as a filesystem path (callers should avoid URIs here so
+        // excluded_paths glob matching works).
+        if self.client.is_excluded_path(Path::new(path)) {
+            return BuiltContext {
+                text: "[code context omitted due to excluded_paths]".to_string(),
+                token_count: 0,
+                truncated: true,
+            };
+        }
+
+        built
     }
 
     pub async fn explain_error(
         &self,
-        error_message: &str,
-        code_context: &CodeSnippet,
+        diagnostic_message: &str,
+        ctx: ContextRequest,
         cancel: CancellationToken,
     ) -> Result<String, AiError> {
-        let context = if code_context
-            .path
-            .as_deref()
-            .is_some_and(|path| self.client.is_excluded_path(path))
-        {
-            "[code context omitted due to excluded_paths]".to_string()
-        } else {
-            code_context.content.clone()
-        };
+        let built = self.context_builder.build(ctx.clone());
+        let BuiltContext { text, .. } = self.maybe_omit_context(&ctx, built);
 
-        let user_prompt = format!(
-            "Explain this Java compiler/runtime error to a developer.\n\n\
-             Error:\n{error_message}\n\n\
-             Code context:\n```java\n{context}\n```\n\n\
-             Provide:\n\
-             1) What the error means\n\
-             2) Why it happened\n\
-             3) How to fix it\n"
-        );
-
+        let user_prompt = actions::explain_error_prompt(diagnostic_message, &text);
         self.client
             .chat(
                 ChatRequest {
                     messages: vec![
-                        ChatMessage::system("You are a helpful Java assistant."),
+                        ChatMessage::system("You are an expert Java developer assistant."),
                         ChatMessage::user(user_prompt),
                     ],
-                    max_tokens: None,
+                    max_tokens: Some(self.max_output_tokens),
+                    temperature: None,
                 },
                 cancel,
             )
@@ -60,25 +75,13 @@ impl NovaAi {
     pub async fn generate_method_body(
         &self,
         method_signature: &str,
-        class_context: &CodeSnippet,
+        ctx: ContextRequest,
         cancel: CancellationToken,
     ) -> Result<String, AiError> {
-        let context = if class_context
-            .path
-            .as_deref()
-            .is_some_and(|path| self.client.is_excluded_path(path))
-        {
-            "[class context omitted due to excluded_paths]".to_string()
-        } else {
-            class_context.content.clone()
-        };
+        let built = self.context_builder.build(ctx.clone());
+        let BuiltContext { text, .. } = self.maybe_omit_context(&ctx, built);
 
-        let user_prompt = format!(
-            "Given the following Java class context:\n```java\n{context}\n```\n\n\
-             Implement the method:\n```java\n{method_signature}\n```\n\n\
-             Return ONLY the method body (no signature), wrapped in braces.\n"
-        );
-
+        let user_prompt = actions::generate_method_body_prompt(method_signature, &text);
         self.client
             .chat(
                 ChatRequest {
@@ -86,7 +89,8 @@ impl NovaAi {
                         ChatMessage::system("You write correct, idiomatic Java code."),
                         ChatMessage::user(user_prompt),
                     ],
-                    max_tokens: None,
+                    max_tokens: Some(self.max_output_tokens),
+                    temperature: None,
                 },
                 cancel,
             )
@@ -95,29 +99,14 @@ impl NovaAi {
 
     pub async fn generate_tests(
         &self,
-        method_or_class: &CodeSnippet,
-        test_framework: Option<&str>,
+        target: &str,
+        ctx: ContextRequest,
         cancel: CancellationToken,
     ) -> Result<String, AiError> {
-        let code = if method_or_class
-            .path
-            .as_deref()
-            .is_some_and(|path| self.client.is_excluded_path(path))
-        {
-            "[code omitted due to excluded_paths]".to_string()
-        } else {
-            method_or_class.content.clone()
-        };
+        let built = self.context_builder.build(ctx.clone());
+        let BuiltContext { text, .. } = self.maybe_omit_context(&ctx, built);
 
-        let framework = test_framework.unwrap_or("JUnit 5");
-        let user_prompt = format!(
-            "Generate {framework} tests for the following Java code:\n\n```java\n{code}\n```\n\n\
-             Include:\n\
-             - Normal cases\n\
-             - Edge cases\n\
-             - Error conditions\n"
-        );
-
+        let user_prompt = actions::generate_tests_prompt(target, &text);
         self.client
             .chat(
                 ChatRequest {
@@ -125,19 +114,19 @@ impl NovaAi {
                         ChatMessage::system("You are a meticulous Java test engineer."),
                         ChatMessage::user(user_prompt),
                     ],
-                    max_tokens: None,
+                    max_tokens: Some(self.max_output_tokens),
+                    temperature: None,
                 },
                 cancel,
             )
             .await
     }
 
-    pub async fn code_review(
-        &self,
-        diff: &str,
-        cancel: CancellationToken,
-    ) -> Result<String, AiError> {
-        let diff = diff.to_string();
+    pub async fn code_review(&self, diff: &str, cancel: CancellationToken) -> Result<String, AiError> {
+        let diff = self
+            .client
+            .sanitize_snippet(&CodeSnippet::ad_hoc(diff))
+            .unwrap_or_else(|| "[diff omitted due to excluded_paths]".to_string());
 
         let review = self
             .client
@@ -145,12 +134,10 @@ impl NovaAi {
                 ChatRequest {
                     messages: vec![
                         ChatMessage::system("You are a senior Java engineer doing code review."),
-                        ChatMessage::user(format!(
-                        "Review this code change:\n\n```diff\n{diff}\n```\n\n\
-                          Consider correctness, performance, security, maintainability, and tests.\n"
-                     )),
+                        ChatMessage::user(actions::code_review_prompt(&diff)),
                     ],
-                    max_tokens: None,
+                    max_tokens: Some(self.max_output_tokens),
+                    temperature: None,
                 },
                 cancel,
             )
@@ -158,4 +145,10 @@ impl NovaAi {
 
         Ok(review)
     }
+
+    /// Access the underlying client (for model listing, custom prompts, etc).
+    pub fn llm(&self) -> Arc<dyn LlmClient> {
+        self.client.clone()
+    }
 }
+

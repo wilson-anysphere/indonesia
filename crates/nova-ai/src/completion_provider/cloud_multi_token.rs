@@ -1,15 +1,19 @@
-use crate::cloud::{CloudLlmClient, CloudLlmError, GenerateRequest};
+use crate::client::LlmClient;
 use crate::privacy::{redact_suspicious_literals, PrivacyMode};
 use crate::provider::{AiProviderError, MultiTokenCompletionProvider, MultiTokenCompletionRequest};
-use crate::{AdditionalEdit, MultiTokenCompletion, MultiTokenInsertTextFormat};
+use crate::{
+    AdditionalEdit, AiError, ChatMessage, ChatRequest, MultiTokenCompletion,
+    MultiTokenInsertTextFormat,
+};
 use futures::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::Value;
+use std::sync::Arc;
 use tracing::debug;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CloudMultiTokenCompletionProvider {
-    llm: CloudLlmClient,
+    llm: Arc<dyn LlmClient>,
     max_output_tokens: u32,
     temperature: f32,
     privacy: PrivacyMode,
@@ -18,8 +22,21 @@ pub struct CloudMultiTokenCompletionProvider {
     max_additional_edits: usize,
 }
 
+impl std::fmt::Debug for CloudMultiTokenCompletionProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CloudMultiTokenCompletionProvider")
+            .field("max_output_tokens", &self.max_output_tokens)
+            .field("temperature", &self.temperature)
+            .field("privacy", &self.privacy)
+            .field("max_insert_text_chars", &self.max_insert_text_chars)
+            .field("max_label_chars", &self.max_label_chars)
+            .field("max_additional_edits", &self.max_additional_edits)
+            .finish()
+    }
+}
+
 impl CloudMultiTokenCompletionProvider {
-    pub fn new(llm: CloudLlmClient) -> Self {
+    pub fn new(llm: Arc<dyn LlmClient>) -> Self {
         Self {
             llm,
             max_output_tokens: 256,
@@ -75,24 +92,23 @@ impl MultiTokenCompletionProvider for CloudMultiTokenCompletionProvider {
             let cancel = request.cancel.child_token();
             let _guard = cancel.clone().drop_guard();
 
-            let generate = self.llm.generate(
-                GenerateRequest {
-                    prompt: full_prompt,
-                    max_tokens: self.max_output_tokens,
-                    temperature: self.temperature,
+            let fut = self.llm.chat(
+                ChatRequest {
+                    messages: vec![ChatMessage::user(full_prompt)],
+                    max_tokens: Some(self.max_output_tokens),
+                    temperature: Some(self.temperature),
                 },
                 cancel,
             );
 
             let response = if request.timeout.is_zero() {
-                generate.await.map_err(map_cloud_error)?
+                fut.await.map_err(map_ai_error)?
             } else {
-                tokio::time::timeout(request.timeout, generate)
+                tokio::time::timeout(request.timeout, fut)
                     .await
                     .map_err(|_| AiProviderError::Timeout)?
-                    .map_err(map_cloud_error)?
+                    .map_err(map_ai_error)?
             };
-
             Ok(parse_completions(
                 &response,
                 max_items,
@@ -104,9 +120,10 @@ impl MultiTokenCompletionProvider for CloudMultiTokenCompletionProvider {
     }
 }
 
-fn map_cloud_error(err: CloudLlmError) -> AiProviderError {
+fn map_ai_error(err: AiError) -> AiProviderError {
     match err {
-        CloudLlmError::Cancelled => AiProviderError::Cancelled,
+        AiError::Cancelled => AiProviderError::Cancelled,
+        AiError::Timeout => AiProviderError::Timeout,
         other => AiProviderError::Provider(other.to_string()),
     }
 }

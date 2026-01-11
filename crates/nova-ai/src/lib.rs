@@ -6,10 +6,12 @@
 //! - Privacy utilities (anonymization/redaction) for cloud integrations
 //! - Optional cloud LLM client and higher-level AI actions
 
+mod actions;
 mod anonymizer;
 mod audit;
 mod cache;
 mod client;
+mod cloud;
 mod code_edit_policy;
 mod completion;
 mod completion_context;
@@ -25,9 +27,7 @@ mod semantic_search;
 mod types;
 mod util;
 
-pub mod actions;
 pub mod cancel;
-pub mod cloud;
 pub mod context;
 pub mod patch;
 pub mod privacy;
@@ -35,10 +35,8 @@ pub mod provider;
 pub mod safety;
 pub mod workspace;
 
-pub use actions::AiService;
 pub use anonymizer::{CodeAnonymizer, CodeAnonymizerOptions};
-pub use client::AiClient;
-pub use cloud::{CloudLlmClient, CloudLlmConfig, ProviderKind, RetryConfig};
+pub use client::{AiClient, LlmClient};
 pub use code_edit_policy::{enforce_code_edit_policy, CodeEditPolicyError};
 pub use completion::{AdditionalEdit, MultiTokenCompletion, MultiTokenInsertTextFormat};
 pub use completion_context::{CompletionContextBuilder, MultiTokenCompletionContext};

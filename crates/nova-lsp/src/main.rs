@@ -12,10 +12,10 @@ use lsp_types::{
 use nova_ai::context::{
     ContextDiagnostic, ContextDiagnosticKind, ContextDiagnosticSeverity, ContextRequest,
 };
-use nova_ai::{AiService, CloudLlmClient, CloudLlmConfig, ProviderKind, RetryConfig};
+use nova_ai::NovaAi;
 #[cfg(feature = "ai")]
 use nova_ai::{
-    CloudMultiTokenCompletionProvider, CompletionContextBuilder, MultiTokenCompletionProvider,
+    AiClient, CloudMultiTokenCompletionProvider, CompletionContextBuilder, MultiTokenCompletionProvider,
 };
 use nova_db::{FileId as DbFileId, InMemoryFileStore};
 use nova_ide::{
@@ -59,10 +59,24 @@ fn main() -> std::io::Result<()> {
         return Ok(());
     }
 
+    // Load AI config early so audit logging can be wired up before we install
+    // the global tracing subscriber.
+    let ai_env = match load_ai_config_from_env() {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("failed to configure AI: {err}");
+            None
+        }
+    };
+
     // Install panic hook + structured logging early. The stdio transport does
     // not currently emit `window/showMessage` notifications on panic, but
     // `nova/bugReport` can be used to generate a diagnostic bundle.
     let mut config = load_config_from_args(&args);
+    if let Some((ai, _privacy)) = ai_env.as_ref() {
+        config.ai = ai.clone();
+    }
+
     // When the legacy env-var based AI wiring is enabled (NOVA_AI_PROVIDER=...),
     // users can opt into prompt/response audit logging via NOVA_AI_AUDIT_LOGGING.
     //
@@ -87,7 +101,10 @@ fn main() -> std::io::Result<()> {
     let mut reader = BufReader::new(stdin.lock());
     let mut writer = BufWriter::new(stdout.lock());
 
-    let mut state = ServerState::new(config.ai.clone());
+    let mut state = ServerState::new(
+        config.ai.clone(),
+        ai_env.as_ref().map(|(_, privacy)| privacy.clone()),
+    );
     let metrics = nova_metrics::MetricsRegistry::global();
 
     while let Some(message) = read_json_message::<_, serde_json::Value>(&mut reader)? {
@@ -380,7 +397,7 @@ struct ServerState {
     documents: HashMap<String, Document>,
     cancelled_requests: HashSet<String>,
     analysis: AnalysisState,
-    ai: Option<AiService>,
+    ai: Option<NovaAi>,
     privacy: nova_ai::PrivacyMode,
     ai_config: nova_config::AiConfig,
     runtime: Option<tokio::runtime::Runtime>,
@@ -393,28 +410,33 @@ struct ServerState {
 }
 
 impl ServerState {
-    fn new(mut ai_config: nova_config::AiConfig) -> Self {
-        let (ai, privacy, runtime, completion_llm) = match load_ai_from_env() {
-            Ok(Some((ai, privacy, completion_llm))) => {
-                let runtime = tokio::runtime::Builder::new_multi_thread()
-                    .enable_all()
-                    .build()
-                    .expect("tokio runtime");
-                (Some(ai), privacy, Some(runtime), Some(completion_llm))
-            }
-            Ok(None) => (None, nova_ai::PrivacyMode::default(), None, None),
-            Err(err) => {
-                eprintln!("failed to configure AI: {err}");
-                (None, nova_ai::PrivacyMode::default(), None, None)
-            }
-        };
+    fn new(
+        ai_config: nova_config::AiConfig,
+        privacy_override: Option<nova_ai::PrivacyMode>,
+    ) -> Self {
+        let privacy = privacy_override.unwrap_or_else(|| nova_ai::PrivacyMode {
+            anonymize_identifiers: ai_config.privacy.effective_anonymize(),
+            include_file_paths: false,
+            ..nova_ai::PrivacyMode::default()
+        });
 
-        if ai.is_some() {
-            // `nova-lsp` supports a legacy env-var based AI configuration flow.
-            // When that path is used, treat AI as enabled so local augmentations
-            // (like semantic search) can still be toggled via `nova_config`.
-            ai_config.enabled = true;
-        }
+        let (ai, runtime) = if ai_config.enabled {
+            match NovaAi::new(&ai_config) {
+                Ok(ai) => {
+                    let runtime = tokio::runtime::Builder::new_multi_thread()
+                        .enable_all()
+                        .build()
+                        .expect("tokio runtime");
+                    (Some(ai), Some(runtime))
+                }
+                Err(err) => {
+                    eprintln!("failed to configure AI: {err}");
+                    (None, None)
+                }
+            }
+        } else {
+            (None, None)
+        };
 
         let memory = MemoryManager::new(MemoryBudget::default_for_system());
         let memory_events: Arc<Mutex<Vec<MemoryEvent>>> = Arc::new(Mutex::new(Vec::new()));
@@ -428,13 +450,23 @@ impl ServerState {
 
         #[cfg(feature = "ai")]
         let completion_service = {
-            let ai_provider = completion_llm.map(|client| {
-                let provider: Arc<dyn MultiTokenCompletionProvider> = Arc::new(
-                    CloudMultiTokenCompletionProvider::new(client)
-                        .with_privacy_mode(privacy.clone()),
-                );
-                provider
-            });
+            let ai_provider = if ai_config.enabled {
+                match AiClient::from_config(&ai_config) {
+                    Ok(client) => {
+                        let provider: Arc<dyn MultiTokenCompletionProvider> = Arc::new(
+                            CloudMultiTokenCompletionProvider::new(Arc::new(client))
+                                .with_privacy_mode(privacy.clone()),
+                        );
+                        Some(provider)
+                    }
+                    Err(err) => {
+                        eprintln!("failed to configure AI completions: {err}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
             let engine = CompletionEngine::new(
                 CompletionConfig::default(),
                 CompletionContextBuilder::new(10_000),
@@ -2394,23 +2426,25 @@ mod tests {
             then.status(200).json_body(json!({ "completion": long }));
         });
 
-        let mut cfg = CloudLlmConfig::http(
-            url::Url::parse(&format!("{}/complete", server.base_url())).unwrap(),
-        );
-        cfg.timeout = Duration::from_secs(2);
-        cfg.retry = RetryConfig {
-            max_retries: 0,
-            ..RetryConfig::default()
-        };
-        let client = CloudLlmClient::new(cfg).unwrap();
-        let ai = AiService::new(client);
+        let mut cfg = nova_config::AiConfig::default();
+        cfg.enabled = true;
+        cfg.provider.kind = nova_config::AiProviderKind::Http;
+        cfg.provider.url = url::Url::parse(&format!("{}/complete", server.base_url())).unwrap();
+        cfg.provider.model = "default".to_string();
+        cfg.provider.timeout_ms = Duration::from_secs(2).as_millis() as u64;
+        cfg.provider.concurrency = 1;
+        cfg.privacy.local_only = false;
+        cfg.privacy.anonymize = Some(false);
+        cfg.cache_enabled = false;
+
+        let ai = NovaAi::new(&cfg).unwrap();
 
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
 
-        let mut state = ServerState::new(nova_config::AiConfig::default());
+        let mut state = ServerState::new(nova_config::AiConfig::default(), None);
         state.ai = Some(ai);
         state.runtime = Some(runtime);
 
@@ -2882,8 +2916,12 @@ fn build_context_request_from_args(
                     state.privacy.clone(),
                     include_doc_comments,
                 );
-                // Include the URI only when the caller explicitly opted in to paths.
-                req.file_path = Some(uri.to_string());
+                // Store the filesystem path for privacy filtering (excluded_paths) and optional
+                // prompt inclusion. The builder will only emit it when `include_file_paths`
+                // is enabled.
+                if let Some(path) = path_from_uri(uri) {
+                    req.file_path = Some(path.display().to_string());
+                }
                 req.cursor = Some(nova_ai::patch::Position {
                     line: range.start.line,
                     character: range.start.character,
@@ -2962,7 +3000,7 @@ fn detect_empty_method_signature(selected: &str) -> Option<String> {
     Some(trimmed[..open].trim().to_string())
 }
 
-fn load_ai_from_env() -> Result<Option<(AiService, nova_ai::PrivacyMode, CloudLlmClient)>, String> {
+fn load_ai_config_from_env() -> Result<Option<(nova_config::AiConfig, nova_ai::PrivacyMode)>, String> {
     let provider = match std::env::var("NOVA_AI_PROVIDER") {
         Ok(p) => p,
         Err(_) => return Ok(None),
@@ -2995,101 +3033,6 @@ fn load_ai_from_env() -> Result<Option<(AiService, nova_ai::PrivacyMode, CloudLl
         .and_then(|s| s.parse::<u64>().ok())
         .map(Duration::from_secs)
         .unwrap_or(Duration::from_secs(30));
-
-    let cfg = match provider.as_str() {
-        "http" => {
-            let endpoint = std::env::var("NOVA_AI_ENDPOINT")
-                .map_err(|_| "NOVA_AI_ENDPOINT is required for http provider".to_string())?;
-            CloudLlmConfig {
-                provider: ProviderKind::Http,
-                endpoint: url::Url::parse(&endpoint).map_err(|e| e.to_string())?,
-                api_key,
-                model,
-                timeout,
-                retry: RetryConfig::default(),
-                audit_logging,
-                cache_enabled,
-                cache_max_entries,
-                cache_ttl,
-            }
-        }
-        "openai" => CloudLlmConfig {
-            provider: ProviderKind::OpenAi,
-            endpoint: url::Url::parse(
-                &std::env::var("NOVA_AI_ENDPOINT")
-                    .unwrap_or_else(|_| "https://api.openai.com/".to_string()),
-            )
-            .map_err(|e| e.to_string())?,
-            api_key,
-            model,
-            timeout,
-            retry: RetryConfig::default(),
-            audit_logging,
-            cache_enabled,
-            cache_max_entries,
-            cache_ttl,
-        },
-        "anthropic" => CloudLlmConfig {
-            provider: ProviderKind::Anthropic,
-            endpoint: url::Url::parse(
-                &std::env::var("NOVA_AI_ENDPOINT")
-                    .unwrap_or_else(|_| "https://api.anthropic.com/".to_string()),
-            )
-            .map_err(|e| e.to_string())?,
-            api_key,
-            model,
-            timeout,
-            retry: RetryConfig::default(),
-            audit_logging,
-            cache_enabled,
-            cache_max_entries,
-            cache_ttl,
-        },
-        "gemini" => CloudLlmConfig {
-            provider: ProviderKind::Gemini,
-            endpoint: url::Url::parse(
-                &std::env::var("NOVA_AI_ENDPOINT")
-                    .unwrap_or_else(|_| "https://generativelanguage.googleapis.com/".to_string()),
-            )
-            .map_err(|e| e.to_string())?,
-            api_key,
-            model,
-            timeout,
-            retry: RetryConfig::default(),
-            audit_logging,
-            cache_enabled,
-            cache_max_entries,
-            cache_ttl,
-        },
-        "azure" => {
-            let endpoint = std::env::var("NOVA_AI_ENDPOINT")
-                .map_err(|_| "NOVA_AI_ENDPOINT is required for azure provider".to_string())?;
-            let deployment = std::env::var("NOVA_AI_AZURE_DEPLOYMENT").map_err(|_| {
-                "NOVA_AI_AZURE_DEPLOYMENT is required for azure provider".to_string()
-            })?;
-            let api_version = std::env::var("NOVA_AI_AZURE_API_VERSION")
-                .unwrap_or_else(|_| "2024-02-01".to_string());
-            CloudLlmConfig {
-                provider: ProviderKind::AzureOpenAi {
-                    deployment,
-                    api_version,
-                },
-                endpoint: url::Url::parse(&endpoint).map_err(|e| e.to_string())?,
-                api_key,
-                model,
-                timeout,
-                retry: RetryConfig::default(),
-                audit_logging,
-                cache_enabled,
-                cache_max_entries,
-                cache_ttl,
-            }
-        }
-        other => return Err(format!("unknown NOVA_AI_PROVIDER: {other}")),
-    };
-
-    let client = CloudLlmClient::new(cfg).map_err(|e| e.to_string())?;
-
     // Privacy defaults: safer by default (no paths, anonymize identifiers).
     let anonymize_identifiers = !matches!(
         std::env::var("NOVA_AI_ANONYMIZE_IDENTIFIERS").as_deref(),
@@ -3100,11 +3043,103 @@ fn load_ai_from_env() -> Result<Option<(AiService, nova_ai::PrivacyMode, CloudLl
         Ok("1") | Ok("true") | Ok("TRUE")
     );
 
+    let mut cfg = nova_config::AiConfig::default();
+    cfg.enabled = true;
+    cfg.api_key = api_key;
+    cfg.audit_log.enabled = audit_logging;
+    cfg.cache_enabled = cache_enabled;
+    cfg.cache_max_entries = cache_max_entries;
+    cfg.cache_ttl_secs = cache_ttl.as_secs().max(1);
+    cfg.provider.model = model;
+    cfg.provider.timeout_ms = timeout.as_millis().min(u64::MAX as u128) as u64;
+    cfg.privacy.anonymize = Some(anonymize_identifiers);
+
+    cfg.provider.kind = match provider.as_str() {
+        "ollama" => {
+            cfg.privacy.local_only = true;
+            nova_config::AiProviderKind::Ollama
+        }
+        "openai_compatible" => {
+            cfg.privacy.local_only = true;
+            nova_config::AiProviderKind::OpenAiCompatible
+        }
+        "http" => {
+            cfg.privacy.local_only = false;
+            nova_config::AiProviderKind::Http
+        }
+        "openai" => {
+            cfg.privacy.local_only = false;
+            nova_config::AiProviderKind::OpenAi
+        }
+        "anthropic" => {
+            cfg.privacy.local_only = false;
+            nova_config::AiProviderKind::Anthropic
+        }
+        "gemini" => {
+            cfg.privacy.local_only = false;
+            nova_config::AiProviderKind::Gemini
+        }
+        "azure" => {
+            cfg.privacy.local_only = false;
+            nova_config::AiProviderKind::AzureOpenAi
+        }
+        other => return Err(format!("unknown NOVA_AI_PROVIDER: {other}")),
+    };
+
+    cfg.provider.url = match provider.as_str() {
+        "http" => {
+            let endpoint = std::env::var("NOVA_AI_ENDPOINT")
+                .map_err(|_| "NOVA_AI_ENDPOINT is required for http provider".to_string())?;
+            url::Url::parse(&endpoint).map_err(|e| e.to_string())?
+        }
+        "ollama" => url::Url::parse(
+            &std::env::var("NOVA_AI_ENDPOINT").unwrap_or_else(|_| "http://localhost:11434".to_string()),
+        )
+        .map_err(|e| e.to_string())?,
+        "openai_compatible" => {
+            let endpoint = std::env::var("NOVA_AI_ENDPOINT")
+                .map_err(|_| "NOVA_AI_ENDPOINT is required for openai_compatible provider".to_string())?;
+            url::Url::parse(&endpoint).map_err(|e| e.to_string())?
+        }
+        "openai" => url::Url::parse(
+            &std::env::var("NOVA_AI_ENDPOINT")
+                .unwrap_or_else(|_| "https://api.openai.com/".to_string()),
+        )
+        .map_err(|e| e.to_string())?,
+        "anthropic" => url::Url::parse(
+            &std::env::var("NOVA_AI_ENDPOINT")
+                .unwrap_or_else(|_| "https://api.anthropic.com/".to_string()),
+        )
+        .map_err(|e| e.to_string())?,
+        "gemini" => url::Url::parse(
+            &std::env::var("NOVA_AI_ENDPOINT").unwrap_or_else(|_| {
+                "https://generativelanguage.googleapis.com/".to_string()
+            }),
+        )
+        .map_err(|e| e.to_string())?,
+        "azure" => {
+            let endpoint = std::env::var("NOVA_AI_ENDPOINT")
+                .map_err(|_| "NOVA_AI_ENDPOINT is required for azure provider".to_string())?;
+            url::Url::parse(&endpoint).map_err(|e| e.to_string())?
+        }
+        _ => cfg.provider.url.clone(),
+    };
+
+    if provider == "azure" {
+        cfg.provider.azure_deployment = Some(
+            std::env::var("NOVA_AI_AZURE_DEPLOYMENT")
+                .map_err(|_| "NOVA_AI_AZURE_DEPLOYMENT is required for azure provider".to_string())?,
+        );
+        cfg.provider.azure_api_version = Some(
+            std::env::var("NOVA_AI_AZURE_API_VERSION").unwrap_or_else(|_| "2024-02-01".to_string()),
+        );
+    }
+
     let privacy = nova_ai::PrivacyMode {
         anonymize_identifiers,
         include_file_paths,
         ..nova_ai::PrivacyMode::default()
     };
 
-    Ok(Some((AiService::new(client.clone()), privacy, client)))
+    Ok(Some((cfg, privacy)))
 }

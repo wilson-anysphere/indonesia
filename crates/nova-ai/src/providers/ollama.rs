@@ -1,5 +1,5 @@
 use crate::{
-    providers::AiProvider,
+    providers::LlmProvider,
     types::{AiStream, ChatMessage, ChatRequest},
     AiError,
 };
@@ -42,21 +42,26 @@ impl OllamaProvider {
 }
 
 #[async_trait]
-impl AiProvider for OllamaProvider {
+impl LlmProvider for OllamaProvider {
     async fn chat(
         &self,
-        mut request: ChatRequest,
+        request: ChatRequest,
         cancel: CancellationToken,
     ) -> Result<String, AiError> {
         let url = self.endpoint("/api/chat")?;
+        let options = if request.max_tokens.is_some() || request.temperature.is_some() {
+            Some(OllamaOptions {
+                num_predict: request.max_tokens,
+                temperature: request.temperature,
+            })
+        } else {
+            None
+        };
         let body = OllamaChatRequest {
             model: &self.model,
             messages: &request.messages,
             stream: false,
-            options: request
-                .max_tokens
-                .take()
-                .map(|num_predict| OllamaOptions { num_predict }),
+            options,
         };
 
         let fut = async {
@@ -82,18 +87,23 @@ impl AiProvider for OllamaProvider {
 
     async fn chat_stream(
         &self,
-        mut request: ChatRequest,
+        request: ChatRequest,
         cancel: CancellationToken,
     ) -> Result<AiStream, AiError> {
         let url = self.endpoint("/api/chat")?;
+        let options = if request.max_tokens.is_some() || request.temperature.is_some() {
+            Some(OllamaOptions {
+                num_predict: request.max_tokens,
+                temperature: request.temperature,
+            })
+        } else {
+            None
+        };
         let body = OllamaChatRequest {
             model: &self.model,
             messages: &request.messages,
             stream: true,
-            options: request
-                .max_tokens
-                .take()
-                .map(|num_predict| OllamaOptions { num_predict }),
+            options,
         };
 
         let response = tokio::select! {
@@ -186,8 +196,10 @@ struct OllamaChatRequest<'a> {
 
 #[derive(Debug, Serialize)]
 struct OllamaOptions {
-    #[serde(rename = "num_predict")]
-    num_predict: u32,
+    #[serde(rename = "num_predict", skip_serializing_if = "Option::is_none")]
+    num_predict: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
 }
 
 #[derive(Debug, Deserialize)]

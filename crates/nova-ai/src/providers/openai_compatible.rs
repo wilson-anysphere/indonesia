@@ -1,11 +1,12 @@
 use crate::{
-    providers::AiProvider,
+    providers::LlmProvider,
     types::{AiStream, ChatMessage, ChatRequest},
     AiError,
 };
 use async_stream::try_stream;
 use async_trait::async_trait;
 use futures::StreamExt;
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -27,7 +28,18 @@ impl OpenAiCompatibleProvider {
         timeout: Duration,
         api_key: Option<String>,
     ) -> Result<Self, AiError> {
-        let client = reqwest::Client::builder().build()?;
+        let mut headers = HeaderMap::new();
+        if let Some(key) = api_key.as_deref() {
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {key}"))
+                    .map_err(|e| AiError::InvalidConfig(e.to_string()))?,
+            );
+        }
+
+        let client = reqwest::Client::builder()
+            .default_headers(headers)
+            .build()?;
         Ok(Self {
             base_url,
             model: model.into(),
@@ -62,17 +74,18 @@ impl OpenAiCompatibleProvider {
 }
 
 #[async_trait]
-impl AiProvider for OpenAiCompatibleProvider {
+impl LlmProvider for OpenAiCompatibleProvider {
     async fn chat(
         &self,
-        mut request: ChatRequest,
+        request: ChatRequest,
         cancel: CancellationToken,
     ) -> Result<String, AiError> {
         let url = self.endpoint("/chat/completions")?;
         let body = OpenAiChatCompletionRequest {
             model: &self.model,
             messages: &request.messages,
-            max_tokens: request.max_tokens.take(),
+            max_tokens: request.max_tokens,
+            temperature: request.temperature,
             stream: false,
         };
 
@@ -105,14 +118,15 @@ impl AiProvider for OpenAiCompatibleProvider {
 
     async fn chat_stream(
         &self,
-        mut request: ChatRequest,
+        request: ChatRequest,
         cancel: CancellationToken,
     ) -> Result<AiStream, AiError> {
         let url = self.endpoint("/chat/completions")?;
         let body = OpenAiChatCompletionRequest {
             model: &self.model,
             messages: &request.messages,
-            max_tokens: request.max_tokens.take(),
+            max_tokens: request.max_tokens,
+            temperature: request.temperature,
             stream: true,
         };
 
@@ -210,6 +224,8 @@ struct OpenAiChatCompletionRequest<'a> {
     messages: &'a [ChatMessage],
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
     stream: bool,
 }
 

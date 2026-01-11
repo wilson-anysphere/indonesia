@@ -455,6 +455,23 @@ pub enum AiProviderKind {
     OpenAiCompatible,
     /// In-process local inference using a GGUF model file (llama.cpp).
     InProcessLlama,
+    /// OpenAI's public API (https://api.openai.com). Requires `ai.api_key`.
+    OpenAi,
+    /// Anthropic Messages API (https://api.anthropic.com). Requires `ai.api_key`.
+    Anthropic,
+    /// Google Gemini Generative Language API (https://generativelanguage.googleapis.com).
+    /// Requires `ai.api_key`.
+    Gemini,
+    /// Azure OpenAI. Requires `ai.api_key` and `ai.provider.azure_deployment`.
+    AzureOpenAi,
+    /// A simple JSON-over-HTTP API (useful for proxies and tests).
+    ///
+    /// Request body:
+    /// `{ "model": "...", "prompt": "...", "max_tokens": 123, "temperature": 0.2 }`
+    ///
+    /// Response body:
+    /// `{ "completion": "..." }`
+    Http,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -477,6 +494,18 @@ pub struct AiProviderConfig {
     /// Default model name.
     #[serde(default = "default_model_name")]
     pub model: String,
+
+    /// Azure OpenAI deployment name.
+    ///
+    /// Required when `kind = "azure_open_ai"`.
+    #[serde(default)]
+    pub azure_deployment: Option<String>,
+
+    /// Azure OpenAI API version (e.g. `2024-02-01`).
+    ///
+    /// If unset, Nova defaults to `2024-02-01`.
+    #[serde(default)]
+    pub azure_api_version: Option<String>,
 
     /// Default max tokens for responses.
     #[serde(default = "default_max_tokens")]
@@ -525,6 +554,8 @@ impl Default for AiProviderConfig {
             kind: AiProviderKind::default(),
             url: default_provider_url(),
             model: default_model_name(),
+            azure_deployment: None,
+            azure_api_version: None,
             max_tokens: default_max_tokens(),
             timeout_ms: default_timeout_ms(),
             concurrency: None,
@@ -541,7 +572,13 @@ impl AiProviderConfig {
     pub fn effective_concurrency(&self) -> usize {
         self.concurrency.unwrap_or_else(|| match self.kind {
             AiProviderKind::InProcessLlama => 1,
-            AiProviderKind::Ollama | AiProviderKind::OpenAiCompatible => default_concurrency(),
+            AiProviderKind::Ollama
+            | AiProviderKind::OpenAiCompatible
+            | AiProviderKind::OpenAi
+            | AiProviderKind::Anthropic
+            | AiProviderKind::Gemini
+            | AiProviderKind::AzureOpenAi
+            | AiProviderKind::Http => default_concurrency(),
         })
     }
 }

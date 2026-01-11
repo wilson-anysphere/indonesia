@@ -7,7 +7,7 @@ use crate::{types::AiStream, AiError, CancellationToken, ChatRequest};
 use async_trait::async_trait;
 
 #[async_trait]
-pub trait AiProvider: Send + Sync {
+pub trait LlmProvider: Send + Sync {
     async fn chat(
         &self,
         request: ChatRequest,

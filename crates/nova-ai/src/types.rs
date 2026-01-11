@@ -41,6 +41,8 @@ impl ChatMessage {
 pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
     pub max_tokens: Option<u32>,
+    /// Sampling temperature (provider-specific). Higher values generally increase randomness.
+    pub temperature: Option<f32>,
 }
 
 #[derive(Debug, Clone)]

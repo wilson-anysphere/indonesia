@@ -1,10 +1,11 @@
 use httpmock::prelude::*;
 use nova_ai::{
-    CloudLlmClient, CloudLlmConfig, CloudMultiTokenCompletionProvider, CompletionContextBuilder,
-    MultiTokenCompletionContext, MultiTokenCompletionProvider, MultiTokenCompletionRequest,
-    MultiTokenInsertTextFormat, PrivacyMode, ProviderKind, RetryConfig,
+    AiClient, CloudMultiTokenCompletionProvider, CompletionContextBuilder, MultiTokenCompletionContext,
+    MultiTokenCompletionProvider, MultiTokenCompletionRequest, MultiTokenInsertTextFormat, PrivacyMode,
 };
+use nova_config::{AiConfig, AiProviderKind};
 use serde_json::json;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -19,23 +20,23 @@ fn ctx() -> MultiTokenCompletionContext {
     }
 }
 
+fn http_config(server: &MockServer) -> AiConfig {
+    let mut cfg = AiConfig::default();
+    cfg.enabled = true;
+    cfg.provider.kind = AiProviderKind::Http;
+    cfg.provider.url = Url::parse(&format!("{}/complete", server.base_url())).unwrap();
+    cfg.provider.model = "test-model".to_string();
+    cfg.provider.timeout_ms = Duration::from_secs(2).as_millis() as u64;
+    cfg.provider.concurrency = 1;
+    cfg.privacy.local_only = false;
+    cfg.privacy.anonymize = Some(false);
+    cfg.cache_enabled = false;
+    cfg
+}
+
 fn provider_for_server(server: &MockServer) -> CloudMultiTokenCompletionProvider {
-    let cfg = CloudLlmConfig {
-        provider: ProviderKind::Http,
-        endpoint: Url::parse(&format!("{}/complete", server.base_url())).unwrap(),
-        api_key: None,
-        model: "test-model".to_string(),
-        timeout: Duration::from_secs(2),
-        retry: RetryConfig {
-            max_retries: 0,
-            ..RetryConfig::default()
-        },
-        audit_logging: false,
-        cache_enabled: false,
-        cache_max_entries: 256,
-        cache_ttl: Duration::from_secs(300),
-    };
-    let client = CloudLlmClient::new(cfg).unwrap();
+    let cfg = http_config(server);
+    let client = Arc::new(AiClient::from_config(&cfg).unwrap());
     CloudMultiTokenCompletionProvider::new(client)
         .with_max_output_tokens(50)
         .with_temperature(0.1)
@@ -78,7 +79,6 @@ async fn sends_prompt_with_context_and_parses_raw_json() {
         })
         .await
         .expect("provider call succeeds");
-
     mock.assert();
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].label, "chain");
@@ -92,7 +92,6 @@ async fn parses_json_wrapped_in_fenced_block() {
     let server = MockServer::start();
     let completion_payload = r#"{"completions":[{"label":"fenced","insert_text":"map(x -> x)","format":"plain","additional_edits":[],"confidence":0.7}]}"#;
     let wrapped = format!("Here you go:\n```json\n{completion_payload}\n```\n");
-
     let mock = server.mock(|when, then| {
         when.method(POST).path("/complete");
         then.status(200).json_body(json!({ "completion": wrapped }));
@@ -110,7 +109,6 @@ async fn parses_json_wrapped_in_fenced_block() {
         })
         .await
         .expect("provider call succeeds");
-
     mock.assert();
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].label, "fenced");
@@ -127,7 +125,6 @@ async fn invalid_json_gracefully_degrades_to_empty() {
         then.status(200)
             .json_body(json!({ "completion": "not json" }));
     });
-
     let provider = provider_for_server(&server);
     let prompt = CompletionContextBuilder::new(10_000).build_completion_prompt(&ctx(), 3);
 
@@ -140,7 +137,6 @@ async fn invalid_json_gracefully_degrades_to_empty() {
         })
         .await
         .expect("provider call succeeds");
-
     mock.assert();
     assert!(out.is_empty());
 }

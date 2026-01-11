@@ -1,26 +1,74 @@
 use crate::{
     audit,
-    cache::{shared_cache, CacheKeyBuilder, CacheSettings, LlmResponseCache},
+    cache::{shared_cache, CacheKey, CacheKeyBuilder, CacheSettings, LlmResponseCache},
+    cloud::{AnthropicProvider, AzureOpenAiProvider, GeminiProvider, HttpProvider},
     llm_privacy::PrivacyFilter,
-    providers::{ollama::OllamaProvider, openai_compatible::OpenAiCompatibleProvider, AiProvider},
-    types::{AiStream, ChatRequest, CodeSnippet},
+    providers::{ollama::OllamaProvider, openai_compatible::OpenAiCompatibleProvider, LlmProvider},
+    types::{AiStream, ChatMessage, ChatRequest, CodeSnippet},
     AiError,
 };
+use async_trait::async_trait;
 use futures::StreamExt;
 use nova_config::{AiConfig, AiProviderKind};
 use sha2::{Digest, Sha256};
-use std::path::Path;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use std::{
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
+use tracing::{debug, warn};
 use url::Host;
 
 #[cfg(feature = "local-llm")]
 use crate::providers::in_process_llama::InProcessLlamaProvider;
 
+#[async_trait]
+pub trait LlmClient: Send + Sync {
+    async fn chat(&self, request: ChatRequest, cancel: CancellationToken) -> Result<String, AiError>;
+
+    async fn chat_stream(
+        &self,
+        request: ChatRequest,
+        cancel: CancellationToken,
+    ) -> Result<AiStream, AiError>;
+
+    async fn list_models(&self, cancel: CancellationToken) -> Result<Vec<String>, AiError>;
+
+    async fn generate(&self, prompt: String, cancel: CancellationToken) -> Result<String, AiError> {
+        self.chat(
+            ChatRequest {
+                messages: vec![ChatMessage::user(prompt)],
+                max_tokens: None,
+                temperature: None,
+            },
+            cancel,
+        )
+        .await
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RetryConfig {
+    max_retries: usize,
+    initial_backoff: Duration,
+    max_backoff: Duration,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: 2,
+            initial_backoff: Duration::from_millis(200),
+            max_backoff: Duration::from_secs(2),
+        }
+    }
+}
+
 pub struct AiClient {
-    provider: Arc<dyn AiProvider>,
+    provider_kind: AiProviderKind,
+    provider: Arc<dyn LlmProvider>,
     semaphore: Arc<Semaphore>,
     privacy: PrivacyFilter,
     default_max_tokens: u32,
@@ -29,7 +77,9 @@ pub struct AiClient {
     provider_label: &'static str,
     model: String,
     endpoint: url::Url,
+    azure_cache_key: Option<(String, String)>,
     cache: Option<Arc<LlmResponseCache>>,
+    retry: RetryConfig,
 }
 
 impl AiClient {
@@ -41,25 +91,34 @@ impl AiClient {
             ));
         }
 
+        let provider_kind = config.provider.kind.clone();
         if config.privacy.local_only {
-            match config.provider.kind {
+            match &provider_kind {
                 AiProviderKind::InProcessLlama => {}
-                AiProviderKind::Ollama | AiProviderKind::OpenAiCompatible => {
+                AiProviderKind::Ollama | AiProviderKind::OpenAiCompatible | AiProviderKind::Http => {
                     validate_local_only_url(&config.provider.url)?;
+                }
+                _ => {
+                    return Err(AiError::InvalidConfig(format!(
+                        "ai.privacy.local_only forbids cloud provider {provider_kind:?}"
+                    )));
                 }
             }
         }
 
-        let provider: Arc<dyn AiProvider> = match config.provider.kind {
+        let timeout = config.provider.timeout();
+        let mut azure_cache_key = None;
+
+        let provider: Arc<dyn LlmProvider> = match &provider_kind {
             AiProviderKind::Ollama => Arc::new(OllamaProvider::new(
                 config.provider.url.clone(),
                 config.provider.model.clone(),
-                config.provider.timeout(),
+                timeout,
             )?),
             AiProviderKind::OpenAiCompatible => Arc::new(OpenAiCompatibleProvider::new(
                 config.provider.url.clone(),
                 config.provider.model.clone(),
-                config.provider.timeout(),
+                timeout,
                 config.api_key.clone(),
             )?),
             AiProviderKind::InProcessLlama => {
@@ -75,9 +134,72 @@ impl AiClient {
                     ));
                 }
             }
+            AiProviderKind::OpenAi => {
+                let api_key = config.api_key.clone().ok_or_else(|| {
+                    AiError::InvalidConfig("OpenAI provider requires ai.api_key".into())
+                })?;
+                Arc::new(OpenAiCompatibleProvider::new(
+                    config.provider.url.clone(),
+                    config.provider.model.clone(),
+                    timeout,
+                    Some(api_key),
+                )?)
+            }
+            AiProviderKind::Anthropic => {
+                let api_key = config.api_key.clone().ok_or_else(|| {
+                    AiError::InvalidConfig("Anthropic provider requires ai.api_key".into())
+                })?;
+                Arc::new(AnthropicProvider::new(
+                    config.provider.url.clone(),
+                    api_key,
+                    config.provider.model.clone(),
+                    timeout,
+                )?)
+            }
+            AiProviderKind::Gemini => {
+                let api_key = config.api_key.clone().ok_or_else(|| {
+                    AiError::InvalidConfig("Gemini provider requires ai.api_key".into())
+                })?;
+                Arc::new(GeminiProvider::new(
+                    config.provider.url.clone(),
+                    api_key,
+                    config.provider.model.clone(),
+                    timeout,
+                )?)
+            }
+            AiProviderKind::AzureOpenAi => {
+                let api_key = config.api_key.clone().ok_or_else(|| {
+                    AiError::InvalidConfig("Azure OpenAI provider requires ai.api_key".into())
+                })?;
+                let deployment = config.provider.azure_deployment.clone().ok_or_else(|| {
+                    AiError::InvalidConfig(
+                        "Azure OpenAI provider requires ai.provider.azure_deployment".into(),
+                    )
+                })?;
+                let api_version = config
+                    .provider
+                    .azure_api_version
+                    .clone()
+                    .unwrap_or_else(|| "2024-02-01".to_string());
+
+                azure_cache_key = Some((deployment.clone(), api_version.clone()));
+                Arc::new(AzureOpenAiProvider::new(
+                    config.provider.url.clone(),
+                    api_key,
+                    deployment,
+                    api_version,
+                    timeout,
+                )?)
+            }
+            AiProviderKind::Http => Arc::new(HttpProvider::new(
+                config.provider.url.clone(),
+                config.api_key.clone(),
+                config.provider.model.clone(),
+                timeout,
+            )?),
         };
 
-        let (model, endpoint) = match config.provider.kind {
+        let (model, endpoint) = match &provider_kind {
             AiProviderKind::InProcessLlama => {
                 let Some(in_process) = config.provider.in_process_llama.as_ref() else {
                     return Err(AiError::InvalidConfig(
@@ -92,9 +214,7 @@ impl AiClient {
                     .unwrap_or_else(|| config.provider.model.clone());
                 (model, in_process_endpoint_id(in_process)?)
             }
-            AiProviderKind::Ollama | AiProviderKind::OpenAiCompatible => {
-                (config.provider.model.clone(), config.provider.url.clone())
-            }
+            _ => (config.provider.model.clone(), config.provider.url.clone()),
         };
 
         let cache = if config.cache_enabled {
@@ -111,13 +231,14 @@ impl AiClient {
 
             Some(shared_cache(CacheSettings {
                 max_entries: config.cache_max_entries,
-                ttl: std::time::Duration::from_secs(config.cache_ttl_secs),
+                ttl: Duration::from_secs(config.cache_ttl_secs),
             }))
         } else {
             None
         };
 
         Ok(Self {
+            provider_kind,
             provider,
             semaphore: Arc::new(Semaphore::new(concurrency)),
             privacy: PrivacyFilter::new(&config.privacy)?,
@@ -127,7 +248,9 @@ impl AiClient {
             provider_label: provider_label(&config.provider.kind),
             model,
             endpoint,
+            azure_cache_key,
             cache,
+            retry: RetryConfig::default(),
         })
     }
 
@@ -140,10 +263,30 @@ impl AiClient {
         self.privacy.is_excluded(path)
     }
 
+    pub async fn chat(
+        &self,
+        request: ChatRequest,
+        cancel: CancellationToken,
+    ) -> Result<String, AiError> {
+        <Self as LlmClient>::chat(self, request, cancel).await
+    }
+
+    pub async fn chat_stream(
+        &self,
+        request: ChatRequest,
+        cancel: CancellationToken,
+    ) -> Result<AiStream, AiError> {
+        <Self as LlmClient>::chat_stream(self, request, cancel).await
+    }
+
+    pub async fn list_models(&self, cancel: CancellationToken) -> Result<Vec<String>, AiError> {
+        <Self as LlmClient>::list_models(self, cancel).await
+    }
+
     async fn acquire_permit(
         &self,
-        cancel: CancellationToken,
-    ) -> Result<OwnedSemaphorePermit, AiError> {
+        cancel: &CancellationToken,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit, AiError> {
         tokio::select! {
             _ = cancel.cancelled() => Err(AiError::Cancelled),
             permit = self.semaphore.clone().acquire_owned() => permit
@@ -151,15 +294,7 @@ impl AiClient {
         }
     }
 
-    pub async fn chat(
-        &self,
-        mut request: ChatRequest,
-        cancel: CancellationToken,
-    ) -> Result<String, AiError> {
-        if cancel.is_cancelled() {
-            return Err(AiError::Cancelled);
-        }
-
+    fn sanitize_request(&self, mut request: ChatRequest) -> ChatRequest {
         if request.max_tokens.is_none() {
             request.max_tokens = Some(self.default_max_tokens);
         }
@@ -175,6 +310,92 @@ impl AiClient {
                 sanitized
             };
         }
+
+        request
+    }
+
+    fn build_cache_key(&self, request: &ChatRequest) -> CacheKey {
+        let mut builder = CacheKeyBuilder::new("ai_chat_v1");
+        builder.push_str(self.provider_label);
+        if let Some((deployment, api_version)) = &self.azure_cache_key {
+            builder.push_str(deployment);
+            builder.push_str(api_version);
+        }
+        builder.push_str(self.endpoint.as_str());
+        builder.push_str(&self.model);
+        builder.push_u32(request.max_tokens.unwrap_or(self.default_max_tokens));
+        builder.push_u32(request.temperature.map(|t| t.to_bits()).unwrap_or(0));
+        builder.push_u64(
+            request
+                .messages
+                .len()
+                .try_into()
+                .expect("message count should fit u64"),
+        );
+        for message in &request.messages {
+            let role = match message.role {
+                crate::types::ChatRole::System => "system",
+                crate::types::ChatRole::User => "user",
+                crate::types::ChatRole::Assistant => "assistant",
+            };
+            builder.push_str(role);
+            builder.push_str(&message.content);
+        }
+        builder.finish()
+    }
+
+    fn should_retry(&self, err: &AiError) -> bool {
+        match err {
+            AiError::Cancelled => false,
+            AiError::Timeout => true,
+            AiError::Http(err) => {
+                if err.is_timeout() || err.is_connect() {
+                    return true;
+                }
+                let Some(status) = err.status() else {
+                    // Network errors without a status are generally worth retrying.
+                    return true;
+                };
+                status.as_u16() == 408 || status.as_u16() == 429 || status.is_server_error()
+            }
+            _ => false,
+        }
+    }
+
+    async fn backoff_sleep(
+        &self,
+        attempt: usize,
+        max_delay: Duration,
+        cancel: &CancellationToken,
+    ) -> Result<(), AiError> {
+        let factor = 2u32.saturating_pow((attempt.saturating_sub(1)).min(16) as u32);
+        let mut delay = self.retry.initial_backoff.saturating_mul(factor);
+        if delay > self.retry.max_backoff {
+            delay = self.retry.max_backoff;
+        }
+        if delay > max_delay {
+            delay = max_delay;
+        }
+
+        tokio::select! {
+            _ = cancel.cancelled() => Err(AiError::Cancelled),
+            _ = tokio::time::sleep(delay) => Ok(()),
+        }
+    }
+}
+
+#[async_trait]
+impl LlmClient for AiClient {
+    async fn chat(
+        &self,
+        request: ChatRequest,
+        cancel: CancellationToken,
+    ) -> Result<String, AiError> {
+        if cancel.is_cancelled() {
+            return Err(AiError::Cancelled);
+        }
+
+        let request = self.sanitize_request(request);
 
         let prompt_for_log = if self.audit_enabled {
             Some(audit::format_chat_prompt(&request.messages))
@@ -192,34 +413,7 @@ impl AiClient {
             None
         };
 
-        let cache_key = self.cache.as_ref().map(|_| {
-            let mut builder = CacheKeyBuilder::new("ai_chat_v1");
-            builder.push_str(self.provider_label);
-            builder.push_str(self.endpoint.as_str());
-            builder.push_str(&self.model);
-            builder.push_u32(request.max_tokens.unwrap_or(self.default_max_tokens));
-            // ChatRequest doesn't currently expose temperature; keep the key
-            // future-proof by reserving the slot.
-            builder.push_u32(0);
-            builder.push_u64(
-                request
-                    .messages
-                    .len()
-                    .try_into()
-                    .expect("message count should fit u64"),
-            );
-            for message in &request.messages {
-                let role = match message.role {
-                    crate::types::ChatRole::System => "system",
-                    crate::types::ChatRole::User => "user",
-                    crate::types::ChatRole::Assistant => "assistant",
-                };
-                builder.push_str(role);
-                builder.push_str(&message.content);
-            }
-            builder.finish()
-        });
-
+        let cache_key = self.cache.as_ref().map(|_| self.build_cache_key(&request));
         if let (Some(cache), Some(key)) = (&self.cache, cache_key) {
             if let Some(hit) = cache.get(key).await {
                 if let Some(prompt) = prompt_for_log.as_deref() {
@@ -244,6 +438,12 @@ impl AiClient {
                         /*stream=*/ false,
                         /*chunk_count=*/ None,
                     );
+                } else {
+                    debug!(
+                        provider = self.provider_label,
+                        model = %self.model,
+                        "llm cache hit"
+                    );
                 }
                 return Ok(hit);
             }
@@ -251,29 +451,64 @@ impl AiClient {
 
         let timeout = self.request_timeout;
         let operation_start = Instant::now();
-        let _permit = tokio::time::timeout(timeout, self.acquire_permit(cancel.clone()))
-            .await
-            .map_err(|_| AiError::Timeout)??;
-        let remaining = timeout.saturating_sub(operation_start.elapsed());
-        if remaining == Duration::ZERO {
-            return Err(AiError::Timeout);
-        }
+        let mut attempt = 0usize;
 
-        let started_at = Instant::now();
-        if let Some(prompt) = prompt_for_log.as_deref() {
-            audit::log_llm_request(
-                request_id,
-                self.provider_label,
-                &self.model,
-                prompt,
-                safe_endpoint.as_deref(),
-                /*attempt=*/ 0,
-                /*stream=*/ false,
-            );
-        }
+        loop {
+            if cancel.is_cancelled() {
+                return Err(AiError::Cancelled);
+            }
 
-        match tokio::time::timeout(remaining, self.provider.chat(request, cancel)).await {
-            Ok(result) => match result {
+            let remaining = timeout.saturating_sub(operation_start.elapsed());
+            if remaining == Duration::ZERO {
+                return Err(AiError::Timeout);
+            }
+
+            let (started_at, result) = {
+                let permit = tokio::time::timeout(remaining, self.acquire_permit(&cancel))
+                    .await
+                    .map_err(|_| AiError::Timeout)??;
+
+                let remaining = timeout.saturating_sub(operation_start.elapsed());
+                if remaining == Duration::ZERO {
+                    drop(permit);
+                    return Err(AiError::Timeout);
+                }
+
+                let started_at = Instant::now();
+                if let Some(prompt) = prompt_for_log.as_deref() {
+                    audit::log_llm_request(
+                        request_id,
+                        self.provider_label,
+                        &self.model,
+                        prompt,
+                        safe_endpoint.as_deref(),
+                        attempt,
+                        /*stream=*/ false,
+                    );
+                } else {
+                    debug!(
+                        provider = self.provider_label,
+                        model = %self.model,
+                        attempt,
+                        "llm request"
+                    );
+                }
+
+                let out = tokio::time::timeout(
+                    remaining,
+                    self.provider.chat(request.clone(), cancel.clone()),
+                )
+                .await;
+                let out = match out {
+                    Ok(res) => res,
+                    Err(_) => Err(AiError::Timeout),
+                };
+
+                drop(permit);
+                (started_at, out)
+            };
+
+            match result {
                 Ok(completion) => {
                     if let (Some(cache), Some(key)) = (&self.cache, cache_key) {
                         cache.insert(key, completion.clone()).await;
@@ -286,12 +521,52 @@ impl AiClient {
                             safe_endpoint.as_deref(),
                             &completion,
                             started_at.elapsed(),
-                            /*retry_count=*/ 0,
+                            /*retry_count=*/ attempt,
                             /*stream=*/ false,
                             /*chunk_count=*/ None,
                         );
                     }
-                    Ok(completion)
+                    return Ok(completion);
+                }
+                Err(err) if attempt < self.retry.max_retries && self.should_retry(&err) => {
+                    if self.audit_enabled {
+                        audit::log_llm_error(
+                            request_id,
+                            self.provider_label,
+                            &self.model,
+                            &err.to_string(),
+                            started_at.elapsed(),
+                            /*retry_count=*/ attempt,
+                            /*stream=*/ false,
+                        );
+                    }
+
+                    attempt += 1;
+                    warn!(
+                        provider = ?self.provider_kind,
+                        attempt,
+                        error = %err,
+                        "llm request failed, retrying"
+                    );
+
+                    let remaining = timeout.saturating_sub(operation_start.elapsed());
+                    if remaining == Duration::ZERO {
+                        return Err(AiError::Timeout);
+                    }
+                    if let Err(err) = self.backoff_sleep(attempt, remaining, &cancel).await {
+                        if self.audit_enabled {
+                            audit::log_llm_error(
+                                request_id,
+                                self.provider_label,
+                                &self.model,
+                                &err.to_string(),
+                                operation_start.elapsed(),
+                                /*retry_count=*/ attempt,
+                                /*stream=*/ false,
+                            );
+                        }
+                        return Err(err);
+                    }
                 }
                 Err(err) => {
                     if self.audit_enabled {
@@ -301,60 +576,26 @@ impl AiClient {
                             &self.model,
                             &err.to_string(),
                             started_at.elapsed(),
-                            /*retry_count=*/ 0,
+                            /*retry_count=*/ attempt,
                             /*stream=*/ false,
                         );
                     }
-                    Err(err)
+                    return Err(err);
                 }
-            },
-            Err(_) => {
-                if self.audit_enabled {
-                    audit::log_llm_error(
-                        request_id,
-                        self.provider_label,
-                        &self.model,
-                        &AiError::Timeout.to_string(),
-                        started_at.elapsed(),
-                        /*retry_count=*/ 0,
-                        /*stream=*/ false,
-                    );
-                }
-                Err(AiError::Timeout)
             }
         }
     }
 
-    pub async fn chat_stream(
+    async fn chat_stream(
         &self,
-        mut request: ChatRequest,
+        request: ChatRequest,
         cancel: CancellationToken,
     ) -> Result<AiStream, AiError> {
-        if request.max_tokens.is_none() {
-            request.max_tokens = Some(self.default_max_tokens);
+        if cancel.is_cancelled() {
+            return Err(AiError::Cancelled);
         }
 
-        let mut session = self.privacy.new_session();
-        for message in &mut request.messages {
-            let sanitized = self
-                .privacy
-                .sanitize_prompt_text(&mut session, &message.content);
-            message.content = if self.audit_enabled {
-                audit::sanitize_prompt_for_audit(&sanitized)
-            } else {
-                sanitized
-            };
-        }
-
-        let timeout = self.request_timeout;
-        let operation_start = Instant::now();
-        let permit = tokio::time::timeout(timeout, self.acquire_permit(cancel.clone()))
-            .await
-            .map_err(|_| AiError::Timeout)??;
-        let remaining = timeout.saturating_sub(operation_start.elapsed());
-        if remaining == Duration::ZERO {
-            return Err(AiError::Timeout);
-        }
+        let request = self.sanitize_request(request);
 
         let prompt_for_log = if self.audit_enabled {
             Some(audit::format_chat_prompt(&request.messages))
@@ -371,6 +612,17 @@ impl AiClient {
         } else {
             None
         };
+
+        let timeout = self.request_timeout;
+        let operation_start = Instant::now();
+        let permit = tokio::time::timeout(timeout, self.acquire_permit(&cancel))
+            .await
+            .map_err(|_| AiError::Timeout)??;
+        let remaining = timeout.saturating_sub(operation_start.elapsed());
+        if remaining == Duration::ZERO {
+            return Err(AiError::Timeout);
+        }
+
         let started_at = Instant::now();
         if let Some(prompt) = prompt_for_log.as_deref() {
             audit::log_llm_request(
@@ -384,48 +636,46 @@ impl AiClient {
             );
         }
 
-        let inner =
-            match tokio::time::timeout(remaining, self.provider.chat_stream(request, cancel)).await
-            {
-                Ok(result) => match result {
-                    Ok(stream) => stream,
-                    Err(err) => {
-                        if self.audit_enabled {
-                            audit::log_llm_error(
-                                request_id,
-                                self.provider_label,
-                                &self.model,
-                                &err.to_string(),
-                                started_at.elapsed(),
-                                /*retry_count=*/ 0,
-                                /*stream=*/ true,
-                            );
-                        }
-                        return Err(err);
-                    }
-                },
-                Err(_) => {
+        let inner = match tokio::time::timeout(remaining, self.provider.chat_stream(request, cancel)).await {
+            Ok(result) => match result {
+                Ok(stream) => stream,
+                Err(err) => {
                     if self.audit_enabled {
                         audit::log_llm_error(
                             request_id,
                             self.provider_label,
                             &self.model,
-                            &AiError::Timeout.to_string(),
+                            &err.to_string(),
                             started_at.elapsed(),
                             /*retry_count=*/ 0,
                             /*stream=*/ true,
                         );
                     }
-                    return Err(AiError::Timeout);
+                    return Err(err);
                 }
-            };
+            },
+            Err(_) => {
+                if self.audit_enabled {
+                    audit::log_llm_error(
+                        request_id,
+                        self.provider_label,
+                        &self.model,
+                        &AiError::Timeout.to_string(),
+                        started_at.elapsed(),
+                        /*retry_count=*/ 0,
+                        /*stream=*/ true,
+                    );
+                }
+                return Err(AiError::Timeout);
+            }
+        };
 
         let audit_enabled = self.audit_enabled;
-        let request_id_for_stream = request_id;
         let provider_label = self.provider_label;
         let model = self.model.clone();
-        let started_at_for_stream = started_at;
         let safe_endpoint_for_stream = safe_endpoint.clone();
+        let request_id_for_stream = request_id;
+        let started_at_for_stream = started_at;
 
         let stream = async_stream::try_stream! {
             let _permit = permit;
@@ -471,24 +721,67 @@ impl AiClient {
             }
         };
 
-        let stream: AiStream = Box::pin(stream);
-        Ok(stream)
+        Ok(Box::pin(stream))
     }
 
-    pub async fn list_models(&self, cancel: CancellationToken) -> Result<Vec<String>, AiError> {
-        let timeout = self.request_timeout;
-        let operation_start = Instant::now();
-        let _permit = tokio::time::timeout(timeout, self.acquire_permit(cancel.clone()))
-            .await
-            .map_err(|_| AiError::Timeout)??;
-        let remaining = timeout.saturating_sub(operation_start.elapsed());
-        if remaining == Duration::ZERO {
-            return Err(AiError::Timeout);
+    async fn list_models(&self, cancel: CancellationToken) -> Result<Vec<String>, AiError> {
+        if cancel.is_cancelled() {
+            return Err(AiError::Cancelled);
         }
 
-        tokio::time::timeout(remaining, self.provider.list_models(cancel))
-            .await
-            .map_err(|_| AiError::Timeout)?
+        let timeout = self.request_timeout;
+        let operation_start = Instant::now();
+        let mut attempt = 0usize;
+
+        loop {
+            if cancel.is_cancelled() {
+                return Err(AiError::Cancelled);
+            }
+
+            let remaining = timeout.saturating_sub(operation_start.elapsed());
+            if remaining == Duration::ZERO {
+                return Err(AiError::Timeout);
+            }
+
+            let (result, should_backoff) = {
+                let permit = tokio::time::timeout(remaining, self.acquire_permit(&cancel))
+                    .await
+                    .map_err(|_| AiError::Timeout)??;
+
+                let remaining = timeout.saturating_sub(operation_start.elapsed());
+                if remaining == Duration::ZERO {
+                    drop(permit);
+                    return Err(AiError::Timeout);
+                }
+
+                let out = tokio::time::timeout(remaining, self.provider.list_models(cancel.clone()))
+                    .await;
+                let out = match out {
+                    Ok(res) => res,
+                    Err(_) => Err(AiError::Timeout),
+                };
+                drop(permit);
+
+                let should_backoff =
+                    out.as_ref().is_err_and(|err| attempt < self.retry.max_retries && self.should_retry(err));
+                (out, should_backoff)
+            };
+
+            match result {
+                Ok(models) => return Ok(models),
+                Err(err) if should_backoff => {
+                    attempt += 1;
+                    warn!(provider = ?self.provider_kind, attempt, "llm list_models failed, retrying");
+
+                    let remaining = timeout.saturating_sub(operation_start.elapsed());
+                    if remaining == Duration::ZERO {
+                        return Err(AiError::Timeout);
+                    }
+                    self.backoff_sleep(attempt, remaining, &cancel).await?;
+                }
+                Err(err) => return Err(err),
+            }
+        }
     }
 }
 
@@ -515,6 +808,11 @@ fn provider_label(kind: &AiProviderKind) -> &'static str {
         AiProviderKind::Ollama => "ollama",
         AiProviderKind::OpenAiCompatible => "openai_compatible",
         AiProviderKind::InProcessLlama => "in_process_llama",
+        AiProviderKind::OpenAi => "openai",
+        AiProviderKind::Anthropic => "anthropic",
+        AiProviderKind::Gemini => "gemini",
+        AiProviderKind::AzureOpenAi => "azure_openai",
+        AiProviderKind::Http => "http",
     }
 }
 
@@ -621,7 +919,7 @@ mod tests {
     const SECRET: &str = "sk-proj-012345678901234567890123456789";
 
     #[async_trait]
-    impl AiProvider for DummyProvider {
+    impl LlmProvider for DummyProvider {
         async fn chat(
             &self,
             request: ChatRequest,
@@ -658,7 +956,7 @@ mod tests {
         }
     }
 
-    fn make_test_client(provider: Arc<dyn AiProvider>) -> AiClient {
+    fn make_test_client(provider: Arc<dyn LlmProvider>) -> AiClient {
         let privacy = PrivacyFilter::new(&nova_config::AiPrivacyConfig::default())
             .expect("default privacy config is valid");
 
@@ -666,6 +964,7 @@ mod tests {
             url::Url::parse("http://user:pass@localhost/?token=supersecret").expect("valid url");
 
         AiClient {
+            provider_kind: AiProviderKind::Ollama,
             provider,
             semaphore: Arc::new(Semaphore::new(1)),
             privacy,
@@ -675,7 +974,9 @@ mod tests {
             provider_label: "dummy",
             model: "dummy-model".to_string(),
             endpoint,
+            azure_cache_key: None,
             cache: None,
+            retry: RetryConfig::default(),
         }
     }
 
@@ -705,6 +1006,7 @@ mod tests {
                 ChatRequest {
                     messages: vec![crate::types::ChatMessage::user(format!("hello {secret}"))],
                     max_tokens: None,
+                    temperature: None,
                 },
                 CancellationToken::new(),
             )
@@ -786,6 +1088,7 @@ mod tests {
                 ChatRequest {
                     messages: vec![crate::types::ChatMessage::user(format!("hello {secret}"))],
                     max_tokens: None,
+                    temperature: None,
                 },
                 CancellationToken::new(),
             )
@@ -843,7 +1146,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl AiProvider for CapturingProvider {
+    impl LlmProvider for CapturingProvider {
         async fn chat(
             &self,
             request: ChatRequest,
@@ -873,7 +1176,7 @@ mod tests {
     #[tokio::test]
     async fn chat_sanitization_is_stable_across_messages_and_snippets() {
         let captured = Arc::new(CapturedRequest::default());
-        let provider: Arc<dyn AiProvider> = Arc::new(CapturingProvider {
+        let provider: Arc<dyn LlmProvider> = Arc::new(CapturingProvider {
             captured: captured.clone(),
         });
 
@@ -885,6 +1188,7 @@ mod tests {
         let privacy = PrivacyFilter::new(&privacy_cfg).expect("privacy filter");
 
         let client = AiClient {
+            provider_kind: AiProviderKind::Ollama,
             provider,
             semaphore: Arc::new(Semaphore::new(1)),
             privacy,
@@ -894,7 +1198,9 @@ mod tests {
             provider_label: "dummy",
             model: "dummy-model".to_string(),
             endpoint: url::Url::parse("http://localhost").expect("valid url"),
+            azure_cache_key: None,
             cache: None,
+            retry: RetryConfig::default(),
         };
 
         let request = ChatRequest {
@@ -905,6 +1211,7 @@ mod tests {
                 crate::types::ChatMessage::user("Snippet 2:\n```java\nFoo foo = null;\n```\n"),
             ],
             max_tokens: None,
+            temperature: None,
         };
 
         let _ = client

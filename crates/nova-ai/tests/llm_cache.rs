@@ -1,50 +1,52 @@
 use httpmock::prelude::*;
-use nova_ai::cloud::GenerateRequest;
-use nova_ai::{CloudLlmClient, CloudLlmConfig, ProviderKind, RetryConfig};
+use nova_ai::{AiClient, ChatMessage, ChatRequest};
+use nova_config::{AiConfig, AiProviderKind};
 use serde_json::json;
-use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
+fn http_config(url: Url, model: &str) -> AiConfig {
+    let mut cfg = AiConfig::default();
+    cfg.enabled = true;
+    cfg.provider.kind = AiProviderKind::Http;
+    cfg.provider.url = url;
+    cfg.provider.model = model.to_string();
+    cfg.provider.timeout_ms = 1_000;
+    cfg.provider.concurrency = 1;
+    cfg.provider.max_tokens = 64;
+    cfg.privacy.local_only = false;
+    cfg.privacy.anonymize = Some(false);
+    cfg.cache_enabled = true;
+    cfg.cache_max_entries = 32;
+    cfg.cache_ttl_secs = 60;
+    cfg
+}
+
 #[tokio::test]
-async fn cloud_llm_generate_is_cached_for_identical_requests() {
+async fn llm_chat_is_cached_for_identical_requests() {
     let server = MockServer::start();
     let mock = server.mock(|when, then| {
         when.method(POST).path("/complete");
         then.status(200).json_body(json!({ "completion": "Pong" }));
     });
 
-    let cfg = CloudLlmConfig {
-        provider: ProviderKind::Http,
-        endpoint: Url::parse(&format!("{}/complete", server.base_url())).unwrap(),
-        api_key: None,
-        model: "default".to_string(),
-        timeout: Duration::from_secs(1),
-        retry: RetryConfig {
-            max_retries: 0,
-            ..RetryConfig::default()
-        },
-        audit_logging: false,
-        cache_enabled: true,
-        cache_max_entries: 32,
-        cache_ttl: Duration::from_secs(60),
-    };
+    let cfg = http_config(
+        Url::parse(&format!("{}/complete", server.base_url())).unwrap(),
+        "default",
+    );
 
-    let client = CloudLlmClient::new(cfg).unwrap();
-    let request = GenerateRequest {
-        prompt: "Ping".to_string(),
-        max_tokens: 5,
-        temperature: 0.2,
+    let client = AiClient::from_config(&cfg).unwrap();
+    let request = ChatRequest {
+        messages: vec![ChatMessage::user("Ping")],
+        max_tokens: Some(5),
+        temperature: Some(0.2),
     };
 
     let out1 = client
-        .generate(request.clone(), CancellationToken::new())
+        .chat(request.clone(), CancellationToken::new())
         .await
         .unwrap();
-    let out2 = client
-        .generate(request, CancellationToken::new())
-        .await
-        .unwrap();
+    let out2 = client.chat(request, CancellationToken::new()).await.unwrap();
 
     assert_eq!(out1, "Pong");
     assert_eq!(out2, "Pong");
@@ -52,100 +54,81 @@ async fn cloud_llm_generate_is_cached_for_identical_requests() {
 }
 
 #[tokio::test]
-async fn cloud_llm_cache_misses_when_model_changes() {
+async fn llm_cache_misses_when_model_changes() {
     let server = MockServer::start();
     let mock = server.mock(|when, then| {
         when.method(POST).path("/complete");
         then.status(200).json_body(json!({ "completion": "Pong" }));
     });
 
-    let base_cfg = CloudLlmConfig {
-        provider: ProviderKind::Http,
-        endpoint: Url::parse(&format!("{}/complete", server.base_url())).unwrap(),
-        api_key: None,
-        model: "model-a".to_string(),
-        timeout: Duration::from_secs(1),
-        retry: RetryConfig {
-            max_retries: 0,
-            ..RetryConfig::default()
-        },
-        audit_logging: false,
-        cache_enabled: true,
-        cache_max_entries: 32,
-        cache_ttl: Duration::from_secs(60),
+    let base_url = Url::parse(&format!("{}/complete", server.base_url())).unwrap();
+    let request = ChatRequest {
+        messages: vec![ChatMessage::user("Ping")],
+        max_tokens: Some(5),
+        temperature: Some(0.2),
     };
 
-    let request = GenerateRequest {
-        prompt: "Ping".to_string(),
-        max_tokens: 5,
-        temperature: 0.2,
-    };
+    let client_a = AiClient::from_config(&http_config(base_url.clone(), "model-a")).unwrap();
+    assert_eq!(
+        client_a
+            .chat(request.clone(), CancellationToken::new())
+            .await
+            .unwrap(),
+        "Pong"
+    );
 
-    let client_a = CloudLlmClient::new(base_cfg.clone()).unwrap();
-    let out_a = client_a
-        .generate(request.clone(), CancellationToken::new())
-        .await
-        .unwrap();
-    assert_eq!(out_a, "Pong");
-
-    let mut cfg_b = base_cfg;
-    cfg_b.model = "model-b".to_string();
-    let client_b = CloudLlmClient::new(cfg_b).unwrap();
-    let out_b = client_b
-        .generate(request, CancellationToken::new())
-        .await
-        .unwrap();
-    assert_eq!(out_b, "Pong");
+    let client_b = AiClient::from_config(&http_config(base_url, "model-b")).unwrap();
+    assert_eq!(
+        client_b
+            .chat(request, CancellationToken::new())
+            .await
+            .unwrap(),
+        "Pong"
+    );
 
     // Both requests should hit the network because the model differs (keyed in the cache).
     mock.assert_hits(2);
 }
 
 #[tokio::test]
-async fn cloud_llm_cache_misses_when_temperature_changes() {
+async fn llm_cache_misses_when_temperature_changes() {
     let server = MockServer::start();
     let mock = server.mock(|when, then| {
         when.method(POST).path("/complete");
         then.status(200).json_body(json!({ "completion": "Pong" }));
     });
 
-    let cfg = CloudLlmConfig {
-        provider: ProviderKind::Http,
-        endpoint: Url::parse(&format!("{}/complete", server.base_url())).unwrap(),
-        api_key: None,
-        model: "default".to_string(),
-        timeout: Duration::from_secs(1),
-        retry: RetryConfig {
-            max_retries: 0,
-            ..RetryConfig::default()
-        },
-        audit_logging: false,
-        cache_enabled: true,
-        cache_max_entries: 32,
-        cache_ttl: Duration::from_secs(60),
-    };
+    let cfg = http_config(
+        Url::parse(&format!("{}/complete", server.base_url())).unwrap(),
+        "default",
+    );
+    let client = AiClient::from_config(&cfg).unwrap();
 
-    let client = CloudLlmClient::new(cfg).unwrap();
-    let request_a = GenerateRequest {
-        prompt: "Ping".to_string(),
-        max_tokens: 5,
-        temperature: 0.2,
+    let request_a = ChatRequest {
+        messages: vec![ChatMessage::user("Ping")],
+        max_tokens: Some(5),
+        temperature: Some(0.2),
     };
-    let request_b = GenerateRequest {
-        temperature: 0.3,
+    let request_b = ChatRequest {
+        temperature: Some(0.3),
         ..request_a.clone()
     };
 
-    let out1 = client
-        .generate(request_a, CancellationToken::new())
-        .await
-        .unwrap();
-    let out2 = client
-        .generate(request_b, CancellationToken::new())
-        .await
-        .unwrap();
+    assert_eq!(
+        client
+            .chat(request_a, CancellationToken::new())
+            .await
+            .unwrap(),
+        "Pong"
+    );
+    assert_eq!(
+        client
+            .chat(request_b, CancellationToken::new())
+            .await
+            .unwrap(),
+        "Pong"
+    );
 
-    assert_eq!(out1, "Pong");
-    assert_eq!(out2, "Pong");
     mock.assert_hits(2);
 }
+

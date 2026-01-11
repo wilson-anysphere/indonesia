@@ -4,7 +4,7 @@ use hyper::{
     service::{make_service_fn, service_fn},
     Body, Request, Response, Server, StatusCode,
 };
-use nova_ai::{AiClient, AiError, ChatMessage, ChatRequest, CodeSnippet, NovaAi};
+use nova_ai::{AiClient, AiError, ChatMessage, ChatRequest, ContextRequest, NovaAi, PrivacyMode};
 use nova_config::{AiConfig, AiPrivacyConfig, AiProviderConfig, AiProviderKind};
 use serde_json::Value;
 use std::{
@@ -59,6 +59,8 @@ fn openai_config(url: Url) -> AiConfig {
             kind: AiProviderKind::OpenAiCompatible,
             url,
             model: "test-model".to_string(),
+            azure_deployment: None,
+            azure_api_version: None,
             max_tokens: 128,
             timeout_ms: 500,
             concurrency: Some(1),
@@ -83,6 +85,8 @@ fn ollama_config(url: Url) -> AiConfig {
             kind: AiProviderKind::Ollama,
             url,
             model: "llama3".to_string(),
+            azure_deployment: None,
+            azure_api_version: None,
             max_tokens: 128,
             timeout_ms: 500,
             concurrency: Some(1),
@@ -171,6 +175,7 @@ async fn openai_compatible_request_formatting() {
             ChatRequest {
                 messages: vec![ChatMessage::user("hi")],
                 max_tokens: Some(7),
+                temperature: None,
             },
             CancellationToken::new(),
         )
@@ -219,6 +224,7 @@ async fn openai_compatible_sends_authorization_header_when_api_key_is_set() {
             ChatRequest {
                 messages: vec![ChatMessage::user("hi")],
                 max_tokens: Some(7),
+                temperature: None,
             },
             CancellationToken::new(),
         )
@@ -306,6 +312,7 @@ async fn openai_compatible_stream_sends_authorization_header_when_api_key_is_set
             ChatRequest {
                 messages: vec![ChatMessage::user("hi")],
                 max_tokens: Some(5),
+                temperature: None,
             },
             CancellationToken::new(),
         )
@@ -350,6 +357,7 @@ async fn ollama_request_formatting() {
             ChatRequest {
                 messages: vec![ChatMessage::user("hi")],
                 max_tokens: Some(11),
+                temperature: None,
             },
             CancellationToken::new(),
         )
@@ -414,6 +422,7 @@ async fn openai_compatible_streaming_parsing() {
             ChatRequest {
                 messages: vec![ChatMessage::user("hi")],
                 max_tokens: Some(5),
+                temperature: None,
             },
             CancellationToken::new(),
         )
@@ -470,6 +479,7 @@ async fn cancellation_stops_in_flight_request() {
             ChatRequest {
                 messages: vec![ChatMessage::user("hi")],
                 max_tokens: Some(5),
+                temperature: None,
             },
             cancel,
         ),
@@ -622,7 +632,13 @@ async fn ai_actions_work_end_to_end_with_local_backend() {
     let response = ai
         .explain_error(
             "cannot find symbol",
-            &CodeSnippet::ad_hoc("class A { void m(){ x(); } }"),
+            ContextRequest::for_java_source_range(
+                "class A { void m(){ x(); } }",
+                0.."class A { void m(){ x(); } }".len(),
+                800,
+                PrivacyMode::default(),
+                true,
+            ),
             CancellationToken::new(),
         )
         .await
