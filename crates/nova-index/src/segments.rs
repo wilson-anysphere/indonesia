@@ -135,45 +135,8 @@ pub fn clear_segments(cache_dir: &CacheDir) -> Result<(), IndexPersistenceError>
     Ok(())
 }
 
-pub fn estimate_segment_bytes(indexes_dir: &Path, file_name: &str) -> Option<u64> {
-    let path = segment_path(indexes_dir, file_name);
-    std::fs::metadata(path).ok().map(|m| m.len())
-}
-
-pub fn manifest_or_new(indexes_dir: &Path) -> Result<SegmentManifest, IndexPersistenceError> {
-    match load_manifest(indexes_dir)? {
-        Some(manifest) if manifest.is_compatible() => Ok(manifest),
-        _ => Ok(SegmentManifest::new()),
-    }
-}
-
 pub fn ensure_segments_dir(indexes_dir: &Path) -> Result<PathBuf, IndexPersistenceError> {
     let dir = segments_dir(indexes_dir);
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
-}
-
-pub fn update_manifest_for_new_segment(
-    indexes_dir: &Path,
-    snapshot: &ProjectSnapshot,
-    covered_files: &[String],
-) -> Result<(SegmentManifest, SegmentEntry), IndexPersistenceError> {
-    let mut manifest = manifest_or_new(indexes_dir)?;
-    let id = manifest.next_segment_id();
-    let file_name = segment_file_name(id);
-    let created_at_millis = now_millis();
-
-    let files = build_segment_files(snapshot, covered_files);
-    let bytes = estimate_segment_bytes(indexes_dir, &file_name);
-    let entry = SegmentEntry {
-        id,
-        created_at_millis,
-        file_name,
-        files,
-        bytes,
-    };
-
-    manifest.last_updated_millis = created_at_millis;
-    manifest.segments.push(entry.clone());
-    Ok((manifest, entry))
 }

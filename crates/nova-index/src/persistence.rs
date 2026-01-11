@@ -14,6 +14,9 @@ pub const INDEX_SCHEMA_VERSION: u32 = 2;
 
 const INDEX_WRITE_LOCK_NAME: &str = "indexes.lock";
 
+const MAX_SEGMENTS_BEFORE_COMPACTION: usize = 32;
+const MAX_SEGMENT_BYTES_BEFORE_COMPACTION: u64 = 256 * 1024 * 1024;
+
 pub const DEFAULT_SHARD_COUNT: u32 = 64;
 
 pub type ShardId = u32;
@@ -678,60 +681,80 @@ pub fn append_index_segment(
     let indexes_dir = cache_dir.indexes_dir();
     std::fs::create_dir_all(&indexes_dir)?;
 
-    let _lock = acquire_index_write_lock(&indexes_dir)?;
+    let should_compact = {
+        let _lock = acquire_index_write_lock(&indexes_dir)?;
 
-    let metadata_path = cache_dir.metadata_path();
-    let (mut metadata, previous_generation) = match CacheMetadata::load(&metadata_path) {
-        Ok(existing)
-            if existing.is_compatible() && &existing.project_hash == snapshot.project_hash() =>
-        {
-            let previous = existing.last_updated_millis;
-            (existing, previous)
+        let metadata_path = cache_dir.metadata_path();
+        let (mut metadata, previous_generation) = match CacheMetadata::load(&metadata_path) {
+            Ok(existing)
+                if existing.is_compatible()
+                    && &existing.project_hash == snapshot.project_hash() =>
+            {
+                let previous = existing.last_updated_millis;
+                (existing, previous)
+            }
+            _ => (CacheMetadata::new(snapshot), 0),
+        };
+
+        let generation = next_generation(previous_generation);
+        delta_indexes.set_generation(generation);
+
+        crate::segments::ensure_segments_dir(&indexes_dir)?;
+        let mut manifest = match crate::segments::load_manifest(&indexes_dir) {
+            Ok(Some(manifest)) if manifest.is_compatible() => manifest,
+            Ok(Some(_)) | Err(_) => {
+                crate::segments::clear_segments(cache_dir)?;
+                crate::segments::SegmentManifest::new()
+            }
+            Ok(None) => crate::segments::SegmentManifest::new(),
+        };
+
+        let id = manifest.next_segment_id();
+        let file_name = segment_file_name(id);
+        let segment_path = crate::segments::segment_path(&indexes_dir, &file_name);
+
+        nova_storage::write_archive_atomic(
+            &segment_path,
+            nova_storage::ArtifactKind::ProjectIndexSegment,
+            INDEX_SCHEMA_VERSION,
+            delta_indexes,
+            nova_storage::Compression::None,
+        )?;
+
+        let bytes = std::fs::metadata(&segment_path).ok().map(|m| m.len());
+        let entry = crate::segments::SegmentEntry {
+            id,
+            created_at_millis: generation,
+            file_name,
+            files: build_segment_files(snapshot, covered_files),
+            bytes,
+        };
+
+        manifest.last_updated_millis = generation;
+        manifest.segments.push(entry);
+        crate::segments::save_manifest(&indexes_dir, &manifest)?;
+
+        metadata.update_from_snapshot(snapshot);
+        metadata.last_updated_millis = generation;
+        metadata.save(metadata_path)?;
+
+        if manifest.segments.len() > MAX_SEGMENTS_BEFORE_COMPACTION {
+            true
+        } else {
+            let total_bytes: u64 = manifest
+                .segments
+                .iter()
+                .map(|segment| segment.bytes.unwrap_or(0))
+                .sum();
+            total_bytes > MAX_SEGMENT_BYTES_BEFORE_COMPACTION
         }
-        _ => (CacheMetadata::new(snapshot), 0),
     };
 
-    let generation = next_generation(previous_generation);
-    delta_indexes.set_generation(generation);
-
-    crate::segments::ensure_segments_dir(&indexes_dir)?;
-    let mut manifest = match crate::segments::load_manifest(&indexes_dir) {
-        Ok(Some(manifest)) if manifest.is_compatible() => manifest,
-        Ok(Some(_)) | Err(_) => {
-            crate::segments::clear_segments(cache_dir)?;
-            crate::segments::SegmentManifest::new()
-        }
-        Ok(None) => crate::segments::SegmentManifest::new(),
-    };
-
-    let id = manifest.next_segment_id();
-    let file_name = segment_file_name(id);
-    let segment_path = crate::segments::segment_path(&indexes_dir, &file_name);
-
-    nova_storage::write_archive_atomic(
-        &segment_path,
-        nova_storage::ArtifactKind::ProjectIndexSegment,
-        INDEX_SCHEMA_VERSION,
-        delta_indexes,
-        nova_storage::Compression::None,
-    )?;
-
-    let bytes = std::fs::metadata(&segment_path).ok().map(|m| m.len());
-    let entry = crate::segments::SegmentEntry {
-        id,
-        created_at_millis: generation,
-        file_name,
-        files: build_segment_files(snapshot, covered_files),
-        bytes,
-    };
-
-    manifest.last_updated_millis = generation;
-    manifest.segments.push(entry);
-    crate::segments::save_manifest(&indexes_dir, &manifest)?;
-
-    metadata.update_from_snapshot(snapshot);
-    metadata.last_updated_millis = generation;
-    metadata.save(metadata_path)?;
+    if should_compact {
+        // Best-effort: segment compaction can be expensive and isn't required
+        // for correctness.
+        let _ = compact_index_segments(cache_dir);
+    }
 
     Ok(())
 }
