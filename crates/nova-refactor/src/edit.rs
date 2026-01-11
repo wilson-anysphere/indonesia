@@ -84,6 +84,10 @@ impl WorkspaceEdit {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.file_ops.is_empty() && self.text_edits.is_empty()
+    }
+
     /// Returns edits grouped by file in deterministic order.
     pub fn edits_by_file(&self) -> BTreeMap<&FileId, Vec<&TextEdit>> {
         let mut map: BTreeMap<&FileId, Vec<&TextEdit>> = BTreeMap::new();
@@ -314,6 +318,9 @@ impl WorkspaceEdit {
                 mapping.insert(from.clone(), to.clone());
             }
         }
+        // Validate there are no cycles so `remap_text_edits_across_renames` can be used before
+        // `normalize()`.
+        let _ = order_renames(&mapping)?;
         Ok(mapping)
     }
 
