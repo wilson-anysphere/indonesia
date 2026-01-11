@@ -70,6 +70,7 @@ impl ContextBuilder {
                 if built.text.is_empty() && remaining == 0 {
                     truncated = true;
                 }
+                remaining = remaining.saturating_sub(built.token_estimate);
                 truncated |= built.truncated;
                 if !built.text.is_empty() {
                     out.push_str(&built.text);
