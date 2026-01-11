@@ -1,6 +1,8 @@
 use bincode::Options;
 use nova_cache::{load_shard_index, save_shard_index, shard_cache_path};
-use nova_remote_proto::{ShardId, ShardIndex, Symbol, MAX_SYMBOLS_PER_SHARD_INDEX, PROTOCOL_VERSION};
+use nova_remote_proto::{
+    ShardId, ShardIndex, Symbol, MAX_SYMBOLS_PER_SHARD_INDEX, PROTOCOL_VERSION,
+};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
