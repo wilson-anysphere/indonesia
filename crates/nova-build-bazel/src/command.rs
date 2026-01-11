@@ -80,10 +80,7 @@ impl CommandRunner for DefaultCommandRunner {
             .with_context(|| "failed to open stderr pipe")?;
 
         let stderr_handle = std::thread::spawn(move || -> io::Result<String> {
-            let mut buf = Vec::new();
-            let reader = BufReader::new(stderr);
-            reader.take(MAX_STDERR_BYTES).read_to_end(&mut buf)?;
-            Ok(String::from_utf8_lossy(&buf).to_string())
+            read_truncated_to_string_and_drain(stderr, MAX_STDERR_BYTES)
         });
 
         let mut stdout_reader = BufReader::new(stdout);
@@ -112,5 +109,59 @@ impl CommandRunner for DefaultCommandRunner {
         }
 
         result
+    }
+}
+
+fn read_truncated_to_string_and_drain<R: Read>(reader: R, limit: u64) -> io::Result<String> {
+    let mut buf = Vec::new();
+    let reader = BufReader::new(reader);
+    let mut limited = reader.take(limit);
+    limited.read_to_end(&mut buf)?;
+
+    // Keep draining the underlying reader even after we've reached `limit` bytes to avoid the
+    // child process blocking (or receiving SIGPIPE) if it keeps writing to stderr.
+    let mut reader = limited.into_inner();
+    let mut sink = io::sink();
+    let _ = io::copy(&mut reader, &mut sink);
+
+    Ok(String::from_utf8_lossy(&buf).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_truncated_to_string_and_drain;
+    use std::io::{Cursor, Read};
+
+    #[derive(Debug)]
+    struct CountingReader<R> {
+        inner: R,
+        bytes_read: usize,
+    }
+
+    impl<R> CountingReader<R> {
+        fn new(inner: R) -> Self {
+            Self {
+                inner,
+                bytes_read: 0,
+            }
+        }
+    }
+
+    impl<R: Read> Read for CountingReader<R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.inner.read(buf)?;
+            self.bytes_read += n;
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn truncated_reader_still_drains_to_eof() {
+        let payload = vec![b'x'; 32 * 1024];
+        let mut reader = CountingReader::new(Cursor::new(payload.clone()));
+
+        let out = read_truncated_to_string_and_drain(&mut reader, 1024).unwrap();
+        assert_eq!(out.len(), 1024);
+        assert_eq!(reader.bytes_read, payload.len());
     }
 }
