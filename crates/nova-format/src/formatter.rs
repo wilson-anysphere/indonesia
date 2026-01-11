@@ -37,21 +37,61 @@ impl Token {
         matches!(self, Token::LineComment(_))
     }
 
-    fn display_len(&self) -> usize {
+    fn display_len(&self, source: &str) -> usize {
         match self {
-            Token::Word(span)
-            | Token::Number(span)
-            | Token::StringLiteral(span)
-            | Token::CharLiteral(span) => span.end.saturating_sub(span.start),
+            Token::Word(span) | Token::Number(span) => span.end.saturating_sub(span.start),
+            Token::StringLiteral(span) => {
+                let text = span.text(source);
+                let first_line_len = text.find(['\n', '\r']).unwrap_or(text.len());
+                let line = &text[..first_line_len];
+                if line.starts_with('"') && !ends_with_unescaped_quote(line.as_bytes(), b'"', 2) {
+                    line.trim_end_matches([' ', '\t']).len()
+                } else {
+                    first_line_len
+                }
+            }
+            Token::CharLiteral(span) => {
+                let text = span.text(source);
+                let first_line_len = text.find(['\n', '\r']).unwrap_or(text.len());
+                let line = &text[..first_line_len];
+                if line.starts_with('\'') && !ends_with_unescaped_quote(line.as_bytes(), b'\'', 2) {
+                    line.trim_end_matches([' ', '\t']).len()
+                } else {
+                    first_line_len
+                }
+            }
             Token::LineComment(span) | Token::BlockComment(span) | Token::DocComment(span) => {
-                // When measuring we treat comment tokens as a single "word" (we'll handle internal
-                // newlines separately during actual formatting).
-                span.end.saturating_sub(span.start)
+                let text = span.text(source);
+                // Multi-line comments include their internal newlines in the token range; for
+                // wrapping decisions we only want to consider the part that will be emitted on the
+                // current line (up to the first line break) to keep formatting stable across
+                // passes.
+                text.find(['\n', '\r']).unwrap_or(text.len())
             }
             Token::Punct(p) => p.len(),
             Token::BlankLine => 1,
         }
     }
+}
+
+fn ends_with_unescaped_quote(bytes: &[u8], quote: u8, min_len: usize) -> bool {
+    if bytes.len() < min_len {
+        return false;
+    }
+    if bytes.last().copied() != Some(quote) {
+        return false;
+    }
+    let mut backslashes = 0usize;
+    let mut idx = bytes.len() - 1;
+    while idx > 0 {
+        idx -= 1;
+        if bytes[idx] == b'\\' {
+            backslashes += 1;
+        } else {
+            break;
+        }
+    }
+    backslashes % 2 == 0
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -936,11 +976,11 @@ fn is_unterminated_string_literal(text: &str) -> bool {
     if text.starts_with("\"\"\"") {
         return !text.ends_with("\"\"\"");
     }
-    !text.ends_with('"')
+    !ends_with_unescaped_quote(text.as_bytes(), b'"', 2)
 }
 
 fn is_unterminated_char_literal(text: &str) -> bool {
-    text.starts_with('\'') && !text.ends_with('\'')
+    text.starts_with('\'') && !ends_with_unescaped_quote(text.as_bytes(), b'\'', 2)
 }
 
 fn finalize_output(
@@ -1407,7 +1447,6 @@ fn write_token(
             if state.needs_space_before(state.last_sig, sig, tok) {
                 state.ensure_space();
             }
-
             let text = span.text(state.source);
             state.out.push_str(text);
             state.line_len += span.end.saturating_sub(span.start);
@@ -1420,7 +1459,6 @@ fn write_token(
             if state.needs_space_before(state.last_sig, sig, tok) {
                 state.ensure_space();
             }
-
             let text = span.text(state.source);
             state.out.push_str(text);
             state.line_len += span.end.saturating_sub(span.start);
@@ -1690,13 +1728,24 @@ fn write_token(
                 let next_is_number = matches!(next, Some(Token::Number(_)));
                 let should_wrap = !prev_is_number && !next_is_number;
 
+                // Prevent sequences of dot tokens (e.g. `. . .`) from collapsing into the `...`
+                // ellipsis token on the next parse, which can otherwise change spacing decisions.
+                if matches!(punct, Punct::Dot) && matches!(state.last_sig, Some(SigToken::Punct(Punct::Dot))) {
+                    state.ensure_space();
+                }
+
                 if should_wrap {
-                    let next_len = next.map(|t| t.display_len()).unwrap_or(0);
+                    let next_len = next.map(|t| t.display_len(state.source)).unwrap_or(0);
                     state.wrap_if_needed(state.continuation_indent(), punct.len() + next_len + 1);
                 }
 
                 punct.push_to(&mut state.out);
                 state.line_len += punct.len();
+                if matches!(punct, Punct::Dot) && !prev_is_number && next_is_number {
+                    // Avoid producing floating-point literals like `.0` from separate `.` and
+                    // numeric tokens, since that changes the lexer token stream on the next parse.
+                    state.ensure_space();
+                }
                 state.last_sig = Some(SigToken::Punct(*punct));
             }
             Punct::Ellipsis => {
@@ -1749,7 +1798,7 @@ fn write_token(
                 } else {
                     // Treat as comparison operator.
                     state.ensure_space();
-                    let next_len = next.map(|t| t.display_len()).unwrap_or(0);
+                    let next_len = next.map(|t| t.display_len(state.source)).unwrap_or(0);
                     state.wrap_if_needed(state.continuation_indent(), punct.len() + next_len + 1);
                     punct.push_to(&mut state.out);
                     state.line_len += punct.len();
@@ -1784,7 +1833,7 @@ fn write_token(
                 } else {
                     let prev = state.last_sig;
                     state.ensure_space();
-                    let next_len = next.map(|t| t.display_len()).unwrap_or(0);
+                    let next_len = next.map(|t| t.display_len(state.source)).unwrap_or(0);
                     state.wrap_if_needed(state.continuation_indent(), punct.len() + next_len + 1);
                     punct.push_to(&mut state.out);
                     state.line_len += punct.len();
@@ -1816,7 +1865,7 @@ fn write_token(
                     }
                 } else {
                     state.ensure_space();
-                    let next_len = next.map(|t| t.display_len()).unwrap_or(0);
+                    let next_len = next.map(|t| t.display_len(state.source)).unwrap_or(0);
                     state.wrap_if_needed(state.continuation_indent(), punct.len() + next_len + 1);
                     punct.push_to(&mut state.out);
                     state.line_len += punct.len();
@@ -1861,6 +1910,11 @@ fn write_token(
                                 && ctx.start_bracket_depth == state.bracket_depth
                                 && ctx.start_generic_depth == state.generic_depth()
                         });
+                    if matches!(state.last_sig, Some(SigToken::Punct(Punct::Colon))) {
+                        // Keep `:` tokens separated so we don't accidentally create a `::` method
+                        // reference token on the next parse when the input contains `: :`.
+                        state.ensure_space();
+                    }
                     if for_each_colon || state.ternary_depth > 0 {
                         state.ensure_space();
                     }
@@ -1896,7 +1950,7 @@ fn write_token(
                 state.write_indent();
                 let sig = SigToken::Punct(Punct::Arrow);
                 state.ensure_space();
-                let next_len = next.map(|t| t.display_len()).unwrap_or(0);
+                let next_len = next.map(|t| t.display_len(state.source)).unwrap_or(0);
                 state.wrap_if_needed(state.continuation_indent(), punct.len() + next_len + 1);
                 punct.push_to(&mut state.out);
                 state.line_len += punct.len();
@@ -1919,7 +1973,7 @@ fn write_token(
                 } else {
                     // Binary +/-
                     state.ensure_space();
-                    let next_len = next.map(|t| t.display_len()).unwrap_or(0);
+                    let next_len = next.map(|t| t.display_len(state.source)).unwrap_or(0);
                     state.wrap_if_needed(state.continuation_indent(), punct.len() + next_len + 1);
                     punct.push_to(&mut state.out);
                     state.line_len += punct.len();
@@ -1952,7 +2006,7 @@ fn write_token(
                 let binary = FormatState::is_binary_operator(*punct, prev, state.generic_depth());
                 if binary {
                     state.ensure_space();
-                    let next_len = next.map(|t| t.display_len()).unwrap_or(0);
+                    let next_len = next.map(|t| t.display_len(state.source)).unwrap_or(0);
                     state.wrap_if_needed(state.continuation_indent(), punct.len() + next_len + 1);
                 }
 

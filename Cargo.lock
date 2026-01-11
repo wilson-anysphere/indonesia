@@ -3637,6 +3637,7 @@ dependencies = [
  "nova-core",
  "nova-syntax",
  "pretty_assertions",
+ "proptest",
  "thiserror 1.0.69",
 ]
 

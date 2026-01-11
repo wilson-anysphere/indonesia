@@ -222,8 +222,25 @@ pub enum FormatError {
 /// formatting while the AST-aware formatter (`format_java_ast`) lands.
 pub fn format_java(tree: &SyntaxTree, source: &str, config: &FormatConfig) -> String {
     let newline = NewlineStyle::detect(source);
-    let input_has_final_newline = ends_with_line_break(source);
-    format_java_with_indent(tree, source, config, 0, input_has_final_newline, newline)
+    let mut input_has_final_newline = ends_with_line_break(source);
+    let mut formatted =
+        format_java_with_indent(tree, source, config, 0, input_has_final_newline, newline);
+
+    // Formatting is best-effort and must be idempotent, even when the lexer tokenization changes
+    // across passes on malformed input (e.g. unterminated literals or comment delimiters created
+    // by whitespace normalization).
+    for _ in 0..8 {
+        let tree = nova_syntax::parse(&formatted);
+        input_has_final_newline = ends_with_line_break(&formatted);
+        let next =
+            format_java_with_indent(&tree, &formatted, config, 0, input_has_final_newline, newline);
+        if next == formatted {
+            break;
+        }
+        formatted = next;
+    }
+
+    formatted
 }
 
 /// Return minimal edits that transform `source` into its formatted representation.

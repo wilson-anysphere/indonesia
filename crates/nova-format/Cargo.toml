@@ -12,6 +12,7 @@ thiserror = "1.0"
 criterion = "0.5"
 insta = "1.38"
 pretty_assertions = "1.4"
+proptest = "1.4"
 
 [[bench]]
 name = "format"
