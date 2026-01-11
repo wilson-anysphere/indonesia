@@ -25,7 +25,9 @@ mod write;
 
 pub use header::{ArtifactKind, Compression, StorageHeader, HEADER_LEN};
 pub use persisted::{CheckableArchived, PersistedArchive, StorageError};
-pub use write::write_archive_atomic;
+pub use write::{
+    write_archive_atomic, write_archive_atomic_with_options, WriteArchiveOptions, WriteCompression,
+};
 
 #[cfg(test)]
 mod tests {
@@ -61,8 +63,7 @@ mod tests {
         )
         .unwrap();
 
-        let loaded =
-            PersistedArchive::<Sample>::open(&path, ArtifactKind::AstArtifacts, 1).unwrap();
+        let loaded = PersistedArchive::<Sample>::open(&path, ArtifactKind::AstArtifacts, 1).unwrap();
         assert_eq!(loaded.header().schema_version, 1);
 
         assert_eq!(loaded.to_owned().unwrap(), value);
@@ -97,6 +98,34 @@ mod tests {
             StorageError::Truncated { .. } => {}
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn round_trip_zstd() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("sample-zstd.bin");
+
+        let value = Sample {
+            a: 7,
+            b: "compressed".to_string(),
+            values: (0..128).collect(),
+        };
+
+        write_archive_atomic_with_options(
+            &path,
+            ArtifactKind::AstArtifacts,
+            1,
+            &value,
+            WriteArchiveOptions {
+                compression: WriteCompression::Zstd { level: 0 },
+                validate_after_write: true,
+            },
+        )
+        .unwrap();
+
+        let loaded = PersistedArchive::<Sample>::open(&path, ArtifactKind::AstArtifacts, 1).unwrap();
+        assert_eq!(loaded.header().compression, Compression::Zstd);
+        assert_eq!(loaded.to_owned().unwrap(), value);
     }
 
     #[test]
@@ -374,3 +403,4 @@ mod tests {
         );
     }
 }
+
