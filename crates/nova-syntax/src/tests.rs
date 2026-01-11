@@ -1,10 +1,10 @@
 use pretty_assertions::assert_eq;
 
 use crate::{
-    lex, lex_with_errors, parse_expression, parse_java, parse_java_expression, parse_java_with_options,
-    reparse_java, AstNode, CompilationUnit, ExportsDirective, JavaLanguageLevel, OpensDirective,
-    ParseOptions, ProvidesDirective, RequiresDirective, SyntaxKind, TextEdit, TextRange,
-    UsesDirective,
+    lex, lex_with_errors, parse_expression, parse_java, parse_java_expression,
+    parse_java_with_options, reparse_java, AstNode, CompilationUnit, ExportsDirective,
+    JavaLanguageLevel, OpensDirective, ParseOptions, ProvidesDirective, RequiresDirective,
+    SyntaxKind, TextEdit, TextRange, UsesDirective,
 };
 
 fn bless_enabled() -> bool {
