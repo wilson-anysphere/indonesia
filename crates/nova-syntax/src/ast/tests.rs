@@ -1,7 +1,7 @@
 use crate::ast::{
     AstNode, BlockFragment, ClassDeclaration, ClassMember, ClassMemberFragment, CompilationUnit,
     Expression, ExpressionFragment, ModuleDirectiveKind, Statement, StatementFragment,
-    SwitchRuleBody, TypeDeclaration,
+    SwitchRuleBody, TypeDeclaration, UnnamedPattern,
 };
 use crate::{
     parse_java, parse_java_block_fragment, parse_java_class_member_fragment,
@@ -265,6 +265,75 @@ fn yield_statement_in_switch_expression_block() {
         .expect("yield statement");
     let yielded = yield_stmt.expression().expect("yielded expression");
     assert_eq!(yielded.syntax().text().to_string(), "x");
+}
+
+#[test]
+fn switch_wildcard_pattern_is_accessible() {
+    let src = "class Foo { void m(Object o) { switch (o) { case _ -> {} } } }";
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let unit = CompilationUnit::cast(parse.syntax()).unwrap();
+    let class = unit
+        .type_declarations()
+        .find_map(|decl| match decl {
+            TypeDeclaration::ClassDeclaration(class) => Some(class),
+            _ => None,
+        })
+        .unwrap();
+    let method = class
+        .body()
+        .unwrap()
+        .members()
+        .find_map(|m| match m {
+            ClassMember::MethodDeclaration(method) => Some(method),
+            _ => None,
+        })
+        .unwrap();
+
+    let switch = method
+        .body()
+        .unwrap()
+        .statements()
+        .find_map(|stmt| match stmt {
+            Statement::SwitchStatement(stmt) => Some(stmt),
+            _ => None,
+        })
+        .unwrap();
+
+    let block = switch.block().expect("switch block");
+    let rule = block.rules().next().expect("switch rule");
+    let label = rule.labels().next().expect("switch label");
+    let element = label.elements().next().expect("case label element");
+
+    let pattern = element.pattern().expect("expected wildcard pattern");
+    assert!(pattern.type_pattern().is_none());
+    assert!(pattern.record_pattern().is_none());
+
+    let wildcard = pattern
+        .unnamed_pattern()
+        .expect("expected Pattern::unnamed_pattern for `_`");
+    assert_eq!(wildcard.syntax().first_token().unwrap().text(), "_");
+}
+
+#[test]
+fn lambda_unnamed_parameter_is_unnamed_pattern_node() {
+    let fragment_parse = parse_java_expression_fragment("_ -> 1", 0);
+    assert!(fragment_parse.parse.errors.is_empty());
+
+    let fragment = ExpressionFragment::cast(fragment_parse.parse.syntax()).expect("ExpressionFragment");
+    let expr = fragment.expression().expect("expression");
+    let lambda = match expr {
+        Expression::LambdaExpression(it) => it,
+        other => panic!("expected LambdaExpression, got {other:?}"),
+    };
+
+    let param = lambda
+        .syntax()
+        .children()
+        .find_map(UnnamedPattern::cast)
+        .expect("expected UnnamedPattern parameter");
+    assert_eq!(param.syntax().first_token().unwrap().text(), "_");
 }
 
 #[test]
