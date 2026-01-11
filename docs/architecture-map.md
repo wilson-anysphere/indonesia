@@ -63,8 +63,8 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
   - Not yet integrated with the VFS archive path model from ADR 0006 (`nova-vfs::ArchivePath`).
 
 ### `nova-bugreport`
-- **Purpose:** crash recording + on-demand bug report bundle creation (logs/config/crashes/perf).
-- **Key entry points:** `crates/nova-bugreport/src/lib.rs` (`install_panic_hook`, `create_bug_report_bundle`).
+- **Purpose:** crash recording + on-demand bug report bundle creation (logs/config/crashes/perf + system/env metadata, optional zip packaging).
+- **Key entry points:** `crates/nova-bugreport/src/lib.rs` (`install_panic_hook`, `BugReportBuilder`, `create_bug_report_bundle`).
 - **Maturity:** productionizing
 - **Known gaps vs intended docs:**
   - Bundle schema is stable but currently Nova-specific; no cross-tool standardization.
