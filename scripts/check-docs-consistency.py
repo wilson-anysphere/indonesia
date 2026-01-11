@@ -22,7 +22,9 @@ def check_architecture_map() -> list[str]:
     crates = sorted(p.name for p in crates_dir.iterdir() if p.is_dir())
     doc = read_text(doc_path)
 
-    doc_crates_list = re.findall(r"^### `([^`]+)`\s*$", doc, flags=re.MULTILINE)
+    heading_re = re.compile(r"^### `([^`]+)`\s*$", flags=re.MULTILINE)
+    matches = list(heading_re.finditer(doc))
+    doc_crates_list = [m.group(1) for m in matches]
     doc_crates = set(doc_crates_list)
 
     errors: list[str] = []
@@ -47,6 +49,24 @@ def check_architecture_map() -> list[str]:
             "docs/architecture-map.md contains headings for crates that no longer exist: "
             + ", ".join(extra)
         )
+
+    required_fields = [
+        "- **Purpose:**",
+        "- **Key entry points:**",
+        "- **Maturity:**",
+        "- **Known gaps vs intended docs:**",
+    ]
+    for idx, m in enumerate(matches):
+        crate = m.group(1)
+        start = m.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(doc)
+        section = doc[start:end]
+        for field in required_fields:
+            if field not in section:
+                errors.append(
+                    f"docs/architecture-map.md crate section `{crate}` is missing required field: {field}"
+                )
+                break
 
     if not duplicates and not missing and not extra and doc_crates_list != crates:
         for idx, (actual, expected) in enumerate(zip(doc_crates_list, crates), start=1):
@@ -91,9 +111,9 @@ def extract_vscode_methods() -> set[str]:
 def check_protocol_extensions() -> list[str]:
     doc_path = REPO_ROOT / "docs" / "protocol-extensions.md"
     doc = read_text(doc_path)
-    doc_methods_list = [
-        m for m in re.findall(r"^### `([^`]+)`", doc, flags=re.MULTILINE) if m.startswith("nova/")
-    ]
+    heading_re = re.compile(r"^### `([^`]+)`", flags=re.MULTILINE)
+    matches = [m for m in heading_re.finditer(doc) if m.group(1).startswith("nova/")]
+    doc_methods_list = [m.group(1) for m in matches]
     doc_methods = {
         m
         for m in doc_methods_list
@@ -131,6 +151,19 @@ def check_protocol_extensions() -> list[str]:
             "docs/protocol-extensions.md contains method headings not referenced by nova-lsp or the VS Code client: "
             + ", ".join(extra)
         )
+
+    required_fields = ["- **Kind:**", "- **Stability:**"]
+    for idx, m in enumerate(matches):
+        method = m.group(1)
+        start = m.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(doc)
+        section = doc[start:end]
+        for field in required_fields:
+            if field not in section:
+                errors.append(
+                    f"docs/protocol-extensions.md method section `{method}` is missing required field: {field}"
+                )
+                break
 
     return errors
 
