@@ -431,3 +431,10 @@ For the stable spec of Nova’s custom `nova/*` LSP methods, see
 - **Known gaps vs intended docs:**
   - Intentionally partial YAML implementation (not YAML 1.2-complete).
 
+### `xtask`
+- **Purpose:** developer tooling tasks invoked via `cargo run -p xtask -- ...` (currently: codegen).
+- **Key entry points:** `crates/xtask/src/lib.rs` (`main`, `codegen`, `generate_ast`),
+  `crates/xtask/src/main.rs`.
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - Only implements `cargo xtask codegen` today (generates `nova-syntax` AST bindings from `java.syntax`).
