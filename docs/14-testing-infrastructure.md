@@ -22,10 +22,9 @@ If you’re looking for *why* we test at each layer, start with the conceptual c
 From the repo root:
 
 ```bash
-# Lint job (docs + dependency boundaries + clippy)
-python3 scripts/check-docs-consistency.py
+# Lint job (repo invariants + clippy)
+./scripts/check-repo-invariants.sh
 cargo fmt --all -- --check
-./scripts/check-deps.sh
 cargo clippy --all-targets --all-features -- -D warnings
 
 # Test job (CI runs this on ubuntu/macos/windows)
@@ -58,9 +57,8 @@ Nova’s PR gates include `ci.yml`, `perf.yml`, and `javac.yml`. To run the same
 
 ```bash
 # ci.yml (rust)
-python3 scripts/check-docs-consistency.py
+./scripts/check-repo-invariants.sh
 cargo fmt --all -- --check
-./scripts/check-deps.sh
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 

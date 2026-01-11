@@ -94,11 +94,9 @@ cargo test -p nova-cli --test real_projects -- --include-ignored
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 
-# Docs consistency checks (CI runs this)
-python3 scripts/check-docs-consistency.py
-
-# Crate dependency boundary check (CI runs this; ADR 0007)
-./scripts/check-deps.sh
+# Repo invariants (CI runs this; nova-devtools)
+./scripts/check-repo-invariants.sh
+# (Runs: crate layering + crate-layers.toml integrity + architecture-map + protocol-extensions)
 
 # Lint GitHub Actions workflows (CI runs actionlint)
 # https://github.com/rhysd/actionlint
