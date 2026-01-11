@@ -196,6 +196,195 @@ describe('ServerManager install flow', () => {
     expect(result.version).toBe(prereleaseTag);
   });
 
+  it('adds Authorization headers for public GitHub URLs when GH_TOKEN is set', async () => {
+    const oldGhToken = process.env.GH_TOKEN;
+    process.env.GH_TOKEN = 'test-token';
+    try {
+      const { Volume, createFsFromVolume } = await import('memfs');
+      const vol = new Volume();
+      const memfs = createFsFromVolume(vol) as typeof import('node:fs');
+
+      vi.doMock('node:fs/promises', () => memfs.promises as unknown as typeof import('node:fs/promises'));
+      vi.doMock('node:fs', () => memfs);
+
+      const { ServerManager } = await import('./serverManager');
+
+      const archiveName = 'nova-lsp-x86_64-unknown-linux-gnu.tar.xz';
+      const archive = Buffer.from('fake-archive-contents');
+      const archiveBytes = archive.buffer.slice(archive.byteOffset, archive.byteOffset + archive.byteLength);
+      const sha256 = await (async () => {
+        const { createHash } = await import('node:crypto');
+        return createHash('sha256').update(archive).digest('hex');
+      })();
+
+      const archiveUrl = `https://github.com/wilson-anysphere/indonesia/releases/download/v0.1.0/${archiveName}`;
+      const shaUrl = `${archiveUrl}.sha256`;
+
+      const release = {
+        tag_name: 'v0.1.0',
+        assets: [
+          { name: archiveName, browser_download_url: archiveUrl },
+          { name: `${archiveName}.sha256`, browser_download_url: shaUrl },
+        ],
+      };
+
+      const authByUrl = new Map<string, string | undefined>();
+      const fetchMock = vi.fn(async (url: string, init?: { headers?: Record<string, string> }) => {
+        const headers = init?.headers ?? {};
+        authByUrl.set(url, headers.Authorization ?? headers.authorization);
+
+        if (url.endsWith(`/releases/tags/${encodeURIComponent('v0.1.0')}`)) {
+          return { ok: true, status: 200, json: async () => release } as unknown as Response;
+        }
+        if (url === shaUrl) {
+          const body = Buffer.from(sha256);
+          const ab = body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength);
+          return { ok: true, status: 200, arrayBuffer: async () => ab } as unknown as Response;
+        }
+        if (url === archiveUrl) {
+          return { ok: true, status: 200, arrayBuffer: async () => archiveBytes } as unknown as Response;
+        }
+        throw new Error(`Unexpected fetch url: ${url}`);
+      });
+
+      const extractor = {
+        extractBinaryFromArchive: vi.fn(async ({ outputPath }: { outputPath: string }) => {
+          await memfs.promises.writeFile(outputPath, 'binary');
+        }),
+      };
+
+      const manager = new ServerManager('/storage', undefined, {
+        fetch: fetchMock as unknown as typeof fetch,
+        platform: 'linux',
+        arch: 'x64',
+        extractor,
+      });
+
+      await manager.installOrUpdate({
+        path: null,
+        autoDownload: true,
+        releaseChannel: 'stable',
+        version: 'v0.1.0',
+        releaseUrl: 'wilson-anysphere/indonesia',
+      });
+
+      expect(authByUrl.get('https://api.github.com/repos/wilson-anysphere/indonesia/releases/tags/v0.1.0')).toBe(
+        'Bearer test-token',
+      );
+      expect(authByUrl.get(shaUrl)).toBe('Bearer test-token');
+      expect(authByUrl.get(archiveUrl)).toBe('Bearer test-token');
+    } finally {
+      if (oldGhToken === undefined) {
+        delete process.env.GH_TOKEN;
+      } else {
+        process.env.GH_TOKEN = oldGhToken;
+      }
+    }
+  });
+
+  it('does not apply GH_TOKEN to non-GitHub hosts unless NOVA_GITHUB_TOKEN is set', async () => {
+    const oldGhToken = process.env.GH_TOKEN;
+    const oldNovaToken = process.env.NOVA_GITHUB_TOKEN;
+    process.env.GH_TOKEN = 'test-token';
+    delete process.env.NOVA_GITHUB_TOKEN;
+
+    const { Volume, createFsFromVolume } = await import('memfs');
+    const vol = new Volume();
+    const memfs = createFsFromVolume(vol) as typeof import('node:fs');
+
+    vi.doMock('node:fs/promises', () => memfs.promises as unknown as typeof import('node:fs/promises'));
+    vi.doMock('node:fs', () => memfs);
+
+    const { ServerManager } = await import('./serverManager');
+
+    const archiveName = 'nova-lsp-x86_64-unknown-linux-gnu.tar.xz';
+    const archive = Buffer.from('fake-archive-contents');
+    const archiveBytes = archive.buffer.slice(archive.byteOffset, archive.byteOffset + archive.byteLength);
+    const sha256 = await (async () => {
+      const { createHash } = await import('node:crypto');
+      return createHash('sha256').update(archive).digest('hex');
+    })();
+
+    const archiveUrl = `https://ghe.example.com/wilson-anysphere/indonesia/releases/download/v0.1.0/${archiveName}`;
+    const shaUrl = `${archiveUrl}.sha256`;
+
+    const runInstall = async (storageRoot: string): Promise<Map<string, string | undefined>> => {
+      const release = {
+        tag_name: 'v0.1.0',
+        assets: [
+          { name: archiveName, browser_download_url: archiveUrl },
+          { name: `${archiveName}.sha256`, browser_download_url: shaUrl },
+        ],
+      };
+
+      const authByUrl = new Map<string, string | undefined>();
+      const fetchMock = vi.fn(async (url: string, init?: { headers?: Record<string, string> }) => {
+        const headers = init?.headers ?? {};
+        authByUrl.set(url, headers.Authorization ?? headers.authorization);
+
+        if (url.endsWith(`/releases/tags/${encodeURIComponent('v0.1.0')}`)) {
+          return { ok: true, status: 200, json: async () => release } as unknown as Response;
+        }
+        if (url === shaUrl) {
+          const body = Buffer.from(sha256);
+          const ab = body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength);
+          return { ok: true, status: 200, arrayBuffer: async () => ab } as unknown as Response;
+        }
+        if (url === archiveUrl) {
+          return { ok: true, status: 200, arrayBuffer: async () => archiveBytes } as unknown as Response;
+        }
+        throw new Error(`Unexpected fetch url: ${url}`);
+      });
+
+      const extractor = {
+        extractBinaryFromArchive: vi.fn(async ({ outputPath }: { outputPath: string }) => {
+          await memfs.promises.writeFile(outputPath, 'binary');
+        }),
+      };
+
+      const manager = new ServerManager(storageRoot, undefined, {
+        fetch: fetchMock as unknown as typeof fetch,
+        platform: 'linux',
+        arch: 'x64',
+        extractor,
+      });
+
+      await manager.installOrUpdate({
+        path: null,
+        autoDownload: true,
+        releaseChannel: 'stable',
+        version: 'v0.1.0',
+        releaseUrl: 'https://ghe.example.com/api/v3/repos/wilson-anysphere/indonesia',
+      });
+
+      return authByUrl;
+    };
+
+    try {
+      const authWithoutExplicit = await runInstall('/storage-no-token');
+      expect(authWithoutExplicit.get('https://ghe.example.com/api/v3/repos/wilson-anysphere/indonesia/releases/tags/v0.1.0')).toBe(
+        undefined,
+      );
+
+      process.env.NOVA_GITHUB_TOKEN = 'explicit-token';
+      const authWithExplicit = await runInstall('/storage-explicit-token');
+      expect(authWithExplicit.get('https://ghe.example.com/api/v3/repos/wilson-anysphere/indonesia/releases/tags/v0.1.0')).toBe(
+        'Bearer explicit-token',
+      );
+    } finally {
+      if (oldGhToken === undefined) {
+        delete process.env.GH_TOKEN;
+      } else {
+        process.env.GH_TOKEN = oldGhToken;
+      }
+      if (oldNovaToken === undefined) {
+        delete process.env.NOVA_GITHUB_TOKEN;
+      } else {
+        process.env.NOVA_GITHUB_TOKEN = oldNovaToken;
+      }
+    }
+  });
+
   it('downloads, verifies, and installs nova-lsp', async () => {
     const { Volume, createFsFromVolume } = await import('memfs');
     const vol = new Volume();
