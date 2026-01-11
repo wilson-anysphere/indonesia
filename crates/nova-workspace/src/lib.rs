@@ -351,13 +351,17 @@ impl Workspace {
         // If metadata is missing content fingerprints for a file that still
         // exists, force it through the indexer so we can compute a content hash
         // without re-reading the entire project.
-        for path in stamp_snapshot.file_fingerprints().keys() {
-            if !content_fingerprints.contains_key(path) {
-                invalidated_files.push(path.clone());
+        if !indexing_all_files {
+            for path in stamp_snapshot.file_fingerprints().keys() {
+                if !content_fingerprints.contains_key(path) {
+                    invalidated_files.push(path.clone());
+                }
             }
         }
-        invalidated_files.sort();
-        invalidated_files.dedup();
+        if invalidated_files.len() > 1 {
+            invalidated_files.sort();
+            invalidated_files.dedup();
+        }
 
         // Remove stale results for invalidated (new/modified/deleted) files before re-indexing.
         for file in &invalidated_files {
@@ -367,11 +371,15 @@ impl Workspace {
 
         // `invalidated_files` may include deleted files. Only re-index files that still exist in
         // the current snapshot.
-        let files_to_index: Vec<String> = invalidated_files
-            .iter()
-            .filter(|path| stamp_snapshot.file_fingerprints().contains_key(*path))
-            .cloned()
-            .collect();
+        let files_to_index: Vec<String> = if indexing_all_files {
+            stamp_snapshot.file_fingerprints().keys().cloned().collect()
+        } else {
+            invalidated_files
+                .iter()
+                .filter(|path| stamp_snapshot.file_fingerprints().contains_key(*path))
+                .cloned()
+                .collect()
+        };
 
         let (files_indexed, bytes_indexed, updated_fingerprints, index_ms) =
             if files_to_index.is_empty() {
