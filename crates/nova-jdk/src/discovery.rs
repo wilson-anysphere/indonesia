@@ -83,6 +83,7 @@ fn discover_from_java_command() -> Option<PathBuf> {
         timeout: Some(Duration::from_secs(5)),
         // HotSpot prints a modest amount of config data; keep a conservative cap anyway.
         max_bytes: 1024 * 1024,
+        ..RunOptions::default()
     };
     let output = run_command(Path::new("."), Path::new("java"), &args, opts).ok()?;
     if output.timed_out {
