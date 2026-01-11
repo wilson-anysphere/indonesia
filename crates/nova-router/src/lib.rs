@@ -14,10 +14,12 @@ use nova_remote_proto::{
     WorkerStats,
 };
 use nova_scheduler::{CancellationToken, Cancelled, Scheduler, SchedulerConfig, TaskError};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, BufReader};
 use tokio::net::TcpListener;
 use tokio::process::Command;
-use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify, RwLock, Semaphore};
+use tokio::sync::{
+    mpsc, oneshot, watch, Mutex, Notify, OwnedSemaphorePermit, RwLock, Semaphore,
+};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{timeout, Duration, Instant};
 use tracing::{error, info, warn};
@@ -67,6 +69,20 @@ const WORKER_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const WORKER_WAIT_TIMEOUT: Duration = Duration::from_secs(20);
 const WORKER_KILL_TIMEOUT: Duration = Duration::from_secs(2);
 const WORKER_RESTART_JITTER_DIVISOR: u32 = 4;
+
+/// Maximum number of bytes allowed for the first message on a new connection (`WorkerHello`).
+///
+/// Unauthenticated clients should never be able to force the router to allocate large buffers.
+pub const MAX_HELLO_BYTES: usize = 1024 * 1024; // 1 MiB
+
+/// Default maximum number of bytes accepted for framed RPC messages after authentication.
+pub const DEFAULT_MAX_RPC_BYTES: usize = nova_remote_proto::MAX_MESSAGE_BYTES;
+
+/// Default maximum number of concurrent in-flight connection handshakes.
+pub const DEFAULT_MAX_INFLIGHT_HANDSHAKES: usize = MAX_CONCURRENT_HANDSHAKES;
+
+/// Default maximum number of active worker connections.
+pub const DEFAULT_MAX_WORKER_CONNECTIONS: usize = 1024;
 
 #[derive(Clone, Debug)]
 pub struct SourceRoot {
@@ -126,6 +142,12 @@ pub struct DistributedRouterConfig {
     ///
     /// This flag exists as an explicit escape hatch for local development and tests.
     pub allow_insecure_tcp: bool,
+    /// Maximum message size accepted for authenticated RPC traffic.
+    pub max_rpc_bytes: usize,
+    /// Maximum number of concurrent in-flight connection handshakes.
+    pub max_inflight_handshakes: usize,
+    /// Maximum number of active worker connections.
+    pub max_worker_connections: usize,
     #[cfg(feature = "tls")]
     pub tls_client_cert_fingerprint_allowlist: TlsClientCertFingerprintAllowlist,
     /// If true, the router spawns `nova-worker` processes locally (multi-process mode).
@@ -377,6 +399,12 @@ pub struct QueryRouter {
     inner: RouterMode,
 }
 
+impl std::fmt::Debug for QueryRouter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QueryRouter").finish_non_exhaustive()
+    }
+}
+
 enum RouterMode {
     InProcess(InProcessRouter),
     Distributed(DistributedRouter),
@@ -396,6 +424,13 @@ impl QueryRouter {
         Ok(Self {
             inner: RouterMode::Distributed(DistributedRouter::new(config, layout).await?),
         })
+    }
+
+    pub async fn bound_listen_addr(&self) -> Option<ListenAddr> {
+        match &self.inner {
+            RouterMode::InProcess(_) => None,
+            RouterMode::Distributed(router) => router.bound_listen_addr().await,
+        }
     }
 
     pub async fn index_workspace(&self) -> Result<()> {
@@ -591,6 +626,7 @@ struct DistributedRouter {
     accept_task: Mutex<Option<JoinHandle<()>>>,
     worker_supervisors: Mutex<Vec<JoinHandle<()>>>,
     shutdown_tx: watch::Sender<bool>,
+    bound_listen_addr_rx: watch::Receiver<Option<ListenAddr>>,
 }
 
 struct RouterState {
@@ -601,6 +637,8 @@ struct RouterState {
     shards: Mutex<HashMap<ShardId, ShardState>>,
     notify: Notify,
     handshake_semaphore: Arc<Semaphore>,
+    connection_semaphore: Arc<Semaphore>,
+    bound_listen_addr_tx: watch::Sender<Option<ListenAddr>>,
 }
 
 struct ShardState {
@@ -669,6 +707,12 @@ impl DistributedRouter {
             .tls_client_cert_fingerprint_allowlist
             .normalize_in_place()?;
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (bound_listen_addr_tx, bound_listen_addr_rx) = watch::channel(None);
+
+        let handshake_limit = config.max_inflight_handshakes.max(1);
+        let connection_limit = config.max_worker_connections.max(1);
+        let handshake_semaphore = Arc::new(Semaphore::new(handshake_limit));
+        let connection_semaphore = Arc::new(Semaphore::new(connection_limit));
 
         info!(
             listen_addr = ?config.listen_addr,
@@ -696,7 +740,9 @@ impl DistributedRouter {
             global_revision: AtomicU64::new(0),
             shards: Mutex::new(shards),
             notify: Notify::new(),
-            handshake_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_HANDSHAKES)),
+            handshake_semaphore,
+            connection_semaphore,
+            bound_listen_addr_tx,
         });
 
         let accept_state = state.clone();
@@ -729,7 +775,21 @@ impl DistributedRouter {
             accept_task: Mutex::new(Some(accept_task)),
             worker_supervisors: Mutex::new(worker_supervisors),
             shutdown_tx,
+            bound_listen_addr_rx,
         })
+    }
+
+    async fn bound_listen_addr(&self) -> Option<ListenAddr> {
+        let mut rx = self.bound_listen_addr_rx.clone();
+        loop {
+            if let Some(addr) = rx.borrow().clone() {
+                return Some(addr);
+            }
+
+            if rx.changed().await.is_err() {
+                return None;
+            }
+        }
     }
 
     async fn index_workspace(&self) -> Result<()> {
@@ -1022,6 +1082,9 @@ async fn accept_loop_unix(
     let listener =
         UnixListener::bind(&path).with_context(|| format!("bind unix socket {path:?}"))?;
     ipc_security::restrict_unix_socket_permissions(&path)?;
+    let _ = state
+        .bound_listen_addr_tx
+        .send(Some(ListenAddr::Unix(path.clone())));
 
     loop {
         tokio::select! {
@@ -1053,7 +1116,16 @@ async fn accept_loop_unix(
                     }
                 }
                 let boxed: BoxedStream = Box::new(stream);
-                let Ok(permit) = state.handshake_semaphore.clone().try_acquire_owned() else {
+                let Ok(connection_permit) =
+                    state.connection_semaphore.clone().try_acquire_owned()
+                else {
+                    warn!(
+                        socket_path = %path.display(),
+                        "dropping incoming unix connection: too many active connections"
+                    );
+                    continue;
+                };
+                let Ok(handshake_permit) = state.handshake_semaphore.clone().try_acquire_owned() else {
                     warn!(
                         socket_path = %path.display(),
                         "dropping incoming unix connection: too many pending handshakes"
@@ -1063,9 +1135,14 @@ async fn accept_loop_unix(
                 let conn_state = state.clone();
                 let socket_path = path.clone();
                 tokio::spawn(async move {
-                    let _permit = permit;
+                    let _handshake_permit = handshake_permit;
                     if let Err(err) =
-                        handle_new_connection(conn_state, boxed, WorkerIdentity::Unauthenticated)
+                        handle_new_connection(
+                            conn_state,
+                            boxed,
+                            WorkerIdentity::Unauthenticated,
+                            connection_permit,
+                        )
                             .await
                     {
                         warn!(
@@ -1089,6 +1166,9 @@ async fn accept_loop_named_pipe(
     let name = normalize_pipe_name(&name);
     let mut server = ipc_security::create_secure_named_pipe_server(&name, true)
         .with_context(|| format!("create named pipe {name}"))?;
+    let _ = state
+        .bound_listen_addr_tx
+        .send(Some(ListenAddr::NamedPipe(name.clone())));
 
     loop {
         tokio::select! {
@@ -1102,7 +1182,16 @@ async fn accept_loop_named_pipe(
                 let stream: BoxedStream = Box::new(server);
                 server = ipc_security::create_secure_named_pipe_server(&name, false)
                     .with_context(|| format!("create named pipe {name}"))?;
-                let Ok(permit) = state.handshake_semaphore.clone().try_acquire_owned() else {
+                let Ok(connection_permit) =
+                    state.connection_semaphore.clone().try_acquire_owned()
+                else {
+                    warn!(
+                        pipe_name = %name,
+                        "dropping incoming named pipe connection: too many active connections"
+                    );
+                    continue;
+                };
+                let Ok(handshake_permit) = state.handshake_semaphore.clone().try_acquire_owned() else {
                     warn!(
                         pipe_name = %name,
                         "dropping incoming named pipe connection: too many pending handshakes"
@@ -1112,9 +1201,14 @@ async fn accept_loop_named_pipe(
                 let conn_state = state.clone();
                 let pipe_name = name.clone();
                 tokio::spawn(async move {
-                    let _permit = permit;
+                    let _handshake_permit = handshake_permit;
                     if let Err(err) =
-                        handle_new_connection(conn_state, stream, WorkerIdentity::Unauthenticated)
+                        handle_new_connection(
+                            conn_state,
+                            stream,
+                            WorkerIdentity::Unauthenticated,
+                            connection_permit,
+                        )
                             .await
                     {
                         warn!(
@@ -1151,6 +1245,19 @@ async fn accept_loop_tcp(
     let listener = TcpListener::bind(addr)
         .await
         .with_context(|| format!("bind tcp listener {addr}"))?;
+    let local_addr = listener.local_addr().context("tcp listener local_addr")?;
+    let cfg = match cfg {
+        TcpListenAddr::Plain(_) => TcpListenAddr::Plain(local_addr),
+        #[cfg(feature = "tls")]
+        TcpListenAddr::Tls { config, .. } => TcpListenAddr::Tls {
+            addr: local_addr,
+            config,
+        },
+    };
+    let addr = local_addr;
+    let _ = state
+        .bound_listen_addr_tx
+        .send(Some(ListenAddr::Tcp(cfg.clone())));
 
     loop {
         tokio::select! {
@@ -1161,7 +1268,16 @@ async fn accept_loop_tcp(
             }
             res = listener.accept() => {
                 let (stream, peer_addr) = res.with_context(|| format!("accept tcp {addr}"))?;
-                let Ok(permit) = state.handshake_semaphore.clone().try_acquire_owned() else {
+                let Ok(connection_permit) =
+                    state.connection_semaphore.clone().try_acquire_owned()
+                else {
+                    warn!(
+                        peer_addr = %peer_addr,
+                        "dropping incoming tcp connection: too many active connections"
+                    );
+                    continue;
+                };
+                let Ok(handshake_permit) = state.handshake_semaphore.clone().try_acquire_owned() else {
                     warn!(
                         peer_addr = %peer_addr,
                         "dropping incoming tcp connection: too many pending handshakes"
@@ -1171,7 +1287,7 @@ async fn accept_loop_tcp(
                 let conn_state = state.clone();
                 let cfg = cfg.clone();
                 tokio::spawn(async move {
-                    let _permit = permit;
+                    let _handshake_permit = handshake_permit;
                     let (boxed, identity): (BoxedStream, WorkerIdentity) = match cfg {
                         TcpListenAddr::Plain(_) => (Box::new(stream), WorkerIdentity::Unauthenticated),
                         #[cfg(feature = "tls")]
@@ -1201,7 +1317,9 @@ async fn accept_loop_tcp(
                         }
                     };
                     let identity_for_log = identity.clone();
-                    if let Err(err) = handle_new_connection(conn_state, boxed, identity).await {
+                    if let Err(err) =
+                        handle_new_connection(conn_state, boxed, identity, connection_permit).await
+                    {
                         warn!(
                             peer_addr = %peer_addr,
                             identity = ?identity_for_log,
@@ -1224,16 +1342,17 @@ async fn handle_new_connection(
     state: Arc<RouterState>,
     mut stream: BoxedStream,
     identity: WorkerIdentity,
+    connection_permit: OwnedSemaphorePermit,
 ) -> Result<()> {
     #[cfg(not(feature = "tls"))]
     let _ = &identity;
 
     let payload = timeout(
         WORKER_HANDSHAKE_TIMEOUT,
-        transport::read_payload(&mut stream),
+        transport::read_payload_limited(&mut stream, MAX_HELLO_BYTES),
     )
-    .await
-    .context("timed out waiting for WorkerHello")??;
+        .await
+        .context("timed out waiting for WorkerHello")??;
     let hello = match nova_remote_proto::decode_message(&payload) {
         Ok(message) => message,
         Err(v2_err) => {
@@ -1471,9 +1590,16 @@ async fn handle_new_connection(
 
     info!(shard_id, worker_id, has_cached_index, "worker connected");
 
+    let max_rpc_bytes = state
+        .config
+        .max_rpc_bytes
+        .min(nova_remote_proto::MAX_MESSAGE_BYTES)
+        .max(1);
+
     let cleanup_state = state.clone();
     tokio::spawn(async move {
-        let _ = worker_connection_loop(worker_id, shard_id, stream, rx).await;
+        let _connection_permit = connection_permit;
+        let _ = worker_connection_loop(worker_id, shard_id, stream, rx, max_rpc_bytes).await;
         info!(shard_id, worker_id, "worker connection closed");
         let mut guard = cleanup_state.shards.lock().await;
         if let Some(shard) = guard.get_mut(&shard_id) {
@@ -1529,6 +1655,7 @@ async fn worker_connection_loop(
     shard_id: ShardId,
     mut stream: BoxedStream,
     mut rx: mpsc::UnboundedReceiver<WorkerRequest>,
+    max_rpc_bytes: usize,
 ) -> Result<()> {
     loop {
         let req = tokio::select! {
@@ -1595,7 +1722,7 @@ async fn worker_connection_loop(
 
         let read_res = match timeout(
             WORKER_RPC_READ_TIMEOUT,
-            transport::read_message(&mut stream),
+            transport::read_message_limited(&mut stream, max_rpc_bytes),
         )
         .await
         {
@@ -1722,6 +1849,8 @@ async fn worker_supervisor_loop(
             .arg(shard_id.to_string())
             .arg("--cache-dir")
             .arg(&state.config.cache_dir);
+        cmd.arg("--max-rpc-bytes")
+            .arg(state.config.max_rpc_bytes.to_string());
 
         if let Some(token) = state.config.auth_token.as_ref() {
             // Avoid passing secrets via argv. Instead, set the token in the child environment and

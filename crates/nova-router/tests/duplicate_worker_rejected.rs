@@ -24,6 +24,9 @@ async fn concurrent_worker_connections_for_same_shard_are_rejected() -> Result<(
         cache_dir: tmp.path().join("cache"),
         auth_token: None,
         allow_insecure_tcp: false,
+        max_rpc_bytes: nova_router::DEFAULT_MAX_RPC_BYTES,
+        max_inflight_handshakes: nova_router::DEFAULT_MAX_INFLIGHT_HANDSHAKES,
+        max_worker_connections: nova_router::DEFAULT_MAX_WORKER_CONNECTIONS,
         #[cfg(feature = "tls")]
         tls_client_cert_fingerprint_allowlist: Default::default(),
         spawn_workers: false,

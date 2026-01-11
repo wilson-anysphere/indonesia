@@ -22,6 +22,9 @@ async fn mtls_allowlist_requires_client_ca_verification() {
         cache_dir: tmp.path().join("cache"),
         auth_token: None,
         allow_insecure_tcp: false,
+        max_rpc_bytes: nova_router::DEFAULT_MAX_RPC_BYTES,
+        max_inflight_handshakes: nova_router::DEFAULT_MAX_INFLIGHT_HANDSHAKES,
+        max_worker_connections: nova_router::DEFAULT_MAX_WORKER_CONNECTIONS,
         tls_client_cert_fingerprint_allowlist: TlsClientCertFingerprintAllowlist {
             global: vec![fingerprint],
             shards: HashMap::new(),
@@ -57,6 +60,9 @@ async fn mtls_allowlist_requires_tcp_tls_transport() {
         cache_dir: tmp.path().join("cache"),
         auth_token: None,
         allow_insecure_tcp: false,
+        max_rpc_bytes: nova_router::DEFAULT_MAX_RPC_BYTES,
+        max_inflight_handshakes: nova_router::DEFAULT_MAX_INFLIGHT_HANDSHAKES,
+        max_worker_connections: nova_router::DEFAULT_MAX_WORKER_CONNECTIONS,
         tls_client_cert_fingerprint_allowlist: TlsClientCertFingerprintAllowlist {
             global: vec![fingerprint],
             shards: HashMap::new(),

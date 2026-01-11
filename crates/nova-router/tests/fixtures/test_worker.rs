@@ -208,6 +208,15 @@ impl Args {
         let mut iter = std::env::args().skip(1);
         while let Some(arg) = iter.next() {
             match arg.as_str() {
+                "--allow-insecure" => {}
+                "--max-rpc-bytes" => {
+                    // The real `nova-worker` accepts this flag to control the maximum frame size
+                    // for post-handshake RPC traffic. Test workers don't need it, but must accept
+                    // it because the router always forwards it when spawning workers.
+                    let _ = iter
+                        .next()
+                        .ok_or_else(|| anyhow!("--max-rpc-bytes requires value"))?;
+                }
                 "--connect" => {
                     connect = Some(
                         iter.next()

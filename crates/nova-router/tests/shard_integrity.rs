@@ -108,6 +108,11 @@ async fn update_file_rejects_cross_shard_index_poisoning() -> Result<()> {
         cache_dir,
         auth_token: None,
         allow_insecure_tcp: false,
+        max_rpc_bytes: nova_router::DEFAULT_MAX_RPC_BYTES,
+        max_inflight_handshakes: nova_router::DEFAULT_MAX_INFLIGHT_HANDSHAKES,
+        max_worker_connections: nova_router::DEFAULT_MAX_WORKER_CONNECTIONS,
+        #[cfg(feature = "tls")]
+        tls_client_cert_fingerprint_allowlist: Default::default(),
         spawn_workers: false,
     };
     let layout = WorkspaceLayout {
@@ -182,6 +187,11 @@ async fn worker_stats_rejects_mismatched_shard_id() -> Result<()> {
         cache_dir,
         auth_token: None,
         allow_insecure_tcp: false,
+        max_rpc_bytes: nova_router::DEFAULT_MAX_RPC_BYTES,
+        max_inflight_handshakes: nova_router::DEFAULT_MAX_INFLIGHT_HANDSHAKES,
+        max_worker_connections: nova_router::DEFAULT_MAX_WORKER_CONNECTIONS,
+        #[cfg(feature = "tls")]
+        tls_client_cert_fingerprint_allowlist: Default::default(),
         spawn_workers: false,
     };
     let layout = WorkspaceLayout {

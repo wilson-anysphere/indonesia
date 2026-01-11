@@ -203,6 +203,9 @@ async fn mtls_shard_allowlist_scopes_workers_by_cert_fingerprint() -> anyhow::Re
         cache_dir: dir.join("cache"),
         auth_token: None,
         allow_insecure_tcp: false,
+        max_rpc_bytes: nova_router::DEFAULT_MAX_RPC_BYTES,
+        max_inflight_handshakes: nova_router::DEFAULT_MAX_INFLIGHT_HANDSHAKES,
+        max_worker_connections: nova_router::DEFAULT_MAX_WORKER_CONNECTIONS,
         tls_client_cert_fingerprint_allowlist: TlsClientCertFingerprintAllowlist {
             global: vec![client_c_fp.clone()],
             shards,

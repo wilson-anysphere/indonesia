@@ -390,7 +390,23 @@ pub mod transport {
     pub async fn read_payload(
         stream: &mut (impl tokio::io::AsyncRead + Unpin),
     ) -> anyhow::Result<Vec<u8>> {
+        read_payload_limited(stream, max_frame_size()).await
+    }
+
+    /// Read a length-delimited payload, enforcing both the transport-level maximum and an
+    /// additional caller-provided cap.
+    ///
+    /// This is useful for applying stricter limits during unauthenticated handshakes, while still
+    /// allowing larger (but bounded) authenticated RPC frames.
+    #[cfg(feature = "tokio")]
+    pub async fn read_payload_limited(
+        stream: &mut (impl tokio::io::AsyncRead + Unpin),
+        max_len: usize,
+    ) -> anyhow::Result<Vec<u8>> {
         use tokio::io::AsyncReadExt;
+
+        let max_len = max_len.min(MAX_FRAME_BYTES).max(1);
+        let max = max_frame_size().min(max_len);
 
         let mut prefix = [0u8; LEN_PREFIX_BYTES];
         stream
@@ -398,7 +414,6 @@ pub mod transport {
             .await
             .context("read message len")?;
         let len = u32::from_le_bytes(prefix) as usize;
-        let max = max_frame_size();
         if len > max {
             return Err(anyhow!(
                 "frame payload too large ({len} bytes > max_frame_bytes={max})"
@@ -431,7 +446,15 @@ pub mod transport {
     pub async fn read_message(
         stream: &mut (impl tokio::io::AsyncRead + Unpin),
     ) -> anyhow::Result<RpcMessage> {
-        let payload = read_payload(stream).await?;
+        read_message_limited(stream, max_frame_size()).await
+    }
+
+    #[cfg(feature = "tokio")]
+    pub async fn read_message_limited(
+        stream: &mut (impl tokio::io::AsyncRead + Unpin),
+        max_len: usize,
+    ) -> anyhow::Result<RpcMessage> {
+        let payload = read_payload_limited(stream, max_len).await?;
         decode_message(&payload)
     }
 }

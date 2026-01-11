@@ -37,6 +37,9 @@ async fn worker_supervisor_backs_off_on_crash_loop_and_recovers() -> anyhow::Res
         cache_dir: cache_dir.clone(),
         auth_token: None,
         allow_insecure_tcp: false,
+        max_rpc_bytes: nova_router::DEFAULT_MAX_RPC_BYTES,
+        max_inflight_handshakes: nova_router::DEFAULT_MAX_INFLIGHT_HANDSHAKES,
+        max_worker_connections: nova_router::DEFAULT_MAX_WORKER_CONNECTIONS,
         #[cfg(feature = "tls")]
         tls_client_cert_fingerprint_allowlist: Default::default(),
         spawn_workers: true,
@@ -101,6 +104,9 @@ async fn worker_supervisor_enforces_handshake_deadline() -> anyhow::Result<()> {
         cache_dir: cache_dir.clone(),
         auth_token: None,
         allow_insecure_tcp: false,
+        max_rpc_bytes: nova_router::DEFAULT_MAX_RPC_BYTES,
+        max_inflight_handshakes: nova_router::DEFAULT_MAX_INFLIGHT_HANDSHAKES,
+        max_worker_connections: nova_router::DEFAULT_MAX_WORKER_CONNECTIONS,
         #[cfg(feature = "tls")]
         tls_client_cert_fingerprint_allowlist: Default::default(),
         spawn_workers: true,
@@ -163,6 +169,9 @@ async fn worker_supervisor_recovers_when_worker_exits_while_idle() -> anyhow::Re
         cache_dir: cache_dir.clone(),
         auth_token: None,
         allow_insecure_tcp: false,
+        max_rpc_bytes: nova_router::DEFAULT_MAX_RPC_BYTES,
+        max_inflight_handshakes: nova_router::DEFAULT_MAX_INFLIGHT_HANDSHAKES,
+        max_worker_connections: nova_router::DEFAULT_MAX_WORKER_CONNECTIONS,
         #[cfg(feature = "tls")]
         tls_client_cert_fingerprint_allowlist: Default::default(),
         spawn_workers: true,
@@ -241,6 +250,9 @@ async fn router_accepts_replacement_worker_after_remote_disconnect() -> anyhow::
         cache_dir: cache_dir.clone(),
         auth_token: None,
         allow_insecure_tcp: false,
+        max_rpc_bytes: nova_router::DEFAULT_MAX_RPC_BYTES,
+        max_inflight_handshakes: nova_router::DEFAULT_MAX_INFLIGHT_HANDSHAKES,
+        max_worker_connections: nova_router::DEFAULT_MAX_WORKER_CONNECTIONS,
         #[cfg(feature = "tls")]
         tls_client_cert_fingerprint_allowlist: Default::default(),
         spawn_workers: false,

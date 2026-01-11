@@ -41,6 +41,7 @@ impl NovaAi {
                 text: "[code context omitted due to excluded_paths]".to_string(),
                 token_count: 0,
                 truncated: true,
+                sections: Vec::new(),
             };
         }
 
@@ -151,4 +152,3 @@ impl NovaAi {
         self.client.clone()
     }
 }
-

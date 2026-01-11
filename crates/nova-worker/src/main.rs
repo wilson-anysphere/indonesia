@@ -28,6 +28,8 @@ use tokio::net::windows::named_pipe::ClientOptions;
 mod tls;
 
 const FALLBACK_SCAN_LIMIT: usize = 50_000;
+const MAX_ROUTER_HELLO_BYTES: usize = 64 * 1024;
+const DEFAULT_MAX_RPC_BYTES: usize = nova_remote_proto::MAX_MESSAGE_BYTES;
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse()?;
@@ -142,7 +144,11 @@ Use `tcp+tls:` or pass `--allow-insecure` for local testing."
     )
     .await?;
 
-    let ack = transport::read_message(&mut stream)
+    let max_rpc_bytes = args
+        .max_rpc_bytes
+        .min(nova_remote_proto::MAX_MESSAGE_BYTES)
+        .max(1);
+    let ack = transport::read_message_limited(&mut stream, MAX_ROUTER_HELLO_BYTES)
         .await
         .with_context(|| format!("read RouterHello for shard {}", args.shard_id))?;
     let (worker_id, shard_id, revision, protocol_version) = match ack {
@@ -176,7 +182,7 @@ Use `tcp+tls:` or pass `--allow-insecure` for local testing."
     info!(worker_id, revision, protocol_version, "connected to router");
 
     let mut state = WorkerState::new(args.shard_id, args.cache_dir, cached_index);
-    if let Err(err) = state.run(&mut stream).await {
+    if let Err(err) = state.run(&mut stream, max_rpc_bytes).await {
         error!(error = ?err, "worker terminated with error");
         return Err(err);
     }
@@ -192,6 +198,7 @@ struct Args {
     cache_dir: PathBuf,
     auth_token: Option<String>,
     allow_insecure: bool,
+    max_rpc_bytes: usize,
     #[cfg(feature = "tls")]
     tls: Option<TlsArgs>,
 }
@@ -225,6 +232,7 @@ impl Args {
         let mut auth_token_file: Option<PathBuf> = None;
         let mut auth_token_env: Option<String> = None;
         let mut allow_insecure = false;
+        let mut max_rpc_bytes = DEFAULT_MAX_RPC_BYTES;
         let mut tls_ca_cert = None;
         let mut tls_domain = None;
         let mut tls_client_cert = None;
@@ -234,6 +242,13 @@ impl Args {
         while let Some(arg) = iter.next() {
             match arg.as_str() {
                 "--allow-insecure" => allow_insecure = true,
+                "--max-rpc-bytes" => {
+                    max_rpc_bytes = iter
+                        .next()
+                        .ok_or_else(|| anyhow!("--max-rpc-bytes requires value"))?
+                        .parse()
+                        .context("parse --max-rpc-bytes")?;
+                }
                 "--connect" => {
                     connect = Some(
                         iter.next()
@@ -384,6 +399,7 @@ impl Args {
             cache_dir,
             auth_token,
             allow_insecure,
+            max_rpc_bytes,
             #[cfg(feature = "tls")]
             tls,
         })
@@ -477,9 +493,9 @@ impl WorkerState {
         }
     }
 
-    async fn run(&mut self, stream: &mut BoxedStream) -> Result<()> {
+    async fn run(&mut self, stream: &mut BoxedStream, max_rpc_bytes: usize) -> Result<()> {
         loop {
-            let msg = transport::read_message(stream)
+            let msg = transport::read_message_limited(stream, max_rpc_bytes)
                 .await
                 .with_context(|| format!("read message from router (shard {})", self.shard_id))?;
 
