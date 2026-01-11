@@ -284,7 +284,7 @@ export class ServerManager {
 
   async getServerVersion(serverPath: string): Promise<string> {
     const execFileAsync = promisify(execFile);
-    const { stdout, stderr } = await execFileAsync(serverPath, ['--version'], { timeout: 10_000 });
+    const { stdout, stderr } = await execFileAsync(serverPath, ['--version'], { timeout: 10_000, windowsHide: true });
     const output = `${stdout ?? ''}${stderr ?? ''}`.trim();
     return output.length > 0 ? output : '(no output)';
   }
