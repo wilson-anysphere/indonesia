@@ -475,7 +475,13 @@ fn sources_fingerprint(db: &dyn Database, sources: &[JavaSource]) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     for src in sources {
         src.path.hash(&mut hasher);
-        db.file_content(src.file_id).hash(&mut hasher);
+        // Avoid hashing full file contents on every request: we only need a
+        // stable-ish signal that a file changed. `InMemoryFileStore` replaces
+        // the underlying `String` on edits, so `(len, ptr)` acts as a cheap
+        // proxy for content identity.
+        let text = db.file_content(src.file_id);
+        text.len().hash(&mut hasher);
+        (text.as_ptr() as usize).hash(&mut hasher);
     }
     hasher.finish()
 }

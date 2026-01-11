@@ -104,7 +104,11 @@ fn sources_fingerprint(
 
     for entry in files {
         entry.path.hash(&mut hasher);
-        db.file_content(entry.file_id).hash(&mut hasher);
+        // Avoid hashing full file contents: pointer + length is enough to detect
+        // edits for our in-memory database implementations.
+        let text = db.file_content(entry.file_id);
+        text.len().hash(&mut hasher);
+        (text.as_ptr() as usize).hash(&mut hasher);
     }
 
     hasher.finish()
