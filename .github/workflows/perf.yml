@@ -204,9 +204,7 @@ jobs:
               --markdown-out perf-report.md
             status=$?
 
-            cat > perf-report.json <<'EOF'
-          {"error":"nova perf compare did not emit JSON (no supported JSON output flags)"}
-          EOF
+            printf '{"error":"nova perf compare did not emit JSON (no supported JSON output flags)","exit_code":%s}\n' "${status}" > perf-report.json
           fi
 
           # Ensure we always have both report artifacts to upload, even if `cargo run` fails
