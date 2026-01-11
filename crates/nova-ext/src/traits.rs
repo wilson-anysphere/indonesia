@@ -1,3 +1,14 @@
+//! Provider traits for native (Rust) extensions.
+//!
+//! ## Cancellation / timeouts
+//!
+//! Providers are executed with a per-call timeout enforced by Nova. On timeout, the cancellation
+//! token in [`ExtensionContext::cancel`] is cancelled and Nova will stop waiting for the result.
+//!
+//! Providers **must** cooperate by periodically checking `ctx.cancel.is_cancelled()` and returning
+//! promptly when cancelled. Non-cooperative providers may starve the bounded execution pool and
+//! cause subsequent extension calls to time out.
+
 use crate::types::{CodeAction, InlayHint, NavigationTarget, Symbol};
 use crate::ExtensionContext;
 use nova_core::FileId;
@@ -30,6 +41,7 @@ pub struct InlayHintParams {
     pub file: FileId,
 }
 
+/// A provider of diagnostics for a source file.
 pub trait DiagnosticProvider<DB: ?Sized + Send + Sync>: Send + Sync {
     fn id(&self) -> &str;
 
