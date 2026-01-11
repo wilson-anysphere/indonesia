@@ -112,7 +112,27 @@ Modifiers {
 
 Annotation {
   name: Name?
-  arguments: ArgumentList?
+  arguments: AnnotationElementValuePairList?
+}
+
+AnnotationElementValuePairList {
+  pairs: AnnotationElementValuePair*
+  value: AnnotationElementValue?
+}
+
+AnnotationElementValuePair {
+  name_token: Ident?
+  value: AnnotationElementValue?
+}
+
+AnnotationElementValue {
+  expression: Expression?
+  annotation: Annotation?
+  array_initializer: AnnotationElementValueArrayInitializer?
+}
+
+AnnotationElementValueArrayInitializer {
+  values: AnnotationElementValue*
 }
 
 Name {}

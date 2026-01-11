@@ -1,0 +1,82 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+      Annotation
+        At "@"
+        Name
+          Identifier "Anno"
+        AnnotationElementValuePairList
+          LParen "("
+          AnnotationElementValuePair
+            Identifier "x"
+            Whitespace " "
+            Eq "="
+            Whitespace " "
+            AnnotationElementValue
+              LiteralExpression
+                IntLiteral "1"
+          RParen ")"
+      Whitespace "\n"
+      Annotation
+        At "@"
+        Name
+          Identifier "Anno"
+        AnnotationElementValuePairList
+          LParen "("
+          AnnotationElementValuePair
+            Identifier "names"
+            Whitespace " "
+            Eq "="
+            Whitespace " "
+            AnnotationElementValue
+              AnnotationElementValueArrayInitializer
+                LBrace "{"
+                AnnotationElementValue
+                  LiteralExpression
+                    StringLiteral "\"a\""
+                Comma ","
+                Whitespace " "
+                AnnotationElementValue
+                  LiteralExpression
+                    StringLiteral "\"b\""
+                RBrace "}"
+          RParen ")"
+      Whitespace "\n"
+      Annotation
+        At "@"
+        Name
+          Identifier "Anno"
+        AnnotationElementValuePairList
+          LParen "("
+          AnnotationElementValuePair
+            Identifier "inner"
+            Whitespace " "
+            Eq "="
+            Whitespace " "
+            AnnotationElementValue
+              Annotation
+                At "@"
+                Name
+                  Identifier "B"
+                AnnotationElementValuePairList
+                  LParen "("
+                  AnnotationElementValuePair
+                    Identifier "x"
+                    Whitespace " "
+                    Eq "="
+                    Whitespace " "
+                    AnnotationElementValue
+                      LiteralExpression
+                        IntLiteral "1"
+                  RParen ")"
+          RParen ")"
+      Whitespace "\n"
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

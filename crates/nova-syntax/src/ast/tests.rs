@@ -459,3 +459,75 @@ fn method_reference_and_class_literal_accessors() {
         other => panic!("expected class literal, got {other:?}"),
     }
 }
+
+#[test]
+fn annotation_element_value_pairs() {
+    let src = r#"
+        @Anno(x = 1)
+        @Anno(names = {"a", "b"})
+        @Anno(inner = @B(x = 1))
+        class Foo {}
+    "#;
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let unit = CompilationUnit::cast(parse.syntax()).unwrap();
+    let class = unit
+        .type_declarations()
+        .find_map(|decl| match decl {
+            TypeDeclaration::ClassDeclaration(class) => Some(class),
+            _ => None,
+        })
+        .unwrap();
+
+    let modifiers = class.modifiers().unwrap();
+    let annotations: Vec<_> = modifiers.annotations().collect();
+    assert_eq!(annotations.len(), 3);
+
+    let pair_names: Vec<_> = annotations
+        .iter()
+        .map(|anno| {
+            anno.arguments()
+                .unwrap()
+                .pairs()
+                .next()
+                .unwrap()
+                .name_token()
+                .unwrap()
+                .text()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(pair_names, vec!["x", "names", "inner"]);
+
+    let array_init = annotations[1]
+        .arguments()
+        .unwrap()
+        .pairs()
+        .next()
+        .unwrap()
+        .value()
+        .unwrap()
+        .array_initializer()
+        .unwrap();
+    assert_eq!(array_init.values().count(), 2);
+
+    let nested = annotations[2]
+        .arguments()
+        .unwrap()
+        .pairs()
+        .next()
+        .unwrap()
+        .value()
+        .unwrap()
+        .annotation()
+        .unwrap();
+    assert_eq!(nested.name().unwrap().text(), "B");
+    let nested_pair_names: Vec<_> = nested
+        .arguments()
+        .unwrap()
+        .pairs()
+        .map(|pair| pair.name_token().unwrap().text().to_string())
+        .collect();
+    assert_eq!(nested_pair_names, vec!["x"]);
+}

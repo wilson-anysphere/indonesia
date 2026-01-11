@@ -1403,9 +1403,195 @@ impl<'a> Parser<'a> {
         self.expect(SyntaxKind::At, "expected `@`");
         self.parse_name();
         if self.at(SyntaxKind::LParen) {
-            self.parse_argument_list();
+            self.parse_annotation_element_value_pair_list();
         }
         self.builder.finish_node();
+    }
+
+    fn parse_annotation_element_value_pair_list(&mut self) {
+        self.builder
+            .start_node(SyntaxKind::AnnotationElementValuePairList.into());
+        self.expect(SyntaxKind::LParen, "expected `(`");
+
+        self.eat_trivia();
+        if self.at(SyntaxKind::RParen) {
+            self.bump();
+            self.builder.finish_node(); // AnnotationElementValuePairList
+            return;
+        }
+
+        // Disambiguate normal annotations (`name = value`) from single-element annotations
+        // (`@Anno(expr)`); if there's no `=`, treat the contents as a single element value.
+        if self.at_ident_like() && self.nth(1) == Some(SyntaxKind::Eq) {
+            while !self.at(SyntaxKind::RParen) && !self.at(SyntaxKind::Eof) {
+                self.eat_trivia();
+
+                if self.at(SyntaxKind::Comma) {
+                    // `@Anno(, x = 1)` – don't get stuck.
+                    self.error_here("expected annotation element-value pair");
+                    self.bump();
+                    continue;
+                }
+
+                if !self.at_ident_like() {
+                    // Likely hit the next declaration while typing `@Anno(`.
+                    self.error_here("expected annotation element-value pair");
+                    break;
+                }
+
+                self.parse_annotation_element_value_pair();
+
+                self.eat_trivia();
+                if self.at(SyntaxKind::Comma) {
+                    self.bump();
+                    // Trailing comma is allowed.
+                    continue;
+                }
+                break;
+            }
+        } else {
+            while !self.at(SyntaxKind::RParen) && !self.at(SyntaxKind::Eof) {
+                self.eat_trivia();
+                if self.at(SyntaxKind::Comma) {
+                    // `@Anno(, x)` – treat as a missing element value.
+                    self.error_here("expected annotation element value");
+                    self.bump();
+                    continue;
+                }
+
+                if !self.can_start_annotation_element_value() {
+                    // Common recovery: `@Anno(` followed by a declaration.
+                    self.error_here("expected annotation element value");
+                    break;
+                }
+
+                self.parse_annotation_element_value();
+                break;
+            }
+
+            self.eat_trivia();
+            if self.at(SyntaxKind::Comma) {
+                // Tolerate a trailing comma for partial code.
+                self.bump();
+            }
+        }
+
+        self.expect(SyntaxKind::RParen, "expected `)`");
+        self.builder.finish_node(); // AnnotationElementValuePairList
+    }
+
+    fn parse_annotation_element_value_pair(&mut self) {
+        self.builder
+            .start_node(SyntaxKind::AnnotationElementValuePair.into());
+
+        if self.at_ident_like() {
+            self.bump();
+        } else {
+            self.error_here("expected annotation argument name");
+        }
+
+        if self.at(SyntaxKind::Eq) {
+            self.bump();
+            if matches!(
+                self.current(),
+                SyntaxKind::Comma | SyntaxKind::RParen | SyntaxKind::Eof
+            ) {
+                // `@Anno(x = )` – keep the pair but leave the value empty.
+                self.error_here("expected annotation element value");
+                self.builder
+                    .start_node(SyntaxKind::AnnotationElementValue.into());
+                self.builder.finish_node();
+            } else {
+                self.parse_annotation_element_value();
+            }
+        } else {
+            // Missing `=`; treat it as a malformed pair and try to recover the value.
+            self.error_here("expected `=` after annotation argument name");
+            if !matches!(
+                self.current(),
+                SyntaxKind::Comma | SyntaxKind::RParen | SyntaxKind::Eof
+            ) {
+                self.parse_annotation_element_value();
+            }
+        }
+
+        self.builder.finish_node(); // AnnotationElementValuePair
+    }
+
+    fn parse_annotation_element_value(&mut self) {
+        self.builder
+            .start_node(SyntaxKind::AnnotationElementValue.into());
+        self.eat_trivia();
+
+        match self.current() {
+            SyntaxKind::At => {
+                // Nested annotation.
+                if self.nth(1) == Some(SyntaxKind::InterfaceKw) {
+                    // `@interface` isn't valid here; avoid descending into a type decl.
+                    self.error_here("expected annotation element value");
+                } else {
+                    self.parse_annotation();
+                }
+            }
+            SyntaxKind::LBrace => {
+                self.parse_annotation_element_value_array_initializer();
+            }
+            kind if can_start_expression(kind) => {
+                self.parse_expression(0);
+            }
+            _ => {
+                self.error_here("expected annotation element value");
+            }
+        }
+
+        self.builder.finish_node(); // AnnotationElementValue
+    }
+
+    fn can_start_annotation_element_value(&mut self) -> bool {
+        match self.current() {
+            SyntaxKind::At => self.nth(1) != Some(SyntaxKind::InterfaceKw),
+            SyntaxKind::LBrace => true,
+            kind => can_start_expression(kind),
+        }
+    }
+
+    fn parse_annotation_element_value_array_initializer(&mut self) {
+        self.builder
+            .start_node(SyntaxKind::AnnotationElementValueArrayInitializer.into());
+        self.expect(SyntaxKind::LBrace, "expected `{` in annotation array initializer");
+
+        while !self.at(SyntaxKind::RBrace) && !self.at(SyntaxKind::Eof) {
+            self.eat_trivia();
+
+            if self.at(SyntaxKind::Comma) {
+                // `@Anno({, "x"})` – treat as a missing element value.
+                self.error_here("expected annotation element value");
+                self.bump();
+                continue;
+            }
+
+            if !self.can_start_annotation_element_value() {
+                // Likely hit the end of the array initializer while typing.
+                self.error_here("expected annotation element value");
+                break;
+            }
+
+            self.parse_annotation_element_value();
+
+            self.eat_trivia();
+            if self.at(SyntaxKind::Comma) {
+                self.bump();
+                // Trailing comma is allowed.
+                continue;
+            }
+            break;
+        }
+
+        self.expect(
+            SyntaxKind::RBrace,
+            "expected `}` to close annotation array initializer",
+        );
+        self.builder.finish_node(); // AnnotationElementValueArrayInitializer
     }
 
     fn parse_name(&mut self) {

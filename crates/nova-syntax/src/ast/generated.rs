@@ -151,8 +151,128 @@ impl Annotation {
         support::child::<Name>(&self.syntax)
     }
 
-    pub fn arguments(&self) -> Option<ArgumentList> {
-        support::child::<ArgumentList>(&self.syntax)
+    pub fn arguments(&self) -> Option<AnnotationElementValuePairList> {
+        support::child::<AnnotationElementValuePairList>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnnotationElementValuePairList {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for AnnotationElementValuePairList {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::AnnotationElementValuePairList
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl AnnotationElementValuePairList {
+    pub fn pairs(&self) -> impl Iterator<Item = AnnotationElementValuePair> + '_ {
+        support::children::<AnnotationElementValuePair>(&self.syntax)
+    }
+
+    pub fn value(&self) -> Option<AnnotationElementValue> {
+        support::child::<AnnotationElementValue>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnnotationElementValuePair {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for AnnotationElementValuePair {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::AnnotationElementValuePair
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl AnnotationElementValuePair {
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        support::ident_token(&self.syntax)
+    }
+
+    pub fn value(&self) -> Option<AnnotationElementValue> {
+        support::child::<AnnotationElementValue>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnnotationElementValue {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for AnnotationElementValue {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::AnnotationElementValue
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl AnnotationElementValue {
+    pub fn expression(&self) -> Option<Expression> {
+        support::child::<Expression>(&self.syntax)
+    }
+
+    pub fn annotation(&self) -> Option<Annotation> {
+        support::child::<Annotation>(&self.syntax)
+    }
+
+    pub fn array_initializer(&self) -> Option<AnnotationElementValueArrayInitializer> {
+        support::child::<AnnotationElementValueArrayInitializer>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnnotationElementValueArrayInitializer {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for AnnotationElementValueArrayInitializer {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::AnnotationElementValueArrayInitializer
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl AnnotationElementValueArrayInitializer {
+    pub fn values(&self) -> impl Iterator<Item = AnnotationElementValue> + '_ {
+        support::children::<AnnotationElementValue>(&self.syntax)
     }
 
 }
