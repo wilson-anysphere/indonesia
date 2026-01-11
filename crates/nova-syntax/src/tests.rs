@@ -852,6 +852,18 @@ fn generated_ast_is_up_to_date() {
 }
 
 #[test]
+fn syntax_lint_is_clean() {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("expected CARGO_MANIFEST_DIR to be `<repo>/crates/nova-syntax`");
+
+    let report = xtask::syntax_lint_report(repo_root).expect("syntax-lint should run");
+    assert!(report.is_clean(), "{report}");
+}
+
+#[test]
 fn feature_gate_records_version_matrix() {
     let input = "public record Point(int x, int y) {}";
 

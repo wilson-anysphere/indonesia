@@ -7,7 +7,7 @@ pub fn main() -> Result<()> {
     let mut args = env::args().skip(1);
     let cmd = args
         .next()
-        .ok_or_else(|| anyhow!("expected a command (try `codegen`)"))?;
+        .ok_or_else(|| anyhow!("expected a command (try `codegen` or `syntax-lint`)"))?;
 
     match cmd.as_str() {
         "codegen" => {
@@ -18,8 +18,18 @@ pub fn main() -> Result<()> {
             }
             codegen()?;
         }
+        "syntax-lint" => {
+            if let Some(arg) = args.next() {
+                return Err(anyhow!(
+                    "unexpected argument `{arg}` (usage: cargo xtask syntax-lint)"
+                ));
+            }
+            syntax_lint()?;
+        }
         _ => {
-            return Err(anyhow!("unknown command `{cmd}` (supported: `codegen`)"));
+            return Err(anyhow!(
+                "unknown command `{cmd}` (supported: `codegen`, `syntax-lint`)"
+            ));
         }
     }
 
@@ -36,6 +46,17 @@ pub fn codegen() -> Result<()> {
     write_if_changed(&ast_out_path, &code)?;
 
     Ok(())
+}
+
+pub fn syntax_lint() -> Result<()> {
+    let repo_root = repo_root()?;
+    let report = syntax_lint_report(&repo_root)?;
+    println!("{report}");
+    if report.is_clean() {
+        Ok(())
+    } else {
+        Err(anyhow!("syntax-lint failed"))
+    }
 }
 
 fn repo_root() -> Result<PathBuf> {
@@ -546,6 +567,370 @@ fn render_enum(out: &mut String, grammar: &Grammar, enm: &EnumDef) {
                 enm.name, var
             );
         }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct SyntaxLintReport {
+    sources_scanned: usize,
+    grammar_node_count: usize,
+    grammar_enum_count: usize,
+    emitted_node_count: usize,
+    missing_wrappers: Vec<(String, String)>,
+    unknown_node_kinds: Vec<String>,
+    unknown_type_references: Vec<String>,
+}
+
+impl SyntaxLintReport {
+    pub fn is_clean(&self) -> bool {
+        self.missing_wrappers.is_empty()
+            && self.unknown_node_kinds.is_empty()
+            && self.unknown_type_references.is_empty()
+    }
+}
+
+impl std::fmt::Display for SyntaxLintReport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "syntax-lint report")?;
+        writeln!(f, "  sources scanned: {}", self.sources_scanned)?;
+        writeln!(
+            f,
+            "  grammar: {} nodes, {} enums",
+            self.grammar_node_count, self.grammar_enum_count
+        )?;
+        writeln!(f, "  parser emitted: {} node kinds", self.emitted_node_count)?;
+
+        if self.is_clean() {
+            writeln!(f)?;
+            writeln!(f, "OK: no drift detected")?;
+            return Ok(());
+        }
+
+        if !self.unknown_type_references.is_empty() {
+            writeln!(f)?;
+            writeln!(f, "Grammar references unknown types:")?;
+            for ty in &self.unknown_type_references {
+                writeln!(f, "  - {ty}")?;
+            }
+        }
+
+        if !self.unknown_node_kinds.is_empty() {
+            writeln!(f)?;
+            writeln!(f, "Grammar defines nodes missing from SyntaxKind:")?;
+            for kind in &self.unknown_node_kinds {
+                writeln!(f, "  - {kind}")?;
+            }
+        }
+
+        if !self.missing_wrappers.is_empty() {
+            writeln!(f)?;
+            writeln!(
+                f,
+                "Parser emitted node kinds without typed wrappers in `grammar/java.syntax`:"
+            )?;
+            for (kind, sample) in &self.missing_wrappers {
+                writeln!(f, "  - {kind} (e.g. {sample})")?;
+            }
+        }
+
+        writeln!(f)?;
+        writeln!(f, "Fix: update `crates/nova-syntax/grammar/java.syntax`, then run:")?;
+        writeln!(f, "  cargo xtask codegen")?;
+        Ok(())
+    }
+}
+
+pub fn syntax_lint_report(repo_root: &Path) -> Result<SyntaxLintReport> {
+    let syntax_kind_path = repo_root.join("crates/nova-syntax/src/syntax_kind.rs");
+    let grammar_path = repo_root.join("crates/nova-syntax/grammar/java.syntax");
+
+    let (syntax_kind_all_kinds, syntax_kind_node_kinds) = parse_syntax_kind_kinds(&syntax_kind_path)
+        .with_context(|| format!("failed to parse `{}`", syntax_kind_path.display()))?;
+
+    let grammar_src = std::fs::read_to_string(&grammar_path)
+        .with_context(|| format!("failed to read `{}`", grammar_path.display()))?;
+    let grammar = parse_grammar(&grammar_src)
+        .with_context(|| format!("failed to parse `{}`", grammar_path.display()))?;
+
+    let grammar_node_names: std::collections::BTreeSet<String> =
+        grammar.nodes.iter().map(|n| n.name.clone()).collect();
+    let grammar_enum_names: std::collections::BTreeSet<String> =
+        grammar.enums.iter().map(|e| e.name.clone()).collect();
+
+    let defined_types: std::collections::BTreeSet<String> = grammar_node_names
+        .iter()
+        .cloned()
+        .chain(grammar_enum_names.iter().cloned())
+        .collect();
+
+    let mut unknown_type_references = Vec::new();
+    for node in &grammar.nodes {
+        for field in &node.fields {
+            match &field.ty {
+                FieldTy::Node(ty) => {
+                    if !defined_types.contains(ty) {
+                        unknown_type_references.push(format!("{}.{}: {ty}", node.name, field.name));
+                    }
+                }
+                FieldTy::Token(kind) => {
+                    if !syntax_kind_all_kinds.contains(kind) {
+                        unknown_type_references.push(format!(
+                            "{}.{}: Token({kind})",
+                            node.name, field.name
+                        ));
+                    }
+                }
+                FieldTy::Ident => {}
+            }
+        }
+    }
+    for enm in &grammar.enums {
+        for variant in &enm.variants {
+            if !defined_types.contains(variant) {
+                unknown_type_references.push(format!("{} = ... | {}", enm.name, variant));
+            }
+        }
+    }
+
+    let mut unknown_node_kinds = Vec::new();
+    for node in &grammar.nodes {
+        if !syntax_kind_node_kinds.contains(&node.name) {
+            unknown_node_kinds.push(node.name.clone());
+        }
+    }
+
+    let mut java_files = Vec::new();
+    collect_java_files(
+        &repo_root.join("crates/nova-syntax/testdata/parser"),
+        &mut java_files,
+    )?;
+    collect_java_files(
+        &repo_root.join("crates/nova-syntax/testdata/javac/ok"),
+        &mut java_files,
+    )?;
+    collect_java_files(
+        &repo_root.join("crates/nova-syntax/testdata/javac/err"),
+        &mut java_files,
+    )?;
+
+    let mut sources: Vec<SyntaxLintSource> = java_files
+        .into_iter()
+        .map(SyntaxLintSource::Path)
+        .collect();
+
+    // Small "smoke test" sources that exercise nodes not currently covered by the fixture corpus.
+    sources.push(SyntaxLintSource::Inline {
+        name: "local_type_declaration_statement".to_string(),
+        text: "class Foo { void m() { class Local {} } }".to_string(),
+    });
+
+    let (emitted_node_kinds, first_seen) =
+        collect_emitted_node_kinds(repo_root, &sources).context("failed to collect parser nodes")?;
+
+    let mut missing_wrappers: Vec<(String, String)> = emitted_node_kinds
+        .iter()
+        .filter(|kind| !grammar_node_names.contains(*kind))
+        .map(|kind| {
+            let sample = first_seen
+                .get(kind)
+                .cloned()
+                .unwrap_or_else(|| "<unknown source>".to_string());
+            (kind.clone(), sample)
+        })
+        .collect();
+
+    missing_wrappers.sort_by(|a, b| a.0.cmp(&b.0));
+    unknown_node_kinds.sort();
+    unknown_type_references.sort();
+
+    Ok(SyntaxLintReport {
+        sources_scanned: sources.len(),
+        grammar_node_count: grammar_node_names.len(),
+        grammar_enum_count: grammar_enum_names.len(),
+        emitted_node_count: emitted_node_kinds.len(),
+        missing_wrappers,
+        unknown_node_kinds,
+        unknown_type_references,
+    })
+}
+
+#[derive(Debug, Clone)]
+enum SyntaxLintSource {
+    Path(PathBuf),
+    Inline { name: String, text: String },
+}
+
+fn collect_java_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir)
+        .with_context(|| format!("failed to read directory `{}`", dir.display()))?
+    {
+        let entry = entry
+            .with_context(|| format!("failed to read directory entry in `{}`", dir.display()))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_java_files(&path, out)?;
+            continue;
+        }
+        if path
+            .extension()
+            .is_some_and(|ext| ext == std::ffi::OsStr::new("java"))
+        {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn collect_emitted_node_kinds(
+    repo_root: &Path,
+    sources: &[SyntaxLintSource],
+) -> Result<(
+    std::collections::BTreeSet<String>,
+    std::collections::BTreeMap<String, String>,
+)> {
+    let mut emitted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut first_seen: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+
+    for source in sources {
+        let (name, text) = match source {
+            SyntaxLintSource::Path(path) => {
+                let rel = path
+                    .strip_prefix(repo_root)
+                    .unwrap_or(path.as_path())
+                    .display()
+                    .to_string();
+                let text = std::fs::read_to_string(path)
+                    .with_context(|| format!("failed to read `{}`", path.display()))?;
+                (rel, text)
+            }
+            SyntaxLintSource::Inline { name, text } => (format!("<inline:{name}>"), text.clone()),
+        };
+
+        let parsed = nova_syntax::parse_java(&text);
+        let root = parsed.syntax();
+
+        record_emitted_kind(root.kind(), &name, &mut emitted, &mut first_seen);
+        for node in root.descendants() {
+            record_emitted_kind(node.kind(), &name, &mut emitted, &mut first_seen);
+        }
+    }
+
+    Ok((emitted, first_seen))
+}
+
+fn record_emitted_kind(
+    kind: nova_syntax::SyntaxKind,
+    source: &str,
+    emitted: &mut std::collections::BTreeSet<String>,
+    first_seen: &mut std::collections::BTreeMap<String, String>,
+) {
+    // Error nodes are internal recovery artifacts; they don't need typed wrappers.
+    if kind == nova_syntax::SyntaxKind::Error {
+        return;
+    }
+    let name = format!("{kind:?}");
+    emitted.insert(name.clone());
+    first_seen.entry(name).or_insert_with(|| source.to_string());
+}
+
+fn parse_syntax_kind_kinds(
+    path: &Path,
+) -> Result<(std::collections::BTreeSet<String>, std::collections::BTreeSet<String>)> {
+    let variants = parse_syntax_kind_variants(path)?;
+    let all = variants.iter().cloned().collect();
+    let nodes = syntax_kind_node_kinds_from_variants(&variants)?;
+    Ok((all, nodes))
+}
+
+fn parse_syntax_kind_variants(path: &Path) -> Result<Vec<String>> {
+    let src = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read `{}`", path.display()))?;
+
+    let mut variants = Vec::new();
+    let mut in_enum = false;
+    for raw in src.lines() {
+        let line = strip_comment(raw).trim();
+        if !in_enum {
+            if line.contains("enum SyntaxKind") && line.contains('{') {
+                in_enum = true;
+            }
+            continue;
+        }
+
+        if line.starts_with('}') {
+            break;
+        }
+
+        if line.is_empty() || line.starts_with('#') || line.starts_with("///") {
+            continue;
+        }
+
+        let Some(name) = parse_rust_ident(line) else {
+            continue;
+        };
+        variants.push(name);
+    }
+
+    Ok(variants)
+}
+
+fn syntax_kind_node_kinds_from_variants(
+    variants: &[String],
+) -> Result<std::collections::BTreeSet<String>> {
+    let start = variants
+        .iter()
+        .position(|v| v == "CompilationUnit")
+        .ok_or_else(|| anyhow!("failed to find `CompilationUnit` variant in SyntaxKind"))?;
+    let end = variants
+        .iter()
+        .position(|v| v == "__Last")
+        .ok_or_else(|| anyhow!("failed to find `__Last` variant in SyntaxKind"))?;
+
+    let deny: std::collections::HashSet<&str> = [
+        "MissingSemicolon",
+        "MissingRParen",
+        "MissingRBrace",
+        "MissingRBracket",
+        "MissingGreater",
+    ]
+    .into_iter()
+    .collect();
+
+    Ok(variants[start..end]
+        .iter()
+        .filter(|name| !deny.contains(name.as_str()))
+        .cloned()
+        .collect())
+}
+
+fn parse_rust_ident(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    let mut chars = trimmed.chars();
+    let first = chars.next()?;
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return None;
+    }
+
+    let mut name = String::new();
+    name.push(first);
+    for c in chars {
+        if c.is_ascii_alphanumeric() || c == '_' {
+            name.push(c);
+        } else {
+            break;
+        }
+    }
+
+    let rest = trimmed[name.len()..].trim_start();
+    // Enum variants are written as `Foo,` in `syntax_kind.rs`.
+    if rest.starts_with(',') {
+        Some(name)
+    } else {
+        None
     }
 }
 
