@@ -87,6 +87,11 @@ fn import_paths_from_item_data(item: &CompletionItem) -> Vec<String> {
 }
 
 fn java_import_text_edits(document_text: &str, imports: &[String]) -> Vec<TextEdit> {
+    let line_ending = if document_text.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
     let mut seen: HashSet<String> = HashSet::new();
     let mut grouped: BTreeMap<(u32, u32, u32, u32), (lsp_types::Range, String)> = BTreeMap::new();
 
@@ -108,7 +113,12 @@ fn java_import_text_edits(document_text: &str, imports: &[String]) -> Vec<TextEd
         let entry = grouped
             .entry(key)
             .or_insert_with(|| (edit.range.clone(), String::new()));
-        entry.1.push_str(&edit.new_text);
+
+        let mut new_text = edit.new_text;
+        if entry.1.ends_with(line_ending) && new_text.starts_with(line_ending) {
+            new_text = new_text[line_ending.len()..].to_string();
+        }
+        entry.1.push_str(&new_text);
     }
 
     grouped
@@ -189,5 +199,41 @@ mod tests {
         let edits = twice.additional_text_edits.expect("additional edits");
         assert_eq!(edits.len(), 1);
         assert_eq!(edits[0].new_text, "import java.util.stream.Collectors;\n");
+    }
+
+    #[test]
+    fn completion_item_resolve_merges_multiple_imports_without_extra_blank_lines() {
+        let context_id: CompletionContextId = "1".parse().expect("context id");
+        let item = NovaCompletionItem::ai(
+            "imports".to_string(),
+            "foo()".to_string(),
+            MultiTokenInsertTextFormat::PlainText,
+            vec![
+                AdditionalEdit::AddImport {
+                    path: "java.util.List".to_string(),
+                },
+                AdditionalEdit::AddImport {
+                    path: "java.util.Set".to_string(),
+                },
+            ],
+            0.9,
+        );
+
+        let lsp_item = to_lsp_completion_item(item, &context_id);
+        let document_text = "package com.example; class Foo {}";
+        let resolved = resolve_completion_item(lsp_item, document_text);
+        let edits = resolved.additional_text_edits.expect("additional edits");
+        assert_eq!(edits.len(), 1);
+        assert_eq!(
+            edits[0].range,
+            Range::new(
+                Position::new(0, "package com.example;".encode_utf16().count() as u32),
+                Position::new(0, "package com.example;".encode_utf16().count() as u32),
+            )
+        );
+        assert_eq!(
+            edits[0].new_text,
+            "\nimport java.util.List;\nimport java.util.Set;\n"
+        );
     }
 }
