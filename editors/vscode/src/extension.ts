@@ -160,6 +160,7 @@ function readLspLaunchConfig(): { args: string[]; env: NodeJS.ProcessEnv } {
 
 interface BugReportResponse {
   path: string;
+  archivePath?: string | null;
 }
 
 type MemoryPressureLevel = 'low' | 'medium' | 'high' | 'critical';
@@ -1084,18 +1085,27 @@ export async function activate(context: vscode.ExtensionContext) {
         );
 
         const bundlePath = resp?.path;
+        const archivePath = resp?.archivePath;
         if (typeof bundlePath !== 'string' || bundlePath.length === 0) {
           vscode.window.showErrorMessage('Nova: bug report failed: server returned an invalid path.');
           return;
         }
 
+        const archivePathString =
+          typeof archivePath === 'string' && archivePath.length > 0 ? archivePath : undefined;
+        const clipboardTarget = archivePathString ?? bundlePath;
+        const clipboardLabel = archivePathString ? 'Archive path' : 'Path';
+
         const channel = getBugReportOutputChannel();
         channel.appendLine('Nova bug report bundle generated:');
-        channel.appendLine(bundlePath);
+        channel.appendLine(`Directory: ${bundlePath}`);
+        if (archivePathString) {
+          channel.appendLine(`Archive: ${archivePathString}`);
+        }
 
         let clipboardCopied = false;
         try {
-          await vscode.env.clipboard.writeText(bundlePath);
+          await vscode.env.clipboard.writeText(clipboardTarget);
           clipboardCopied = true;
         } catch {
           // Best-effort: clipboard may be unavailable in some remote contexts.
@@ -1104,11 +1114,15 @@ export async function activate(context: vscode.ExtensionContext) {
         // Best-effort: reveal in the OS file explorer.
         void vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(bundlePath));
 
-        channel.appendLine(clipboardCopied ? 'Path copied to clipboard.' : 'Failed to copy path to clipboard.');
+        channel.appendLine(
+          clipboardCopied ? `${clipboardLabel} copied to clipboard.` : `Failed to copy ${clipboardLabel.toLowerCase()} to clipboard.`,
+        );
         channel.show(true);
 
         void vscode.window.showInformationMessage(
-          clipboardCopied ? 'Nova: bug report bundle created (path copied to clipboard).' : 'Nova: bug report bundle created.',
+          clipboardCopied
+            ? `Nova: bug report bundle created (${clipboardLabel.toLowerCase()} copied to clipboard).`
+            : 'Nova: bug report bundle created.',
         );
       } catch (err) {
         const message = formatError(err);
