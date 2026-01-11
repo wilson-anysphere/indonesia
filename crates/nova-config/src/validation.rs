@@ -150,6 +150,13 @@ fn validate_extensions(
 }
 
 fn validate_ai(config: &NovaConfig, out: &mut ValidationDiagnostics) {
+    if config.ai.audit_log.enabled && !config.ai.enabled {
+        out.warnings.push(ConfigWarning::InvalidValue {
+            toml_path: "ai.audit_log.enabled".to_string(),
+            message: "ignored unless ai.enabled=true".to_string(),
+        });
+    }
+
     if !config.ai.enabled {
         return;
     }

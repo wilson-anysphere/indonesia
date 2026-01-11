@@ -182,6 +182,26 @@ level = "warn,nova=foo"
 }
 
 #[test]
+fn warns_when_audit_log_enabled_without_ai_enabled() {
+    let text = r#"
+[ai.audit_log]
+enabled = true
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert!(diagnostics.errors.is_empty());
+    assert_eq!(
+        diagnostics.warnings,
+        vec![ConfigWarning::InvalidValue {
+            toml_path: "ai.audit_log.enabled".to_string(),
+            message: "ignored unless ai.enabled=true".to_string(),
+        }]
+    );
+}
+
+#[test]
 fn validates_ai_provider_limits_are_positive() {
     let text = r#"
 [ai]
