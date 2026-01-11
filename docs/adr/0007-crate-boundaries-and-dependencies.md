@@ -116,3 +116,27 @@ Negative:
   - internal crates can be `pub(crate)` heavy and expose only what upstream needs,
   - avoid leaking rowan/salsa types across too many layers without wrappers.
 - Add CI checks for forbidden dependency edges (e.g., via `cargo deny` / custom script).
+
+## Automation (dependency edge checker)
+
+Nova enforces this ADR in CI using a lightweight dependency validator:
+
+- **Layer map config**: [`crate-layers.toml`](../../crate-layers.toml)
+- **Runner**: `./scripts/check-deps.sh`
+- **Direct invocation**: `cargo run -p nova-devtools -- check-deps`
+
+### Dev-dependency policy
+
+`dev-dependencies` are allowed to point *up* the layer stack (to support integration-style tests),
+**except** that lower layers must not depend on **protocol/integration** crates even in tests unless
+explicitly allowlisted in `crate-layers.toml`.
+
+### Adding a new crate
+
+When adding a new workspace crate, update both:
+
+1. `Cargo.toml` workspace `members`
+2. `crate-layers.toml` under `[crates]`
+
+Choose the **lowest layer that can own the responsibility**. If `check-deps` fails, it will print
+the offending dependency edge and suggestions for remediation.

@@ -3563,6 +3563,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nova-devtools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "nova-ext"
 version = "0.1.0"
 dependencies = [

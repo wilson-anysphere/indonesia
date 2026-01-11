@@ -1,0 +1,102 @@
+# Machine-readable enforcement of ADR 0007 crate layering.
+#
+# Layer order is top (highest number) → bottom (lowest number):
+# protocol → IDE → semantic/project model → syntax → VFS → core
+version = 1
+
+[layers]
+protocol = 5
+ide = 4
+semantic = 3
+syntax = 2
+vfs = 1
+core = 0
+
+[policy]
+# Most crates are allowed to depend on other crates in the same layer.
+allow_same_layer = true
+
+[policy.dev]
+# Dev-dependencies are allowed to point "up" the layer stack to enable
+# integration-style tests in lower-layer crates.
+allow_upward = true
+
+# ...but lower layers must not pull in protocol/server crates even in tests,
+# unless explicitly allowlisted.
+forbid_upward_to = ["protocol"]
+
+# To make an exception:
+# [[policy.dev.allowlist]]
+# from = "some-lower-crate"
+# to = "nova-lsp"
+
+[crates]
+# core (foundation)
+nova-config = "core"
+nova-core = "core"
+nova-ext = "core"
+nova-fuzzy = "core"
+nova-memory = "core"
+nova-remote-proto = "core"
+nova-scheduler = "core"
+nova-types = "core"
+
+# vfs / IO / persistence
+nova-archive = "vfs"
+nova-storage = "vfs"
+nova-vfs = "vfs"
+
+# syntax + file formats
+nova-properties = "syntax"
+nova-syntax = "syntax"
+nova-yaml = "syntax"
+
+# semantic + project model
+nova-apt = "semantic"
+nova-build = "semantic"
+nova-build-bazel = "semantic"
+nova-cache = "semantic"
+nova-classfile = "semantic"
+nova-classpath = "semantic"
+nova-config-metadata = "semantic"
+nova-db = "semantic"
+nova-decompile = "semantic"
+nova-deps-cache = "semantic"
+nova-flow = "semantic"
+nova-framework = "semantic"
+nova-hir = "semantic"
+nova-index = "semantic"
+nova-jdk = "semantic"
+nova-modules = "semantic"
+nova-project = "semantic"
+nova-resolve = "semantic"
+nova-testing = "semantic"
+
+# IDE features
+nova-ai = "ide"
+nova-format = "ide"
+nova-framework-dagger = "ide"
+nova-framework-jpa = "ide"
+nova-framework-lombok = "ide"
+nova-framework-mapstruct = "ide"
+nova-framework-micronaut = "ide"
+nova-framework-quarkus = "ide"
+nova-framework-spring = "ide"
+nova-framework-web = "ide"
+nova-ide = "ide"
+nova-refactor = "ide"
+nova-test-utils = "ide"
+
+# protocol / integration
+nova-bugreport = "protocol"
+nova-cli = "protocol"
+nova-dap = "protocol"
+nova-devtools = "protocol"
+nova-jdwp = "protocol"
+nova-lsp = "protocol"
+nova-perf = "protocol"
+nova-router = "protocol"
+nova-stream-debug = "protocol"
+nova-worker = "protocol"
+nova-workspace = "protocol"
+

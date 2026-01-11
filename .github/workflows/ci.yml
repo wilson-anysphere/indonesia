@@ -22,6 +22,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: fmt
         run: cargo fmt --all -- --check
+      - name: crate boundary check (ADR 0007)
+        run: ./scripts/check-deps.sh
       - name: clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
