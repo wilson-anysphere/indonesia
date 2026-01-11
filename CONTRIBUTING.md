@@ -16,7 +16,7 @@ well-tested.
 ## Prerequisites
 
 - Rust (see `rust-toolchain.toml`)
-- Node.js + npm (for the VS Code extension)
+- Node.js + npm (for the VS Code extension; CI uses Node 20)
 - Java (JDK 17 recommended) — optional, but required for:
   - `javac` differential tests (`.github/workflows/javac.yml`)
   - DAP real-JVM smoke test (`cargo test -p nova-dap --features real-jvm-tests ...`)

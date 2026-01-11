@@ -41,6 +41,7 @@ To run those locally:
 actionlint
 
 # VS Code extension packaging (also checks version sync)
+# CI uses Node.js 20 (see `.github/workflows/ci.yml`).
 ./scripts/sync-versions.sh
 git diff --exit-code
 (cd editors/vscode && npm ci && npm run package)
@@ -60,6 +61,7 @@ cargo test
 actionlint
 
 # ci.yml (vscode)
+# CI uses Node.js 20 (see `.github/workflows/ci.yml`).
 ./scripts/sync-versions.sh
 git diff --exit-code
 (cd editors/vscode && npm ci && npm run package)
