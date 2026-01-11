@@ -32,7 +32,10 @@ pub(crate) fn analysis_for_file(db: &dyn Database, file: FileId) -> Option<Arc<A
         .map(project_config_signature)
         .unwrap_or_default();
 
-    let (sources, config_files, base_signature) = gather_workspace_inputs(db, &root);
+    // Computing the full `JavaSource`/`ConfigFile` inputs requires cloning the
+    // entire workspace's file text. Use a lightweight signature first so cache
+    // hits avoid that work.
+    let base_signature = workspace_signature(db, &root);
     let signature = combined_signature(base_signature, config_signature);
 
     // Fast path: cache hit.
@@ -45,6 +48,7 @@ pub(crate) fn analysis_for_file(db: &dyn Database, file: FileId) -> Option<Arc<A
         }
     }
 
+    let (sources, config_files) = gather_workspace_inputs(db, &root);
     let applicable = is_applicable(&config, &sources);
     let analysis = if applicable {
         Some(Arc::new(
@@ -151,10 +155,7 @@ fn combined_signature(base: u64, config: u64) -> u64 {
     hasher.finish()
 }
 
-fn gather_workspace_inputs(
-    db: &dyn Database,
-    root: &Path,
-) -> (Vec<JavaSource>, Vec<ConfigFile>, u64) {
+fn workspace_signature(db: &dyn Database, root: &Path) -> u64 {
     let mut paths: Vec<(String, FileId)> = db
         .all_file_ids()
         .into_iter()
@@ -167,9 +168,6 @@ fn gather_workspace_inputs(
         })
         .collect();
     paths.sort_by(|a, b| a.0.cmp(&b.0));
-
-    let mut sources = Vec::new();
-    let mut config_files = Vec::new();
 
     let mut hasher = DefaultHasher::new();
     for (path_string, id) in paths {
@@ -187,10 +185,48 @@ fn gather_workspace_inputs(
             continue;
         }
 
-        let text = db.file_content(id).to_string();
-
         path_string.hash(&mut hasher);
-        text.hash(&mut hasher);
+        let text = db.file_content(id);
+        text.len().hash(&mut hasher);
+        (text.as_ptr() as usize).hash(&mut hasher);
+    }
+
+    hasher.finish()
+}
+
+fn gather_workspace_inputs(db: &dyn Database, root: &Path) -> (Vec<JavaSource>, Vec<ConfigFile>) {
+    let mut paths: Vec<(String, FileId)> = db
+        .all_file_ids()
+        .into_iter()
+        .filter_map(|id| {
+            let path = db.file_path(id)?;
+            if !path.starts_with(root) {
+                return None;
+            }
+            Some((path.to_string_lossy().to_string(), id))
+        })
+        .collect();
+    paths.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut sources = Vec::new();
+    let mut config_files = Vec::new();
+
+    for (path_string, id) in paths {
+        let Some(path) = db.file_path(id) else {
+            continue;
+        };
+        let is_java = path.extension().and_then(|e| e.to_str()) == Some("java");
+        let config_kind = match path.file_name().and_then(|n| n.to_str()) {
+            Some("application.properties") => Some("properties"),
+            Some("application.yml") | Some("application.yaml") => Some("yaml"),
+            _ => None,
+        };
+
+        if !is_java && config_kind.is_none() {
+            continue;
+        }
+
+        let text = db.file_content(id).to_string();
 
         if is_java {
             sources.push(JavaSource::new(path_string, text));
@@ -204,5 +240,5 @@ fn gather_workspace_inputs(
         }
     }
 
-    (sources, config_files, hasher.finish())
+    (sources, config_files)
 }
