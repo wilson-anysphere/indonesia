@@ -29,16 +29,16 @@ jobs:
             fuzz -> target
 
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+        run: cargo +nightly install cargo-fuzz --locked
 
       - name: fuzz_syntax_parse
-        run: cargo fuzz run --codegen-units 16 fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
+        run: cargo +nightly fuzz run --codegen-units 16 fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
 
       - name: fuzz_format
-        run: cargo fuzz run --codegen-units 16 fuzz_format -- -max_total_time=60 -max_len=262144
+        run: cargo +nightly fuzz run --codegen-units 16 fuzz_format -- -max_total_time=60 -max_len=262144
 
       - name: fuzz_classfile
-        run: cargo fuzz run --codegen-units 16 fuzz_classfile -- -max_total_time=60 -max_len=262144
+        run: cargo +nightly fuzz run --codegen-units 16 fuzz_classfile -- -max_total_time=60 -max_len=262144
 
       - name: Upload fuzz artifacts
         if: failure()
