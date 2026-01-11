@@ -27,6 +27,13 @@ All commands below are run from the repository root.
 > Note: the first `cargo fuzz` run can take a while because the toolchain builds the Rust standard
 > library with the selected fuzzing settings. Subsequent runs reuse `fuzz/target/` and are much
 > faster.
+>
+> If you see `Blocking waiting for file lock on ...`, another Cargo process is likely building at
+> the same time. Either wait, or use a separate target directory:
+>
+> ```bash
+> cargo +nightly fuzz run --target-dir fuzz/target-local fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
+> ```
 
 ### Parse Java (syntax)
 
