@@ -89,6 +89,7 @@ pub struct Debugger {
     requested_breakpoints: HashMap<String, Vec<i32>>,
     class_prepare_request: Option<i32>,
     step_request: Option<i32>,
+    exception_requests: Vec<i32>,
 
     source_cache: HashMap<ReferenceTypeId, String>,
     methods_cache: HashMap<ReferenceTypeId, Vec<MethodInfo>>,
@@ -109,6 +110,7 @@ impl Debugger {
             requested_breakpoints: HashMap::new(),
             class_prepare_request: None,
             step_request: None,
+            exception_requests: Vec::new(),
             source_cache: HashMap::new(),
             methods_cache: HashMap::new(),
             line_table_cache: HashMap::new(),
@@ -300,6 +302,28 @@ impl Debugger {
             .await?;
         self.step_request = Some(req);
         self.jdwp.vm_resume().await?;
+        Ok(())
+    }
+
+    pub async fn set_exception_breakpoints(&mut self, caught: bool, uncaught: bool) -> Result<()> {
+        self.clear_exception_breakpoints().await;
+        if !caught && !uncaught {
+            return Ok(());
+        }
+
+        let request_id = self
+            .jdwp
+            .event_request_set(
+                4,
+                1,
+                vec![EventModifier::ExceptionOnly {
+                    exception_or_null: 0,
+                    caught,
+                    uncaught,
+                }],
+            )
+            .await?;
+        self.exception_requests.push(request_id);
         Ok(())
     }
 
@@ -516,6 +540,13 @@ impl Debugger {
         }
         self.breakpoints.insert(file, entries);
         Ok(())
+    }
+
+    async fn clear_exception_breakpoints(&mut self) {
+        let existing = std::mem::take(&mut self.exception_requests);
+        for request_id in existing {
+            let _ = self.jdwp.event_request_clear(4, request_id).await;
+        }
     }
 }
 

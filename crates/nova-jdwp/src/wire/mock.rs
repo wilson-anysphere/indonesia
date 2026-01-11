@@ -65,6 +65,10 @@ impl MockJdwpServer {
     pub async fn pinned_object_ids(&self) -> BTreeSet<ObjectId> {
         self.state.pinned_object_ids.lock().await.clone()
     }
+
+    pub async fn exception_request(&self) -> Option<MockExceptionRequest> {
+        *self.state.exception_request.lock().await
+    }
 }
 
 impl Drop for MockJdwpServer {
@@ -78,6 +82,7 @@ struct State {
     next_packet_id: AtomicU32,
     breakpoint_request: tokio::sync::Mutex<Option<i32>>,
     step_request: tokio::sync::Mutex<Option<i32>>,
+    exception_request: tokio::sync::Mutex<Option<MockExceptionRequest>>,
     redefine_classes_error_code: AtomicU16,
     redefine_classes_calls: tokio::sync::Mutex<Vec<RedefineClassesCall>>,
     pinned_object_ids: tokio::sync::Mutex<BTreeSet<ObjectId>>,
@@ -91,6 +96,7 @@ impl Default for State {
             next_packet_id: AtomicU32::new(0),
             breakpoint_request: tokio::sync::Mutex::new(None),
             step_request: tokio::sync::Mutex::new(None),
+            exception_request: tokio::sync::Mutex::new(None),
             redefine_classes_error_code: AtomicU16::new(0),
             redefine_classes_calls: tokio::sync::Mutex::new(Vec::new()),
             pinned_object_ids: tokio::sync::Mutex::new(BTreeSet::new()),
@@ -121,8 +127,16 @@ const CLASS_ID: u64 = 0x3001;
 const FOO_CLASS_ID: u64 = 0x3002;
 const METHOD_ID: u64 = 0x4001;
 const OBJECT_ID: u64 = 0x5001;
+const EXCEPTION_ID: u64 = 0x5002;
 const OBJECT_CLASS_ID: u64 = 0x6001;
 const FIELD_ID: u64 = 0x7001;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MockExceptionRequest {
+    pub request_id: i32,
+    pub caught: bool,
+    pub uncaught: bool,
+}
 
 fn default_location() -> Location {
     Location {
@@ -293,7 +307,7 @@ async fn handle_packet(
             (err, Vec::new())
         }
         // VirtualMachine.Suspend
-        (1, 8) => Vec::new(),
+        (1, 8) => (0, Vec::new()),
         // VirtualMachine.Resume
         (1, 9) => {
             (0, Vec::new())
@@ -468,6 +482,8 @@ async fn handle_packet(
             let event_kind = r.read_u8().unwrap_or(0);
             let _suspend = r.read_u8().unwrap_or(0);
             let modifiers = r.read_u32().unwrap_or(0) as usize;
+            let mut exception_caught = false;
+            let mut exception_uncaught = false;
             for _ in 0..modifiers {
                 let mod_kind = r.read_u8().unwrap_or(0);
                 match mod_kind {
@@ -482,8 +498,8 @@ async fn handle_packet(
                     }
                     8 => {
                         let _ = r.read_reference_type_id(sizes);
-                        let _ = r.read_bool();
-                        let _ = r.read_bool();
+                        exception_caught = r.read_bool().unwrap_or(false);
+                        exception_uncaught = r.read_bool().unwrap_or(false);
                     }
                     10 => {
                         let _ = r.read_object_id(sizes);
@@ -497,6 +513,13 @@ async fn handle_packet(
             match event_kind {
                 1 => *state.step_request.lock().await = Some(request_id),
                 2 => *state.breakpoint_request.lock().await = Some(request_id),
+                4 => {
+                    *state.exception_request.lock().await = Some(MockExceptionRequest {
+                        request_id,
+                        caught: exception_caught,
+                        uncaught: exception_uncaught,
+                    })
+                }
                 _ => {}
             }
             let mut w = JdwpWriter::new();
@@ -520,6 +543,12 @@ async fn handle_packet(
                         *guard = None;
                     }
                 }
+                4 => {
+                    let mut guard = state.exception_request.lock().await;
+                    if guard.map(|v| v.request_id == request_id).unwrap_or(false) {
+                        *guard = None;
+                    }
+                }
                 _ => {}
             }
             (0, Vec::new())
@@ -540,7 +569,8 @@ async fn handle_packet(
         // After a resume, immediately emit a stop event if a request is configured.
         let breakpoint_request = { *state.breakpoint_request.lock().await };
         let step_request = { *state.step_request.lock().await };
-        emit_stop_event(socket, state, id_sizes, breakpoint_request, step_request).await?;
+        let exception_request = { *state.exception_request.lock().await };
+        emit_stop_event(socket, state, id_sizes, breakpoint_request, step_request, exception_request).await?;
     }
     Ok(())
 }
@@ -551,19 +581,39 @@ async fn emit_stop_event(
     id_sizes: &JdwpIdSizes,
     breakpoint_request: Option<i32>,
     step_request: Option<i32>,
+    exception_request: Option<MockExceptionRequest>,
 ) -> std::io::Result<()> {
-    let request_id = breakpoint_request.or(step_request);
-    let Some(request_id) = request_id else {
+    let (kind, request_id) = if let Some(request_id) = breakpoint_request {
+        (2, request_id)
+    } else if let Some(request_id) = step_request {
+        (1, request_id)
+    } else if let Some(request) = exception_request {
+        (4, request.request_id)
+    } else {
         return Ok(());
     };
 
     let mut w = JdwpWriter::new();
     w.write_u8(1); // suspend policy: event thread
     w.write_u32(1); // event count
-    w.write_u8(if breakpoint_request.is_some() { 2 } else { 1 });
+    w.write_u8(kind);
     w.write_i32(request_id);
     w.write_object_id(THREAD_ID, id_sizes);
     w.write_location(&default_location(), id_sizes);
+    if kind == 4 {
+        w.write_object_id(EXCEPTION_ID, id_sizes);
+        let catch_location = if exception_request.map(|r| r.uncaught).unwrap_or(false) {
+            Location {
+                type_tag: 0,
+                class_id: 0,
+                method_id: 0,
+                index: 0,
+            }
+        } else {
+            default_location()
+        };
+        w.write_location(&catch_location, id_sizes);
+    }
 
     let payload = w.into_vec();
     let packet_id = state.alloc_packet_id();

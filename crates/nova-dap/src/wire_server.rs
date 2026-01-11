@@ -73,6 +73,11 @@ where
                             "supportsSetVariable": false,
                             "supportsStepBack": false,
                             "supportsExceptionInfoRequest": false,
+                            "exceptionBreakpointFilters": [
+                                { "filter": "caught", "label": "Caught Exceptions", "default": false },
+                                { "filter": "uncaught", "label": "Uncaught Exceptions", "default": false },
+                                { "filter": "all", "label": "All Exceptions", "default": false },
+                            ],
                             "supportsConditionalBreakpoints": false,
                         });
                         send_response(&out_tx, &seq, &request, true, Some(body), None);
@@ -150,6 +155,52 @@ where
                                 Some(json!({ "breakpoints": bps })),
                                 None,
                             ),
+                            Err(err) => send_response(&out_tx, &seq, &request, false, None, Some(err.to_string())),
+                        }
+                    }
+                    "setExceptionBreakpoints" => {
+                        let filters: Vec<String> = request
+                            .arguments
+                            .get("filters")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                            .unwrap_or_default();
+
+                        let mut caught = false;
+                        let mut uncaught = false;
+                        for filter in &filters {
+                            match filter.as_str() {
+                                "all" => {
+                                    caught = true;
+                                    uncaught = true;
+                                }
+                                "caught" => caught = true,
+                                "uncaught" => uncaught = true,
+                                _ => {}
+                            }
+                        }
+
+                        if let Some(options) = request.arguments.get("exceptionOptions").and_then(|v| v.as_array()) {
+                            for opt in options {
+                                match opt.get("breakMode").and_then(|v| v.as_str()) {
+                                    Some("always") => {
+                                        caught = true;
+                                        uncaught = true;
+                                    }
+                                    Some("unhandled" | "userUnhandled") => uncaught = true,
+                                    _ => {}
+                                }
+                            }
+                        }
+
+                        let mut guard = debugger.lock().await;
+                        let Some(dbg) = guard.as_mut() else {
+                            send_response(&out_tx, &seq, &request, false, None, Some("not attached".to_string()));
+                            continue;
+                        };
+
+                        match dbg.set_exception_breakpoints(caught, uncaught).await {
+                            Ok(()) => send_response(&out_tx, &seq, &request, true, None, None),
                             Err(err) => send_response(&out_tx, &seq, &request, false, None, Some(err.to_string())),
                         }
                     }
