@@ -152,13 +152,36 @@ run_cargo() {
 
   cargo_cmd+=("$@")
 
+  local tmp_stderr status
+  tmp_stderr="$(mktemp -t cargo_agent_stderr.XXXXXX)"
+  status=0
+
   if [[ -z "${limit_as}" || "${limit_as}" == "0" || "${limit_as}" == "off" || "${limit_as}" == "unlimited" ]]; then
-    "${cargo_cmd[@]}"
-    return $?
+    "${cargo_cmd[@]}" 2> >(tee "${tmp_stderr}" >&2) || status=$?
+  else
+    bash "${repo_root}/scripts/run_limited.sh" --as "${limit_as}" -- "${cargo_cmd[@]}" 2> >(tee "${tmp_stderr}" >&2) || status=$?
   fi
 
-  bash "${repo_root}/scripts/run_limited.sh" --as "${limit_as}" -- "${cargo_cmd[@]}"
-  return $?
+  if [[ "${status}" -ne 0 ]]; then
+    # Some environments (including CI sandboxes) configure `sccache` as the rustc wrapper,
+    # but the sccache server can occasionally become unreachable (e.g. stale socket/port).
+    # This shows up as an immediate failure running `sccache rustc -vV`, which prevents
+    # *any* cargo command from starting. Detect that specific failure mode and retry once
+    # with `RUSTC_WRAPPER=` to disable the wrapper.
+    if grep -q "sccache: error:" "${tmp_stderr}" >/dev/null 2>&1; then
+      echo "cargo_agent: sccache failed; retrying without RUSTC_WRAPPER" >&2
+      rm -f "${tmp_stderr}"
+      if [[ -z "${limit_as}" || "${limit_as}" == "0" || "${limit_as}" == "off" || "${limit_as}" == "unlimited" ]]; then
+        RUSTC_WRAPPER= "${cargo_cmd[@]}"
+        return $?
+      fi
+      RUSTC_WRAPPER= bash "${repo_root}/scripts/run_limited.sh" --as "${limit_as}" -- "${cargo_cmd[@]}"
+      return $?
+    fi
+  fi
+
+  rm -f "${tmp_stderr}"
+  return "${status}"
 }
 
 # Skip slot acquisition if already in a slot (nested invocation)
