@@ -195,6 +195,10 @@ fn normalize_archive_entry(entry: &str) -> Option<String> {
     } else {
         entry.to_string()
     };
+    let bytes = entry.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return None;
+    }
     if entry.contains("//") {
         return None;
     }
@@ -414,6 +418,17 @@ mod tests {
         assert!(matches!(VfsPath::uri(uri), VfsPath::Uri(_)));
 
         let uri = format!("jar:{archive_uri}!/a/../evil.class");
+        assert!(matches!(VfsPath::uri(uri), VfsPath::Uri(_)));
+    }
+
+    #[test]
+    fn jar_uris_reject_drive_letter_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive_path = dir.path().join("lib.jar");
+        let abs = AbsPathBuf::new(archive_path).unwrap();
+        let archive_uri = path_to_file_uri(&abs).unwrap();
+
+        let uri = format!("jar:{archive_uri}!/C:/evil.class");
         assert!(matches!(VfsPath::uri(uri), VfsPath::Uri(_)));
     }
 
