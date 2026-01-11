@@ -441,6 +441,7 @@ fn cache_key<T: Serialize>(
 mod disk_cache_tests {
     use super::*;
     use bincode::Options;
+    use nova_cache::QueryDiskCachePolicy;
     use serde::{Deserialize, Serialize};
     use tempfile::TempDir;
 
@@ -598,6 +599,125 @@ mod disk_cache_tests {
         std::fs::write(&path, b"not a valid bincode payload").unwrap();
 
         assert_eq!(cache.load("key").unwrap(), None);
+    }
+
+    #[test]
+    fn disk_cache_gc_expires_entries_by_saved_at_millis() {
+        let tmp = TempDir::new().unwrap();
+        let cache = QueryDiskCache::new_with_policy(
+            tmp.path(),
+            QueryDiskCachePolicy {
+                ttl_millis: 1_000,
+                max_bytes: u64::MAX,
+                gc_interval_millis: 0,
+            },
+        )
+        .unwrap();
+
+        #[derive(Debug, Serialize)]
+        struct PersistedQueryValue<'a> {
+            schema_version: u32,
+            nova_version: String,
+            saved_at_millis: u64,
+            key: &'a str,
+            key_fingerprint: Fingerprint,
+            value: &'a [u8],
+        }
+
+        let saved_at_millis = nova_cache::now_millis().saturating_sub(10_000);
+        let fingerprint = Fingerprint::from_bytes("key".as_bytes());
+        let path = tmp.path().join(format!("{}.bin", fingerprint.as_str()));
+
+        let persisted = PersistedQueryValue {
+            schema_version: nova_cache::QUERY_DISK_CACHE_SCHEMA_VERSION,
+            nova_version: nova_core::NOVA_VERSION.to_string(),
+            saved_at_millis,
+            key: "key",
+            key_fingerprint: fingerprint,
+            value: b"value",
+        };
+        let bytes = bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_little_endian()
+            .serialize(&persisted)
+            .unwrap();
+        std::fs::write(&path, bytes).unwrap();
+
+        cache.gc().unwrap();
+
+        assert!(!path.exists(), "expired entry should be deleted by GC");
+        assert_eq!(cache.load("key").unwrap(), None);
+    }
+
+    #[test]
+    fn disk_cache_gc_enforces_max_bytes_oldest_first() {
+        let tmp = TempDir::new().unwrap();
+
+        #[derive(Debug, Serialize)]
+        struct PersistedQueryValue<'a> {
+            schema_version: u32,
+            nova_version: String,
+            saved_at_millis: u64,
+            key: &'a str,
+            key_fingerprint: Fingerprint,
+            value: &'a [u8],
+        }
+
+        let now = nova_cache::now_millis();
+
+        let value_old = vec![0u8; 128];
+        let value_new = vec![1u8; 128];
+
+        let fp_old = Fingerprint::from_bytes("key1".as_bytes());
+        let fp_new = Fingerprint::from_bytes("key2".as_bytes());
+
+        let persisted_old = PersistedQueryValue {
+            schema_version: nova_cache::QUERY_DISK_CACHE_SCHEMA_VERSION,
+            nova_version: nova_core::NOVA_VERSION.to_string(),
+            saved_at_millis: now.saturating_sub(10_000),
+            key: "key1",
+            key_fingerprint: fp_old.clone(),
+            value: &value_old,
+        };
+        let persisted_new = PersistedQueryValue {
+            schema_version: nova_cache::QUERY_DISK_CACHE_SCHEMA_VERSION,
+            nova_version: nova_core::NOVA_VERSION.to_string(),
+            saved_at_millis: now,
+            key: "key2",
+            key_fingerprint: fp_new.clone(),
+            value: &value_new,
+        };
+
+        let opts = bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_little_endian();
+        let bytes_old = opts.serialize(&persisted_old).unwrap();
+        let bytes_new = opts.serialize(&persisted_new).unwrap();
+
+        let cache = QueryDiskCache::new_with_policy(
+            tmp.path(),
+            QueryDiskCachePolicy {
+                ttl_millis: u64::MAX,
+                // Allow the newer entry to fit, but not both.
+                max_bytes: bytes_new.len() as u64,
+                gc_interval_millis: 0,
+            },
+        )
+        .unwrap();
+
+        let path_old = tmp.path().join(format!("{}.bin", fp_old.as_str()));
+        let path_new = tmp.path().join(format!("{}.bin", fp_new.as_str()));
+        std::fs::write(&path_old, bytes_old).unwrap();
+        std::fs::write(&path_new, bytes_new).unwrap();
+
+        cache.gc().unwrap();
+
+        assert!(!path_old.exists(), "GC should evict the oldest entry first");
+        assert!(path_new.exists(), "GC should keep the newest entry");
+        assert_eq!(
+            cache.load("key2").unwrap().as_deref(),
+            Some(value_new.as_slice())
+        );
     }
 }
 

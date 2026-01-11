@@ -1,13 +1,16 @@
 use crate::error::CacheError;
 use crate::fingerprint::Fingerprint;
 use crate::util::{
-    atomic_write, bincode_deserialize, bincode_serialize, now_millis, read_file_limited,
+    atomic_write, bincode_deserialize, bincode_options_limited, bincode_serialize, now_millis,
+    read_file_limited,
 };
+use bincode::Options;
+use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const QUERY_DISK_CACHE_SCHEMA_VERSION: u32 = 1;
 
@@ -25,7 +28,7 @@ pub struct QueryDiskCache {
 
 #[derive(Clone, Copy, Debug)]
 pub struct QueryDiskCachePolicy {
-    /// Time-to-live for entries, measured from file modified time.
+    /// Time-to-live for entries, measured from the persisted `saved_at_millis`.
     pub ttl_millis: u64,
     /// Maximum total size of cache files on disk.
     pub max_bytes: u64,
@@ -164,28 +167,53 @@ impl QueryDiskCache {
                 Err(_) => continue,
             };
             let path = entry.path();
-            let meta = match entry.metadata() {
+            let meta = match std::fs::symlink_metadata(&path) {
                 Ok(meta) => meta,
                 Err(_) => continue,
             };
 
-            if !meta.is_file() {
+            let file_type = meta.file_type();
+            if !file_type.is_file() && !file_type.is_symlink() {
                 continue;
             }
 
             // We only expect `.bin` files for cache entries. Clean up any other
             // leftovers (including crashed atomic-write tempfiles).
             if path.extension().and_then(|s| s.to_str()) != Some("bin") {
+                if file_type.is_file() {
+                    let _ = std::fs::remove_file(&path);
+                }
+                continue;
+            }
+
+            let Some(header) = read_query_cache_header(&path) else {
+                // Corrupted or unreadable cache entry (including payloads over our
+                // deserialization limit). Treat as stale and delete it.
+                let _ = std::fs::remove_file(&path);
+                continue;
+            };
+
+            // Version-gate entries at GC time too so older Nova versions don't
+            // accumulate indefinitely if they're never read.
+            if header.schema_version != QUERY_DISK_CACHE_SCHEMA_VERSION
+                || header.nova_version != nova_core::NOVA_VERSION
+            {
                 let _ = std::fs::remove_file(&path);
                 continue;
             }
 
-            let modified_millis = meta
-                .modified()
-                .ok()
-                .and_then(system_time_to_millis)
-                .unwrap_or(0);
-            if now.saturating_sub(modified_millis) > self.policy.ttl_millis {
+            // If the file name doesn't match the stored key fingerprint, treat
+            // as corruption and delete.
+            if path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .is_some_and(|stem| stem != header.key_fingerprint.as_str())
+            {
+                let _ = std::fs::remove_file(&path);
+                continue;
+            }
+
+            if now.saturating_sub(header.saved_at_millis) > self.policy.ttl_millis {
                 let _ = std::fs::remove_file(&path);
                 continue;
             }
@@ -193,7 +221,7 @@ impl QueryDiskCache {
             let len = meta.len();
             total_bytes = total_bytes.saturating_add(len);
             candidates.push(GcEntry {
-                modified_millis,
+                last_used_millis: header.saved_at_millis,
                 len,
                 path,
             });
@@ -204,7 +232,7 @@ impl QueryDiskCache {
         }
 
         // Evict oldest files first until we're within budget.
-        candidates.sort_by_key(|entry| entry.modified_millis);
+        candidates.sort_by_key(|entry| entry.last_used_millis);
         for entry in candidates {
             if total_bytes <= self.policy.max_bytes {
                 break;
@@ -220,7 +248,7 @@ impl QueryDiskCache {
 
 #[derive(Debug)]
 struct GcEntry {
-    modified_millis: u64,
+    last_used_millis: u64,
     len: u64,
     path: PathBuf,
 }
@@ -245,8 +273,21 @@ struct PersistedQueryValueOwned {
     value: Vec<u8>,
 }
 
-fn system_time_to_millis(time: SystemTime) -> Option<u64> {
-    time.duration_since(UNIX_EPOCH)
-        .ok()
-        .map(|d| d.as_millis() as u64)
+#[derive(Debug, Deserialize)]
+struct PersistedQueryValueHeader {
+    schema_version: u32,
+    nova_version: String,
+    saved_at_millis: u64,
+    key: IgnoredAny,
+    key_fingerprint: Fingerprint,
+    value: IgnoredAny,
+}
+
+fn read_query_cache_header(path: &Path) -> Option<PersistedQueryValueHeader> {
+    let bytes = read_file_limited(path)?;
+    // Use the same bincode options as the writer (and the same size cap as
+    // regular loads) to avoid allocating unbounded amounts of memory if the
+    // file is corrupted.
+    let mut cursor = Cursor::new(bytes);
+    bincode_options_limited().deserialize_from(&mut cursor).ok()
 }
