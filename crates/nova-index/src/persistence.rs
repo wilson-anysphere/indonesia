@@ -793,6 +793,26 @@ impl ShardedIndexView {
             })
     }
 
+    /// Returns all symbol names that have at least one location in a
+    /// non-invalidated file.
+    pub fn symbol_names<'a>(&'a self) -> impl Iterator<Item = &'a str> + 'a {
+        let invalidated_files = &self.invalidated_files;
+        let mut names: BTreeSet<&'a str> = BTreeSet::new();
+
+        for shard in self.shards.iter().filter_map(|s| s.as_ref()) {
+            for (name, locations) in shard.symbols.archived().symbols.iter() {
+                if locations
+                    .iter()
+                    .any(|loc| !invalidated_files.contains(loc.file.as_str()))
+                {
+                    names.insert(name.as_str());
+                }
+            }
+        }
+
+        names.into_iter()
+    }
+
     #[must_use]
     pub fn reference_locations<'a>(
         &'a self,
@@ -818,6 +838,26 @@ impl ShardedIndexView {
             })
     }
 
+    /// Returns all symbols that have at least one reference location in a
+    /// non-invalidated file.
+    pub fn referenced_symbols<'a>(&'a self) -> impl Iterator<Item = &'a str> + 'a {
+        let invalidated_files = &self.invalidated_files;
+        let mut symbols: BTreeSet<&'a str> = BTreeSet::new();
+
+        for shard in self.shards.iter().filter_map(|s| s.as_ref()) {
+            for (symbol, locations) in shard.references.archived().references.iter() {
+                if locations
+                    .iter()
+                    .any(|loc| !invalidated_files.contains(loc.file.as_str()))
+                {
+                    symbols.insert(symbol.as_str());
+                }
+            }
+        }
+
+        symbols.into_iter()
+    }
+
     #[must_use]
     pub fn annotation_locations<'a>(
         &'a self,
@@ -841,6 +881,26 @@ impl ShardedIndexView {
                 line: loc.line,
                 column: loc.column,
             })
+    }
+
+    /// Returns all annotation names that have at least one location in a
+    /// non-invalidated file.
+    pub fn annotation_names<'a>(&'a self) -> impl Iterator<Item = &'a str> + 'a {
+        let invalidated_files = &self.invalidated_files;
+        let mut names: BTreeSet<&'a str> = BTreeSet::new();
+
+        for shard in self.shards.iter().filter_map(|s| s.as_ref()) {
+            for (name, locations) in shard.annotations.archived().annotations.iter() {
+                if locations
+                    .iter()
+                    .any(|loc| !invalidated_files.contains(loc.file.as_str()))
+                {
+                    names.insert(name.as_str());
+                }
+            }
+        }
+
+        names.into_iter()
     }
 }
 

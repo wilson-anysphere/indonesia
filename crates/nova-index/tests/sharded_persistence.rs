@@ -110,6 +110,8 @@ fn sharded_roundtrip_loads_all_shards() {
     let a_locations: Vec<_> = view.view.symbol_locations("A").collect();
     assert_eq!(a_locations.len(), 1);
     assert_eq!(a_locations[0].file, "A.java");
+
+    assert_eq!(view.view.symbol_names().collect::<Vec<_>>(), vec!["A", "B"]);
 }
 
 #[test]
@@ -238,6 +240,7 @@ fn sharded_index_view_filters_invalidated_files() {
     // The view should hide stale locations from invalidated files without requiring deserialization.
     assert!(loaded_v2.view.symbol_locations("A").next().is_none());
     assert_eq!(loaded_v2.view.symbol_locations("B").count(), 1);
+    assert_eq!(loaded_v2.view.symbol_names().collect::<Vec<_>>(), vec!["B"]);
 }
 
 #[test]
