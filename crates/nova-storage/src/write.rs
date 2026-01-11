@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use rkyv::ser::serializers::{
-    CompositeSerializer, HeapScratch, SharedSerializeMap, WriteSerializer,
+    AllocScratch, CompositeSerializer, FallbackScratch, HeapScratch, SharedSerializeMap,
+    WriteSerializer,
 };
 use rkyv::ser::Serializer as _;
 
@@ -13,8 +14,11 @@ use crate::persisted::StorageError;
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-pub type FileArchiveSerializer =
-    CompositeSerializer<WriteSerializer<fs::File>, HeapScratch<256>, SharedSerializeMap>;
+pub type FileArchiveSerializer = CompositeSerializer<
+    WriteSerializer<fs::File>,
+    FallbackScratch<HeapScratch<256>, AllocScratch>,
+    SharedSerializeMap,
+>;
 
 /// Trait alias for values that can be serialized by `nova-storage`'s streaming
 /// writer.
@@ -213,7 +217,7 @@ where
 
     let mut serializer = CompositeSerializer::new(
         WriteSerializer::with_pos(file, 0),
-        HeapScratch::<256>::new(),
+        FallbackScratch::new(HeapScratch::<256>::new(), AllocScratch::default()),
         SharedSerializeMap::new(),
     );
 

@@ -214,7 +214,7 @@ where
         expected_schema: u32,
         prefer_mmap: bool,
     ) -> Result<Self, StorageError> {
-        let mut file = File::open(path)?;
+        let file = File::open(path)?;
         let file_len = file.metadata()?.len();
         if file_len < HEADER_LEN as u64 {
             return Err(StorageError::Truncated {
