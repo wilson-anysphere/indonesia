@@ -2342,6 +2342,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn distributed_router_config_debug_does_not_expose_auth_token() {
+        let token = "super-secret-token";
+        let config = DistributedRouterConfig {
+            listen_addr: ListenAddr::Tcp(TcpListenAddr::Plain("127.0.0.1:0".parse().unwrap())),
+            worker_command: PathBuf::from("nova-worker"),
+            cache_dir: std::env::temp_dir(),
+            auth_token: Some(token.to_string()),
+            allow_insecure_tcp: false,
+            max_rpc_bytes: DEFAULT_MAX_RPC_BYTES,
+            max_inflight_handshakes: DEFAULT_MAX_INFLIGHT_HANDSHAKES,
+            max_worker_connections: DEFAULT_MAX_WORKER_CONNECTIONS,
+            #[cfg(feature = "tls")]
+            tls_client_cert_fingerprint_allowlist: Default::default(),
+            spawn_workers: false,
+        };
+
+        let output = format!("{config:?}");
+        assert!(
+            !output.contains(token),
+            "DistributedRouterConfig debug output leaked auth token: {output}"
+        );
+        assert!(
+            output.contains("auth_present"),
+            "DistributedRouterConfig debug output should include auth presence indicator: {output}"
+        );
+    }
+
+    #[test]
     fn global_symbol_search_prefers_prefix_matches() {
         let symbols = vec![
             Symbol {
