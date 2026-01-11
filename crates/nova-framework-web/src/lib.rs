@@ -191,6 +191,7 @@ fn extract_spring_mvc_endpoints_from_source(source: &str, file: Option<PathBuf>)
 
     let mut class_base_path: Option<String> = None;
     let mut in_class = false;
+    let mut class_body_started = false;
     let mut brace_depth: i32 = 0;
 
     // Best-effort check to reduce false positives.
@@ -220,6 +221,7 @@ fn extract_spring_mvc_endpoints_from_source(source: &str, file: Option<PathBuf>)
                     .and_then(|ann| ann.args.as_deref().and_then(extract_spring_mapping_path));
                 pending_annotations.clear();
                 in_class = true;
+                class_body_started = false;
             }
         } else if brace_depth == 1 {
             if is_controller_class && method_sig_re.is_match(line) {
@@ -239,11 +241,16 @@ fn extract_spring_mvc_endpoints_from_source(source: &str, file: Option<PathBuf>)
         }
 
         brace_depth += count_braces(line);
-        if in_class && brace_depth <= 0 {
+        if in_class && !class_body_started && brace_depth > 0 {
+            // Handle the "Allman" brace style where `{` is on the next line.
+            class_body_started = true;
+        }
+        if in_class && class_body_started && brace_depth <= 0 {
             // Reset once we leave the class body so multiple classes per file still work.
             in_class = false;
             is_controller_class = false;
             class_base_path = None;
+            class_body_started = false;
             pending_annotations.clear();
         }
     }
@@ -342,6 +349,7 @@ fn extract_micronaut_endpoints_from_source(source: &str, file: Option<PathBuf>) 
 
     let mut class_base_path: Option<String> = None;
     let mut in_class = false;
+    let mut class_body_started = false;
     let mut brace_depth: i32 = 0;
     let mut is_controller_class = false;
 
@@ -366,6 +374,7 @@ fn extract_micronaut_endpoints_from_source(source: &str, file: Option<PathBuf>) 
                     .and_then(|ann| ann.args.as_deref().and_then(extract_micronaut_mapping_path));
                 pending_annotations.clear();
                 in_class = true;
+                class_body_started = false;
             }
         } else if brace_depth == 1 {
             if is_controller_class && method_sig_re.is_match(line) {
@@ -385,10 +394,14 @@ fn extract_micronaut_endpoints_from_source(source: &str, file: Option<PathBuf>) 
         }
 
         brace_depth += count_braces(line);
-        if in_class && brace_depth <= 0 {
+        if in_class && !class_body_started && brace_depth > 0 {
+            class_body_started = true;
+        }
+        if in_class && class_body_started && brace_depth <= 0 {
             in_class = false;
             is_controller_class = false;
             class_base_path = None;
+            class_body_started = false;
             pending_annotations.clear();
         }
     }
