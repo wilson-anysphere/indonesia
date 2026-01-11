@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use nova_db::RootDatabase;
-use nova_framework_spring::{SPRING_AMBIGUOUS_BEAN, SPRING_NO_BEAN};
-use nova_ide::{completions, file_diagnostics, goto_definition};
+use nova_framework_spring::{SPRING_AMBIGUOUS_BEAN, SPRING_CIRCULAR_DEP, SPRING_NO_BEAN};
+use nova_ide::{completions, file_diagnostics, find_references, goto_definition};
 use nova_types::Severity;
 
 fn offset_to_position(text: &str, offset: usize) -> lsp_types::Position {
@@ -190,4 +190,85 @@ class FooService {}
     );
     assert_eq!(loc.range.start.line, 2);
     assert_eq!(loc.range.start.character, 6);
+}
+
+#[test]
+fn spring_profile_completion_returns_profiles() {
+    let java_path = PathBuf::from("/spring-profile/src/main/java/A.java");
+    let java_text = r#"import org.springframework.context.annotation.Profile;
+import org.springframework.stereotype.Component;
+
+@Profile("<|>")
+@Component
+class A {}
+"#;
+
+    let (db, file, pos) = fixture_multi(java_path, java_text, vec![]);
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"dev") && labels.contains(&"test") && labels.contains(&"prod"),
+        "expected profile completions; got {labels:?}"
+    );
+}
+
+#[test]
+fn spring_find_references_from_bean_definition_to_injection_site() {
+    let bean_path = PathBuf::from("/spring-refs/src/main/java/FooService.java");
+    let bean_text = r#"import org.springframework.stereotype.Component;
+
+@Component
+class Foo<|>Service {}
+"#;
+
+    let consumer_path = PathBuf::from("/spring-refs/src/main/java/Consumer.java");
+    let consumer_text = r#"import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+
+@Component
+class Consumer {
+  @Autowired FooService fooService;
+}
+"#;
+
+    let (db, file, pos) = fixture_multi(
+        bean_path,
+        bean_text,
+        vec![(consumer_path, consumer_text.to_string())],
+    );
+
+    let refs = find_references(&db, file, pos, false);
+    assert_eq!(refs.len(), 1);
+    assert!(
+        refs[0].uri.as_str().contains("Consumer.java"),
+        "expected reference to point at Consumer.java; got {:?}",
+        refs[0].uri
+    );
+}
+
+#[test]
+fn spring_di_diagnostics_report_circular_dependency() {
+    let java_path = PathBuf::from("/spring-cycle/src/main/java/Cycle.java");
+    let java_text = r#"import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+
+@Component
+class A {
+  @Autowired B b;
+}
+
+@Component
+class B {
+  @Autowired A a;
+}
+"#;
+
+    let (db, file, _) = fixture_multi(java_path, java_text, vec![]);
+    let diags = file_diagnostics(&db, file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == SPRING_CIRCULAR_DEP && d.severity == Severity::Warning),
+        "expected circular-dependency diagnostic; got {diags:#?}"
+    );
 }
