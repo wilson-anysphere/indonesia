@@ -1274,65 +1274,15 @@ fn handle_completion_item_resolve(
 }
 
 fn position_to_offset_utf16(text: &str, position: lsp_types::Position) -> Option<usize> {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
-    let mut idx = 0usize;
-
-    for ch in text.chars() {
-        if line == position.line && col_utf16 == position.character {
-            return Some(idx);
-        }
-
-        if ch == '\n' {
-            if line == position.line {
-                if col_utf16 == position.character {
-                    return Some(idx);
-                }
-                return None;
-            }
-            line += 1;
-            col_utf16 = 0;
-            idx += 1;
-            continue;
-        }
-
-        if line == position.line {
-            col_utf16 += ch.len_utf16() as u32;
-            if col_utf16 > position.character {
-                return None;
-            }
-        }
-        idx += ch.len_utf8();
-    }
-
-    if line == position.line && col_utf16 == position.character {
-        Some(idx)
-    } else {
-        None
-    }
+    nova_lsp::text_pos::byte_offset(text, position)
 }
 
 fn offset_to_position_utf16(text: &str, offset: usize) -> lsp_types::Position {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
-    let mut i = 0usize;
-
-    for ch in text.chars() {
-        if i >= offset {
-            break;
-        }
-
-        if ch == '\n' {
-            line += 1;
-            col_utf16 = 0;
-        } else {
-            col_utf16 += ch.len_utf16() as u32;
-        }
-
-        i += ch.len_utf8();
+    let mut clamped = offset.min(text.len());
+    while clamped > 0 && !text.is_char_boundary(clamped) {
+        clamped -= 1;
     }
-
-    lsp_types::Position::new(line, col_utf16)
+    nova_lsp::text_pos::lsp_position(text, clamped).unwrap_or_else(|| lsp_types::Position::new(0, 0))
 }
 
 fn ident_range_at(text: &str, offset: usize) -> Option<(usize, usize)> {

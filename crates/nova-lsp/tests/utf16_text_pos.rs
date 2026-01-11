@@ -34,6 +34,21 @@ fn utf16_positions_inside_surrogate_pairs_are_rejected() {
 }
 
 #[test]
+fn utf16_positions_treat_crlf_as_newline_and_reject_carriage_return_columns() {
+    let text = "a😀b\r\nx";
+    let pos = TextPos::new(text);
+
+    // End-of-line for "a😀b" (UTF-16 columns: a=1, 😀=2, b=1 -> 4).
+    assert_eq!(pos.byte_offset(Position::new(0, 4)), Some(6));
+    // Line 1 starts after the full CRLF sequence.
+    assert_eq!(pos.byte_offset(Position::new(1, 0)), Some(8));
+
+    // `character=5` would land on the `\r` code unit of the line ending; this is
+    // not a valid LSP position.
+    assert_eq!(pos.byte_offset(Position::new(0, 5)), None);
+}
+
+#[test]
 fn utf16_range_to_byte_range_is_validated_and_safe_for_slicing() {
     let text = "a😀b\nx";
     let pos = TextPos::new(text);

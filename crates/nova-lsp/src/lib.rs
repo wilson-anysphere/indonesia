@@ -389,53 +389,15 @@ fn looks_like_mapstruct_file(text: &str) -> bool {
 }
 
 fn position_to_offset(text: &str, position: lsp_types::Position) -> Option<usize> {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
-    let mut offset: usize = 0;
-
-    for ch in text.chars() {
-        if line == position.line && col_utf16 == position.character {
-            return Some(offset);
-        }
-
-        offset += ch.len_utf8();
-        if ch == '\n' {
-            line += 1;
-            col_utf16 = 0;
-        } else {
-            col_utf16 += ch.len_utf16() as u32;
-        }
-    }
-
-    if line == position.line && col_utf16 == position.character {
-        Some(offset)
-    } else {
-        None
-    }
+    text_pos::byte_offset(text, position)
 }
 
 fn offset_to_position(text: &str, offset: usize) -> lsp_types::Position {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
-    let mut cur: usize = 0;
-
-    for ch in text.chars() {
-        if cur >= offset {
-            break;
-        }
-        cur += ch.len_utf8();
-        if ch == '\n' {
-            line += 1;
-            col_utf16 = 0;
-        } else {
-            col_utf16 += ch.len_utf16() as u32;
-        }
+    let mut clamped = offset.min(text.len());
+    while clamped > 0 && !text.is_char_boundary(clamped) {
+        clamped -= 1;
     }
-
-    lsp_types::Position {
-        line,
-        character: col_utf16,
-    }
+    text_pos::lsp_position(text, clamped).unwrap_or_else(|| lsp_types::Position::new(0, 0))
 }
 
 fn span_to_lsp_range(text: &str, start: usize, end: usize) -> lsp_types::Range {
