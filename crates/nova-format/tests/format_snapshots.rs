@@ -27,6 +27,21 @@ fn assert_crlf_only(text: &str) {
     }
 }
 
+fn assert_cr_only(text: &str) {
+    let bytes = text.as_bytes();
+    for (idx, b) in bytes.iter().enumerate() {
+        if *b == b'\n' {
+            panic!("found LF at byte index {idx}");
+        }
+        if *b == b'\r' {
+            assert!(
+                bytes.get(idx + 1) != Some(&b'\n'),
+                "found CRLF at byte index {idx}"
+            );
+        }
+    }
+}
+
 fn assert_ast_idempotent(input: &str) {
     let parse = parse_java(input);
     let formatted = format_java_ast(&parse, input, &FormatConfig::default());
@@ -658,6 +673,27 @@ fn preserves_crlf_line_endings_for_full_ast_formatting() {
     let out = apply_text_edits(input, &edits).unwrap();
     assert_eq!(out, formatted);
     assert_crlf_only(&out);
+}
+
+#[test]
+fn preserves_cr_line_endings_for_full_ast_formatting() {
+    let input = concat!(
+        "class  Foo{\r",
+        "public static void main(String[]args){\r",
+        "System.out.println(\"hi\"); // comment\r",
+        "if(true){System.out.println(\"x\");}\r",
+        "}\r",
+        "}\r",
+    );
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
+
+    assert_cr_only(&formatted);
+
+    let edits = edits_for_formatting_ast(&parse, input, &FormatConfig::default());
+    let out = apply_text_edits(input, &edits).unwrap();
+    assert_eq!(out, formatted);
+    assert_cr_only(&out);
 }
 
 #[test]
