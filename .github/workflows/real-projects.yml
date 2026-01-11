@@ -38,8 +38,9 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Cache test projects
-        uses: actions/cache@v4
+      - name: Restore test projects cache
+        id: test-projects-cache
+        uses: actions/cache/restore@v4
         with:
           path: test-projects
           key: test-projects-${{ runner.os }}-${{ hashFiles('test-projects/pins.toml') }}
@@ -57,6 +58,13 @@ jobs:
           set -euxo pipefail
           mkdir -p real-project-logs
           ./scripts/javac-validate.sh 2>&1 | tee real-project-logs/javac-validate.log
+
+      - name: Save test projects cache
+        if: always() && steps.test-projects-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: test-projects
+          key: test-projects-${{ runner.os }}-${{ hashFiles('test-projects/pins.toml') }}
 
       - name: Upload logs
         if: always()
