@@ -3669,6 +3669,7 @@ version = "0.1.0"
 dependencies = [
  "nova-core",
  "nova-framework",
+ "nova-framework-parse",
  "nova-hir",
  "nova-resolve",
  "nova-syntax",
@@ -3708,6 +3709,7 @@ version = "0.1.0"
 dependencies = [
  "nova-core",
  "nova-framework",
+ "nova-framework-parse",
  "nova-hir",
  "nova-index",
  "nova-properties",

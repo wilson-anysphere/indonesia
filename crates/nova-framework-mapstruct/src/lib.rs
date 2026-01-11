@@ -17,7 +17,8 @@ use nova_apt::discover_generated_source_roots;
 use nova_core::ProjectId;
 use nova_framework::{Database, FrameworkAnalyzer, VirtualMember};
 use nova_framework_parse::{
-    collect_annotations, find_named_child, node_text, parse_java, visit_nodes, ParsedAnnotation,
+    annotation_string_value_span, clean_type, collect_annotations, find_named_child, node_text,
+    parse_java, visit_nodes, ParsedAnnotation,
 };
 use nova_types::{ClassId, Diagnostic, Span};
 use std::collections::{HashMap, HashSet};
@@ -687,30 +688,6 @@ fn parse_mapping_annotation(annotation: &ParsedAnnotation) -> Option<PropertyMap
     })
 }
 
-fn annotation_string_value_span(
-    annotation: &ParsedAnnotation,
-    key: &str,
-) -> Option<(String, Span)> {
-    let haystack = annotation.text.as_str();
-    let idx = haystack.find(key)?;
-    let after_key = &haystack[idx + key.len()..];
-    let eq_idx = after_key.find('=')?;
-    let after_eq = &after_key[eq_idx + 1..];
-    let quote_idx = after_eq.find('"')?;
-    let after_quote = &after_eq[quote_idx + 1..];
-    let end_quote_idx = after_quote.find('"')?;
-    let value = after_quote[..end_quote_idx].to_string();
-
-    let start_in_ann = idx + key.len() + eq_idx + 1 + quote_idx + 1;
-    let end_in_ann = start_in_ann + value.len();
-    let span = Span::new(
-        annotation.span.start + start_in_ann,
-        annotation.span.start + end_in_ann,
-    );
-
-    Some((value, span))
-}
-
 fn parse_formal_parameter_types(
     params: Node<'_>,
     source: &str,
@@ -743,7 +720,7 @@ fn parse_java_type(raw: &str, default_package: Option<&str>) -> JavaType {
         };
     }
 
-    let compact = raw.split_whitespace().collect::<String>();
+    let compact = clean_type(raw);
     let no_generics = compact.split('<').next().unwrap_or(&compact);
     let no_array = no_generics.trim_end_matches("[]");
 

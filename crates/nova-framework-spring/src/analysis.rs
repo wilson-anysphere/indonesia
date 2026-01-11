@@ -1,8 +1,8 @@
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use nova_framework_parse::{
-    collect_annotations, find_named_child, node_text, parse_java, simplify_type, visit_nodes,
-    ParsedAnnotation,
+    collect_annotations, find_named_child, modifier_node, node_text, parse_java, simplify_type,
+    visit_nodes, ParsedAnnotation,
 };
 use nova_types::{Diagnostic, Span};
 use tree_sitter::Node;
@@ -389,10 +389,7 @@ fn parse_class_declaration(
     injections: &mut Vec<InjectionPoint>,
     hierarchy: &mut ClassHierarchy,
 ) {
-    let modifiers = node
-        .child_by_field_name("modifiers")
-        .or_else(|| find_named_child(node, "modifiers"));
-    let annotations = modifiers
+    let annotations = modifier_node(node)
         .map(|m| collect_annotations(m, source))
         .unwrap_or_default();
 
@@ -523,10 +520,7 @@ fn parse_field_injections(
     class_name: &str,
     injections: &mut Vec<InjectionPoint>,
 ) {
-    let modifiers = node
-        .child_by_field_name("modifiers")
-        .or_else(|| find_named_child(node, "modifiers"));
-    let annotations = modifiers
+    let annotations = modifier_node(node)
         .map(|m| collect_annotations(m, source))
         .unwrap_or_default();
 
@@ -598,10 +592,7 @@ fn parse_constructor(
     source: &str,
     class_name: &str,
 ) -> ConstructorData {
-    let modifiers = node
-        .child_by_field_name("modifiers")
-        .or_else(|| find_named_child(node, "modifiers"));
-    let annotations = modifiers
+    let annotations = modifier_node(node)
         .map(|m| collect_annotations(m, source))
         .unwrap_or_default();
     let is_autowired = annotations.iter().any(|a| a.simple_name == "Autowired");
@@ -632,10 +623,7 @@ fn parse_constructor(
 }
 
 fn parse_constructor_param(node: Node<'_>, source: &str) -> Option<ConstructorParam> {
-    let modifiers = node
-        .child_by_field_name("modifiers")
-        .or_else(|| find_named_child(node, "modifiers"));
-    let annotations = modifiers
+    let annotations = modifier_node(node)
         .map(|m| collect_annotations(m, source))
         .unwrap_or_default();
     let qualifier = annotations
@@ -693,10 +681,7 @@ fn parse_constructor_injections(ctors: Vec<ConstructorData>, injections: &mut Ve
 }
 
 fn parse_bean_method(node: Node<'_>, source_idx: usize, source: &str) -> Option<Bean> {
-    let modifiers = node
-        .child_by_field_name("modifiers")
-        .or_else(|| find_named_child(node, "modifiers"));
-    let annotations = modifiers
+    let annotations = modifier_node(node)
         .map(|m| collect_annotations(m, source))
         .unwrap_or_default();
 

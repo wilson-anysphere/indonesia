@@ -60,7 +60,10 @@ pub struct ParsedAnnotation {
     pub args: HashMap<String, String>,
     pub span: Span,
     /// The exact annotation source text (byte-for-byte) covered by `span`.
-    pub text: String,
+    ///
+    /// Some framework analyzers don't need this; keeping it optional avoids forcing
+    /// all callers to clone annotation text when they only care about `args`.
+    pub text: Option<String>,
 }
 
 /// Collect all annotation nodes under a modifiers node.
@@ -80,10 +83,18 @@ pub fn collect_annotations(modifiers: Node<'_>, source: &str) -> Vec<ParsedAnnot
 fn parse_annotation(node: Node<'_>, source: &str) -> Option<ParsedAnnotation> {
     let text = node_text(source, node).to_string();
     let span = Span::new(node.start_byte(), node.end_byte());
-    parse_annotation_text(text, span)
+    parse_annotation_text_owned(text, span)
 }
 
-fn parse_annotation_text(text: String, span: Span) -> Option<ParsedAnnotation> {
+/// Parse an annotation from raw source text and a span.
+///
+/// This is useful for analyzers built on top of parsers other than tree-sitter
+/// (e.g. `nova_syntax`) that still want consistent annotation argument parsing.
+pub fn parse_annotation_text(text: &str, span: Span) -> Option<ParsedAnnotation> {
+    parse_annotation_text_owned(text.to_string(), span)
+}
+
+fn parse_annotation_text_owned(text: String, span: Span) -> Option<ParsedAnnotation> {
     let trimmed = text.trim();
     if !trimmed.starts_with('@') {
         return None;
@@ -116,7 +127,7 @@ fn parse_annotation_text(text: String, span: Span) -> Option<ParsedAnnotation> {
         simple_name,
         args,
         span,
-        text,
+        text: Some(text),
     })
 }
 
@@ -337,10 +348,9 @@ pub fn clean_type(raw: &str) -> String {
 
 /// Return the simple (unqualified) name of a type-like string, stripping generic arguments.
 ///
-/// This helper keeps array suffixes (`[]`) intact.
+/// This helper strips trailing array suffixes (`[]`).
 pub fn simple_name(raw: &str) -> String {
-    let raw = strip_generic_args(raw);
-    raw.rsplit('.').next().unwrap_or(&raw).to_string()
+    simplify_type(raw)
 }
 
 /// Simplify a type-like string down to its unqualified base type.
@@ -355,6 +365,100 @@ pub fn simplify_type(raw: &str) -> String {
     let no_generics = strip_generic_args(&compact);
     let no_array = no_generics.trim_end_matches("[]");
     no_array.rsplit('.').next().unwrap_or(no_array).to_string()
+}
+
+/// Parse a class literal like `Foo.class` into a simple class name (`Foo`).
+///
+/// This is intentionally best-effort and also accepts bare type names (without
+/// the `.class` suffix).
+pub fn parse_class_literal(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let value = value.strip_suffix(".class").unwrap_or(value).trim();
+    if value.is_empty() {
+        return None;
+    }
+    Some(value.rsplit('.').next().unwrap_or(value).to_string())
+}
+
+/// Extract a string literal argument's value *and* span (without quotes) within
+/// the original source file.
+///
+/// This is a small convenience for analyzers that want to implement navigation
+/// based on annotation string arguments (e.g. MapStruct's `@Mapping(target="...")`).
+pub fn annotation_string_value_span(
+    annotation: &ParsedAnnotation,
+    key: &str,
+) -> Option<(String, Span)> {
+    let haystack = annotation.text.as_deref()?;
+    let idx = find_assignment_key(haystack, key)?;
+    let mut i = idx + key.len();
+
+    // Skip whitespace between key and '='.
+    i += haystack[i..].bytes().take_while(|b| b.is_ascii_whitespace()).count();
+    if i >= haystack.len() || !haystack[i..].starts_with('=') {
+        return None;
+    }
+    i += 1;
+
+    // Skip whitespace between '=' and opening quote.
+    i += haystack[i..].bytes().take_while(|b| b.is_ascii_whitespace()).count();
+    if i >= haystack.len() || !haystack[i..].starts_with('"') {
+        return None;
+    }
+    i += 1;
+
+    let start_in_ann = i;
+    let end_quote_rel = find_unescaped_quote(&haystack[start_in_ann..])?;
+    let end_in_ann = start_in_ann + end_quote_rel;
+    let value = haystack[start_in_ann..end_in_ann].to_string();
+
+    Some((
+        value,
+        Span::new(annotation.span.start + start_in_ann, annotation.span.start + end_in_ann),
+    ))
+}
+
+fn find_unescaped_quote(input: &str) -> Option<usize> {
+    let bytes = input.as_bytes();
+    let mut escaped = false;
+    for (idx, &b) in bytes.iter().enumerate() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if b == b'\\' {
+            escaped = true;
+            continue;
+        }
+        if b == b'"' {
+            return Some(idx);
+        }
+    }
+    None
+}
+
+fn find_assignment_key(haystack: &str, key: &str) -> Option<usize> {
+    let mut search_start = 0usize;
+    while let Some(rel) = haystack[search_start..].find(key) {
+        let idx = search_start + rel;
+        let before = haystack[..idx].as_bytes().last().copied();
+        let after = haystack[idx + key.len()..].as_bytes().first().copied();
+
+        let before_ok = before
+            .map(|b| !is_ident_continue(b as char))
+            .unwrap_or(true);
+        let after_ok = after.map(|b| !is_ident_continue(b as char)).unwrap_or(true);
+
+        if before_ok && after_ok {
+            return Some(idx);
+        }
+
+        search_start = idx + key.len();
+    }
+    None
 }
 
 fn strip_generic_args(raw: &str) -> String {
@@ -377,7 +481,7 @@ mod tests {
 
     #[test]
     fn parses_positional_and_named_args() {
-        let ann = parse_annotation_text("@X(\"foo\", name = \"bar\")".to_string(), Span::new(0, 0))
+        let ann = parse_annotation_text("@X(\"foo\", name = \"bar\")", Span::new(0, 0))
             .expect("annotation");
         assert_eq!(ann.simple_name, "X");
         assert_eq!(ann.args.get("value").map(String::as_str), Some("foo"));
@@ -386,11 +490,8 @@ mod tests {
 
     #[test]
     fn does_not_split_commas_inside_strings() {
-        let ann = parse_annotation_text(
-            "@X(value = \"a,b\", name=\"c\")".to_string(),
-            Span::new(0, 0),
-        )
-        .expect("annotation");
+        let ann =
+            parse_annotation_text("@X(value = \"a,b\", name=\"c\")", Span::new(0, 0)).expect("annotation");
         assert_eq!(ann.args.get("value").map(String::as_str), Some("a,b"));
         assert_eq!(ann.args.get("name").map(String::as_str), Some("c"));
     }
@@ -398,7 +499,7 @@ mod tests {
     #[test]
     fn handles_nested_parens_in_values() {
         let ann = parse_annotation_text(
-            "@X(value = foo(\"a,b\", bar(1,2)), name = \"x\")".to_string(),
+            "@X(value = foo(\"a,b\", bar(1,2)), name = \"x\")",
             Span::new(0, 0),
         )
         .expect("annotation");
@@ -411,11 +512,8 @@ mod tests {
 
     #[test]
     fn handles_escaped_quotes_in_strings() {
-        let ann = parse_annotation_text(
-            "@X(value = \"a,\\\\\\\"b\\\\\\\",c\")".to_string(),
-            Span::new(0, 0),
-        )
-        .expect("annotation");
+        let ann = parse_annotation_text("@X(value = \"a,\\\\\\\"b\\\\\\\",c\")", Span::new(0, 0))
+            .expect("annotation");
         assert_eq!(
             ann.args.get("value").map(String::as_str),
             Some("a,\\\\\\\"b\\\\\\\",c")
@@ -425,11 +523,34 @@ mod tests {
     #[test]
     fn preserves_class_literals() {
         let ann =
-            parse_annotation_text("@X(targetEntity = Foo.class)".to_string(), Span::new(0, 0))
-                .expect("annotation");
+            parse_annotation_text("@X(targetEntity = Foo.class)", Span::new(0, 0)).expect("annotation");
         assert_eq!(
             ann.args.get("targetEntity").map(String::as_str),
             Some("Foo.class")
+        );
+    }
+
+    #[test]
+    fn parses_class_literal_simple_name() {
+        assert_eq!(parse_class_literal("Foo.class").as_deref(), Some("Foo"));
+        assert_eq!(
+            parse_class_literal("com.example.Foo.class").as_deref(),
+            Some("Foo")
+        );
+        assert_eq!(parse_class_literal("Foo").as_deref(), Some("Foo"));
+    }
+
+    #[test]
+    fn finds_string_value_span() {
+        let text = r#"@Mapping(target = "seatCount", source = "numberOfSeats")"#;
+        let span = Span::new(100, 100 + text.len());
+        let ann = parse_annotation_text(text, span).expect("annotation");
+        let (value, value_span) =
+            annotation_string_value_span(&ann, "target").expect("target span");
+        assert_eq!(value, "seatCount");
+        assert_eq!(
+            &text[(value_span.start - span.start)..(value_span.end - span.start)],
+            "seatCount"
         );
     }
 }

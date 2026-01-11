@@ -13,6 +13,7 @@ nova-types = { path = "../nova-types" }
 nova-properties = { path = "../nova-properties" }
 nova-yaml = { path = "../nova-yaml" }
 nova-syntax = { path = "../nova-syntax" }
+nova-framework-parse = { path = "../nova-framework-parse" }
 zip = "0.6"
 
 [dev-dependencies]

@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use nova_framework_parse::{clean_type, parse_annotation_text, parse_class_literal, ParsedAnnotation};
 use nova_syntax::{parse_java, SyntaxKind, SyntaxNode, SyntaxToken};
 use nova_types::{Diagnostic, Span};
 
@@ -491,11 +492,7 @@ fn decapitalize_java_bean(name: &str) -> String {
     out
 }
 
-fn clean_type(raw: &str) -> String {
-    raw.split_whitespace().collect::<String>()
-}
-
-fn relationship_from_annotation(ann: &Annotation, _source: &str) -> Option<Relationship> {
+fn relationship_from_annotation(ann: &ParsedAnnotation, _source: &str) -> Option<Relationship> {
     let kind = match ann.simple_name.as_str() {
         "OneToMany" => RelationshipKind::OneToMany,
         "ManyToOne" => RelationshipKind::ManyToOne,
@@ -518,132 +515,18 @@ fn relationship_from_annotation(ann: &Annotation, _source: &str) -> Option<Relat
     })
 }
 
-#[derive(Clone, Debug)]
-struct Annotation {
-    simple_name: String,
-    args: HashMap<String, String>,
-    span: Span,
-}
-
-fn collect_annotations(modifiers: &SyntaxNode, source: &str) -> Vec<Annotation> {
+fn collect_annotations(modifiers: &SyntaxNode, source: &str) -> Vec<ParsedAnnotation> {
     let mut anns = Vec::new();
     for child in modifiers.children() {
         if child.kind() == SyntaxKind::Annotation {
-            if let Some(ann) = parse_annotation(&child, source) {
+            let text = node_text(source, &child);
+            let span = span_of_node(&child);
+            if let Some(ann) = parse_annotation_text(text, span) {
                 anns.push(ann);
             }
         }
     }
     anns
-}
-
-fn parse_annotation(node: &SyntaxNode, source: &str) -> Option<Annotation> {
-    let text = node_text(source, node);
-    let span = span_of_node(node);
-    parse_annotation_text(text, span)
-}
-
-fn parse_annotation_text(text: &str, span: Span) -> Option<Annotation> {
-    let text = text.trim();
-    if !text.starts_with('@') {
-        return None;
-    }
-    let rest = &text[1..];
-    let (name_part, args_part) = match rest.split_once('(') {
-        Some((name, args)) => (name.trim(), Some(args)),
-        None => (rest.trim(), None),
-    };
-
-    let simple_name = name_part
-        .rsplit('.')
-        .next()
-        .unwrap_or(name_part)
-        .trim()
-        .to_string();
-
-    let mut args = HashMap::new();
-    if let Some(args_part) = args_part {
-        let args_part = args_part.trim_end_matches(')').trim();
-        parse_annotation_args(args_part, &mut args);
-    }
-
-    Some(Annotation {
-        simple_name,
-        args,
-        span,
-    })
-}
-
-fn parse_annotation_args(args_part: &str, out: &mut HashMap<String, String>) {
-    // Very small, best-effort parser for named arguments.
-    //
-    // Example: `name = "users", schema="public"`
-    for segment in split_top_level_commas(args_part) {
-        let seg = segment.trim();
-        if seg.is_empty() {
-            continue;
-        }
-
-        // When the annotation uses a single positional argument, JPA commonly
-        // treats it as `value`. We record it as `value`.
-        if !seg.contains('=') {
-            if let Some(value) = parse_literal(seg) {
-                out.insert("value".to_string(), value);
-            }
-            continue;
-        }
-
-        let Some((key, value)) = seg.split_once('=') else {
-            continue;
-        };
-        let key = key.trim().to_string();
-        let value = value.trim();
-        if let Some(parsed) = parse_literal(value) {
-            out.insert(key, parsed);
-        }
-    }
-}
-
-fn split_top_level_commas(input: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut depth = 0u32;
-    let mut in_string = false;
-    let mut current = String::new();
-
-    for ch in input.chars() {
-        match ch {
-            '"' => {
-                in_string = !in_string;
-                current.push(ch);
-            }
-            '(' if !in_string => {
-                depth += 1;
-                current.push(ch);
-            }
-            ')' if !in_string => {
-                depth = depth.saturating_sub(1);
-                current.push(ch);
-            }
-            ',' if !in_string && depth == 0 => {
-                out.push(current);
-                current = String::new();
-            }
-            _ => current.push(ch),
-        }
-    }
-    out.push(current);
-    out
-}
-
-fn parse_literal(input: &str) -> Option<String> {
-    let input = input.trim();
-    if input.starts_with('"') && input.ends_with('"') && input.len() >= 2 {
-        return Some(input[1..input.len() - 1].to_string());
-    }
-    if input.starts_with('\'') && input.ends_with('\'') && input.len() >= 2 {
-        return Some(input[1..input.len() - 1].to_string());
-    }
-    Some(input.to_string())
 }
 
 fn node_text<'a>(source: &'a str, node: &SyntaxNode) -> &'a str {
@@ -746,19 +629,6 @@ fn hydrate_relationship_targets(model: &mut EntityModel) {
             rel.target_entity = relationship_target_from_type(&rel.kind, &field.ty, &entity_names);
         }
     }
-}
-
-fn parse_class_literal(value: &str) -> Option<String> {
-    let value = value.trim();
-    if value.is_empty() {
-        return None;
-    }
-    let value = value.strip_suffix(".class").unwrap_or(value);
-    let value = value.trim();
-    if value.is_empty() {
-        return None;
-    }
-    Some(value.rsplit('.').next().unwrap_or(value).to_string())
 }
 
 fn relationship_target_from_type(
