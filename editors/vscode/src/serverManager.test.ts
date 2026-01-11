@@ -179,6 +179,71 @@ describe('ServerManager install flow', () => {
     expect(metadata.target).toBe('x86_64-unknown-linux-gnu');
   });
 
+  it('falls back to .tar.gz archives when .tar.xz is not published', async () => {
+    const { Volume, createFsFromVolume } = await import('memfs');
+    const vol = new Volume();
+    const memfs = createFsFromVolume(vol) as typeof import('node:fs');
+
+    vi.doMock('node:fs/promises', () => memfs.promises as unknown as typeof import('node:fs/promises'));
+    vi.doMock('node:fs', () => memfs);
+
+    const { ServerManager } = await import('./serverManager');
+    const archiveName = 'nova-lsp-x86_64-unknown-linux-gnu.tar.gz';
+    const archive = Buffer.from('fake-archive-contents');
+    const archiveBytes = archive.buffer.slice(archive.byteOffset, archive.byteOffset + archive.byteLength);
+    const sha256 = await (async () => {
+      const { createHash } = await import('node:crypto');
+      return createHash('sha256').update(archive).digest('hex');
+    })();
+
+    const release = {
+      tag_name: 'v0.1.0',
+      assets: [
+        { name: archiveName, browser_download_url: 'https://example.invalid/archive' },
+        { name: `${archiveName}.sha256`, browser_download_url: 'https://example.invalid/archive.sha256' },
+      ],
+    };
+
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith(`/releases/tags/${encodeURIComponent('v0.1.0')}`)) {
+        return { ok: true, status: 200, json: async () => release } as unknown as Response;
+      }
+      if (url === 'https://example.invalid/archive.sha256') {
+        const body = Buffer.from(sha256);
+        const ab = body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength);
+        return { ok: true, status: 200, arrayBuffer: async () => ab } as unknown as Response;
+      }
+      if (url === 'https://example.invalid/archive') {
+        return { ok: true, status: 200, arrayBuffer: async () => archiveBytes } as unknown as Response;
+      }
+      throw new Error(`Unexpected fetch url: ${url}`);
+    });
+
+    const extractor = {
+      extractBinaryFromArchive: vi.fn(async ({ outputPath }: { outputPath: string }) => {
+        await memfs.promises.writeFile(outputPath, 'binary');
+      }),
+    };
+
+    const manager = new ServerManager('/storage', undefined, {
+      fetch: fetchMock as unknown as typeof fetch,
+      platform: 'linux',
+      arch: 'x64',
+      extractor,
+    });
+
+    const result = await manager.installOrUpdate({
+      path: null,
+      autoDownload: true,
+      releaseChannel: 'stable',
+      version: 'v0.1.0',
+      releaseUrl: 'wilson-anysphere/indonesia',
+    });
+
+    expect(result.path).toBe('/storage/server/nova-lsp');
+    expect(await memfs.promises.readFile('/storage/server/nova-lsp', 'utf8')).toBe('binary');
+  });
+
   it('streams the archive download when the fetch response exposes a body', async () => {
     const { Volume, createFsFromVolume } = await import('memfs');
     const vol = new Volume();

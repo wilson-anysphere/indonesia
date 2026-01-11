@@ -125,14 +125,18 @@ export class ServerManager {
     }
 
     const release = await fetchReleaseByTag({ fetchImpl: this.fetchImpl, repo, tag });
-    const archiveName = novaLspArchiveName(target, this.platform);
-    const archiveAsset = release.assets.find((asset) => asset.name === archiveName);
-    if (!archiveAsset) {
+    const archiveNameCandidates = candidateArchiveNames(target, this.platform);
+    const archive = findFirstAssetByName(release.assets, archiveNameCandidates);
+    if (!archive) {
       const available = release.assets.map((asset) => asset.name).sort().join(', ');
-      throw new Error(`Release ${release.tag_name} is missing ${archiveName}. Available assets: ${available}`);
+      throw new Error(
+        `Release ${release.tag_name} is missing ${archiveNameCandidates.join(' or ')}. Available assets: ${available}`,
+      );
     }
 
-    this.log(`Selected release ${release.tag_name} (${target})`);
+    const { name: archiveName, asset: archiveAsset } = archive;
+
+    this.log(`Selected release ${release.tag_name} (${target}, ${archiveName})`);
 
     const expectedSha256 = await fetchPublishedSha256({
       fetchImpl: this.fetchImpl,
@@ -298,6 +302,27 @@ export function novaLspBinaryName(platform: NodeJS.Platform): string {
 export function novaLspArchiveName(target: string, platform: NodeJS.Platform): string {
   const ext = platform === 'win32' ? 'zip' : 'tar.xz';
   return `nova-lsp-${target}.${ext}`;
+}
+
+function candidateArchiveNames(target: string, platform: NodeJS.Platform): string[] {
+  const primary = novaLspArchiveName(target, platform);
+  if (platform !== 'win32' && primary.endsWith('.tar.xz')) {
+    return [primary, primary.replace(/\.tar\.xz$/, '.tar.gz')];
+  }
+  return [primary];
+}
+
+function findFirstAssetByName(
+  assets: GitHubReleaseAsset[],
+  names: readonly string[],
+): { name: string; asset: GitHubReleaseAsset } | undefined {
+  for (const name of names) {
+    const asset = assets.find((candidate) => candidate.name === name);
+    if (asset) {
+      return { name, asset };
+    }
+  }
+  return undefined;
 }
 
 async function resolveTag(opts: {
