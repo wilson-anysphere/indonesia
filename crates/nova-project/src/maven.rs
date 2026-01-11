@@ -17,6 +17,7 @@ pub(crate) fn load_maven_project(
 ) -> Result<ProjectConfig, ProjectError> {
     let root_pom_path = root.join("pom.xml");
     let root_pom = parse_pom(&root_pom_path)?;
+    let include_root_module = root_pom.packaging.as_deref() != Some("pom") || root_pom.modules.is_empty();
 
     let mut modules = Vec::new();
     let mut source_roots = Vec::new();
@@ -43,6 +44,13 @@ pub(crate) fn load_maven_project(
 
     for module in &discovered_modules {
         let module_root = &module.root;
+        if module_root == root && !include_root_module {
+            // When the workspace root is an aggregator POM (`packaging=pom` with `<modules>`),
+            // treat the child modules as the workspace modules and avoid creating a synthetic
+            // "root" module entry. This matches `workspace_root` expectations for nested loads.
+            continue;
+        }
+
         let effective = module.effective.as_ref();
         let module_java = effective
             .java
@@ -175,6 +183,7 @@ pub(crate) fn load_maven_workspace_model(
 ) -> Result<WorkspaceProjectModel, ProjectError> {
     let root_pom_path = root.join("pom.xml");
     let root_pom = parse_pom(&root_pom_path)?;
+    let include_root_module = root_pom.packaging.as_deref() != Some("pom") || root_pom.modules.is_empty();
 
     let root_effective = Arc::new(EffectivePom::from_raw(&root_pom, None));
     let mut discovered_modules =
@@ -191,6 +200,10 @@ pub(crate) fn load_maven_workspace_model(
     let mut module_configs = Vec::new();
     for module in &discovered_modules {
         let module_root = &module.root;
+        if module_root == root && !include_root_module {
+            continue;
+        }
+
         let effective = module.effective.as_ref();
 
         let module_java = effective
