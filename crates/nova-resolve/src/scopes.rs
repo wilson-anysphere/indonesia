@@ -281,6 +281,7 @@ impl<'a> ScopeBuilder<'a> {
         let class_scope = self.alloc_scope(Some(parent), ScopeKind::Class { item });
         self.class_scopes.insert(item, class_scope);
 
+        // Copy the members out so we can mutably borrow `self` while iterating.
         let members: Vec<Member> = self.item_members(item).to_vec();
 
         // Populate member namespaces.

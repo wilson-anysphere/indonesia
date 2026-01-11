@@ -9,6 +9,7 @@
 //! (or of the file text via `nova-hir`'s HIR queries).
 
 pub mod def_map;
+pub mod expr_scopes;
 pub mod ids;
 pub mod jpms;
 pub mod jpms_env;
