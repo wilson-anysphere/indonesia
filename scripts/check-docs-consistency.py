@@ -193,6 +193,8 @@ def check_perf_docs() -> list[str]:
             "expected .github/workflows/perf.yml to contain `cargo bench -p <crate> --bench <name>` invocations"
         ]
 
+    expected_bench_paths = {f"crates/{crate}/benches/{bench}.rs" for crate, bench in suites}
+
     # Docs we expect to mention the CI-gated suite.
     # - Strategy doc should reference the concrete bench file paths for readers.
     # - Infrastructure doc should include both the file paths and local-equivalent commands.
@@ -213,25 +215,47 @@ def check_perf_docs() -> list[str]:
                 f".github/workflows/perf.yml references `cargo bench -p {crate} --bench {bench}` but {bench_path} does not exist"
             )
 
-        for doc_path in docs_require_paths:
-            if not doc_path.exists():
-                errors.append(f"expected {doc_path.relative_to(REPO_ROOT)} to exist")
-                continue
-            doc = read_text(doc_path)
-            if bench_path not in doc:
-                errors.append(
-                    f"{doc_path.relative_to(REPO_ROOT)} does not mention {bench_path} (CI perf gate includes `cargo bench -p {crate} --bench {bench}`)"
-                )
+    bench_path_re = re.compile(r"crates/[A-Za-z0-9_-]+/benches/[A-Za-z0-9_-]+\.rs")
+    for doc_path in docs_require_paths:
+        if not doc_path.exists():
+            errors.append(f"expected {doc_path.relative_to(REPO_ROOT)} to exist")
+            continue
+        doc = read_text(doc_path)
+        present = set(bench_path_re.findall(doc))
+        missing = sorted(expected_bench_paths - present)
+        extra = sorted(present - expected_bench_paths)
+        if missing:
+            errors.append(
+                f"{doc_path.relative_to(REPO_ROOT)} is missing CI perf bench paths: "
+                + ", ".join(missing)
+            )
+        if extra:
+            errors.append(
+                f"{doc_path.relative_to(REPO_ROOT)} mentions bench paths not gated by `.github/workflows/perf.yml`: "
+                + ", ".join(extra)
+            )
 
-        if not perf_readme.exists():
-            errors.append("expected perf/README.md to exist")
-        else:
-            perf_doc = read_text(perf_readme)
-            expected_command = f"cargo bench -p {crate} --bench {bench}"
-            if expected_command not in perf_doc:
-                errors.append(
-                    f"perf/README.md does not include `{expected_command}` (CI perf gate includes it)"
-                )
+    if not perf_readme.exists():
+        errors.append("expected perf/README.md to exist")
+    else:
+        perf_doc = read_text(perf_readme)
+        readme_bench_re = re.compile(
+            r"^\s*cargo bench[^\n]*\s-p\s+([^\s]+)[^\n]*\s--bench\s+([^\s]+)",
+            flags=re.MULTILINE,
+        )
+        present_suites = set(readme_bench_re.findall(perf_doc))
+        missing_suites = sorted(set(suites) - present_suites)
+        extra_suites = sorted(present_suites - set(suites))
+        if missing_suites:
+            errors.append(
+                "perf/README.md is missing CI bench commands for: "
+                + ", ".join(f"{crate}::{bench}" for crate, bench in missing_suites)
+            )
+        if extra_suites:
+            errors.append(
+                "perf/README.md includes bench commands not gated by `.github/workflows/perf.yml`: "
+                + ", ".join(f"{crate}::{bench}" for crate, bench in extra_suites)
+            )
 
     return errors
 
