@@ -285,7 +285,7 @@ fn parses_maven_classpath_path_separator_list() {
         .expect("join paths")
         .to_string_lossy()
         .to_string();
-    let cp = parse_maven_classpath_output(out);
+    let cp = parse_maven_classpath_output(&out);
     assert_eq!(
         cp,
         vec![PathBuf::from("/a/b/c.jar"), PathBuf::from("/d/e/f.jar")]
