@@ -840,10 +840,12 @@ expression: schema
       "type": "object",
       "properties": {
         "enabled": {
+          "description": "Enable writing AI audit events (prompts / model output) to a dedicated log file.",
           "default": false,
           "type": "boolean"
         },
         "path": {
+          "description": "Optional path for the audit log file.\n\nIf unset, defaults to `$TMPDIR/nova-ai-audit.log` at runtime.",
           "default": null,
           "type": [
             "string",

@@ -568,9 +568,13 @@ impl Default for AiEmbeddingsConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct AuditLogConfig {
+    /// Enable writing AI audit events (prompts / model output) to a dedicated log file.
     #[serde(default)]
     pub enabled: bool,
 
+    /// Optional path for the audit log file.
+    ///
+    /// If unset, defaults to `$TMPDIR/nova-ai-audit.log` at runtime.
     #[serde(default)]
     #[schemars(with = "Option<String>")]
     pub path: Option<PathBuf>,
