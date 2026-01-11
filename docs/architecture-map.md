@@ -50,11 +50,13 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
   - Embeddings-backed semantic search is feature-gated (`embeddings`) and still experimental.
 
 ### `nova-ai-codegen`
-- **Purpose:** AI “code edit/codegen” pipeline: parse a structured patch response, enforce safety policies, apply edits to a virtual workspace, format touched files, and validate (syntax/type) diagnostics before returning a patch.
-- **Key entry points:** `crates/nova-ai-codegen/src/lib.rs` (`generate_patch`, `CodeGenerationConfig`, `CodeGenerationResult`, `PatchSafetyConfig`, `CodegenProgressReporter`).
+- **Purpose:** AI “code edit/codegen” pipeline: parse a structured patch response, enforce safety policies, apply edits to a virtual workspace, format touched files, validate (syntax/type) diagnostics, and optionally attempt repair before returning a patch.
+- **Key entry points:** `crates/nova-ai-codegen/src/lib.rs` (`generate_patch`, `CodeGenerationConfig`, `CodeGenerationResult`, `ValidationConfig`, `PatchSafetyConfig`, `PromptCompletionProvider`, `CodegenProgressReporter`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
   - Primarily used by the `nova-lsp` AI endpoints today; not yet integrated into the Salsa DB / persistent workspace model.
+  - Validation is best-effort (syntax/type diagnostics via `nova-ide`), not a full compile/test execution pipeline.
+  - Safety rules are intentionally conservative (e.g. disallowing certain edits/imports) and may need tuning per editor/workflow.
 
 ### `nova-apt`
 - **Purpose:** annotation-processing support (discovering generated source roots; triggering APT builds).
