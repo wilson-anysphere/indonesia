@@ -73,6 +73,12 @@ async fn dap_hit_count_breakpoints_use_jdwp_count_modifier() {
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
 
+    let initialized = read_event(&mut reader, "initialized").await;
+    assert_eq!(
+        initialized.get("event").and_then(|v| v.as_str()),
+        Some("initialized")
+    );
+
     send_request(
         &mut writer,
         2,
@@ -88,12 +94,6 @@ async fn dap_hit_count_breakpoints_use_jdwp_count_modifier() {
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
-
-    let initialized = read_event(&mut reader, "initialized").await;
-    assert_eq!(
-        initialized.get("event").and_then(|v| v.as_str()),
-        Some("initialized")
-    );
 
     send_request(
         &mut writer,
@@ -140,6 +140,12 @@ async fn dap_logpoints_emit_output_without_stopping() {
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
 
+    let initialized = read_event(&mut reader, "initialized").await;
+    assert_eq!(
+        initialized.get("event").and_then(|v| v.as_str()),
+        Some("initialized")
+    );
+
     send_request(
         &mut writer,
         2,
@@ -155,12 +161,6 @@ async fn dap_logpoints_emit_output_without_stopping() {
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
-
-    let initialized = read_event(&mut reader, "initialized").await;
-    assert_eq!(
-        initialized.get("event").and_then(|v| v.as_str()),
-        Some("initialized")
-    );
 
     send_request(
         &mut writer,

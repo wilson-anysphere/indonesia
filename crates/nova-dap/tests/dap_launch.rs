@@ -70,6 +70,13 @@ async fn dap_launch_spawns_process_forwards_output_and_disconnect_can_terminate(
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
 
+    // Per DAP spec, the adapter emits `initialized` after responding to `initialize`.
+    let initialized_evt = read_next(&mut reader).await;
+    assert_eq!(
+        initialized_evt.get("event").and_then(|v| v.as_str()),
+        Some("initialized")
+    );
+
     let temp = TempDir::new().unwrap();
     let pid_path = temp.path().join("pid.txt");
 
@@ -95,20 +102,6 @@ async fn dap_launch_spawns_process_forwards_output_and_disconnect_can_terminate(
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
-
-    // Initialized event is emitted after launch/attach once the adapter is ready to accept
-    // breakpoint configuration.
-    let mut saw_initialized = find_event(&messages, "initialized").is_some();
-    for _ in 0..50 {
-        if saw_initialized {
-            break;
-        }
-        let msg = read_next(&mut reader).await;
-        saw_initialized = msg.get("type").and_then(|v| v.as_str()) == Some("event")
-            && msg.get("event").and_then(|v| v.as_str()) == Some("initialized");
-        messages.push(msg);
-    }
-    assert!(saw_initialized, "expected initialized event after launch");
 
     // Ensure at least one stdout/stderr output event is forwarded.
     let mut saw_output = messages.iter().any(|msg| {

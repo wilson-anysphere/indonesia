@@ -113,6 +113,12 @@ async fn dap_cancel_aborts_long_running_request() {
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
 
+    let initialized = read_event(&mut reader, "initialized").await;
+    assert_eq!(
+        initialized.get("event").and_then(|v| v.as_str()),
+        Some("initialized")
+    );
+
     send_request(
         &mut writer,
         2,
@@ -128,12 +134,6 @@ async fn dap_cancel_aborts_long_running_request() {
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
-
-    let initialized = read_event(&mut reader, "initialized").await;
-    assert_eq!(
-        initialized.get("event").and_then(|v| v.as_str()),
-        Some("initialized")
-    );
 
     send_request(&mut writer, 3, "threads", json!({})).await;
     let threads_resp = read_response(&mut reader, 3).await;

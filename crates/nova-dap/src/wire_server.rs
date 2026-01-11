@@ -81,6 +81,12 @@ struct SessionLifecycle {
     awaiting_configuration_done_resume: bool,
 }
 
+#[derive(Debug, Default)]
+struct PendingConfiguration {
+    breakpoints: HashMap<String, Vec<BreakpointSpec>>,
+    exception_breakpoints: Option<(bool, bool)>,
+}
+
 impl Default for SessionLifecycle {
     fn default() -> Self {
         Self {
@@ -109,6 +115,8 @@ where
     let debugger: Arc<Mutex<Option<Debugger>>> = Arc::new(Mutex::new(None));
     let launched_process: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(None));
     let session: Arc<Mutex<SessionLifecycle>> = Arc::new(Mutex::new(SessionLifecycle::default()));
+    let pending_config: Arc<Mutex<PendingConfiguration>> =
+        Arc::new(Mutex::new(PendingConfiguration::default()));
     let in_flight: Arc<Mutex<HashMap<i64, CancellationToken>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let server_shutdown = CancellationToken::new();
@@ -161,6 +169,7 @@ where
                     debugger.clone(),
                     launched_process.clone(),
                     session.clone(),
+                    pending_config.clone(),
                     in_flight.clone(),
                     initialized_tx.clone(),
                     initialized_rx.clone(),
@@ -218,6 +227,7 @@ async fn handle_request(
     debugger: Arc<Mutex<Option<Debugger>>>,
     launched_process: Arc<Mutex<Option<Child>>>,
     session: Arc<Mutex<SessionLifecycle>>,
+    pending_config: Arc<Mutex<PendingConfiguration>>,
     in_flight: Arc<Mutex<HashMap<i64, CancellationToken>>>,
     initialized_tx: watch::Sender<bool>,
     initialized_rx: watch::Receiver<bool>,
@@ -236,6 +246,7 @@ async fn handle_request(
         &debugger,
         &launched_process,
         &session,
+        &pending_config,
         &in_flight,
         &initialized_tx,
         initialized_rx,
@@ -256,6 +267,7 @@ async fn handle_request_inner(
     debugger: &Arc<Mutex<Option<Debugger>>>,
     launched_process: &Arc<Mutex<Option<Child>>>,
     session: &Arc<Mutex<SessionLifecycle>>,
+    pending_config: &Arc<Mutex<PendingConfiguration>>,
     in_flight: &Arc<Mutex<HashMap<i64, CancellationToken>>>,
     initialized_tx: &watch::Sender<bool>,
     initialized_rx: watch::Receiver<bool>,
@@ -263,7 +275,7 @@ async fn handle_request_inner(
     terminated_sent: &Arc<AtomicBool>,
 ) {
     if requires_initialized(request.command.as_str()) {
-        if !wait_initialized(cancel, initialized_rx).await {
+        if !wait_initialized(cancel, initialized_rx.clone()).await {
             send_response(
                 out_tx,
                 seq,
@@ -283,6 +295,11 @@ async fn handle_request_inner(
                 sess.lifecycle = LifecycleState::Initialized;
                 sess.kind = None;
                 sess.awaiting_configuration_done_resume = false;
+            }
+
+            {
+                let mut pending = pending_config.lock().await;
+                *pending = PendingConfiguration::default();
             }
 
             let body = json!({
@@ -308,6 +325,11 @@ async fn handle_request_inner(
                 "supportsLogPoints": true,
             });
             send_response(out_tx, seq, request, true, Some(body), None);
+
+            if !*initialized_rx.borrow() {
+                send_event(out_tx, seq, "initialized", None);
+                let _ = initialized_tx.send(true);
+            }
         }
         "nova/metrics" => {
             match serde_json::to_value(nova_metrics::MetricsRegistry::global().snapshot()) {
@@ -819,9 +841,9 @@ async fn handle_request_inner(
                     matches!(mode, LaunchMode::Java) && args.stop_on_entry;
             }
 
+            apply_pending_configuration(cancel, debugger, pending_config).await;
+
             send_response(out_tx, seq, request, true, None, None);
-            send_event(out_tx, seq, "initialized", None);
-            let _ = initialized_tx.send(true);
         }
         "attach" => {
             {
@@ -953,9 +975,9 @@ async fn handle_request_inner(
                 sess.awaiting_configuration_done_resume = false;
             }
 
+            apply_pending_configuration(cancel, debugger, pending_config).await;
+
             send_response(out_tx, seq, request, true, None, None);
-            send_event(out_tx, seq, "initialized", None);
-            let _ = initialized_tx.send(true);
         }
         "setFunctionBreakpoints" => {
             if cancel.is_cancelled() {
@@ -1112,6 +1134,17 @@ async fn handle_request_inner(
                 })
                 .unwrap_or_default();
 
+            {
+                let mut pending = pending_config.lock().await;
+                if breakpoints.is_empty() {
+                    pending.breakpoints.remove(source_path);
+                } else {
+                    pending
+                        .breakpoints
+                        .insert(source_path.to_string(), breakpoints.clone());
+                }
+            }
+
             let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
                 Some(guard) => guard,
                 None => {
@@ -1128,13 +1161,23 @@ async fn handle_request_inner(
             };
 
             let Some(dbg) = guard.as_mut() else {
+                let pending_bps: Vec<Value> = breakpoints
+                    .iter()
+                    .map(|bp| {
+                        json!({
+                            "verified": false,
+                            "line": bp.line,
+                            "message": "pending attach/launch",
+                        })
+                    })
+                    .collect();
                 send_response(
                     out_tx,
                     seq,
                     request,
-                    false,
+                    true,
+                    Some(json!({ "breakpoints": pending_bps })),
                     None,
-                    Some("not attached".to_string()),
                 );
                 return;
             };
@@ -1214,6 +1257,11 @@ async fn handle_request_inner(
                 }
             }
 
+            {
+                let mut pending = pending_config.lock().await;
+                pending.exception_breakpoints = Some((caught, uncaught));
+            }
+
             let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
                 Some(guard) => guard,
                 None => {
@@ -1229,14 +1277,8 @@ async fn handle_request_inner(
                 }
             };
             let Some(dbg) = guard.as_mut() else {
-                send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some("not attached".to_string()),
-                );
+                // Cache the configuration and apply it once the debugger is attached.
+                send_response(out_tx, seq, request, true, None, None);
                 return;
             };
 
@@ -2398,11 +2440,46 @@ fn requires_initialized(command: &str) -> bool {
             | "cancel"
             | "disconnect"
             | "terminate"
-            | "attach"
-            | "launch"
             | "nova/bugReport"
             | "nova/metrics"
     )
+}
+
+async fn apply_pending_configuration(
+    cancel: &CancellationToken,
+    debugger: &Arc<Mutex<Option<Debugger>>>,
+    pending_config: &Arc<Mutex<PendingConfiguration>>,
+) {
+    let (breakpoints, exception_breakpoints) = {
+        let pending = pending_config.lock().await;
+        (pending.breakpoints.clone(), pending.exception_breakpoints)
+    };
+
+    if breakpoints.is_empty() && exception_breakpoints.is_none() {
+        return;
+    }
+
+    let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+        Some(guard) => guard,
+        None => return,
+    };
+    let Some(dbg) = guard.as_mut() else {
+        return;
+    };
+
+    for (source_path, bps) in breakpoints {
+        if cancel.is_cancelled() {
+            return;
+        }
+        let _ = dbg.set_breakpoints(cancel, &source_path, bps).await;
+    }
+
+    if let Some((caught, uncaught)) = exception_breakpoints {
+        if cancel.is_cancelled() {
+            return;
+        }
+        let _ = dbg.set_exception_breakpoints(caught, uncaught).await;
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

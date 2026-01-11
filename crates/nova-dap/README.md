@@ -7,6 +7,22 @@ This crate is still intentionally small, but it supports the core requests
 required for a basic debugging session: breakpoints, stepping, threads,
 stack frames, locals, and best-effort evaluation.
 
+## DAP lifecycle / request ordering
+
+`nova-dap` follows the standard DAP initialization flow:
+
+1. Client sends `initialize`
+2. Adapter replies to `initialize`
+3. Adapter emits the `initialized` event (exactly once per session)
+
+After `initialized`, the client may send breakpoint configuration requests
+(`setBreakpoints`, `setExceptionBreakpoints`) either **before** or **after**
+`attach` / `launch`.
+
+If breakpoint/exception configuration arrives before the debugger is attached,
+`nova-dap` caches it and applies it automatically once `attach`/`launch`
+completes.
+
 ## Debugging a simple Java program (manual)
 
 ### 1) Build Nova DAP

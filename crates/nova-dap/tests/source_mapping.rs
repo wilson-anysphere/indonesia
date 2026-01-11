@@ -98,6 +98,8 @@ async fn stack_trace_maps_sources_to_absolute_paths() {
     send_request(&mut writer, 1, "initialize", json!({})).await;
     let _init_resp = read_response(&mut reader, 1).await;
 
+    let _initialized = read_event(&mut reader, "initialized").await;
+
     send_request(
         &mut writer,
         2,
@@ -114,8 +116,6 @@ async fn stack_trace_maps_sources_to_absolute_paths() {
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
-
-    let _initialized = read_event(&mut reader, "initialized").await;
 
     send_request(&mut writer, 3, "threads", json!({})).await;
     let threads_resp = read_response(&mut reader, 3).await;

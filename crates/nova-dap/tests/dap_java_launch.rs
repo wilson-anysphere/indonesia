@@ -96,6 +96,8 @@ async fn dap_can_launch_a_jvm_and_forward_output() {
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
 
+    let _initialized = read_event(&mut reader, "initialized").await;
+
     send_request(
         &mut writer,
         2,
@@ -114,8 +116,6 @@ async fn dap_can_launch_a_jvm_and_forward_output() {
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
-
-    let _initialized = read_event(&mut reader, "initialized").await;
 
     // Configuration done should resume the debuggee and allow the process to run.
     send_request(&mut writer, 3, "configurationDone", json!({})).await;
