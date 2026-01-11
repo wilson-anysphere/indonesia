@@ -3505,6 +3505,7 @@ version = "0.1.0"
 dependencies = [
  "nova-classfile",
  "nova-core",
+ "nova-modules",
  "nova-types",
  "once_cell",
  "tempfile",

@@ -6,6 +6,7 @@ use thiserror::Error;
 use zip::ZipArchive;
 
 const CLASSES_PREFIX: &str = "classes/";
+const MODULE_INFO_INTERNAL_NAME: &str = "module-info";
 
 #[derive(Debug, Error)]
 pub enum JmodError {
@@ -46,6 +47,10 @@ pub fn read_class_bytes(jmod_path: &Path, internal_name: &str) -> Result<Option<
     };
 
     res
+}
+
+pub fn read_module_info_class_bytes(jmod_path: &Path) -> Result<Option<Vec<u8>>, JmodError> {
+    read_class_bytes(jmod_path, MODULE_INFO_INTERNAL_NAME)
 }
 
 pub fn open_archive(jmod_path: &Path) -> Result<ZipArchive<File>, JmodError> {

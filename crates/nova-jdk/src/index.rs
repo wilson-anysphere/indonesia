@@ -3,8 +3,9 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use nova_classfile::ClassFile;
+use nova_classfile::{parse_module_info_class, ClassFile};
 use nova_core::ProjectConfig;
+use nova_modules::{ModuleGraph, ModuleInfo, ModuleName, JAVA_BASE};
 use once_cell::sync::OnceCell;
 use thiserror::Error;
 
@@ -15,6 +16,7 @@ use crate::{JdkClassStub, JdkFieldStub, JdkMethodStub};
 
 #[derive(Debug)]
 struct JdkModule {
+    name: ModuleName,
     path: PathBuf,
     indexed: OnceCell<()>,
 }
@@ -22,6 +24,7 @@ struct JdkModule {
 #[derive(Debug)]
 pub(crate) struct JdkSymbolIndex {
     modules: Vec<JdkModule>,
+    module_graph: ModuleGraph,
 
     by_internal: Mutex<HashMap<String, Arc<JdkClassStub>>>,
     by_binary: Mutex<HashMap<String, Arc<JdkClassStub>>>,
@@ -67,16 +70,26 @@ impl JdkSymbolIndex {
             return Err(JdkIndexError::NoModulesFound { dir: jmods_dir });
         }
 
-        let modules = module_paths
-            .into_iter()
-            .map(|path| JdkModule {
+        let mut module_graph = ModuleGraph::new();
+        let mut modules = Vec::with_capacity(module_paths.len());
+        for path in module_paths {
+            let Some(bytes) = jmod::read_module_info_class_bytes(&path)? else {
+                return Err(JdkIndexError::MissingModuleInfo { path });
+            };
+            let info = parse_module_info_class(&bytes)?;
+            let name = info.name.clone();
+            module_graph.insert(info);
+
+            modules.push(JdkModule {
+                name,
                 path,
                 indexed: OnceCell::new(),
-            })
-            .collect();
+            });
+        }
 
         Ok(Self {
             modules,
+            module_graph,
             by_internal: Mutex::new(HashMap::new()),
             by_binary: Mutex::new(HashMap::new()),
             class_to_module: Mutex::new(HashMap::new()),
@@ -85,6 +98,74 @@ impl JdkSymbolIndex {
             java_lang: OnceLock::new(),
             binary_names_sorted: OnceLock::new(),
         })
+    }
+
+    pub fn module_graph(&self) -> &ModuleGraph {
+        &self.module_graph
+    }
+
+    pub fn module_info(&self, name: &ModuleName) -> Option<&ModuleInfo> {
+        self.module_graph.get(name)
+    }
+
+    pub fn module_of_type(&self, binary_or_internal: &str) -> Result<Option<ModuleName>, JdkIndexError> {
+        let internal = if binary_or_internal.contains('/') {
+            binary_or_internal.to_owned()
+        } else if binary_or_internal.contains('.') {
+            binary_to_internal(binary_or_internal)
+        } else {
+            format!("java/lang/{binary_or_internal}")
+        };
+
+        if is_non_type_classfile(&internal) {
+            return Ok(None);
+        }
+
+        if self
+            .missing
+            .lock()
+            .expect("mutex poisoned")
+            .contains(&internal)
+        {
+            return Ok(None);
+        }
+
+        if let Some(module_idx) = self
+            .class_to_module
+            .lock()
+            .expect("mutex poisoned")
+            .get(&internal)
+            .copied()
+        {
+            return Ok(Some(self.modules[module_idx].name.clone()));
+        }
+
+        // Lazily index modules until we locate the class. This mirrors
+        // `lookup_type` but avoids parsing the classfile itself.
+        let mut found_module = None;
+        for module_idx in 0..self.modules.len() {
+            self.ensure_module_indexed(module_idx)?;
+            let module = self
+                .class_to_module
+                .lock()
+                .expect("mutex poisoned")
+                .get(&internal)
+                .copied();
+            if module.is_some() {
+                found_module = module;
+                break;
+            }
+        }
+
+        if let Some(module_idx) = found_module {
+            return Ok(Some(self.modules[module_idx].name.clone()));
+        }
+
+        self.missing
+            .lock()
+            .expect("mutex poisoned")
+            .insert(internal);
+        Ok(None)
     }
 
     /// Lookup a type by binary name (`java.lang.String`), internal name
@@ -176,11 +257,7 @@ impl JdkSymbolIndex {
         let java_base_idx = self
             .modules
             .iter()
-            .position(|m| {
-                m.path
-                    .file_name()
-                    .is_some_and(|n| n == std::ffi::OsStr::new("java.base.jmod"))
-            })
+            .position(|m| m.name.as_str() == JAVA_BASE)
             .unwrap_or(0);
         self.ensure_module_indexed(java_base_idx)?;
 
@@ -378,6 +455,9 @@ pub enum JdkIndexError {
 
     #[error("no `.jmod` modules found under `{dir}`")]
     NoModulesFound { dir: PathBuf },
+
+    #[error("`module-info.class` not found in `{path}`")]
+    MissingModuleInfo { path: PathBuf },
 
     #[error(transparent)]
     Io(#[from] std::io::Error),

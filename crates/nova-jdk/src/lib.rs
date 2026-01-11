@@ -21,6 +21,7 @@ use std::borrow::Cow;
 use nova_core::{
     Name, PackageName, ProjectConfig, QualifiedName, StaticMemberId, TypeIndex, TypeName,
 };
+use nova_modules::{ModuleGraph, ModuleInfo, ModuleName};
 use nova_types::{FieldStub, MethodStub, TypeDefStub, TypeProvider};
 
 pub use discovery::{JdkDiscoveryError, JdkInstallation};
@@ -196,6 +197,26 @@ impl JdkIndex {
                 Ok(out)
             }
         }
+    }
+
+    /// Module graph for the underlying JDK, if this index is backed by JMODs.
+    pub fn module_graph(&self) -> Option<&ModuleGraph> {
+        self.symbols.as_ref().map(|symbols| symbols.module_graph())
+    }
+
+    /// Retrieve the parsed JPMS module descriptor for `name` (JMOD-backed only).
+    pub fn module_info(&self, name: &ModuleName) -> Option<&ModuleInfo> {
+        self.symbols.as_ref()?.module_info(name)
+    }
+
+    /// Best-effort lookup of the JPMS module that defines `binary_or_internal`.
+    ///
+    /// Accepts binary names (`java.lang.String`) or internal names
+    /// (`java/lang/String`). Returns `None` when this index is not backed by
+    /// JMODs or the type cannot be found.
+    pub fn module_of_type(&self, binary_or_internal: &str) -> Option<ModuleName> {
+        let symbols = self.symbols.as_ref()?;
+        symbols.module_of_type(binary_or_internal).ok().flatten()
     }
 
     fn add_type(&mut self, package: &str, name: &str) {

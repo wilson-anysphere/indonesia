@@ -4,6 +4,7 @@ use std::sync::Mutex;
 
 use nova_core::{Name, ProjectConfig, StaticMemberId, TypeIndex, TypeName};
 use nova_jdk::{JdkIndex, JdkInstallation};
+use nova_modules::ModuleName;
 use nova_types::TypeProvider;
 use tempfile::tempdir;
 
@@ -51,6 +52,20 @@ impl Drop for EnvVarGuard {
 fn loads_java_lang_string_from_test_jmod() -> Result<(), Box<dyn std::error::Error>> {
     let index = JdkIndex::from_jdk_root(fake_jdk_root())?;
 
+    let java_base = ModuleName::new("java.base");
+    let graph = index
+        .module_graph()
+        .expect("JMOD-backed JdkIndex should expose a module graph");
+    assert!(
+        graph.get(&java_base).is_some(),
+        "module graph should include java.base"
+    );
+
+    let java_base_info = index
+        .module_info(&java_base)
+        .expect("java.base module descriptor should be indexed");
+    assert_eq!(java_base_info.name.as_str(), "java.base");
+
     let string = index
         .lookup_type("java.lang.String")?
         .expect("java.lang.String should be present in testdata");
@@ -70,6 +85,11 @@ fn loads_java_lang_string_from_test_jmod() -> Result<(), Box<dyn std::error::Err
 
     let java_lang = index.java_lang_symbols()?;
     assert!(java_lang.iter().any(|t| t.binary_name == "java.lang.String"));
+
+    let string_module = index
+        .module_of_type("java.lang.String")
+        .expect("module lookup should succeed for java.lang.String");
+    assert_eq!(string_module.as_str(), "java.base");
 
     let pkgs = index.packages()?;
     assert!(pkgs.contains(&"java.lang".to_owned()));
