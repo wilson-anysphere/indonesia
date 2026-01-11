@@ -1,7 +1,10 @@
 use std::ffi::OsString;
 use std::sync::Mutex;
 
-use nova_config::{discover_config_path, load_for_workspace, NovaConfig, NOVA_CONFIG_ENV_VAR};
+use nova_config::{
+    discover_config_path, load_for_workspace, load_for_workspace_with_diagnostics, ConfigWarning,
+    NovaConfig, NOVA_CONFIG_ENV_VAR,
+};
 use tempfile::tempdir;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -157,4 +160,40 @@ fn reload_for_workspace_reports_changes() {
         nova_config::reload_for_workspace(dir.path(), &config, path.as_deref()).unwrap();
     assert!(changed, "expected reload to report config changes");
     assert!(reloaded.generated_sources.enabled);
+}
+
+#[test]
+fn load_for_workspace_with_diagnostics_resolves_relative_paths_from_workspace_root() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _env = EnvVarGuard::unset(NOVA_CONFIG_ENV_VAR);
+
+    let dir = tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".nova")).unwrap();
+
+    let config_path = dir.path().join(".nova/config.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[extensions]
+enabled = true
+wasm_paths = ["extensions"]
+"#,
+    )
+    .unwrap();
+
+    let (_config, path, diagnostics) = load_for_workspace_with_diagnostics(dir.path()).unwrap();
+
+    assert_eq!(
+        path.expect("expected discovered config path"),
+        config_path.canonicalize().unwrap_or(config_path.clone())
+    );
+    assert!(diagnostics.unknown_keys.is_empty());
+    assert!(diagnostics.errors.is_empty());
+    assert_eq!(
+        diagnostics.warnings,
+        vec![ConfigWarning::ExtensionsWasmPathMissing {
+            toml_path: "extensions.wasm_paths[0]".to_string(),
+            resolved: dir.path().join("extensions"),
+        }]
+    );
 }
