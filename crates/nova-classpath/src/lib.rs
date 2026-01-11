@@ -428,7 +428,9 @@ impl ClasspathIndex {
                 if stubs_by_binary.contains_key(&stub.binary_name) {
                     continue;
                 }
-                internal_to_binary.insert(stub.internal_name.clone(), stub.binary_name.clone());
+                internal_to_binary
+                    .entry(stub.internal_name.clone())
+                    .or_insert_with(|| stub.binary_name.clone());
                 stubs_by_binary.insert(stub.binary_name.clone(), stub);
             }
         }
