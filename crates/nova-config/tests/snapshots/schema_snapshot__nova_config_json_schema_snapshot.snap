@@ -1,0 +1,693 @@
+---
+source: crates/nova-config/tests/schema_snapshot.rs
+assertion_line: 4
+expression: schema
+---
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "NovaConfig",
+  "description": "Top-level Nova configuration loaded from TOML.\n\nExtensions can be configured via the `[extensions]` table: ```toml [extensions] enabled = true wasm_paths = [\"./extensions\"] allow = [\"example.my_extension\"] deny = [\"example.bad_extension\"] wasm_memory_limit_bytes = 268435456 wasm_timeout_ms = 5000 ```",
+  "type": "object",
+  "properties": {
+    "ai": {
+      "description": "Offline / local LLM configuration (Ollama, vLLM, etc).",
+      "default": {
+        "api_key": null,
+        "audit_log": {
+          "enabled": false,
+          "path": null
+        },
+        "cache_enabled": false,
+        "cache_max_entries": 256,
+        "cache_ttl_secs": 300,
+        "embeddings": {
+          "batch_size": 32,
+          "enabled": false,
+          "max_memory_bytes": 536870912,
+          "model_dir": ".nova/models/embeddings"
+        },
+        "enabled": false,
+        "features": {
+          "completion_ranking": false,
+          "multi_token_completion": false,
+          "semantic_search": false
+        },
+        "privacy": {
+          "allow_cloud_code_edits": false,
+          "allow_code_edits_without_anonymization": false,
+          "anonymize": null,
+          "excluded_paths": [],
+          "local_only": true,
+          "redact_patterns": []
+        },
+        "provider": {
+          "azure_api_version": null,
+          "azure_deployment": null,
+          "concurrency": null,
+          "in_process_llama": null,
+          "kind": "ollama",
+          "max_tokens": 1024,
+          "model": "llama3",
+          "timeout_ms": 60000,
+          "url": "http://localhost:11434/"
+        },
+        "timeouts": {
+          "completion_ranking_ms": 20,
+          "multi_token_completion_ms": 250
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/AiConfig"
+        }
+      ]
+    },
+    "extensions": {
+      "default": {
+        "allow": null,
+        "deny": [],
+        "enabled": true,
+        "wasm_memory_limit_bytes": null,
+        "wasm_paths": [],
+        "wasm_timeout_ms": null
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/ExtensionsConfig"
+        }
+      ]
+    },
+    "generated_sources": {
+      "default": {
+        "additional_roots": [],
+        "enabled": true,
+        "override_roots": null
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/GeneratedSourcesConfig"
+        }
+      ]
+    },
+    "jdk": {
+      "description": "Workspace-level JDK override configuration.",
+      "default": {
+        "home": null
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/JdkConfig"
+        }
+      ]
+    },
+    "logging": {
+      "description": "Global logging settings for Nova crates.",
+      "default": {
+        "buffer_lines": 2000,
+        "file": null,
+        "include_backtrace": false,
+        "json": false,
+        "level": "info",
+        "stderr": true
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/LoggingConfig"
+        }
+      ]
+    }
+  },
+  "definitions": {
+    "AiConfig": {
+      "type": "object",
+      "properties": {
+        "api_key": {
+          "description": "API key for the configured provider. This should never be included in bug report bundles.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "audit_log": {
+          "default": {
+            "enabled": false,
+            "path": null
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/AuditLogConfig"
+            }
+          ]
+        },
+        "cache_enabled": {
+          "description": "Enable in-memory response caching for LLM calls made via `nova-ai`.\n\nDefaults to `false` (conservative): caching may retain model output in memory, so consumers must explicitly opt in.",
+          "default": false,
+          "type": "boolean"
+        },
+        "cache_max_entries": {
+          "description": "Maximum number of cached responses to keep in memory.",
+          "default": 256,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "cache_ttl_secs": {
+          "description": "Cache TTL in seconds.",
+          "default": 300,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "embeddings": {
+          "description": "Local embedding model configuration used for offline semantic search.",
+          "default": {
+            "batch_size": 32,
+            "enabled": false,
+            "max_memory_bytes": 536870912,
+            "model_dir": ".nova/models/embeddings"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/AiEmbeddingsConfig"
+            }
+          ]
+        },
+        "enabled": {
+          "description": "Enables AI-assisted features. When enabled, **audit** logging may be enabled separately to capture prompts and model output (sanitized).",
+          "default": false,
+          "type": "boolean"
+        },
+        "features": {
+          "description": "Local augmentation features and their individual toggles.",
+          "default": {
+            "completion_ranking": false,
+            "multi_token_completion": false,
+            "semantic_search": false
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/AiFeaturesConfig"
+            }
+          ]
+        },
+        "privacy": {
+          "default": {
+            "allow_cloud_code_edits": false,
+            "allow_code_edits_without_anonymization": false,
+            "anonymize": null,
+            "excluded_paths": [],
+            "local_only": true,
+            "redact_patterns": []
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/AiPrivacyConfig"
+            }
+          ]
+        },
+        "provider": {
+          "default": {
+            "azure_api_version": null,
+            "azure_deployment": null,
+            "concurrency": null,
+            "in_process_llama": null,
+            "kind": "ollama",
+            "max_tokens": 1024,
+            "model": "llama3",
+            "timeout_ms": 60000,
+            "url": "http://localhost:11434/"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/AiProviderConfig"
+            }
+          ]
+        },
+        "timeouts": {
+          "description": "Timeouts for latency-sensitive AI operations.",
+          "default": {
+            "completion_ranking_ms": 20,
+            "multi_token_completion_ms": 250
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/AiTimeoutsConfig"
+            }
+          ]
+        }
+      }
+    },
+    "AiEmbeddingsConfig": {
+      "type": "object",
+      "properties": {
+        "batch_size": {
+          "description": "Maximum batch size for embedding requests.",
+          "default": 32,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "enabled": {
+          "description": "Enable local embeddings for semantic search and context building.",
+          "default": false,
+          "type": "boolean"
+        },
+        "max_memory_bytes": {
+          "description": "Soft memory budget (in bytes) for embedding models / caches.",
+          "default": 536870912,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "model_dir": {
+          "description": "Directory containing embedding model files / cache.",
+          "default": ".nova/models/embeddings",
+          "type": "string"
+        }
+      }
+    },
+    "AiFeaturesConfig": {
+      "type": "object",
+      "properties": {
+        "completion_ranking": {
+          "description": "Enables AI-assisted completion re-ranking.",
+          "default": false,
+          "type": "boolean"
+        },
+        "multi_token_completion": {
+          "description": "Enables multi-token completion suggestions.",
+          "default": false,
+          "type": "boolean"
+        },
+        "semantic_search": {
+          "description": "Enables semantic search-based features.",
+          "default": false,
+          "type": "boolean"
+        }
+      }
+    },
+    "AiPrivacyConfig": {
+      "type": "object",
+      "properties": {
+        "allow_cloud_code_edits": {
+          "description": "Allow AI-assisted code edits (patches / file modifications) when `local_only = false` (cloud mode).\n\nThis is intentionally opt-in because code-edit prompts typically include larger portions of source code and the resulting edits can directly modify project files.",
+          "default": false,
+          "type": "boolean"
+        },
+        "allow_code_edits_without_anonymization": {
+          "description": "Allow AI-assisted code edits when anonymization is disabled.\n\nIn cloud mode (`local_only = false`), disabling anonymization means raw source identifiers will be sent to the provider. This flag is an additional opt-in to avoid accidental leakage.",
+          "default": false,
+          "type": "boolean"
+        },
+        "anonymize": {
+          "description": "If unset, defaults to: - `false` when `local_only = true` - `true` when `local_only = false` (cloud mode)\n\nThis matches Nova's privacy philosophy: anonymize when sending code to a third-party, but avoid needless transformations when everything stays local.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "excluded_paths": {
+          "description": "Glob patterns for file paths that must never be sent to the LLM.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "local_only": {
+          "description": "If true, Nova will not use any cloud providers. This is the recommended setting for privacy-sensitive environments.",
+          "default": true,
+          "type": "boolean"
+        },
+        "redact_patterns": {
+          "description": "Regex patterns to redact from any text that will be sent to the LLM.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "AiProviderConfig": {
+      "type": "object",
+      "properties": {
+        "azure_api_version": {
+          "description": "Azure OpenAI API version (e.g. `2024-02-01`).\n\nIf unset, Nova defaults to `2024-02-01`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "azure_deployment": {
+          "description": "Azure OpenAI deployment name.\n\nRequired when `kind = \"azure_open_ai\"`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "concurrency": {
+          "description": "Maximum number of concurrent requests Nova will make to the backend.\n\nIf unset, defaults to: - `1` for [`AiProviderKind::InProcessLlama`] - `4` for HTTP providers",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "in_process_llama": {
+          "description": "Configuration for in-process inference when `kind = \"in_process_llama\"`.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/InProcessLlamaConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "description": "Which backend implementation to use.",
+          "default": "ollama",
+          "allOf": [
+            {
+              "$ref": "#/definitions/AiProviderKind"
+            }
+          ]
+        },
+        "max_tokens": {
+          "description": "Default max tokens for responses.",
+          "default": 1024,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "model": {
+          "description": "Default model name.",
+          "default": "llama3",
+          "type": "string"
+        },
+        "timeout_ms": {
+          "description": "Per-request timeout.",
+          "default": 60000,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "url": {
+          "description": "Base URL for the provider (e.g. http://localhost:11434, http://localhost:8000).",
+          "default": "http://localhost:11434/",
+          "type": "string"
+        }
+      }
+    },
+    "AiProviderKind": {
+      "oneOf": [
+        {
+          "description": "Ollama HTTP API (e.g. http://localhost:11434)",
+          "type": "string",
+          "enum": [
+            "ollama"
+          ]
+        },
+        {
+          "description": "OpenAI-compatible endpoints (e.g. vLLM, llama.cpp server, etc.)",
+          "type": "string",
+          "enum": [
+            "open_ai_compatible"
+          ]
+        },
+        {
+          "description": "In-process local inference using a GGUF model file (llama.cpp).",
+          "type": "string",
+          "enum": [
+            "in_process_llama"
+          ]
+        },
+        {
+          "description": "OpenAI's public API (https://api.openai.com). Requires `ai.api_key`.",
+          "type": "string",
+          "enum": [
+            "open_ai"
+          ]
+        },
+        {
+          "description": "Anthropic Messages API (https://api.anthropic.com). Requires `ai.api_key`.",
+          "type": "string",
+          "enum": [
+            "anthropic"
+          ]
+        },
+        {
+          "description": "Google Gemini Generative Language API (https://generativelanguage.googleapis.com). Requires `ai.api_key`.",
+          "type": "string",
+          "enum": [
+            "gemini"
+          ]
+        },
+        {
+          "description": "Azure OpenAI. Requires `ai.api_key` and `ai.provider.azure_deployment`.",
+          "type": "string",
+          "enum": [
+            "azure_open_ai"
+          ]
+        },
+        {
+          "description": "A simple JSON-over-HTTP API (useful for proxies and tests).\n\nRequest body: `{ \"model\": \"...\", \"prompt\": \"...\", \"max_tokens\": 123, \"temperature\": 0.2 }`\n\nResponse body: `{ \"completion\": \"...\" }`",
+          "type": "string",
+          "enum": [
+            "http"
+          ]
+        }
+      ]
+    },
+    "AiTimeoutsConfig": {
+      "type": "object",
+      "properties": {
+        "completion_ranking_ms": {
+          "description": "Timeout for completion ranking requests.",
+          "default": 20,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "multi_token_completion_ms": {
+          "description": "Timeout for multi-token completion requests.",
+          "default": 250,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      }
+    },
+    "AuditLogConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "path": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "ExtensionsConfig": {
+      "type": "object",
+      "properties": {
+        "allow": {
+          "description": "If set, only extensions with an id in this list will be loaded.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny": {
+          "description": "Extensions with an id in this list will never be loaded.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "description": "Whether extensions are enabled.",
+          "default": true,
+          "type": "boolean"
+        },
+        "wasm_memory_limit_bytes": {
+          "description": "Optional upper bound for WASM extension linear memory (in bytes).\n\nWhen set, the runtime uses the *minimum* of this value and the per-plugin default. If unset, the per-plugin default applies.",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "wasm_paths": {
+          "description": "Directories searched for extension bundles.\n\nEach directory is scanned for extension bundle folders containing a `nova-ext.toml` manifest.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "wasm_timeout_ms": {
+          "description": "Optional upper bound for WASM extension execution timeouts (in milliseconds).\n\nWhen set, the runtime uses the *minimum* of this value and the per-plugin default. If unset, the per-plugin default applies.",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      }
+    },
+    "GeneratedSourcesConfig": {
+      "type": "object",
+      "properties": {
+        "additional_roots": {
+          "description": "Additional generated roots (relative to project root unless absolute).",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "description": "Whether generated sources should be indexed and participate in resolution.",
+          "default": true,
+          "type": "boolean"
+        },
+        "override_roots": {
+          "description": "If set, replaces default discovery entirely.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "InProcessLlamaConfig": {
+      "type": "object",
+      "required": [
+        "model_path"
+      ],
+      "properties": {
+        "context_size": {
+          "description": "Context window size (`n_ctx`) used for inference.\n\nLarger values increase memory usage roughly linearly.",
+          "default": 4096,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "gpu_layers": {
+          "description": "Number of layers to offload to GPU (if supported by the build).\n\nA value of `0` disables GPU offload.",
+          "default": 0,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "model_path": {
+          "description": "Path to a GGUF model file on disk.",
+          "type": "string"
+        },
+        "temperature": {
+          "description": "Sampling temperature.",
+          "default": 0.20000000298023224,
+          "type": "number",
+          "format": "float"
+        },
+        "threads": {
+          "description": "Number of CPU threads to use (`n_threads`).\n\nIf unset or set to `0`, the backend will use the available parallelism.",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "top_p": {
+          "description": "Nucleus sampling probability.",
+          "default": 0.949999988079071,
+          "type": "number",
+          "format": "float"
+        }
+      }
+    },
+    "JdkConfig": {
+      "type": "object",
+      "properties": {
+        "home": {
+          "description": "Optional override for the JDK installation to use.\n\nWhen set, JDK discovery will use this path instead of searching `JAVA_HOME` or `java` on `PATH`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "LoggingConfig": {
+      "type": "object",
+      "properties": {
+        "buffer_lines": {
+          "description": "Number of log lines kept in memory for bug reports.",
+          "default": 2000,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "file": {
+          "description": "Append logs to the given file path (in addition to the in-memory buffer).\n\nIf the file cannot be opened, file logging is disabled while other sinks remain active.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "include_backtrace": {
+          "description": "Capture and include backtraces in panic reports.",
+          "default": false,
+          "type": "boolean"
+        },
+        "json": {
+          "description": "Emit logs in JSON format.",
+          "default": false,
+          "type": "boolean"
+        },
+        "level": {
+          "description": "Logging level for all Nova crates.",
+          "default": "info",
+          "type": "string"
+        },
+        "stderr": {
+          "description": "Mirror logs to stderr (in addition to the in-memory buffer).\n\nDefaults to enabled so running Nova binaries outside an editor still produces real-time logs.",
+          "default": true,
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

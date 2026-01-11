@@ -1,0 +1,175 @@
+use std::path::Path;
+
+use crate::diagnostics::{ConfigValidationError, ConfigWarning, ValidationDiagnostics};
+use crate::{AiProviderKind, LoggingConfig, NovaConfig};
+
+/// Context for semantic config validation.
+///
+/// Some validations (like checking whether configured directories exist) require a base directory.
+/// `NovaConfig` paths are documented as relative to the workspace root when possible; callers that
+/// don't have a workspace root can instead provide the directory containing the config file.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ConfigValidationContext<'a> {
+    /// Workspace root used to resolve relative paths in the config.
+    pub workspace_root: Option<&'a Path>,
+    /// Directory containing the loaded config file, used as a fallback base directory.
+    pub config_dir: Option<&'a Path>,
+}
+
+impl<'a> ConfigValidationContext<'a> {
+    fn base_dir(self) -> Option<&'a Path> {
+        self.workspace_root.or(self.config_dir)
+    }
+}
+
+impl NovaConfig {
+    /// Validate semantic invariants for a configuration.
+    ///
+    /// Validation is best-effort: it attempts to report as many problems as possible in one pass.
+    #[must_use]
+    pub fn validate(&self) -> ValidationDiagnostics {
+        self.validate_with_context(ConfigValidationContext::default())
+    }
+
+    /// Like [`NovaConfig::validate`] but with access to additional context such as the workspace root.
+    #[must_use]
+    pub fn validate_with_context(&self, ctx: ConfigValidationContext<'_>) -> ValidationDiagnostics {
+        let mut out = ValidationDiagnostics::default();
+
+        validate_ai(self, &mut out);
+        validate_extensions(self, ctx, &mut out);
+        validate_generated_sources(self, &mut out);
+        validate_logging(self, &mut out);
+
+        out
+    }
+}
+
+fn validate_generated_sources(config: &NovaConfig, out: &mut ValidationDiagnostics) {
+    if matches!(&config.generated_sources.override_roots, Some(roots) if roots.is_empty()) {
+        out.warnings
+            .push(ConfigWarning::GeneratedSourcesOverrideRootsEmpty);
+    }
+}
+
+fn validate_logging(config: &NovaConfig, out: &mut ValidationDiagnostics) {
+    let normalized = LoggingConfig::normalize_level_directives(&config.logging.level);
+    if !config.logging.level.trim().is_empty()
+        && tracing_subscriber::EnvFilter::try_new(normalized.clone()).is_err()
+    {
+        out.warnings.push(ConfigWarning::LoggingLevelInvalid {
+            value: config.logging.level.clone(),
+            normalized,
+        });
+    }
+}
+
+fn validate_extensions(config: &NovaConfig, ctx: ConfigValidationContext<'_>, out: &mut ValidationDiagnostics) {
+    if !config.extensions.enabled {
+        return;
+    }
+
+    let Some(base_dir) = ctx.base_dir() else {
+        return;
+    };
+
+    for (idx, path) in config.extensions.wasm_paths.iter().enumerate() {
+        let resolved = if path.is_absolute() {
+            path.clone()
+        } else {
+            base_dir.join(path)
+        };
+        let toml_path = format!("extensions.wasm_paths[{idx}]");
+        if !resolved.exists() {
+            out.warnings.push(ConfigWarning::ExtensionsWasmPathMissing {
+                toml_path,
+                resolved,
+            });
+            continue;
+        }
+        if !resolved.is_dir() {
+            out.warnings
+                .push(ConfigWarning::ExtensionsWasmPathNotDirectory { toml_path, resolved });
+        }
+    }
+}
+
+fn validate_ai(config: &NovaConfig, out: &mut ValidationDiagnostics) {
+    if !config.ai.enabled {
+        return;
+    }
+
+    if matches!(config.ai.provider.concurrency, Some(0)) {
+        out.errors.push(ConfigValidationError::AiConcurrencyZero);
+    }
+
+    if config.ai.cache_enabled {
+        if config.ai.cache_max_entries == 0 {
+            out.errors.push(ConfigValidationError::AiCacheMaxEntriesZero);
+        }
+        if config.ai.cache_ttl_secs == 0 {
+            out.errors.push(ConfigValidationError::AiCacheTtlZero);
+        }
+    }
+
+    if config.ai.privacy.local_only {
+        match config.ai.provider.kind {
+            AiProviderKind::InProcessLlama => {}
+            AiProviderKind::Ollama | AiProviderKind::OpenAiCompatible | AiProviderKind::Http => {
+                if !url_is_loopback(&config.ai.provider.url) {
+                    out.errors.push(ConfigValidationError::AiLocalOnlyUrlNotLocal {
+                        provider: config.ai.provider.kind.clone(),
+                        url: config.ai.provider.url.to_string(),
+                    });
+                }
+            }
+            AiProviderKind::OpenAi
+            | AiProviderKind::Anthropic
+            | AiProviderKind::Gemini
+            | AiProviderKind::AzureOpenAi => {
+                out.errors
+                    .push(ConfigValidationError::AiLocalOnlyForbidsCloudProvider {
+                        provider: config.ai.provider.kind.clone(),
+                    });
+            }
+        }
+    }
+
+    match config.ai.provider.kind {
+        AiProviderKind::OpenAi
+        | AiProviderKind::Anthropic
+        | AiProviderKind::Gemini
+        | AiProviderKind::AzureOpenAi => {
+            if config.ai.api_key.as_deref().unwrap_or("").trim().is_empty() {
+                out.errors.push(ConfigValidationError::AiMissingApiKey {
+                    provider: config.ai.provider.kind.clone(),
+                });
+            }
+        }
+        _ => {}
+    }
+
+    if matches!(config.ai.provider.kind, AiProviderKind::AzureOpenAi)
+        && config.ai.provider.azure_deployment.as_deref().unwrap_or("").trim().is_empty()
+    {
+        out.errors.push(ConfigValidationError::AiMissingAzureDeployment);
+    }
+
+    if matches!(config.ai.provider.kind, AiProviderKind::InProcessLlama)
+        && config.ai.provider.in_process_llama.is_none()
+    {
+        out.errors.push(ConfigValidationError::AiMissingInProcessConfig);
+    }
+}
+
+fn url_is_loopback(url: &url::Url) -> bool {
+    use url::Host;
+
+    match url.host() {
+        Some(Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+        Some(Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    }
+}
+

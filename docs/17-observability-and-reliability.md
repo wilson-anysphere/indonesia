@@ -38,6 +38,7 @@ Nova’s logging configuration lives in `nova_config::LoggingConfig`:
 - `logging.level` (`string`)
   - either a simple level (`"error" | "warn" | "info" | "debug" | "trace"`)
   - **or** a full `tracing_subscriber::EnvFilter` directive string (e.g. `"info,nova.lsp=debug"`)
+  - invalid directive strings fall back to `"info"` (and are reported via config diagnostics)
 - `logging.json` (`bool`) – emit JSON-formatted log lines (affects the ring buffer + stderr/file)
 - `logging.stderr` (`bool`) – mirror logs to `stderr` (default: `true`)
 - `logging.file` (`string`, optional) – append logs to a file

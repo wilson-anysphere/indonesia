@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::io;
@@ -12,29 +13,42 @@ use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::prelude::*;
 use url::Url;
 
+mod diagnostics;
+mod schema;
+mod validation;
+
+pub use diagnostics::{
+    ConfigDiagnostics, ConfigValidationError, ConfigWarning, ValidationDiagnostics,
+};
+pub use schema::json_schema;
+pub use validation::ConfigValidationContext;
+
 /// Tracing target used for AI audit events (prompts / model output).
 pub const AI_AUDIT_TARGET: &str = "nova.ai.audit";
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct GeneratedSourcesConfig {
     /// Whether generated sources should be indexed and participate in resolution.
     #[serde(default = "default_generated_sources_enabled")]
     pub enabled: bool,
     /// Additional generated roots (relative to project root unless absolute).
     #[serde(default)]
+    #[schemars(with = "Vec<String>")]
     pub additional_roots: Vec<PathBuf>,
     /// If set, replaces default discovery entirely.
     #[serde(default)]
+    #[schemars(with = "Option<Vec<String>>")]
     pub override_roots: Option<Vec<PathBuf>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
 pub struct JdkConfig {
     /// Optional override for the JDK installation to use.
     ///
     /// When set, JDK discovery will use this path instead of searching `JAVA_HOME`
     /// or `java` on `PATH`.
     #[serde(default, alias = "jdk_home")]
+    #[schemars(with = "Option<String>")]
     pub home: Option<PathBuf>,
 }
 
@@ -52,7 +66,7 @@ impl Default for GeneratedSourcesConfig {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ExtensionsConfig {
     /// Whether extensions are enabled.
     #[serde(default = "default_extensions_enabled")]
@@ -61,6 +75,7 @@ pub struct ExtensionsConfig {
     ///
     /// Each directory is scanned for extension bundle folders containing a `nova-ext.toml` manifest.
     #[serde(default)]
+    #[schemars(with = "Vec<String>")]
     pub wasm_paths: Vec<PathBuf>,
     /// If set, only extensions with an id in this list will be loaded.
     #[serde(default)]
@@ -99,7 +114,7 @@ impl Default for ExtensionsConfig {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 /// Top-level Nova configuration loaded from TOML.
 ///
 /// Extensions can be configured via the `[extensions]` table:
@@ -145,7 +160,7 @@ impl Default for NovaConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct LoggingConfig {
     /// Logging level for all Nova crates.
     #[serde(default = "LoggingConfig::default_level")]
@@ -167,6 +182,7 @@ pub struct LoggingConfig {
     /// If the file cannot be opened, file logging is disabled while other sinks
     /// remain active.
     #[serde(default)]
+    #[schemars(with = "Option<String>")]
     pub file: Option<PathBuf>,
 
     /// Capture and include backtraces in panic reports.
@@ -191,7 +207,7 @@ impl LoggingConfig {
         2_000
     }
 
-    fn normalize_level_directives(input: &str) -> String {
+    pub(crate) fn normalize_level_directives(input: &str) -> String {
         let trimmed = input.trim();
         if trimmed.is_empty() {
             return Self::default_level();
@@ -256,7 +272,7 @@ impl Default for LoggingConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AiFeaturesConfig {
     /// Enables AI-assisted completion re-ranking.
     #[serde(default)]
@@ -282,7 +298,7 @@ impl Default for AiFeaturesConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AiTimeoutsConfig {
     /// Timeout for completion ranking requests.
     #[serde(default = "default_completion_ranking_timeout_ms")]
@@ -320,7 +336,7 @@ impl AiTimeoutsConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AiConfig {
     #[serde(default)]
     pub provider: AiProviderConfig,
@@ -393,7 +409,7 @@ fn default_ai_cache_ttl_secs() -> u64 {
     300
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AiEmbeddingsConfig {
     /// Enable local embeddings for semantic search and context building.
     #[serde(default)]
@@ -401,6 +417,7 @@ pub struct AiEmbeddingsConfig {
 
     /// Directory containing embedding model files / cache.
     #[serde(default = "default_embeddings_model_dir")]
+    #[schemars(with = "String")]
     pub model_dir: PathBuf,
 
     /// Maximum batch size for embedding requests.
@@ -435,12 +452,13 @@ impl Default for AiEmbeddingsConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AuditLogConfig {
     #[serde(default)]
     pub enabled: bool,
 
     #[serde(default)]
+    #[schemars(with = "Option<String>")]
     pub path: Option<PathBuf>,
 }
 
@@ -454,7 +472,7 @@ impl Default for AuditLogConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AiProviderKind {
     /// Ollama HTTP API (e.g. http://localhost:11434)
@@ -489,7 +507,7 @@ impl Default for AiProviderKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AiProviderConfig {
     /// Which backend implementation to use.
     #[serde(default)]
@@ -497,6 +515,7 @@ pub struct AiProviderConfig {
 
     /// Base URL for the provider (e.g. http://localhost:11434, http://localhost:8000).
     #[serde(default = "default_provider_url")]
+    #[schemars(with = "String")]
     pub url: Url,
 
     /// Default model name.
@@ -591,9 +610,10 @@ impl AiProviderConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct InProcessLlamaConfig {
     /// Path to a GGUF model file on disk.
+    #[schemars(with = "String")]
     pub model_path: PathBuf,
 
     /// Context window size (`n_ctx`) used for inference.
@@ -635,7 +655,7 @@ fn default_in_process_llama_top_p() -> f32 {
     0.95
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AiPrivacyConfig {
     /// If true, Nova will not use any cloud providers. This is the recommended
     /// setting for privacy-sensitive environments.
@@ -728,6 +748,52 @@ impl NovaConfig {
         Ok(toml::from_str(&text)?)
     }
 
+    /// Load a config file from TOML and return diagnostics (unknown keys, deprecated keys, and
+    /// semantic validation failures).
+    pub fn load_from_path_with_diagnostics(
+        path: impl AsRef<Path>,
+    ) -> Result<(Self, ConfigDiagnostics), ConfigError> {
+        let path = path.as_ref();
+        let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
+
+        let ctx = ConfigValidationContext {
+            workspace_root: None,
+            config_dir: path.parent(),
+        };
+        Self::load_from_str_with_diagnostics_inner(&text, ctx)
+    }
+
+    /// Load a config from a TOML string and return diagnostics.
+    pub fn load_from_str_with_diagnostics(
+        text: &str,
+    ) -> Result<(Self, ConfigDiagnostics), ConfigError> {
+        Self::load_from_str_with_diagnostics_inner(text, ConfigValidationContext::default())
+    }
+
+    fn load_from_str_with_diagnostics_inner(
+        text: &str,
+        ctx: ConfigValidationContext<'_>,
+    ) -> Result<(Self, ConfigDiagnostics), ConfigError> {
+        let (config, unknown_keys) =
+            diagnostics::deserialize_toml_with_unknown_keys::<NovaConfig>(text)?;
+
+        let mut diagnostics = ConfigDiagnostics {
+            unknown_keys,
+            ..ConfigDiagnostics::default()
+        };
+
+        if let Ok(value) = toml::from_str::<toml::Value>(text) {
+            diagnostics.warnings.extend(deprecation_warnings(&value));
+        }
+
+        diagnostics.extend_validation(config.validate_with_context(ctx));
+
+        Ok((config, diagnostics))
+    }
+
     pub fn jdk_config(&self) -> nova_core::JdkConfig {
         nova_core::JdkConfig {
             home: self.jdk.home.clone(),
@@ -784,6 +850,30 @@ pub fn load_for_workspace(
     Ok((config, Some(path)))
 }
 
+/// Load the Nova configuration for a workspace root with diagnostics.
+///
+/// If no config is present, returns [`NovaConfig::default`], `None`, and empty diagnostics.
+pub fn load_for_workspace_with_diagnostics(
+    workspace_root: &Path,
+) -> Result<(NovaConfig, Option<PathBuf>, ConfigDiagnostics), ConfigError> {
+    let Some(path) = discover_config_path(workspace_root) else {
+        return Ok((NovaConfig::default(), None, ConfigDiagnostics::default()));
+    };
+
+    let text = std::fs::read_to_string(&path).map_err(|source| ConfigError::Io {
+        path: path.display().to_string(),
+        source,
+    })?;
+
+    let ctx = ConfigValidationContext {
+        workspace_root: Some(workspace_root),
+        config_dir: path.parent(),
+    };
+
+    let (config, diagnostics) = NovaConfig::load_from_str_with_diagnostics_inner(&text, ctx)?;
+    Ok((config, Some(path), diagnostics))
+}
+
 /// Reload the Nova configuration for a workspace root and report whether it changed.
 pub fn reload_for_workspace(
     workspace_root: &Path,
@@ -793,6 +883,33 @@ pub fn reload_for_workspace(
     let (config, path) = load_for_workspace(workspace_root)?;
     let changed = path.as_deref() != previous_path || &config != previous;
     Ok((config, path, changed))
+}
+
+/// Reload the Nova configuration for a workspace root with diagnostics and report whether it
+/// changed.
+pub fn reload_for_workspace_with_diagnostics(
+    workspace_root: &Path,
+    previous: &NovaConfig,
+    previous_path: Option<&Path>,
+) -> Result<(NovaConfig, Option<PathBuf>, bool, ConfigDiagnostics), ConfigError> {
+    let (config, path, diagnostics) = load_for_workspace_with_diagnostics(workspace_root)?;
+    let changed = path.as_deref() != previous_path || &config != previous;
+    Ok((config, path, changed, diagnostics))
+}
+
+fn deprecation_warnings(value: &toml::Value) -> Vec<ConfigWarning> {
+    let mut out = Vec::new();
+
+    if let Some(jdk) = value.get("jdk").and_then(|v| v.as_table()) {
+        if jdk.contains_key("jdk_home") {
+            out.push(ConfigWarning::DeprecatedKey {
+                path: "jdk.jdk_home".to_string(),
+                message: "jdk.jdk_home is deprecated; use jdk.home instead".to_string(),
+            });
+        }
+    }
+
+    out
 }
 
 /// Ring buffer of formatted log lines for bug reports.
