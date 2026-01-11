@@ -84,7 +84,7 @@ fn main() -> std::io::Result<()> {
     let mut reader = BufReader::new(stdin.lock());
     let mut writer = BufWriter::new(stdout.lock());
 
-    let mut state = ServerState::new();
+    let mut state = ServerState::new(config.ai.clone());
     let metrics = nova_metrics::MetricsRegistry::global();
 
     while let Some(message) = read_json_message::<_, serde_json::Value>(&mut reader)? {
@@ -255,6 +255,7 @@ struct ServerState {
     cancelled_requests: HashSet<String>,
     ai: Option<AiService>,
     privacy: nova_ai::PrivacyMode,
+    ai_config: nova_config::AiConfig,
     runtime: Option<tokio::runtime::Runtime>,
     #[cfg(feature = "ai")]
     completion_service: nova_lsp::NovaCompletionService,
@@ -265,7 +266,7 @@ struct ServerState {
 }
 
 impl ServerState {
-    fn new() -> Self {
+    fn new(mut ai_config: nova_config::AiConfig) -> Self {
         let (ai, privacy, runtime, completion_llm) = match load_ai_from_env() {
             Ok(Some((ai, privacy, completion_llm))) => {
                 let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -280,6 +281,13 @@ impl ServerState {
                 (None, nova_ai::PrivacyMode::default(), None, None)
             }
         };
+
+        if ai.is_some() {
+            // `nova-lsp` supports a legacy env-var based AI configuration flow.
+            // When that path is used, treat AI as enabled so local augmentations
+            // (like semantic search) can still be toggled via `nova_config`.
+            ai_config.enabled = true;
+        }
 
         let memory = MemoryManager::new(MemoryBudget::default_for_system());
         let memory_events: Arc<Mutex<Vec<MemoryEvent>>> = Arc::new(Mutex::new(Vec::new()));
@@ -314,6 +322,7 @@ impl ServerState {
             cancelled_requests: HashSet::new(),
             ai,
             privacy,
+            ai_config,
             runtime,
             #[cfg(feature = "ai")]
             completion_service,
@@ -1540,7 +1549,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let mut state = ServerState::new();
+        let mut state = ServerState::new(nova_config::AiConfig::default());
         state.ai = Some(ai);
         state.runtime = Some(runtime);
 
@@ -1934,6 +1943,45 @@ fn send_progress_end(
     .map_err(|e| (-32603, e.to_string()))
 }
 
+fn maybe_add_related_code(state: &ServerState, req: ContextRequest) -> ContextRequest {
+    use nova_core::ProjectDatabase;
+    use std::path::{Path, PathBuf};
+
+    if !(state.ai_config.enabled && state.ai_config.features.semantic_search) {
+        return req;
+    }
+
+    #[derive(Debug)]
+    struct OpenDocumentsDb(Vec<(PathBuf, String)>);
+
+    impl ProjectDatabase for OpenDocumentsDb {
+        fn project_files(&self) -> Vec<PathBuf> {
+            self.0.iter().map(|(path, _)| path.clone()).collect()
+        }
+
+        fn file_text(&self, path: &Path) -> Option<String> {
+            self.0
+                .iter()
+                .find(|(p, _)| p == path)
+                .map(|(_, text)| text.clone())
+        }
+    }
+
+    let db = OpenDocumentsDb(
+        state
+            .documents
+            .iter()
+            .filter_map(|(uri, doc)| path_from_uri(uri).map(|path| (path, doc.text().to_owned())))
+            .collect(),
+    );
+
+    let mut search = nova_ai::semantic_search_from_config(&state.ai_config);
+    search.index_project(&db);
+
+    // Keep this conservative: extra context is useful, but should not drown the prompt.
+    req.with_related_code_from_focal(search.as_ref(), 3)
+}
+
 fn build_context_request(
     state: &ServerState,
     focal_code: String,
@@ -1979,12 +2027,15 @@ fn build_context_request_from_args(
                     line: range.start.line,
                     character: range.start.character,
                 });
-                return req;
+                return maybe_add_related_code(state, req);
             }
         }
     }
 
-    build_context_request(state, fallback_focal, fallback_enclosing)
+    maybe_add_related_code(
+        state,
+        build_context_request(state, fallback_focal, fallback_enclosing),
+    )
 }
 
 fn parse_first_arg<T: serde::de::DeserializeOwned>(
