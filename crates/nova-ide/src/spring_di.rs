@@ -220,6 +220,16 @@ pub(crate) fn injection_definition_targets(
         })
         .map(|(idx, _)| idx)?;
 
+    // Only navigate when the injection resolves to exactly one candidate.
+    if analysis
+        .model
+        .injection_candidates
+        .get(injection_idx)
+        .is_some_and(|cands| cands.len() != 1)
+    {
+        return None;
+    }
+
     let targets = analysis.model.navigation_from_injection(injection_idx);
     let locations = targets
         .into_iter()

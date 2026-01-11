@@ -193,6 +193,46 @@ class FooService {}
 }
 
 #[test]
+fn spring_goto_definition_returns_none_for_ambiguous_injection() {
+    let consumer_path = PathBuf::from("/spring-nav-ambiguous/src/main/java/Consumer.java");
+    let consumer_text = r#"import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+
+interface Foo {}
+
+@Component
+class Consumer {
+  @Autowired Foo fo<|>o;
+}
+"#;
+
+    let foo_impl_1 = (
+        PathBuf::from("/spring-nav-ambiguous/src/main/java/FooImpl1.java"),
+        r#"import org.springframework.stereotype.Component;
+
+@Component
+class FooImpl1 implements Foo {}
+"#
+        .to_string(),
+    );
+
+    let foo_impl_2 = (
+        PathBuf::from("/spring-nav-ambiguous/src/main/java/FooImpl2.java"),
+        r#"import org.springframework.stereotype.Component;
+
+@Component
+class FooImpl2 implements Foo {}
+"#
+        .to_string(),
+    );
+
+    let (db, file, pos) = fixture_multi(consumer_path, consumer_text, vec![foo_impl_1, foo_impl_2]);
+
+    let loc = goto_definition(&db, file, pos);
+    assert!(loc.is_none(), "expected no goto-definition; got {loc:?}");
+}
+
+#[test]
 fn spring_profile_completion_returns_profiles() {
     let java_path = PathBuf::from("/spring-profile/src/main/java/A.java");
     let java_text = r#"import org.springframework.context.annotation.Profile;
