@@ -181,6 +181,23 @@ async fn open_unique_tmp_file(dest: &Path) -> io::Result<(PathBuf, tokio::fs::Fi
 }
 
 #[cfg(feature = "s3")]
+async fn sync_parent_dir_best_effort(dest: &Path) {
+    #[cfg(unix)]
+    if let Some(parent) = dest.parent() {
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
+        let parent = parent.to_path_buf();
+        let _ = tokio::task::spawn_blocking(move || {
+            std::fs::File::open(parent).and_then(|dir| dir.sync_all())
+        })
+        .await;
+    }
+}
+
+#[cfg(feature = "s3")]
 async fn stream_async_read_to_path(
     reader: impl tokio::io::AsyncRead,
     dest: &Path,
@@ -225,7 +242,10 @@ async fn stream_async_read_to_path(
         }
 
         match tokio::fs::rename(&tmp_path, dest).await {
-            Ok(()) => Ok(copied),
+            Ok(()) => {
+                sync_parent_dir_best_effort(dest).await;
+                Ok(copied)
+            }
             Err(err) => {
                 // On Windows, rename doesn't overwrite. Try remove + rename.
                 if cfg!(windows)
@@ -234,6 +254,7 @@ async fn stream_async_read_to_path(
                 {
                     let _ = tokio::fs::remove_file(dest).await;
                     if tokio::fs::rename(&tmp_path, dest).await.is_ok() {
+                        sync_parent_dir_best_effort(dest).await;
                         return Ok(copied);
                     }
                 }
@@ -256,6 +277,7 @@ async fn stream_async_read_to_path(
                     return Err(err.into());
                 }
                 let _ = tokio::fs::remove_file(&tmp_path).await;
+                sync_parent_dir_best_effort(dest).await;
                 Ok(copied)
             }
         }
@@ -354,7 +376,15 @@ mod tests {
         }
 
         assert!(!dest.exists());
-        assert!(!tmp_download_path(&dest).exists());
+        for entry in std::fs::read_dir(tmp.path())? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            assert!(
+                !name.contains(".tmp."),
+                "left behind temp download file {name:?} in {}",
+                tmp.path().display()
+            );
+        }
         Ok(())
     }
 }
