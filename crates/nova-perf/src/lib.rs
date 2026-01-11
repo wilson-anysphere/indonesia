@@ -167,7 +167,15 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
     sorted[lower] * (1.0 - weight) + sorted[upper] * weight
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+/// Regression thresholds for a benchmark comparison.
+///
+/// ## Serde JSON representation (stable)
+///
+/// Serialized as an object with the following keys:
+///
+/// - `p50_regression`
+/// - `p95_regression`
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Thresholds {
     #[serde(default = "default_p50_regression")]
     pub p50_regression: f64,
@@ -221,16 +229,46 @@ impl ThresholdConfig {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The outcome of comparing a benchmark between two runs.
+///
+/// ## Serde JSON representation (stable)
+///
+/// When serialized as JSON, this enum is represented as a string with one of the
+/// following values:
+///
+/// - `"ok"`
+/// - `"regression"`
+/// - `"allowed_regression"`
+/// - `"missing_in_current"`
+/// - `"new_in_current"`
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum DiffStatus {
+    #[serde(rename = "ok")]
     Ok,
+    #[serde(rename = "regression")]
     Regression,
+    #[serde(rename = "allowed_regression")]
     AllowedRegression,
+    #[serde(rename = "missing_in_current")]
     MissingInCurrent,
+    #[serde(rename = "new_in_current")]
     NewInCurrent,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+/// The per-benchmark diff produced by [`compare_runs`].
+///
+/// ## Serde JSON representation (stable)
+///
+/// Serialized as an object with the following keys:
+///
+/// - `id`: benchmark identifier
+/// - `baseline`: baseline metrics (or `null`)
+/// - `current`: current metrics (or `null`)
+/// - `p50_change`: relative p50 change (e.g. `0.12` for +12%) (or `null`)
+/// - `p95_change`: relative p95 change (or `null`)
+/// - `thresholds`: thresholds used for the comparison (or `null`)
+/// - `status`: [`DiffStatus`] as a stable string
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct BenchDiff {
     pub id: String,
     pub baseline: Option<BenchMetric>,
@@ -241,13 +279,34 @@ pub struct BenchDiff {
     pub status: DiffStatus,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+/// The result of comparing two [`BenchRun`]s.
+///
+/// ## Serde JSON representation (stable)
+///
+/// Serialized as an object with the following keys:
+///
+/// - `diffs`: array of [`BenchDiff`]
+/// - `has_failure`: `true` if the comparison contains any hard failures
+///   (e.g. regressions not allowlisted, or benchmarks missing in the current run)
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Comparison {
     pub diffs: Vec<BenchDiff>,
     pub has_failure: bool,
 }
 
 impl Comparison {
+    /// Write this comparison as pretty JSON to `path`.
+    pub fn write_json(&self, path: impl AsRef<Path>) -> Result<()> {
+        let serialized = serde_json::to_string_pretty(self)?;
+        fs::write(path.as_ref(), serialized).with_context(|| {
+            format!(
+                "failed to write comparison JSON to {}",
+                path.as_ref().display()
+            )
+        })?;
+        Ok(())
+    }
+
     pub fn to_markdown(&self) -> String {
         let mut out = String::new();
         out.push_str("## Nova performance report\n\n");
@@ -499,5 +558,176 @@ mod tests {
         let comparison = compare_runs(&baseline, &current, &config, &[]);
         assert!(comparison.has_failure);
         assert_eq!(comparison.diffs[0].status, DiffStatus::MissingInCurrent);
+    }
+
+    #[test]
+    fn diff_status_serializes_as_stable_snake_case_strings() {
+        assert_eq!(serde_json::to_string(&DiffStatus::Ok).unwrap(), "\"ok\"");
+        assert_eq!(
+            serde_json::to_string(&DiffStatus::Regression).unwrap(),
+            "\"regression\""
+        );
+        assert_eq!(
+            serde_json::to_string(&DiffStatus::AllowedRegression).unwrap(),
+            "\"allowed_regression\""
+        );
+        assert_eq!(
+            serde_json::to_string(&DiffStatus::MissingInCurrent).unwrap(),
+            "\"missing_in_current\""
+        );
+        assert_eq!(
+            serde_json::to_string(&DiffStatus::NewInCurrent).unwrap(),
+            "\"new_in_current\""
+        );
+    }
+
+    #[test]
+    fn comparison_json_roundtrips() {
+        let baseline = BenchRun {
+            benchmarks: BTreeMap::from([
+                (
+                    "ok/bench".to_string(),
+                    BenchMetric {
+                        p50_ns: 100,
+                        p95_ns: 200,
+                    },
+                ),
+                (
+                    "regression/bench".to_string(),
+                    BenchMetric {
+                        p50_ns: 100,
+                        p95_ns: 200,
+                    },
+                ),
+                (
+                    "allowed/bench".to_string(),
+                    BenchMetric {
+                        p50_ns: 100,
+                        p95_ns: 200,
+                    },
+                ),
+                (
+                    "missing/bench".to_string(),
+                    BenchMetric {
+                        p50_ns: 100,
+                        p95_ns: 200,
+                    },
+                ),
+            ]),
+        };
+
+        let current = BenchRun {
+            benchmarks: BTreeMap::from([
+                (
+                    "ok/bench".to_string(),
+                    BenchMetric {
+                        p50_ns: 105,
+                        p95_ns: 210,
+                    },
+                ),
+                (
+                    "regression/bench".to_string(),
+                    BenchMetric {
+                        p50_ns: 120,
+                        p95_ns: 210,
+                    },
+                ),
+                (
+                    "allowed/bench".to_string(),
+                    BenchMetric {
+                        p50_ns: 130,
+                        p95_ns: 260,
+                    },
+                ),
+                (
+                    "new/bench".to_string(),
+                    BenchMetric {
+                        p50_ns: 50,
+                        p95_ns: 100,
+                    },
+                ),
+            ]),
+        };
+
+        let mut config = ThresholdConfig::default();
+        config.allow_regressions.push("allowed/bench".to_string());
+
+        let comparison = compare_runs(&baseline, &current, &config, &[]);
+        let json = serde_json::to_string_pretty(&comparison).unwrap();
+        let decoded: Comparison = serde_json::from_str(&json).unwrap();
+
+        // JSON floats are not guaranteed to preserve the exact underlying IEEE-754
+        // representation. We assert "semantic" equality here, treating floats as
+        // equivalent within a small epsilon.
+        fn assert_close(label: &str, left: f64, right: f64) {
+            assert!(
+                (left - right).abs() < 1e-12,
+                "{label} differs too much: left={left:?} right={right:?}"
+            );
+        }
+
+        fn assert_opt_close(label: &str, left: Option<f64>, right: Option<f64>) {
+            match (left, right) {
+                (None, None) => {}
+                (Some(left), Some(right)) => assert_close(label, left, right),
+                (left, right) => panic!("{label} differs: left={left:?} right={right:?}"),
+            }
+        }
+
+        fn assert_opt_thresholds_close(
+            label: &str,
+            left: Option<Thresholds>,
+            right: Option<Thresholds>,
+        ) {
+            match (left, right) {
+                (None, None) => {}
+                (Some(left), Some(right)) => {
+                    assert_close(
+                        &format!("{label}.p50_regression"),
+                        left.p50_regression,
+                        right.p50_regression,
+                    );
+                    assert_close(
+                        &format!("{label}.p95_regression"),
+                        left.p95_regression,
+                        right.p95_regression,
+                    );
+                }
+                (left, right) => panic!("{label} differs: left={left:?} right={right:?}"),
+            }
+        }
+
+        assert_eq!(comparison.has_failure, decoded.has_failure);
+        assert_eq!(comparison.diffs.len(), decoded.diffs.len());
+
+        for (idx, (left, right)) in comparison
+            .diffs
+            .iter()
+            .zip(decoded.diffs.iter())
+            .enumerate()
+        {
+            assert_eq!(left.id, right.id, "diffs[{idx}].id differs");
+            assert_eq!(
+                left.baseline, right.baseline,
+                "diffs[{idx}].baseline differs"
+            );
+            assert_eq!(left.current, right.current, "diffs[{idx}].current differs");
+            assert_opt_close(
+                &format!("diffs[{idx}].p50_change"),
+                left.p50_change,
+                right.p50_change,
+            );
+            assert_opt_close(
+                &format!("diffs[{idx}].p95_change"),
+                left.p95_change,
+                right.p95_change,
+            );
+            assert_opt_thresholds_close(
+                &format!("diffs[{idx}].thresholds"),
+                left.thresholds,
+                right.thresholds,
+            );
+            assert_eq!(left.status, right.status, "diffs[{idx}].status differs");
+        }
     }
 }
