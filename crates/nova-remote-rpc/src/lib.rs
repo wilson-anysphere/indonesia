@@ -445,6 +445,11 @@ impl Inner {
             self.compression_threshold,
             &uncompressed,
         )?;
+        let chunked = self.negotiated.capabilities.supports_chunking
+            && !packet_fits_in_single_frame(
+                &wire_bytes,
+                self.negotiated.capabilities.max_frame_len,
+            );
 
         tracing::trace!(
             target: TRACE_TARGET,
@@ -459,14 +464,13 @@ impl Inner {
             response_type,
             error_code,
             compressed = compression != CompressionAlgo::None,
+            chunked,
             bytes = wire_bytes.len(),
             uncompressed_bytes = uncompressed.len()
         );
 
         let mut writer = self.writer.lock().await;
-        if self.negotiated.capabilities.supports_chunking
-            && !packet_fits_in_single_frame(&wire_bytes, self.negotiated.capabilities.max_frame_len)
-        {
+        if chunked {
             write_packet_chunked(
                 &mut *writer,
                 self.negotiated.capabilities.max_frame_len,
@@ -1022,7 +1026,7 @@ async fn read_loop(
         data: Vec<u8>,
     }
 
-    let mut chunked: HashMap<RequestId, ChunkState> = HashMap::new();
+    let mut chunked_packets: HashMap<RequestId, ChunkState> = HashMap::new();
     loop {
         let frame =
             match read_wire_frame(&mut reader, inner.negotiated.capabilities.max_frame_len).await {
@@ -1041,12 +1045,12 @@ async fn read_loop(
                 }
             };
 
-        let (request_id, compression, data) = match frame {
+        let (request_id, compression, data, chunked) = match frame {
             WireFrame::Packet {
                 id,
                 compression,
                 data,
-            } => (id, compression, data),
+            } => (id, compression, data, false),
             WireFrame::PacketChunk {
                 id,
                 compression,
@@ -1066,7 +1070,7 @@ async fn read_loop(
                 }
 
                 let max_packet_len = inner.negotiated.capabilities.max_packet_len as usize;
-                let entry = chunked.entry(id).or_insert_with(|| ChunkState {
+                let entry = chunked_packets.entry(id).or_insert_with(|| ChunkState {
                     compression,
                     next_seq: 0,
                     data: Vec::new(),
@@ -1082,7 +1086,7 @@ async fn read_loop(
                         expected_seq = entry.next_seq,
                         got_seq = seq
                     );
-                    chunked.remove(&id);
+                    chunked_packets.remove(&id);
                     let mut pending = inner.pending.lock().await;
                     pending.clear();
                     break;
@@ -1100,7 +1104,7 @@ async fn read_loop(
                         incoming = data.len(),
                         max_packet_len
                     );
-                    chunked.remove(&id);
+                    chunked_packets.remove(&id);
                     let mut pending = inner.pending.lock().await;
                     pending.clear();
                     break;
@@ -1112,8 +1116,8 @@ async fn read_loop(
                     continue;
                 }
 
-                let entry = chunked.remove(&id).expect("entry exists");
-                (id, entry.compression, entry.data)
+                let entry = chunked_packets.remove(&id).expect("entry exists");
+                (id, entry.compression, entry.data, true)
             }
             other => {
                 tracing::trace!(
@@ -1176,6 +1180,7 @@ async fn read_loop(
             response_type = payload_response_type(&payload),
             error_code = payload_error_code(&payload),
             compressed,
+            chunked,
             bytes = data.len(),
             uncompressed_bytes = decoded_bytes.len()
         );
@@ -1570,7 +1575,10 @@ mod tests {
             .build()
             .expect("build tokio runtime");
 
-        let mut runner = TestRunner::new(ProptestConfig { cases: 64, ..ProptestConfig::default() });
+        let mut runner = TestRunner::new(ProptestConfig {
+            cases: 64,
+            ..ProptestConfig::default()
+        });
         runner
             .run(
                 &proptest::collection::vec(any::<u8>(), 0..=MAX_FUZZ_INPUT_LEN),
@@ -1601,7 +1609,10 @@ mod tests {
             Just(CompressionAlgo::Unknown),
         ];
 
-        let mut runner = TestRunner::new(ProptestConfig { cases: 64, ..ProptestConfig::default() });
+        let mut runner = TestRunner::new(ProptestConfig {
+            cases: 64,
+            ..ProptestConfig::default()
+        });
         runner
             .run(
                 &(
@@ -1628,8 +1639,8 @@ mod tests {
         let mut caps = Capabilities::default();
         caps.max_packet_len = 1024;
 
-        let err =
-            maybe_decompress(&caps, CompressionAlgo::Zstd, &compressed).expect_err("expected error");
+        let err = maybe_decompress(&caps, CompressionAlgo::Zstd, &compressed)
+            .expect_err("expected error");
         assert!(
             err.to_string().contains("decompressed payload too large"),
             "unexpected error: {err:?}"

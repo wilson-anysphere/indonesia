@@ -9,7 +9,9 @@ use nova_remote_proto::v3::{
     RpcPayload, RpcResult, SupportedVersions, WireFrame,
 };
 use nova_remote_proto::{FileText, WorkerStats};
-use nova_remote_rpc::{Client, ClientConfig, Server, ServerConfig, DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN};
+use nova_remote_rpc::{
+    Client, ClientConfig, Server, ServerConfig, DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN,
+};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
 #[tokio::test(flavor = "current_thread")]
@@ -234,7 +236,8 @@ async fn handshake_rejects_missing_auth_token() -> Result<()> {
         let mut server_cfg = ServerConfig::default();
         server_cfg.expected_auth_token = Some("secret".to_string());
 
-        let server_task = tokio::spawn(async move { Server::accept(server_stream, server_cfg).await });
+        let server_task =
+            tokio::spawn(async move { Server::accept(server_stream, server_cfg).await });
 
         let mut client_cfg = ClientConfig::default();
         client_cfg.hello.auth_token = None;
@@ -258,7 +261,10 @@ async fn handshake_rejects_unsupported_version() -> Result<()> {
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         let (mut client_stream, server_stream) = tokio::io::duplex(64 * 1024);
 
-        let server_task = tokio::spawn(async move { Server::accept(server_stream, ServerConfig::default()).await });
+        let server_task =
+            tokio::spawn(
+                async move { Server::accept(server_stream, ServerConfig::default()).await },
+            );
 
         let mut client_cfg = ClientConfig::default();
         let unsupported = ProtocolVersion { major: 2, minor: 0 };
@@ -292,7 +298,8 @@ async fn max_packet_len_closes_connection_deterministically() -> Result<()> {
         server_cfg.capabilities.supported_compression = vec![CompressionAlgo::None];
         server_cfg.capabilities.supports_chunking = false;
 
-        let server_task = tokio::spawn(async move { Server::accept(server_stream, server_cfg).await });
+        let server_task =
+            tokio::spawn(async move { Server::accept(server_stream, server_cfg).await });
 
         // Manual handshake.
         let mut client_cfg = ClientConfig::default();
@@ -318,9 +325,10 @@ async fn max_packet_len_closes_connection_deterministically() -> Result<()> {
         write_frame(&mut client_stream, &too_large).await?;
 
         // The receiver should close rather than attempting to allocate unbounded buffers.
-        let req = tokio::time::timeout(std::time::Duration::from_millis(100), server.recv_request())
-            .await
-            .context("recv_request timed out")?;
+        let req =
+            tokio::time::timeout(std::time::Duration::from_millis(100), server.recv_request())
+                .await
+                .context("recv_request timed out")?;
         assert!(req.is_none(), "expected receiver to close on TooLarge");
 
         Ok::<_, anyhow::Error>(())
@@ -370,10 +378,7 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for CountingStream<S> {
         Pin::new(&mut self.inner).poll_flush(cx)
     }
 
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<std::io::Result<()>> {
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         Pin::new(&mut self.inner).poll_shutdown(cx)
     }
 }
@@ -390,9 +395,15 @@ async fn write_frame(stream: &mut (impl AsyncWrite + Unpin), frame: &WireFrame) 
     Ok(())
 }
 
-async fn read_frame(stream: &mut (impl AsyncRead + Unpin), max_frame_len: u32) -> Result<WireFrame> {
+async fn read_frame(
+    stream: &mut (impl AsyncRead + Unpin),
+    max_frame_len: u32,
+) -> Result<WireFrame> {
     let len = stream.read_u32_le().await.context("read frame len")?;
-    anyhow::ensure!(len <= max_frame_len, "frame too large: {len} > {max_frame_len}");
+    anyhow::ensure!(
+        len <= max_frame_len,
+        "frame too large: {len} > {max_frame_len}"
+    );
     let mut buf = vec![0u8; len as usize];
     stream
         .read_exact(&mut buf)
@@ -400,4 +411,3 @@ async fn read_frame(stream: &mut (impl AsyncRead + Unpin), max_frame_len: u32) -
         .context("read frame payload")?;
     v3::decode_wire_frame(&buf).context("decode wire frame")
 }
-
