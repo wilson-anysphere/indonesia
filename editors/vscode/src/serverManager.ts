@@ -286,7 +286,9 @@ export function detectNovaTarget(info: { platform: NodeJS.Platform; arch: string
     }
   }
 
-  throw new Error(`Unsupported platform/arch: ${platform}/${arch}`);
+  throw new Error(
+    `Unsupported platform/arch: ${platform}/${arch}. Nova does not currently ship a prebuilt nova-lsp for this platform; set nova.server.path to a local nova-lsp executable instead.`,
+  );
 }
 
 export function novaLspBinaryName(platform: NodeJS.Platform): string {
