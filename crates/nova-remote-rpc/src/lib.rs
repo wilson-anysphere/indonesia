@@ -225,6 +225,7 @@ impl Client {
             request_id,
             request_type
         );
+        let parent_span = span.clone();
         let inner = self.inner.clone();
         let response = async move {
             let (tx, rx) = oneshot::channel();
@@ -253,6 +254,7 @@ impl Client {
             let status = rpc_result_status(&response);
             let error_code = rpc_result_error_code_str(&response);
             tracing::debug!(
+                parent: &parent_span,
                 target: TRACE_TARGET,
                 event = "call_complete",
                 request_id,
@@ -384,6 +386,9 @@ async fn client_handshake(
     stream: &mut BoxedStream,
     config: &ClientConfig,
 ) -> Result<RouterWelcome> {
+    let start =
+        tracing::enabled!(target: TRACE_TARGET, level: tracing::Level::DEBUG).then(Instant::now);
+
     tracing::debug!(
         target: TRACE_TARGET,
         event = "handshake_start",
@@ -399,32 +404,92 @@ async fn client_handshake(
         config.pre_handshake_max_frame_len,
         &WireFrame::Hello(config.hello.clone()),
     )
-    .await?;
+    .await
+    .map_err(|err| {
+        let latency_ms = start.map(|start| start.elapsed().as_secs_f64() * 1000.0);
+        tracing::debug!(
+            target: TRACE_TARGET,
+            event = "handshake_end",
+            role = "worker",
+            status = "error",
+            latency_ms,
+            error = %err
+        );
+        err
+    })?;
 
-    let frame = read_wire_frame(stream, config.pre_handshake_max_frame_len).await?;
+    let frame = match read_wire_frame(stream, config.pre_handshake_max_frame_len).await {
+        Ok(frame) => frame,
+        Err(err) => {
+            if let Some(start) = start {
+                tracing::debug!(
+                    target: TRACE_TARGET,
+                    event = "handshake_end",
+                    role = "worker",
+                    status = "error",
+                    latency_ms = start.elapsed().as_secs_f64() * 1000.0,
+                    error = %err
+                );
+            } else {
+                tracing::debug!(
+                    target: TRACE_TARGET,
+                    event = "handshake_end",
+                    role = "worker",
+                    status = "error",
+                    error = %err
+                );
+            }
+            return Err(err);
+        }
+    };
     match frame {
         WireFrame::Welcome(welcome) => {
+            let latency_ms = start.map(|start| start.elapsed().as_secs_f64() * 1000.0);
             tracing::debug!(
                 target: TRACE_TARGET,
                 event = "handshake_end",
                 role = "worker",
+                status = "ok",
                 worker_id = welcome.worker_id,
                 shard_id = welcome.shard_id,
                 revision = welcome.revision,
                 negotiated_version = ?welcome.chosen_version,
-                negotiated_capabilities = ?welcome.chosen_capabilities
+                negotiated_capabilities = ?welcome.chosen_capabilities,
+                latency_ms
             );
             Ok(welcome)
         }
-        WireFrame::Reject(reject) => Err(anyhow!(
-            "handshake rejected (code={:?}): {}",
-            reject.code,
-            reject.message
-        )),
-        other => Err(anyhow!(
-            "unexpected handshake frame: {}",
-            wire_frame_type(&other)
-        )),
+        WireFrame::Reject(reject) => {
+            let latency_ms = start.map(|start| start.elapsed().as_secs_f64() * 1000.0);
+            tracing::debug!(
+                target: TRACE_TARGET,
+                event = "handshake_end",
+                role = "worker",
+                status = "rejected",
+                reject_code = ?reject.code,
+                latency_ms,
+                message = %reject.message
+            );
+
+            Err(anyhow!(
+                "handshake rejected (code={:?}): {}",
+                reject.code,
+                reject.message
+            ))
+        }
+        other => {
+            let frame_type = wire_frame_type(&other);
+            let latency_ms = start.map(|start| start.elapsed().as_secs_f64() * 1000.0);
+            tracing::debug!(
+                target: TRACE_TARGET,
+                event = "handshake_end",
+                role = "worker",
+                status = "error",
+                latency_ms,
+                frame_type
+            );
+            Err(anyhow!("unexpected handshake frame: {frame_type}"))
+        }
     }
 }
 
@@ -432,7 +497,42 @@ async fn server_handshake(
     stream: &mut BoxedStream,
     config: &ServerConfig,
 ) -> Result<(RouterWelcome, ShardId, bool)> {
-    let frame = read_wire_frame(stream, config.pre_handshake_max_frame_len).await?;
+    let start =
+        tracing::enabled!(target: TRACE_TARGET, level: tracing::Level::DEBUG).then(Instant::now);
+
+    tracing::debug!(
+        target: TRACE_TARGET,
+        event = "handshake_start",
+        role = "router",
+        supported_versions = ?config.supported_versions,
+        capabilities = ?config.capabilities,
+        auth_required = config.expected_auth_token.is_some()
+    );
+
+    let frame = match read_wire_frame(stream, config.pre_handshake_max_frame_len).await {
+        Ok(frame) => frame,
+        Err(err) => {
+            if let Some(start) = start {
+                tracing::debug!(
+                    target: TRACE_TARGET,
+                    event = "handshake_end",
+                    role = "router",
+                    status = "error",
+                    latency_ms = start.elapsed().as_secs_f64() * 1000.0,
+                    error = %err
+                );
+            } else {
+                tracing::debug!(
+                    target: TRACE_TARGET,
+                    event = "handshake_end",
+                    role = "router",
+                    status = "error",
+                    error = %err
+                );
+            }
+            return Err(err);
+        }
+    };
     let hello = match frame {
         WireFrame::Hello(hello) => hello,
         other => {
@@ -444,6 +544,16 @@ async fn server_handshake(
             let reject_frame = WireFrame::Reject(reject);
             let _ =
                 write_wire_frame(stream, config.pre_handshake_max_frame_len, &reject_frame).await;
+            let latency_ms = start.map(|start| start.elapsed().as_secs_f64() * 1000.0);
+            tracing::debug!(
+                target: TRACE_TARGET,
+                event = "handshake_end",
+                role = "router",
+                status = "rejected",
+                reject_code = ?RejectCode::InvalidRequest,
+                latency_ms,
+                message = "expected hello"
+            );
             return Err(anyhow!(
                 "invalid handshake: expected hello, got {frame_type}"
             ));
@@ -452,15 +562,14 @@ async fn server_handshake(
 
     tracing::debug!(
         target: TRACE_TARGET,
-        event = "handshake_start",
+        event = "handshake_hello",
         role = "router",
         shard_id = hello.shard_id,
-        supported_versions = ?config.supported_versions,
-        capabilities = ?config.capabilities,
         peer_supported_versions = ?hello.supported_versions,
         peer_capabilities = ?hello.capabilities,
         peer_auth_present = hello.auth_token.is_some(),
-        auth_required = config.expected_auth_token.is_some()
+        cached_index_present = hello.cached_index_info.is_some(),
+        worker_build_present = hello.worker_build.is_some()
     );
 
     if let Some(expected) = config.expected_auth_token.as_deref() {
@@ -476,6 +585,15 @@ async fn server_handshake(
                 &WireFrame::Reject(reject.clone()),
             )
             .await?;
+            let latency_ms = start.map(|start| start.elapsed().as_secs_f64() * 1000.0);
+            tracing::debug!(
+                target: TRACE_TARGET,
+                event = "handshake_end",
+                role = "router",
+                status = "rejected",
+                reject_code = ?RejectCode::Unauthorized,
+                latency_ms
+            );
             return Err(anyhow!("handshake rejected: unauthorized"));
         }
     }
@@ -494,6 +612,15 @@ async fn server_handshake(
             &WireFrame::Reject(reject),
         )
         .await;
+        let latency_ms = start.map(|start| start.elapsed().as_secs_f64() * 1000.0);
+        tracing::debug!(
+            target: TRACE_TARGET,
+            event = "handshake_end",
+            role = "router",
+            status = "rejected",
+            reject_code = ?RejectCode::UnsupportedVersion,
+            latency_ms
+        );
         return Err(anyhow!("handshake rejected: unsupported version"));
     };
 
@@ -511,6 +638,15 @@ async fn server_handshake(
                     &WireFrame::Reject(reject),
                 )
                 .await;
+                let latency_ms = start.map(|start| start.elapsed().as_secs_f64() * 1000.0);
+                tracing::debug!(
+                    target: TRACE_TARGET,
+                    event = "handshake_end",
+                    role = "router",
+                    status = "rejected",
+                    reject_code = ?RejectCode::InvalidRequest,
+                    latency_ms
+                );
                 return Err(err).context("handshake rejected: incompatible capabilities");
             }
         };
@@ -530,16 +666,19 @@ async fn server_handshake(
     )
     .await?;
 
+    let latency_ms = start.map(|start| start.elapsed().as_secs_f64() * 1000.0);
     tracing::debug!(
         target: TRACE_TARGET,
         event = "handshake_end",
         role = "router",
+        status = "ok",
         worker_id = welcome.worker_id,
         shard_id = welcome.shard_id,
         revision = welcome.revision,
         negotiated_version = ?welcome.chosen_version,
         negotiated_capabilities = ?welcome.chosen_capabilities,
-        peer_auth_present = hello.auth_token.is_some()
+        peer_auth_present = hello.auth_token.is_some(),
+        latency_ms
     );
 
     Ok((welcome, hello.shard_id, hello.auth_token.is_some()))
