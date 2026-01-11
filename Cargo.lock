@@ -4092,6 +4092,9 @@ dependencies = [
  "anyhow",
  "getrandom 0.2.16",
  "hex",
+ "nova-bugreport",
+ "nova-cache",
+ "nova-config",
  "nova-fuzzy",
  "nova-index",
  "nova-remote-proto",
@@ -4104,6 +4107,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-rustls 0.26.4",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 
@@ -4226,7 +4230,9 @@ name = "nova-worker"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "nova-bugreport",
  "nova-cache",
+ "nova-config",
  "nova-fuzzy",
  "nova-index",
  "nova-lsp",
@@ -4238,6 +4244,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-rustls 0.26.4",
+ "tracing",
 ]
 
 [[package]]

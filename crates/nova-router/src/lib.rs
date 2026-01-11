@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context};
+use nova_bugreport::{install_panic_hook, PanicHookConfig};
+use nova_config::{init_tracing_with_config, NovaConfig};
 use nova_fuzzy::{FuzzyMatcher, MatchScore, TrigramIndex, TrigramIndexBuilder};
 use nova_remote_proto::{
     FileText, RpcMessage, ScoredSymbol, ShardId, ShardIndex, ShardIndexInfo, Symbol, WorkerId,
@@ -18,6 +20,7 @@ use tokio::process::Command;
 use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify, RwLock};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{timeout, Duration, Instant};
+use tracing::{error, info, warn};
 
 #[cfg(unix)]
 use tokio::net::UnixListener;
@@ -31,6 +34,24 @@ mod supervisor;
 use supervisor::RestartBackoff;
 
 pub type Result<T> = anyhow::Result<T>;
+
+/// Initialize structured logging and install the global panic hook used by Nova.
+///
+/// `nova-router` is typically embedded within `nova-lsp`, which is responsible
+/// for calling this early during startup. Standalone router binaries can use
+/// this helper directly.
+pub fn init_observability(
+    config: &NovaConfig,
+    notifier: Arc<dyn Fn(&str) + Send + Sync + 'static>,
+) {
+    let _ = init_tracing_with_config(config);
+    install_panic_hook(
+        PanicHookConfig {
+            include_backtrace: config.logging.include_backtrace,
+        },
+        notifier,
+    );
+}
 
 const WORKSPACE_SYMBOL_LIMIT: usize = 200;
 const FALLBACK_SCAN_LIMIT: usize = 50_000;
@@ -456,6 +477,13 @@ impl DistributedRouter {
         config.validate()?;
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
+        info!(
+            listen_addr = ?config.listen_addr,
+            spawn_workers = config.spawn_workers,
+            cache_dir = %config.cache_dir.display(),
+            worker_command = %config.worker_command.display(),
+            "starting distributed router"
+        );
         let mut shards = HashMap::new();
         for (idx, root) in layout.source_roots.iter().enumerate() {
             shards.insert(
@@ -479,8 +507,13 @@ impl DistributedRouter {
         let accept_state = state.clone();
         let accept_shutdown_rx = shutdown_rx.clone();
         let accept_task = tokio::spawn(async move {
+            let listen_addr = accept_state.config.listen_addr.clone();
             if let Err(err) = accept_loop(accept_state, accept_shutdown_rx).await {
-                eprintln!("router accept loop terminated: {err:?}");
+                error!(
+                    listen_addr = ?listen_addr,
+                    error = ?err,
+                    "router accept loop terminated"
+                );
             }
         });
 
@@ -595,9 +628,12 @@ impl DistributedRouter {
     }
 
     async fn workspace_symbols(&self, query: &str) -> Vec<Symbol> {
-        let workers: Vec<WorkerHandle> = {
+        let workers: Vec<(ShardId, WorkerHandle)> = {
             let guard = self.state.shards.lock().await;
-            guard.values().filter_map(|s| s.worker.clone()).collect()
+            guard
+                .iter()
+                .filter_map(|(shard_id, shard)| shard.worker.clone().map(|w| (*shard_id, w)))
+                .collect()
         };
 
         if workers.is_empty() {
@@ -606,35 +642,47 @@ impl DistributedRouter {
 
         let mut tasks = JoinSet::new();
         let query = query.to_string();
-        for worker in workers {
+        for (shard_id, worker) in workers {
             let query = query.clone();
+            let worker_id = worker.worker_id;
             tasks.spawn(async move {
-                worker
+                let resp = worker
                     .request(RpcMessage::SearchSymbols {
                         query,
                         limit: WORKSPACE_SYMBOL_LIMIT as u32,
                     })
-                    .await
+                    .await;
+                (shard_id, worker_id, resp)
             });
         }
 
         let mut merged = Vec::new();
         while let Some(res) = tasks.join_next().await {
             match res {
-                Ok(Ok(RpcMessage::SearchSymbolsResult { items })) => {
+                Ok((shard_id, worker_id, Ok(RpcMessage::SearchSymbolsResult { items }))) => {
                     merged.extend(items);
                 }
-                Ok(Ok(RpcMessage::Error { message })) => {
-                    eprintln!("worker returned error for symbol search: {message}");
+                Ok((shard_id, worker_id, Ok(RpcMessage::Error { message }))) => {
+                    warn!(
+                        shard_id,
+                        worker_id,
+                        message = %message,
+                        "worker returned error for symbol search"
+                    );
                 }
-                Ok(Ok(other)) => {
-                    eprintln!("unexpected worker response for symbol search: {other:?}");
+                Ok((shard_id, worker_id, Ok(other))) => {
+                    warn!(
+                        shard_id,
+                        worker_id,
+                        response = ?other,
+                        "unexpected worker response for symbol search"
+                    );
                 }
-                Ok(Err(err)) => {
-                    eprintln!("symbol search request failed: {err:?}");
+                Ok((shard_id, worker_id, Err(err))) => {
+                    warn!(shard_id, worker_id, error = ?err, "symbol search request failed");
                 }
                 Err(err) => {
-                    eprintln!("symbol search task failed: {err:?}");
+                    error!(error = ?err, "symbol search task failed");
                 }
             }
         }
@@ -754,7 +802,7 @@ async fn accept_loop_unix(
                 let (stream, _) = res.with_context(|| format!("accept unix socket {path:?}"))?;
                 let boxed: BoxedStream = Box::new(stream);
                 if let Err(err) = handle_new_connection(state.clone(), boxed, WorkerIdentity::Unauthenticated).await {
-                    eprintln!("failed to handle worker connection: {err:?}");
+                    warn!(socket_path = %path.display(), error = ?err, "failed to handle worker connection");
                 }
             }
         }
@@ -782,7 +830,7 @@ async fn accept_loop_named_pipe(
                 res.with_context(|| format!("accept named pipe {name}"))?;
                 let stream: BoxedStream = Box::new(server);
                 if let Err(err) = handle_new_connection(state.clone(), stream, WorkerIdentity::Unauthenticated).await {
-                    eprintln!("failed to handle worker connection: {err:?}");
+                    warn!(pipe_name = %name, error = ?err, "failed to handle worker connection");
                 }
                 server = ipc_security::create_secure_named_pipe_server(&name, false)
                     .with_context(|| format!("create named pipe {name}"))?;
@@ -835,13 +883,18 @@ async fn accept_loop_tcp(
                             (Box::new(accepted.stream), identity)
                         }
                         Err(err) => {
-                            eprintln!("tls accept failed from {peer_addr}: {err:?}");
+                            warn!(peer_addr = %peer_addr, error = ?err, "tls accept failed");
                             continue;
                         }
                     },
                 };
                 if let Err(err) = handle_new_connection(state.clone(), boxed, identity).await {
-                    eprintln!("failed to handle worker connection from {peer_addr}: {err:?}");
+                    warn!(
+                        peer_addr = %peer_addr,
+                        identity = ?identity,
+                        error = ?err,
+                        "failed to handle worker connection"
+                    );
                 }
             }
         }
@@ -892,6 +945,7 @@ async fn handle_new_connection(
 
     if let Some(expected) = state.config.auth_token.as_ref() {
         if auth_token.as_deref() != Some(expected.as_str()) {
+            warn!(shard_id, "worker authentication failed");
             write_message(
                 &mut stream,
                 &RpcMessage::Error {
@@ -991,6 +1045,8 @@ async fn handle_new_connection(
     )
     .await?;
 
+    info!(shard_id, worker_id, has_cached_index, "worker connected");
+
     let (tx, rx) = mpsc::unbounded_channel::<WorkerRequest>();
     let handle = WorkerHandle { worker_id, tx };
 
@@ -1005,6 +1061,7 @@ async fn handle_new_connection(
     let cleanup_state = state.clone();
     tokio::spawn(async move {
         let _ = worker_connection_loop(stream, rx).await;
+        info!(shard_id, worker_id, "worker connection closed");
         let mut guard = cleanup_state.shards.lock().await;
         if let Some(shard) = guard.get_mut(&shard_id) {
             if shard
@@ -1034,7 +1091,13 @@ async fn handle_new_connection(
             let files = match collect_java_files(&root).await {
                 Ok(files) => files,
                 Err(err) => {
-                    eprintln!("failed to load shard files for worker restart: {err:?}");
+                    warn!(
+                        shard_id,
+                        worker_id = refresh_handle.worker_id,
+                        root = %root.display(),
+                        error = ?err,
+                        "failed to load shard files for worker restart"
+                    );
                     return;
                 }
             };
@@ -1135,8 +1198,13 @@ async fn worker_supervisor_loop(
             Ok(child) => child,
             Err(err) => {
                 let delay = backoff.next_delay();
-                eprintln!(
-                    "failed to spawn worker for shard {shard_id} (attempt {attempt}); retrying in {delay:?}: {err:?}"
+                warn!(
+                    shard_id,
+                    attempt,
+                    delay = ?delay,
+                    worker_command = %state.config.worker_command.display(),
+                    error = ?err,
+                    "failed to spawn worker; retrying"
                 );
                 tokio::select! {
                     _ = shutdown_rx.changed() => {},
@@ -1145,6 +1213,7 @@ async fn worker_supervisor_loop(
                 continue;
             }
         };
+        info!(shard_id, pid = ?child.id(), "spawned worker process");
 
         if let Some(stdout) = child.stdout.take() {
             tokio::spawn(drain_worker_output(shard_id, "stdout", stdout));
@@ -1189,7 +1258,7 @@ async fn worker_supervisor_loop(
                     match status {
                         Ok(status) => break SpawnEvent::Exited(status),
                         Err(err) => {
-                            eprintln!("failed to wait on worker for shard {shard_id}: {err:?}");
+                            warn!(shard_id, attempt, error = ?err, "failed to wait on worker during handshake");
                             break SpawnEvent::HandshakeTimeout;
                         }
                     }
@@ -1206,16 +1275,22 @@ async fn worker_supervisor_loop(
                 return;
             }
             SpawnEvent::HandshakeTimeout => {
-                eprintln!(
-                    "worker for shard {shard_id} (attempt {attempt}) did not complete handshake within {WORKER_HANDSHAKE_TIMEOUT:?}; restarting"
+                warn!(
+                    shard_id,
+                    attempt,
+                    timeout = ?WORKER_HANDSHAKE_TIMEOUT,
+                    "worker did not complete handshake; restarting"
                 );
                 let _ = child.start_kill();
                 let status = child.wait().await.ok();
                 (false, status)
             }
             SpawnEvent::Exited(status) => {
-                eprintln!(
-                    "worker for shard {shard_id} (attempt {attempt}) exited before handshake: {status:?}"
+                warn!(
+                    shard_id,
+                    attempt,
+                    status = ?status,
+                    "worker exited before handshake"
                 );
                 (false, Some(status))
             }
@@ -1223,9 +1298,7 @@ async fn worker_supervisor_loop(
                 worker_id,
                 connected_at,
             } => {
-                eprintln!(
-                    "worker for shard {shard_id} connected (worker_id {worker_id}, attempt {attempt})"
-                );
+                info!(shard_id, worker_id, attempt, "worker connected");
 
                 enum SessionEvent {
                     Shutdown,
@@ -1254,7 +1327,7 @@ async fn worker_supervisor_loop(
                             match status {
                                 Ok(status) => break SessionEvent::Exited(status),
                                 Err(err) => {
-                                    eprintln!("failed to wait on worker for shard {shard_id}: {err:?}");
+                                    warn!(shard_id, worker_id, error = ?err, "failed to wait on worker");
                                     break SessionEvent::Disconnected;
                                 }
                             }
@@ -1273,13 +1346,24 @@ async fn worker_supervisor_loop(
                         return;
                     }
                     SessionEvent::Disconnected => {
-                        eprintln!("worker for shard {shard_id} disconnected after {session_duration:?}; restarting");
+                        warn!(
+                            shard_id,
+                            worker_id,
+                            session_duration = ?session_duration,
+                            "worker disconnected; restarting"
+                        );
                         let _ = child.start_kill();
                         let status = child.wait().await.ok();
                         (stable, status)
                     }
                     SessionEvent::Exited(status) => {
-                        eprintln!("worker for shard {shard_id} exited after {session_duration:?}: {status:?}");
+                        warn!(
+                            shard_id,
+                            worker_id,
+                            session_duration = ?session_duration,
+                            status = ?status,
+                            "worker exited; restarting"
+                        );
                         (stable, Some(status))
                     }
                 }
@@ -1291,11 +1375,11 @@ async fn worker_supervisor_loop(
         }
 
         if let Some(status) = exit_status {
-            eprintln!("worker for shard {shard_id} restart scheduled after exit: {status:?}");
+            info!(shard_id, status = ?status, "scheduling worker restart after exit");
         }
 
         let delay = backoff.next_delay();
-        eprintln!("restarting worker for shard {shard_id} in {delay:?}");
+        info!(shard_id, delay = ?delay, "restarting worker");
         tokio::select! {
             _ = shutdown_rx.changed() => {},
             _ = tokio::time::sleep(delay) => {},
@@ -1315,13 +1399,23 @@ where
             Ok(0) => return,
             Ok(_) => {
                 let line = String::from_utf8_lossy(&buf);
-                eprintln!(
-                    "[worker shard {shard_id} {label}] {}",
-                    line.trim_end_matches(&['\r', '\n'][..])
+                let line = line.trim_end_matches(&['\r', '\n'][..]);
+                info!(
+                    target = "nova.worker.output",
+                    shard_id,
+                    stream = label,
+                    line = %line,
+                    "worker output"
                 );
             }
             Err(err) => {
-                eprintln!("[worker shard {shard_id} {label}] output error: {err:?}");
+                warn!(
+                    target = "nova.worker.output",
+                    shard_id,
+                    stream = label,
+                    error = ?err,
+                    "worker output error"
+                );
                 return;
             }
         }

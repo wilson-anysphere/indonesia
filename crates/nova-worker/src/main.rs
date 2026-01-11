@@ -1,15 +1,19 @@
 use std::collections::HashMap;
+use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
+use nova_bugreport::{install_panic_hook, PanicHookConfig};
+use nova_config::{init_tracing_with_config, NovaConfig};
 use nova_fuzzy::{FuzzyMatcher, MatchKind, MatchScore, TrigramIndex, TrigramIndexBuilder};
 use nova_remote_proto::{
     RpcMessage, ScoredSymbol, ShardId, ShardIndex, ShardIndexInfo, SymbolRankKey, WorkerStats,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tracing::{error, info, warn};
 
 #[cfg(unix)]
 use tokio::net::UnixStream;
@@ -26,6 +30,30 @@ const FALLBACK_SCAN_LIMIT: usize = 50_000;
 async fn main() -> Result<()> {
     let args = Args::parse()?;
 
+    let config = NovaConfig::default();
+    let _ = init_tracing_with_config(&config);
+    install_panic_hook(
+        PanicHookConfig {
+            include_backtrace: config.logging.include_backtrace,
+        },
+        Arc::new(|message| {
+            let _ = writeln!(std::io::stderr(), "{message}");
+        }),
+    );
+
+    let span = tracing::info_span!(
+        "nova.worker",
+        shard_id = args.shard_id,
+        worker_id = tracing::field::Empty
+    );
+    let _guard = span.enter();
+
+    info!(
+        connect = ?args.connect,
+        cache_dir = %args.cache_dir.display(),
+        "starting worker"
+    );
+
     match (&args.connect, args.auth_token.as_ref()) {
         (ConnectAddr::Tcp(addr), Some(_)) if !args.allow_insecure => {
             return Err(anyhow!(
@@ -35,13 +63,15 @@ Use `tcp+tls:` or pass `--allow-insecure` for local testing."
             ));
         }
         (ConnectAddr::Tcp(addr), Some(_)) => {
-            eprintln!(
-                "WARNING: connecting to {addr} via plaintext TCP with an auth token; this will send the token and shard source code in cleartext."
+            warn!(
+                addr = %addr,
+                "connecting via plaintext TCP with an auth token; this will send the token and shard source code in cleartext"
             );
         }
         (ConnectAddr::Tcp(addr), None) => {
-            eprintln!(
-                "WARNING: connecting to {addr} via plaintext TCP (`tcp:`); traffic is unencrypted. Prefer `tcp+tls:` for remote connections."
+            warn!(
+                addr = %addr,
+                "connecting via plaintext TCP (`tcp:`); traffic is unencrypted; prefer `tcp+tls:` for remote connections"
             );
         }
         _ => {}
@@ -89,11 +119,11 @@ Use `tcp+tls:` or pass `--allow-insecure` for local testing."
     {
         Ok(Ok(index)) => index,
         Ok(Err(err)) => {
-            eprintln!("failed to load shard cache: {err:?}");
+            warn!(error = ?err, "failed to load shard cache");
             None
         }
         Err(err) => {
-            eprintln!("failed to join shard cache task: {err:?}");
+            warn!(error = ?err, "failed to join shard cache task");
             None
         }
     };
@@ -110,18 +140,42 @@ Use `tcp+tls:` or pass `--allow-insecure` for local testing."
     .await?;
 
     let ack = read_message(&mut stream).await?;
-    match ack {
+    let (worker_id, shard_id, revision, protocol_version) = match ack {
         RpcMessage::RouterHello {
+            worker_id,
             shard_id,
+            revision,
             protocol_version,
             ..
-        } if shard_id == args.shard_id
-            && protocol_version == nova_remote_proto::PROTOCOL_VERSION => {}
+        } => (worker_id, shard_id, revision, protocol_version),
         other => return Err(anyhow!("unexpected router hello: {other:?}")),
+    };
+
+    if shard_id != args.shard_id {
+        return Err(anyhow!(
+            "router hello shard mismatch: expected {}, got {}",
+            args.shard_id,
+            shard_id
+        ));
     }
 
+    if protocol_version != nova_remote_proto::PROTOCOL_VERSION {
+        return Err(anyhow!(
+            "router hello protocol version mismatch: expected {}, got {}",
+            nova_remote_proto::PROTOCOL_VERSION,
+            protocol_version
+        ));
+    }
+
+    span.record("worker_id", worker_id);
+    info!(worker_id, revision, protocol_version, "connected to router");
+
     let mut state = WorkerState::new(args.shard_id, args.cache_dir, cached_index);
-    state.run(&mut stream).await?;
+    if let Err(err) = state.run(&mut stream).await {
+        error!(error = ?err, "worker terminated with error");
+        return Err(err);
+    }
+    info!("worker shutdown");
 
     Ok(())
 }

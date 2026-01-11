@@ -16,8 +16,12 @@ tls = [
 anyhow.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 getrandom = "0.2"
 
+nova-cache = { path = "../nova-cache" }
+nova-bugreport = { path = "../nova-bugreport" }
+nova-config = { path = "../nova-config" }
 nova-fuzzy = { path = "../nova-fuzzy" }
 nova-index = { path = "../nova-index" }
 nova-remote-proto = { path = "../nova-remote-proto" }
