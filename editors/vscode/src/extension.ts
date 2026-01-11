@@ -626,11 +626,17 @@ export async function activate(context: vscode.ExtensionContext) {
         `Nova: Failed to install nova-lsp: ${message}`,
         'Show Output',
         'Use Local Server Binary...',
+        'Open Settings',
+        'Open install docs',
       );
       if (action === 'Show Output') {
         serverOutput.show(true);
       } else if (action === 'Use Local Server Binary...') {
         await useLocalServerBinary();
+      } else if (action === 'Open Settings') {
+        await vscode.commands.executeCommand('workbench.action.openSettings', 'nova.download');
+      } else if (action === 'Open install docs') {
+        await openInstallDocs(context);
       }
     }
   }

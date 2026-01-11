@@ -41,6 +41,7 @@ npm run compile
 
 - **Nova: Install/Update Server** (`nova.installOrUpdateServer`)
   - Downloads and installs `nova-lsp` into VS Code global storage, verifying SHA-256 against the published release checksums.
+  - If checksums are missing, Nova refuses to install; use `nova.server.path` to point at a trusted local build.
 
 - **Nova: Use Local Server Binary...** (`nova.useLocalServerBinary`)
   - Sets `nova.server.path` to a local `nova-lsp` binary.
@@ -114,6 +115,7 @@ Tests are discovered via `nova/test/discover` and can be run from the Test Explo
 Nova contributes a `nova` debug type backed by the `nova-dap` binary (DAP over stdio).
 
 If Nova can't find a usable `nova-dap` (via `nova.dap.path` or on `$PATH`), it can download and install a matching version into VS Code global storage (controlled by `nova.download.mode`).
+Managed downloads are verified via published SHA-256 checksums; if checksums are missing, use `nova.dap.path` instead.
 
 ### Attach configuration
 
@@ -148,6 +150,7 @@ Nova adds a **Debug** run profile alongside **Run**. Debugging a test will:
 
 These settings control managed downloads for both `nova-lsp` and `nova-dap`:
 
+- Managed downloads are verified via published SHA-256 checksums. If checksums are missing for a release asset, Nova refuses to install it.
 - `nova.download.mode` ("auto" | "prompt" | "off"): download missing binaries automatically, prompt, or never download (default: "prompt").
 - `nova.download.releaseTag` (string): release tag to download from (default: `v${extensionVersion}` for packaged releases).
 - `nova.download.baseUrl` (string): GitHub Releases download base URL (e.g. `https://github.com/<owner>/<repo>/releases/download`). Used to locate the repository + assets.
