@@ -852,4 +852,46 @@ mod tests {
         assert!(!logs.contains("SUPERSECRET-TOKEN"));
         assert!(logs.contains("<redacted>"));
     }
+
+    #[test]
+    fn persisted_crashes_are_loaded_and_included_in_bundle() {
+        let dir = tempfile::tempdir().expect("tempdir should succeed");
+        let crash_log = dir.path().join("crashes.jsonl");
+
+        let record = CrashRecord {
+            timestamp_unix_ms: 123,
+            message: "boom".to_owned(),
+            location: None,
+            backtrace: None,
+        };
+        append_crash_record(&crash_log, &record).expect("append crash record should succeed");
+
+        let crash_store = CrashStore::new(10);
+        crash_store.load_from_file(&crash_log);
+        assert_eq!(crash_store.snapshot().len(), 1);
+
+        let config = NovaConfig::default();
+        let buffer = LogBuffer::new(1);
+        let perf = PerfStats::default();
+
+        let bundle = BugReportBuilder::new(&config, &buffer, &CrashStore::new(10), &perf)
+            .persisted_crash_log_path(Some(crash_log))
+            .create_archive(false)
+            .build()
+            .expect("bundle creation failed");
+
+        let crashes_text =
+            std::fs::read_to_string(bundle.path().join("crashes.json")).expect("crashes read failed");
+        let crashes: serde_json::Value =
+            serde_json::from_str(&crashes_text).expect("crashes json should parse");
+        let persisted = crashes
+            .get("persisted")
+            .and_then(|v| v.as_array())
+            .expect("persisted crashes should be an array");
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(
+            persisted[0].get("message").and_then(|v| v.as_str()),
+            Some("boom")
+        );
+    }
 }
