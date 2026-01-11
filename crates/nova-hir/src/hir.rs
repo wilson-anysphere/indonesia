@@ -146,6 +146,8 @@ impl Body {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Local {
+    pub ty_text: String,
+    pub ty_range: Span,
     pub name: String,
     pub name_range: Span,
     pub range: Span,
@@ -175,6 +177,12 @@ pub enum Stmt {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LiteralKind {
+    Int,
+    String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     Name {
@@ -182,6 +190,7 @@ pub enum Expr {
         range: Span,
     },
     Literal {
+        kind: LiteralKind,
         value: String,
         range: Span,
     },

@@ -1,7 +1,7 @@
-use nova_hir::hir::{Body, Expr, ExprId, Stmt};
+use nova_hir::hir::{Body, Expr, ExprId, LiteralKind, Stmt};
 use nova_hir::queries::{body, constructor_body, initializer_body, item_tree, HirDatabase};
-use nova_vfs::FileId;
 use nova_types::Span;
+use nova_vfs::FileId;
 use std::sync::Arc;
 
 struct TestDb {
@@ -158,6 +158,16 @@ class Foo {
         .map(|(_, local)| local.name.as_str())
         .collect();
     assert_eq!(local_names, vec!["z"]);
+    let (_, local_z) = body
+        .locals
+        .iter()
+        .find(|(_, local)| local.name == "z")
+        .expect("z local");
+    assert_eq!(local_z.ty_text, "int");
+    assert_eq!(
+        &source[local_z.ty_range.start..local_z.ty_range.end],
+        local_z.ty_text
+    );
 
     let mut call_paths = Vec::new();
     for (id, expr) in body.exprs.iter() {
@@ -339,6 +349,49 @@ class Foo {
         }
     }
     assert!(returns_t);
+}
+
+#[test]
+fn lower_local_types_and_literal_kinds() {
+    let source = r#"
+class Foo {
+    void m() {
+        int n = 1;
+        String s = "hi";
+    }
+}
+"#;
+
+    let db = TestDb {
+        files: vec![Arc::from(source)],
+    };
+    let file = FileId::from_raw(0);
+
+    let tree = item_tree(&db, file);
+    assert_eq!(tree.methods.len(), 1);
+    let method_id = nova_hir::ids::MethodId::new(file, 0);
+    let body = body(&db, method_id);
+
+    let locals: Vec<_> = body
+        .locals
+        .iter()
+        .map(|(_, local)| (local.name.as_str(), local.ty_text.as_str()))
+        .collect();
+    assert_eq!(locals, vec![("n", "int"), ("s", "String")]);
+
+    let mut int_literal = None;
+    let mut string_literal = None;
+    for (_, expr) in body.exprs.iter() {
+        if let Expr::Literal { kind, value, .. } = expr {
+            match kind {
+                LiteralKind::Int => int_literal = Some(value.clone()),
+                LiteralKind::String => string_literal = Some(value.clone()),
+            }
+        }
+    }
+
+    assert_eq!(int_literal.as_deref(), Some("1"));
+    assert_eq!(string_literal.as_deref(), Some("\"hi\""));
 }
 
 #[test]

@@ -1,4 +1,4 @@
-use crate::hir::{Arena, BinaryOp, Body, Expr, ExprId, Local, LocalId, Stmt, StmtId};
+use crate::hir::{Arena, BinaryOp, Body, Expr, ExprId, LiteralKind, Local, LocalId, Stmt, StmtId};
 use crate::ids::{
     AnnotationId, ClassId, ConstructorId, EnumId, FieldId, InitializerId, InterfaceId, MethodId,
     RecordId,
@@ -299,6 +299,8 @@ impl<'a> BodyLower<'a> {
         match stmt {
             syntax::Stmt::LocalVar(local) => {
                 let local_id = self.alloc_local(Local {
+                    ty_text: local.ty.text.clone(),
+                    ty_range: local.ty.range,
                     name: local.name.clone(),
                     name_range: local.name_range,
                     range: local.range,
@@ -336,12 +338,16 @@ impl<'a> BodyLower<'a> {
                 name: name.name.clone(),
                 range: name.range,
             }),
-            syntax::Expr::IntLiteral(lit) | syntax::Expr::StringLiteral(lit) => {
-                self.alloc_expr(Expr::Literal {
-                    value: lit.value.clone(),
-                    range: lit.range,
-                })
-            }
+            syntax::Expr::IntLiteral(lit) => self.alloc_expr(Expr::Literal {
+                kind: LiteralKind::Int,
+                value: lit.value.clone(),
+                range: lit.range,
+            }),
+            syntax::Expr::StringLiteral(lit) => self.alloc_expr(Expr::Literal {
+                kind: LiteralKind::String,
+                value: lit.value.clone(),
+                range: lit.range,
+            }),
             syntax::Expr::FieldAccess(access) => {
                 let receiver = self.lower_expr(&access.receiver);
                 self.alloc_expr(Expr::FieldAccess {
