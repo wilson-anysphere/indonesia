@@ -459,7 +459,9 @@ impl PersistentQueryCache {
             return compute();
         };
 
-        if let Ok(Some(value)) = derived.load(query_name, query_schema_version, args, input_fingerprints) {
+        if let Ok(Some(value)) =
+            derived.load(query_name, query_schema_version, args, input_fingerprints)
+        {
             return value;
         }
 
@@ -694,6 +696,29 @@ mod disk_cache_tests {
 
         let fingerprint = Fingerprint::from_bytes("key".as_bytes());
         let path = tmp.path().join(format!("{}.bin", fingerprint.as_str()));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn disk_cache_load_deletes_entries_larger_than_policy_max_bytes() {
+        let tmp = TempDir::new().unwrap();
+        let cache = QueryDiskCache::new_with_policy(
+            tmp.path(),
+            QueryDiskCachePolicy {
+                ttl_millis: u64::MAX,
+                max_bytes: 1,
+                gc_interval_millis: u64::MAX,
+            },
+        )
+        .unwrap();
+
+        let fingerprint = Fingerprint::from_bytes("key".as_bytes());
+        let path = tmp.path().join(format!("{}.bin", fingerprint.as_str()));
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(2).unwrap();
+        drop(file);
+
+        assert_eq!(cache.load("key").unwrap(), None);
         assert!(!path.exists());
     }
 
@@ -1058,9 +1083,9 @@ mod tests {
             .as_ref()
             .expect("cache1 created with memory tier")
             .evict(EvictionRequest {
-            pressure: nova_memory::MemoryPressure::Critical,
-            target_bytes: 0,
-        });
+                pressure: nova_memory::MemoryPressure::Critical,
+                target_bytes: 0,
+            });
 
         let entry_path = persisted_entry_path(&cache_dir, "type_of", 1, &args, &inputs);
 
@@ -1096,9 +1121,9 @@ mod tests {
             .as_ref()
             .expect("cache1 created with memory tier")
             .evict(EvictionRequest {
-            pressure: nova_memory::MemoryPressure::Critical,
-            target_bytes: 0,
-        });
+                pressure: nova_memory::MemoryPressure::Critical,
+                target_bytes: 0,
+            });
 
         let entry_path = persisted_entry_path(&cache_dir, "type_of", 1, &args, &inputs);
 
@@ -1134,9 +1159,9 @@ mod tests {
             .as_ref()
             .expect("cache1 created with memory tier")
             .evict(EvictionRequest {
-            pressure: nova_memory::MemoryPressure::Critical,
-            target_bytes: 0,
-        });
+                pressure: nova_memory::MemoryPressure::Critical,
+                target_bytes: 0,
+            });
 
         let entry_path = persisted_entry_path(&cache_dir, "type_of", 1, &args, &inputs);
 

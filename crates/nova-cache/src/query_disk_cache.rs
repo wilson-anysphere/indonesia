@@ -128,6 +128,10 @@ impl QueryDiskCache {
             let _ = std::fs::remove_file(&path);
             return Ok(None);
         }
+        if meta.len() > self.policy.max_bytes {
+            let _ = std::fs::remove_file(&path);
+            return Ok(None);
+        }
 
         let file = match std::fs::File::open(&path) {
             Ok(file) => file,
