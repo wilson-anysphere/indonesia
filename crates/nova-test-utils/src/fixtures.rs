@@ -131,6 +131,9 @@ fn bless_fixture_dir(dir: &Path, files: &BTreeMap<PathBuf, String>) {
 }
 
 /// A minimal multi-file fixture with `$0`, `$1`, ... markers.
+///
+/// Marker IDs must be unique across the entire fixture; duplicate IDs will
+/// panic during parsing.
 pub struct Fixture {
     pub db: Database,
     files: HashMap<Uri, String>,
@@ -175,7 +178,11 @@ impl Fixture {
             let (text, file_markers) = strip_markers(&text);
             file_texts.insert(uri.clone(), text.clone());
             for (id, offset) in file_markers {
-                markers.insert(id, (uri.clone(), offset));
+                if let Some((prev_uri, prev_offset)) = markers.insert(id, (uri.clone(), offset)) {
+                    panic!(
+                        "duplicate fixture marker ${id} (first at {prev_uri:?}:{prev_offset}, again at {uri:?}:{offset})"
+                    );
+                }
             }
             db.set_file_content(uri, text);
         }
@@ -268,24 +275,149 @@ fn strip_markers(text: &str) -> (String, Vec<(u32, usize)>) {
 
     let bytes = text.as_bytes();
     let mut i = 0usize;
+    let mut last = 0usize;
     while i < bytes.len() {
         if bytes[i] == b'$' {
             let mut j = i + 1;
-            while j < bytes.len() && (bytes[j] as char).is_ascii_digit() {
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
                 j += 1;
             }
 
             if j > i + 1 {
+                // Safe slicing: `$` and ASCII digits are always UTF-8 single-byte
+                // codepoints, so `i` and `j` are valid UTF-8 boundaries.
+                out.push_str(&text[last..i]);
                 let id: u32 = text[i + 1..j].parse().unwrap();
                 markers.push((id, out.len()));
                 i = j;
+                last = j;
                 continue;
             }
         }
 
-        out.push(bytes[i] as char);
         i += 1;
     }
 
+    out.push_str(&text[last..]);
+
     (out, markers)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use lsp_types::Position;
+    use std::str::FromStr;
+
+    #[test]
+    fn strip_markers_preserves_unicode_and_offsets() {
+        let input = "α$0😃β$10";
+        let (text, markers) = strip_markers(input);
+
+        assert_eq!(text, "α😃β");
+        assert_eq!(markers, vec![(0, "α".len()), (10, "α😃β".len())]);
+    }
+
+    #[test]
+    fn strip_markers_keeps_invalid_dollar_sequences() {
+        // `$x` and `$` at EOF are not markers and should be preserved.
+        let input = "a$x$0b$";
+        let (text, markers) = strip_markers(input);
+
+        assert_eq!(text, "a$xb$");
+        assert_eq!(markers, vec![(0, 3)]);
+    }
+
+    #[test]
+    fn fixture_marker_position_uses_utf16_columns() {
+        let fixture = Fixture::parse("//- /main.txt\na\n😃$0b");
+        let uri = fixture.marker_uri(0);
+
+        assert_eq!(fixture.marker_offset(0), "a\n😃".len());
+        assert_eq!(
+            fixture.marker_position(0),
+            Position {
+                line: 1,
+                character: 2
+            }
+        );
+
+        let roundtrip = fixture
+            .offset_for_position(&uri, fixture.marker_position(0))
+            .unwrap();
+        assert_eq!(roundtrip, fixture.marker_offset(0));
+    }
+
+    #[test]
+    fn extract_range_handles_multibyte_chars() {
+        let input = "a/*start*/α😃β/*end*/c";
+        let (text, range) = extract_range(input);
+
+        assert_eq!(text, "aα😃βc");
+        assert_eq!(&text[range.start..range.end], "α😃β");
+    }
+
+    #[test]
+    fn fixture_multi_file_multi_marker_unicode() {
+        let fixture = Fixture::parse("//- /a.txt\nα$0β$10\n//- /b.txt\n$1😃$2");
+
+        let a_uri = Uri::from_str("file:///a.txt").unwrap();
+        let b_uri = Uri::from_str("file:///b.txt").unwrap();
+
+        assert_eq!(fixture.files.get(&a_uri).unwrap(), "αβ");
+        assert_eq!(fixture.files.get(&b_uri).unwrap(), "😃");
+
+        assert_eq!(fixture.marker_uri(0), a_uri);
+        assert_eq!(fixture.marker_uri(10), Uri::from_str("file:///a.txt").unwrap());
+        assert_eq!(fixture.marker_uri(1), b_uri);
+        assert_eq!(fixture.marker_uri(2), Uri::from_str("file:///b.txt").unwrap());
+
+        assert_eq!(fixture.marker_offset(0), "α".len());
+        assert_eq!(fixture.marker_offset(10), "αβ".len());
+        assert_eq!(fixture.marker_offset(1), 0);
+        assert_eq!(fixture.marker_offset(2), "😃".len());
+
+        assert_eq!(
+            fixture.marker_position(0),
+            Position {
+                line: 0,
+                character: 1
+            }
+        );
+        assert_eq!(
+            fixture.marker_position(10),
+            Position {
+                line: 0,
+                character: 2
+            }
+        );
+        assert_eq!(
+            fixture.marker_position(1),
+            Position {
+                line: 0,
+                character: 0
+            }
+        );
+        assert_eq!(
+            fixture.marker_position(2),
+            Position {
+                line: 0,
+                character: 2
+            }
+        );
+
+        for id in [0u32, 10, 1, 2] {
+            let uri = fixture.marker_uri(id);
+            let pos = fixture.marker_position(id);
+            let off = fixture.offset_for_position(&uri, pos).unwrap();
+            assert_eq!(off, fixture.marker_offset(id));
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate fixture marker $0")]
+    fn duplicate_marker_ids_panic() {
+        let _ = Fixture::parse("//- /a.txt\n$0\n//- /b.txt\n$0");
+    }
 }
