@@ -41,6 +41,7 @@ The ADRs are normative; these pointers are only meant to make it easy to find th
 
 - **Crate-by-crate ownership map (current reality):** [`architecture-map.md`](architecture-map.md)
 - **Custom LSP methods (`nova/*`) spec:** [`protocol-extensions.md`](protocol-extensions.md)
+- **Testing & CI (how to run/update suites locally):** [`14-testing-infrastructure.md`](14-testing-infrastructure.md)
 - **ADR 0001 (Salsa / incremental engine)**:
   - `crates/nova-db/src/salsa/mod.rs` — `ra_ap_salsa` query groups, snapshots, cancellation checkpoints
 - **ADR 0002 (Rowan syntax trees)**:
