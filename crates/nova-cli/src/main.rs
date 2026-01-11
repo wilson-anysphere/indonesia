@@ -6,7 +6,7 @@ use nova_cache::{
     atomic_write, fetch_cache_package, install_cache_package, pack_cache_package, CacheConfig,
     CacheDir, CachePackageInstallOutcome,
 };
-use nova_config::{global_log_buffer, init_tracing_with_config, NovaConfig};
+use nova_config::{global_log_buffer, init_tracing_with_config, NovaConfig, NOVA_CONFIG_ENV_VAR};
 use nova_core::{
     apply_text_edits as apply_core_text_edits, LineIndex, Position, Range,
     TextEdit as CoreTextEdit, TextSize,
@@ -29,7 +29,7 @@ use nova_workspace::{
 use serde::Serialize;
 use std::{
     collections::BTreeMap,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
 };
 use tokio_util::sync::CancellationToken;
@@ -358,18 +358,7 @@ struct RenameArgs {
 fn main() {
     let cli = Cli::parse();
 
-    let config = match cli.config.as_ref() {
-        Some(path) => match NovaConfig::load_from_path(path)
-            .with_context(|| format!("load config from {}", path.display()))
-        {
-            Ok(config) => config,
-            Err(err) => {
-                eprintln!("{:#}", err);
-                std::process::exit(2);
-            }
-        },
-        None => NovaConfig::default(),
-    };
+    let config = load_config_from_cli(&cli);
 
     let _ = init_tracing_with_config(&config);
 
@@ -382,6 +371,67 @@ fn main() {
     };
 
     std::process::exit(exit_code);
+}
+
+fn load_config_from_cli(cli: &Cli) -> NovaConfig {
+    // Prefer explicit `--config` (and propagate it to nested loaders).
+    if let Some(path) = cli.config.as_ref() {
+        env::set_var(NOVA_CONFIG_ENV_VAR, path);
+        match NovaConfig::load_from_path(path)
+            .with_context(|| format!("load config from {}", path.display()))
+        {
+            Ok(config) => return config,
+            Err(err) => {
+                eprintln!("{:#}", err);
+                std::process::exit(2);
+            }
+        }
+    }
+
+    let root = config_root_from_command(&cli.command)
+        .or_else(|| env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    let root = if root.is_file() {
+        root.parent().map(Path::to_path_buf).unwrap_or(root)
+    } else {
+        root
+    };
+
+    match nova_config::load_for_workspace(&root) {
+        Ok((config, _path)) => config,
+        Err(err) => {
+            eprintln!(
+                "nova-cli: failed to load workspace config from {}: {err}",
+                root.display()
+            );
+            NovaConfig::default()
+        }
+    }
+}
+
+fn config_root_from_command(command: &Command) -> Option<PathBuf> {
+    match command {
+        Command::Index(args) => Some(args.path.clone()),
+        Command::Diagnostics(args) => Some(args.path.clone()),
+        Command::Symbols(args) => Some(args.path.clone()),
+        Command::Cache(args) => match &args.command {
+            CacheCommand::Clean(args) | CacheCommand::Status(args) | CacheCommand::Warm(args) => {
+                Some(args.path.clone())
+            }
+            CacheCommand::Pack(args) => Some(args.path.clone()),
+            CacheCommand::Install(args) => Some(args.path.clone()),
+            CacheCommand::Fetch(args) => Some(args.path.clone()),
+        },
+        Command::Parse(args) => Some(args.file.clone()),
+        Command::Format(args) => Some(args.file.clone()),
+        Command::OrganizeImports(args) => Some(args.file.clone()),
+        Command::Refactor(args) => match &args.command {
+            RefactorCommand::Rename(args) => Some(args.file.clone()),
+        },
+        // Other commands are not tied to a workspace (deps cache, perf tooling, etc).
+        Command::Deps(_) | Command::Perf(_) | Command::BugReport(_) | Command::Ai(_) => None,
+    }
 }
 
 fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
