@@ -60,14 +60,53 @@ fn index_view_filters_invalidated_files_without_materializing() {
             },
         );
     }
+    indexes.symbols.insert(
+        "OnlyA",
+        SymbolLocation {
+            file: "A.java".to_string(),
+            line: 1,
+            column: 1,
+        },
+    );
+    indexes.references.insert(
+        "OnlyA",
+        ReferenceLocation {
+            file: "A.java".to_string(),
+            line: 1,
+            column: 1,
+        },
+    );
+    indexes.annotations.insert(
+        "@OnlyA",
+        AnnotationLocation {
+            file: "A.java".to_string(),
+            line: 1,
+            column: 1,
+        },
+    );
 
     save_indexes(&cache_dir, &snapshot_v1, &indexes).unwrap();
 
     let view_v1 = load_index_view(&cache_dir, &snapshot_v1).unwrap().unwrap();
     assert!(view_v1.invalidated_files.is_empty());
     assert_eq!(view_v1.symbol_locations("Foo").count(), 2);
+    assert_eq!(view_v1.symbol_locations("OnlyA").count(), 1);
     assert_eq!(view_v1.reference_locations("Foo").count(), 2);
+    assert_eq!(view_v1.reference_locations("OnlyA").count(), 1);
     assert_eq!(view_v1.annotation_locations("@Deprecated").count(), 2);
+    assert_eq!(view_v1.annotation_locations("@OnlyA").count(), 1);
+    assert_eq!(
+        view_v1.symbol_names().collect::<Vec<_>>(),
+        vec!["Foo", "OnlyA"]
+    );
+    assert_eq!(
+        view_v1.referenced_symbols().collect::<Vec<_>>(),
+        vec!["Foo", "OnlyA"]
+    );
+    assert_eq!(
+        view_v1.annotation_names().collect::<Vec<_>>(),
+        vec!["@Deprecated", "@OnlyA"]
+    );
 
     // Change a file so its fingerprint changes; A.java entries should be filtered.
     std::fs::write(&a, "class A { void m() {} }").unwrap();
@@ -92,6 +131,10 @@ fn index_view_filters_invalidated_files_without_materializing() {
     let symbol_files: Vec<&str> = symbol_iter.map(|loc| loc.file.as_str()).collect();
     assert_eq!(symbol_files, vec!["B.java"]);
 
+    assert_eq!(view_v2.symbol_locations("OnlyA").count(), 0);
+    assert_eq!(view_v2.reference_locations("OnlyA").count(), 0);
+    assert_eq!(view_v2.annotation_locations("@OnlyA").count(), 0);
+
     let annotation_iter = {
         let name = "@Deprecated".to_string();
         view_v2.annotation_locations(&name)
@@ -105,6 +148,10 @@ fn index_view_filters_invalidated_files_without_materializing() {
     };
     let reference_files: Vec<&str> = reference_iter.map(|loc| loc.file.as_str()).collect();
     assert_eq!(reference_files, vec!["B.java"]);
+
+    assert_eq!(view_v2.symbol_names().collect::<Vec<_>>(), vec!["Foo"]);
+    assert_eq!(view_v2.referenced_symbols().collect::<Vec<_>>(), vec!["Foo"]);
+    assert_eq!(view_v2.annotation_names().collect::<Vec<_>>(), vec!["@Deprecated"]);
 }
 
 #[test]

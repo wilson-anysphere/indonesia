@@ -70,6 +70,22 @@ impl ProjectIndexesView {
         self.invalidated_files.contains(file)
     }
 
+    /// Returns all symbol names that have at least one location in a
+    /// non-invalidated file.
+    pub fn symbol_names<'a>(&'a self) -> impl Iterator<Item = &'a str> + 'a {
+        let invalidated_files = &self.invalidated_files;
+        self.symbols
+            .archived()
+            .symbols
+            .iter()
+            .filter_map(move |(name, locations)| {
+                locations
+                    .iter()
+                    .any(|loc| !invalidated_files.contains(loc.file.as_str()))
+                    .then(|| name.as_str())
+            })
+    }
+
     /// Returns symbol definition locations for `name`, filtering out any
     /// locations that come from invalidated files.
     pub fn symbol_locations<'a>(
@@ -108,6 +124,22 @@ impl ProjectIndexesView {
             })
     }
 
+    /// Returns all annotation names that have at least one location in a
+    /// non-invalidated file.
+    pub fn annotation_names<'a>(&'a self) -> impl Iterator<Item = &'a str> + 'a {
+        let invalidated_files = &self.invalidated_files;
+        self.annotations
+            .archived()
+            .annotations
+            .iter()
+            .filter_map(move |(name, locations)| {
+                locations
+                    .iter()
+                    .any(|loc| !invalidated_files.contains(loc.file.as_str()))
+                    .then(|| name.as_str())
+            })
+    }
+
     /// Returns reference locations for `symbol`, filtering out any locations
     /// that come from invalidated files.
     pub fn reference_locations<'a>(
@@ -124,6 +156,22 @@ impl ProjectIndexesView {
                 locations
                     .iter()
                     .filter(move |loc| !invalidated_files.contains(loc.file.as_str()))
+            })
+    }
+
+    /// Returns all symbols that have at least one reference location in a
+    /// non-invalidated file.
+    pub fn referenced_symbols<'a>(&'a self) -> impl Iterator<Item = &'a str> + 'a {
+        let invalidated_files = &self.invalidated_files;
+        self.references
+            .archived()
+            .references
+            .iter()
+            .filter_map(move |(symbol, locations)| {
+                locations
+                    .iter()
+                    .any(|loc| !invalidated_files.contains(loc.file.as_str()))
+                    .then(|| symbol.as_str())
             })
     }
 }
