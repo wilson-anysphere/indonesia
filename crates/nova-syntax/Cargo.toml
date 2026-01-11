@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_repr = "0.1"
+thiserror.workspace = true
 nova-core = { path = "../nova-core" }
 nova-types = { path = "../nova-types" }
 nova-memory = { path = "../nova-memory" }
