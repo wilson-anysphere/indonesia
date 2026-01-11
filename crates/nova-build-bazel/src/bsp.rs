@@ -340,8 +340,9 @@ impl BspClient {
 impl Drop for BspClient {
     fn drop(&mut self) {
         // Best-effort shutdown; ignore errors.
-        if let Some(child) = self.child.as_mut() {
+        if let Some(mut child) = self.child.take() {
             let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }
