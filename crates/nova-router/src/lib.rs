@@ -27,9 +27,9 @@ use tokio::net::UnixListener;
 
 mod ipc_security;
 
+mod supervisor;
 #[cfg(feature = "tls")]
 pub mod tls;
-mod supervisor;
 
 use supervisor::RestartBackoff;
 
@@ -64,6 +64,8 @@ const WORKER_RESTART_BACKOFF_INITIAL: Duration = Duration::from_millis(50);
 const WORKER_RESTART_BACKOFF_MAX: Duration = Duration::from_secs(5);
 const WORKER_SESSION_RESET_BACKOFF_AFTER: Duration = Duration::from_secs(10);
 const WORKER_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+const WORKER_KILL_TIMEOUT: Duration = Duration::from_secs(2);
+const WORKER_RESTART_JITTER_DIVISOR: u32 = 4;
 
 #[derive(Clone, Debug)]
 pub struct SourceRoot {
@@ -168,8 +170,7 @@ impl DistributedRouterConfig {
         #[cfg(feature = "tls")]
         {
             let allowlist = &self.tls_client_cert_fingerprint_allowlist;
-            let allowlist_configured =
-                !allowlist.global.is_empty() || !allowlist.shards.is_empty();
+            let allowlist_configured = !allowlist.global.is_empty() || !allowlist.shards.is_empty();
 
             if allowlist_configured {
                 match &self.listen_addr {
@@ -1287,6 +1288,71 @@ async fn worker_connection_loop(
     Ok(())
 }
 
+fn add_worker_restart_jitter(delay: Duration) -> Duration {
+    let max_extra = delay / WORKER_RESTART_JITTER_DIVISOR;
+    if max_extra.is_zero() {
+        return delay;
+    }
+
+    let max_extra_ms: u64 = max_extra.as_millis().try_into().unwrap_or(u64::MAX);
+    if max_extra_ms == 0 {
+        return delay;
+    }
+
+    let mut bytes = [0u8; 8];
+    if getrandom::getrandom(&mut bytes).is_err() {
+        return delay;
+    }
+
+    let rand = u64::from_le_bytes(bytes);
+    let extra_ms = rand % (max_extra_ms + 1);
+    delay + Duration::from_millis(extra_ms)
+}
+
+async fn kill_and_reap_worker(
+    shard_id: ShardId,
+    attempt: u64,
+    mut child: tokio::process::Child,
+    reason: &'static str,
+) -> Option<std::process::ExitStatus> {
+    if let Err(err) = child.start_kill() {
+        warn!(
+            shard_id,
+            attempt,
+            reason = %reason,
+            error = ?err,
+            "failed to kill worker"
+        );
+    }
+
+    match timeout(WORKER_KILL_TIMEOUT, child.wait()).await {
+        Ok(Ok(status)) => Some(status),
+        Ok(Err(err)) => {
+            warn!(
+                shard_id,
+                attempt,
+                reason = %reason,
+                error = ?err,
+                "failed to wait for worker after kill"
+            );
+            None
+        }
+        Err(_) => {
+            warn!(
+                shard_id,
+                attempt,
+                reason = %reason,
+                timeout = ?WORKER_KILL_TIMEOUT,
+                "timed out waiting for worker after kill; detaching reap task"
+            );
+            tokio::spawn(async move {
+                let _ = child.wait().await;
+            });
+            None
+        }
+    }
+}
+
 async fn worker_supervisor_loop(
     state: Arc<RouterState>,
     shard_id: ShardId,
@@ -1327,7 +1393,10 @@ async fn worker_supervisor_loop(
         }
 
         if state.config.allow_insecure_tcp
-            && matches!(state.config.listen_addr, ListenAddr::Tcp(TcpListenAddr::Plain(_)))
+            && matches!(
+                state.config.listen_addr,
+                ListenAddr::Tcp(TcpListenAddr::Plain(_))
+            )
         {
             cmd.arg("--allow-insecure");
         }
@@ -1335,10 +1404,12 @@ async fn worker_supervisor_loop(
         let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(err) => {
-                let delay = backoff.next_delay();
+                let backoff_delay = backoff.next_delay();
+                let delay = add_worker_restart_jitter(backoff_delay);
                 warn!(
                     shard_id,
                     attempt,
+                    backoff_delay = ?backoff_delay,
                     delay = ?delay,
                     worker_command = %state.config.worker_command.display(),
                     error = ?err,
@@ -1408,8 +1479,7 @@ async fn worker_supervisor_loop(
 
         let (stable_session, exit_status) = match spawn_event {
             SpawnEvent::Shutdown => {
-                let _ = child.start_kill();
-                let _ = child.wait().await;
+                let _ = kill_and_reap_worker(shard_id, attempt, child, "shutdown").await;
                 return;
             }
             SpawnEvent::HandshakeTimeout => {
@@ -1419,8 +1489,8 @@ async fn worker_supervisor_loop(
                     timeout = ?WORKER_HANDSHAKE_TIMEOUT,
                     "worker did not complete handshake; restarting"
                 );
-                let _ = child.start_kill();
-                let status = child.wait().await.ok();
+                let status =
+                    kill_and_reap_worker(shard_id, attempt, child, "handshake-timeout").await;
                 (false, status)
             }
             SpawnEvent::Exited(status) => {
@@ -1479,8 +1549,7 @@ async fn worker_supervisor_loop(
 
                 match session_event {
                     SessionEvent::Shutdown => {
-                        let _ = child.start_kill();
-                        let _ = child.wait().await;
+                        let _ = kill_and_reap_worker(shard_id, attempt, child, "shutdown").await;
                         return;
                     }
                     SessionEvent::Disconnected => {
@@ -1490,8 +1559,8 @@ async fn worker_supervisor_loop(
                             session_duration = ?session_duration,
                             "worker disconnected; restarting"
                         );
-                        let _ = child.start_kill();
-                        let status = child.wait().await.ok();
+                        let status =
+                            kill_and_reap_worker(shard_id, attempt, child, "disconnected").await;
                         (stable, status)
                     }
                     SessionEvent::Exited(status) => {
@@ -1516,8 +1585,9 @@ async fn worker_supervisor_loop(
             info!(shard_id, status = ?status, "scheduling worker restart after exit");
         }
 
-        let delay = backoff.next_delay();
-        info!(shard_id, delay = ?delay, "restarting worker");
+        let backoff_delay = backoff.next_delay();
+        let delay = add_worker_restart_jitter(backoff_delay);
+        info!(shard_id, backoff_delay = ?backoff_delay, delay = ?delay, "restarting worker");
         tokio::select! {
             _ = shutdown_rx.changed() => {},
             _ = tokio::time::sleep(delay) => {},
