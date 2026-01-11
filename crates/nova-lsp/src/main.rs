@@ -1424,6 +1424,7 @@ fn build_context_request(
         focal_code,
         enclosing_context: enclosing,
         related_symbols: Vec::new(),
+        related_code: Vec::new(),
         doc_comments: None,
         include_doc_comments: false,
         token_budget: 800,

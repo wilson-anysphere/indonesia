@@ -47,11 +47,13 @@ pub use completion_ranking::{
     CompletionRanker,
 };
 pub use completion_validation::validate_multi_token_completion;
-pub use context::{BuiltContext, ContextBuilder, ContextRequest, RelatedSymbol};
+pub use context::{BuiltContext, ContextBuilder, ContextRequest, RelatedCode, RelatedSymbol};
 pub use error::AiError;
 pub use features::NovaAi;
 pub use privacy::{PrivacyMode, RedactionConfig};
 pub use provider::MultiTokenCompletionProvider;
+#[cfg(feature = "embeddings")]
+pub use semantic_search::{Embedder, EmbeddingSemanticSearch, HashEmbedder};
 pub use semantic_search::{SearchResult, SemanticSearch, TrigramSemanticSearch};
 pub use types::{AiStream, ChatMessage, ChatRequest, ChatRole, CodeSnippet};
 

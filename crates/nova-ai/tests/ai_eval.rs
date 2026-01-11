@@ -76,6 +76,7 @@ class SecretService {
             kind: "class".to_string(),
             snippet: "class SecretService {}".to_string(),
         }],
+        related_code: vec![],
         doc_comments: Some("/** SecretService docs */".to_string()),
         include_doc_comments: true,
         token_budget: 10_000,

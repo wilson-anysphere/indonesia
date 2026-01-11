@@ -317,6 +317,10 @@ pub struct AiConfig {
     #[serde(default)]
     pub privacy: AiPrivacyConfig,
 
+    /// Local embedding model configuration used for offline semantic search.
+    #[serde(default)]
+    pub embeddings: AiEmbeddingsConfig,
+
     /// Enables AI-assisted features. When enabled, **audit** logging may be
     /// enabled separately to capture prompts and model output (sanitized).
     #[serde(default)]
@@ -358,6 +362,7 @@ impl Default for AiConfig {
         Self {
             provider: AiProviderConfig::default(),
             privacy: AiPrivacyConfig::default(),
+            embeddings: AiEmbeddingsConfig::default(),
             enabled: false,
             api_key: None,
             audit_log: AuditLogConfig::default(),
@@ -376,6 +381,48 @@ fn default_ai_cache_max_entries() -> usize {
 
 fn default_ai_cache_ttl_secs() -> u64 {
     300
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiEmbeddingsConfig {
+    /// Enable local embeddings for semantic search and context building.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Directory containing embedding model files / cache.
+    #[serde(default = "default_embeddings_model_dir")]
+    pub model_dir: PathBuf,
+
+    /// Maximum batch size for embedding requests.
+    #[serde(default = "default_embeddings_batch_size")]
+    pub batch_size: usize,
+
+    /// Soft memory budget (in bytes) for embedding models / caches.
+    #[serde(default = "default_embeddings_max_memory_bytes")]
+    pub max_memory_bytes: usize,
+}
+
+fn default_embeddings_model_dir() -> PathBuf {
+    PathBuf::from(".nova/models/embeddings")
+}
+
+fn default_embeddings_batch_size() -> usize {
+    32
+}
+
+fn default_embeddings_max_memory_bytes() -> usize {
+    512 * 1024 * 1024
+}
+
+impl Default for AiEmbeddingsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model_dir: default_embeddings_model_dir(),
+            batch_size: default_embeddings_batch_size(),
+            max_memory_bytes: default_embeddings_max_memory_bytes(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

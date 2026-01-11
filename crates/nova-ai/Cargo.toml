@@ -8,6 +8,7 @@ async-stream = "0.3"
 async-trait = "0.1"
 futures = "0.3"
 futures-timer = "3"
+hnsw_rs = { version = "0.3", optional = true }
 nova-core = { path = "../nova-core" }
 nova-fuzzy = { path = "../nova-fuzzy" }
 nova-syntax = { path = "../nova-syntax" }
@@ -24,6 +25,9 @@ url = "2"
 once_cell = "1"
 regex = "1"
 nova-config = { path = "../nova-config" }
+
+[features]
+embeddings = ["dep:hnsw_rs"]
 
 [dev-dependencies]
 httpmock = "0.7"

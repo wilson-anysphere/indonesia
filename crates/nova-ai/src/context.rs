@@ -1,6 +1,7 @@
 use crate::anonymizer::{CodeAnonymizer, CodeAnonymizerOptions};
 use crate::privacy::PrivacyMode;
 use std::ops::Range;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub struct ContextBuilder;
@@ -75,6 +76,36 @@ impl ContextBuilder {
             }
         }
 
+        // Related code snippets (typically supplied by semantic search).
+        if !req.related_code.is_empty() && remaining > 0 {
+            for related in &req.related_code {
+                if remaining == 0 {
+                    break;
+                }
+
+                let title = if req.privacy.include_file_paths {
+                    format!(
+                        "Related code: {} ({})",
+                        related.path.to_string_lossy(),
+                        related.kind
+                    )
+                } else {
+                    format!("Related code ({})", related.kind)
+                };
+
+                let (section, section_truncated, used) = build_section(
+                    &title,
+                    &related.snippet,
+                    remaining,
+                    &mut anonymizer,
+                    /*always_include=*/ false,
+                );
+                out.push_str(&section);
+                truncated |= section_truncated;
+                remaining = remaining.saturating_sub(used);
+            }
+        }
+
         if req.include_doc_comments {
             if let Some(docs) = req.doc_comments.as_deref() {
                 let (section, section_truncated, used) = build_section(
@@ -127,6 +158,7 @@ pub struct ContextRequest {
     pub focal_code: String,
     pub enclosing_context: Option<String>,
     pub related_symbols: Vec<RelatedSymbol>,
+    pub related_code: Vec<RelatedCode>,
     pub doc_comments: Option<String>,
     pub include_doc_comments: bool,
     pub token_budget: usize,
@@ -159,17 +191,50 @@ impl ContextRequest {
             focal_code,
             enclosing_context: extracted.enclosing_context,
             related_symbols: Vec::new(),
+            related_code: Vec::new(),
             doc_comments: extracted.doc_comment,
             include_doc_comments,
             token_budget,
             privacy,
         }
     }
+
+    /// Populate `related_code` using a [`crate::SemanticSearch`] implementation.
+    ///
+    /// Callers decide whether the underlying search engine is embedding-backed
+    /// (feature `embeddings`) or the built-in trigram fallback.
+    pub fn with_related_code_from_search(
+        mut self,
+        search: &dyn crate::SemanticSearch,
+        query: &str,
+        max_results: usize,
+    ) -> Self {
+        self.related_code = search
+            .search(query)
+            .into_iter()
+            .take(max_results)
+            .map(|result| RelatedCode {
+                path: result.path,
+                range: result.range,
+                kind: result.kind,
+                snippet: result.snippet,
+            })
+            .collect();
+        self
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct RelatedSymbol {
     pub name: String,
+    pub kind: String,
+    pub snippet: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct RelatedCode {
+    pub path: PathBuf,
+    pub range: Range<usize>,
     pub kind: String,
     pub snippet: String,
 }
@@ -446,6 +511,7 @@ mod tests {
                 kind: "class".to_string(),
                 snippet: "class Secret {}".to_string(),
             }],
+            related_code: vec![],
             doc_comments: Some("/** Javadoc mentioning Secret */".to_string()),
             include_doc_comments: true,
             token_budget: 20,
