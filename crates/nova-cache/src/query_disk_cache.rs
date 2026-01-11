@@ -126,36 +126,36 @@ impl QueryDiskCache {
         };
         let mut reader = BufReader::new(file);
 
-        let opts = bincode_options_limited();
-        let schema_version: u32 = match opts.deserialize_from(&mut reader) {
+        let schema_version: u32 = match bincode_options_limited().deserialize_from(&mut reader) {
             Ok(v) => v,
             Err(_) => {
                 let _ = std::fs::remove_file(&path);
                 return Ok(None);
             }
         };
-        let nova_version: String = match opts.deserialize_from(&mut reader) {
+        let nova_version: String = match bincode_options_limited().deserialize_from(&mut reader) {
             Ok(v) => v,
             Err(_) => {
                 let _ = std::fs::remove_file(&path);
                 return Ok(None);
             }
         };
-        let _saved_at_millis: u64 = match opts.deserialize_from(&mut reader) {
+        let _saved_at_millis: u64 = match bincode_options_limited().deserialize_from(&mut reader) {
             Ok(v) => v,
             Err(_) => {
                 let _ = std::fs::remove_file(&path);
                 return Ok(None);
             }
         };
-        let stored_key: String = match opts.deserialize_from(&mut reader) {
+        let stored_key: String = match bincode_options_limited().deserialize_from(&mut reader) {
             Ok(v) => v,
             Err(_) => {
                 let _ = std::fs::remove_file(&path);
                 return Ok(None);
             }
         };
-        let stored_fingerprint: Fingerprint = match opts.deserialize_from(&mut reader) {
+        let stored_fingerprint: Fingerprint =
+            match bincode_options_limited().deserialize_from(&mut reader) {
             Ok(v) => v,
             Err(_) => {
                 let _ = std::fs::remove_file(&path);
@@ -177,7 +177,7 @@ impl QueryDiskCache {
             return Ok(None);
         }
 
-        let value: Vec<u8> = match opts.deserialize_from(&mut reader) {
+        let value: Vec<u8> = match bincode_options_limited().deserialize_from(&mut reader) {
             Ok(v) => v,
             Err(_) => {
                 let _ = std::fs::remove_file(&path);
