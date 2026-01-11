@@ -626,37 +626,156 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
             .filter(|t| !t.is_empty())
             .map(str::to_string);
 
-        let cp = match config.build_system {
+        let (
+            classpath,
+            module_path,
+            source_roots,
+            source,
+            target_version,
+            release,
+            output_dir,
+            enable_preview,
+        ) = match config.build_system {
             nova_project::BuildSystem::Maven => {
-                let module_relative = normalized_target
-                    .as_deref()
-                    .filter(|t| *t != ".")
-                    .map(Path::new);
-                manager
-                    .classpath_maven(&project_root, module_relative)
-                    .map_err(map_build_error)?
+                let module_relative = normalize_maven_module_relative(normalized_target.as_deref());
+                let cfg = manager
+                    .java_compile_config_maven(&project_root, module_relative)
+                    .map_err(map_build_error)?;
+
+                let JavaCompileConfig {
+                    compile_classpath,
+                    module_path: cfg_module_path,
+                    main_source_roots,
+                    test_source_roots,
+                    main_output_dir,
+                    source: cfg_source,
+                    target: cfg_target,
+                    release: cfg_release,
+                    enable_preview,
+                    ..
+                } = cfg;
+
+                let classpath = paths_to_strings(compile_classpath.iter());
+                let module_path = if cfg_module_path.is_empty() {
+                    config
+                        .module_path
+                        .iter()
+                        .map(|entry| entry.path.to_string_lossy().to_string())
+                        .collect()
+                } else {
+                    paths_to_strings(cfg_module_path.iter())
+                };
+
+                let mut source_roots: Vec<String> = main_source_roots
+                    .iter()
+                    .chain(test_source_roots.iter())
+                    .map(|p| p.to_string_lossy().to_string())
+                    .collect();
+                source_roots.sort();
+                source_roots.dedup();
+                if source_roots.is_empty() {
+                    source_roots = config
+                        .source_roots
+                        .iter()
+                        .map(|root| root.path.to_string_lossy().to_string())
+                        .collect();
+                }
+
+                let source = cfg_source.or_else(|| Some(config.java.source.0.to_string()));
+                let target_version = cfg_target.or_else(|| Some(config.java.target.0.to_string()));
+
+                (
+                    classpath,
+                    module_path,
+                    source_roots,
+                    source,
+                    target_version,
+                    cfg_release,
+                    main_output_dir.map(|p| p.to_string_lossy().to_string()),
+                    enable_preview,
+                )
             }
             nova_project::BuildSystem::Gradle => {
-                let project_path = normalized_target.as_deref().map(|t| {
-                    if t.starts_with(':') {
-                        t.to_string()
-                    } else {
-                        format!(":{t}")
-                    }
-                });
-                let project_path = project_path.as_deref().filter(|t| *t != ":");
+                let project_path = normalize_gradle_project_path(normalized_target.as_deref());
+                let cfg = manager
+                    .java_compile_config_gradle(&project_root, project_path.as_deref())
+                    .map_err(map_build_error)?;
 
-                manager
-                    .classpath_gradle(&project_root, project_path)
-                    .map_err(map_build_error)?
+                let JavaCompileConfig {
+                    compile_classpath,
+                    module_path: cfg_module_path,
+                    main_source_roots,
+                    test_source_roots,
+                    main_output_dir,
+                    source: cfg_source,
+                    target: cfg_target,
+                    release: cfg_release,
+                    enable_preview,
+                    ..
+                } = cfg;
+
+                let classpath = paths_to_strings(compile_classpath.iter());
+                let module_path = if cfg_module_path.is_empty() {
+                    config
+                        .module_path
+                        .iter()
+                        .map(|entry| entry.path.to_string_lossy().to_string())
+                        .collect()
+                } else {
+                    paths_to_strings(cfg_module_path.iter())
+                };
+
+                let mut source_roots: Vec<String> = main_source_roots
+                    .iter()
+                    .chain(test_source_roots.iter())
+                    .map(|p| p.to_string_lossy().to_string())
+                    .collect();
+                source_roots.sort();
+                source_roots.dedup();
+                if source_roots.is_empty() {
+                    source_roots = config
+                        .source_roots
+                        .iter()
+                        .map(|root| root.path.to_string_lossy().to_string())
+                        .collect();
+                }
+
+                let source = cfg_source.or_else(|| Some(config.java.source.0.to_string()));
+                let target_version = cfg_target.or_else(|| Some(config.java.target.0.to_string()));
+
+                (
+                    classpath,
+                    module_path,
+                    source_roots,
+                    source,
+                    target_version,
+                    cfg_release,
+                    main_output_dir.map(|p| p.to_string_lossy().to_string()),
+                    enable_preview,
+                )
             }
             // For simple projects, `nova-project` is already the source of truth.
-            nova_project::BuildSystem::Simple => Classpath::new(
+            nova_project::BuildSystem::Simple => (
                 config
                     .classpath
                     .iter()
-                    .map(|entry| entry.path.clone())
+                    .map(|entry| entry.path.to_string_lossy().to_string())
                     .collect(),
+                config
+                    .module_path
+                    .iter()
+                    .map(|entry| entry.path.to_string_lossy().to_string())
+                    .collect(),
+                config
+                    .source_roots
+                    .iter()
+                    .map(|root| root.path.to_string_lossy().to_string())
+                    .collect(),
+                Some(config.java.source.0.to_string()),
+                Some(config.java.target.0.to_string()),
+                None,
+                None,
+                false,
             ),
             // Bazel workspaces are handled above via `bazel_workspace_root`.
             nova_project::BuildSystem::Bazel => {
@@ -669,26 +788,14 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
         let result = TargetClasspathResult {
             project_root: project_root.to_string_lossy().to_string(),
             target: normalized_target,
-            classpath: cp
-                .entries
-                .into_iter()
-                .map(|entry| entry.to_string_lossy().to_string())
-                .collect(),
-            module_path: config
-                .module_path
-                .iter()
-                .map(|entry| entry.path.to_string_lossy().to_string())
-                .collect(),
-            source_roots: config
-                .source_roots
-                .iter()
-                .map(|root| root.path.to_string_lossy().to_string())
-                .collect(),
-            source: Some(config.java.source.0.to_string()),
-            target_version: Some(config.java.target.0.to_string()),
-            release: None,
-            output_dir: None,
-            enable_preview: false,
+            classpath,
+            module_path,
+            source_roots,
+            source,
+            target_version,
+            release,
+            output_dir,
+            enable_preview,
         };
         serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
     }
@@ -824,17 +931,14 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
         return serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()));
     }
 
-    let config = nova_project::load_project(&requested_root)
+    let nova_config = load_workspace_config(&requested_root);
+    let mut options = LoadOptions::default();
+    options.nova_config = nova_config;
+    let config = load_project_with_options(&requested_root, &options)
         .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
     let project_root = config.workspace_root.clone();
 
     let manager = super::build_manager_for_root(&project_root, Duration::from_secs(120));
-
-    let language_level = Some(JavaLanguageLevel {
-        source: Some(config.java.source.0.to_string()),
-        target: Some(config.java.target.0.to_string()),
-        release: None,
-    });
 
     let units = match config.build_system {
         nova_project::BuildSystem::Maven => config
@@ -856,27 +960,47 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                 } else {
                     Some(Path::new(&rel))
                 };
-                let cp = manager
-                    .classpath_maven(&project_root, module_relative)
+                let cfg = manager
+                    .java_compile_config_maven(&project_root, module_relative)
                     .map_err(map_build_error)?;
 
-                let source_roots = config
-                    .source_roots
+                let JavaCompileConfig {
+                    compile_classpath,
+                    module_path,
+                    main_source_roots,
+                    test_source_roots,
+                    source,
+                    target,
+                    release,
+                    ..
+                } = cfg;
+
+                let mut source_roots: Vec<String> = main_source_roots
                     .iter()
-                    .filter(|root| root.path.starts_with(&module.root))
-                    .map(|root| root.path.to_string_lossy().to_string())
+                    .chain(test_source_roots.iter())
+                    .map(|root| root.to_string_lossy().to_string())
                     .collect();
+                source_roots.sort();
+                source_roots.dedup();
+                if source_roots.is_empty() {
+                    source_roots = config
+                        .source_roots
+                        .iter()
+                        .filter(|root| root.path.starts_with(&module.root))
+                        .map(|root| root.path.to_string_lossy().to_string())
+                        .collect();
+                }
 
                 Ok(ProjectModelUnit::Maven {
                     module: rel,
-                    compile_classpath: cp
-                        .entries
-                        .into_iter()
-                        .map(|p| p.to_string_lossy().to_string())
-                        .collect(),
-                    module_path: Vec::new(),
+                    compile_classpath: paths_to_strings(compile_classpath.iter()),
+                    module_path: paths_to_strings(module_path.iter()),
                     source_roots,
-                    language_level: language_level.clone(),
+                    language_level: Some(JavaLanguageLevel {
+                        source: source.or_else(|| Some(config.java.source.0.to_string())),
+                        target: target.or_else(|| Some(config.java.target.0.to_string())),
+                        release,
+                    }),
                 })
             })
             .collect::<Result<Vec<_>>>()?,
@@ -907,8 +1031,8 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                     out
                 };
 
-                let cp = manager
-                    .classpath_gradle(
+                let cfg = manager
+                    .java_compile_config_gradle(
                         &project_root,
                         if project_path == ":" {
                             None
@@ -918,23 +1042,43 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                     )
                     .map_err(map_build_error)?;
 
-                let source_roots = config
-                    .source_roots
+                let JavaCompileConfig {
+                    compile_classpath,
+                    module_path,
+                    main_source_roots,
+                    test_source_roots,
+                    source,
+                    target,
+                    release,
+                    ..
+                } = cfg;
+
+                let mut source_roots: Vec<String> = main_source_roots
                     .iter()
-                    .filter(|root| root.path.starts_with(&module.root))
-                    .map(|root| root.path.to_string_lossy().to_string())
+                    .chain(test_source_roots.iter())
+                    .map(|root| root.to_string_lossy().to_string())
                     .collect();
+                source_roots.sort();
+                source_roots.dedup();
+                if source_roots.is_empty() {
+                    source_roots = config
+                        .source_roots
+                        .iter()
+                        .filter(|root| root.path.starts_with(&module.root))
+                        .map(|root| root.path.to_string_lossy().to_string())
+                        .collect();
+                }
 
                 Ok(ProjectModelUnit::Gradle {
                     project_path,
-                    compile_classpath: cp
-                        .entries
-                        .into_iter()
-                        .map(|p| p.to_string_lossy().to_string())
-                        .collect(),
-                    module_path: Vec::new(),
+                    compile_classpath: paths_to_strings(compile_classpath.iter()),
+                    module_path: paths_to_strings(module_path.iter()),
                     source_roots,
-                    language_level: language_level.clone(),
+                    language_level: Some(JavaLanguageLevel {
+                        source: source.or_else(|| Some(config.java.source.0.to_string())),
+                        target: target.or_else(|| Some(config.java.target.0.to_string())),
+                        release,
+                    }),
                 })
             })
             .collect::<Result<Vec<_>>>()?,
@@ -957,7 +1101,11 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                     .map(|entry| entry.path.to_string_lossy().to_string())
                     .collect(),
                 source_roots,
-                language_level,
+                language_level: Some(JavaLanguageLevel {
+                    source: Some(config.java.source.0.to_string()),
+                    target: Some(config.java.target.0.to_string()),
+                    release: None,
+                }),
             }]
         }
         nova_project::BuildSystem::Bazel => {
@@ -1360,7 +1508,36 @@ mod tests {
         let fake_jar_str = fake_jar.to_string_lossy().to_string();
         write_executable(
             &bin_dir.join("mvn"),
-            &format!("#!/bin/sh\n\necho {}\n", &fake_jar_str),
+            &format!(
+                "#!/bin/sh\n\
+\n\
+for arg in \"$@\"; do\n\
+  case \"$arg\" in\n\
+    -Dexpression=project.compileClasspathElements|-Dexpression=project.testClasspathElements)\n\
+      echo \"{fake_jar_str}\"\n\
+      exit 0\n\
+      ;;\n\
+    -Dexpression=project.compileSourceRoots|-Dexpression=project.testCompileSourceRoots|-Dexpression=project.testSourceRoots)\n\
+      echo \"[]\"\n\
+      exit 0\n\
+      ;;\n\
+    -Dexpression=maven.compiler.source|-Dexpression=maven.compiler.target)\n\
+      echo \"17\"\n\
+      exit 0\n\
+      ;;\n\
+    -Dexpression=maven.compiler.release|-Dexpression=project.build.outputDirectory|-Dexpression=project.build.testOutputDirectory)\n\
+      echo \"null\"\n\
+      exit 0\n\
+      ;;\n\
+    -Dexpression=maven.compiler.compilerArgs|-Dexpression=maven.compiler.compilerArgument)\n\
+      echo \"null\"\n\
+      exit 0\n\
+      ;;\n\
+  esac\n\
+done\n\
+\n\
+echo \"null\"\n",
+            ),
         );
 
         std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));
