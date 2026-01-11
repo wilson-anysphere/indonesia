@@ -408,6 +408,28 @@ mod tests {
     }
 
     #[test]
+    fn file_uri_normalization_clamps_dotdot_at_root() {
+        #[cfg(not(windows))]
+        let (uri, expected) = ("file:///a/../../b.java", PathBuf::from("/b.java"));
+
+        #[cfg(windows)]
+        let (uri, expected) = ("file:///C:/a/../../b.java", PathBuf::from(r"C:\b.java"));
+
+        assert_eq!(VfsPath::uri(uri), VfsPath::Local(expected));
+    }
+
+    #[test]
+    fn file_uri_normalization_removes_dot_segments() {
+        #[cfg(not(windows))]
+        let (uri, expected) = ("file:///a/./b/./c.java", PathBuf::from("/a/b/c.java"));
+
+        #[cfg(windows)]
+        let (uri, expected) = ("file:///C:/a/./b/./c.java", PathBuf::from(r"C:\a\b\c.java"));
+
+        assert_eq!(VfsPath::uri(uri), VfsPath::Local(expected));
+    }
+
+    #[test]
     fn jar_uris_reject_entry_traversal() {
         let dir = tempfile::tempdir().unwrap();
         let archive_path = dir.path().join("lib.jar");
@@ -429,6 +451,17 @@ mod tests {
         let archive_uri = path_to_file_uri(&abs).unwrap();
 
         let uri = format!("jar:{archive_uri}!/C:/evil.class");
+        assert!(matches!(VfsPath::uri(uri), VfsPath::Uri(_)));
+    }
+
+    #[test]
+    fn jar_uris_reject_empty_segments() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive_path = dir.path().join("lib.jar");
+        let abs = AbsPathBuf::new(archive_path).unwrap();
+        let archive_uri = path_to_file_uri(&abs).unwrap();
+
+        let uri = format!("jar:{archive_uri}!/a//b.class");
         assert!(matches!(VfsPath::uri(uri), VfsPath::Uri(_)));
     }
 
