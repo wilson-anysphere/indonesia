@@ -1,9 +1,10 @@
 use crate::{NovaLspError, Result};
-use nova_build::{BuildError, BuildManager, BuildResult, Classpath};
+use nova_build::{BuildError, BuildManager, BuildResult, Classpath, JavaCompileConfig};
 use nova_cache::{CacheConfig, CacheDir};
 use nova_project::{load_project_with_options, LoadOptions};
 use serde::{Deserialize, Serialize};
 use std::{
+    borrow::Cow,
     env,
     path::{Path, PathBuf},
     time::Duration,
@@ -79,7 +80,7 @@ impl Default for LanguageLevel {
     }
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OutputDirs {
     #[serde(default)]
@@ -171,19 +172,82 @@ pub fn handle_java_classpath(params: serde_json::Value) -> Result<serde_json::Va
     let params = parse_params(params)?;
     let project_root = PathBuf::from(&params.project_root);
     let manager = super::build_manager_for_root(&project_root, Duration::from_secs(60));
-    let cp = run_classpath(&manager, &params)?;
     let metadata = load_build_metadata(&params);
+
+    let kind = detect_kind(&project_root, params.build_tool)?;
+    let compile_config = match kind {
+        BuildKind::Maven => manager.java_compile_config_maven(
+            &project_root,
+            normalize_maven_module_relative(params.module.as_deref()),
+        ),
+        BuildKind::Gradle => {
+            let project_path = normalize_gradle_project_path(params.project_path.as_deref());
+            manager.java_compile_config_gradle(&project_root, project_path.as_deref())
+        }
+    };
+
+    let (classpath, module_path, source_roots, language_level, output_dirs) = match compile_config {
+        Ok(cfg) => {
+            let classpath = paths_to_strings(cfg.compile_classpath.iter());
+            let module_path = if cfg.module_path.is_empty() {
+                metadata.module_path.clone()
+            } else {
+                paths_to_strings(cfg.module_path.iter())
+            };
+            let source_roots = {
+                let mut seen = std::collections::HashSet::new();
+                let mut roots = Vec::new();
+                for root in cfg
+                    .main_source_roots
+                    .iter()
+                    .chain(cfg.test_source_roots.iter())
+                {
+                    let s = root.to_string_lossy().to_string();
+                    if seen.insert(s.clone()) {
+                        roots.push(s);
+                    }
+                }
+                if roots.is_empty() {
+                    metadata.source_roots.clone()
+                } else {
+                    roots
+                }
+            };
+            let language_level =
+                language_level_from_java_compile_config(&cfg).unwrap_or(metadata.language_level);
+            let output_dirs = output_dirs_from_java_compile_config(&cfg)
+                .filter(|dirs| !(dirs.main.is_empty() && dirs.test.is_empty()))
+                .unwrap_or_else(|| metadata.output_dirs.clone());
+            (
+                classpath,
+                module_path,
+                source_roots,
+                language_level,
+                output_dirs,
+            )
+        }
+        Err(_) => {
+            // If the richer compile-config extraction fails, fall back to the legacy
+            // classpath computation so existing clients keep working.
+            let cp = run_classpath(&manager, &params)?;
+            let classpath = paths_to_strings(cp.entries.iter());
+            (
+                classpath,
+                metadata.module_path.clone(),
+                metadata.source_roots.clone(),
+                metadata.language_level,
+                metadata.output_dirs.clone(),
+            )
+        }
+    };
+
     let resp = NovaClasspathResponse {
-        classpath: cp
-            .entries
-            .into_iter()
-            .map(|p| p.to_string_lossy().to_string())
-            .collect(),
-        module_path: metadata.module_path,
-        source_roots: metadata.source_roots,
+        classpath,
+        module_path,
+        source_roots,
         generated_source_roots: metadata.generated_source_roots,
-        language_level: metadata.language_level,
-        output_dirs: metadata.output_dirs,
+        language_level,
+        output_dirs,
     };
     serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
 }
@@ -212,7 +276,10 @@ fn run_build(build: &BuildManager, params: &NovaProjectParams) -> Result<BuildRe
             )
             .map_err(map_build_error),
         BuildKind::Gradle => build
-            .build_gradle(&root, params.project_path.as_deref())
+            .build_gradle(
+                &root,
+                normalize_gradle_project_path(params.project_path.as_deref()).as_deref(),
+            )
             .map_err(map_build_error),
     }
 }
@@ -227,7 +294,10 @@ fn run_classpath(build: &BuildManager, params: &NovaProjectParams) -> Result<Cla
             )
             .map_err(map_build_error),
         BuildKind::Gradle => build
-            .classpath_gradle(&root, params.project_path.as_deref())
+            .classpath_gradle(
+                &root,
+                normalize_gradle_project_path(params.project_path.as_deref()).as_deref(),
+            )
             .map_err(map_build_error),
     }
 }
@@ -244,6 +314,59 @@ fn normalize_maven_module_relative(module: Option<&str>) -> Option<&Path> {
 enum BuildKind {
     Maven,
     Gradle,
+}
+
+fn normalize_gradle_project_path(project_path: Option<&str>) -> Option<Cow<'_, str>> {
+    let project_path = project_path.map(str::trim)?;
+    if project_path.is_empty() || project_path == ":" {
+        return None;
+    }
+    if project_path.starts_with(':') {
+        Some(Cow::Borrowed(project_path))
+    } else {
+        Some(Cow::Owned(format!(":{project_path}")))
+    }
+}
+
+fn paths_to_strings<'a>(paths: impl IntoIterator<Item = &'a PathBuf>) -> Vec<String> {
+    paths
+        .into_iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect()
+}
+
+fn parse_java_major(text: &str) -> Option<u16> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let trimmed = trimmed.strip_prefix("1.").unwrap_or(trimmed);
+    let digits: String = trimmed.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
+}
+
+fn language_level_from_java_compile_config(cfg: &JavaCompileConfig) -> Option<LanguageLevel> {
+    let major = cfg
+        .release
+        .as_deref()
+        .and_then(parse_java_major)
+        .or_else(|| cfg.source.as_deref().and_then(parse_java_major))
+        .or_else(|| cfg.target.as_deref().and_then(parse_java_major))?;
+    Some(LanguageLevel {
+        major,
+        preview: cfg.enable_preview,
+    })
+}
+
+fn output_dirs_from_java_compile_config(cfg: &JavaCompileConfig) -> Option<OutputDirs> {
+    let mut out = OutputDirs::default();
+    if let Some(dir) = &cfg.main_output_dir {
+        out.main.push(dir.to_string_lossy().to_string());
+    }
+    if let Some(dir) = &cfg.test_output_dir {
+        out.test.push(dir.to_string_lossy().to_string());
+    }
+    Some(out)
 }
 
 fn detect_kind(root: &Path, explicit: Option<BuildTool>) -> Result<BuildKind> {
@@ -1058,6 +1181,49 @@ mod tests {
         assert_eq!(
             normalize_maven_module_relative(Some(" module-b ")),
             Some(Path::new("module-b"))
+        );
+    }
+
+    #[test]
+    fn parse_java_major_accepts_common_formats() {
+        assert_eq!(parse_java_major("17"), Some(17));
+        assert_eq!(parse_java_major("1.8"), Some(8));
+        assert_eq!(parse_java_major("17.0.1"), Some(17));
+        assert_eq!(parse_java_major(""), None);
+        assert_eq!(parse_java_major("   "), None);
+        assert_eq!(parse_java_major("foo"), None);
+    }
+
+    #[test]
+    fn language_level_from_java_compile_config_prefers_release_then_source_then_target() {
+        let cfg = JavaCompileConfig {
+            release: Some("21".into()),
+            source: Some("17".into()),
+            target: Some("11".into()),
+            enable_preview: true,
+            ..JavaCompileConfig::default()
+        };
+        assert_eq!(
+            language_level_from_java_compile_config(&cfg),
+            Some(LanguageLevel {
+                major: 21,
+                preview: true
+            })
+        );
+
+        let cfg = JavaCompileConfig {
+            release: None,
+            source: Some("1.8".into()),
+            target: Some("11".into()),
+            enable_preview: false,
+            ..JavaCompileConfig::default()
+        };
+        assert_eq!(
+            language_level_from_java_compile_config(&cfg),
+            Some(LanguageLevel {
+                major: 8,
+                preview: false
+            })
         );
     }
 
