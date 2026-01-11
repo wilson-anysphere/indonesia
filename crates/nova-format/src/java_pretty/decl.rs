@@ -56,39 +56,113 @@ impl<'a> JavaPrettyFormatter<'a> {
             Doc::text,
         );
 
-        let body_doc = self.print_brace_body(&l_brace, &r_brace);
+        let body_doc = self.print_brace_body(&body, &l_brace, &r_brace);
 
         Doc::concat([header, print::space(), body_doc])
     }
 
     fn print_brace_body(
         &mut self,
+        body: &SyntaxNode,
         l_brace: &nova_syntax::SyntaxToken,
         r_brace: &nova_syntax::SyntaxToken,
     ) -> Doc<'a> {
-        let inner_start = u32::from(l_brace.text_range().end()) as usize;
-        let inner_end = u32::from(r_brace.text_range().start()) as usize;
-        let inner_start = inner_start.min(self.source.len());
-        let inner_end = inner_end.min(self.source.len());
-        let (inner_start, inner_end) = if inner_start <= inner_end {
-            (inner_start, inner_end)
-        } else {
-            (inner_end, inner_start)
-        };
-        let inner = self.source.get(inner_start..inner_end).unwrap_or("");
-        let inner = inner.trim_matches(|c: char| matches!(c, ' ' | '\t' | '\n' | '\r'));
-
-        if inner.is_empty() {
+        let inner_start = u32::from(l_brace.text_range().end());
+        let inner_end = u32::from(r_brace.text_range().start());
+        let inner = self.print_verbatim_tokens(body, inner_start, inner_end);
+        if inner.is_none() {
             return Doc::concat([Doc::text("{"), Doc::hardline(), Doc::text("}")]);
         }
 
-        let inner_doc = Doc::text(inner);
+        let inner_doc = inner.unwrap();
         Doc::concat([
             Doc::text("{"),
             Doc::concat([Doc::hardline(), inner_doc]).indent(),
             Doc::hardline(),
             Doc::text("}"),
         ])
+    }
+
+    fn print_verbatim_tokens(
+        &self,
+        node: &SyntaxNode,
+        start: u32,
+        end: u32,
+    ) -> Option<Doc<'a>> {
+        if start >= end {
+            return None;
+        }
+
+        let mut parts: Vec<Doc<'a>> = Vec::new();
+        let mut has_content = false;
+        let mut pending_ws: Option<PendingWs> = None;
+
+        for el in node.descendants_with_tokens() {
+            let Some(tok) = el.into_token() else {
+                continue;
+            };
+            if is_synthetic_missing(tok.kind()) || tok.kind() == SyntaxKind::Eof {
+                continue;
+            }
+
+            let tok_range = tok.text_range();
+            let tok_start = u32::from(tok_range.start());
+            let tok_end = u32::from(tok_range.end());
+            if tok_start < start || tok_end > end {
+                continue;
+            }
+
+            match tok.kind() {
+                SyntaxKind::Whitespace => {
+                    if !has_content {
+                        continue;
+                    }
+
+                    let breaks = crate::comment_printer::count_line_breaks(tok.text());
+                    pending_ws = Some(if breaks == 0 {
+                        PendingWs::Space
+                    } else {
+                        PendingWs::Hardlines(breaks.min(2) as usize)
+                    });
+                }
+                _ => {
+                    if let Some(ws) = pending_ws.take() {
+                        ws.flush(&mut parts);
+                    }
+                    parts.push(fallback::byte_range(self.source, tok_start, tok_end));
+                    has_content = true;
+                }
+            }
+        }
+
+        if !has_content {
+            return None;
+        }
+
+        if parts.is_empty() {
+            None
+        } else {
+            Some(Doc::concat(parts))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PendingWs {
+    Space,
+    Hardlines(usize),
+}
+
+impl PendingWs {
+    fn flush<'a>(self, out: &mut Vec<Doc<'a>>) {
+        match self {
+            Self::Space => out.push(Doc::text(" ")),
+            Self::Hardlines(count) => {
+                for _ in 0..count {
+                    out.push(Doc::hardline());
+                }
+            }
+        }
     }
 }
 
