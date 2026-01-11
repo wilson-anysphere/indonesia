@@ -1338,6 +1338,44 @@ class Foo {
 }
 
 #[test]
+fn ast_binary_expression_instanceof_pattern_accessors_work() {
+    use crate::{AstNode, BinaryExpression};
+
+    let input = "class Foo { boolean m(Object x) { return x instanceof String s; } }";
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let expr = result
+        .syntax()
+        .descendants()
+        .find_map(BinaryExpression::cast)
+        .expect("expected a binary expression");
+
+    assert!(expr.ty().is_none());
+    let pattern = expr.pattern().expect("expected a parsed pattern");
+    let type_pattern = pattern.type_pattern().expect("expected a type pattern");
+    assert_eq!(type_pattern.name_token().unwrap().text(), "s");
+}
+
+#[test]
+fn ast_binary_expression_instanceof_type_test_accessors_work() {
+    use crate::{AstNode, BinaryExpression};
+
+    let input = "class Foo { boolean m(Object x) { return x instanceof String; } }";
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let expr = result
+        .syntax()
+        .descendants()
+        .find_map(BinaryExpression::cast)
+        .expect("expected a binary expression");
+
+    assert!(expr.pattern().is_none());
+    assert!(expr.ty().is_some());
+}
+
+#[test]
 fn parse_instanceof_pattern_allows_when_identifier() {
     let input = "class Foo { void m(Object x) { if (x instanceof String when) {} } }";
     let result = parse_java(input);
@@ -1373,6 +1411,43 @@ class Foo {
     assert!(kinds.contains(&SyntaxKind::Pattern));
     assert!(kinds.contains(&SyntaxKind::TypePattern));
     assert!(kinds.contains(&SyntaxKind::Guard));
+}
+
+#[test]
+fn ast_switch_label_elements_accessors_work() {
+    use crate::{AstNode, SwitchLabel};
+
+    let input = r#"
+class Foo {
+  void m(Object o) {
+    switch (o) {
+      case String s when s.isEmpty() -> {}
+    }
+  }
+}
+"#;
+
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let label = result
+        .syntax()
+        .descendants()
+        .find_map(SwitchLabel::cast)
+        .expect("expected a switch label");
+
+    let element = label
+        .elements()
+        .next()
+        .expect("expected a case label element");
+    let pattern = element.pattern().expect("expected a pattern element");
+    let type_pattern = pattern.type_pattern().expect("expected a type pattern");
+    assert_eq!(type_pattern.name_token().unwrap().text(), "s");
+    assert!(element.guard().is_some());
+
+    // `SwitchLabel::expressions` is a compatibility helper that returns only constant-expression
+    // label elements; pattern labels should not surface expressions here.
+    assert_eq!(label.expressions().count(), 0);
 }
 
 #[test]
