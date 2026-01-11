@@ -3,8 +3,10 @@ use std::collections::HashMap;
 use nova_ai::cancel::CancellationToken;
 use nova_ai::patch::{parse_structured_patch, Patch, PatchParseError};
 use nova_ai::provider::{AiProvider, AiProviderError};
-use nova_ai::safety::{enforce_patch_safety, extract_new_imports, PatchSafetyConfig, SafetyError};
-use nova_ai::workspace::{affected_files, AppliedPatch, PatchApplyError, VirtualWorkspace};
+use nova_ai::safety::{
+    enforce_no_new_imports, enforce_patch_safety, PatchSafetyConfig, SafetyError,
+};
+use nova_ai::workspace::{AppliedPatch, PatchApplyError, VirtualWorkspace};
 use nova_core::{LineIndex, TextRange};
 use nova_ide::diagnostics::{Diagnostic, DiagnosticKind, DiagnosticSeverity, DiagnosticsEngine};
 use nova_ide::format::Formatter;
@@ -158,7 +160,7 @@ pub fn run_code_generation(
             }
         };
 
-        enforce_patch_safety(&patch, &config.safety)?;
+        enforce_patch_safety(&patch, workspace, &config.safety)?;
 
         let applied = match workspace.apply_patch(&patch) {
             Ok(applied) => applied,
@@ -175,13 +177,7 @@ pub fn run_code_generation(
         let formatted_workspace = format_workspace(&formatter, &applied, config);
 
         if config.safety.no_new_imports {
-            let violation = find_new_imports_violation(workspace, &formatted_workspace, &patch);
-            if let Some((file, imports)) = violation {
-                return Err(CodeGenerationError::Safety(SafetyError::NewImports {
-                    file,
-                    imports,
-                }));
-            }
+            enforce_no_new_imports(workspace, &formatted_workspace, &applied)?;
         }
 
         match validate_patch(
@@ -219,12 +215,14 @@ fn build_prompt(
     out.push_str(base);
     out.push_str("\n\nReturn ONLY a structured patch.\n");
     out.push_str("JSON schema:\n");
-    out.push_str("{\"edits\":[{\"file\":\"path\",\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":0}},\"text\":\"...\"}]}\n");
+    out.push_str("{\"edits\":[{\"file\":\"path\",\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":0}},\"text\":\"...\"}],\"ops\":[{\"op\":\"create\",\"file\":\"path\",\"text\":\"...\"},{\"op\":\"delete\",\"file\":\"path\"},{\"op\":\"rename\",\"from\":\"old\",\"to\":\"new\"}]}\n");
     out.push_str("Alternatively you may return a unified diff starting with \"---\"/\"+++\" and \"@@\" hunks.\n");
 
     out.push_str(&format!(
-        "\nSafety limits: max_files={}, max_total_inserted_chars={}.\n",
-        config.safety.max_files, config.safety.max_total_inserted_chars
+        "\nSafety limits: max_files={}, max_total_inserted_chars={}, max_total_deleted_chars={}.\n",
+        config.safety.max_files,
+        config.safety.max_total_inserted_chars,
+        config.safety.max_total_deleted_chars
     ));
     if !config.safety.excluded_path_prefixes.is_empty() {
         out.push_str("Excluded path prefixes:\n");
@@ -277,22 +275,6 @@ fn format_workspace(
     out
 }
 
-fn find_new_imports_violation(
-    before: &VirtualWorkspace,
-    after: &VirtualWorkspace,
-    patch: &Patch,
-) -> Option<(String, Vec<String>)> {
-    for file in affected_files(patch) {
-        let before_text = before.get(&file).unwrap_or("");
-        let after_text = after.get(&file).unwrap_or("");
-        let imports = extract_new_imports(before_text, after_text);
-        if !imports.is_empty() {
-            return Some((file, imports));
-        }
-    }
-    None
-}
-
 fn validate_patch(
     before: &VirtualWorkspace,
     after: &VirtualWorkspace,
@@ -305,7 +287,8 @@ fn validate_patch(
     let mut new_type_errors = 0usize;
 
     for (file, touched) in &applied.touched_ranges {
-        let before_text = before.get(file).unwrap_or("");
+        let before_path = resolve_before_path(file, &applied.renamed_files);
+        let before_text = before.get(&before_path).unwrap_or("");
         let after_text = after.get(file).unwrap_or("");
 
         let before_diags = engine.diagnose(file, before_text);
@@ -361,6 +344,18 @@ fn validate_patch(
     }
 
     Ok(())
+}
+
+fn resolve_before_path(path: &str, renames: &std::collections::BTreeMap<String, String>) -> String {
+    let mut current = path;
+    let mut visited = std::collections::BTreeSet::new();
+    while let Some(prev) = renames.get(current) {
+        if !visited.insert(current.to_string()) {
+            break;
+        }
+        current = prev;
+    }
+    current.to_string()
 }
 
 #[derive(Debug, Hash, Eq, PartialEq)]

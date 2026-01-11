@@ -1,12 +1,33 @@
-use crate::patch::{Patch, UnifiedDiffLine};
+use crate::patch::{JsonPatchOp, Patch, UnifiedDiffLine};
+use crate::workspace::{AppliedPatch, VirtualWorkspace};
+use globset::{Glob, GlobSet, GlobSetBuilder};
+use nova_core::{LineIndex, Position as CorePosition};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 use thiserror::Error;
 
 #[derive(Debug, Clone)]
 pub struct PatchSafetyConfig {
     pub max_files: usize,
     pub max_total_inserted_chars: usize,
+    pub max_total_deleted_chars: usize,
+    pub max_hunks_per_file: usize,
+    pub max_edit_span_chars: usize,
+
+    /// Paths that should never be modified (simple prefix match).
     pub excluded_path_prefixes: Vec<String>,
+
+    /// Glob patterns for excluded paths (e.g. "secret/**").
+    pub excluded_path_globs: Vec<String>,
+
+    /// If non-empty, only these extensions are allowed.
+    ///
+    /// Extensions include the leading dot (e.g. ".java").
+    pub allowed_file_extensions: Vec<String>,
+
+    /// Extensions that are always rejected.
+    pub denied_file_extensions: Vec<String>,
+
     pub no_new_imports: bool,
 }
 
@@ -15,7 +36,22 @@ impl Default for PatchSafetyConfig {
         Self {
             max_files: 10,
             max_total_inserted_chars: 20_000,
+            max_total_deleted_chars: 20_000,
+            max_hunks_per_file: 50,
+            max_edit_span_chars: 20_000,
             excluded_path_prefixes: Vec::new(),
+            excluded_path_globs: Vec::new(),
+            allowed_file_extensions: vec![
+                ".java".into(),
+                ".kt".into(),
+                ".gradle".into(),
+                ".xml".into(),
+                ".properties".into(),
+                ".yml".into(),
+                ".yaml".into(),
+                ".md".into(),
+            ],
+            denied_file_extensions: Vec::new(),
             no_new_imports: false,
         }
     }
@@ -27,67 +63,210 @@ pub enum SafetyError {
     TooManyFiles { files: usize, max: usize },
     #[error("patch inserts too many characters ({chars} > {max})")]
     TooManyInsertedChars { chars: usize, max: usize },
+    #[error("patch deletes too many characters ({chars} > {max})")]
+    TooManyDeletedChars { chars: usize, max: usize },
+    #[error("patch contains too many hunks/edits for '{file}' ({hunks} > {max})")]
+    TooManyHunks {
+        file: String,
+        hunks: usize,
+        max: usize,
+    },
+    #[error("patch edit span for '{file}' is too large ({span} > {max})")]
+    EditSpanTooLarge {
+        file: String,
+        span: usize,
+        max: usize,
+    },
     #[error("patch attempted to edit excluded path '{path}'")]
     ExcludedPath { path: String },
     #[error("patch attempted to use non-relative path '{path}'")]
     NonRelativePath { path: String },
+    #[error("patch attempted to edit disallowed file extension '{extension}' for '{path}'")]
+    DisallowedFileExtension { path: String, extension: String },
+    #[error("invalid excluded_paths glob {pattern:?}: {error}")]
+    InvalidExcludedGlob { pattern: String, error: String },
     #[error("patch introduces new imports in '{file}': {imports:?}")]
     NewImports { file: String, imports: Vec<String> },
-    #[error("unsupported unified diff patch: {0}")]
-    UnsupportedUnifiedDiff(String),
 }
 
-pub fn enforce_patch_safety(patch: &Patch, config: &PatchSafetyConfig) -> Result<(), SafetyError> {
+pub fn enforce_patch_safety(
+    patch: &Patch,
+    workspace: &VirtualWorkspace,
+    config: &PatchSafetyConfig,
+) -> Result<(), SafetyError> {
+    let excluded_globs = build_excluded_globset(config)?;
+    let allowed_exts: BTreeSet<String> = config.allowed_file_extensions.iter().cloned().collect();
+    let denied_exts: BTreeSet<String> = config.denied_file_extensions.iter().cloned().collect();
+
     let mut files = BTreeSet::new();
     let mut inserted_chars = 0usize;
-    let mut new_imports: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut deleted_chars = 0usize;
 
     match patch {
-        Patch::Edits(edits) => {
-            for edit in edits {
-                validate_path(&edit.file, config)?;
+        Patch::Json(patch) => {
+            let mut virtual_files: BTreeMap<String, Option<&str>> = BTreeMap::new();
+
+            for op in &patch.ops {
+                match op {
+                    JsonPatchOp::Create { file, text } => {
+                        validate_path(file, config, &excluded_globs, &allowed_exts, &denied_exts)?;
+                        files.insert(file.clone());
+                        inserted_chars = inserted_chars.saturating_add(text.len());
+                        let span = text.len();
+                        if span > config.max_edit_span_chars {
+                            return Err(SafetyError::EditSpanTooLarge {
+                                file: file.clone(),
+                                span,
+                                max: config.max_edit_span_chars,
+                            });
+                        }
+                        virtual_files.insert(file.clone(), Some(text));
+                    }
+                    JsonPatchOp::Delete { file } => {
+                        validate_path(file, config, &excluded_globs, &allowed_exts, &denied_exts)?;
+                        files.insert(file.clone());
+                        let before =
+                            resolve_virtual_file(file, workspace, &virtual_files).unwrap_or("");
+                        deleted_chars = deleted_chars.saturating_add(before.len());
+                        let span = before.len();
+                        if span > config.max_edit_span_chars {
+                            return Err(SafetyError::EditSpanTooLarge {
+                                file: file.clone(),
+                                span,
+                                max: config.max_edit_span_chars,
+                            });
+                        }
+                        virtual_files.insert(file.clone(), None);
+                    }
+                    JsonPatchOp::Rename { from, to } => {
+                        validate_path(from, config, &excluded_globs, &allowed_exts, &denied_exts)?;
+                        validate_path(to, config, &excluded_globs, &allowed_exts, &denied_exts)?;
+                        files.insert(from.clone());
+                        files.insert(to.clone());
+
+                        let before = resolve_virtual_file(from, workspace, &virtual_files);
+                        virtual_files.insert(from.clone(), None);
+                        virtual_files.insert(to.clone(), before);
+                    }
+                }
+            }
+
+            let mut edits_per_file: BTreeMap<String, usize> = BTreeMap::new();
+
+            for edit in &patch.edits {
+                validate_path(
+                    &edit.file,
+                    config,
+                    &excluded_globs,
+                    &allowed_exts,
+                    &denied_exts,
+                )?;
                 files.insert(edit.file.clone());
                 inserted_chars = inserted_chars.saturating_add(edit.text.len());
 
-                if config.no_new_imports {
-                    for line in edit.text.lines() {
-                        if is_import_line(line) {
-                            new_imports
-                                .entry(edit.file.clone())
-                                .or_default()
-                                .insert(line.trim().to_string());
-                        }
-                    }
+                let count = edits_per_file.entry(edit.file.clone()).or_default();
+                *count += 1;
+                if *count > config.max_hunks_per_file {
+                    return Err(SafetyError::TooManyHunks {
+                        file: edit.file.clone(),
+                        hunks: *count,
+                        max: config.max_hunks_per_file,
+                    });
+                }
+
+                let before =
+                    resolve_virtual_file(&edit.file, workspace, &virtual_files).unwrap_or("");
+                let index = LineIndex::new(before);
+
+                let start_pos =
+                    CorePosition::new(edit.range.start.line, edit.range.start.character);
+                let end_pos = CorePosition::new(edit.range.end.line, edit.range.end.character);
+
+                let start = index
+                    .offset_of_position(before, start_pos)
+                    .map(u32::from)
+                    .unwrap_or(0);
+                let end = index
+                    .offset_of_position(before, end_pos)
+                    .map(u32::from)
+                    .unwrap_or(0);
+                let deleted_len = end.saturating_sub(start) as usize;
+                deleted_chars = deleted_chars.saturating_add(deleted_len);
+
+                let span = deleted_len.max(edit.text.len());
+                if span > config.max_edit_span_chars {
+                    return Err(SafetyError::EditSpanTooLarge {
+                        file: edit.file.clone(),
+                        span,
+                        max: config.max_edit_span_chars,
+                    });
                 }
             }
         }
         Patch::UnifiedDiff(diff) => {
             for file in &diff.files {
-                if file.new_path == "/dev/null" {
-                    return Err(SafetyError::UnsupportedUnifiedDiff(
-                        "file deletions are not supported".into(),
-                    ));
+                let file_id = if file.new_path != "/dev/null" {
+                    file.new_path.as_str()
+                } else {
+                    file.old_path.as_str()
+                };
+
+                if file.old_path != "/dev/null" {
+                    validate_path(
+                        &file.old_path,
+                        config,
+                        &excluded_globs,
+                        &allowed_exts,
+                        &denied_exts,
+                    )?;
+                    files.insert(file.old_path.clone());
                 }
-                if file.old_path != "/dev/null" && file.old_path != file.new_path {
-                    return Err(SafetyError::UnsupportedUnifiedDiff(
-                        "file renames are not supported".into(),
-                    ));
+                if file.new_path != "/dev/null" {
+                    validate_path(
+                        &file.new_path,
+                        config,
+                        &excluded_globs,
+                        &allowed_exts,
+                        &denied_exts,
+                    )?;
+                    files.insert(file.new_path.clone());
                 }
 
-                validate_path(&file.new_path, config)?;
-                files.insert(file.new_path.clone());
+                if file.hunks.len() > config.max_hunks_per_file {
+                    return Err(SafetyError::TooManyHunks {
+                        file: file_id.to_string(),
+                        hunks: file.hunks.len(),
+                        max: config.max_hunks_per_file,
+                    });
+                }
 
                 for hunk in &file.hunks {
+                    let mut old_span = 0usize;
+                    let mut new_span = 0usize;
                     for line in &hunk.lines {
-                        if let UnifiedDiffLine::Add(text) = line {
-                            inserted_chars = inserted_chars.saturating_add(text.len());
-                            if config.no_new_imports && is_import_line(text) {
-                                new_imports
-                                    .entry(file.new_path.clone())
-                                    .or_default()
-                                    .insert(text.trim().to_string());
+                        match line {
+                            UnifiedDiffLine::Add(text) => {
+                                inserted_chars = inserted_chars.saturating_add(text.len());
+                                new_span = new_span.saturating_add(text.len() + 1);
+                            }
+                            UnifiedDiffLine::Remove(text) => {
+                                deleted_chars = deleted_chars.saturating_add(text.len());
+                                old_span = old_span.saturating_add(text.len() + 1);
+                            }
+                            UnifiedDiffLine::Context(text) => {
+                                old_span = old_span.saturating_add(text.len() + 1);
+                                new_span = new_span.saturating_add(text.len() + 1);
                             }
                         }
+                    }
+
+                    let span = old_span.max(new_span);
+                    if span > config.max_edit_span_chars {
+                        return Err(SafetyError::EditSpanTooLarge {
+                            file: file_id.to_string(),
+                            span,
+                            max: config.max_edit_span_chars,
+                        });
                     }
                 }
             }
@@ -108,11 +287,30 @@ pub fn enforce_patch_safety(patch: &Patch, config: &PatchSafetyConfig) -> Result
         });
     }
 
-    if config.no_new_imports {
-        if let Some((file, imports)) = new_imports.into_iter().find(|(_, v)| !v.is_empty()) {
+    if deleted_chars > config.max_total_deleted_chars {
+        return Err(SafetyError::TooManyDeletedChars {
+            chars: deleted_chars,
+            max: config.max_total_deleted_chars,
+        });
+    }
+
+    Ok(())
+}
+
+pub fn enforce_no_new_imports(
+    before: &VirtualWorkspace,
+    after: &VirtualWorkspace,
+    applied: &AppliedPatch,
+) -> Result<(), SafetyError> {
+    for (after_path, _ranges) in &applied.touched_ranges {
+        let before_path = resolve_rename_origin(after_path, &applied.renamed_files);
+        let before_text = before.get(&before_path).unwrap_or("");
+        let after_text = after.get(after_path).unwrap_or("");
+        let imports = extract_new_imports(before_text, after_text);
+        if !imports.is_empty() {
             return Err(SafetyError::NewImports {
-                file,
-                imports: imports.into_iter().collect(),
+                file: after_path.clone(),
+                imports,
             });
         }
     }
@@ -120,8 +318,59 @@ pub fn enforce_patch_safety(patch: &Patch, config: &PatchSafetyConfig) -> Result
     Ok(())
 }
 
-fn validate_path(path: &str, config: &PatchSafetyConfig) -> Result<(), SafetyError> {
-    if path.starts_with('/') || path.starts_with('\\') || path.contains("..") {
+fn resolve_rename_origin(path: &str, renames: &BTreeMap<String, String>) -> String {
+    let mut current = path;
+    let mut visited = BTreeSet::new();
+
+    while let Some(prev) = renames.get(current) {
+        if !visited.insert(current.to_string()) {
+            break;
+        }
+        current = prev;
+    }
+
+    current.to_string()
+}
+
+fn build_excluded_globset(config: &PatchSafetyConfig) -> Result<Option<GlobSet>, SafetyError> {
+    if config.excluded_path_globs.is_empty() {
+        return Ok(None);
+    }
+
+    let mut builder = GlobSetBuilder::new();
+    for pattern in &config.excluded_path_globs {
+        let glob = Glob::new(pattern).map_err(|err| SafetyError::InvalidExcludedGlob {
+            pattern: pattern.clone(),
+            error: err.to_string(),
+        })?;
+        builder.add(glob);
+    }
+
+    let set = builder
+        .build()
+        .map_err(|err| SafetyError::InvalidExcludedGlob {
+            pattern: "<globset build>".into(),
+            error: err.to_string(),
+        })?;
+
+    Ok(Some(set))
+}
+
+fn validate_path(
+    path: &str,
+    config: &PatchSafetyConfig,
+    excluded_globs: &Option<GlobSet>,
+    allowed_exts: &BTreeSet<String>,
+    denied_exts: &BTreeSet<String>,
+) -> Result<(), SafetyError> {
+    if path.starts_with('/') || path.starts_with('\\') || path.contains('\\') {
+        return Err(SafetyError::NonRelativePath {
+            path: path.to_string(),
+        });
+    }
+
+    // Disallow traversal and drive letters / URI schemes.
+    if path.split('/').any(|segment| segment == "..") || path.contains(':') {
         return Err(SafetyError::NonRelativePath {
             path: path.to_string(),
         });
@@ -137,12 +386,47 @@ fn validate_path(path: &str, config: &PatchSafetyConfig) -> Result<(), SafetyErr
         });
     }
 
+    if let Some(set) = excluded_globs {
+        if set.is_match(Path::new(path)) {
+            return Err(SafetyError::ExcludedPath {
+                path: path.to_string(),
+            });
+        }
+    }
+
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| format!(".{ext}"))
+        .unwrap_or_else(|| "<none>".to_string());
+
+    if denied_exts.contains(&ext) {
+        return Err(SafetyError::DisallowedFileExtension {
+            path: path.to_string(),
+            extension: ext,
+        });
+    }
+
+    if !allowed_exts.is_empty() && !allowed_exts.contains(&ext) {
+        return Err(SafetyError::DisallowedFileExtension {
+            path: path.to_string(),
+            extension: ext,
+        });
+    }
+
     Ok(())
 }
 
-fn is_import_line(line: &str) -> bool {
-    let trimmed = line.trim();
-    trimmed.starts_with("import ") && trimmed.ends_with(';')
+fn resolve_virtual_file<'a>(
+    path: &str,
+    workspace: &'a VirtualWorkspace,
+    virtual_files: &BTreeMap<String, Option<&'a str>>,
+) -> Option<&'a str> {
+    match virtual_files.get(path) {
+        Some(Some(text)) => Some(*text),
+        Some(None) => None,
+        None => workspace.get(path),
+    }
 }
 
 pub fn extract_new_imports(before: &str, after: &str) -> Vec<String> {

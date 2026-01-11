@@ -24,8 +24,29 @@ pub struct TextEdit {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Patch {
-    Edits(Vec<TextEdit>),
+    /// Structured JSON patch.
+    ///
+    /// This format supports:
+    /// - text edits (LSP-style ranges)
+    /// - explicit file operations (create/delete/rename)
+    ///
+    /// Note: file creation via unified diffs is also supported by using
+    /// `/dev/null` as the old path (git-style).
+    Json(JsonPatch),
     UnifiedDiff(UnifiedDiffPatch),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JsonPatch {
+    pub edits: Vec<TextEdit>,
+    pub ops: Vec<JsonPatchOp>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JsonPatchOp {
+    Create { file: String, text: String },
+    Delete { file: String },
+    Rename { from: String, to: String },
 }
 
 #[derive(Debug, Error)]
@@ -34,7 +55,7 @@ pub enum PatchParseError {
     UnsupportedFormat,
     #[error("invalid JSON patch: {0}")]
     InvalidJson(#[from] serde_json::Error),
-    #[error("invalid JSON patch: expected at least one edit")]
+    #[error("invalid JSON patch: expected at least one edit or op")]
     EmptyJsonPatch,
     #[error("invalid unified diff patch: {0}")]
     InvalidDiff(String),
@@ -70,25 +91,37 @@ pub enum UnifiedDiffLine {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct JsonPatch {
-    edits: Vec<JsonEdit>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct JsonEdit {
     file: String,
     range: Range,
     text: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JsonPatchEnvelope {
+    #[serde(default)]
+    edits: Vec<JsonEdit>,
+    #[serde(default)]
+    ops: Vec<JsonPatchOpEnvelope>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+enum JsonPatchOpEnvelope {
+    Create { file: String, text: String },
+    Delete { file: String },
+    Rename { from: String, to: String },
+}
+
 pub fn parse_structured_patch(raw: &str) -> Result<Patch, PatchParseError> {
     let trimmed = raw.trim();
     if trimmed.starts_with('{') {
-        let patch: JsonPatch = serde_json::from_str(trimmed)?;
-        if patch.edits.is_empty() {
+        let patch: JsonPatchEnvelope = serde_json::from_str(trimmed)?;
+        if patch.edits.is_empty() && patch.ops.is_empty() {
             return Err(PatchParseError::EmptyJsonPatch);
         }
+
         let edits = patch
             .edits
             .into_iter()
@@ -98,7 +131,18 @@ pub fn parse_structured_patch(raw: &str) -> Result<Patch, PatchParseError> {
                 text: edit.text,
             })
             .collect();
-        return Ok(Patch::Edits(edits));
+
+        let ops = patch
+            .ops
+            .into_iter()
+            .map(|op| match op {
+                JsonPatchOpEnvelope::Create { file, text } => JsonPatchOp::Create { file, text },
+                JsonPatchOpEnvelope::Delete { file } => JsonPatchOp::Delete { file },
+                JsonPatchOpEnvelope::Rename { from, to } => JsonPatchOp::Rename { from, to },
+            })
+            .collect();
+
+        return Ok(Patch::Json(JsonPatch { edits, ops }));
     }
 
     if trimmed.starts_with("diff --git") || trimmed.starts_with("--- ") {
@@ -122,64 +166,26 @@ fn parse_unified_diff(diff: &str) -> Result<UnifiedDiffPatch, PatchParseError> {
         }
 
         if is_allowed_diff_metadata(line) {
+            // Start of a git-style file block.
+            if let Some((file, next_idx)) = parse_git_file_block(&lines, idx)? {
+                files.push(file);
+                idx = next_idx;
+                continue;
+            }
             idx += 1;
             continue;
         }
 
-        if !line.starts_with("--- ") {
-            return Err(PatchParseError::InvalidDiff(format!(
-                "unexpected line in diff: {line}"
-            )));
-        }
-
-        let old_path = parse_diff_path(line, "--- ")?;
-        idx += 1;
-        if idx >= lines.len() {
-            return Err(PatchParseError::InvalidDiff("missing +++ header".into()));
-        }
-        let new_header = lines[idx];
-        if !new_header.starts_with("+++ ") {
-            return Err(PatchParseError::InvalidDiff("expected +++ header".into()));
-        }
-        let new_path = parse_diff_path(new_header, "+++ ")?;
-        idx += 1;
-
-        let mut hunks = Vec::new();
-        while idx < lines.len() {
-            let line = lines[idx];
-            if line.trim().is_empty() {
-                return Err(PatchParseError::InvalidDiff(
-                    "unexpected blank line inside file patch".into(),
-                ));
-            }
-            if is_allowed_diff_metadata(line) {
-                idx += 1;
-                continue;
-            }
-            if line.starts_with("--- ") {
-                break;
-            }
-            if !line.starts_with("@@") {
-                return Err(PatchParseError::InvalidDiff(format!(
-                    "unexpected line between headers and hunks: {line}"
-                )));
-            }
-            let (hunk, next_idx) = parse_hunk(&lines, idx)?;
-            hunks.push(hunk);
+        if line.starts_with("--- ") {
+            let (file, next_idx) = parse_unified_file_block(&lines, idx)?;
+            files.push(file);
             idx = next_idx;
+            continue;
         }
 
-        if hunks.is_empty() {
-            return Err(PatchParseError::InvalidDiff(
-                "expected at least one @@ hunk per file".into(),
-            ));
-        }
-
-        files.push(UnifiedDiffFile {
-            old_path: normalize_diff_path(&old_path),
-            new_path: normalize_diff_path(&new_path),
-            hunks,
-        });
+        return Err(PatchParseError::InvalidDiff(format!(
+            "unexpected line in diff: {line}"
+        )));
     }
 
     if files.is_empty() {
@@ -187,6 +193,169 @@ fn parse_unified_diff(diff: &str) -> Result<UnifiedDiffPatch, PatchParseError> {
     }
 
     Ok(UnifiedDiffPatch { files })
+}
+
+fn parse_git_file_block(
+    lines: &[&str],
+    start_idx: usize,
+) -> Result<Option<(UnifiedDiffFile, usize)>, PatchParseError> {
+    let header = lines[start_idx];
+    if !header.starts_with("diff --git ") {
+        return Ok(None);
+    }
+
+    let (mut old_path, mut new_path) = parse_diff_git_paths(header)?;
+    let mut idx = start_idx + 1;
+
+    let mut rename_from: Option<String> = None;
+    let mut rename_to: Option<String> = None;
+
+    while idx < lines.len() {
+        let line = lines[idx];
+        if line.starts_with("diff --git ") || line.starts_with("--- ") {
+            break;
+        }
+        if let Some(rest) = line.strip_prefix("rename from ") {
+            rename_from = Some(
+                rest.trim()
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_string(),
+            );
+        } else if let Some(rest) = line.strip_prefix("rename to ") {
+            rename_to = Some(
+                rest.trim()
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_string(),
+            );
+        }
+        idx += 1;
+    }
+
+    if let (Some(from), Some(to)) = (rename_from, rename_to) {
+        if !from.is_empty() && !to.is_empty() {
+            old_path = from;
+            new_path = to;
+        }
+    }
+
+    let mut hunks = Vec::new();
+    if idx < lines.len() && lines[idx].starts_with("--- ") {
+        let (file, next_idx) = parse_unified_file_block(lines, idx)?;
+        old_path = file.old_path;
+        new_path = file.new_path;
+        hunks = file.hunks;
+        idx = next_idx;
+    }
+
+    old_path = normalize_diff_path(&old_path);
+    new_path = normalize_diff_path(&new_path);
+
+    if hunks.is_empty() && old_path == new_path && old_path != "/dev/null" {
+        return Err(PatchParseError::InvalidDiff(format!(
+            "expected at least one @@ hunk for file '{old_path}'"
+        )));
+    }
+
+    Ok(Some((
+        UnifiedDiffFile {
+            old_path,
+            new_path,
+            hunks,
+        },
+        idx,
+    )))
+}
+
+fn parse_unified_file_block(
+    lines: &[&str],
+    start_idx: usize,
+) -> Result<(UnifiedDiffFile, usize), PatchParseError> {
+    let old_header = lines
+        .get(start_idx)
+        .ok_or_else(|| PatchParseError::InvalidDiff("missing --- header".into()))?;
+    if !old_header.starts_with("--- ") {
+        return Err(PatchParseError::InvalidDiff("expected --- header".into()));
+    }
+
+    let old_path = parse_diff_path(old_header, "--- ")?;
+    let mut idx = start_idx + 1;
+    if idx >= lines.len() {
+        return Err(PatchParseError::InvalidDiff("missing +++ header".into()));
+    }
+    let new_header = lines[idx];
+    if !new_header.starts_with("+++ ") {
+        return Err(PatchParseError::InvalidDiff("expected +++ header".into()));
+    }
+    let new_path = parse_diff_path(new_header, "+++ ")?;
+    idx += 1;
+
+    let mut hunks = Vec::new();
+    while idx < lines.len() {
+        let line = lines[idx];
+        if line.trim().is_empty() {
+            idx += 1;
+            continue;
+        }
+        if line.starts_with("diff --git ") || line.starts_with("--- ") {
+            break;
+        }
+        if is_allowed_diff_metadata(line) {
+            idx += 1;
+            continue;
+        }
+        if !line.starts_with("@@") {
+            return Err(PatchParseError::InvalidDiff(format!(
+                "unexpected line between headers and hunks: {line}"
+            )));
+        }
+        let (hunk, next_idx) = parse_hunk(lines, idx)?;
+        hunks.push(hunk);
+        idx = next_idx;
+    }
+
+    let old_path = normalize_diff_path(&old_path);
+    let new_path = normalize_diff_path(&new_path);
+
+    if hunks.is_empty() && old_path == new_path && old_path != "/dev/null" {
+        return Err(PatchParseError::InvalidDiff(format!(
+            "expected at least one @@ hunk for file '{old_path}'"
+        )));
+    }
+
+    Ok((
+        UnifiedDiffFile {
+            old_path,
+            new_path,
+            hunks,
+        },
+        idx,
+    ))
+}
+
+fn parse_diff_git_paths(line: &str) -> Result<(String, String), PatchParseError> {
+    let mut parts = line.split_whitespace();
+    let diff = parts
+        .next()
+        .ok_or_else(|| PatchParseError::InvalidDiff("invalid diff --git header".into()))?;
+    let git = parts
+        .next()
+        .ok_or_else(|| PatchParseError::InvalidDiff("invalid diff --git header".into()))?;
+    if diff != "diff" || git != "--git" {
+        return Err(PatchParseError::InvalidDiff(
+            "invalid diff --git header".into(),
+        ));
+    }
+    let old = parts.next().ok_or_else(|| {
+        PatchParseError::InvalidDiff("missing old path in diff --git header".into())
+    })?;
+    let new = parts.next().ok_or_else(|| {
+        PatchParseError::InvalidDiff("missing new path in diff --git header".into())
+    })?;
+    Ok((old.to_string(), new.to_string()))
 }
 
 fn parse_hunk(
@@ -228,7 +397,7 @@ fn parse_hunk(
 
     while idx < lines.len() {
         let line = lines[idx];
-        if line.starts_with("@@") || line.starts_with("--- ") {
+        if line.starts_with("@@") || line.starts_with("--- ") || line.starts_with("diff --git ") {
             break;
         }
         if line.starts_with("\\ No newline at end of file") {
