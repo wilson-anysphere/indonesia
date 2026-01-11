@@ -374,7 +374,7 @@ class Foo {
 
     let tree = item_tree(&db, file);
     assert_eq!(tree.methods.len(), 1);
-    let method_id = nova_hir::ids::MethodId::new(file, 0);
+    let method_id = method_id_by_name(&tree, file, "m");
     let body = body(&db, method_id);
 
     let locals: Vec<_> = body
