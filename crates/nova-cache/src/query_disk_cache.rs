@@ -5,7 +5,8 @@ use crate::util::{
     BINCODE_PAYLOAD_LIMIT_BYTES,
 };
 use bincode::Options;
-use serde::Serialize;
+use serde::de::IgnoredAny;
+use serde::{Deserialize, Serialize};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -130,14 +131,16 @@ impl QueryDiskCache {
         };
         let mut reader = BufReader::new(file);
 
-        let schema_version: u32 = match bincode_options_limited().deserialize_from(&mut reader) {
+        let opts = bincode_options_limited();
+
+        let schema_version: u32 = match opts.deserialize_from(&mut reader) {
             Ok(v) => v,
             Err(_) => {
                 let _ = std::fs::remove_file(&path);
                 return Ok(None);
             }
         };
-        let nova_version: String = match bincode_options_limited().deserialize_from(&mut reader) {
+        let nova_version: String = match opts.deserialize_from(&mut reader) {
             Ok(v) => v,
             Err(_) => {
                 let _ = std::fs::remove_file(&path);
@@ -151,7 +154,7 @@ impl QueryDiskCache {
             return Ok(None);
         }
 
-        let saved_at_millis: u64 = match bincode_options_limited().deserialize_from(&mut reader) {
+        let saved_at_millis: u64 = match opts.deserialize_from(&mut reader) {
             Ok(v) => v,
             Err(_) => {
                 let _ = std::fs::remove_file(&path);
@@ -162,21 +165,20 @@ impl QueryDiskCache {
             let _ = std::fs::remove_file(&path);
             return Ok(None);
         }
-        let stored_key: String = match bincode_options_limited().deserialize_from(&mut reader) {
+        let stored_key: String = match opts.deserialize_from(&mut reader) {
             Ok(v) => v,
             Err(_) => {
                 let _ = std::fs::remove_file(&path);
                 return Ok(None);
             }
         };
-        let stored_fingerprint: Fingerprint =
-            match bincode_options_limited().deserialize_from(&mut reader) {
-                Ok(v) => v,
-                Err(_) => {
-                    let _ = std::fs::remove_file(&path);
-                    return Ok(None);
-                }
-            };
+        let stored_fingerprint: Fingerprint = match opts.deserialize_from(&mut reader) {
+            Ok(v) => v,
+            Err(_) => {
+                let _ = std::fs::remove_file(&path);
+                return Ok(None);
+            }
+        };
 
         if stored_fingerprint != key_fingerprint {
             let _ = std::fs::remove_file(&path);
@@ -186,7 +188,7 @@ impl QueryDiskCache {
             return Ok(None);
         }
 
-        let value: Vec<u8> = match bincode_options_limited().deserialize_from(&mut reader) {
+        let value: Vec<u8> = match opts.deserialize_from(&mut reader) {
             Ok(v) => v,
             Err(_) => {
                 let _ = std::fs::remove_file(&path);
@@ -349,6 +351,15 @@ struct PersistedQueryValueHeader {
     key_fingerprint: Fingerprint,
 }
 
+#[derive(Debug, Deserialize)]
+struct PersistedQueryValueHeaderRaw {
+    schema_version: u32,
+    nova_version: String,
+    saved_at_millis: u64,
+    key: IgnoredAny,
+    key_fingerprint: Fingerprint,
+}
+
 fn read_query_cache_header(path: &Path) -> Option<PersistedQueryValueHeader> {
     let meta = std::fs::symlink_metadata(path).ok()?;
     if meta.file_type().is_symlink() || !meta.is_file() {
@@ -362,21 +373,14 @@ fn read_query_cache_header(path: &Path) -> Option<PersistedQueryValueHeader> {
     let mut reader = BufReader::new(file);
     let opts = bincode_options_limited();
 
-    // Bincode is not self-describing, so we must deserialize each prefix field
-    // in the correct order. We intentionally stop before the `value` payload so
-    // GC doesn't need to read the full cached value into memory.
-    let (schema_version, nova_version, saved_at_millis, _key, key_fingerprint): (
-        u32,
-        String,
-        u64,
-        String,
-        Fingerprint,
-    ) = opts.deserialize_from(&mut reader).ok()?;
+    // We intentionally stop before the `value` payload so GC doesn't need to
+    // read the full cached value into memory.
+    let raw: PersistedQueryValueHeaderRaw = opts.deserialize_from(&mut reader).ok()?;
 
     Some(PersistedQueryValueHeader {
-        schema_version,
-        nova_version,
-        saved_at_millis,
-        key_fingerprint,
+        schema_version: raw.schema_version,
+        nova_version: raw.nova_version,
+        saved_at_millis: raw.saved_at_millis,
+        key_fingerprint: raw.key_fingerprint,
     })
 }
