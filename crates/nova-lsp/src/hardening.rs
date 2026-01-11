@@ -1,9 +1,9 @@
 use crate::{
     NovaLspError, Result, BUG_REPORT_METHOD, BUILD_DIAGNOSTICS_METHOD, BUILD_PROJECT_METHOD,
     BUILD_STATUS_METHOD, BUILD_TARGET_CLASSPATH_METHOD, DEBUG_CONFIGURATIONS_METHOD,
-    DEBUG_HOT_SWAP_METHOD, JAVA_CLASSPATH_METHOD, JAVA_GENERATED_SOURCES_METHOD,
-    RELOAD_PROJECT_METHOD, RUN_ANNOTATION_PROCESSING_METHOD, TEST_DEBUG_CONFIGURATION_METHOD,
-    TEST_DISCOVER_METHOD, TEST_RUN_METHOD,
+    DEBUG_HOT_SWAP_METHOD, JAVA_CLASSPATH_METHOD, JAVA_GENERATED_SOURCES_METHOD, METRICS_METHOD,
+    RELOAD_PROJECT_METHOD, RESET_METRICS_METHOD, RUN_ANNOTATION_PROCESSING_METHOD,
+    TEST_DEBUG_CONFIGURATION_METHOD, TEST_DISCOVER_METHOD, TEST_RUN_METHOD,
 };
 use nova_bugreport::{
     create_bug_report_bundle, global_crash_store, install_panic_hook, BugReportOptions,
@@ -64,7 +64,10 @@ pub fn init(config: &NovaConfig, notifier: Arc<dyn Fn(&str) + Send + Sync + 'sta
 }
 
 pub fn guard_method(method: &str) -> Result<()> {
-    if method == BUG_REPORT_METHOD {
+    if matches!(
+        method,
+        BUG_REPORT_METHOD | METRICS_METHOD | RESET_METRICS_METHOD
+    ) {
         return Ok(());
     }
 
@@ -88,7 +91,7 @@ pub fn guard_method(method: &str) -> Result<()> {
         }
 
         return Err(NovaLspError::Internal(
-            "Nova is running in safe-mode (previous request crashed or timed out). Only `nova/bugReport` is available for now."
+            "Nova is running in safe-mode (previous request crashed or timed out). Only `nova/bugReport`, `nova/metrics`, and `nova/resetMetrics` are available for now."
                 .to_owned(),
         ));
     }
@@ -130,6 +133,7 @@ pub fn run_with_watchdog(
         Ok(Err(err)) => Err(err),
         Err(WatchdogError::DeadlineExceeded(duration)) => {
             perf().record_timeout();
+            nova_metrics::MetricsRegistry::global().record_timeout(method);
             if timeout_enters_safe_mode(method) {
                 enter_safe_mode(SafeModeReason::WatchdogTimeout);
             }
@@ -139,6 +143,7 @@ pub fn run_with_watchdog(
         }
         Err(WatchdogError::Panicked) => {
             perf().record_panic();
+            nova_metrics::MetricsRegistry::global().record_panic(method);
             enter_safe_mode(SafeModeReason::Panic);
             Err(NovaLspError::Internal(format!(
                 "{method} panicked; entering safe-mode"

@@ -1,0 +1,21 @@
+[package]
+name = "nova-metrics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Lightweight runtime metrics (counters + latency histograms) for Nova servers."
+
+[dependencies]
+hdrhistogram = "7.5"
+parking_lot = "0.12"
+serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lib]
+path = "src/lib.rs"
+

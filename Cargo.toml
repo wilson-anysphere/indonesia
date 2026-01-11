@@ -9,6 +9,7 @@ members = [
     "crates/nova-cache",
     "crates/nova-deps-cache",
     "crates/nova-memory",
+    "crates/nova-metrics",
     "crates/nova-classfile",
     "crates/nova-classpath",
     "crates/nova-cli",

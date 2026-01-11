@@ -29,7 +29,7 @@ use std::fs;
 use std::io::{BufReader, BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 fn main() -> std::io::Result<()> {
@@ -75,27 +75,52 @@ fn main() -> std::io::Result<()> {
     let mut writer = BufWriter::new(stdout.lock());
 
     let mut state = ServerState::new();
+    let metrics = nova_metrics::MetricsRegistry::global();
 
     while let Some(message) = read_json_message::<_, serde_json::Value>(&mut reader)? {
         let Some(method) = message.get("method").and_then(|m| m.as_str()) else {
             // Response (from client) or malformed message. Ignore.
             continue;
         };
+        let start = Instant::now();
 
         let id = message.get("id").cloned();
         if id.is_none() {
             // Notification.
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if method == "exit" {
+                // Preserve the process-exit semantics (dropping a tokio runtime can block), but
+                // still record that we received the notification.
+                metrics.record_request(method, start.elapsed());
+                std::process::exit(0);
+            }
+
+            let mut did_panic = false;
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 handle_notification(method, &message, &mut state)
-            })) {
-                Ok(result) => result?,
+            }));
+
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    metrics.record_request(method, start.elapsed());
+                    metrics.record_error(method);
+                    return Err(err);
+                }
                 Err(_) => {
+                    did_panic = true;
                     tracing::error!(
                         target = "nova.lsp",
                         method,
                         "panic while handling notification"
                     );
                 }
+            }
+            metrics.record_request(method, start.elapsed());
+            if did_panic {
+                metrics.record_error(method);
+            }
+            if did_panic {
+                metrics.record_panic(method);
             }
             flush_memory_status_notifications(&mut writer, &mut state)?;
             continue;
@@ -108,11 +133,18 @@ fn main() -> std::io::Result<()> {
             .unwrap_or(serde_json::Value::Null);
 
         let id_for_panic = id.clone();
+        let mut did_panic = false;
         let response = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             handle_request(method, id, params, &mut state, &mut writer)
         })) {
-            Ok(result) => result?,
+            Ok(Ok(response)) => response,
+            Ok(Err(err)) => {
+                metrics.record_request(method, start.elapsed());
+                metrics.record_error(method);
+                return Err(err);
+            }
             Err(_) => {
+                did_panic = true;
                 tracing::error!(target = "nova.lsp", method, "panic while handling request");
                 json!({
                     "jsonrpc": "2.0",
@@ -124,7 +156,23 @@ fn main() -> std::io::Result<()> {
                 })
             }
         };
-        write_json_message(&mut writer, &response)?;
+
+        if let Err(err) = write_json_message(&mut writer, &response) {
+            metrics.record_request(method, start.elapsed());
+            metrics.record_error(method);
+            if did_panic {
+                metrics.record_panic(method);
+            }
+            return Err(err);
+        }
+
+        metrics.record_request(method, start.elapsed());
+        if response.get("error").is_some() {
+            metrics.record_error(method);
+        }
+        if did_panic {
+            metrics.record_panic(method);
+        }
         flush_memory_status_notifications(&mut writer, &mut state)?;
     }
 
@@ -277,7 +325,7 @@ fn handle_request(
             state.shutdown_requested = true;
             Ok(json!({ "jsonrpc": "2.0", "id": id, "result": serde_json::Value::Null }))
         }
-        nova_lsp::MEMORY_STATUS_METHOD | "nova/metrics" => {
+        nova_lsp::MEMORY_STATUS_METHOD => {
             // Force an enforcement pass so the response reflects the current
             // pressure state and triggers evictions in registered components.
             let report = state.memory.enforce();

@@ -541,34 +541,6 @@ impl JdwpClient {
         Ok(values)
     }
 
-    /// StringReference.Value (10, 1)
-    pub async fn string_reference_value(&self, object_id: ObjectId) -> Result<String> {
-        let sizes = self.id_sizes().await;
-        let mut w = JdwpWriter::new();
-        w.write_object_id(object_id, &sizes);
-        let payload = self.send_command_raw(10, 1, w.into_vec()).await?;
-        let mut r = JdwpReader::new(&payload);
-        r.read_string()
-    }
-
-    /// ObjectReference.DisableCollection (9, 7)
-    pub async fn object_reference_disable_collection(&self, object_id: ObjectId) -> Result<()> {
-        let sizes = self.id_sizes().await;
-        let mut w = JdwpWriter::new();
-        w.write_object_id(object_id, &sizes);
-        let _ = self.send_command_raw(9, 7, w.into_vec()).await?;
-        Ok(())
-    }
-
-    /// ObjectReference.EnableCollection (9, 8)
-    pub async fn object_reference_enable_collection(&self, object_id: ObjectId) -> Result<()> {
-        let sizes = self.id_sizes().await;
-        let mut w = JdwpWriter::new();
-        w.write_object_id(object_id, &sizes);
-        let _ = self.send_command_raw(9, 8, w.into_vec()).await?;
-        Ok(())
-    }
-
     pub async fn array_reference_length(&self, array_id: ObjectId) -> Result<i32> {
         let sizes = self.id_sizes().await;
         let mut w = JdwpWriter::new();

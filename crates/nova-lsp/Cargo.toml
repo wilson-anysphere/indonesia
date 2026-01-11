@@ -28,6 +28,7 @@ nova-framework-web = { path = "../nova-framework-web" }
 nova-db = { path = "../nova-db" }
 nova-index = { path = "../nova-index" }
 nova-memory = { path = "../nova-memory" }
+nova-metrics = { path = "../nova-metrics" }
 nova-project = { path = "../nova-project" }
 nova-refactor = { path = "../nova-refactor" }
 nova-scheduler = { path = "../nova-scheduler" }

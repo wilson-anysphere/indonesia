@@ -76,6 +76,79 @@ impl Inspector {
         Ok(signature_to_type_name(&signature))
     }
 
+    async fn preview_hash_map_entries(
+        &mut self,
+        children: &[InspectVariable],
+    ) -> Option<(usize, Vec<(JdwpValue, JdwpValue)>)> {
+        let size = children.iter().find_map(|v| match (&v.name[..], &v.value) {
+            ("size", JdwpValue::Int(size)) => Some((*size).max(0) as usize),
+            _ => None,
+        })?;
+        let table_id = children.iter().find_map(|v| match (&v.name[..], &v.value) {
+            ("table", JdwpValue::Object { id, .. }) if *id != 0 => Some(*id),
+            _ => None,
+        })?;
+
+        let mut sample = Vec::new();
+        if let Ok(table_len) = self.client().array_reference_length(table_id).await {
+            let table_len = table_len.max(0) as usize;
+            let scan = table_len.min(64);
+            if scan > 0 {
+                if let Ok(buckets) = self
+                    .client()
+                    .array_reference_get_values(table_id, 0, scan as i32)
+                    .await
+                {
+                    for bucket in buckets {
+                        if sample.len() >= ARRAY_PREVIEW_SAMPLE {
+                            break;
+                        }
+                        let JdwpValue::Object { id: mut node_id, .. } = bucket else {
+                            continue;
+                        };
+                        if node_id == 0 {
+                            continue;
+                        }
+
+                        // Traverse collision chain (bounded).
+                        for _ in 0..16 {
+                            if sample.len() >= ARRAY_PREVIEW_SAMPLE {
+                                break;
+                            }
+                            let Ok(node_fields) = self.object_children(node_id).await else {
+                                break;
+                            };
+                            let key = node_fields
+                                .iter()
+                                .find(|v| v.name == "key")
+                                .map(|v| v.value.clone())
+                                .unwrap_or_else(null_value);
+                            let value = node_fields
+                                .iter()
+                                .find(|v| v.name == "value")
+                                .map(|v| v.value.clone())
+                                .unwrap_or_else(null_value);
+                            sample.push((key, value));
+
+                            match node_fields
+                                .iter()
+                                .find(|v| v.name == "next")
+                                .map(|v| &v.value)
+                            {
+                                Some(JdwpValue::Object { id: next_id, .. }) if *next_id != 0 => {
+                                    node_id = *next_id
+                                }
+                                _ => break,
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Some((size, sample))
+    }
+
     pub async fn preview_object(&mut self, object_id: ObjectId) -> Result<ObjectPreview> {
         let type_id = self.client().object_reference_reference_type(object_id).await?;
         let signature = self.signature_for_type(type_id).await?;
@@ -198,69 +271,7 @@ impl Inspector {
 
         if runtime_type == "java.util.HashMap" {
             if let Ok(children) = self.object_children(object_id).await {
-                let size = children.iter().find_map(|v| match (&v.name[..], &v.value) {
-                    ("size", JdwpValue::Int(size)) => Some((*size).max(0) as usize),
-                    _ => None,
-                });
-                let table = children.iter().find_map(|v| match (&v.name[..], &v.value) {
-                    ("table", JdwpValue::Object { id, .. }) if *id != 0 => Some(*id),
-                    _ => None,
-                });
-
-                if let (Some(size), Some(table_id)) = (size, table) {
-                    let mut sample = Vec::new();
-                    if let Ok(table_len) = self.client().array_reference_length(table_id).await {
-                        let table_len = table_len.max(0) as usize;
-                        let scan = table_len.min(64);
-                        if scan > 0 {
-                            if let Ok(buckets) = self
-                                .client()
-                                .array_reference_get_values(table_id, 0, scan as i32)
-                                .await
-                            {
-                                for bucket in buckets {
-                                    if sample.len() >= ARRAY_PREVIEW_SAMPLE {
-                                        break;
-                                    }
-                                    let JdwpValue::Object { id: mut node_id, .. } = bucket else {
-                                        continue;
-                                    };
-                                    if node_id == 0 {
-                                        continue;
-                                    }
-
-                                    // Traverse collision chain (bounded).
-                                    for _ in 0..16 {
-                                        if sample.len() >= ARRAY_PREVIEW_SAMPLE {
-                                            break;
-                                        }
-                                        let Ok(node_fields) = self.object_children(node_id).await else {
-                                            break;
-                                        };
-                                        let key = node_fields
-                                            .iter()
-                                            .find(|v| v.name == "key")
-                                            .map(|v| v.value.clone())
-                                            .unwrap_or_else(null_value);
-                                        let value = node_fields
-                                            .iter()
-                                            .find(|v| v.name == "value")
-                                            .map(|v| v.value.clone())
-                                            .unwrap_or_else(null_value);
-                                        sample.push((key, value));
-
-                                        match node_fields.iter().find(|v| v.name == "next").map(|v| &v.value) {
-                                            Some(JdwpValue::Object { id: next_id, .. }) if *next_id != 0 => {
-                                                node_id = *next_id
-                                            }
-                                            _ => break,
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
+                if let Some((size, sample)) = self.preview_hash_map_entries(&children).await {
                     return Ok(ObjectPreview {
                         runtime_type,
                         kind: ObjectKindPreview::Map { size, sample },
@@ -277,17 +288,17 @@ impl Inspector {
                 });
 
                 if let Some(map_id) = map {
-                    // Reuse HashMap's preview by pulling the keys out of the sampled entries.
-                    if let Ok(ObjectPreview {
-                        kind: ObjectKindPreview::Map { size, sample },
-                        ..
-                    }) = self.preview_object(map_id).await
-                    {
-                        let sample = sample.into_iter().map(|(k, _)| k).collect();
-                        return Ok(ObjectPreview {
-                            runtime_type,
-                            kind: ObjectKindPreview::Set { size, sample },
-                        });
+                    // Pull the keys out of the backing map's sampled entries.
+                    if let Ok(map_children) = self.object_children(map_id).await {
+                        if let Some((size, sample)) =
+                            self.preview_hash_map_entries(&map_children).await
+                        {
+                            let sample = sample.into_iter().map(|(k, _)| k).collect();
+                            return Ok(ObjectPreview {
+                                runtime_type,
+                                kind: ObjectKindPreview::Set { size, sample },
+                            });
+                        }
                     }
                 }
             }

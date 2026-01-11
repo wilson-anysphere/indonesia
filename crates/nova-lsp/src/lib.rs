@@ -122,6 +122,8 @@ pub const PROJECT_MODEL_METHOD: &str = "nova/projectModel";
 // Performance / memory custom endpoints.
 pub const MEMORY_STATUS_METHOD: &str = "nova/memoryStatus";
 pub const MEMORY_STATUS_NOTIFICATION: &str = "nova/memoryStatusChanged";
+pub const METRICS_METHOD: &str = "nova/metrics";
+pub const RESET_METRICS_METHOD: &str = "nova/resetMetrics";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MemoryStatusResponse {
@@ -149,6 +151,12 @@ fn handle_custom_request_inner(
 
     match method {
         BUG_REPORT_METHOD => hardening::handle_bug_report(params),
+        METRICS_METHOD => serde_json::to_value(nova_metrics::MetricsRegistry::global().snapshot())
+            .map_err(|err| NovaLspError::Internal(err.to_string())),
+        RESET_METRICS_METHOD => {
+            nova_metrics::MetricsRegistry::global().reset();
+            Ok(serde_json::json!({ "ok": true }))
+        }
         TEST_DISCOVER_METHOD => {
             hardening::run_with_watchdog(method, params, extensions::test::handle_discover)
         }

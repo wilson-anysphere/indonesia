@@ -5,6 +5,7 @@ use std::{
         atomic::{AtomicBool, AtomicI64, Ordering},
         Arc,
     },
+    time::Instant,
 };
 
 use nova_jdwp::wire::JdwpError;
@@ -51,7 +52,8 @@ where
     let seq = Arc::new(AtomicI64::new(1));
     let terminated_sent = Arc::new(AtomicBool::new(false));
     let debugger: Arc<Mutex<Option<Debugger>>> = Arc::new(Mutex::new(None));
-    let in_flight: Arc<Mutex<HashMap<i64, CancellationToken>>> = Arc::new(Mutex::new(HashMap::new()));
+    let in_flight: Arc<Mutex<HashMap<i64, CancellationToken>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let server_shutdown = CancellationToken::new();
     let (initialized_tx, initialized_rx) = watch::channel(false);
 
@@ -157,6 +159,10 @@ async fn handle_request(
     server_shutdown: CancellationToken,
     terminated_sent: Arc<AtomicBool>,
 ) {
+    let _request_metrics = RequestMetricsGuard::new(
+        &request.command,
+        nova_metrics::MetricsRegistry::global(),
+    );
     let request_seq = request.seq;
 
     handle_request_inner(
@@ -217,6 +223,10 @@ async fn handle_request_inner(
             send_event(out_tx, seq, "initialized", None);
             let _ = initialized_tx.send(true);
         }
+        "nova/metrics" => match serde_json::to_value(nova_metrics::MetricsRegistry::global().snapshot()) {
+            Ok(snapshot) => send_response(out_tx, seq, request, true, Some(snapshot), None),
+            Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+        },
         "nova/bugReport" => {
             if cancel.is_cancelled() {
                 send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
@@ -819,7 +829,7 @@ fn is_cancelled_error(err: &DebuggerError) -> bool {
 }
 
 fn requires_initialized(command: &str) -> bool {
-    !matches!(command, "initialize" | "cancel" | "disconnect")
+    !matches!(command, "initialize" | "cancel" | "disconnect" | "nova/bugReport" | "nova/metrics")
 }
 
 async fn wait_initialized(cancel: &CancellationToken, mut initialized: watch::Receiver<bool>) -> bool {
@@ -863,9 +873,38 @@ fn send_response(
     body: Option<Value>,
     message: Option<String>,
 ) {
+    if !success {
+        nova_metrics::MetricsRegistry::global().record_error(&request.command);
+    }
     let s = seq.fetch_add(1, Ordering::Relaxed);
     let resp = make_response(s, request, success, body, message);
     let _ = tx.send(serde_json::to_value(resp).unwrap_or_else(|_| json!({})));
+}
+
+struct RequestMetricsGuard<'a> {
+    command: &'a str,
+    start: Instant,
+    metrics: &'static nova_metrics::MetricsRegistry,
+}
+
+impl<'a> RequestMetricsGuard<'a> {
+    fn new(command: &'a str, metrics: &'static nova_metrics::MetricsRegistry) -> Self {
+        Self {
+            command,
+            start: Instant::now(),
+            metrics,
+        }
+    }
+}
+
+impl Drop for RequestMetricsGuard<'_> {
+    fn drop(&mut self) {
+        self.metrics.record_request(self.command, self.start.elapsed());
+        if std::thread::panicking() {
+            self.metrics.record_panic(self.command);
+            self.metrics.record_error(self.command);
+        }
+    }
 }
 
 fn send_terminated_once(

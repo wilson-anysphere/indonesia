@@ -2343,6 +2343,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 
 [[package]]
+name = "hdrhistogram"
+version = "7.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "765c9198f173dd59ce26ff9f95ef0aafd0a0fe01fb9d72841bc5066a4c06511d"
+dependencies = [
+ "base64 0.21.7",
+ "byteorder",
+ "crossbeam-channel",
+ "flate2",
+ "nom",
+ "num-traits",
+]
+
+[[package]]
 name = "heck"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3542,6 +3556,7 @@ dependencies = [
  "nova-db",
  "nova-ide",
  "nova-jdwp",
+ "nova-metrics",
  "nova-project",
  "nova-scheduler",
  "nova-stream-debug",
@@ -3906,6 +3921,7 @@ dependencies = [
  "nova-index",
  "nova-jdwp",
  "nova-memory",
+ "nova-metrics",
  "nova-project",
  "nova-refactor",
  "nova-remote-proto",
@@ -3935,6 +3951,16 @@ dependencies = [
  "serde",
  "serde_json",
  "sysinfo",
+]
+
+[[package]]
+name = "nova-metrics"
+version = "0.1.0"
+dependencies = [
+ "hdrhistogram",
+ "parking_lot",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

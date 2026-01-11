@@ -829,7 +829,8 @@ impl Debugger {
             return Ok(None);
         }
         check_cancel(cancel)?;
-        let class_id = cancellable_jdwp(cancel, self.jdwp.object_reference_reference_type(object_id)).await?;
+        let class_id =
+            cancellable_jdwp(cancel, self.jdwp.object_reference_reference_type(object_id)).await?;
         let sig = cancellable_jdwp(cancel, self.jdwp.reference_type_signature(class_id)).await?;
         Ok(signature_to_object_type_name(&sig))
     }
@@ -1000,7 +1001,6 @@ fn signature_to_object_type_name(sig: &str) -> Option<String> {
     }
     Some(out)
 }
-
 fn is_identifier(s: &str) -> bool {
     let mut chars = s.chars();
     let Some(first) = chars.next() else {
@@ -1208,7 +1208,8 @@ impl Debugger {
         value: &JdwpValue,
         depth: usize,
     ) -> Result<String> {
-        let (display, _ref, _hint, _rt) = self.format_value_display(cancel, value, None, depth).await?;
+        let (display, _ref, _hint, _rt) =
+            Box::pin(self.format_value_display(cancel, value, None, depth)).await?;
         Ok(display)
     }
 

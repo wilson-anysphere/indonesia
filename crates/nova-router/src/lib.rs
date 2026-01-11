@@ -1372,19 +1372,19 @@ impl GlobalSymbolIndex {
         &self,
         ids: impl IntoIterator<Item = u32>,
         matcher: &mut FuzzyMatcher,
-        out: &mut Vec<ScoredSymbol>,
+        out: &mut Vec<LocalScoredSymbol>,
     ) {
         for id in ids {
             let Some(sym) = self.symbols.get(id as usize) else {
                 continue;
             };
             if let Some(score) = matcher.score(&sym.name) {
-                out.push(ScoredSymbol { id, score });
+                out.push(LocalScoredSymbol { id, score });
             }
         }
     }
 
-    fn finish(&self, mut scored: Vec<ScoredSymbol>, limit: usize) -> Vec<Symbol> {
+    fn finish(&self, mut scored: Vec<LocalScoredSymbol>, limit: usize) -> Vec<Symbol> {
         scored.sort_by(|a, b| {
             b.score.rank_key().cmp(&a.score.rank_key()).then_with(|| {
                 let a_sym = &self.symbols[a.id as usize];
@@ -1408,7 +1408,7 @@ impl GlobalSymbolIndex {
 }
 
 #[derive(Debug, Clone)]
-struct ScoredSymbol {
+struct LocalScoredSymbol {
     id: u32,
     score: MatchScore,
 }

@@ -19,9 +19,17 @@ struct CacheEntry<V> {
 ///
 /// This intentionally stays lightweight: we compute a best-effort fingerprint from the
 /// relevant source set and reuse the cached value when the fingerprint matches.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct FrameworkWorkspaceCache<V> {
     entries: Mutex<HashMap<PathBuf, CacheEntry<V>>>,
+}
+
+impl<V> Default for FrameworkWorkspaceCache<V> {
+    fn default() -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+        }
+    }
 }
 
 impl<V> FrameworkWorkspaceCache<V> {

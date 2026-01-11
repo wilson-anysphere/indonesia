@@ -17,8 +17,8 @@ use nova_modules::{ModuleGraph, ModuleInfo, ModuleName};
 use thiserror::Error;
 use walkdir::WalkDir;
 
-use crate::{Resolution, ScopeGraph, ScopeId, ScopeKind};
 use crate::scopes::{append_package, resolve_type_with_nesting};
+use crate::{Resolution, ScopeGraph, ScopeId, ScopeKind};
 
 /// A JPMS-aware wrapper around [`crate::Resolver`].
 ///

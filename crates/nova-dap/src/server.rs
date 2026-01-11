@@ -17,10 +17,23 @@ use std::collections::HashMap;
 use std::io::{BufReader, BufWriter, Write};
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
+use std::time::Instant;
 
 struct Outgoing {
     messages: Vec<serde_json::Value>,
     wait_for_stop: bool,
+}
+
+fn dap_outgoing_is_success(outgoing: &Outgoing) -> bool {
+    outgoing
+        .messages
+        .iter()
+        .find_map(|msg| {
+            (msg.get("type").and_then(|v| v.as_str()) == Some("response"))
+                .then(|| msg.get("success").and_then(|v| v.as_bool()))
+                .flatten()
+        })
+        .unwrap_or(true)
 }
 
 pub struct DapServer<C: JdwpClient> {
@@ -71,21 +84,35 @@ impl<C: JdwpClient> DapServer<C> {
         let stdout = std::io::stdout();
         let mut reader = BufReader::new(stdin.lock());
         let mut writer = BufWriter::new(stdout.lock());
+        let metrics = nova_metrics::MetricsRegistry::global();
 
         while let Some(request) = read_json_message::<_, Request>(&mut reader)? {
+            let command = request.command.clone();
+            let start = Instant::now();
+            let mut did_panic = false;
+            let mut did_error = false;
             let outgoing = match std::panic::catch_unwind(AssertUnwindSafe(|| {
                 self.handle_request(&request)
             })) {
-                Ok(Ok(outgoing)) => outgoing,
+                Ok(Ok(outgoing)) => {
+                    if !dap_outgoing_is_success(&outgoing) {
+                        did_error = true;
+                    }
+                    outgoing
+                }
                 Ok(Err(err)) => Outgoing {
-                    messages: vec![serde_json::to_value(Response::error(
-                        self.alloc_seq(),
-                        &request,
-                        err.to_string(),
-                    ))?],
+                    messages: {
+                        did_error = true;
+                        vec![serde_json::to_value(Response::error(
+                            self.alloc_seq(),
+                            &request,
+                            err.to_string(),
+                        ))?]
+                    },
                     wait_for_stop: false,
                 },
                 Err(_) => {
+                    did_panic = true;
                     tracing::error!(
                         target = "nova.dap",
                         "panic in DAP request handler; recovering workspace state"
@@ -107,6 +134,14 @@ impl<C: JdwpClient> DapServer<C> {
                 write_json_message(&mut writer, &msg)?;
             }
             writer.flush()?;
+
+            metrics.record_request(&command, start.elapsed());
+            if did_panic {
+                metrics.record_panic(&command);
+                metrics.record_error(&command);
+            } else if did_error {
+                metrics.record_error(&command);
+            }
 
             if outgoing.wait_for_stop {
                 let Some(event) = self.session.jdwp_mut().wait_for_event().ok().flatten() else {
@@ -162,6 +197,7 @@ impl<C: JdwpClient> DapServer<C> {
             "evaluate" => self.evaluate(request),
             STREAM_DEBUG_COMMAND => self.stream_debug(request),
             "continue" | "next" | "stepIn" | "stepOut" | "pause" => self.execution_control(request),
+            "nova/metrics" => self.metrics(request),
             "nova/pinObject" => self.pin_object(request),
             "nova/bugReport" => self.bug_report(request),
             "disconnect" => self.disconnect(request),
@@ -195,6 +231,16 @@ impl<C: JdwpClient> DapServer<C> {
                 serde_json::to_value(response)?,
                 serde_json::to_value(initialized_event)?,
             ],
+            wait_for_stop: false,
+        })
+    }
+
+    fn metrics(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
+        let snapshot = nova_metrics::MetricsRegistry::global().snapshot();
+        let body = serde_json::to_value(snapshot)?;
+        let response = Response::success(self.alloc_seq(), request, Some(body));
+        Ok(Outgoing {
+            messages: vec![serde_json::to_value(response)?],
             wait_for_stop: false,
         })
     }
