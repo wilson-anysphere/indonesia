@@ -472,16 +472,6 @@ fn gradle_project_dir_cached(
     Ok(project_root.join(rel))
 }
 
-#[cfg(test)]
-fn gradle_test_output_dir(
-    project_root: &Path,
-    project_path: Option<&str>,
-    cache: &BuildCache,
-    fingerprint: &BuildFileFingerprint,
-) -> Result<PathBuf> {
-    let dir = gradle_project_dir_cached(project_root, project_path, cache, fingerprint)?;
-    Ok(dir.join("build").join("classes").join("java").join("test"))
-}
 fn gradle_output_dir(project_root: &Path, project_path: Option<&str>) -> PathBuf {
     // Best-effort mapping from Gradle project paths to directories.
     //
