@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::PathBuf;
 
 use nova_jdwp::{JdwpError as NovaJdwpError, TcpJdwpClient};
+use nova_jdwp::wire::{JdwpClient as WireJdwpClient, JdwpError as WireJdwpError};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -75,15 +77,39 @@ pub trait JdwpRedefiner {
 
 impl JdwpRedefiner for TcpJdwpClient {
     fn redefine_class(&mut self, class_name: &str, bytecode: &[u8]) -> Result<(), JdwpError> {
-        TcpJdwpClient::redefine_class(self, class_name, bytecode).map_err(map_jdwp_error)
+        TcpJdwpClient::redefine_class(self, class_name, bytecode).map_err(map_tcp_jdwp_error)
     }
 }
 
-fn map_jdwp_error(err: NovaJdwpError) -> JdwpError {
+/// Minimal JDWP integration required for hot swapping (async).
+pub trait AsyncJdwpRedefiner {
+    fn redefine_class(&mut self, class_name: &str, bytecode: &[u8]) -> impl Future<Output = Result<(), JdwpError>> + Send + '_;
+}
+
+impl AsyncJdwpRedefiner for WireJdwpClient {
+    fn redefine_class(&mut self, class_name: &str, bytecode: &[u8]) -> impl Future<Output = Result<(), JdwpError>> + Send + '_ {
+        async move {
+            WireJdwpClient::redefine_class_by_name(self, class_name, bytecode)
+                .await
+                .map_err(map_wire_jdwp_error)
+        }
+    }
+}
+
+fn map_tcp_jdwp_error(err: NovaJdwpError) -> JdwpError {
     match err {
         NovaJdwpError::CommandFailed { error_code } if is_schema_change(error_code) => {
             JdwpError::SchemaChange(format!("HotSwap rejected by JVM (JDWP error {error_code})"))
         }
+        other => JdwpError::Other(other.to_string()),
+    }
+}
+
+fn map_wire_jdwp_error(err: WireJdwpError) -> JdwpError {
+    match err {
+        WireJdwpError::VmError(error_code) if is_schema_change(error_code) => JdwpError::SchemaChange(format!(
+            "HotSwap rejected by JVM (JDWP error {error_code})"
+        )),
         other => JdwpError::Other(other.to_string()),
     }
 }
@@ -143,6 +169,61 @@ impl<B: BuildSystem, J: JdwpRedefiner> HotSwapEngine<B, J> {
                     Ok(compiled) => match self
                         .jdwp
                         .redefine_class(&compiled.class_name, &compiled.bytecode)
+                    {
+                        Ok(()) => results.push(HotSwapFileResult {
+                            file: file.clone(),
+                            status: HotSwapStatus::Success,
+                            message: None,
+                        }),
+                        Err(JdwpError::SchemaChange(msg)) => results.push(HotSwapFileResult {
+                            file: file.clone(),
+                            status: HotSwapStatus::SchemaChange,
+                            message: Some(msg),
+                        }),
+                        Err(err) => results.push(HotSwapFileResult {
+                            file: file.clone(),
+                            status: HotSwapStatus::RedefinitionError,
+                            message: Some(err.to_string()),
+                        }),
+                    },
+                },
+            }
+        }
+
+        HotSwapResult { results }
+    }
+}
+
+impl<B: BuildSystem, J: AsyncJdwpRedefiner> HotSwapEngine<B, J> {
+    /// Async variant of [`Self::hot_swap`] for JDWP clients that require `await`
+    /// (e.g. the wire-based tokio client).
+    pub async fn hot_swap_async(&mut self, changed_files: &[PathBuf]) -> HotSwapResult {
+        let compile_outputs = self.build.compile_files(changed_files);
+        let outputs_by_file: HashMap<PathBuf, CompileOutput> = compile_outputs
+            .into_iter()
+            .map(|out| (out.file.clone(), out))
+            .collect();
+
+        let mut results = Vec::with_capacity(changed_files.len());
+
+        for file in changed_files {
+            let output = outputs_by_file.get(file);
+            match output {
+                None => results.push(HotSwapFileResult {
+                    file: file.clone(),
+                    status: HotSwapStatus::CompileError,
+                    message: Some("file was not part of compile output".into()),
+                }),
+                Some(output) => match &output.result {
+                    Err(err) => results.push(HotSwapFileResult {
+                        file: file.clone(),
+                        status: HotSwapStatus::CompileError,
+                        message: Some(err.to_string()),
+                    }),
+                    Ok(compiled) => match self
+                        .jdwp
+                        .redefine_class(&compiled.class_name, &compiled.bytecode)
+                        .await
                     {
                         Ok(()) => results.push(HotSwapFileResult {
                             file: file.clone(),

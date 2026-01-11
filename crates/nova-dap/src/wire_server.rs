@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use base64::{engine::general_purpose, Engine as _};
 use nova_jdwp::wire::JdwpError;
 use nova_scheduler::CancellationToken;
 use serde::Deserialize;
@@ -28,6 +29,7 @@ use nova_config::NovaConfig;
 
 use crate::{
     dap_tokio::{make_event, make_response, DapError, DapReader, DapWriter, Request},
+    hot_swap::{BuildSystem, CompileError, CompileOutput, CompiledClass, HotSwapEngine},
     wire_debugger::{
         AttachArgs, BreakpointDisposition, BreakpointSpec, Debugger, DebuggerError, StepDepth,
     },
@@ -1697,6 +1699,46 @@ async fn handle_request_inner(
         }
         // Hot swap support (class redefinition).
         "redefineClasses" | "hotCodeReplace" | "nova/hotSwap" => {
+            #[derive(Debug, Default, Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct HotSwapArgs {
+                #[serde(default)]
+                changed_files: Vec<PathBuf>,
+                #[serde(default)]
+                classes: Vec<HotSwapClassArg>,
+            }
+
+            #[derive(Debug, Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct HotSwapClassArg {
+                class_name: String,
+                bytecode_base64: String,
+            }
+
+            #[derive(Debug)]
+            struct PrecompiledBuild {
+                outputs: HashMap<PathBuf, CompileOutput>,
+            }
+
+            impl BuildSystem for PrecompiledBuild {
+                fn compile_files(&mut self, files: &[PathBuf]) -> Vec<CompileOutput> {
+                    files
+                        .iter()
+                        .map(|file| {
+                            self.outputs.get(file).cloned().unwrap_or_else(|| CompileOutput {
+                                file: file.clone(),
+                                result: Err(CompileError::new("no bytecode provided")),
+                            })
+                        })
+                        .collect()
+                }
+            }
+
+            fn derive_source_path(class_name: &str) -> PathBuf {
+                let outer = class_name.split('$').next().unwrap_or(class_name);
+                PathBuf::from(format!("{}.java", outer.replace('.', "/")))
+            }
+
             if cancel.is_cancelled() {
                 send_response(
                     out_tx,
@@ -1709,34 +1751,38 @@ async fn handle_request_inner(
                 return;
             }
 
-            let guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
-                Some(guard) => guard,
-                None => {
+            let jdwp = {
+                let guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+                    Some(guard) => guard,
+                    None => {
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some("cancelled".to_string()),
+                        );
+                        return;
+                    }
+                };
+
+                let Some(dbg) = guard.as_ref() else {
                     send_response(
                         out_tx,
                         seq,
                         request,
                         false,
                         None,
-                        Some("cancelled".to_string()),
+                        Some("not attached".to_string()),
                     );
                     return;
-                }
+                };
+
+                dbg.jdwp_client()
             };
 
-            let Some(dbg) = guard.as_ref() else {
-                send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    false,
-                    None,
-                    Some("not attached".to_string()),
-                );
-                return;
-            };
-
-            let caps = dbg.capabilities().await;
+            let caps = jdwp.capabilities().await;
             if !caps.supports_redefine_classes() {
                 send_response(
                     out_tx,
@@ -1752,13 +1798,93 @@ async fn handle_request_inner(
                 return;
             }
 
+            let args: HotSwapArgs = match serde_json::from_value(request.arguments.clone()) {
+                Ok(v) => v,
+                Err(err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(format!("invalid arguments: {err}")),
+                    );
+                    return;
+                }
+            };
+
+            let mut changed_files = Vec::new();
+            let mut outputs = HashMap::<PathBuf, CompileOutput>::new();
+
+            if !args.classes.is_empty() {
+                let use_changed_files =
+                    !args.changed_files.is_empty() && args.changed_files.len() == args.classes.len();
+                for (idx, class) in args.classes.into_iter().enumerate() {
+                    let file = if use_changed_files {
+                        args.changed_files[idx].clone()
+                    } else {
+                        derive_source_path(&class.class_name)
+                    };
+                    changed_files.push(file.clone());
+
+                    let result = match general_purpose::STANDARD.decode(class.bytecode_base64) {
+                        Ok(bytecode) => Ok(CompiledClass {
+                            class_name: class.class_name,
+                            bytecode,
+                        }),
+                        Err(err) => Err(CompileError::new(format!(
+                            "invalid bytecodeBase64 for {}: {err}",
+                            class.class_name
+                        ))),
+                    };
+
+                    outputs.insert(file.clone(), CompileOutput { file, result });
+                }
+            } else if !args.changed_files.is_empty() {
+                // No compilation integration in the wire adapter yet; surface a per-file error so
+                // the editor can display a structured result.
+                for file in args.changed_files {
+                    changed_files.push(file.clone());
+                    outputs.insert(
+                        file.clone(),
+                        CompileOutput {
+                            file,
+                            result: Err(CompileError::new(
+                                "no class bytecode provided (pass `classes` instead of `changedFiles`)"
+                                    .to_string(),
+                            )),
+                        },
+                    );
+                }
+            } else {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("expected either `classes` or `changedFiles`".to_string()),
+                );
+                return;
+            }
+
+            let build = PrecompiledBuild { outputs };
+            let mut engine = HotSwapEngine::new(build, jdwp);
+            let result = tokio::select! {
+                _ = cancel.cancelled() => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    return;
+                }
+                result = engine.hot_swap_async(&changed_files) => result,
+            };
+
             send_response(
                 out_tx,
                 seq,
                 request,
-                false,
+                true,
+                Some(serde_json::to_value(result).unwrap_or_else(|_| json!({}))),
                 None,
-                Some("hot swap is not implemented in the wire adapter yet".to_string()),
             );
         }
         // Method return values (e.g. step-out with return value).

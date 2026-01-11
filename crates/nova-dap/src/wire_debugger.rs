@@ -337,6 +337,10 @@ impl Debugger {
         self.objects.clear_unpinned();
     }
 
+    pub fn jdwp_client(&self) -> JdwpClient {
+        self.jdwp.clone()
+    }
+
     pub async fn disconnect(&mut self) {
         self.jdwp.shutdown();
     }

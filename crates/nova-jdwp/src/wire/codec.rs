@@ -10,6 +10,19 @@ pub fn signature_to_tag(signature: &str) -> u8 {
     signature.as_bytes().first().copied().unwrap_or(b'V')
 }
 
+/// Convert a Java binary class name (e.g. `com.example.Foo`) into a JDWP
+/// reference type signature (e.g. `Lcom/example/Foo;`).
+///
+/// If `class` already looks like a JDWP signature (starts with `L` and ends with
+/// `;`), it is returned unchanged.
+pub fn class_name_to_signature(class: &str) -> String {
+    if class.starts_with('L') && class.ends_with(';') {
+        return class.to_string();
+    }
+    let internal = class.replace('.', "/");
+    format!("L{internal};")
+}
+
 pub struct JdwpWriter {
     buf: Vec<u8>,
 }
@@ -332,4 +345,20 @@ pub fn encode_reply(id: u32, error_code: u16, payload: &[u8]) -> Vec<u8> {
     out.extend_from_slice(&error_code.to_be_bytes());
     out.extend_from_slice(payload);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn class_name_to_signature_converts_dots() {
+        assert_eq!(class_name_to_signature("com.example.Foo"), "Lcom/example/Foo;");
+        assert_eq!(class_name_to_signature("Foo"), "LFoo;");
+    }
+
+    #[test]
+    fn class_name_to_signature_passes_through_signatures() {
+        assert_eq!(class_name_to_signature("Ljava/lang/String;"), "Ljava/lang/String;");
+    }
 }

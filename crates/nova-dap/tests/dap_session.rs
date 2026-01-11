@@ -1,6 +1,7 @@
 use serde_json::{json, Value};
 use std::time::Duration;
 
+use base64::{engine::general_purpose, Engine as _};
 use nova_dap::dap_tokio::{DapReader, DapWriter};
 use nova_dap::object_registry::{OBJECT_HANDLE_BASE, PINNED_SCOPE_REF};
 use nova_dap::wire_server;
@@ -291,6 +292,138 @@ async fn dap_can_attach_set_breakpoints_and_stop() {
 
     send_request(&mut writer, 11, "disconnect", json!({})).await;
     let _disc_resp = read_response(&mut reader, 11).await;
+
+    server_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn dap_can_hot_swap_a_class() {
+    let mut caps = vec![false; 32];
+    caps[7] = true; // canRedefineClasses
+    let jdwp = MockJdwpServer::spawn_with_capabilities(caps).await.unwrap();
+
+    let (client, server_stream) = tokio::io::duplex(64 * 1024);
+    let (server_read, server_write) = tokio::io::split(server_stream);
+    let server_task = tokio::spawn(async move { wire_server::run(server_read, server_write).await });
+
+    let (client_read, client_write) = tokio::io::split(client);
+    let mut reader = DapReader::new(client_read);
+    let mut writer = DapWriter::new(client_write);
+
+    send_request(&mut writer, 1, "initialize", json!({})).await;
+    let init_resp = read_response(&mut reader, 1).await;
+    assert!(init_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    let _initialized = read_next(&mut reader).await;
+
+    send_request(
+        &mut writer,
+        2,
+        "attach",
+        json!({
+            "host": "127.0.0.1",
+            "port": jdwp.addr().port()
+        }),
+    )
+    .await;
+    let attach_resp = read_response(&mut reader, 2).await;
+    assert!(attach_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+
+    let bytecode = vec![0xCA, 0xFE];
+    let bytecode_base64 = general_purpose::STANDARD.encode(&bytecode);
+    send_request(
+        &mut writer,
+        3,
+        "nova/hotSwap",
+        json!({
+            "classes": [{
+                "className": "Main",
+                "bytecodeBase64": bytecode_base64
+            }]
+        }),
+    )
+    .await;
+    let hot_swap_resp = read_response(&mut reader, 3).await;
+    assert!(hot_swap_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    assert_eq!(
+        hot_swap_resp.pointer("/body/results/0/status").and_then(|v| v.as_str()),
+        Some("success")
+    );
+    assert_eq!(
+        hot_swap_resp.pointer("/body/results/0/file").and_then(|v| v.as_str()),
+        Some("Main.java")
+    );
+
+    let calls = jdwp.redefine_classes_calls().await;
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].class_count, 1);
+    assert_eq!(calls[0].classes.len(), 1);
+    assert_eq!(calls[0].classes[0].1, bytecode);
+
+    send_request(&mut writer, 4, "disconnect", json!({})).await;
+    let _disc_resp = read_response(&mut reader, 4).await;
+
+    server_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn dap_hot_swap_reports_schema_change() {
+    let mut caps = vec![false; 32];
+    caps[7] = true; // canRedefineClasses
+    let jdwp = MockJdwpServer::spawn_with_capabilities(caps).await.unwrap();
+    jdwp.set_redefine_classes_error_code(62); // SCHEMA_CHANGE_NOT_IMPLEMENTED
+
+    let (client, server_stream) = tokio::io::duplex(64 * 1024);
+    let (server_read, server_write) = tokio::io::split(server_stream);
+    let server_task = tokio::spawn(async move { wire_server::run(server_read, server_write).await });
+
+    let (client_read, client_write) = tokio::io::split(client);
+    let mut reader = DapReader::new(client_read);
+    let mut writer = DapWriter::new(client_write);
+
+    send_request(&mut writer, 1, "initialize", json!({})).await;
+    let _init_resp = read_response(&mut reader, 1).await;
+    let _initialized = read_next(&mut reader).await;
+
+    send_request(
+        &mut writer,
+        2,
+        "attach",
+        json!({
+            "host": "127.0.0.1",
+            "port": jdwp.addr().port()
+        }),
+    )
+    .await;
+    let attach_resp = read_response(&mut reader, 2).await;
+    assert!(attach_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+
+    let bytecode_base64 = general_purpose::STANDARD.encode([0u8; 4]);
+    send_request(
+        &mut writer,
+        3,
+        "nova/hotSwap",
+        json!({
+            "classes": [{
+                "className": "Main",
+                "bytecodeBase64": bytecode_base64
+            }]
+        }),
+    )
+    .await;
+    let hot_swap_resp = read_response(&mut reader, 3).await;
+    assert!(hot_swap_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    assert_eq!(
+        hot_swap_resp.pointer("/body/results/0/status").and_then(|v| v.as_str()),
+        Some("schema_change")
+    );
+    let msg = hot_swap_resp
+        .pointer("/body/results/0/message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert!(msg.contains("JDWP error 62"), "unexpected message: {msg:?}");
+
+    send_request(&mut writer, 4, "disconnect", json!({})).await;
+    let _disc_resp = read_response(&mut reader, 4).await;
 
     server_task.await.unwrap().unwrap();
 }
