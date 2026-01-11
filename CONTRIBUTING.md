@@ -162,10 +162,25 @@ To focus on a subset of fixtures:
 ./scripts/run-real-project-tests.sh --only guava,spring-petclinic
 ```
 
+For CI-like behavior (and to reduce peak memory), run with a single test thread:
+
+```bash
+RUST_TEST_THREADS=1 ./scripts/run-real-project-tests.sh
+```
+
 Optional helper to compile the fixtures with their build toolchain (best-effort sanity check):
 
 ```bash
 ./scripts/javac-validate.sh
+```
+
+`javac-validate.sh` also supports the same fixture selection mechanism:
+
+```bash
+./scripts/javac-validate.sh --only guava,spring-petclinic
+
+# or:
+NOVA_TEST_PROJECTS=guava,spring-petclinic ./scripts/javac-validate.sh
 ```
 
 ## Benchmarks
