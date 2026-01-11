@@ -76,7 +76,7 @@ jobs:
           format_supported=0
           if grep -q -- '--json-out' "${help_file}"; then
             json_out_supported=1
-          elif grep -Eq -- '^[[:space:]]+--format([[:space:]]|$)' "${help_file}"; then
+          elif grep -q -- '--format' "${help_file}"; then
             format_supported=1
           fi
           rm -f "${help_file}"
