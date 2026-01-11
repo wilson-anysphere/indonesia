@@ -52,17 +52,17 @@ jobs:
           set -euxo pipefail
           # `actions/cache` path patterns are resolved before restore. Ensure the
           # fixture directories exist so the `test-projects/*/` glob matches.
-          python3 - <<'PY'
-          import tomllib
-          from pathlib import Path
-
-          pins = Path("test-projects/pins.toml")
-          if pins.exists():
-            data = tomllib.load(pins.open("rb"))
-            root = Path("test-projects")
-            for name in data.keys():
-              (root / name).mkdir(parents=True, exist_ok=True)
-          PY
+          if [[ -f test-projects/pins.toml ]]; then
+            awk '
+            /^\s*\[[^]]+\]\s*$/ {
+              name = $0
+              sub(/^[[:space:]]*\[/, "", name)
+              sub(/\][[:space:]]*$/, "", name)
+              print name
+            }' test-projects/pins.toml | while read -r name; do
+              [[ -n "$name" ]] && mkdir -p "test-projects/$name"
+            done
+          fi
 
           # Same idea for Maven caches.
           mkdir -p ~/.m2/repository ~/.m2/wrapper
