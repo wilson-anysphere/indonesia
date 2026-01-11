@@ -12,6 +12,10 @@
 //!   - `nova/java/classpath`
 //!   - `nova/java/organizeImports`
 //!   - `nova/reloadProject`
+//! - Project metadata endpoints (backed by `nova-project`)
+//!   - `nova/projectConfiguration`
+//!   - `nova/java/sourcePaths`
+//!   - `nova/java/resolveMainClass`
 //! - Annotation processing endpoints (backed by `nova-apt`)
 //!   - `nova/java/generatedSources`
 //!   - `nova/java/runAnnotationProcessing`
@@ -99,6 +103,9 @@ pub const TEST_DEBUG_CONFIGURATION_METHOD: &str = "nova/test/debugConfiguration"
 pub const BUILD_PROJECT_METHOD: &str = "nova/buildProject";
 pub const JAVA_CLASSPATH_METHOD: &str = "nova/java/classpath";
 pub const JAVA_ORGANIZE_IMPORTS_METHOD: &str = "nova/java/organizeImports";
+pub const PROJECT_CONFIGURATION_METHOD: &str = "nova/projectConfiguration";
+pub const JAVA_SOURCE_PATHS_METHOD: &str = "nova/java/sourcePaths";
+pub const JAVA_RESOLVE_MAIN_CLASS_METHOD: &str = "nova/java/resolveMainClass";
 pub const JAVA_GENERATED_SOURCES_METHOD: &str = "nova/java/generatedSources";
 pub const RUN_ANNOTATION_PROCESSING_METHOD: &str = "nova/java/runAnnotationProcessing";
 pub const RELOAD_PROJECT_METHOD: &str = "nova/reloadProject";
@@ -179,6 +186,19 @@ fn handle_custom_request_inner(
         JAVA_CLASSPATH_METHOD => {
             hardening::run_with_watchdog(method, params, extensions::build::handle_java_classpath)
         }
+        PROJECT_CONFIGURATION_METHOD => hardening::run_with_watchdog(
+            method,
+            params,
+            extensions::project::handle_project_configuration,
+        ),
+        JAVA_SOURCE_PATHS_METHOD => {
+            hardening::run_with_watchdog(method, params, extensions::java::handle_source_paths)
+        }
+        JAVA_RESOLVE_MAIN_CLASS_METHOD => hardening::run_with_watchdog(
+            method,
+            params,
+            extensions::java::handle_resolve_main_class,
+        ),
         JAVA_GENERATED_SOURCES_METHOD => {
             hardening::run_with_watchdog(method, params, extensions::apt::handle_generated_sources)
         }
