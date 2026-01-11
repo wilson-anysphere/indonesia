@@ -793,15 +793,45 @@ async fn read_wire_frame(
         });
     }
 
-    // Reserve fallibly so allocation failure surfaces as an error instead of aborting the process.
     let len_usize = len as usize;
+    if len_usize == 0 {
+        // `decode_wire_frame` will (correctly) reject empty frames, but we should not allocate an
+        // attacker-controlled buffer for the length prefix alone.
+        return v3::decode_wire_frame(&[]).map_err(|err| RpcTransportError::DecodeError {
+            message: err.to_string(),
+        });
+    }
+
+    // Grow the buffer gradually so a peer cannot force us to allocate `len` bytes up-front and
+    // then stall (e.g. by sending only the length prefix). This keeps per-connection memory
+    // bounded by the amount of payload actually received.
+    //
+    // This mirrors the v2 transport's `read_payload_limited` behavior.
     let mut buf = Vec::new();
-    buf.try_reserve_exact(len_usize)
+    buf.try_reserve_exact(len_usize.min(8 * 1024))
         .map_err(|err| RpcTransportError::AllocationFailed {
-            message: format!("allocate frame buffer ({len} bytes): {err}"),
+            message: format!("allocate frame buffer ({} bytes): {err}", len_usize.min(8 * 1024)),
         })?;
-    buf.resize(len_usize, 0);
-    stream.read_exact(&mut buf).await?;
+
+    while buf.len() < len_usize {
+        if buf.capacity() == buf.len() {
+            let new_cap = (buf.capacity().saturating_mul(2)).min(len_usize);
+            let additional = new_cap.saturating_sub(buf.capacity());
+            buf.try_reserve_exact(additional)
+                .map_err(|err| RpcTransportError::AllocationFailed {
+                    message: format!("allocate frame buffer ({} bytes): {err}", new_cap),
+                })?;
+        }
+
+        let remaining = len_usize - buf.len();
+        let spare = buf.capacity() - buf.len();
+        let to_read = remaining.min(spare);
+
+        let start = buf.len();
+        buf.resize(start + to_read, 0);
+        stream.read_exact(&mut buf[start..]).await?;
+    }
+
     v3::decode_wire_frame(&buf).map_err(|err| RpcTransportError::DecodeError {
         message: err.to_string(),
     })
@@ -1434,6 +1464,70 @@ fn wire_frame_type(frame: &WireFrame) -> &'static str {
 }
 
 #[cfg(test)]
+use std::alloc::{GlobalAlloc, Layout, System};
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
+#[cfg(test)]
+use std::sync::Mutex as StdMutex;
+
+/// Tracks the maximum single allocation size for tests that protect against unbounded allocations.
+#[cfg(test)]
+struct TrackingAllocator;
+
+#[cfg(test)]
+static MAX_ALLOC: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+#[global_allocator]
+static GLOBAL: TrackingAllocator = TrackingAllocator;
+
+#[cfg(test)]
+unsafe impl GlobalAlloc for TrackingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        track_alloc(layout.size());
+        System.alloc(layout)
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        track_alloc(layout.size());
+        System.alloc_zeroed(layout)
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        System.dealloc(ptr, layout)
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        track_alloc(new_size);
+        System.realloc(ptr, layout, new_size)
+    }
+}
+
+#[cfg(test)]
+fn track_alloc(size: usize) {
+    let mut current = MAX_ALLOC.load(Ordering::Relaxed);
+    while size > current {
+        match MAX_ALLOC.compare_exchange_weak(current, size, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(old) => current = old,
+        }
+    }
+}
+
+#[cfg(test)]
+fn reset_max_alloc() {
+    MAX_ALLOC.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn max_alloc() -> usize {
+    MAX_ALLOC.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+static TEST_LOCK: StdMutex<()> = StdMutex::new(());
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1477,6 +1571,8 @@ mod tests {
 
     #[test]
     fn read_wire_frame_rejects_oversize_len_prefix_without_allocating() {
+        let _guard = TEST_LOCK.lock().unwrap();
+
         // A regression test for the length-prefixed framing: `read_wire_frame` must reject
         // lengths larger than `max_frame_len` *before* allocating the buffer.
         //
@@ -1509,6 +1605,93 @@ mod tests {
             .expect_err("expected oversize frame error");
 
             assert!(matches!(err, RpcTransportError::FrameTooLarge { .. }));
+        });
+    }
+
+    #[test]
+    fn read_wire_frame_large_len_prefix_eof_does_not_allocate_full_len() {
+        let _guard = TEST_LOCK.lock().unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
+
+        rt.block_on(async {
+            use tokio::io::AsyncWriteExt as _;
+
+            let max_frame_len = u32::MAX;
+            let len = u32::MAX - 1;
+
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&len.to_le_bytes());
+
+            let (mut tx, mut rx) = tokio::io::duplex(bytes.len());
+            tx.write_all(&bytes).await.expect("write prefix");
+            drop(tx); // EOF before any payload bytes arrive.
+
+            reset_max_alloc();
+
+            let err = tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                read_wire_frame(&mut rx, max_frame_len),
+            )
+            .await
+            .expect("read_wire_frame timed out")
+            .expect_err("expected EOF error");
+
+            assert!(matches!(err, RpcTransportError::Io { .. }));
+
+            let max_during_read = max_alloc();
+            assert!(
+                max_during_read < 1024 * 1024,
+                "read_wire_frame should not allocate proportional to the length prefix; max alloc {max_during_read} bytes"
+            );
+        });
+    }
+
+    #[test]
+    fn read_wire_frame_large_len_prefix_blocks_without_allocating_full_len() {
+        let _guard = TEST_LOCK.lock().unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
+
+        rt.block_on(async {
+            use tokio::io::AsyncWriteExt as _;
+
+            let max_frame_len = u32::MAX;
+            let len = u32::MAX - 1;
+
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&len.to_le_bytes());
+
+            let (mut tx, mut rx) = tokio::io::duplex(64);
+            tx.write_all(&bytes).await.expect("write prefix");
+            tx.flush().await.expect("flush prefix");
+
+            reset_max_alloc();
+
+            let res = tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                read_wire_frame(&mut rx, max_frame_len),
+            )
+            .await;
+
+            assert!(
+                res.is_err(),
+                "expected read_wire_frame to block until payload bytes arrive"
+            );
+
+            let max_during_read = max_alloc();
+            assert!(
+                max_during_read < 1024 * 1024,
+                "read_wire_frame should not allocate proportional to the length prefix; max alloc {max_during_read} bytes"
+            );
+
+            drop(tx);
         });
     }
 }
