@@ -72,7 +72,7 @@ pub(crate) fn atomic_write_with(
     write: impl FnOnce(&mut fs::File) -> Result<(), CacheError>,
 ) -> Result<(), CacheError> {
     let Some(parent) = path.parent() else {
-        return Err(std::io::Error::new(std::io::ErrorKind::Other, "path has no parent").into());
+        return Err(io::Error::other("path has no parent").into());
     };
     let parent = if parent.as_os_str().is_empty() {
         Path::new(".")
@@ -141,9 +141,9 @@ pub(crate) fn atomic_write_with(
 }
 
 fn open_unique_tmp_file(dest: &Path, parent: &Path) -> io::Result<(PathBuf, fs::File)> {
-    let file_name = dest.file_name().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::Other, "destination path has no file name")
-    })?;
+    let file_name = dest
+        .file_name()
+        .ok_or_else(|| io::Error::other("destination path has no file name"))?;
     let pid = std::process::id();
 
     loop {

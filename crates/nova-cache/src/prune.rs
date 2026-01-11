@@ -106,7 +106,12 @@ pub fn prune_cache(cache_dir: &CacheDir, policy: PrunePolicy) -> Result<PruneRep
     Ok(report)
 }
 
-fn prune_ast(cache_dir: &CacheDir, cutoff_millis: Option<u64>, policy: &PrunePolicy, report: &mut PruneReport) {
+fn prune_ast(
+    cache_dir: &CacheDir,
+    cutoff_millis: Option<u64>,
+    policy: &PrunePolicy,
+    report: &mut PruneReport,
+) {
     let ast_dir = cache_dir.ast_dir();
     if !ast_dir.is_dir() {
         return;
@@ -162,7 +167,9 @@ fn prune_ast(cache_dir: &CacheDir, cutoff_millis: Option<u64>, policy: &PrunePol
 
         let mut should_delete = !referenced.contains_key(&file_name);
         if !should_delete {
-            if let (Some(cutoff), Some(saved_at)) = (cutoff_millis, referenced.get(&file_name).copied()) {
+            if let (Some(cutoff), Some(saved_at)) =
+                (cutoff_millis, referenced.get(&file_name).copied())
+            {
                 if saved_at < cutoff {
                     should_delete = true;
                 }
@@ -285,9 +292,8 @@ fn prune_single_query_dir(
 
         let path = entry.path();
         let size = file_size_bytes(&path, report).unwrap_or(0);
-        let last_used = derived_entry_saved_at_millis(&path, report).unwrap_or_else(|| {
-            file_modified_millis(&path, report).unwrap_or(0)
-        });
+        let last_used = derived_entry_saved_at_millis(&path, report)
+            .unwrap_or_else(|| file_modified_millis(&path, report).unwrap_or(0));
 
         if let Some(cutoff) = cutoff_millis {
             if last_used < cutoff {
@@ -489,7 +495,11 @@ enum CandidateKind {
     LegacyIndex,
 }
 
-fn gather_ast_candidates(cache_dir: &CacheDir, report: &mut PruneReport, out: &mut Vec<EvictionCandidate>) {
+fn gather_ast_candidates(
+    cache_dir: &CacheDir,
+    report: &mut PruneReport,
+    out: &mut Vec<EvictionCandidate>,
+) {
     let ast_dir = cache_dir.ast_dir();
     if !ast_dir.is_dir() {
         return;
@@ -557,7 +567,11 @@ fn gather_ast_candidates(cache_dir: &CacheDir, report: &mut PruneReport, out: &m
     }
 }
 
-fn gather_query_candidates(cache_dir: &CacheDir, report: &mut PruneReport, out: &mut Vec<EvictionCandidate>) {
+fn gather_query_candidates(
+    cache_dir: &CacheDir,
+    report: &mut PruneReport,
+    out: &mut Vec<EvictionCandidate>,
+) {
     let queries_dir = cache_dir.queries_dir();
     if !queries_dir.is_dir() {
         return;
@@ -728,7 +742,10 @@ fn dir_size_bytes(path: &Path, report: &mut PruneReport) -> u64 {
         let entry = match entry {
             Ok(entry) => entry,
             Err(err) => {
-                let p = err.path().map(PathBuf::from).unwrap_or_else(|| path.to_path_buf());
+                let p = err
+                    .path()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| path.to_path_buf());
                 report.push_error(p, "walkdir", err);
                 continue;
             }
@@ -802,7 +819,12 @@ fn load_ast_metadata(path: &Path, report: &mut PruneReport) -> Option<AstCacheMe
     }
 }
 
-fn store_ast_metadata(path: &Path, metadata: &AstCacheMetadata, policy: &PrunePolicy, report: &mut PruneReport) {
+fn store_ast_metadata(
+    path: &Path,
+    metadata: &AstCacheMetadata,
+    policy: &PrunePolicy,
+    report: &mut PruneReport,
+) {
     if policy.dry_run {
         return;
     }

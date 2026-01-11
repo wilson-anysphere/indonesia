@@ -369,7 +369,7 @@ fn remove_dir_all_nofollow(path: &Path) -> std::io::Result<()> {
         .follow_links(false)
         .contents_first(true)
     {
-        let entry = entry.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+        let entry = entry.map_err(std::io::Error::other)?;
         let ty = entry.file_type();
         if ty.is_dir() {
             std::fs::remove_dir(entry.path())?;

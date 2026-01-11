@@ -205,6 +205,7 @@ impl AstArtifactCache {
 
         let lock_file = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(&self.metadata_lock_path)?;
@@ -238,6 +239,7 @@ impl AstArtifactCache {
         // a cache miss instead of blocking on the hot path.
         if let Ok(lock_file) = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(&self.metadata_lock_path)

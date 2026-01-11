@@ -156,12 +156,12 @@ impl QueryDiskCache {
         };
         let stored_fingerprint: Fingerprint =
             match bincode_options_limited().deserialize_from(&mut reader) {
-            Ok(v) => v,
-            Err(_) => {
-                let _ = std::fs::remove_file(&path);
-                return Ok(None);
-            }
-        };
+                Ok(v) => v,
+                Err(_) => {
+                    let _ = std::fs::remove_file(&path);
+                    return Ok(None);
+                }
+            };
 
         if schema_version != QUERY_DISK_CACHE_SCHEMA_VERSION
             || nova_version != nova_core::NOVA_VERSION

@@ -64,7 +64,7 @@ impl CacheStore for S3Store {
         })?;
 
         runtime.block_on(async move {
-            let config = aws_config::load_from_env().await;
+            let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
             let client = aws_sdk_s3::Client::new(&config);
             let object = client
                 .get_object()
