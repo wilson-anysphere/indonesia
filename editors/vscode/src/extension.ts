@@ -781,11 +781,24 @@ export async function activate(context: vscode.ExtensionContext) {
       const message = settings.path
         ? `Nova: nova.server.path points to a missing file: ${settings.path}`
         : 'Nova: nova-lsp is not installed.';
-      const action = await vscode.window.showErrorMessage(message, 'Install/Update Server', 'Use Local Server Binary...');
+      const action = await vscode.window.showErrorMessage(
+        message,
+        'Install/Update Server',
+        'Use Local Server Binary...',
+        'Open Settings',
+        'Open install docs',
+      );
       if (action === 'Install/Update Server') {
         await installOrUpdateServer();
       } else if (action === 'Use Local Server Binary...') {
         await useLocalServerBinary();
+      } else if (action === 'Open Settings') {
+        await vscode.commands.executeCommand(
+          'workbench.action.openSettings',
+          settings.path ? 'nova.server.path' : 'nova.download',
+        );
+      } else if (action === 'Open install docs') {
+        await openInstallDocs(context);
       }
       return;
     }
