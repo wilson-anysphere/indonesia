@@ -191,7 +191,7 @@ impl Workspace {
     }
 
     pub fn index(&self) -> Result<IndexReport> {
-        let (snapshot, cache_dir, _shards, metrics) = self.build_indexes()?;
+        let (snapshot, cache_dir, _shards, metrics) = self.build_indexes(false)?;
         Ok(IndexReport {
             root: snapshot.project_root().to_path_buf(),
             project_hash: snapshot.project_hash().as_str().to_string(),
@@ -202,12 +202,8 @@ impl Workspace {
 
     /// Index a project and persist the resulting artifacts into Nova's persistent cache.
     pub fn index_and_write_cache(&self) -> Result<IndexReport> {
-        if let Some(report) = self.try_index_and_write_cache_fast()? {
-            return Ok(report);
-        }
-
         let shard_count = DEFAULT_SHARD_COUNT;
-        let (snapshot, cache_dir, mut shards, metrics) = self.build_indexes()?;
+        let (snapshot, cache_dir, mut shards, metrics) = self.build_indexes(false)?;
         if metrics.files_invalidated > 0 {
             save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards)
                 .context("failed to persist indexes")?;
@@ -221,73 +217,9 @@ impl Workspace {
         })
     }
 
-    fn try_index_and_write_cache_fast(&self) -> Result<Option<IndexReport>> {
-        let start = Instant::now();
-
-        let cache_dir = self.open_cache_dir()?;
-        let metadata_path = cache_dir.metadata_path();
-        if !metadata_path.exists() && !cache_dir.metadata_bin_path().exists() {
-            return Ok(None);
-        }
-
-        let files = self.project_java_files()?;
-        let snapshot_start = Instant::now();
-        let stamp_snapshot = ProjectSnapshot::new_fast(&self.root, files).with_context(|| {
-            format!(
-                "failed to build file stamp snapshot for {}",
-                self.root.display()
-            )
-        })?;
-        let snapshot_ms = snapshot_start.elapsed().as_millis();
-
-        // Fast path: check if the existing cache is reusable without allocating the in-memory
-        // indexes. This is used by `nova index` / cache warming where the caller doesn't need to
-        // query symbols immediately.
-        let shard_count = DEFAULT_SHARD_COUNT;
-        let loaded = load_sharded_index_archives_from_fast_snapshot(
-            &cache_dir,
-            &stamp_snapshot,
-            shard_count,
-        )
-        .context("failed to load cached indexes")?;
-        let Some(loaded) = loaded else {
-            return Ok(None);
-        };
-        if !loaded.invalidated_files.is_empty() {
-            return Ok(None);
-        }
-
-        let symbols_indexed = self
-            .read_cache_perf(&cache_dir)
-            .ok()
-            .flatten()
-            .map(|perf| perf.symbols_indexed)
-            .unwrap_or(0);
-
-        let metrics = PerfMetrics {
-            files_total: stamp_snapshot.file_fingerprints().len(),
-            files_indexed: 0,
-            bytes_indexed: 0,
-            files_invalidated: 0,
-            symbols_indexed,
-            snapshot_ms,
-            index_ms: 0,
-            elapsed_ms: start.elapsed().as_millis(),
-            rss_bytes: current_rss_bytes(),
-        };
-
-        self.write_cache_perf(&cache_dir, &metrics)?;
-
-        Ok(Some(IndexReport {
-            root: stamp_snapshot.project_root().to_path_buf(),
-            project_hash: stamp_snapshot.project_hash().as_str().to_string(),
-            cache_root: cache_dir.root().to_path_buf(),
-            metrics,
-        }))
-    }
-
     fn build_indexes(
         &self,
+        load_shards_on_hit: bool,
     ) -> Result<(ProjectSnapshot, CacheDir, Vec<ProjectIndexes>, PerfMetrics)> {
         let start = Instant::now();
 
@@ -316,15 +248,39 @@ impl Workspace {
             shard_count,
         )
         .context("failed to load cached indexes")?;
+        let (loaded_shards, mut invalidated_files) = match loaded {
+            Some(loaded) => (Some(loaded.shards), loaded.invalidated_files),
+            None => (
+                None,
+                stamp_snapshot.file_fingerprints().keys().cloned().collect(),
+            ),
+        };
 
-        let (mut shards, mut invalidated_files) = match loaded {
-            Some(loaded) => {
-                let nova_index::LoadedShardedIndexArchives {
-                    shards: loaded_shards,
-                    invalidated_files,
-                    ..
-                } = loaded;
+        if invalidated_files.is_empty() && !load_shards_on_hit {
+            let symbols_indexed = self
+                .read_cache_perf(&cache_dir)
+                .ok()
+                .flatten()
+                .map(|perf| perf.symbols_indexed)
+                .unwrap_or(0);
 
+            let metrics = PerfMetrics {
+                files_total: stamp_snapshot.file_fingerprints().len(),
+                files_indexed: 0,
+                bytes_indexed: 0,
+                files_invalidated: 0,
+                symbols_indexed,
+                snapshot_ms,
+                index_ms: 0,
+                elapsed_ms: start.elapsed().as_millis(),
+                rss_bytes: current_rss_bytes(),
+            };
+
+            return Ok((stamp_snapshot, cache_dir, Vec::new(), metrics));
+        }
+
+        let mut shards = match loaded_shards {
+            Some(loaded_shards) => {
                 let mut shards = Vec::with_capacity(shard_count as usize);
                 for shard in loaded_shards {
                     let indexes = match shard {
@@ -338,14 +294,11 @@ impl Workspace {
                     };
                     shards.push(indexes);
                 }
-                (shards, invalidated_files)
+                shards
             }
-            None => (
-                (0..shard_count)
-                    .map(|_| ProjectIndexes::default())
-                    .collect(),
-                stamp_snapshot.file_fingerprints().keys().cloned().collect(),
-            ),
+            None => (0..shard_count)
+                .map(|_| ProjectIndexes::default())
+                .collect(),
         };
 
         if invalidated_files.is_empty() {
@@ -767,7 +720,7 @@ impl Workspace {
         // Keep the symbol index up to date by running the incremental indexer
         // and persisting the updated indexes into the on-disk cache.
         let shard_count = DEFAULT_SHARD_COUNT;
-        let (snapshot, cache_dir, mut shards, metrics) = self.build_indexes()?;
+        let (snapshot, cache_dir, mut shards, metrics) = self.build_indexes(true)?;
         if metrics.files_invalidated > 0 {
             save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards)
                 .context("failed to persist indexes")?;
