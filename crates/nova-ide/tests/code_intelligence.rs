@@ -4,6 +4,7 @@ use nova_ide::{
     find_references, goto_definition, hover, inlay_hints, prepare_call_hierarchy,
     prepare_type_hierarchy, signature_help, type_hierarchy_subtypes, type_hierarchy_supertypes,
 };
+use lsp_types::CompletionTextEdit;
 use nova_types::Severity;
 use std::path::PathBuf;
 
@@ -156,6 +157,46 @@ class C {
 }
 
 #[test]
+fn spring_value_completion_replaces_full_placeholder_prefix() {
+    let config_path = PathBuf::from("/workspace/src/main/resources/application.properties");
+    let java_path = PathBuf::from("/workspace/src/main/java/C.java");
+
+    let config_text = "server.port=8080\n".to_string();
+    let java_text = r#"
+import org.springframework.beans.factory.annotation.Value;
+class C {
+  @Value("${server.p<|>}")
+  String port;
+}
+"#;
+
+    let (db, file, pos) = fixture_multi(
+        java_path,
+        java_text,
+        vec![(config_path, config_text)],
+    );
+
+    let java_without_caret = java_text.replace("<|>", "");
+    let key_start = java_without_caret
+        .find("server.p")
+        .expect("expected placeholder prefix in fixture");
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "server.port")
+        .expect("expected server.port completion item");
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+
+    assert_eq!(edit.range.start, offset_to_position(&java_without_caret, key_start));
+    assert_eq!(edit.range.end, pos);
+}
+
+#[test]
 fn spring_goto_definition_jumps_to_config_file() {
     let config_path = PathBuf::from("/workspace/src/main/resources/application.properties");
     let java_path = PathBuf::from("/workspace/src/main/java/C.java");
@@ -183,6 +224,39 @@ class C {
     );
     assert_eq!(loc.range.start.line, 0);
     assert_eq!(loc.range.start.character, 0);
+}
+
+#[test]
+fn spring_properties_key_completion_replaces_full_key_prefix() {
+    let config_path = PathBuf::from("/workspace/src/main/resources/application.properties");
+
+    let config_text = r#"server.port=8080
+server.p<|>
+"#;
+
+    let (db, file, pos) = fixture_multi(config_path, config_text, vec![]);
+
+    let config_without_caret = config_text.replace("<|>", "");
+    let key_start = config_without_caret
+        .rfind("server.p")
+        .expect("expected second server.p key in fixture");
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "server.port")
+        .expect("expected server.port completion item");
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+
+    assert_eq!(
+        edit.range.start,
+        offset_to_position(&config_without_caret, key_start)
+    );
+    assert_eq!(edit.range.end, pos);
 }
 
 #[test]

@@ -407,6 +407,8 @@ struct PlaceholderContext {
     prefix: String,
     /// Best-effort full key in the placeholder (may be incomplete).
     key: String,
+    /// Absolute byte offset of the key start (first char after `${`).
+    key_start: usize,
 }
 
 fn placeholder_context_at(text: &str, offset: usize) -> Option<PlaceholderContext> {
@@ -438,7 +440,11 @@ fn placeholder_context_at(text: &str, offset: usize) -> Option<PlaceholderContex
         let Some(open_rel) = content[..rel_offset].rfind("${") else {
             return None;
         };
-        let key_start_rel = open_rel + 2;
+        let mut key_start_rel = open_rel + 2;
+        while key_start_rel < content.len() && content.as_bytes()[key_start_rel].is_ascii_whitespace()
+        {
+            key_start_rel += 1;
+        }
         if rel_offset < key_start_rel {
             return None;
         }
@@ -454,9 +460,43 @@ fn placeholder_context_at(text: &str, offset: usize) -> Option<PlaceholderContex
 
         let key = content[key_start_rel..key_end_rel].trim().to_string();
         let prefix = content[key_start_rel..rel_offset].trim().to_string();
-        return Some(PlaceholderContext { prefix, key });
+        let key_start = content_start + key_start_rel;
+        return Some(PlaceholderContext {
+            prefix,
+            key,
+            key_start,
+        });
     }
 
+    None
+}
+
+/// Compute the replacement span for completions inside `@Value("${...}")`.
+///
+/// The returned span covers the placeholder key prefix (start of key to cursor),
+/// so inserting a full key like `server.port` replaces `server.p` instead of
+/// only the last identifier segment (`p`).
+#[must_use]
+pub fn completion_span_for_value_placeholder(java_source: &str, offset: usize) -> Option<Span> {
+    let ctx = placeholder_context_at(java_source, offset)?;
+    Some(Span::new(ctx.key_start, offset))
+}
+
+/// Compute the replacement span for completions inside `.properties` files.
+///
+/// This uses the range-preserving parser to locate the surrounding key/value
+/// token and returns the span from its start to the cursor.
+#[must_use]
+pub fn completion_span_for_properties_file(path: &Path, text: &str, offset: usize) -> Option<Span> {
+    let entries = parse_config_entries(path, text);
+    for entry in entries {
+        if entry.key_span.start <= offset && offset <= entry.key_span.end {
+            return Some(Span::new(entry.key_span.start, offset));
+        }
+        if entry.value_span.start <= offset && offset <= entry.value_span.end {
+            return Some(Span::new(entry.value_span.start, offset));
+        }
+    }
     None
 }
 

@@ -615,9 +615,14 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
                 offset,
                 index.as_ref(),
             );
+            let replace_start = nova_framework_spring::completion_span_for_properties_file(
+                path, text, offset,
+            )
+            .map(|span| span.start)
+            .unwrap_or(prefix_start);
             return decorate_completions(
                 text,
-                prefix_start,
+                replace_start,
                 offset,
                 spring_completions_to_lsp(items),
             );
@@ -683,9 +688,13 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
                     index.as_ref(),
                 );
                 if !items.is_empty() {
+                    let replace_start =
+                        nova_framework_spring::completion_span_for_value_placeholder(text, offset)
+                            .map(|span| span.start)
+                            .unwrap_or(prefix_start);
                     return decorate_completions(
                         text,
-                        prefix_start,
+                        replace_start,
                         offset,
                         spring_completions_to_lsp(items),
                     );
