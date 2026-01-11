@@ -156,7 +156,7 @@ jobs:
           key: m2-${{ runner.os }}-java17-${{ hashFiles('test-projects/pins.toml') }}
 
       - name: Save test projects cache
-        if: always() && steps.test-projects-cache.outputs.cache-hit != 'true'
+        if: always() && steps.test-projects-cache.outputs.cache-hit != 'true' && hashFiles('test-projects/*/.git/HEAD') != ''
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
