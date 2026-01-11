@@ -524,38 +524,6 @@ fn handle_request(
                 },
             )
         }
-        "textDocument/completion" => {
-            if state.shutdown_requested {
-                return Ok(server_shutting_down_error(id));
-            }
-            // This server's focus today is code actions/formatting/etc. We still
-            // provide a stub completion endpoint so clients that notice
-            // `completionProvider` don't receive "method not found" errors.
-            Ok(json!({ "jsonrpc": "2.0", "id": id, "result": [] }))
-        }
-        "completionItem/resolve" => {
-            if state.shutdown_requested {
-                return Ok(server_shutting_down_error(id));
-            }
-
-            let item: lsp_types::CompletionItem = match serde_json::from_value(params) {
-                Ok(item) => item,
-                Err(err) => {
-                    return Ok(json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "error": { "code": -32602, "message": format!("invalid CompletionItem params: {err}") }
-                    }));
-                }
-            };
-
-            let resolved = resolve_completion_item_with_state(item, state);
-            Ok(json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": serde_json::to_value(resolved).unwrap_or(serde_json::Value::Null)
-            }))
-        }
         nova_lsp::JAVA_ORGANIZE_IMPORTS_METHOD => {
             if state.shutdown_requested {
                 return Ok(server_shutting_down_error(id));
@@ -1299,16 +1267,8 @@ fn handle_completion_item_resolve(
     state: &ServerState,
 ) -> Result<serde_json::Value, String> {
     let item: CompletionItem = serde_json::from_value(params).map_err(|e| e.to_string())?;
-    let document_text = item
-        .data
-        .as_ref()
-        .and_then(|data| data.get("nova"))
-        .and_then(|nova| nova.get("uri"))
-        .and_then(|uri| uri.as_str())
-        .and_then(|uri| load_document_text(state, uri))
-        .unwrap_or_default();
-    serde_json::to_value(nova_lsp::resolve_completion_item(item, &document_text))
-        .map_err(|e| e.to_string())
+    let resolved = resolve_completion_item_with_state(item, state);
+    serde_json::to_value(resolved).map_err(|e| e.to_string())
 }
 
 fn position_to_offset_utf16(text: &str, position: lsp_types::Position) -> Option<usize> {
