@@ -1227,7 +1227,12 @@ fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf
         }
 
         match name {
-            "gradle.properties" | "gradlew" | "gradlew.bat" => out.push(path),
+            "gradle.properties" => out.push(path),
+            "gradlew" | "gradlew.bat" => {
+                if path == root.join(name) {
+                    out.push(path);
+                }
+            }
             "gradle-wrapper.properties" => {
                 if path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.properties")) {
                     out.push(path);
