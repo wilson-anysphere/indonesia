@@ -101,3 +101,27 @@ pub(crate) fn format_command(program: &Path, args: &[String]) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn default_runner_times_out() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("sleep.sh");
+        std::fs::write(&script, "#!/bin/sh\nsleep 5\n").unwrap();
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let runner = DefaultCommandRunner {
+            timeout: Some(Duration::from_millis(50)),
+        };
+        let err = runner.run(dir.path(), &script, &[]).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+    }
+}
