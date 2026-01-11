@@ -1,6 +1,7 @@
 use nova_hir::hir::{Body, Expr, ExprId, Stmt};
 use nova_hir::queries::{body, constructor_body, initializer_body, item_tree, HirDatabase};
 use nova_vfs::FileId;
+use nova_types::Span;
 use std::sync::Arc;
 
 struct TestDb {
@@ -111,6 +112,11 @@ class Foo {
         .expect("Foo class");
     let class = tree.class(class_id);
     assert_eq!(class.name, "Foo");
+    let foo_decl = source.find("class Foo").expect("class Foo declaration");
+    let foo_start = foo_decl + "class ".len();
+    let foo_end = foo_start + "Foo".len();
+    assert_eq!(class.name_range, Span::new(foo_start, foo_end));
+    assert_eq!(&source[class.name_range.start..class.name_range.end], "Foo");
 
     assert!(class
         .members

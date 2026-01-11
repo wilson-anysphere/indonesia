@@ -132,6 +132,7 @@ pub enum Item {
 #[derive(Debug, Clone)]
 pub struct Class {
     pub name: String,
+    pub name_range: Span,
     pub range: Span,
     pub body_range: Span,
     pub members: Vec<Member>,
@@ -148,6 +149,7 @@ impl Eq for Class {}
 #[derive(Debug, Clone)]
 pub struct Interface {
     pub name: String,
+    pub name_range: Span,
     pub range: Span,
     pub body_range: Span,
     pub members: Vec<Member>,
@@ -164,6 +166,7 @@ impl Eq for Interface {}
 #[derive(Debug, Clone)]
 pub struct Enum {
     pub name: String,
+    pub name_range: Span,
     pub range: Span,
     pub body_range: Span,
     pub members: Vec<Member>,
@@ -180,6 +183,7 @@ impl Eq for Enum {}
 #[derive(Debug, Clone)]
 pub struct Record {
     pub name: String,
+    pub name_range: Span,
     pub range: Span,
     pub body_range: Span,
     pub members: Vec<Member>,
@@ -196,6 +200,7 @@ impl Eq for Record {}
 #[derive(Debug, Clone)]
 pub struct Annotation {
     pub name: String,
+    pub name_range: Span,
     pub range: Span,
     pub body_range: Span,
     pub members: Vec<Member>,

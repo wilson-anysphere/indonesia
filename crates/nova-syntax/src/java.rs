@@ -75,6 +75,7 @@ pub mod ast {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct ClassDecl {
         pub name: String,
+        pub name_range: Span,
         pub range: Span,
         pub body_range: Span,
         pub members: Vec<MemberDecl>,
@@ -83,6 +84,7 @@ pub mod ast {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct InterfaceDecl {
         pub name: String,
+        pub name_range: Span,
         pub range: Span,
         pub body_range: Span,
         pub members: Vec<MemberDecl>,
@@ -91,6 +93,7 @@ pub mod ast {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct EnumDecl {
         pub name: String,
+        pub name_range: Span,
         pub range: Span,
         pub body_range: Span,
         pub members: Vec<MemberDecl>,
@@ -99,6 +102,7 @@ pub mod ast {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct RecordDecl {
         pub name: String,
+        pub name_range: Span,
         pub range: Span,
         pub body_range: Span,
         pub members: Vec<MemberDecl>,
@@ -107,6 +111,7 @@ pub mod ast {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct AnnotationDecl {
         pub name: String,
+        pub name_range: Span,
         pub range: Span,
         pub body_range: Span,
         pub members: Vec<MemberDecl>,
@@ -695,6 +700,7 @@ impl Parser {
             let range = Span::new(start, end);
             return Some(ast::TypeDecl::Annotation(ast::AnnotationDecl {
                 name: name.text,
+                name_range: name.range,
                 range,
                 body_range,
                 members,
@@ -723,24 +729,28 @@ impl Parser {
         match kind.as_str() {
             "class" => Some(ast::TypeDecl::Class(ast::ClassDecl {
                 name: name.text,
+                name_range: name.range,
                 range,
                 body_range,
                 members,
             })),
             "interface" => Some(ast::TypeDecl::Interface(ast::InterfaceDecl {
                 name: name.text,
+                name_range: name.range,
                 range,
                 body_range,
                 members,
             })),
             "enum" => Some(ast::TypeDecl::Enum(ast::EnumDecl {
                 name: name.text,
+                name_range: name.range,
                 range,
                 body_range,
                 members,
             })),
             "record" => Some(ast::TypeDecl::Record(ast::RecordDecl {
                 name: name.text,
+                name_range: name.range,
                 range,
                 body_range,
                 members,

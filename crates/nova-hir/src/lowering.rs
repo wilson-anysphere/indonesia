@@ -78,6 +78,7 @@ impl ItemTreeLower<'_> {
                 let id = ClassId::new(self.file, self.tree.classes.len() as u32);
                 self.tree.classes.push(Class {
                     name: class.name.clone(),
+                    name_range: class.name_range,
                     range: class.range,
                     body_range: class.body_range,
                     members: Vec::new(),
@@ -90,6 +91,7 @@ impl ItemTreeLower<'_> {
                 let id = InterfaceId::new(self.file, self.tree.interfaces.len() as u32);
                 self.tree.interfaces.push(Interface {
                     name: interface.name.clone(),
+                    name_range: interface.name_range,
                     range: interface.range,
                     body_range: interface.body_range,
                     members: Vec::new(),
@@ -102,6 +104,7 @@ impl ItemTreeLower<'_> {
                 let id = EnumId::new(self.file, self.tree.enums.len() as u32);
                 self.tree.enums.push(Enum {
                     name: enm.name.clone(),
+                    name_range: enm.name_range,
                     range: enm.range,
                     body_range: enm.body_range,
                     members: Vec::new(),
@@ -114,6 +117,7 @@ impl ItemTreeLower<'_> {
                 let id = RecordId::new(self.file, self.tree.records.len() as u32);
                 self.tree.records.push(Record {
                     name: record.name.clone(),
+                    name_range: record.name_range,
                     range: record.range,
                     body_range: record.body_range,
                     members: Vec::new(),
@@ -126,6 +130,7 @@ impl ItemTreeLower<'_> {
                 let id = AnnotationId::new(self.file, self.tree.annotations.len() as u32);
                 self.tree.annotations.push(Annotation {
                     name: annotation.name.clone(),
+                    name_range: annotation.name_range,
                     range: annotation.range,
                     body_range: annotation.body_range,
                     members: Vec::new(),
