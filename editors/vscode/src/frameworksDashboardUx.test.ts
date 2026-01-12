@@ -14,9 +14,9 @@ describe('Frameworks dashboard UX', () => {
     const contents = await readSrcFile('frameworksView.ts');
 
     // Category node construction should reference each category explicitly (single-root and per-workspace).
-    expect(contents).toContain("category: 'web-endpoints'");
-    expect(contents).toContain("category: 'micronaut-endpoints'");
-    expect(contents).toContain("category: 'micronaut-beans'");
+    expect(contents).toMatch(/category:\s*['"]web-endpoints['"]/);
+    expect(contents).toMatch(/category:\s*['"]micronaut-endpoints['"]/);
+    expect(contents).toMatch(/category:\s*['"]micronaut-beans['"]/);
     expect(contents).toContain("return 'Web Endpoints';");
     expect(contents).toContain("return 'Micronaut Endpoints';");
     expect(contents).toContain("return 'Micronaut Beans';");
@@ -49,6 +49,10 @@ describe('Frameworks dashboard UX', () => {
 
   it('Frameworks tree view uses the standard unsupported placeholder label', async () => {
     const contents = await readSrcFile('frameworksView.ts');
+
+    // Ensure the Frameworks view uses the shared constant rather than duplicating the string literal.
+    expect(contents).not.toContain('const NOT_SUPPORTED_MESSAGE');
+    expect(contents).not.toContain("'Not supported by this server'");
 
     expect(contents).toContain('NOVA_NOT_SUPPORTED_MESSAGE');
     expect(contents).toMatch(/return\s+messageNode\(NOVA_NOT_SUPPORTED_MESSAGE,\s*method,\s*new\s+vscode\.ThemeIcon\('warning'\)\);/);
