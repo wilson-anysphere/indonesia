@@ -2551,7 +2551,7 @@ fn glb(env: &dyn TypeEnv, a: &Type, b: &Type) -> Type {
     if is_subtype(env, b, a) {
         return b.clone();
     }
-    Type::Intersection(vec![a.clone(), b.clone()])
+    make_intersection(env, vec![a.clone(), b.clone()])
 }
 
 // === Member resolution =======================================================
