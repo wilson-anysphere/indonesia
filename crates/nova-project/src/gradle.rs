@@ -1381,13 +1381,10 @@ fn parse_gradle_settings_included_builds(contents: &str) -> Vec<String> {
     // contains additional string literals.
     let contents = strip_gradle_comments(contents);
 
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r"\bincludeBuild\b").expect("valid regex"));
-
     let mut out: BTreeSet<String> = BTreeSet::new();
 
-    for m in re.find_iter(&contents) {
-        let mut idx = m.end();
+    for start in find_keyword_outside_strings(&contents, "includeBuild") {
+        let mut idx = start + "includeBuild".len();
         let bytes = contents.as_bytes();
         while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
             idx += 1;
@@ -2772,7 +2769,8 @@ mod tests {
 
     use super::{
         parse_gradle_dependencies_from_text, parse_gradle_project_dependencies_from_text,
-        parse_gradle_settings_projects, parse_gradle_version_catalog_from_toml,
+        parse_gradle_settings_included_builds, parse_gradle_settings_projects,
+        parse_gradle_version_catalog_from_toml,
         sort_dedup_dependencies, strip_gradle_comments, GradleProperties,
     };
 
@@ -2796,6 +2794,45 @@ def tripleGroovy = '''includeFlat("lib")'''
         assert_eq!(modules.len(), 1);
         assert_eq!(modules[0].project_path, ":");
         assert_eq!(modules[0].dir_rel, ".");
+    }
+
+    #[test]
+    fn parse_gradle_settings_included_builds_ignores_keywords_inside_strings() {
+        let settings = r#"
+rootProject.name = "includeBuild-root"
+
+val ignored = "includeBuild('ignored')"
+
+val triple = """includeBuild("ignored2")"""
+def tripleGroovy = '''includeBuild("ignored3")'''
+
+// This should be discovered.
+includeBuild("build-logic")
+"#;
+        let builds = parse_gradle_settings_included_builds(settings);
+        assert_eq!(builds, vec!["build-logic".to_string()]);
+    }
+
+    #[test]
+    fn parse_gradle_settings_included_builds_ignores_absolute_paths() {
+        let settings = r#"
+includeBuild("/absolute/path")
+includeBuild("C:\\absolute\\path")
+includeBuild("build-logic")
+"#;
+        let builds = parse_gradle_settings_included_builds(settings);
+        assert_eq!(builds, vec!["build-logic".to_string()]);
+    }
+
+    #[test]
+    fn parse_gradle_settings_included_builds_supports_multiline_parens() {
+        let settings = r#"
+includeBuild(
+    "build-logic"
+)
+"#;
+        let builds = parse_gradle_settings_included_builds(settings);
+        assert_eq!(builds, vec!["build-logic".to_string()]);
     }
 
     #[test]
