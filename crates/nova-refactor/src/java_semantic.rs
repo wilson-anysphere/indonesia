@@ -3847,6 +3847,7 @@ fn process_field_access_expression(
 
 fn record_expression_references(
     file: &FileId,
+    file_text: &str,
     expr: ast::Expression,
     scope: nova_resolve::ScopeId,
     scope_result: &ScopeBuildResult,
@@ -3941,6 +3942,29 @@ fn record_expression_references(
             }
             _ => {}
         }
+    }
+
+    // Also record any type references that occur in nested `Type` nodes (e.g. `new Foo()`,
+    // casts, `instanceof`, array creation, lambda parameter types). These types are not modeled
+    // in HIR bodies for syntax-only contexts like enum constant argument lists.
+    for node in expr.syntax().descendants() {
+        let Some(ty) = ast::Type::cast(node) else {
+            continue;
+        };
+        let range = ty.syntax().text_range();
+        let start = u32::from(range.start()) as usize;
+        let end = u32::from(range.end()) as usize;
+        record_type_references_in_range(
+            file,
+            file_text,
+            TextRange::new(start, end),
+            scope,
+            &scope_result.scopes,
+            resolver,
+            resolution_to_symbol,
+            references,
+            spans,
+        );
     }
 }
 
@@ -4121,6 +4145,7 @@ fn record_syntax_only_references(
 
     fn visit_value(
         file: &FileId,
+        file_text: &str,
         value: ast::AnnotationElementValue,
         scope: nova_resolve::ScopeId,
         scope_result: &ScopeBuildResult,
@@ -4134,6 +4159,7 @@ fn record_syntax_only_references(
         if let Some(expr) = value.expression() {
             record_expression_references(
                 file,
+                file_text,
                 expr,
                 scope,
                 scope_result,
@@ -4147,6 +4173,7 @@ fn record_syntax_only_references(
         if let Some(nested) = value.annotation() {
             visit_annotation(
                 file,
+                file_text,
                 nested,
                 scope,
                 scope_result,
@@ -4162,6 +4189,7 @@ fn record_syntax_only_references(
             for v in array.values() {
                 visit_value(
                     file,
+                    file_text,
                     v,
                     scope,
                     scope_result,
@@ -4178,6 +4206,7 @@ fn record_syntax_only_references(
 
     fn visit_annotation(
         file: &FileId,
+        file_text: &str,
         annotation: ast::Annotation,
         scope: nova_resolve::ScopeId,
         scope_result: &ScopeBuildResult,
@@ -4214,6 +4243,7 @@ fn record_syntax_only_references(
         if let Some(value) = args.value() {
             visit_value(
                 file,
+                file_text,
                 value,
                 scope,
                 scope_result,
@@ -4248,6 +4278,7 @@ fn record_syntax_only_references(
             };
             visit_value(
                 file,
+                file_text,
                 value,
                 scope,
                 scope_result,
@@ -4310,6 +4341,7 @@ fn record_syntax_only_references(
 
         visit_annotation(
             file,
+            text,
             annotation,
             scope,
             scope_result,
@@ -4399,6 +4431,7 @@ fn record_syntax_only_references(
         for expr in args.arguments() {
             record_expression_references(
                 file,
+                text,
                 expr,
                 scope,
                 scope_result,

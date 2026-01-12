@@ -151,3 +151,84 @@ public class Use {}
         "expected annotation value updated: {after_use}"
     );
 }
+
+#[test]
+fn type_rename_updates_new_expression_in_enum_constant_args() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Foo {}
+
+enum E {
+  A(new Foo());
+  E(Foo foo) {}
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("class Foo").unwrap() + "class ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at Foo");
+    assert_eq!(db.symbol_kind(symbol), Some(JavaSymbolKind::Type));
+
+    let edit = materialize(
+        &db,
+        [SemanticChange::Rename {
+            symbol,
+            new_name: "Bar".into(),
+        }],
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    assert!(
+        after.contains("new Bar()"),
+        "expected enum constant argument updated: {after}"
+    );
+    assert!(
+        after.contains("class Bar"),
+        "expected type declaration updated: {after}"
+    );
+    assert!(
+        !after.contains("new Foo()"),
+        "expected old enum constant argument removed: {after}"
+    );
+}
+
+#[test]
+fn method_rename_updates_call_in_enum_constant_args() {
+    let file = FileId::new("Test.java");
+    let src = r#"enum E {
+  A(bar());
+  E(int x) {}
+  static int bar() { return 1; }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("static int bar").unwrap() + "static int ".len() + 1;
+    let symbol = db.symbol_at(&file, offset).expect("symbol at bar method");
+    assert_eq!(db.symbol_kind(symbol), Some(JavaSymbolKind::Method));
+
+    let edit = materialize(
+        &db,
+        [SemanticChange::Rename {
+            symbol,
+            new_name: "baz".into(),
+        }],
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    assert!(
+        after.contains("A(baz())"),
+        "expected enum constant argument call updated: {after}"
+    );
+    assert!(
+        after.contains("static int baz()"),
+        "expected method declaration updated: {after}"
+    );
+    assert!(
+        !after.contains("bar()"),
+        "expected old method name removed: {after}"
+    );
+}
