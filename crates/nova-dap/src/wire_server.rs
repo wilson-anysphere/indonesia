@@ -37,7 +37,8 @@ use crate::{
     javac::{compile_java_for_hot_swap, resolve_hot_swap_javac_config},
     stream_debug::StreamDebugArguments,
     wire_debugger::{
-        AttachArgs, BreakpointDisposition, BreakpointSpec, Debugger, DebuggerError,
+        is_retryable_attach_error, AttachArgs, BreakpointDisposition, BreakpointSpec, Debugger,
+        DebuggerError,
         FunctionBreakpointSpec, StepDepth, VmStoppedValue,
     },
     EvaluateResult,
@@ -629,8 +630,7 @@ async fn handle_request_inner(
             };
 
             let mut launch_outcome_tx: Option<watch::Sender<Option<bool>>>;
-
-            let attach = match mode {
+            let (attach_hosts, attach_port, attach_target_label) = match mode {
                 LaunchMode::Command => {
                     let Some(cwd) = args.cwd.as_deref() else {
                         send_response(
@@ -685,11 +685,7 @@ async fn handle_request_inner(
                             return;
                         }
                     };
-
-                    // Prefer IPv4 when available (e.g. `localhost` resolving to `::1` before
-                    // `127.0.0.1`), since some debug targets (and our mock JDWP server) bind only to
-                    // IPv4.
-                    let host = resolved_hosts[0];
+                    let attach_target_label = format!("{host_label}:{port}");
 
                     let mut cmd = Command::new(command);
                     cmd.args(&args.args);
@@ -749,11 +745,7 @@ async fn handle_request_inner(
                         *guard = Some(proc);
                     }
 
-                    AttachArgs {
-                        host,
-                        port,
-                        source_roots: source_roots.clone(),
-                    }
+                    (resolved_hosts, port, attach_target_label)
                 }
                 LaunchMode::Java => {
                     let main_class = args.main_class.as_deref().unwrap_or_default();
@@ -787,6 +779,7 @@ async fn handle_request_inner(
                         },
                     };
                     let host: IpAddr = "127.0.0.1".parse().unwrap();
+                    let attach_target_label = format!("{host}:{port}");
 
                     let java = args.java.clone().unwrap_or_else(|| "java".to_string());
 
@@ -875,15 +868,12 @@ async fn handle_request_inner(
                         *guard = Some(proc);
                     }
 
-                    AttachArgs {
-                        host,
-                        port,
-                        source_roots: source_roots.clone(),
-                    }
+                    (vec![host], port, attach_target_label)
                 }
             };
 
-            let attach_fut = Debugger::attach_with_retry(attach, attach_timeout);
+            let attach_fut =
+                attach_debugger_with_retry_hosts(attach_hosts, attach_port, source_roots, attach_timeout);
             let dbg = tokio::select! {
                 _ = cancel.cancelled() => {
                     if let Some(tx) = launch_outcome_tx.take() {
@@ -900,7 +890,14 @@ async fn handle_request_inner(
                             let _ = tx.send(Some(false));
                         }
                         terminate_existing_process(launched_process).await;
-                        send_response(out_tx, seq, request, false, None, Some(err.to_string()));
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some(format!("failed to attach to {attach_target_label}: {err}")),
+                        );
                         return;
                     }
                 }
@@ -3469,6 +3466,73 @@ async fn resolve_host_candidates(host: &str, port: u16) -> std::io::Result<Vec<I
 
     // `IpAddr` sorts IPv4 before IPv6, which ensures `localhost` prefers `127.0.0.1` over `::1`.
     Ok(unique.into_iter().collect())
+}
+
+async fn attach_debugger_with_retry_hosts(
+    hosts: Vec<IpAddr>,
+    port: u16,
+    source_roots: Vec<PathBuf>,
+    timeout: Duration,
+) -> std::result::Result<Debugger, DebuggerError> {
+    if hosts.is_empty() {
+        return Err(DebuggerError::InvalidRequest(
+            "no host addresses resolved".to_string(),
+        ));
+    }
+
+    if hosts.len() == 1 {
+        return Debugger::attach_with_retry(
+            AttachArgs {
+                host: hosts[0],
+                port,
+                source_roots,
+            },
+            timeout,
+        )
+        .await;
+    }
+
+    // For hostnames that resolve to multiple addresses (e.g. IPv4 + IPv6), try each candidate
+    // per retry tick to avoid getting stuck on an address family the debuggee isn't listening on.
+    //
+    // `hosts` is ordered to prefer IPv4 before IPv6 (see `resolve_host_candidates`).
+    let start = Instant::now();
+    let mut backoff = Duration::from_millis(50);
+    let max_backoff = Duration::from_secs(1);
+
+    loop {
+        let mut last_err: Option<DebuggerError> = None;
+        for &host in &hosts {
+            match Debugger::attach(AttachArgs {
+                host,
+                port,
+                source_roots: source_roots.clone(),
+            })
+            .await
+            {
+                Ok(dbg) => return Ok(dbg),
+                Err(err) => last_err = Some(err),
+            }
+        }
+
+        let err = last_err.unwrap_or_else(|| {
+            DebuggerError::InvalidRequest("no host addresses resolved".to_string())
+        });
+
+        // If `timeout` is disabled, behave like an `attach` attempt and return the last error.
+        if timeout == Duration::ZERO {
+            return Err(err);
+        }
+
+        let elapsed = start.elapsed();
+        if elapsed >= timeout || !is_retryable_attach_error(&err) {
+            return Err(err);
+        }
+
+        let remaining = timeout.saturating_sub(elapsed);
+        tokio::time::sleep(backoff.min(remaining)).await;
+        backoff = (backoff * 2).min(max_backoff);
+    }
 }
 
 async fn pick_free_port() -> std::io::Result<u16> {

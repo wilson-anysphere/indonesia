@@ -24,7 +24,7 @@ async fn configuration_done_resumes_command_launch_when_stop_on_entry_is_default
             json!({
                 "cwd": temp.path().to_string_lossy(),
                 "command": helper,
-                "host": "127.0.0.1",
+                "host": "localhost",
                 "port": jdwp.addr().port(),
                 "attachTimeoutMs": 2_000,
             }),

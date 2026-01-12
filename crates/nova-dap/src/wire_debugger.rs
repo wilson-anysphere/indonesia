@@ -5216,7 +5216,7 @@ mod tests {
     }
 }
 
-fn is_retryable_attach_error(err: &DebuggerError) -> bool {
+pub(crate) fn is_retryable_attach_error(err: &DebuggerError) -> bool {
     match err {
         DebuggerError::InvalidRequest(_) => false,
         DebuggerError::Jdwp(JdwpError::Io(io_err)) => matches!(
