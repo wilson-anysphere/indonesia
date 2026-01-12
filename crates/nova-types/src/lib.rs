@@ -3806,7 +3806,72 @@ fn collect_method_candidates(
                     // into the merged return type (`String & V`), rewrite the current method's
                     // type vars to the existing candidate's ids (by position) before computing the
                     // GLB return type.
-                    if method.type_params.len() != out[existing].method.type_params.len() {
+                    let existing_tp_len = out[existing].method.type_params.len();
+                    let current_tp_len = method.type_params.len();
+
+                    if existing_tp_len != current_tp_len {
+                        // If the two declarations have different method type parameter counts, do
+                        // not blindly GLB the return types: that can introduce a "foreign" method
+                        // type variable into the kept candidate (e.g. merging `Object` with `<T> T`
+                        // would yield `T`, but `T` is not declared on the non-generic method).
+                        //
+                        // Still, in intersection bounds it's common to see a non-generic method
+                        // paired with a generic one that erases to the same signature
+                        // (`Object id(Object)` vs `<T> T id(T)`). In that case we prefer keeping the
+                        // generic method so downstream inference can pick a precise return type.
+                        let existing_owner = out[existing].owner;
+                        let current_owner = def;
+                        let existing_owner_ty = Type::class(existing_owner, vec![]);
+                        let current_owner_ty = Type::class(current_owner, vec![]);
+                        let existing_is_subtype = is_subtype(env, &existing_owner_ty, &current_owner_ty);
+
+                        // Preserve override/hiding semantics: if the existing declaration comes
+                        // from a more specific type, keep it (even if it is non-generic).
+                        if existing_is_subtype {
+                            if existing_tp_len > 0 && current_tp_len == 0 {
+                                // Safe merge: non-generic return types cannot introduce method type vars.
+                                let existing_return = substitute(
+                                    &out[existing].method.return_type,
+                                    &out[existing].class_subst,
+                                );
+                                let current_return = substitute(&method.return_type, &subst);
+                                out[existing].method.return_type =
+                                    glb(env, &existing_return, &current_return);
+                            }
+                            continue;
+                        }
+
+                        // Unrelated bounds: prefer keeping the generic method if either side is
+                        // generic. (This avoids dropping generic signatures due to intersection
+                        // component ordering.)
+                        if existing_tp_len == 0 && current_tp_len > 0 {
+                            let existing_return = substitute(
+                                &out[existing].method.return_type,
+                                &out[existing].class_subst,
+                            );
+                            let mut new_method = method.clone();
+                            let current_return = substitute(&new_method.return_type, &subst);
+                            new_method.return_type = glb(env, &existing_return, &current_return);
+                            out[existing] = CandidateMethod {
+                                owner: def,
+                                method: new_method,
+                                class_subst: subst.clone(),
+                            };
+                            continue;
+                        }
+
+                        if existing_tp_len > 0 && current_tp_len == 0 {
+                            // Safe merge into the generic method (kept candidate).
+                            let existing_return = substitute(
+                                &out[existing].method.return_type,
+                                &out[existing].class_subst,
+                            );
+                            let current_return = substitute(&method.return_type, &subst);
+                            out[existing].method.return_type = glb(env, &existing_return, &current_return);
+                            continue;
+                        }
+
+                        // Otherwise, keep the existing candidate and do not merge return types.
                         continue;
                     }
                     let existing_return = substitute(

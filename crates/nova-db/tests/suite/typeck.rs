@@ -6238,6 +6238,42 @@ class C {
 }
 
 #[test]
+fn intersection_bounds_prefer_generic_method_over_non_generic_duplicate_signature() {
+    // `Object id(Object)` and `<T> T id(T)` have the same erased signature (`Object id(Object)`).
+    // For intersection bounds, we should prefer keeping the generic declaration so inference can
+    // pick a precise return type.
+    let src = r#"
+interface A { Object id(Object o); }
+interface B { <T> T id(T t); }
+class C {
+    <X extends A & B> String m(X x) {
+        return x.id("x");
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected intersection-bounded receiver to resolve method; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected generic method to infer String and avoid mismatch; got {diags:?}"
+    );
+
+    let offset = src
+        .find("x.id(\"x\")")
+        .expect("snippet should contain call")
+        + "x.id".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+}
+
+#[test]
 fn lambda_param_type_is_inferred_from_function_target() {
     let src = r#"
   import java.util.function.Function;
