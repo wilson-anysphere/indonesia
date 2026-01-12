@@ -777,8 +777,11 @@ fn type_of_expr_demand_result(
                 }
             };
 
+            let mut scan_steps: u32 = 0;
             let mut stack = vec![body.root];
             while let Some(stmt) = stack.pop() {
+                cancel::checkpoint_cancelled_every(db, scan_steps, 256);
+                scan_steps = scan_steps.wrapping_add(1);
                 if !stmt_may_contain_target(stmt) {
                     continue;
                 }
@@ -791,6 +794,8 @@ fn type_of_expr_demand_result(
                             // the full block to remain resilient under parse recovery.
                             let mut candidates = Vec::new();
                             for &child in statements {
+                                cancel::checkpoint_cancelled_every(db, scan_steps, 256);
+                                scan_steps = scan_steps.wrapping_add(1);
                                 let range = stmt_range(child);
                                 if !range.is_empty()
                                     && range.start <= target_offset
