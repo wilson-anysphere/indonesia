@@ -908,19 +908,6 @@ fn type_use_annotation_missing_type_is_diagnosed_when_anchored() {
         text,
         Some(base_span),
     );
-
-    assert!(
-        !result
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_ref() == "invalid-type-ref"),
-        "unexpected diagnostics: {:?}",
-        result.diagnostics
-    );
-
-    // Even though Nova's `Type` model doesn't represent type-use annotations yet,
-    // the annotation type names should still be resolved for diagnostics when we
-    // have a base span to anchor them.
     let diag = result
         .diagnostics
         .iter()
@@ -934,6 +921,14 @@ fn type_use_annotation_missing_type_is_diagnosed_when_anchored() {
         "Missing",
         "expected diagnostic span to cover the annotation name"
     );
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        result.diagnostics
+    );
 
     // The type should parse/resolve as if the annotation were not present.
     let plain = resolve_type_ref_text(
@@ -946,6 +941,41 @@ fn type_use_annotation_missing_type_is_diagnosed_when_anchored() {
         None,
     );
     assert_eq!(plain.diagnostics, Vec::new());
+    assert_eq!(result.ty, plain.ty);
+
+    // Also validate the whitespace-stripped form produced by `nova_syntax::TypeRef.text`.
+    let stripped = "List<@MissingString>";
+    let base_span = Span::new(0, stripped.len());
+    let result = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        stripped,
+        Some(base_span),
+    );
+    let diag = result
+        .diagnostics
+        .iter()
+        .find(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Missing"))
+        .expect("expected unresolved-type diagnostic for missing annotation type");
+    let span = diag
+        .span
+        .expect("expected anchored span for unresolved-type diagnostic");
+    assert_eq!(
+        &stripped[span.start..span.end],
+        "Missing",
+        "expected diagnostic span to cover the annotation name"
+    );
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        result.diagnostics
+    );
     assert_eq!(result.ty, plain.ty);
 }
 
