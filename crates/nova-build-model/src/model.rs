@@ -408,7 +408,14 @@ pub struct WorkspaceModuleConfig {
 pub struct WorkspaceProjectModel {
     pub workspace_root: PathBuf,
     pub build_system: BuildSystem,
-    /// Workspace-level default Java config (used for compatibility `ProjectConfig`).
+    /// Workspace-level default Java config.
+    ///
+    /// Loaders should populate this as a conservative workspace-wide default:
+    /// - typically the maximum `source`/`target` across modules
+    /// - `enable_preview` should be true if any module enables preview
+    ///
+    /// This is used as a fallback when converting per-module language levels into legacy
+    /// [`ProjectConfig`] objects.
     pub java: JavaConfig,
     pub modules: Vec<WorkspaceModuleConfig>,
     /// JPMS module roots within this workspace.
