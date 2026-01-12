@@ -1053,6 +1053,88 @@ mod tests {
     }
 
     #[test]
+    fn streaming_top_k_matches_select_nth_reference_for_many_trigram_matches() {
+        let count = 10_000usize;
+        let mut symbols = Vec::with_capacity(count);
+        for i in (0..count).rev() {
+            let name = format!("MapThing{i:05}");
+            symbols.push(Symbol {
+                name: name.clone(),
+                qualified_name: format!("com.example.pkg{i:05}.{name}"),
+                kind: IndexSymbolKind::Class,
+                container_name: None,
+                location: SymbolLocation {
+                    file: "A.java".into(),
+                    line: 0,
+                    column: 0,
+                },
+                ast_id: 0,
+            });
+        }
+
+        let index = SymbolSearchIndex::build(symbols);
+        let limit = 100;
+
+        let (streaming, streaming_stats) = index.search_with_stats("map", limit);
+        let (reference, reference_stats) = search_reference_select_nth(&index, "map", limit);
+
+        assert_eq!(streaming_stats.strategy, CandidateStrategy::Trigram);
+        assert_eq!(streaming_stats.strategy, reference_stats.strategy);
+        assert_eq!(
+            streaming_stats.candidates_considered,
+            reference_stats.candidates_considered
+        );
+
+        let streaming_ids: Vec<SymbolId> = streaming.iter().map(|r| r.id).collect();
+        let reference_ids: Vec<SymbolId> = reference.iter().map(|r| r.id).collect();
+        assert_eq!(streaming_ids, reference_ids);
+
+        assert_eq!(streaming.len(), limit);
+        assert_eq!(streaming[0].symbol.name, "MapThing00000");
+    }
+
+    #[test]
+    fn streaming_top_k_matches_select_nth_reference_for_many_full_scan_matches() {
+        let count = 10_000usize;
+        let mut symbols = Vec::with_capacity(count);
+        for i in (0..count).rev() {
+            let name = format!("Baa{i:05}");
+            symbols.push(Symbol {
+                name: name.clone(),
+                qualified_name: name,
+                kind: IndexSymbolKind::Class,
+                container_name: None,
+                location: SymbolLocation {
+                    file: "A.java".into(),
+                    line: 0,
+                    column: 0,
+                },
+                ast_id: 0,
+            });
+        }
+
+        let index = SymbolSearchIndex::build(symbols);
+        let limit = 100;
+
+        let (streaming, streaming_stats) = index.search_with_stats("aa", limit);
+        let (reference, reference_stats) = search_reference_select_nth(&index, "aa", limit);
+
+        assert_eq!(streaming_stats.strategy, CandidateStrategy::FullScan);
+        assert_eq!(streaming_stats.strategy, reference_stats.strategy);
+        assert_eq!(
+            streaming_stats.candidates_considered,
+            reference_stats.candidates_considered
+        );
+
+        let streaming_ids: Vec<SymbolId> = streaming.iter().map(|r| r.id).collect();
+        let reference_ids: Vec<SymbolId> = reference.iter().map(|r| r.id).collect();
+        assert_eq!(streaming_ids, reference_ids);
+
+        assert_eq!(streaming.len(), limit);
+        assert_eq!(streaming[0].symbol.name, "Baa00000");
+    }
+
+    #[test]
     fn estimated_bytes_accounts_for_symbol_metadata() {
         let container_name = "container".repeat(16 * 1024);
         let file = "src/Foo.java".repeat(16 * 1024);

@@ -154,6 +154,17 @@ fn bench_symbol_search(c: &mut Criterion) {
             CandidateStrategy::Trigram,
             "expected \"map\" to use trigram candidates ({label})"
         );
+        let (_results, stats) = index.search_with_stats("man", LIMIT);
+        assert_eq!(
+            stats.strategy,
+            CandidateStrategy::Trigram,
+            "expected \"man\" to use trigram candidates ({label})"
+        );
+        assert!(
+            stats.candidates_considered > 5_000,
+            "expected \"man\" to consider many candidates ({label}), got {}",
+            stats.candidates_considered
+        );
         let (_results, stats) = index.search_with_stats("hmap", LIMIT);
         assert_eq!(
             stats.strategy,
@@ -189,6 +200,14 @@ fn bench_symbol_search(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("trigram_map", label), index, |b, index| {
             b.iter(|| black_box(index.search_with_stats(black_box("map"), black_box(LIMIT))))
         });
+
+        group.bench_with_input(
+            BenchmarkId::new("trigram_man_many", label),
+            index,
+            |b, index| {
+                b.iter(|| black_box(index.search_with_stats(black_box("man"), black_box(LIMIT))))
+            },
+        );
 
         group.bench_with_input(
             BenchmarkId::new("trigram_hmap_multi", label),
