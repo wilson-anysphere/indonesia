@@ -5,7 +5,10 @@ use nova_project::{JavaVersion, LoadOptions};
 #[test]
 fn reload_project_reloads_on_gradle_snapshot_handoff_change() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let root = tmp.path();
+    // Match the canonicalization behavior of `load_project_with_options` to avoid path mismatch
+    // issues on macOS (`/var` vs `/private/var`) when we later pass `snapshot_path` to
+    // `reload_project`.
+    let root = tmp.path().canonicalize().expect("canonicalize tempdir");
 
     // Ensure `detect_build_system`/`workspace_root` classify this as a Gradle workspace.
     fs::write(root.join("settings.gradle"), "").expect("settings.gradle");
@@ -23,7 +26,7 @@ fn reload_project_reloads_on_gradle_snapshot_handoff_change() {
     fs::write(&snapshot_path, "{}").expect("write gradle snapshot");
 
     let mut options = LoadOptions::default();
-    let config = nova_project::load_project_with_options(root, &options).expect("load project");
+    let config = nova_project::load_project_with_options(&root, &options).expect("load project");
     assert_eq!(config.java.source, JavaVersion(11));
     assert_eq!(config.java.target, JavaVersion(11));
 
