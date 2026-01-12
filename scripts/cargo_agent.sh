@@ -12,7 +12,7 @@ set -euo pipefail
 #   scripts/cargo_agent.sh build --release
 #   scripts/cargo_agent.sh check -p nova-syntax
 #   scripts/cargo_agent.sh test -p nova-core --lib
-#   scripts/cargo_agent.sh test -p nova-types --test javac_differential -- --ignored
+#   scripts/cargo_agent.sh test -p nova-types --test harness -- --ignored
 #
 # Tuning knobs (env vars):
 #   NOVA_CARGO_SLOTS        Max concurrent cargo commands (default: auto from CPU)
@@ -29,7 +29,7 @@ Examples:
   scripts/cargo_agent.sh check -p nova-syntax --quiet
   scripts/cargo_agent.sh build --release
   scripts/cargo_agent.sh test -p nova-core --lib
-  scripts/cargo_agent.sh test -p nova-types --test javac_differential -- --ignored
+  scripts/cargo_agent.sh test -p nova-types --test harness -- --ignored
 
 Environment:
   NOVA_CARGO_SLOTS        Max concurrent cargo commands (default: auto)
