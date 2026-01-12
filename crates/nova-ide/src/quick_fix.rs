@@ -60,6 +60,15 @@ pub(crate) fn quick_fixes_for_diagnostics(
                     actions.extend(import_and_qualify_type_actions(
                         uri, source, diag_span, &name,
                     ));
+
+                    // For simple identifiers, also offer creating the missing class (mirrors the
+                    // `unresolved-type` quick fix).
+                    let span_text = source.get(diag_span.start..diag_span.end).unwrap_or_default();
+                    if !span_text.contains('.') && is_simple_type_identifier(&name) {
+                        if let Some(action) = create_class_action(uri, source, &name) {
+                            actions.push(CodeActionOrCommand::CodeAction(action));
+                        }
+                    }
                 }
             }
             "FLOW_UNASSIGNED" => {
