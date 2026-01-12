@@ -3,6 +3,7 @@ use serde_json::json;
 use std::io::BufReader;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tempfile::TempDir;
@@ -210,16 +211,28 @@ fn stdio_cancel_request_interrupts_workspace_symbol_indexing() {
 
     // Cancel after a short delay to give the request a chance to enter the indexing loop.
     let cancel_stdin = stdin.clone();
+    let cancel_done = Arc::new(AtomicBool::new(false));
+    let cancel_done_thread = cancel_done.clone();
     let cancel_thread = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(10));
-        let mut stdin = cancel_stdin.lock().expect("lock stdin");
-        write_jsonrpc_message(
-            &mut *stdin,
-            &json!({ "jsonrpc": "2.0", "method": "$/cancelRequest", "params": { "id": 2 } }),
-        );
+        // Cancellation can race with request registration inside the server/router thread.
+        // Keep retrying for a short window so we reliably cancel the in-flight request.
+        for _ in 0..200 {
+            if cancel_done_thread.load(Ordering::SeqCst) {
+                break;
+            }
+            {
+                let mut stdin = cancel_stdin.lock().expect("lock stdin");
+                write_jsonrpc_message(
+                    &mut *stdin,
+                    &json!({ "jsonrpc": "2.0", "method": "$/cancelRequest", "params": { "id": 2 } }),
+                );
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
     });
 
     let resp = read_response_with_id(&mut stdout, 2);
+    cancel_done.store(true, Ordering::SeqCst);
     let code = resp
         .get("error")
         .and_then(|err| err.get("code"))
