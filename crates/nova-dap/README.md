@@ -292,7 +292,9 @@ Response body:
   "runtime": {
     // nova_stream_debug::StreamDebugResult
     "expression": "list.stream().map(x -> x * 2).count()",
+    "source": { "kind": "collection", "collectionExpr": "list", "streamExpr": "list.stream()", "method": "stream" },
     "sourceSample": { "elements": ["1", "2"], "truncated": false, "elementType": "int", "collectionType": "java.util.ArrayList" },
+    "sourceDurationMs": 1,
     "steps": [
       {
         "operation": "map",
@@ -313,6 +315,17 @@ Response body:
 
 - The wire implementation uses `javac` plus JDWP `DefineClass`/`InvokeMethod` internally; `javac`
   must be available on `PATH`.
+- `maxSampleSize` is applied by evaluating a bounded sample of the stream (roughly
+  `stream.limit(maxSampleSize)`); this helps keep evaluations fast and prevents accidentally
+  consuming large streams.
+- `allowSideEffects` gates execution of known side-effecting operations like `peek` and `forEach`.
+- `allowTerminalOps` gates execution of the terminal operation. When disabled, the terminal result
+  is still included but marked `"executed": false`.
+- Expressions that look like an already-instantiated stream value (for example a local `Stream<?> s`
+  referenced as just `s`) may be rejected because sampling consumes streams. Prefer an expression
+  that recreates the stream (for example `collection.stream()` or `java.util.Arrays.stream(array)`).
+- `maxTotalTimeMs` budgets the evaluation phase; helper compilation/injection is treated as setup
+  and is bounded separately.
 - On failure, the adapter responds with `success=false` and a human-readable `message` (standard DAP
   error response shape).
 
