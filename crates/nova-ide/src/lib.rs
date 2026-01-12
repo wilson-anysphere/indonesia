@@ -36,7 +36,9 @@ pub use ai::{
     COMMAND_EXPLAIN_ERROR, COMMAND_GENERATE_METHOD_BODY, COMMAND_GENERATE_TESTS,
 };
 pub use completion::filter_and_rank_completions;
-pub use decompile::{decompiled_definition_location, DefinitionLocation};
+pub use decompile::{
+    canonical_decompiled_definition_location, decompiled_definition_location, DefinitionLocation,
+};
 pub use diagnostics::{Diagnostic, DiagnosticKind, DiagnosticSeverity, DiagnosticsEngine};
 pub use format::Formatter;
 pub use nova_core::CompletionItem;
