@@ -43,6 +43,10 @@ Queue sizes can be tuned via environment variables:
 
 Values must be positive integers. Empty/`0` values fall back to built-in defaults.
 
+Downstream of the watcher, `nova-workspace` also uses bounded channels for its own internal
+watcher/driver pipeline and for the external workspace event stream returned by
+`Workspace::subscribe()`. If a subscriber does not keep up, workspace events may be dropped.
+
 ## Watch paths and modes (`WatchMode`)
 
 `nova_vfs::FileWatcher` is defined in terms of watching **paths**, not just “workspace roots”.
