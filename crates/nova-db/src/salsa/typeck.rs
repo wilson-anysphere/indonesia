@@ -805,23 +805,65 @@ fn type_of_expr_demand_result(
                         }
                     }
                     HirStmt::If {
+                        condition,
                         then_branch,
                         else_branch,
                         ..
                     } => {
+                        {
+                            let cond_range = body.exprs[*condition].range();
+                            let may_contain = cond_range.start <= target_range.start
+                                && target_range.end <= cond_range.end;
+                            if may_contain && contains_expr_in_expr(&body, *condition, target_expr) {
+                                update_inference_root(
+                                    *condition,
+                                    Some(Type::Primitive(PrimitiveType::Boolean)),
+                                );
+                            }
+                        }
                         stack.push(*then_branch);
                         if let Some(else_branch) = else_branch {
                             stack.push(*else_branch);
                         }
                     }
-                    HirStmt::While { body: b, .. } => stack.push(*b),
+                    HirStmt::While {
+                        condition,
+                        body: b,
+                        ..
+                    } => {
+                        {
+                            let cond_range = body.exprs[*condition].range();
+                            let may_contain = cond_range.start <= target_range.start
+                                && target_range.end <= cond_range.end;
+                            if may_contain && contains_expr_in_expr(&body, *condition, target_expr) {
+                                update_inference_root(
+                                    *condition,
+                                    Some(Type::Primitive(PrimitiveType::Boolean)),
+                                );
+                            }
+                        }
+                        stack.push(*b)
+                    }
                     HirStmt::For {
                         init,
+                        condition,
                         update,
                         body: b,
                         ..
                     } => {
                         stack.extend(init.iter().rev().copied());
+
+                        if let Some(condition) = condition {
+                            let cond_range = body.exprs[*condition].range();
+                            let may_contain = cond_range.start <= target_range.start
+                                && target_range.end <= cond_range.end;
+                            if may_contain && contains_expr_in_expr(&body, *condition, target_expr) {
+                                update_inference_root(
+                                    *condition,
+                                    Some(Type::Primitive(PrimitiveType::Boolean)),
+                                );
+                            }
+                        }
 
                         // The `for` update list can contain multiple expressions; if the target lies
                         // within one of them, infer that expression first.
@@ -872,9 +914,53 @@ fn type_of_expr_demand_result(
 
                         stack.push(*b);
                     }
-                    HirStmt::ForEach { body: b, .. } => stack.push(*b),
-                    HirStmt::Synchronized { body: b, .. } => stack.push(*b),
-                    HirStmt::Switch { body: b, .. } => stack.push(*b),
+                    HirStmt::ForEach {
+                        iterable,
+                        body: b,
+                        ..
+                    } => {
+                        {
+                            let it_range = body.exprs[*iterable].range();
+                            let may_contain = it_range.start <= target_range.start
+                                && target_range.end <= it_range.end;
+                            if may_contain && contains_expr_in_expr(&body, *iterable, target_expr) {
+                                update_inference_root(*iterable, None);
+                            }
+                        }
+                        stack.push(*b)
+                    }
+                    HirStmt::Synchronized {
+                        expr,
+                        body: b,
+                        ..
+                    } => {
+                        {
+                            let lock_range = body.exprs[*expr].range();
+                            let may_contain = lock_range.start <= target_range.start
+                                && target_range.end <= lock_range.end;
+                            if may_contain && contains_expr_in_expr(&body, *expr, target_expr) {
+                                update_inference_root(*expr, None);
+                            }
+                        }
+                        stack.push(*b)
+                    }
+                    HirStmt::Switch {
+                        selector,
+                        body: b,
+                        ..
+                    } => {
+                        {
+                            let sel_range = body.exprs[*selector].range();
+                            let may_contain = sel_range.start <= target_range.start
+                                && target_range.end <= sel_range.end;
+                            if may_contain
+                                && contains_expr_in_expr(&body, *selector, target_expr)
+                            {
+                                update_inference_root(*selector, None);
+                            }
+                        }
+                        stack.push(*b)
+                    }
                     HirStmt::Try {
                         body: b,
                         catches,
@@ -939,9 +1025,38 @@ fn type_of_expr_demand_result(
                             );
                         }
                     }
-                    HirStmt::Assert { .. }
-                    | HirStmt::Throw { .. }
-                    | HirStmt::Break { .. }
+                    HirStmt::Assert {
+                        condition, message, ..
+                    } => {
+                        {
+                            let cond_range = body.exprs[*condition].range();
+                            let may_contain = cond_range.start <= target_range.start
+                                && target_range.end <= cond_range.end;
+                            if may_contain && contains_expr_in_expr(&body, *condition, target_expr) {
+                                update_inference_root(
+                                    *condition,
+                                    Some(Type::Primitive(PrimitiveType::Boolean)),
+                                );
+                            }
+                        }
+                        if let Some(message) = message {
+                            let msg_range = body.exprs[*message].range();
+                            let may_contain = msg_range.start <= target_range.start
+                                && target_range.end <= msg_range.end;
+                            if may_contain && contains_expr_in_expr(&body, *message, target_expr) {
+                                update_inference_root(*message, None);
+                            }
+                        }
+                    }
+                    HirStmt::Throw { expr, .. } => {
+                        let throw_range = body.exprs[*expr].range();
+                        let may_contain = throw_range.start <= target_range.start
+                            && target_range.end <= throw_range.end;
+                        if may_contain && contains_expr_in_expr(&body, *expr, target_expr) {
+                            update_inference_root(*expr, None);
+                        }
+                    }
+                    HirStmt::Break { .. }
                     | HirStmt::Continue { .. }
                     | HirStmt::Empty { .. } => {}
                 }
