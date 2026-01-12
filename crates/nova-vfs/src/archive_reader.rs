@@ -22,6 +22,17 @@ impl NovaArchiveReader {
             Cow::Borrowed(entry)
         }
     }
+
+    fn is_valid_entry(entry: &str) -> bool {
+        let bytes = entry.as_bytes();
+        if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+            return false;
+        }
+        if entry.contains("//") {
+            return false;
+        }
+        !entry.split('/').any(|segment| segment == "..")
+    }
 }
 
 impl ArchiveReader for NovaArchiveReader {
@@ -34,6 +45,12 @@ impl ArchiveReader for NovaArchiveReader {
         }
 
         let entry = Self::normalize_entry(&path.entry);
+        if !Self::is_valid_entry(entry.as_ref()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid archive entry ({path})"),
+            ));
+        }
         let archive = Archive::new(path.archive.clone());
         let bytes = archive.read(entry.as_ref()).map_err(io::Error::other)?;
         match bytes {
@@ -56,6 +73,9 @@ impl ArchiveReader for NovaArchiveReader {
         }
 
         let entry = Self::normalize_entry(&path.entry);
+        if !Self::is_valid_entry(entry.as_ref()) {
+            return false;
+        }
         if path.archive.is_dir() {
             return path.archive.join(entry.as_ref()).exists();
         }
@@ -72,6 +92,7 @@ mod tests {
     use zip::write::FileOptions;
 
     use crate::{FileSystem, LocalFs, VfsPath};
+    use crate::{ArchiveKind, ArchivePath};
 
     fn write_zip_file(path: &std::path::Path, name: &str, contents: &str) {
         let mut jar = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
@@ -111,5 +132,24 @@ mod tests {
 
         let missing_path = VfsPath::jar(archive_dir.clone(), "com/example/Missing.java");
         assert!(!fs.exists(&missing_path));
+    }
+
+    #[test]
+    fn exploded_directory_archives_reject_entry_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive_dir = dir.path().join("exploded.jar");
+        std::fs::create_dir_all(&archive_dir).unwrap();
+        std::fs::write(dir.path().join("secret.txt"), "do not read me").unwrap();
+
+        let fs = LocalFs::new();
+        let traversal = VfsPath::Archive(ArchivePath::new(
+            ArchiveKind::Jar,
+            archive_dir,
+            "../secret.txt".to_string(),
+        ));
+
+        let err = fs.read_to_string(&traversal).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(!fs.exists(&traversal));
     }
 }
