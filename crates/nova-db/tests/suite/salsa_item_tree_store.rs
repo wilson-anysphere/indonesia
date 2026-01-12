@@ -64,3 +64,42 @@ fn closing_document_disables_item_tree_pinning_even_if_text_matches() {
         "expected closed document item_tree to be recomputed after memo eviction"
     );
 }
+
+#[test]
+fn unpin_item_tree_restores_salsa_memo_bytes_for_cached_memo() {
+    let db = SalsaDatabase::new();
+
+    let memory = MemoryManager::new(MemoryBudget::from_total(1024 * 1024 * 1024));
+    let open_docs = Arc::new(OpenDocuments::default());
+    let store = db.attach_item_tree_store(&memory, open_docs.clone());
+
+    let file = FileId::from_raw(0);
+    open_docs.open(file);
+
+    let text = "class Main { int x; }".to_string();
+    let text_len = text.len() as u64;
+    db.set_file_text(file, text);
+
+    // Computing `item_tree` also computes/records `parse`. Because we only pin `item_tree` here
+    // (no SyntaxTreeStore attached), `parse` should still be attributed to Salsa memoization, while
+    // `item_tree` is attributed to the pin store (0 bytes in Salsa memo stats).
+    let _ = db.with_snapshot(|snap| snap.item_tree(file));
+    assert!(store.contains(file));
+
+    let bytes_before = db.salsa_memo_bytes();
+    assert_eq!(
+        bytes_before, text_len,
+        "expected only parse memo bytes to be counted while item_tree is pinned"
+    );
+
+    open_docs.close(file);
+    db.unpin_item_tree(file);
+    assert!(!store.contains(file));
+
+    let bytes_after = db.salsa_memo_bytes();
+    assert_eq!(
+        bytes_after,
+        text_len.saturating_mul(2),
+        "expected item_tree memo bytes to be restored after unpinning (parse + item_tree)"
+    );
+}
