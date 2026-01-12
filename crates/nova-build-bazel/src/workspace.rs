@@ -1212,6 +1212,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         //
         // Instead, use a conservative best-effort set of workspace-local inputs:
         // - workspace-level config files (WORKSPACE, MODULE.bazel, .bazelrc, ...)
+        // - any files imported by `.bazelrc` via `import` / `try-import`
         // - the BUILD file for the target's package (when resolvable on disk)
         //
         // Callers can still explicitly invalidate caches via `invalidate_changed_files`.
@@ -1220,6 +1221,9 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         }
         for rel in bazel_config_files(&self.root) {
             inputs.insert(self.root.join(rel));
+        }
+        for imported in bazelrc_imported_files(&self.root) {
+            inputs.insert(imported);
         }
         if let Some(build_file) = build_file_for_label(&self.root, target)? {
             inputs.insert(build_file);

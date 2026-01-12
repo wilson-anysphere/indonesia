@@ -165,3 +165,81 @@ fn bazel_workspace_target_compile_info_prefers_bsp_javac_options() {
     drop(workspace);
     server.join();
 }
+
+#[test]
+fn bazel_workspace_target_compile_info_cache_is_invalidated_by_bazelrc_imports() {
+    let root = tempdir().unwrap();
+
+    // Create a `.bazelrc` that imports another file. Changes to the imported file can affect query
+    // evaluation and should invalidate cached compile-info entries.
+    std::fs::create_dir_all(root.path().join("tools")).unwrap();
+    std::fs::write(root.path().join(".bazelrc"), "try-import tools/bazel.rc\n").unwrap();
+    std::fs::write(root.path().join("tools/bazel.rc"), "common --color=no\n").unwrap();
+
+    let java_target = BuildTarget {
+        id: BuildTargetIdentifier {
+            uri: "test://t1".to_string(),
+        },
+        tags: Vec::new(),
+        language_ids: vec!["java".to_string()],
+        display_name: Some("//pkg:t1".to_string()),
+    };
+
+    let javac = JavacOptionsItem {
+        target: java_target.id.clone(),
+        classpath: vec!["a.jar".to_string()],
+        class_directory: "out/classes".to_string(),
+        options: vec!["--release".to_string(), "17".to_string()],
+    };
+
+    let config = FakeBspServerConfig {
+        initialize: InitializeBuildResult {
+            display_name: "fake-bsp".to_string(),
+            version: "0.1.0".to_string(),
+            bsp_version: "2.1.0".to_string(),
+            capabilities: server_caps(),
+        },
+        targets: vec![java_target.clone()],
+        inverse_sources: std::collections::BTreeMap::new(),
+        javac_options: vec![javac],
+        compile_status_code: 0,
+        diagnostics: Vec::new(),
+        send_server_request_before_initialize_response: false,
+    };
+
+    let (client, server) = spawn_fake_bsp_server(config).unwrap();
+    let bsp_workspace = BspWorkspace::from_client(root.path().to_path_buf(), client).unwrap();
+
+    let runner = RecordingRunner::default();
+    let mut workspace = BazelWorkspace::new(root.path().to_path_buf(), runner.clone())
+        .unwrap()
+        .with_bsp_workspace(bsp_workspace);
+
+    let _ = workspace.target_compile_info("//pkg:t1").unwrap();
+
+    let count_javac_options = || {
+        server
+            .requests()
+            .iter()
+            .filter(|msg| msg.get("method").and_then(|v| v.as_str()) == Some("buildTarget/javacOptions"))
+            .count()
+    };
+
+    assert_eq!(count_javac_options(), 1);
+
+    // Cache hit: no additional BSP requests.
+    let _ = workspace.target_compile_info("//pkg:t1").unwrap();
+    assert_eq!(count_javac_options(), 1);
+
+    // Editing an imported bazelrc file should invalidate the cached entry and force a new BSP
+    // request.
+    std::fs::write(root.path().join("tools/bazel.rc"), "common --color=yes\n").unwrap();
+    let _ = workspace.target_compile_info("//pkg:t1").unwrap();
+    assert_eq!(count_javac_options(), 2);
+
+    // BSP path should not invoke any `bazel` subprocesses.
+    assert!(runner.calls().is_empty());
+
+    drop(workspace);
+    server.join();
+}
