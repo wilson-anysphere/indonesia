@@ -2506,6 +2506,56 @@ class C {
 }
 
 #[test]
+fn method_reference_is_typed_from_explicit_constructor_invocation_target() {
+    let src = r#"
+import java.util.function.Function;
+class C {
+    C(Function<String, Integer> f) {}
+    C() { this(String::length); }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "method-ref-without-target"),
+        "expected ctor invocation to target-type method reference; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-constructor"),
+        "expected constructor invocation to resolve; got {diags:?}"
+    );
+
+    let offset = src
+        .find("String::length")
+        .expect("snippet should contain method reference")
+        + "String::".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Function<String, Integer>");
+}
+
+#[test]
+fn lambda_argument_in_explicit_constructor_invocation_is_target_typed() {
+    let src = r#"
+class C {
+    C(Runnable r) {}
+    C() { this(() -> 1); }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "return-mismatch"),
+        "expected return-mismatch diagnostic for void-compatible lambda; got {diags:?}"
+    );
+}
+
+#[test]
 fn resolves_explicit_this_constructor_invocation() {
     let src = r#"
 class C {

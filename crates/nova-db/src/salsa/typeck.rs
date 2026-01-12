@@ -8040,6 +8040,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         let arg_types = args
             .iter()
             .map(|arg| match &self.body.exprs[*arg] {
+                // Lambda/method refs are target-typed. Avoid inferring them without a target
+                // type to prevent spurious diagnostics; we can revisit once the constructor is
+                // resolved and we know the parameter types.
                 HirExpr::Lambda { .. } => Type::Unknown,
                 HirExpr::MethodReference { receiver, .. }
                 | HirExpr::ConstructorReference { receiver, .. } => {
@@ -8137,6 +8140,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         match nova_types::resolve_constructor_call(env_ro, class_id, &arg_types, None) {
             MethodResolution::Found(method) => {
                 for (arg, param_ty) in args.iter().zip(method.params.iter()) {
+                    // Target-typed expressions like lambdas and method references may need the
+                    // full functional interface definition (SAM) available. Ensure the parameter
+                    // type is loaded before attempting target typing.
                     self.ensure_type_loaded(loader, param_ty);
                     let _ = self.infer_expr_with_expected(loader, *arg, Some(param_ty));
                 }
