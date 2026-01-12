@@ -152,7 +152,7 @@ and **skipping** these directories:
 - `.git/`
 - `.gradle/`
 - `build/`
-- `bazel-*/` (only when a top-level entry under the workspace root, e.g. `bazel-out/`)
+- `bazel-*/` (e.g. `bazel-out/`, `bazel-bin/`, `bazel-testlogs/`, `bazel-<workspace>/`)
 - `node_modules/`
 - `target/`
 - `.nova/`
