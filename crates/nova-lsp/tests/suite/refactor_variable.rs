@@ -776,6 +776,28 @@ class C {
 }
 
 #[test]
+fn extract_variable_code_action_not_offered_for_synchronized_body_without_braces_multiline() {
+    let fixture = r#"
+class C {
+    void m(Object lock) {
+        synchronized (lock)
+            System.out.println(/*start*/1 + 2/*end*/);
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let uri = Uri::from_str("file:///Test.java").unwrap();
+    let range = lsp_types::Range {
+        start: offset_to_position(&source, selection.start),
+        end: offset_to_position(&source, selection.end),
+    };
+
+    let actions = extract_variable_code_actions(&uri, &source, range);
+    assert!(actions.is_empty());
+}
+
+#[test]
 fn extract_variable_code_action_not_offered_for_oneline_switch_case_statement() {
     let fixture = r#"
 class C {

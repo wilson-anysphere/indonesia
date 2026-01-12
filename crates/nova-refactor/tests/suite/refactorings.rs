@@ -4737,12 +4737,12 @@ fn extract_variable_rejects_labeled_statement_body() {
     let fixture = r#"class Test {
   void m() {
     label:
-      System.out.println(/*select*/1 + 2/*end*/);
+      System.out.println(/*start*/1 + 2/*end*/);
   }
 }
 "#;
 
-    let (src, expr_range) = strip_selection_markers(fixture);
+    let (src, expr_range) = extract_range(fixture);
     let db = RefactorJavaDatabase::new([(file.clone(), src)]);
 
     let err = extract_variable(
@@ -4761,7 +4761,7 @@ fn extract_variable_rejects_labeled_statement_body() {
         matches!(
             err,
             SemanticRefactorError::ExtractNotSupported { reason }
-                if reason == "cannot extract into a labeled statement body"
+                if reason == "cannot extract into a single-statement control structure body without braces"
         ),
         "expected labeled statement rejection, got: {err:?}"
     );
@@ -4793,15 +4793,13 @@ fn extract_variable_rejects_synchronized_body_without_braces_multiline() {
     )
     .unwrap_err();
 
-    // Today this is rejected at parse time because Nova's Java parser requires a block
-    // after `synchronized (...)`. If we later accept single-statement synchronized bodies,
-    // we still want extraction to be rejected (it would need braces to preserve semantics).
     assert!(
         matches!(
             err,
-            SemanticRefactorError::ParseError | SemanticRefactorError::ExtractNotSupported { .. }
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason == "cannot extract into a single-statement control structure body without braces"
         ),
-        "expected ParseError or ExtractNotSupported, got: {err:?}"
+        "expected synchronized body rejection, got: {err:?}"
     );
 }
 

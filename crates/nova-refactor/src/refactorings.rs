@@ -1182,9 +1182,7 @@ pub fn extract_variable(
         return Err(RefactorError::InvalidSelection);
     }
     let parsed = parse_java(text);
-    if !parsed.errors.is_empty() {
-        return Err(RefactorError::ParseError);
-    }
+    let had_parse_errors = !parsed.errors.is_empty();
 
     let root = parsed.syntax();
     let expr =
@@ -1374,14 +1372,6 @@ pub fn extract_variable(
 
     let stmt_range = syntax_range(stmt.syntax());
     if let Some(parent) = stmt.syntax().parent() {
-        // Reject labeled statements (`label:\n  stmt;`) where inserting at the start of the line
-        // would "steal" the label and change control flow.
-        if ast::LabeledStatement::cast(parent.clone()).is_some() {
-            return Err(RefactorError::ExtractNotSupported {
-                reason: "cannot extract into a labeled statement body",
-            });
-        }
-
         // Reject switch arrow rules with a single statement body:
         // `case 1 -> stmt;`
         // Inserting a new statement would require rewriting the body to a `{ ... }` block.
@@ -1400,6 +1390,7 @@ pub fn extract_variable(
                 || ast::WhileStatement::cast(parent.clone()).is_some()
                 || ast::DoWhileStatement::cast(parent.clone()).is_some()
                 || ast::ForStatement::cast(parent.clone()).is_some()
+                || ast::LabeledStatement::cast(parent.clone()).is_some()
                 || ast::SynchronizedStatement::cast(parent.clone()).is_some())
         {
             return Err(RefactorError::ExtractNotSupported {
@@ -1407,6 +1398,33 @@ pub fn extract_variable(
                     "cannot extract into a single-statement control structure body without braces",
             });
         }
+
+        // Be extra defensive for error-recovered blocks: `synchronized (lock)\n  stmt;` is invalid
+        // Java (a synchronized statement requires a `{ ... }` block), but the parser still builds a
+        // `Block` node for recovery. If the block braces are missing, inserting a new statement
+        // would move `stmt` outside the `synchronized`, changing semantics once braces are fixed.
+        if let Some(block) = stmt.syntax().parent().and_then(ast::Block::cast) {
+            if first_non_trivia_child_token_kind(block.syntax()) != Some(SyntaxKind::LBrace)
+                && block.statements().count() == 1
+            {
+                if let Some(parent) = block.syntax().parent() {
+                    if ast::SynchronizedStatement::cast(parent.clone()).is_some()
+                        || ast::LabeledStatement::cast(parent).is_some()
+                    {
+                        return Err(RefactorError::ExtractNotSupported {
+                            reason:
+                                "cannot extract into a single-statement control structure body without braces",
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // We never apply edits against a syntactically invalid file. The above checks run first so we
+    // can still return a more specific error when possible.
+    if had_parse_errors {
+        return Err(RefactorError::ParseError);
     }
 
     let line_start = line_start(text, stmt_range.start);
