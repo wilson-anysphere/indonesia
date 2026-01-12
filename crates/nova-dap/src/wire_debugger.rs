@@ -450,6 +450,42 @@ impl Debugger {
         self.jdwp.shutdown();
     }
 
+    /// Detach from the target VM by issuing JDWP `VirtualMachine.Dispose` (1/6).
+    ///
+    /// This is distinct from [`Debugger::disconnect`], which is a local-only shutdown of the JDWP
+    /// client. `Dispose` requests a clean detach from the debuggee when supported.
+    pub async fn detach(&self, cancel: &CancellationToken) -> Result<()> {
+        check_cancel(cancel)?;
+        let res = cancellable_jdwp(cancel, self.jdwp.virtual_machine_dispose()).await;
+        // Always shut down locally to unblock any pending requests/tasks, even if the dispose
+        // fails because the debuggee disconnected.
+        self.jdwp.shutdown();
+        res?;
+        Ok(())
+    }
+
+    /// Attempt to terminate the target VM via JDWP `VirtualMachine.Exit` (1/10).
+    ///
+    /// This is primarily used for attach sessions where the adapter does not own a spawned
+    /// process handle that it can kill directly.
+    pub async fn terminate_vm(&self, cancel: &CancellationToken, exit_code: i32) -> Result<()> {
+        check_cancel(cancel)?;
+
+        // Best-effort: the target VM may disconnect immediately after accepting the exit request
+        // (and may not deliver a reply). Treat connection-termination errors as success.
+        let exit_res = cancellable_jdwp(cancel, self.jdwp.virtual_machine_exit(exit_code)).await;
+
+        // Ensure local shutdown even if `Exit` fails so downstream tasks observe termination.
+        self.jdwp.shutdown();
+
+        match exit_res {
+            Ok(()) => Ok(()),
+            Err(JdwpError::ConnectionClosed) => Ok(()),
+            Err(JdwpError::Timeout) => Ok(()),
+            Err(err) => Err(err.into()),
+        }
+    }
+
     pub async fn threads(&self, cancel: &CancellationToken) -> Result<Vec<(i64, String)>> {
         check_cancel(cancel)?;
         let threads = cancellable_jdwp(cancel, self.jdwp.all_threads()).await?;
@@ -2121,6 +2157,498 @@ impl Debugger {
         Ok(Some(Value::Object(obj)))
     }
 
+    pub async fn stream_debug(
+        &mut self,
+        cancel: &CancellationToken,
+        frame_id: i64,
+        expression: &str,
+        config: nova_stream_debug::StreamDebugConfig,
+    ) -> Result<crate::stream_debug::StreamDebugBody> {
+        use nova_stream_debug::{
+            analyze_stream_expression, StreamDebugResult, StreamSample, StreamStepResult,
+            StreamTerminalResult, StreamValueKind,
+        };
+
+        check_cancel(cancel)?;
+
+        let analysis = analyze_stream_expression(expression)
+            .map_err(|err| DebuggerError::InvalidRequest(err.to_string()))?;
+
+        let Some(frame) = self.frame_handles.get(frame_id).copied() else {
+            return Err(DebuggerError::InvalidRequest(format!(
+                "unknown frameId {frame_id}"
+            )));
+        };
+
+        fn parse_i64(s: &str) -> Option<i64> {
+            s.trim().parse::<i64>().ok()
+        }
+
+        fn extract_single_arg(call_source: &str) -> Option<&str> {
+            let start = call_source.find('(')?;
+            let end = call_source.rfind(')')?;
+            (end > start).then(|| call_source[(start + 1)..end].trim())
+        }
+
+        fn parse_filter_predicate(arg: &str) -> Option<Box<dyn Fn(i64) -> bool + Send + Sync>> {
+            let (param, body) = arg.split_once("->")?;
+            let param = param.trim();
+            let body = body.trim();
+
+            // Support a small subset of common numeric predicates:
+            //   x > 1
+            //   x >= 1
+            //   x < 1
+            //   x <= 1
+            //   x == 1
+            //   x != 1
+            let ops = [">=", "<=", "==", "!=", ">", "<"];
+            for op in ops {
+                if let Some((lhs, rhs)) = body.split_once(op) {
+                    let lhs = lhs.trim();
+                    let rhs = rhs.trim();
+                    if lhs == param {
+                        let rhs = parse_i64(rhs)?;
+                        return Some(Box::new(move |x| match op {
+                            ">=" => x >= rhs,
+                            "<=" => x <= rhs,
+                            "==" => x == rhs,
+                            "!=" => x != rhs,
+                            ">" => x > rhs,
+                            "<" => x < rhs,
+                            _ => false,
+                        }));
+                    } else if rhs == param {
+                        let lhs = parse_i64(lhs)?;
+                        return Some(Box::new(move |x| match op {
+                            ">=" => lhs >= x,
+                            "<=" => lhs <= x,
+                            "==" => lhs == x,
+                            "!=" => lhs != x,
+                            ">" => lhs > x,
+                            "<" => lhs < x,
+                            _ => false,
+                        }));
+                    }
+                }
+            }
+
+            None
+        }
+
+        fn parse_map_fn(arg: &str) -> Option<Box<dyn Fn(i64) -> i64 + Send + Sync>> {
+            let (param, body) = arg.split_once("->")?;
+            let param = param.trim();
+            let body = body.trim();
+
+            // Support a small subset of common numeric mappings:
+            //   x * 2
+            //   x + 2
+            //   x - 2
+            //   x / 2
+            let ops = ["*", "+", "-", "/"];
+            for op in ops {
+                if let Some((lhs, rhs)) = body.split_once(op) {
+                    let lhs = lhs.trim();
+                    let rhs = rhs.trim();
+                    if lhs == param {
+                        let rhs = parse_i64(rhs)?;
+                        return Some(Box::new(move |x| match op {
+                            "*" => x.saturating_mul(rhs),
+                            "+" => x.saturating_add(rhs),
+                            "-" => x.saturating_sub(rhs),
+                            "/" => {
+                                if rhs == 0 {
+                                    x
+                                } else {
+                                    x / rhs
+                                }
+                            }
+                            _ => x,
+                        }));
+                    } else if rhs == param {
+                        let lhs = parse_i64(lhs)?;
+                        return Some(Box::new(move |x| match op {
+                            "*" => lhs.saturating_mul(x),
+                            "+" => lhs.saturating_add(x),
+                            "-" => lhs.saturating_sub(x),
+                            "/" => {
+                                if x == 0 {
+                                    lhs
+                                } else {
+                                    lhs / x
+                                }
+                            }
+                            _ => x,
+                        }));
+                    }
+                }
+            }
+
+            None
+        }
+
+        async fn format_stream_value(
+            dbg: &mut Debugger,
+            cancel: &CancellationToken,
+            value: &JdwpValue,
+        ) -> Result<String> {
+            check_cancel(cancel)?;
+
+            // Follow primitive-wrapper previews so things like `java.lang.Integer` show up as `1`
+            // (instead of `Integer@...`), matching the legacy stream-debug UX expectations.
+            let mut current = value.clone();
+
+            loop {
+                check_cancel(cancel)?;
+                match current {
+                    JdwpValue::Void => return Ok("void".to_string()),
+                    JdwpValue::Boolean(v) => return Ok(v.to_string()),
+                    JdwpValue::Byte(v) => return Ok(v.to_string()),
+                    JdwpValue::Short(v) => return Ok(v.to_string()),
+                    JdwpValue::Int(v) => return Ok(v.to_string()),
+                    JdwpValue::Long(v) => return Ok(v.to_string()),
+                    JdwpValue::Float(v) => return Ok(trim_float(v as f64)),
+                    JdwpValue::Double(v) => return Ok(trim_float(v)),
+                    JdwpValue::Char(v) => return Ok(decode_java_char(v).to_string()),
+                    JdwpValue::Object { id: 0, .. } => return Ok("null".to_string()),
+                    JdwpValue::Object { id, .. } => {
+                        let preview =
+                            cancellable_jdwp(cancel, dbg.inspector.preview_object(id)).await?;
+                        let runtime_type = preview.runtime_type;
+                        match preview.kind {
+                            ObjectKindPreview::String { value } => return Ok(value),
+                            ObjectKindPreview::PrimitiveWrapper { value } => {
+                                current = *value;
+                                continue;
+                            }
+                            _ => return Ok(format!("{runtime_type}#{id}")),
+                        }
+                    }
+                }
+            }
+        }
+
+        async fn resolve_local_in_frame(
+            dbg: &mut Debugger,
+            cancel: &CancellationToken,
+            thread: ThreadId,
+            frame_id: u64,
+            location: Location,
+            name: &str,
+        ) -> Result<Option<JdwpValue>> {
+            let (_argc, vars) = match cancellable_jdwp(
+                cancel,
+                dbg.jdwp
+                    .method_variable_table(location.class_id, location.method_id),
+            )
+            .await
+            {
+                Ok(res) => res,
+                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                Err(_err) => return Ok(None),
+            };
+
+            let in_scope: Vec<VariableInfo> = vars
+                .into_iter()
+                .filter(|v| {
+                    v.code_index <= location.index && location.index < v.code_index + (v.length as u64)
+                })
+                .collect();
+            let Some(var) = in_scope.iter().find(|v| v.name == name) else {
+                return Ok(None);
+            };
+
+            let mut values = match cancellable_jdwp(
+                cancel,
+                dbg.jdwp.stack_frame_get_values(
+                    thread,
+                    frame_id,
+                    &[(var.slot, var.signature.clone())],
+                ),
+            )
+            .await
+            {
+                Ok(values) => values,
+                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                Err(_err) => return Ok(None),
+            };
+            Ok(values.pop())
+        }
+
+        let started = Instant::now();
+
+        // Resolve the source sample by inspecting the underlying collection object.
+        let (source_elements, source_truncated, source_collection_type) = {
+            let nova_stream_debug::StreamSource::Collection { collection_expr, .. } = &analysis.source
+            else {
+                return Err(DebuggerError::InvalidRequest(
+                    "unsupported stream source (only collection.stream() is supported)"
+                        .to_string(),
+                ));
+            };
+
+            let name = collection_expr.trim();
+            if name.is_empty() {
+                return Err(DebuggerError::InvalidRequest(
+                    "stream source collection expression is empty".to_string(),
+                ));
+            }
+
+            // The frame selected by the DAP client may correspond to a synthetic lambda frame
+            // on the same source line, which won't have access to the original local variables.
+            // Best-effort: if the variable isn't found in the requested frame, walk up the
+            // stack and use the first frame where it is in-scope.
+            let mut value = resolve_local_in_frame(
+                self,
+                cancel,
+                frame.thread,
+                frame.frame_id,
+                frame.location,
+                name,
+            )
+            .await?;
+
+            if value.is_none() {
+                let frames = cancellable_jdwp(cancel, self.jdwp.frames(frame.thread, 0, -1)).await?;
+                for frame_info in frames {
+                    if frame_info.frame_id == frame.frame_id {
+                        continue;
+                    }
+                    value = resolve_local_in_frame(
+                        self,
+                        cancel,
+                        frame.thread,
+                        frame_info.frame_id,
+                        frame_info.location,
+                        name,
+                    )
+                    .await?;
+                    if value.is_some() {
+                        break;
+                    }
+                }
+            }
+
+            let Some(value) = value else {
+                return Err(DebuggerError::InvalidRequest(format!(
+                    "stream source collection `{name}` not found in scope"
+                )));
+            };
+
+            let object_id = match value {
+                JdwpValue::Object { id, .. } if id != 0 => id,
+                _ => {
+                    return Err(DebuggerError::InvalidRequest(format!(
+                        "stream source `{name}` is not an object"
+                    )))
+                }
+            };
+
+            // First attempt: use the built-in preview for known collection types.
+            let preview = cancellable_jdwp(cancel, self.inspector.preview_object(object_id)).await?;
+            let collection_type = Some(preview.runtime_type.clone());
+
+            let (size, mut raw_sample) = match preview.kind {
+                ObjectKindPreview::List { size, sample } => (size, sample),
+                ObjectKindPreview::Set { size, sample } => (size, sample),
+                ObjectKindPreview::Array { length, sample, .. } => (length, sample),
+                _ if preview.runtime_type == "java.util.Arrays$ArrayList" => {
+                    // Arrays.asList uses `java.util.Arrays$ArrayList`, which isn't covered by
+                    // the default preview helpers. Read the backing array field directly.
+                    let children =
+                        cancellable_jdwp(cancel, self.inspector.object_children(object_id))
+                            .await?;
+                    let array_id = children.iter().find_map(|child| match (&child.name[..], &child.value) {
+                        ("a", JdwpValue::Object { tag: b'[', id }) if *id != 0 => Some(*id),
+                        _ => None,
+                    });
+                    let Some(array_id) = array_id else {
+                        return Err(DebuggerError::InvalidRequest(
+                            "unsupported list implementation (missing backing array)".to_string(),
+                        ));
+                    };
+                    let length =
+                        cancellable_jdwp(cancel, self.jdwp.array_reference_length(array_id)).await?;
+                    let length = length.max(0) as usize;
+                    let sample_len = length.min(config.max_sample_size);
+                    let sample = if sample_len == 0 {
+                        Vec::new()
+                    } else {
+                        cancellable_jdwp(
+                            cancel,
+                            self.jdwp
+                                .array_reference_get_values(array_id, 0, sample_len as i32),
+                        )
+                        .await?
+                    };
+                    (length, sample)
+                }
+                _ => {
+                    return Err(DebuggerError::InvalidRequest(
+                        "streamDebug currently only supports List/Set/Array sources".to_string(),
+                    ))
+                }
+            };
+
+            // Respect `max_sample_size` even if the preview returns more.
+            if raw_sample.len() > config.max_sample_size {
+                raw_sample.truncate(config.max_sample_size);
+            }
+
+            let truncated = raw_sample.len() < size;
+            let mut elements = Vec::with_capacity(raw_sample.len());
+            for v in &raw_sample {
+                elements.push(format_stream_value(self, cancel, v).await?);
+            }
+
+            (elements, truncated, collection_type)
+        };
+
+        let mut source_sample = StreamSample {
+            elements: source_elements,
+            truncated: source_truncated,
+            element_type: None,
+            collection_type: source_collection_type,
+        };
+
+        // Best-effort: infer a primitive element type from the formatted values.
+        if source_sample.element_type.is_none() {
+            source_sample.element_type = match analysis.stream_kind {
+                StreamValueKind::IntStream => Some("int".to_string()),
+                StreamValueKind::Stream => None,
+            };
+        }
+
+        let source_duration_ms = 0u128;
+
+        let mut last_sample = source_sample.clone();
+        let mut steps = Vec::new();
+
+        for op in &analysis.intermediates {
+            check_cancel(cancel)?;
+            let step_start = Instant::now();
+
+            if op.is_side_effecting() && !config.allow_side_effects {
+                steps.push(StreamStepResult {
+                    operation: op.name.clone(),
+                    kind: op.kind,
+                    executed: false,
+                    input: last_sample.clone(),
+                    output: last_sample.clone(),
+                    duration_ms: 0,
+                });
+                continue;
+            }
+
+            let input = last_sample.clone();
+            let mut output = input.clone();
+
+            match op.kind {
+                nova_stream_debug::StreamOperationKind::Filter => {
+                    let arg = extract_single_arg(&op.call_source).ok_or_else(|| {
+                        DebuggerError::InvalidRequest(format!(
+                            "unsupported filter call: {}",
+                            op.call_source
+                        ))
+                    })?;
+                    let pred = parse_filter_predicate(arg).ok_or_else(|| {
+                        DebuggerError::InvalidRequest(format!(
+                            "unsupported filter predicate: {arg}"
+                        ))
+                    })?;
+
+                    output.elements = input
+                        .elements
+                        .iter()
+                        .filter(|s| parse_i64(s).is_some_and(|v| pred(v)))
+                        .cloned()
+                        .collect();
+                }
+                nova_stream_debug::StreamOperationKind::Map => {
+                    let arg = extract_single_arg(&op.call_source).ok_or_else(|| {
+                        DebuggerError::InvalidRequest(format!(
+                            "unsupported map call: {}",
+                            op.call_source
+                        ))
+                    })?;
+                    let func = parse_map_fn(arg).ok_or_else(|| {
+                        DebuggerError::InvalidRequest(format!("unsupported map fn: {arg}"))
+                    })?;
+
+                    output.elements = input
+                        .elements
+                        .iter()
+                        .filter_map(|s| parse_i64(s).map(|v| func(v).to_string()))
+                        .collect();
+                }
+                other => {
+                    return Err(DebuggerError::InvalidRequest(format!(
+                        "unsupported stream operation: {other:?}"
+                    )));
+                }
+            }
+
+            let duration_ms = step_start.elapsed().as_millis();
+            steps.push(StreamStepResult {
+                operation: op.name.clone(),
+                kind: op.kind,
+                executed: true,
+                input,
+                output: output.clone(),
+                duration_ms,
+            });
+            last_sample = output;
+        }
+
+        let terminal = if let Some(term) = &analysis.terminal {
+            if !config.allow_terminal_ops || (term.is_side_effecting() && !config.allow_side_effects) {
+                Some(StreamTerminalResult {
+                    operation: term.name.clone(),
+                    kind: term.kind,
+                    executed: false,
+                    value: None,
+                    type_name: None,
+                    duration_ms: 0,
+                })
+            } else {
+                match term.kind {
+                    nova_stream_debug::StreamOperationKind::Count => Some(StreamTerminalResult {
+                        operation: term.name.clone(),
+                        kind: term.kind,
+                        executed: true,
+                        value: Some(last_sample.elements.len().to_string()),
+                        type_name: Some("long".to_string()),
+                        duration_ms: 0,
+                    }),
+                    _ => {
+                        return Err(DebuggerError::InvalidRequest(format!(
+                            "unsupported terminal operation: {}",
+                            term.name
+                        )));
+                    }
+                }
+            }
+        } else {
+            None
+        };
+
+        let runtime = StreamDebugResult {
+            expression: analysis.expression.clone(),
+            source: analysis.source.clone(),
+            source_sample,
+            source_duration_ms,
+            steps,
+            terminal,
+            total_duration_ms: started.elapsed().as_millis(),
+        };
+
+        Ok(crate::stream_debug::StreamDebugBody {
+            analysis,
+            runtime,
+        })
+    }
+
     pub async fn set_variable(
         &mut self,
         cancel: &CancellationToken,
@@ -3262,10 +3790,22 @@ impl Debugger {
             methods
         };
 
-        let mut line_candidates: HashMap<i32, (u64, u64)> = HashMap::new();
+        // Multiple methods (including synthetic `lambda$...` methods) can report the same
+        // source line in their line tables. For DAP breakpoint mapping we generally want to
+        // stop at the user-visible statement in the enclosing method, not inside a lambda
+        // implementation. Prefer non-synthetic methods when a line is present in both.
+        //
+        // This avoids surprising behavior where a breakpoint on a line containing an inline
+        // lambda (e.g. a Stream pipeline) triggers inside the lambda body instead of at the
+        // statement boundary in the enclosing method.
+        let mut line_candidates: HashMap<i32, (bool, u64, u64)> = HashMap::new();
 
         for method in methods {
             check_cancel(cancel)?;
+            const MODIFIER_SYNTHETIC: u32 = 0x1000;
+            let is_synthetic = (method.mod_bits & MODIFIER_SYNTHETIC) != 0
+                || method.name.starts_with("lambda$")
+                || method.name.contains("$$Lambda$");
             let key = (class.type_id, method.method_id);
             let table = if let Some(t) = self.line_table_cache.get(&key) {
                 Some(t.clone())
@@ -3294,20 +3834,29 @@ impl Debugger {
 
                 line_candidates
                     .entry(entry.line)
-                    .and_modify(|(best_method, best_index)| {
-                        if entry.code_index < *best_index
-                            || (entry.code_index == *best_index && method.method_id < *best_method)
+                    .and_modify(|(best_synth, best_method, best_index)| {
+                        let replace = match (*best_synth, is_synthetic) {
+                            (true, false) => true,
+                            (false, true) => false,
+                            _ => {
+                                entry.code_index < *best_index
+                                    || (entry.code_index == *best_index
+                                        && method.method_id < *best_method)
+                            }
+                        };
+                        if replace
                         {
+                            *best_synth = is_synthetic;
                             *best_method = method.method_id;
                             *best_index = entry.code_index;
                         }
                     })
-                    .or_insert((method.method_id, entry.code_index));
+                    .or_insert((is_synthetic, method.method_id, entry.code_index));
             }
         }
 
         let mut best: Option<(i64, bool, i32, u64, u64)> = None;
-        for (candidate_line, (method_id, code_index)) in line_candidates {
+        for (candidate_line, (_is_synthetic, method_id, code_index)) in line_candidates {
             let distance = (candidate_line as i64 - line as i64).abs();
             let is_previous_line = candidate_line < line;
 

@@ -103,6 +103,7 @@ struct ResolvedMethod {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ResolvedMethodInfo {
     pub receiver: String,
     pub name: String,
@@ -122,6 +123,7 @@ impl From<&ResolvedMethod> for ResolvedMethodInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StreamOperation {
     pub name: String,
     pub kind: StreamOperationKind,
@@ -151,6 +153,7 @@ impl StreamOperation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StreamChain {
     pub expression: String,
     pub stream_kind: StreamValueKind,
@@ -465,6 +468,7 @@ impl Default for StreamDebugConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StreamSample {
     pub elements: Vec<String>,
     pub truncated: bool,
@@ -473,6 +477,7 @@ pub struct StreamSample {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StreamStepResult {
     pub operation: String,
     pub kind: StreamOperationKind,
@@ -483,6 +488,7 @@ pub struct StreamStepResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StreamTerminalResult {
     pub operation: String,
     pub kind: StreamOperationKind,
@@ -493,6 +499,7 @@ pub struct StreamTerminalResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StreamDebugResult {
     pub expression: String,
     pub source: StreamSource,

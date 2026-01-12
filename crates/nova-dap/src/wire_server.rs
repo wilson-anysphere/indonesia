@@ -3160,29 +3160,63 @@ async fn handle_request_inner(
             );
         }
         "terminate" => {
-            terminate_existing_process(launched_process).await;
-            disconnect_debugger(debugger).await;
+            let has_launched_process = launched_process.lock().await.is_some();
+
+            if has_launched_process {
+                terminate_existing_process(launched_process).await;
+                disconnect_debugger(debugger).await;
+            } else {
+                // Attach session: request that the target VM exits via JDWP.
+                let mut dbg = {
+                    let mut guard = debugger.lock().await;
+                    guard.take()
+                };
+                if let Some(dbg) = dbg.as_mut() {
+                    let _ = dbg.terminate_vm(cancel, 0).await;
+                }
+            }
+
             send_response(out_tx, seq, request, true, None, None);
             send_terminated_once(out_tx, seq, terminated_sent);
             server_shutdown.cancel();
         }
         "disconnect" => {
+            let has_launched_process = launched_process.lock().await.is_some();
             let terminate_debuggee = match request
                 .arguments
                 .get("terminateDebuggee")
                 .and_then(|v| v.as_bool())
             {
                 Some(value) => value,
-                None => launched_process.lock().await.is_some(),
+                None => has_launched_process,
             };
 
             if terminate_debuggee {
-                terminate_existing_process(launched_process).await;
+                if has_launched_process {
+                    terminate_existing_process(launched_process).await;
+                    disconnect_debugger(debugger).await;
+                } else {
+                    // Attach session: request that the target VM exits via JDWP.
+                    let mut dbg = {
+                        let mut guard = debugger.lock().await;
+                        guard.take()
+                    };
+                    if let Some(dbg) = dbg.as_mut() {
+                        let _ = dbg.terminate_vm(cancel, 0).await;
+                    }
+                }
             } else {
                 detach_existing_process(launched_process).await;
+                // Detach from the target VM (best-effort).
+                let mut dbg = {
+                    let mut guard = debugger.lock().await;
+                    guard.take()
+                };
+                if let Some(dbg) = dbg.as_mut() {
+                    let _ = dbg.detach(cancel).await;
+                }
             }
 
-            disconnect_debugger(debugger).await;
             send_response(out_tx, seq, request, true, None, None);
             send_terminated_once(out_tx, seq, terminated_sent);
             server_shutdown.cancel();
@@ -3202,36 +3236,6 @@ async fn handle_request_inner(
 
 fn is_cancelled_error(err: &DebuggerError) -> bool {
     matches!(err, DebuggerError::Jdwp(JdwpError::Cancelled))
-}
-
-// Temporary compatibility shim: `nova/streamDebug` is being migrated to the wire adapter.
-//
-// The runtime implementation should live in `wire_debugger::Debugger`, but while that work
-// lands we provide a trait method so `wire_server` can compile and handle request plumbing.
-#[allow(dead_code)]
-trait StreamDebugExt {
-    async fn stream_debug(
-        &mut self,
-        cancel: &CancellationToken,
-        frame_id: i64,
-        expression: &str,
-        config: nova_stream_debug::StreamDebugConfig,
-    ) -> std::result::Result<crate::stream_debug::StreamDebugBody, DebuggerError>;
-}
-
-#[allow(dead_code)]
-impl StreamDebugExt for Debugger {
-    async fn stream_debug(
-        &mut self,
-        _cancel: &CancellationToken,
-        _frame_id: i64,
-        _expression: &str,
-        _config: nova_stream_debug::StreamDebugConfig,
-    ) -> std::result::Result<crate::stream_debug::StreamDebugBody, DebuggerError> {
-        Err(DebuggerError::InvalidRequest(
-            "streamDebug is not implemented in the wire debugger yet".to_string(),
-        ))
-    }
 }
 
 fn resolve_source_roots(

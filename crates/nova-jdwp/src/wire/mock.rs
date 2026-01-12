@@ -2117,8 +2117,16 @@ async fn handle_packet(
                 let tag = values.first().map(jdwp_value_tag).unwrap_or(b'V');
                 w.write_u8(tag);
                 w.write_u32(slice.len() as u32);
+                let primitive = matches!(
+                    tag,
+                    b'Z' | b'B' | b'C' | b'S' | b'I' | b'J' | b'F' | b'D'
+                );
                 for value in slice {
-                    w.write_value(value, sizes);
+                    if primitive {
+                        w.write_value(value, sizes);
+                    } else {
+                        w.write_tagged_value(value, sizes);
+                    }
                 }
             } else {
                 match array_id {
@@ -2167,6 +2175,7 @@ async fn handle_packet(
                         w.write_u8(b'L');
                         w.write_u32(slice.len() as u32);
                         for object_id in slice {
+                            w.write_u8(b'L');
                             w.write_object_id(*object_id, sizes);
                         }
                     }

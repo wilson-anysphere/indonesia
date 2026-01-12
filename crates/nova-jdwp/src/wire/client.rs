@@ -1495,13 +1495,30 @@ impl JdwpClient {
         w.write_i32(length);
         let payload = self.send_command_raw(13, 2, w.into_vec()).await?;
         let mut r = JdwpReader::new(&payload);
-        // JDWP spec: ArrayReference.GetValues reply contains a single element tag, followed by the values.
-        let tag = r.read_u8()?;
+        // The JDWP spec includes an element tag in the reply. For primitive arrays, the
+        // elements are encoded without per-value tags (the element tag determines the wire
+        // encoding). For object arrays, VMs (including HotSpot) still encode each element as a
+        // tagged value so the debugger can distinguish Strings/arrays/etc.
+        let element_tag = r.read_u8()?;
         let count = r.read_u32()? as usize;
         let mut values = Vec::with_capacity(count);
-        for _ in 0..count {
-            values.push(r.read_value(tag, &sizes)?);
+
+        let is_primitive = matches!(
+            element_tag,
+            b'Z' | b'B' | b'C' | b'S' | b'I' | b'J' | b'F' | b'D'
+        );
+
+        if is_primitive {
+            for _ in 0..count {
+                values.push(r.read_value(element_tag, &sizes)?);
+            }
+        } else {
+            for _ in 0..count {
+                let tag = r.read_u8()?;
+                values.push(r.read_value(tag, &sizes)?);
+            }
         }
+
         Ok(values)
     }
 
