@@ -1,7 +1,7 @@
 use nova_refactor::{
     apply_text_edits, apply_workspace_edit, extract_variable, inline_variable, materialize, rename,
-    Conflict, ExtractVariableParams, FileId, InlineVariableParams, JavaSymbolKind,
-    RefactorDatabase, RefactorJavaDatabase, Reference, ReferenceKind, RenameParams, SemanticChange,
+    Conflict, ExtractVariableParams, FileId, InlineVariableParams, JavaSymbolKind, ReferenceKind,
+    RefactorDatabase, RefactorJavaDatabase, Reference, RenameParams, SemanticChange,
     SemanticRefactorError, SymbolDefinition, SymbolId, TextDatabase, WorkspaceTextRange,
 };
 use nova_test_utils::extract_range;

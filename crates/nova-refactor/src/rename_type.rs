@@ -638,8 +638,8 @@ fn expr_scope_for_offset(
                 for dim in dim_exprs {
                     visit_expr(body, *dim, offset, best_expr, best_stmt);
                 }
-                if let Some(init) = initializer {
-                    visit_expr(body, *init, offset, best_expr, best_stmt);
+                if let Some(initializer) = initializer {
+                    visit_expr(body, *initializer, offset, best_expr, best_stmt);
                 }
             }
             Expr::ArrayInitializer { items, .. } => {
