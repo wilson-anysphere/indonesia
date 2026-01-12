@@ -58,6 +58,14 @@ fn stdio_server_exposes_extensions_status_and_navigation_requests() {
         "expected {} to be advertised in experimental.nova.requests; got {requests:?}",
         nova_lsp::EXTENSIONS_NAVIGATION_METHOD
     );
+    assert!(
+        requests
+            .iter()
+            .filter_map(|v| v.as_str())
+            .any(|m| m == nova_lsp::BUILD_FILE_CLASSPATH_METHOD),
+        "expected {} to be advertised in experimental.nova.requests; got {requests:?}",
+        nova_lsp::BUILD_FILE_CLASSPATH_METHOD
+    );
 
     write_jsonrpc_message(
         &mut stdin,
