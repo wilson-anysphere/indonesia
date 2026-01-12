@@ -41,6 +41,7 @@ pub struct WorkDoneProgressCancelParams {
 }
 
 /// Options to signal work done progress support in server capabilities.
+#[allow(dead_code)]
 #[derive(Debug, Eq, PartialEq, Default, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkDoneProgressOptions {
