@@ -2,19 +2,18 @@
 mod codec;
 mod rpc_out;
 
-use rpc_out::RpcOut;
 use crossbeam_channel::{Receiver, Sender};
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response, ResponseError};
 use lsp_types::{
     CallHierarchyIncomingCallsParams, CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams,
     CodeAction, CodeActionKind, CodeLens as LspCodeLens, Command as LspCommand, CompletionItem,
     CompletionItemKind, CompletionList, CompletionParams, CompletionTextEdit,
-    DidChangeWatchedFilesParams as LspDidChangeWatchedFilesParams,
-    DocumentSymbolParams, FileChangeType as LspFileChangeType, Location as LspLocation,
-    InlayHintParams as LspInlayHintParams, Position as LspTypesPosition, Range as LspTypesRange,
+    DidChangeWatchedFilesParams as LspDidChangeWatchedFilesParams, DocumentSymbolParams,
+    FileChangeType as LspFileChangeType, InlayHintParams as LspInlayHintParams,
+    Location as LspLocation, Position as LspTypesPosition, Range as LspTypesRange,
     RenameParams as LspRenameParams, SymbolInformation, SymbolKind as LspSymbolKind,
-    TextDocumentPositionParams, TextEdit, Uri as LspUri, WorkspaceEdit as LspWorkspaceEdit,
-    TypeHierarchyPrepareParams, TypeHierarchySubtypesParams, TypeHierarchySupertypesParams,
+    TextDocumentPositionParams, TextEdit, TypeHierarchyPrepareParams, TypeHierarchySubtypesParams,
+    TypeHierarchySupertypesParams, Uri as LspUri, WorkspaceEdit as LspWorkspaceEdit,
     WorkspaceSymbolParams,
 };
 use nova_ai::context::{
@@ -29,18 +28,20 @@ use nova_ai::{
 use nova_db::{Database, FileId as DbFileId, InMemoryFileStore};
 use nova_ext::wasm::WasmHostDb;
 use nova_ext::{ExtensionManager, ExtensionMetadata, ExtensionRegistry};
+use nova_ide::extensions::IdeExtensions;
 use nova_ide::{
     explain_error_action, generate_method_body_action, generate_tests_action, ExplainErrorArgs,
     GenerateMethodBodyArgs, GenerateTestsArgs, NovaCodeAction, CODE_ACTION_KIND_AI_GENERATE,
     CODE_ACTION_KIND_AI_TESTS, CODE_ACTION_KIND_EXPLAIN, COMMAND_EXPLAIN_ERROR,
     COMMAND_GENERATE_METHOD_BODY, COMMAND_GENERATE_TESTS,
 };
-use nova_ide::extensions::IdeExtensions;
 #[cfg(feature = "ai")]
 use nova_ide::{multi_token_completion_context, CompletionConfig, CompletionEngine};
 use nova_index::{Index, SymbolKind};
 use nova_lsp::refactor_workspace::RefactorWorkspaceSnapshot;
-use nova_memory::{MemoryBudget, MemoryBudgetOverrides, MemoryCategory, MemoryEvent, MemoryManager};
+use nova_memory::{
+    MemoryBudget, MemoryBudgetOverrides, MemoryCategory, MemoryEvent, MemoryManager,
+};
 use nova_refactor::{
     code_action_for_edit, organize_imports, rename as semantic_rename, workspace_edit_to_lsp,
     FileId as RefactorFileId, JavaSymbolKind, OrganizeImportsParams, RefactorJavaDatabase,
@@ -48,6 +49,7 @@ use nova_refactor::{
 };
 use nova_vfs::{ChangeEvent, DocumentError, FileSystem, LocalFs, Vfs, VfsPath};
 use nova_workspace::Workspace;
+use rpc_out::RpcOut;
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap};
@@ -66,7 +68,11 @@ struct SingleFileDb {
 
 impl SingleFileDb {
     fn new(file_id: DbFileId, path: Option<PathBuf>, text: String) -> Self {
-        Self { file_id, path, text }
+        Self {
+            file_id,
+            path,
+            text,
+        }
     }
 }
 
@@ -771,7 +777,10 @@ fn reload_config_best_effort(
     }
 
     // Fall back to workspace discovery (env var + workspace-root detection).
-    let seed = match project_root.map(PathBuf::from).or_else(|| env::current_dir().ok()) {
+    let seed = match project_root
+        .map(PathBuf::from)
+        .or_else(|| env::current_dir().ok())
+    {
         Some(dir) => dir,
         None => return Err("failed to determine current directory".to_string()),
     };
@@ -1044,7 +1053,8 @@ impl ServerState {
 
         #[cfg(feature = "ai")]
         let completion_service = {
-            let multi_token_enabled = ai_config.enabled && ai_config.features.multi_token_completion;
+            let multi_token_enabled =
+                ai_config.enabled && ai_config.features.multi_token_completion;
             let ai_provider = if multi_token_enabled {
                 match AiClient::from_config(&ai_config) {
                     Ok(client) => {
@@ -1119,7 +1129,10 @@ impl ServerState {
         }
 
         if self.config.extensions.wasm_paths.is_empty() {
-            tracing::debug!(target = "nova.lsp", "no wasm_paths configured; skipping extension load");
+            tracing::debug!(
+                target = "nova.lsp",
+                "no wasm_paths configured; skipping extension load"
+            );
             return;
         }
 
@@ -1937,7 +1950,8 @@ fn handle_request_json(
             }
 
             nova_lsp::hardening::record_request();
-            if let Err(err) = nova_lsp::hardening::guard_method(nova_lsp::MOVE_STATIC_MEMBER_METHOD) {
+            if let Err(err) = nova_lsp::hardening::guard_method(nova_lsp::MOVE_STATIC_MEMBER_METHOD)
+            {
                 let (code, message) = match err {
                     nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
                     nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
@@ -2808,8 +2822,10 @@ fn handle_code_action(
         if let Ok(uri) = params.text_document.uri.parse::<LspUri>() {
             let file_id = state.analysis.ensure_loaded(&uri);
             if state.analysis.exists(file_id) {
-                let start_pos = LspTypesPosition::new(params.range.start.line, params.range.start.character);
-                let end_pos = LspTypesPosition::new(params.range.end.line, params.range.end.character);
+                let start_pos =
+                    LspTypesPosition::new(params.range.start.line, params.range.start.character);
+                let end_pos =
+                    LspTypesPosition::new(params.range.end.line, params.range.end.character);
                 let start = position_to_offset_utf16(text, start_pos).unwrap_or(0);
                 let end = position_to_offset_utf16(text, end_pos).unwrap_or(start);
                 let span = Some(nova_ext::Span::new(start.min(end), start.max(end)));
@@ -2824,11 +2840,12 @@ fn handle_code_action(
                 );
                 for action in ide_extensions.code_actions(cancel, file_id, span) {
                     let kind = action.kind.map(CodeActionKind::from);
-                    let action = lsp_types::CodeActionOrCommand::CodeAction(lsp_types::CodeAction {
-                        title: action.title,
-                        kind,
-                        ..lsp_types::CodeAction::default()
-                    });
+                    let action =
+                        lsp_types::CodeActionOrCommand::CodeAction(lsp_types::CodeAction {
+                            title: action.title,
+                            kind,
+                            ..lsp_types::CodeAction::default()
+                        });
                     actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
                 }
             }
@@ -3172,14 +3189,13 @@ fn goto_definition_jdk(
     };
     let range = decompiled.range_for(&symbol)?;
 
-    // Register the virtual document in the VFS overlay so follow-up requests can read it.
+    // Register the virtual document in the VFS so follow-up requests can read it.
     let vfs_path = VfsPath::uri(uri_string.clone());
     let vfs_file_id = state.analysis.vfs.file_id(vfs_path.clone());
     state
         .analysis
         .vfs
-        .overlay()
-        .open(vfs_path, decompiled.text.clone(), 0);
+        .store_virtual_document(vfs_path, decompiled.text.clone());
     state.analysis.file_exists.insert(vfs_file_id, true);
     state
         .analysis
@@ -3409,28 +3425,30 @@ fn handle_document_diagnostic(
             state.extensions_registry.clone(),
         );
         let ext_diags = ide_extensions.diagnostics(cancel, file_id);
-        diagnostics.extend(ext_diags.into_iter().map(|d| lsp_types::Diagnostic {
-            range: d
-                .span
-                .map(|span| lsp_types::Range {
-                    start: offset_to_position_utf16(&text, span.start),
-                    end: offset_to_position_utf16(&text, span.end),
-                })
-                .unwrap_or_else(|| {
-                    lsp_types::Range::new(
-                        lsp_types::Position::new(0, 0),
-                        lsp_types::Position::new(0, 0),
-                    )
+        diagnostics.extend(ext_diags.into_iter().map(|d| {
+            lsp_types::Diagnostic {
+                range: d
+                    .span
+                    .map(|span| lsp_types::Range {
+                        start: offset_to_position_utf16(&text, span.start),
+                        end: offset_to_position_utf16(&text, span.end),
+                    })
+                    .unwrap_or_else(|| {
+                        lsp_types::Range::new(
+                            lsp_types::Position::new(0, 0),
+                            lsp_types::Position::new(0, 0),
+                        )
+                    }),
+                severity: Some(match d.severity {
+                    nova_ext::Severity::Error => lsp_types::DiagnosticSeverity::ERROR,
+                    nova_ext::Severity::Warning => lsp_types::DiagnosticSeverity::WARNING,
+                    nova_ext::Severity::Info => lsp_types::DiagnosticSeverity::INFORMATION,
                 }),
-            severity: Some(match d.severity {
-                nova_ext::Severity::Error => lsp_types::DiagnosticSeverity::ERROR,
-                nova_ext::Severity::Warning => lsp_types::DiagnosticSeverity::WARNING,
-                nova_ext::Severity::Info => lsp_types::DiagnosticSeverity::INFORMATION,
-            }),
-            code: Some(lsp_types::NumberOrString::String(d.code.to_string())),
-            source: Some("nova".into()),
-            message: d.message,
-            ..lsp_types::Diagnostic::default()
+                code: Some(lsp_types::NumberOrString::String(d.code.to_string())),
+                source: Some("nova".into()),
+                message: d.message,
+                ..lsp_types::Diagnostic::default()
+            }
         }));
 
         diagnostics
@@ -4781,7 +4799,11 @@ fn run_ai_generate_method_body(
         .as_ref()
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
 
-    send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Generate method body")?;
+    send_progress_begin(
+        rpc_out,
+        work_done_token.as_ref(),
+        "AI: Generate method body",
+    )?;
     send_progress_report(rpc_out, work_done_token.as_ref(), "Building context…", None)?;
     send_log_message(rpc_out, "AI: generating method body…")?;
     let ctx = build_context_request_from_args(
