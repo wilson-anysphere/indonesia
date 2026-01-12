@@ -6206,23 +6206,33 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             if !lhs_ty.is_errorish() && !rhs_ty.is_errorish() {
                                 let env_ro: &dyn TypeEnv = &*loader.store;
                                 let const_value = const_value_for_expr(self.body, *rhs);
-                                if assignment_conversion_with_const(
+                                match assignment_conversion_with_const(
                                     env_ro,
                                     &rhs_ty,
                                     &lhs_ty,
                                     const_value,
-                                )
-                                .is_none()
-                                {
-                                    let expected = format_type(env_ro, &lhs_ty);
-                                    let found = format_type(env_ro, &rhs_ty);
-                                    self.diagnostics.push(Diagnostic::error(
-                                        "type-mismatch",
-                                        format!(
-                                            "type mismatch: expected {expected}, found {found}"
-                                        ),
-                                        Some(self.body.exprs[*rhs].range()),
-                                    ));
+                                ) {
+                                    None => {
+                                        let expected = format_type(env_ro, &lhs_ty);
+                                        let found = format_type(env_ro, &rhs_ty);
+                                        self.diagnostics.push(Diagnostic::error(
+                                            "type-mismatch",
+                                            format!(
+                                                "type mismatch: expected {expected}, found {found}"
+                                            ),
+                                            Some(self.body.exprs[*rhs].range()),
+                                        ));
+                                    }
+                                    Some(conv) => {
+                                        for warning in conv.warnings {
+                                            if let TypeWarning::Unchecked(reason) = warning {
+                                                self.emit_unchecked_warning(
+                                                    reason,
+                                                    self.body.exprs[*rhs].range(),
+                                                );
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -6470,23 +6480,33 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             && !body_info.ty.is_errorish()
                         {
                             let env_ro: &dyn TypeEnv = &*loader.store;
-                            if assignment_conversion_with_const(
+                            match assignment_conversion_with_const(
                                 env_ro,
                                 &body_info.ty,
                                 &sam_return,
                                 const_value_for_expr(self.body, *expr_id),
-                            )
-                            .is_none()
-                            {
-                                let expected = format_type(env_ro, &sam_return);
-                                let found = format_type(env_ro, &body_info.ty);
-                                self.diagnostics.push(Diagnostic::error(
-                                    "return-mismatch",
-                                    format!(
-                                        "return type mismatch: expected {expected}, found {found}"
-                                    ),
-                                    Some(self.body.exprs[*expr_id].range()),
-                                ));
+                            ) {
+                                None => {
+                                    let expected = format_type(env_ro, &sam_return);
+                                    let found = format_type(env_ro, &body_info.ty);
+                                    self.diagnostics.push(Diagnostic::error(
+                                        "return-mismatch",
+                                        format!(
+                                            "return type mismatch: expected {expected}, found {found}"
+                                        ),
+                                        Some(self.body.exprs[*expr_id].range()),
+                                    ));
+                                }
+                                Some(conv) => {
+                                    for warning in conv.warnings {
+                                        if let TypeWarning::Unchecked(reason) = warning {
+                                            self.emit_unchecked_warning(
+                                                reason,
+                                                self.body.exprs[*expr_id].range(),
+                                            );
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
