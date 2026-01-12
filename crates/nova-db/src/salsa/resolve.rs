@@ -129,12 +129,30 @@ fn scope_graph(db: &dyn NovaResolve, file: FileId) -> Arc<nova_resolve::ItemTree
     let built = nova_resolve::build_scopes_for_item_tree(file, &tree);
 
     let result = Arc::new(built);
-    let approx_bytes = if db.file_exists(file) {
-        let text = db.file_content(file);
-        (text.len() as u64).saturating_mul(2)
-    } else {
-        0
-    };
+    // NOTE: This is a best-effort estimate used for memory pressure heuristics.
+    //
+    // Avoid depending on `file_content` here: scope graphs are derived from the
+    // file's structural HIR (`hir_item_tree`), and we want Salsa to early-cutoff
+    // and reuse `scope_graph` when only method bodies change.
+    let declared_items = (tree.items.len()
+        + tree.imports.len()
+        + tree.classes.len()
+        + tree.interfaces.len()
+        + tree.enums.len()
+        + tree.records.len()
+        + tree.annotations.len()
+        + tree.fields.len()
+        + tree.methods.len()
+        + tree.constructors.len()
+        + tree.initializers.len()) as u64;
+    let scope_count = 4u64 // universe + package + import + file
+        .saturating_add(result.class_scopes.len() as u64)
+        .saturating_add(result.method_scopes.len() as u64)
+        .saturating_add(result.constructor_scopes.len() as u64)
+        .saturating_add(result.initializer_scopes.len() as u64);
+    let approx_bytes = scope_count
+        .saturating_mul(256)
+        .saturating_add(declared_items.saturating_mul(64));
     db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ScopeGraph, approx_bytes);
     db.record_query_stat("scope_graph", start.elapsed());
     result
