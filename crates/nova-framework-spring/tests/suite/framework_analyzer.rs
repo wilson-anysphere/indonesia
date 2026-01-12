@@ -126,6 +126,41 @@ fn config_diagnostics_are_case_insensitive_for_application_properties() {
 }
 
 #[test]
+fn config_diagnostics_work_for_windows_style_paths_on_non_windows_hosts() {
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+    db.add_dependency(project, "org.springframework", "spring-context");
+
+    db.add_file_with_path_and_text(
+        project,
+        r"C:\workspace\SPRING-CONFIGURATION-METADATA.JSON",
+        r#"
+        {
+          "properties": [
+            { "name": "server.port", "type": "java.lang.Integer" }
+          ]
+        }
+        "#,
+    );
+
+    let config = db.add_file_with_path_and_text(
+        project,
+        r"C:\workspace\src\main\resources\application.properties",
+        "unknown.key=foo\n",
+    );
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(SpringAnalyzer::new()));
+
+    let diags = registry.framework_diagnostics(&db, config);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == SPRING_UNKNOWN_CONFIG_KEY
+            && d.message.contains("unknown.key")),
+        "expected SPRING_UNKNOWN_CONFIG_KEY for unknown.key; got {diags:?}"
+    );
+}
+
+#[test]
 fn value_placeholder_completion_includes_replace_span() {
     let mut db = MemoryDatabase::new();
     let project = db.add_project();

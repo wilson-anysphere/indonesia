@@ -672,7 +672,7 @@ fn looks_like_java_source(text: &str) -> bool {
 }
 
 fn is_application_properties(path: &Path) -> bool {
-    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    let name = file_name(path);
     starts_with_ignore_ascii_case(name, "application")
         && path
             .extension()
@@ -681,7 +681,7 @@ fn is_application_properties(path: &Path) -> bool {
 }
 
 fn is_application_yaml(path: &Path) -> bool {
-    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    let name = file_name(path);
     if !starts_with_ignore_ascii_case(name, "application") {
         return false;
     }
@@ -696,9 +696,7 @@ fn is_application_config_file(path: &Path) -> bool {
 }
 
 fn is_spring_metadata_file(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
-        return false;
-    };
+    let name = file_name(path);
 
     name.eq_ignore_ascii_case("spring-configuration-metadata.json")
         || name.eq_ignore_ascii_case("additional-spring-configuration-metadata.json")
@@ -708,6 +706,15 @@ fn starts_with_ignore_ascii_case(haystack: &str, prefix: &str) -> bool {
     haystack
         .get(..prefix.len())
         .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+}
+
+fn file_name(path: &Path) -> &str {
+    // `Path::file_name` uses host OS semantics. When running on Unix, a Windows-style
+    // path like `C:\foo\bar\application.properties` is treated as a single component,
+    // so `file_name` returns the full string. As a best-effort cross-platform fallback,
+    // also split on backslashes.
+    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    name.rsplit('\\').next().unwrap_or(name)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
