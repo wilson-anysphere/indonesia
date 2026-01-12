@@ -1,34 +1,17 @@
 #![cfg(feature = "embeddings")]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use nova_ai::{
     ContextBuilder, ContextRequest, EmbeddingSemanticSearch, HashEmbedder, PrivacyMode,
-    SemanticSearch,
+    SemanticSearch, VirtualWorkspace,
 };
-use nova_core::ProjectDatabase;
-
-#[derive(Debug)]
-struct MemDb(Vec<(PathBuf, String)>);
-
-impl ProjectDatabase for MemDb {
-    fn project_files(&self) -> Vec<PathBuf> {
-        self.0.iter().map(|(p, _)| p.clone()).collect()
-    }
-
-    fn file_text(&self, path: &Path) -> Option<String> {
-        self.0
-            .iter()
-            .find(|(p, _)| p == path)
-            .map(|(_, text)| text.clone())
-    }
-}
 
 #[test]
 fn embedding_search_ranks_most_relevant_method_first() {
-    let db = MemDb(vec![
+    let db = VirtualWorkspace::new([
         (
-            PathBuf::from("src/Hello.java"),
+            "src/Hello.java".to_string(),
             r#"
                 package com.example;
 
@@ -42,7 +25,7 @@ fn embedding_search_ranks_most_relevant_method_first() {
             .to_string(),
         ),
         (
-            PathBuf::from("src/Other.java"),
+            "src/Other.java".to_string(),
             r#"
                 public class Other {
                     public String goodbye() {
@@ -65,14 +48,14 @@ fn embedding_search_ranks_most_relevant_method_first() {
 
 #[test]
 fn context_builder_can_include_embedding_related_code() {
-    let db = MemDb(vec![
+    let db = VirtualWorkspace::new([
         (
-            PathBuf::from("src/Hello.java"),
+            "src/Hello.java".to_string(),
             "public class Hello { public String helloWorld() { return \"hello world\"; } }"
                 .to_string(),
         ),
         (
-            PathBuf::from("src/Other.java"),
+            "src/Other.java".to_string(),
             "public class Other { public String goodbye() { return \"goodbye\"; } }".to_string(),
         ),
     ]);

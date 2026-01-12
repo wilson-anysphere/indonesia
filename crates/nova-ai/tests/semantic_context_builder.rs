@@ -1,34 +1,17 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use nova_ai::{ContextRequest, PrivacyMode, SemanticContextBuilder};
+use nova_ai::{ContextRequest, PrivacyMode, SemanticContextBuilder, VirtualWorkspace};
 use nova_config::{AiConfig, AiEmbeddingsConfig, AiFeaturesConfig};
-use nova_core::ProjectDatabase;
 
-#[derive(Debug)]
-struct MemDb(Vec<(PathBuf, String)>);
-
-impl ProjectDatabase for MemDb {
-    fn project_files(&self) -> Vec<PathBuf> {
-        self.0.iter().map(|(p, _)| p.clone()).collect()
-    }
-
-    fn file_text(&self, path: &Path) -> Option<String> {
-        self.0
-            .iter()
-            .find(|(p, _)| p == path)
-            .map(|(_, text)| text.clone())
-    }
-}
-
-fn test_db() -> MemDb {
-    MemDb(vec![
+fn test_db() -> VirtualWorkspace {
+    VirtualWorkspace::new([
         (
-            PathBuf::from("src/Hello.java"),
+            "src/Hello.java".to_string(),
             "public class Hello { public String helloWorld() { return \"hello world\"; } }"
                 .to_string(),
         ),
         (
-            PathBuf::from("src/Other.java"),
+            "src/Other.java".to_string(),
             "public class Other { public String goodbye() { return \"goodbye\"; } }".to_string(),
         ),
     ])

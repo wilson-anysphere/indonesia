@@ -1,23 +1,6 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use nova_ai::{SemanticSearch, TrigramSemanticSearch};
-use nova_core::ProjectDatabase;
-
-#[derive(Debug)]
-struct MemDb(Vec<(PathBuf, String)>);
-
-impl ProjectDatabase for MemDb {
-    fn project_files(&self) -> Vec<PathBuf> {
-        self.0.iter().map(|(p, _)| p.clone()).collect()
-    }
-
-    fn file_text(&self, path: &Path) -> Option<String> {
-        self.0
-            .iter()
-            .find(|(p, _)| p == path)
-            .map(|(_, text)| text.clone())
-    }
-}
+use nova_ai::{SemanticSearch, TrigramSemanticSearch, VirtualWorkspace};
 
 #[test]
 fn trigram_index_file_then_search_returns_results() {
@@ -83,20 +66,20 @@ fn trigram_remove_file_removes_from_results() {
 
 #[test]
 fn trigram_index_project_matches_repeated_index_file() {
-    let db = MemDb(vec![
-        (PathBuf::from("src/a.txt"), "hello world".to_string()),
-        (
-            PathBuf::from("src/b.txt"),
-            "helicopter landing pad".to_string(),
-        ),
-    ]);
+    let files = vec![("src/a.txt", "hello world"), ("src/b.txt", "helicopter landing pad")];
+
+    let db = VirtualWorkspace::new(
+        files
+            .iter()
+            .map(|(path, text)| (path.to_string(), text.to_string())),
+    );
 
     let mut by_project = TrigramSemanticSearch::new();
     by_project.index_project(&db);
 
     let mut by_file = TrigramSemanticSearch::new();
-    for (path, text) in db.0 {
-        by_file.index_file(path, text);
+    for (path, text) in files {
+        by_file.index_file(PathBuf::from(path), text.to_string());
     }
 
     assert_eq!(by_project.search("hello"), by_file.search("hello"));

@@ -1,29 +1,12 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use nova_ai::semantic_search_from_config;
+use nova_ai::{semantic_search_from_config, VirtualWorkspace};
 use nova_config::{AiConfig, AiEmbeddingsConfig};
-use nova_core::ProjectDatabase;
-
-#[derive(Debug)]
-struct MemDb(Vec<(PathBuf, String)>);
-
-impl ProjectDatabase for MemDb {
-    fn project_files(&self) -> Vec<PathBuf> {
-        self.0.iter().map(|(p, _)| p.clone()).collect()
-    }
-
-    fn file_text(&self, path: &Path) -> Option<String> {
-        self.0
-            .iter()
-            .find(|(p, _)| p == path)
-            .map(|(_, text)| text.clone())
-    }
-}
 
 #[test]
 fn semantic_search_from_config_respects_feature_flag() {
-    let db = MemDb(vec![(
-        PathBuf::from("src/Hello.java"),
+    let db = VirtualWorkspace::new([(
+        "src/Hello.java".to_string(),
         r#"
             public class Hello {
                 public String helloWorld() {
@@ -64,7 +47,7 @@ fn semantic_search_from_config_respects_feature_flag() {
 fn semantic_search_from_config_disabled_returns_empty() {
     let cfg = AiConfig::default();
     let mut search = semantic_search_from_config(&cfg);
-    search.index_project(&MemDb(Vec::new()));
+    search.index_project(&VirtualWorkspace::new([]));
     assert!(search.search("hello world").is_empty());
 }
 
