@@ -2,6 +2,7 @@
 name = "nova-ide"
 version.workspace = true
 edition = "2021"
+autotests = false
 
 [dependencies]
 nova-ai = { path = "../nova-ai", optional = true }
@@ -54,6 +55,10 @@ path = "src/lib.rs"
 ra_salsa = { package = "ra_ap_salsa", version = "0.0.269" }
 criterion = "0.5"
 tempfile = "3"
+
+[[test]]
+name = "tests"
+path = "tests/tests.rs"
 
 [[bench]]
 name = "completion"
