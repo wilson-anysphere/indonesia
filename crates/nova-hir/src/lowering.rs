@@ -311,8 +311,7 @@ impl ItemTreeLower<'_> {
                     }
                     params
                 };
-                let throws =
-                    collect_direct_child_types_after_token(&node, SyntaxKind::ThrowsKw, SyntaxKind::Block);
+                let throws = collect_throws_clause_types(&node, SyntaxKind::Block);
                 let body = method
                     .body
                     .as_ref()
@@ -355,8 +354,7 @@ impl ItemTreeLower<'_> {
                     }
                     params
                 };
-                let throws =
-                    collect_direct_child_types_after_token(&node, SyntaxKind::ThrowsKw, SyntaxKind::Block);
+                let throws = collect_throws_clause_types(&node, SyntaxKind::Block);
                 let body = self.ast_id_for_range(SyntaxKind::Block, cons.body.range);
                 self.tree.constructors.insert(
                     ast_id,
@@ -699,6 +697,45 @@ fn collect_direct_child_types_after_token(
         .filter(|ty| ty.text_range().start() >= keyword_end && ty.text_range().end() <= end_start)
         .map(|ty| non_trivia_text(&ty))
         .collect()
+}
+
+fn collect_throws_clause_types(decl: &SyntaxNode, end_node_kind: SyntaxKind) -> Vec<String> {
+    let signature_end = decl
+        .children()
+        .find(|child| child.kind() == end_node_kind)
+        .map(|node| node.text_range().start())
+        .unwrap_or_else(|| decl.text_range().end());
+
+    let throws_clauses: Vec<_> = decl
+        .descendants()
+        .filter(|node| node.kind() == SyntaxKind::ThrowsClause)
+        .filter(|node| node.text_range().end() <= signature_end)
+        .collect();
+
+    // Prefer structured `ThrowsClause` nodes when present in the rowan tree.
+    if !throws_clauses.is_empty() {
+        let mut out = Vec::new();
+        for clause in throws_clauses {
+            for ty in clause.descendants().filter(|n| n.kind() == SyntaxKind::Type) {
+                // Only keep the outermost `Type` nodes within the throws clause. This avoids
+                // treating type arguments (e.g. `Foo<Bar>`) as separate thrown types.
+                let nested_in_type = ty
+                    .ancestors()
+                    .skip(1)
+                    .take_while(|a| a.kind() != SyntaxKind::ThrowsClause)
+                    .any(|a| a.kind() == SyntaxKind::Type);
+                if nested_in_type {
+                    continue;
+                }
+                out.push(non_trivia_text(&ty));
+            }
+        }
+        return out;
+    }
+
+    // Fallback for syntax trees that don't wrap `throws` in a `ThrowsClause` node: search for
+    // `Type` nodes that appear after the `throws` keyword.
+    collect_direct_child_types_after_token(decl, SyntaxKind::ThrowsKw, end_node_kind)
 }
 
 fn non_trivia_text(node: &SyntaxNode) -> String {
