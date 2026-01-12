@@ -11,6 +11,7 @@ use nova_ai_codegen::{
 };
 use nova_config::AiPrivacyConfig;
 use nova_core::{LineIndex, Position as CorePosition};
+use nova_db::InMemoryFileStore;
 use nova_ide::diagnostics::Diagnostic;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -85,6 +86,7 @@ impl<'a> AiCodeActionExecutor<'a> {
                     &file,
                     insert_range,
                     workspace,
+                    root_uri,
                     &self.privacy,
                 );
 
@@ -124,6 +126,7 @@ impl<'a> AiCodeActionExecutor<'a> {
                     &file,
                     insert_range,
                     workspace,
+                    root_uri,
                     &self.privacy,
                 );
 
@@ -188,11 +191,12 @@ fn build_insert_prompt(
     file: &str,
     insert_range: Range,
     workspace: &VirtualWorkspace,
+    root_uri: &Uri,
     privacy: &AiPrivacyConfig,
 ) -> String {
     let contents = workspace.get(file).unwrap_or("");
     let annotated = annotate_file_with_range_markers(contents, insert_range);
-    let context = build_prompt_context(contents, insert_range, privacy)
+    let context = build_prompt_context(root_uri, file, contents, insert_range, privacy)
         .map(|ctx| format!("\nExtracted context:\n{ctx}\n"))
         .unwrap_or_default();
 
@@ -228,7 +232,13 @@ fn annotate_file_with_range_markers(contents: &str, range: Range) -> String {
     out
 }
 
-fn build_prompt_context(contents: &str, range: Range, privacy: &AiPrivacyConfig) -> Option<String> {
+fn build_prompt_context(
+    root_uri: &Uri,
+    file: &str,
+    contents: &str,
+    range: Range,
+    privacy: &AiPrivacyConfig,
+) -> Option<String> {
     let (start, end) = lsp_range_to_offsets(contents, range)?;
     let selection = start..end;
 
@@ -242,7 +252,7 @@ fn build_prompt_context(contents: &str, range: Range, privacy: &AiPrivacyConfig)
         privacy_mode,
         /*include_doc_comments=*/ true,
     );
-    Some(builder.build(req).text)
+    Some(builder.build(enrich_context_request(root_uri, file, contents, range, req)).text)
 }
 
 fn lsp_range_to_offsets(contents: &str, range: Range) -> Option<(usize, usize)> {
@@ -256,6 +266,132 @@ fn lsp_range_to_offsets(contents: &str, range: Range) -> Option<(usize, usize)> 
         CorePosition::new(range.end.line, range.end.character),
     )?;
     Some((u32::from(start) as usize, u32::from(end) as usize))
+}
+
+fn enrich_context_request(
+    root_uri: &Uri,
+    file: &str,
+    contents: &str,
+    range: Range,
+    mut req: ContextRequest,
+) -> ContextRequest {
+    let Some(root_path) = nova_core::file_uri_to_path(root_uri.as_str()).ok() else {
+        return req;
+    };
+
+    let file_path = root_path.as_path().join(Path::new(file));
+    req.file_path = Some(file_path.display().to_string());
+    req.project_context = project_context_for_path(&file_path);
+    req.semantic_context = semantic_context_for_hover(&file_path, contents, range.start);
+
+    req
+}
+
+fn project_context_for_path(path: &Path) -> Option<nova_ai::context::ProjectContext> {
+    let root = nova_ide::framework_cache::project_root_for_path(path);
+    let config = nova_ide::framework_cache::project_config(&root)?;
+
+    let build_system = Some(format!("{:?}", config.build_system));
+    let java_version = Some(format!(
+        "source {} / target {}",
+        config.java.source.0, config.java.target.0
+    ));
+
+    let mut frameworks = Vec::new();
+    let deps = &config.dependencies;
+    if deps
+        .iter()
+        .any(|d| d.group_id.starts_with("org.springframework"))
+    {
+        frameworks.push("Spring".to_string());
+    }
+    if deps.iter().any(|d| {
+        d.group_id.contains("micronaut")
+            || d.artifact_id.contains("micronaut")
+            || d.group_id.starts_with("io.micronaut")
+    }) {
+        frameworks.push("Micronaut".to_string());
+    }
+    if deps.iter().any(|d| d.group_id.starts_with("io.quarkus")) {
+        frameworks.push("Quarkus".to_string());
+    }
+    if deps.iter().any(|d| {
+        d.group_id.contains("jakarta.persistence")
+            || d.group_id.contains("javax.persistence")
+            || d.artifact_id.contains("persistence")
+    }) {
+        frameworks.push("JPA".to_string());
+    }
+    if deps
+        .iter()
+        .any(|d| d.group_id == "org.projectlombok" || d.artifact_id == "lombok")
+    {
+        frameworks.push("Lombok".to_string());
+    }
+    if deps.iter().any(|d| {
+        d.group_id.starts_with("org.mapstruct") || d.artifact_id.contains("mapstruct")
+    }) {
+        frameworks.push("MapStruct".to_string());
+    }
+    if deps
+        .iter()
+        .any(|d| d.group_id == "com.google.dagger" || d.artifact_id.contains("dagger"))
+    {
+        frameworks.push("Dagger".to_string());
+    }
+
+    frameworks.sort();
+    frameworks.dedup();
+
+    let classpath = config
+        .classpath
+        .iter()
+        .chain(config.module_path.iter())
+        .map(|entry| entry.path.to_string_lossy().to_string())
+        .collect();
+
+    Some(nova_ai::context::ProjectContext {
+        build_system,
+        java_version,
+        frameworks,
+        classpath,
+    })
+}
+
+fn semantic_context_for_hover(path: &Path, text: &str, position: Position) -> Option<String> {
+    let mut db = InMemoryFileStore::new();
+    let file = db.file_id_for_path(path);
+    db.set_file_text(file, text.to_string());
+
+    let hover = nova_ide::hover(&db, file, position)?;
+    match hover.contents {
+        lsp_types::HoverContents::Markup(markup) => Some(markup.value),
+        lsp_types::HoverContents::Scalar(marked) => Some(match marked {
+            lsp_types::MarkedString::String(s) => s,
+            lsp_types::MarkedString::LanguageString(ls) => ls.value,
+        }),
+        lsp_types::HoverContents::Array(items) => {
+            let mut out = String::new();
+            for item in items {
+                match item {
+                    lsp_types::MarkedString::String(s) => {
+                        out.push_str(&s);
+                        out.push('\n');
+                    }
+                    lsp_types::MarkedString::LanguageString(ls) => {
+                        out.push_str(&ls.value);
+                        out.push('\n');
+                    }
+                }
+            }
+            let out = out.trim().to_string();
+            if out.is_empty() {
+                None
+            } else {
+                Some(out)
+            }
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -280,6 +416,7 @@ mod tests {
     use nova_ai::CodeEditPolicyError;
     use nova_ai::PatchSafetyConfig;
     use pretty_assertions::assert_eq;
+    use tempfile::TempDir;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Mutex,
@@ -358,6 +495,49 @@ mod tests {
                 },
             },
         }
+    }
+
+    #[test]
+    fn build_insert_prompt_includes_project_and_semantic_context() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = temp.path();
+        let src_dir = root.join("src");
+        std::fs::create_dir_all(&src_dir).expect("create src dir");
+
+        let file_path = src_dir.join("Main.java");
+        let file = "src/Main.java";
+        let text = r#"class Main { void run() { String s = "hi"; } }"#;
+        std::fs::write(&file_path, text).expect("write java file");
+
+        let root_uri: Uri = url::Url::from_file_path(root)
+            .expect("file url")
+            .to_string()
+            .parse()
+            .expect("uri");
+
+        let offset = text.find("s =").expect("variable occurrence");
+        let start = crate::text_pos::lsp_position(text, offset).expect("start pos");
+        let end = crate::text_pos::lsp_position(text, offset + 1).expect("end pos");
+        let range = Range { start, end };
+
+        let workspace = VirtualWorkspace::new([(file.to_string(), text.to_string())]);
+        let prompt = build_insert_prompt(
+            "Generate a Java method body for the marked range.",
+            file,
+            range,
+            &workspace,
+            &root_uri,
+            &AiPrivacyConfig::default(),
+        );
+
+        assert!(
+            prompt.contains("## Project context"),
+            "expected project context in prompt: {prompt}"
+        );
+        assert!(
+            prompt.contains("## Symbol/type info"),
+            "expected semantic context in prompt: {prompt}"
+        );
     }
 
     #[tokio::test]
