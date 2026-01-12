@@ -855,6 +855,18 @@ where
             let source_index = TextIndex::new(source);
             let selection = source_index.span_to_lsp_range(span);
 
+            let diagnostics = crate::code_intelligence::core_file_diagnostics(
+                self.db.as_ref().as_dyn_nova_db(),
+                file,
+                &cancel,
+            );
+            actions.extend(crate::quick_fix::quick_fixes_for_diagnostics(
+                &uri,
+                source,
+                span,
+                &diagnostics,
+            ));
+
             actions.extend(crate::refactor::extract_member_code_actions(
                 &uri, source, selection,
             ));

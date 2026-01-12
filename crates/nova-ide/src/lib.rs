@@ -22,6 +22,7 @@ pub mod java_semantics;
 pub mod semantics;
 
 pub mod code_intelligence;
+mod quick_fix;
 mod completion;
 mod file_navigation;
 mod jpa_intel;
