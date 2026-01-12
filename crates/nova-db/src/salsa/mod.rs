@@ -836,6 +836,52 @@ impl MemoryEvictor for SalsaMemoEvictor {
         MemoryCategory::QueryCache
     }
 
+    fn flush_to_disk(&self) -> std::io::Result<()> {
+        // Persistence should be strictly best-effort under memory pressure:
+        // - never panic
+        // - never block eviction on cache write failures
+        //
+        // Avoid even attempting persistence when writes are disabled or the
+        // cache directory is unavailable.
+        let can_write = {
+            let db = self.db.lock();
+            db.persistence.mode().allows_write() && db.persistence.cache_dir().is_some()
+        };
+        if !can_write {
+            return Ok(());
+        }
+
+        // Persist only "known" projects: projects that have `project_files`
+        // set in the tracked inputs.
+        let mut projects: Vec<ProjectId> = {
+            let inputs = self.inputs.lock();
+            inputs.project_files.keys().copied().collect()
+        };
+        projects.sort();
+        projects.dedup();
+
+        if projects.is_empty() {
+            return Ok(());
+        }
+
+        // Reuse the existing `Database::persist_project_indexes` helper by
+        // constructing a temporary wrapper around the shared db/input state.
+        let db = Database {
+            inner: self.db.clone(),
+            inputs: self.inputs.clone(),
+            memo_evictor: Arc::new(OnceLock::new()),
+            memo_footprint: self.footprint.clone(),
+        };
+
+        for project in projects {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = db.persist_project_indexes(project);
+            }));
+        }
+
+        Ok(())
+    }
+
     fn evict(&self, request: EvictionRequest) -> EvictionResult {
         let before = self.footprint.bytes();
         if before <= request.target_bytes {
@@ -2609,6 +2655,67 @@ class Foo {
         assert!(
             executions(&db.inner.lock(), "parse") > parse_exec_after_evict,
             "expected parse to re-execute after memo eviction"
+        );
+    }
+
+    #[test]
+    fn salsa_memo_evictor_flush_to_disk_persists_project_indexes() {
+        let tmp = TempDir::new().unwrap();
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+
+        let cache_root = tmp.path().join("cache");
+        std::fs::create_dir_all(&cache_root).unwrap();
+
+        let manager = MemoryManager::new(MemoryBudget::from_total(1));
+        let db = Database::new_with_persistence(
+            &project_root,
+            PersistenceConfig {
+                mode: crate::persistence::PersistenceMode::ReadWrite,
+                cache: CacheConfig {
+                    cache_root_override: Some(cache_root.clone()),
+                },
+            },
+        );
+        db.register_salsa_memo_evictor(&manager);
+
+        let project = ProjectId::from_raw(0);
+        let file = FileId::from_raw(1);
+        db.set_file_text(file, "class Foo { int x; }");
+        db.set_file_rel_path(file, Arc::new("src/Foo.java".to_string()));
+        db.set_project_files(project, Arc::new(vec![file]));
+
+        // Ensure we have some tracked usage so `MemoryManager::enforce()` enters High/Critical on
+        // platforms where RSS is unavailable.
+        db.with_snapshot(|snap| {
+            let _ = snap.parse(file);
+        });
+        assert!(
+            manager.report().usage.query_cache > 0,
+            "expected salsa memo tracker to report usage after parsing"
+        );
+
+        let cache_dir = nova_cache::CacheDir::new(&project_root, CacheConfig {
+            cache_root_override: Some(cache_root),
+        })
+        .unwrap();
+        let expected_shard_artifact = cache_dir
+            .indexes_dir()
+            .join("shards")
+            .join("0")
+            .join("symbols.idx");
+        assert!(
+            !expected_shard_artifact.exists(),
+            "expected index shards to be absent before flush"
+        );
+
+        // Under high/critical pressure, the memory manager should ask the salsa memo evictor to
+        // flush cold artifacts before evicting memoized results.
+        manager.enforce();
+
+        assert!(
+            expected_shard_artifact.exists(),
+            "expected salsa memo evictor flush_to_disk to persist project index shards"
         );
     }
 
