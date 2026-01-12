@@ -1,5 +1,5 @@
 ---
-source: crates/nova-config/tests/schema_snapshot.rs
+source: crates/nova-config/tests/suite/schema_snapshot.rs
 expression: schema
 ---
 {
