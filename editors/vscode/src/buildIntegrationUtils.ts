@@ -63,3 +63,43 @@ export function shouldRefreshBuildDiagnosticsOnStatusTransition(opts: {
   }
   return false;
 }
+
+export type NovaDiagnosticCounts = {
+  errors: number;
+  warnings: number;
+  info: number;
+};
+
+/**
+ * Best-effort diagnostic summary for build integration messaging.
+ *
+ * Unknown/missing severities are treated as "info" so the totals remain useful
+ * even if the server evolves.
+ */
+export function summarizeNovaDiagnostics(
+  diagnostics: readonly { severity?: unknown }[] | undefined | null,
+): NovaDiagnosticCounts {
+  let errors = 0;
+  let warnings = 0;
+  let info = 0;
+
+  for (const diagnostic of diagnostics ?? []) {
+    switch (diagnostic.severity) {
+      case 'error':
+        errors += 1;
+        break;
+      case 'warning':
+        warnings += 1;
+        break;
+      case 'information':
+      case 'hint':
+        info += 1;
+        break;
+      default:
+        info += 1;
+        break;
+    }
+  }
+
+  return { errors, warnings, info };
+}

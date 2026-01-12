@@ -4,6 +4,7 @@ import {
   groupByFilePath,
   isBazelTargetRequiredMessage,
   shouldRefreshBuildDiagnosticsOnStatusTransition,
+  summarizeNovaDiagnostics,
   type NovaBuildStatus,
 } from './buildIntegrationUtils';
 import { resolvePossiblyRelativePath } from './pathUtils';
@@ -458,7 +459,7 @@ export function registerNovaBuildIntegration(
           const msg = formatUnsupportedNovaMethodMessage('nova/build/diagnostics');
           state.diagnosticsSupported = false;
           if (silent) {
-            output.appendLine(msg);
+            buildOutput.appendLine(msg);
           } else {
             void vscode.window.showErrorMessage(msg);
           }
@@ -467,7 +468,7 @@ export function registerNovaBuildIntegration(
 
         const message = formatError(err);
         if (silent) {
-          output.appendLine(`Nova: failed to fetch build diagnostics for ${projectRoot}: ${message}`);
+          buildOutput.appendLine(`Nova: failed to fetch build diagnostics for ${projectRoot}: ${message}`);
         } else {
           void vscode.window.showErrorMessage(`Nova: failed to fetch build diagnostics: ${message}`);
         }
@@ -517,7 +518,7 @@ export function registerNovaBuildIntegration(
         if (!silent) {
           void vscode.window.showErrorMessage('Nova: Missing projectRoot for build diagnostics refresh.');
         } else {
-          output.appendLine('Nova: missing projectRoot for build diagnostics refresh.');
+          buildOutput.appendLine('Nova: missing projectRoot for build diagnostics refresh.');
         }
         return;
       }
@@ -529,7 +530,7 @@ export function registerNovaBuildIntegration(
         if (!silent) {
           void vscode.window.showErrorMessage(`Nova: Workspace folder not found for ${projectRoot}`);
         } else {
-          output.appendLine(`Nova: workspace folder not found for build diagnostics refresh (${projectRoot})`);
+          buildOutput.appendLine(`Nova: workspace folder not found for build diagnostics refresh (${projectRoot})`);
         }
         return;
       }
@@ -774,17 +775,46 @@ export function registerNovaBuildIntegration(
         const projectPath = selector?.projectPath;
         let target: string | undefined = selector?.target;
 
-        buildOutput.appendLine('');
-        buildOutput.appendLine(`=== Nova build (${new Date().toISOString()}) ===`);
-        buildOutput.appendLine(`Workspace: ${folder.name} (${folder.uri.fsPath})`);
-        if (projectRoot !== folder.uri.fsPath) {
-          buildOutput.appendLine(`Project root: ${projectRoot}`);
-        }
-        buildOutput.appendLine(
-          `Invocation params: buildTool=${buildTool} module=${module ?? 'null'} projectPath=${projectPath ?? 'null'} target=${target ?? 'null'}`,
-        );
+        const startedAtIso = new Date().toISOString();
+        let finishedLogged = false;
 
-        const outcome = await vscode.window.withProgress(
+        const logBuildFinished = (): void => {
+          if (finishedLogged) {
+            return;
+          }
+          finishedLogged = true;
+          buildOutput.appendLine(`=== Nova Build finished (${new Date().toISOString()}) ===`);
+        };
+
+        buildOutput.appendLine('');
+        buildOutput.appendLine(`=== Nova Build started (${startedAtIso}) ===`);
+        buildOutput.appendLine(`workspaceFolder: ${folder.name} (${folder.uri.fsPath})`);
+        buildOutput.appendLine(`projectRoot: ${projectRoot}`);
+        if (module) {
+          buildOutput.appendLine(`module: ${module}`);
+        }
+        if (projectPath) {
+          buildOutput.appendLine(`projectPath: ${projectPath}`);
+        }
+        if (target) {
+          buildOutput.appendLine(`target: ${target}`);
+        }
+        buildOutput.appendLine(`buildTool: ${buildTool}`);
+
+        type BuildOutcome =
+          | { kind: 'cancelled' }
+          | { kind: 'error'; message: string }
+          | {
+              kind: 'completed';
+              status?: NovaBuildStatus;
+              lastError?: string;
+              timedOut: boolean;
+              diagnosticCounts: { errors: number; warnings: number; info: number };
+              diagnosticsTotal: number;
+              diagnosticsAvailable: boolean;
+            };
+
+        const outcome = await vscode.window.withProgress<BuildOutcome>(
           {
             location: vscode.ProgressLocation.Notification,
             title: 'Nova: Building…',
@@ -809,24 +839,32 @@ export function registerNovaBuildIntegration(
                 }, { token });
                 buildProjectResponse = response as NovaBuildProjectResponse | undefined;
                 if (typeof buildProjectResponse === 'undefined') {
-                  return undefined;
+                  buildOutput.appendLine('nova/buildProject returned undefined.');
+                  logBuildFinished();
+                  return { kind: 'error', message: 'nova/buildProject returned undefined.' };
                 }
               } catch (err) {
                 if (token.isCancellationRequested || isRequestCancelledError(err)) {
-                  return { cancelled: true as const };
+                  logBuildFinished();
+                  return { kind: 'cancelled' };
                 }
                 if (isMethodNotFoundError(err)) {
-                  void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage('nova/buildProject'));
-                  return undefined;
+                  const msg = formatUnsupportedNovaMethodMessage('nova/buildProject');
+                  buildOutput.appendLine(msg);
+                  logBuildFinished();
+                  return { kind: 'error', message: msg };
                 }
 
                 const message = formatError(err);
                 if (buildTool === 'auto' && !target && !module && !projectPath && isBazelTargetRequiredMessage(message)) {
                   target = await promptForBazelTarget(folder);
                   if (!target) {
-                    return undefined;
+                    buildOutput.appendLine('Build cancelled (no Bazel target selected).');
+                    logBuildFinished();
+                    return { kind: 'cancelled' };
                   }
 
+                  buildOutput.appendLine(`target: ${target}`);
                   const response = await request('nova/buildProject', {
                     projectRoot,
                     buildTool,
@@ -836,7 +874,9 @@ export function registerNovaBuildIntegration(
                   }, { token });
                   buildProjectResponse = response as NovaBuildProjectResponse | undefined;
                   if (typeof buildProjectResponse === 'undefined') {
-                    return undefined;
+                    buildOutput.appendLine('nova/buildProject returned undefined.');
+                    logBuildFinished();
+                    return { kind: 'error', message: 'nova/buildProject returned undefined.' };
                   }
                 } else {
                   throw err;
@@ -873,69 +913,130 @@ export function registerNovaBuildIntegration(
               }
 
               if (token.isCancellationRequested) {
-                return { cancelled: true as const };
+                logBuildFinished();
+                return { kind: 'cancelled' };
               }
 
-                if (lastStatusResult?.status === 'building') {
-                  buildOutput.appendLine('Build status polling timed out before completion.');
-                }
+              const timedOut = lastStatusResult?.status === 'building';
+              if (timedOut) {
+                buildOutput.appendLine('Build status polling timed out before completion.');
+              }
 
-                // `nova.buildProject` explicitly refreshes diagnostics; clear any pending auto-refresh
-                // request that may have been queued while the command was running.
-                workspaceState.pendingDiagnosticsRefreshAfterBuildCommand = false;
-                const diagnostics = await refreshBuildDiagnostics(folder, target ? { target, token } : { token });
-                const diagnosticList = diagnostics?.diagnostics ?? [];
-                const errors = diagnosticList.filter((d) => d.severity === 'error').length;
-                const warnings = diagnosticList.filter((d) => d.severity === 'warning').length;
+              // `nova.buildProject` explicitly refreshes diagnostics; clear any pending auto-refresh
+              // request that may have been queued while the command was running.
+              workspaceState.pendingDiagnosticsRefreshAfterBuildCommand = false;
+              const diagnostics = await refreshBuildDiagnostics(folder, target ? { target, silent: true, token } : { silent: true, token });
+              const diagnosticList = diagnostics?.diagnostics ?? [];
+              const diagnosticCounts = summarizeNovaDiagnostics(diagnosticList);
 
-                buildOutput.appendLine(`diagnostics summary: errors=${errors} warnings=${warnings} total=${diagnosticList.length}`);
-                if (diagnostics?.error) {
-                  buildOutput.appendLine(`build/diagnostics error: ${diagnostics.error}`);
-                }
+              buildOutput.appendLine(
+                `final status: ${lastStatusResult?.status ?? 'unknown'}${
+                  lastStatusResult?.lastError ? ` (lastError=${lastStatusResult.lastError})` : ''
+                }`,
+              );
+              buildOutput.appendLine(
+                `diagnostics summary: errors=${diagnosticCounts.errors} warnings=${diagnosticCounts.warnings} info=${diagnosticCounts.info} total=${diagnosticList.length}`,
+              );
+              if (diagnostics?.error) {
+                buildOutput.appendLine(`build/diagnostics error: ${diagnostics.error}`);
+              }
 
-                if (token.isCancellationRequested) {
-                  return { cancelled: true as const };
-                }
+              if (token.isCancellationRequested) {
+                logBuildFinished();
+                return { kind: 'cancelled' };
+              }
 
-                return {
-                  cancelled: false as const,
-                  status: lastStatusResult?.status,
-                  diagnostics,
-                  errors,
-                  warnings,
-                };
+              logBuildFinished();
+              return {
+                kind: 'completed',
+                status: lastStatusResult?.status,
+                lastError: lastStatusResult?.lastError ?? undefined,
+                timedOut,
+                diagnosticCounts,
+                diagnosticsTotal: diagnosticList.length,
+                diagnosticsAvailable: Boolean(diagnostics),
+              };
             } catch (err) {
               if (token.isCancellationRequested || isRequestCancelledError(err)) {
-                return { cancelled: true as const };
+                logBuildFinished();
+                return { kind: 'cancelled' };
               }
               const message = formatError(err);
               buildOutput.appendLine(`Build failed: ${message}`);
-              void vscode.window.showErrorMessage(`Nova: build failed: ${message}`);
-              return undefined;
+              logBuildFinished();
+              return { kind: 'error', message };
             }
           },
         );
 
-        if (!outcome || outcome.cancelled) {
+        if (!outcome || outcome.kind === 'cancelled') {
+          return;
+        }
+
+        const SHOW_PROBLEMS = 'Show Problems';
+        const SHOW_BUILD_LOG = 'Show Build Log';
+
+        const showProblems = async (): Promise<void> => {
+          await vscode.commands.executeCommand('workbench.actions.view.problems');
+        };
+
+        const showBuildLog = (): void => {
+          buildOutput.show(true);
+        };
+
+        if (outcome.kind === 'error') {
+          // Only auto-reveal the output channel when something went wrong.
+          showBuildLog();
+          const msg = outcome.message.startsWith('Nova:') ? outcome.message : `Nova: build failed: ${outcome.message}`;
+          const picked = await vscode.window.showErrorMessage(msg, SHOW_PROBLEMS, SHOW_BUILD_LOG);
+          if (picked === SHOW_PROBLEMS) {
+            await showProblems();
+          } else if (picked === SHOW_BUILD_LOG) {
+            showBuildLog();
+          }
           return;
         }
 
         const status = outcome.status;
-        const diagnostics = outcome.diagnostics?.diagnostics ?? [];
-        const errors = outcome.errors ?? 0;
+        const counts = outcome.diagnosticCounts;
+        const hasErrors = status === 'failed' || counts.errors > 0;
 
-        if (status === 'idle' && diagnostics.length === 0) {
-          void vscode.window.showInformationMessage('Nova: Build succeeded');
+        if (hasErrors) {
+          // Only auto-reveal the output channel when something went wrong.
+          showBuildLog();
+          const msg =
+            status === 'failed'
+              ? 'Nova: build failed.'
+              : `Nova: build completed with ${counts.errors} error${counts.errors === 1 ? '' : 's'}.`;
+          const picked = await vscode.window.showErrorMessage(msg, SHOW_PROBLEMS, SHOW_BUILD_LOG);
+          if (picked === SHOW_PROBLEMS) {
+            await showProblems();
+          } else if (picked === SHOW_BUILD_LOG) {
+            showBuildLog();
+          }
           return;
         }
 
-        if (status === 'failed' || errors > 0) {
-          const choice = await vscode.window.showErrorMessage('Nova: Build failed', 'Show Problems', 'Show Build Log');
-          if (choice === 'Show Problems') {
-            await vscode.commands.executeCommand('workbench.actions.view.problems');
-          } else if (choice === 'Show Build Log') {
-            buildOutput.show(true);
+        if (outcome.timedOut) {
+          const picked = await vscode.window.showWarningMessage(
+            'Nova: build status polling timed out; check the Problems view or the build log.',
+            SHOW_PROBLEMS,
+            SHOW_BUILD_LOG,
+          );
+          if (picked === SHOW_PROBLEMS) {
+            await showProblems();
+          } else if (picked === SHOW_BUILD_LOG) {
+            showBuildLog();
           }
+          return;
+        }
+
+        const successMessage = outcome.diagnosticsAvailable
+          ? 'Nova: build succeeded.'
+          : 'Nova: build succeeded (diagnostics unavailable).';
+        const picked = await vscode.window.showInformationMessage(successMessage, SHOW_BUILD_LOG);
+        if (picked === SHOW_BUILD_LOG) {
+          showBuildLog();
         }
       } finally {
         workspaceState.buildCommandInFlight = false;

@@ -73,7 +73,10 @@ describe('buildIntegration refreshBuildDiagnostics', () => {
         return false;
       }
       const receiver = unwrapExpression(expr.expression);
-      return ts.isIdentifier(receiver) && receiver.text === 'output';
+      // Build integration may log to the main extension output channel (`output`) or the dedicated
+      // build output channel (`buildOutput`). Both are acceptable as long as we avoid popups when
+      // refresh is silent.
+      return ts.isIdentifier(receiver) && (receiver.text === 'output' || receiver.text === 'buildOutput');
     };
 
     const containsCall = (node: ts.Node, predicate: (node: ts.Node) => boolean): boolean => {

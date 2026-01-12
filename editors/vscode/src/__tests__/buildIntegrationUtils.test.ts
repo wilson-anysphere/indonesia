@@ -5,6 +5,7 @@ import {
   groupByFilePath,
   isBazelTargetRequiredMessage,
   shouldRefreshBuildDiagnosticsOnStatusTransition,
+  summarizeNovaDiagnostics,
 } from '../buildIntegrationUtils';
 
 describe('buildIntegrationUtils', () => {
@@ -46,5 +47,20 @@ describe('buildIntegrationUtils', () => {
     // Best-effort: if we missed earlier polling state, refresh once when we first see a failure.
     expect(shouldRefreshBuildDiagnosticsOnStatusTransition({ prev: undefined, next: 'failed' })).toBe(true);
     expect(shouldRefreshBuildDiagnosticsOnStatusTransition({ prev: undefined, next: 'idle' })).toBe(false);
+  });
+
+  it('summarizes diagnostics by severity', () => {
+    expect(
+      summarizeNovaDiagnostics([
+        { severity: 'error' },
+        { severity: 'warning' },
+        { severity: 'information' },
+        { severity: 'hint' },
+      ]),
+    ).toEqual({ errors: 1, warnings: 1, info: 2 });
+
+    // Unknown severities should still be counted (as info) rather than dropped.
+    expect(summarizeNovaDiagnostics([{ severity: 'unknown' }])).toEqual({ errors: 0, warnings: 0, info: 1 });
+    expect(summarizeNovaDiagnostics(undefined)).toEqual({ errors: 0, warnings: 0, info: 0 });
   });
 });
