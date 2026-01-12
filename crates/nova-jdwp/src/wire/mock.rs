@@ -2139,8 +2139,8 @@ async fn handle_packet(
                         (0, b'I') => JdwpValue::Int(42),
                         // Slot 0 is `int x` in `Method.VariableTable`, but is also used for a
                         // reference-typed local (`List<String> list`) in the mock's generic variable
-                        // table. Ensure generic locals don't decode to `void` so stream-eval /
-                        // compile+inject paths can be tested without a real JVM.
+                        // table. Use a concrete `ArrayList` sample object so stream-debug can
+                        // inspect it without requiring a real JVM.
                         (0, _) => JdwpValue::Object {
                             tag: b'L',
                             id: SAMPLE_ARRAYLIST_OBJECT_ID,
