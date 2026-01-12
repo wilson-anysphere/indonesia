@@ -393,6 +393,8 @@ may still validate and be used, but can be outdated. Re-run Gradle extraction to
 
 The snapshot handoff has cross-crate tests that exercise both sides of the contract:
 
+- schema/types: `crates/nova-build-model/tests/gradle_snapshot.rs` (locks down JSON field names and
+  defaulting behavior for forward compatibility)
 - writer: `crates/nova-build/tests/suite/gradle_snapshot.rs` (asserts `.nova/queries/gradle.json` is
   created and contains expected fields after Gradle config extraction)
 - reader: `crates/nova-project/tests/cases/gradle_snapshot.rs` (asserts `nova-project` consumes a
