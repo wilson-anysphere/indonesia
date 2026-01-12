@@ -15,15 +15,17 @@
 
 use nova_apt::discover_generated_source_roots;
 use nova_core::ProjectId;
-use nova_framework::{Database, FrameworkAnalyzer, VirtualMember};
+use nova_framework::{CompletionContext, Database, FrameworkAnalyzer, VirtualMember};
 use nova_framework_parse::{
     annotation_string_value_span, clean_type, collect_annotations, find_named_child, node_text,
     parse_java, visit_nodes, ParsedAnnotation,
 };
-use nova_types::{ClassId, Diagnostic, Span};
+use nova_types::{ClassId, CompletionItem, Diagnostic, Span};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use tree_sitter::Node;
+
+mod workspace;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComponentModel {
@@ -57,6 +59,9 @@ pub struct NavigationTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PropertyMappingModel {
     pub source: Option<String>,
+    /// Byte span of the source string literal *value* (without quotes) inside the
+    /// mapper source file.
+    pub source_span: Option<Span>,
     pub target: String,
     /// Byte span of the target string literal *value* (without quotes) inside the
     /// mapper source file.
@@ -121,11 +126,15 @@ pub struct AnalysisResult {
 /// MapStruct does not currently synthesize virtual members; it primarily
 /// provides diagnostics + navigation into generated sources. Those features are
 /// exposed via the free functions in this crate.
-pub struct MapStructAnalyzer;
+pub struct MapStructAnalyzer {
+    workspace: workspace::WorkspaceCache,
+}
 
 impl MapStructAnalyzer {
     pub fn new() -> Self {
-        Self
+        Self {
+            workspace: workspace::WorkspaceCache::new(),
+        }
     }
 }
 
@@ -152,6 +161,85 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
 
     fn virtual_members(&self, _db: &dyn Database, _class: ClassId) -> Vec<VirtualMember> {
         Vec::new()
+    }
+
+    fn diagnostics(&self, db: &dyn Database, file: nova_vfs::FileId) -> Vec<Diagnostic> {
+        let Some(path) = db.file_path(file) else {
+            return Vec::new();
+        };
+        if path.extension().and_then(|e| e.to_str()) != Some("java") {
+            return Vec::new();
+        }
+        if db.file_text(file).is_none() {
+            return Vec::new();
+        }
+
+        let project = db.project_of_file(file);
+        let workspace = self.workspace.workspace(db, project);
+        workspace.diagnostics_for_file(path)
+    }
+
+    fn completions(&self, db: &dyn Database, ctx: &CompletionContext) -> Vec<CompletionItem> {
+        let Some(path) = db.file_path(ctx.file) else {
+            return Vec::new();
+        };
+        if path.extension().and_then(|e| e.to_str()) != Some("java") {
+            return Vec::new();
+        }
+        let Some(text) = db.file_text(ctx.file) else {
+            return Vec::new();
+        };
+        if ctx.offset > text.len() {
+            return Vec::new();
+        }
+
+        let workspace = self.workspace.workspace(db, ctx.project);
+        let mut items = Vec::new();
+
+        // Find the `@Mapping(...)` string literal value under the cursor, then offer
+        // property name completions for the corresponding source/target type.
+        for mapper in workspace
+            .analysis
+            .mappers
+            .iter()
+            .filter(|m| m.file.as_path() == path)
+        {
+            for method in &mapper.methods {
+                for mapping in &method.mappings {
+                    if span_contains_inclusive(mapping.target_span, ctx.offset) {
+                        items.extend(mapping_property_completions(
+                            db,
+                            workspace.as_ref(),
+                            text,
+                            ctx.offset,
+                            mapping.target_span,
+                            &method.target_type,
+                        ));
+                        if !items.is_empty() {
+                            return items;
+                        }
+                    }
+
+                    if let Some(span) = mapping.source_span {
+                        if span_contains_inclusive(span, ctx.offset) {
+                            items.extend(mapping_property_completions(
+                                db,
+                                workspace.as_ref(),
+                                text,
+                                ctx.offset,
+                                span,
+                                &method.source_type,
+                            ));
+                            if !items.is_empty() {
+                                return items;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        items
     }
 }
 
@@ -323,6 +411,49 @@ fn span_contains(span: Span, offset: usize) -> bool {
     span.start <= offset && offset < span.end
 }
 
+fn span_contains_inclusive(span: Span, offset: usize) -> bool {
+    span.start <= offset && offset <= span.end
+}
+
+fn mapping_property_completions(
+    db: &dyn Database,
+    workspace: &workspace::MapStructWorkspace,
+    file_text: &str,
+    offset: usize,
+    value_span: Span,
+    ty: &JavaType,
+) -> Vec<CompletionItem> {
+    let Some(props) = workspace.properties_for_type(db, ty) else {
+        return Vec::new();
+    };
+
+    let cursor = offset.min(value_span.end).min(file_text.len());
+    if cursor < value_span.start || value_span.start > file_text.len() {
+        return Vec::new();
+    }
+
+    // Compute the current segment prefix within the string literal value.
+    let before_cursor = file_text
+        .get(value_span.start..cursor)
+        .unwrap_or_default();
+    let segment_start_rel = before_cursor.rfind('.').map(|idx| idx + 1).unwrap_or(0);
+    let segment_start = value_span.start + segment_start_rel;
+    let prefix = file_text.get(segment_start..cursor).unwrap_or_default();
+
+    let replace_span = Span::new(segment_start, cursor);
+    let mut items: Vec<CompletionItem> = props
+        .iter()
+        .filter(|name| name.starts_with(prefix))
+        .map(|name| CompletionItem {
+            label: name.clone(),
+            detail: None,
+            replace_span: Some(replace_span),
+        })
+        .collect();
+    items.sort_by(|a, b| a.label.cmp(&b.label));
+    items
+}
+
 fn source_roots(project_root: &Path) -> Vec<PathBuf> {
     let candidates = ["src/main/java", "src/test/java", "src"];
     let mut roots = candidates
@@ -381,15 +512,29 @@ fn discover_mappers_in_source(
         parse_java(source).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let package = package_of_source(tree.root_node(), source);
 
+    Ok(discover_mappers_in_tree(
+        file,
+        source,
+        tree.root_node(),
+        package.as_deref(),
+    ))
+}
+
+fn discover_mappers_in_tree(
+    file: &Path,
+    source: &str,
+    root: Node<'_>,
+    default_package: Option<&str>,
+) -> Vec<MapperModel> {
     let mut out = Vec::new();
-    visit_nodes(tree.root_node(), &mut |node| {
+    visit_nodes(root, &mut |node| {
         if node.kind() == "interface_declaration" || node.kind() == "class_declaration" {
-            if let Some(mapper) = parse_mapper_decl(file, source, node, package.as_deref()) {
+            if let Some(mapper) = parse_mapper_decl(file, source, node, default_package) {
                 out.push(mapper);
             }
         }
     });
-    Ok(out)
+    out
 }
 
 fn package_of_source(root: Node<'_>, source: &str) -> Option<String> {
@@ -680,9 +825,13 @@ fn parse_formal_parameters(
 
 fn parse_mapping_annotation(annotation: &ParsedAnnotation) -> Option<PropertyMappingModel> {
     let (target, target_span) = annotation_string_value_span(annotation, "target")?;
-    let source = annotation.args.get("source").cloned();
+    let (source, source_span) = match annotation_string_value_span(annotation, "source") {
+        Some((value, span)) => (Some(value), Some(span)),
+        None => (annotation.args.get("source").cloned(), None),
+    };
     Some(PropertyMappingModel {
         source,
+        source_span,
         target,
         target_span,
     })

@@ -3771,6 +3771,7 @@ dependencies = [
  "nova-framework-parse",
  "nova-hir",
  "nova-types",
+ "nova-vfs",
  "tree-sitter",
 ]
 
