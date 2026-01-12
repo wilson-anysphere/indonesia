@@ -228,6 +228,16 @@ impl JdwpClient {
         command: u8,
         payload: Vec<u8>,
     ) -> Result<Vec<u8>> {
+        let length = HEADER_LEN
+            .checked_add(payload.len())
+            .ok_or_else(|| JdwpError::Protocol("packet too large".to_string()))?;
+        if length > crate::MAX_JDWP_PACKET_BYTES {
+            return Err(JdwpError::Protocol(format!(
+                "packet too large ({length} bytes, max {})",
+                crate::MAX_JDWP_PACKET_BYTES
+            )));
+        }
+
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         let mut pending_guard = PendingGuard::new(self.inner.clone(), id);

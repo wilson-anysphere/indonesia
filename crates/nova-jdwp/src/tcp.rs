@@ -96,6 +96,12 @@ impl TcpJdwpClient {
         let length = crate::JDWP_HEADER_LEN
             .checked_add(data.len())
             .ok_or_else(|| JdwpError::Protocol("packet too large".to_string()))?;
+        if length > crate::MAX_JDWP_PACKET_BYTES {
+            return Err(JdwpError::Protocol(format!(
+                "packet too large ({length} bytes, max {})",
+                crate::MAX_JDWP_PACKET_BYTES
+            )));
+        }
 
         let mut buf = Vec::with_capacity(length);
         buf.extend_from_slice(&(length as u32).to_be_bytes());
