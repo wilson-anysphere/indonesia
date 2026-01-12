@@ -1028,6 +1028,32 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn watch_event_paths_is_empty_for_rescan() {
+        let event = WatchEvent::Rescan;
+        let paths: Vec<VfsPath> = event.paths().cloned().collect();
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn watch_event_paths_yields_all_paths_for_changes() {
+        let a = VfsPath::local("/tmp/A.java");
+        let b = VfsPath::local("/tmp/B.java");
+
+        let event = WatchEvent::Changes {
+            changes: vec![
+                FileChange::Created { path: a.clone() },
+                FileChange::Moved {
+                    from: a.clone(),
+                    to: b.clone(),
+                },
+            ],
+        };
+
+        let paths: Vec<VfsPath> = event.paths().cloned().collect();
+        assert_eq!(paths, vec![a.clone(), a, b]);
+    }
+
+    #[test]
     fn manual_watcher_tracks_roots_and_delivers_events() {
         let tmp = tempfile::tempdir().unwrap();
         let root_a = tmp.path().join("a");
