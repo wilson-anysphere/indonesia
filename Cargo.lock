@@ -4308,6 +4308,7 @@ dependencies = [
 name = "nova-vfs"
 version = "0.1.0"
 dependencies = [
+ "lru",
  "lsp-types",
  "nova-archive",
  "nova-core",

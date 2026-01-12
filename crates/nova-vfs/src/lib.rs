@@ -16,6 +16,8 @@ mod open_documents;
 mod overlay_fs;
 mod path;
 mod vfs;
+mod virtual_documents;
+mod virtual_documents_fs;
 mod watch;
 
 pub use archive::{ArchiveKind, ArchivePath, ArchiveReader, StubArchiveReader};
@@ -29,4 +31,6 @@ pub use open_documents::OpenDocuments;
 pub use overlay_fs::OverlayFs;
 pub use path::VfsPath;
 pub use vfs::Vfs;
+pub use virtual_documents::VirtualDocumentStore;
+pub use virtual_documents_fs::VirtualDocumentsFs;
 pub use watch::{FileWatcher, WatchEvent};

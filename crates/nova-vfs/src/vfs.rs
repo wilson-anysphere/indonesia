@@ -10,28 +10,40 @@ use crate::fs::FileSystem;
 use crate::open_documents::OpenDocuments;
 use crate::overlay_fs::OverlayFs;
 use crate::path::VfsPath;
+use crate::virtual_documents::VirtualDocumentStore;
+use crate::virtual_documents_fs::VirtualDocumentsFs;
 
 /// High-level VFS facade combining:
 /// - a base `FileSystem` (usually `LocalFs`)
 /// - an in-memory overlay for open documents (`OverlayFs`)
+/// - a bounded in-memory store for virtual documents (`VirtualDocumentStore`)
 /// - stable `FileId` allocation (`FileIdRegistry`)
 #[derive(Debug, Clone)]
 pub struct Vfs<F: FileSystem> {
-    fs: OverlayFs<F>,
+    fs: OverlayFs<VirtualDocumentsFs<F>>,
     ids: Arc<Mutex<FileIdRegistry>>,
     open_docs: Arc<OpenDocuments>,
+    virtual_documents: VirtualDocumentStore,
 }
 
 impl<F: FileSystem> Vfs<F> {
     pub fn new(base: F) -> Self {
+        // Default budget for cached virtual documents (decompiled sources, etc).
+        //
+        // This store is process-local and is bounded via LRU eviction, so this value is primarily
+        // about keeping enough recent virtual docs resident without unbounded memory growth.
+        const DEFAULT_VIRTUAL_DOCUMENT_BUDGET_BYTES: usize = 64 * 1024 * 1024;
+        let virtual_documents = VirtualDocumentStore::new(DEFAULT_VIRTUAL_DOCUMENT_BUDGET_BYTES);
+        let base = VirtualDocumentsFs::new(base, virtual_documents.clone());
         Self {
             fs: OverlayFs::new(base),
             ids: Arc::new(Mutex::new(FileIdRegistry::new())),
             open_docs: Arc::new(OpenDocuments::default()),
+            virtual_documents,
         }
     }
 
-    pub fn overlay(&self) -> &OverlayFs<F> {
+    pub fn overlay(&self) -> &OverlayFs<VirtualDocumentsFs<F>> {
         &self.fs
     }
 
@@ -111,6 +123,14 @@ impl<F: FileSystem> Vfs<F> {
         self.fs.open(path, text, version);
         self.open_docs.open(id);
         id
+    }
+
+    /// Stores a virtual document (e.g. a decompiled source file) for later reads through the VFS.
+    ///
+    /// Only [`VfsPath::Decompiled`] and [`VfsPath::LegacyDecompiled`] are stored; other paths are
+    /// ignored.
+    pub fn store_virtual_document(&self, path: VfsPath, text: String) {
+        self.virtual_documents.insert_text(path, text);
     }
 
     #[cfg(feature = "lsp")]
@@ -352,5 +372,38 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    const HASH_64: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn decompiled_virtual_documents_are_readable_without_overlay() {
+        let vfs = Vfs::new(LocalFs::new());
+        let path = VfsPath::decompiled(HASH_64, "com.example.Foo");
+
+        vfs.store_virtual_document(path.clone(), "class Foo {}".to_string());
+        assert_eq!(vfs.read_to_string(&path).unwrap(), "class Foo {}");
+    }
+
+    #[test]
+    fn missing_decompiled_virtual_documents_return_not_found() {
+        let vfs = Vfs::new(LocalFs::new());
+        let path = VfsPath::decompiled(HASH_64, "com.example.Missing");
+
+        let err = vfs
+            .read_to_string(&path)
+            .expect_err("expected read to fail");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn overlay_precedence_over_virtual_document_store() {
+        let vfs = Vfs::new(LocalFs::new());
+        let path = VfsPath::decompiled(HASH_64, "com.example.Foo");
+
+        vfs.store_virtual_document(path.clone(), "store".to_string());
+        vfs.open_document(path.clone(), "overlay".to_string(), 1);
+
+        assert_eq!(vfs.read_to_string(&path).unwrap(), "overlay");
     }
 }
