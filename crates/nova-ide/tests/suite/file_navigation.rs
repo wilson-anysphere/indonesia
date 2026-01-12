@@ -1237,6 +1237,52 @@ class Main { void test(){ Derived d = new Derived(); d.$0baz.toString(); } }
 }
 
 #[test]
+fn go_to_type_definition_on_chained_field_access_returns_field_type() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Leaf.java
+class $1Leaf {}
+//- /Middle.java
+class Middle { Leaf leaf; }
+//- /Outer.java
+class Outer { Middle middle; }
+//- /Main.java
+class Main { void test(){ Outer o = new Outer(); o.middle.$0leaf.toString(); } }
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = type_definition(&fixture.db, file, pos).expect("expected type definition location");
+
+    assert_eq!(got.uri, fixture.marker_uri(1));
+    assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
+fn go_to_type_definition_on_new_expression_chained_field_access_returns_field_type() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Leaf.java
+class $1Leaf {}
+//- /Middle.java
+class Middle { Leaf leaf; }
+//- /Outer.java
+class Outer { Middle middle; }
+//- /Main.java
+class Main { void test(){ new Outer().middle.$0leaf.toString(); } }
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = type_definition(&fixture.db, file, pos).expect("expected type definition location");
+
+    assert_eq!(got.uri, fixture.marker_uri(1));
+    assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
 fn go_to_type_definition_supports_dollar_in_identifier() {
     let fixture = FileIdFixture::parse(
         r#"

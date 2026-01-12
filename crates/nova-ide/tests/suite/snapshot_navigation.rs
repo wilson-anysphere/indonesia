@@ -162,3 +162,69 @@ fn snapshot_type_definition_on_field_access_with_whitespace_returns_field_type()
     let bar_offset = bar_text.find("Bar").unwrap();
     assert_eq!(got.range.start, offset_to_position(bar_text, bar_offset));
 }
+
+#[test]
+fn snapshot_type_definition_on_chained_field_access_returns_field_type() {
+    let mut db = Database::new();
+
+    let leaf_uri = Uri::from_str("file:///Leaf.java").unwrap();
+    let middle_uri = Uri::from_str("file:///Middle.java").unwrap();
+    let outer_uri = Uri::from_str("file:///Outer.java").unwrap();
+    let main_uri = Uri::from_str("file:///Main.java").unwrap();
+
+    let leaf_text = "class Leaf {}";
+    let middle_text = "class Middle { Leaf leaf; }";
+    let outer_text = "class Outer { Middle middle; }";
+    let main_text = "class Main { void m(){ Outer o = new Outer(); o.middle.leaf.toString(); } }";
+
+    db.set_file_content(leaf_uri.clone(), leaf_text);
+    db.set_file_content(middle_uri, middle_text);
+    db.set_file_content(outer_uri, outer_text);
+    db.set_file_content(main_uri.clone(), main_text);
+
+    let snap = db.snapshot();
+
+    let offset = main_text.find("o.middle.leaf").unwrap() + "o.middle.".len();
+    let pos = offset_to_position(main_text, offset);
+    let got = snap
+        .type_definition(&main_uri, pos)
+        .expect("expected type definition location");
+
+    assert_eq!(got.uri, leaf_uri);
+
+    let leaf_offset = leaf_text.find("Leaf").unwrap();
+    assert_eq!(got.range.start, offset_to_position(leaf_text, leaf_offset));
+}
+
+#[test]
+fn snapshot_type_definition_on_new_expression_chained_field_access_returns_field_type() {
+    let mut db = Database::new();
+
+    let leaf_uri = Uri::from_str("file:///Leaf.java").unwrap();
+    let middle_uri = Uri::from_str("file:///Middle.java").unwrap();
+    let outer_uri = Uri::from_str("file:///Outer.java").unwrap();
+    let main_uri = Uri::from_str("file:///Main.java").unwrap();
+
+    let leaf_text = "class Leaf {}";
+    let middle_text = "class Middle { Leaf leaf; }";
+    let outer_text = "class Outer { Middle middle; }";
+    let main_text = "class Main { void m(){ new Outer().middle.leaf.toString(); } }";
+
+    db.set_file_content(leaf_uri.clone(), leaf_text);
+    db.set_file_content(middle_uri, middle_text);
+    db.set_file_content(outer_uri, outer_text);
+    db.set_file_content(main_uri.clone(), main_text);
+
+    let snap = db.snapshot();
+
+    let offset = main_text.find("new Outer().middle.leaf").unwrap() + "new Outer().middle.".len();
+    let pos = offset_to_position(main_text, offset);
+    let got = snap
+        .type_definition(&main_uri, pos)
+        .expect("expected type definition location");
+
+    assert_eq!(got.uri, leaf_uri);
+
+    let leaf_offset = leaf_text.find("Leaf").unwrap();
+    assert_eq!(got.range.start, offset_to_position(leaf_text, leaf_offset));
+}
