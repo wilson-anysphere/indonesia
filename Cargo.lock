@@ -3631,6 +3631,7 @@ name = "nova-decompile"
 version = "0.1.0"
 dependencies = [
  "filetime",
+ "libc",
  "nova-archive",
  "nova-cache",
  "nova-classfile",

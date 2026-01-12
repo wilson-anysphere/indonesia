@@ -584,7 +584,7 @@ fn read_cache_file_bytes(path: &Path) -> Result<Option<Vec<u8>>, CacheError> {
         return Ok(None);
     }
 
-    let file = match std::fs::File::open(path) {
+    let file = match open_cache_file_read(path) {
         Ok(file) => file,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(_) => {
@@ -659,6 +659,24 @@ fn ensure_dir_safe(path: &Path) -> Result<(), CacheError> {
     }
 
     Ok(())
+}
+
+fn open_cache_file_read(path: &Path) -> io::Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+
+        let mut opts = std::fs::OpenOptions::new();
+        opts.read(true);
+        // Refuse to follow symlinks at open time (mitigates TOCTOU races).
+        opts.custom_flags(libc::O_NOFOLLOW);
+        opts.open(path)
+    }
+
+    #[cfg(not(unix))]
+    {
+        std::fs::File::open(path)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

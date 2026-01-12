@@ -8,6 +8,7 @@ nova-archive = { path = "../nova-archive" }
 nova-cache = { path = "../nova-cache" }
 nova-classfile = { path = "../nova-classfile" }
 nova-core = { path = "../nova-core" }
+libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
