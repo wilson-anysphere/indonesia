@@ -477,10 +477,14 @@ fn type_of_expr_demand_result(
                     local, initializer, ..
                 } => {
                     if let Some(init) = initializer {
+                        let local_data = &body.locals[*local];
+                        let is_infer_var =
+                            local_data.ty_text.trim() == "var" && checker.var_inference_enabled();
+
                         // If the target expression is the initializer of an explicitly-typed local,
                         // use the declared type as the expected type.
-                        if *init == target_expr && body.locals[*local].ty_text.trim() != "var" {
-                            let data = &body.locals[*local];
+                        if *init == target_expr && !is_infer_var {
+                            let data = local_data;
                             let decl_ty = checker.resolve_source_type(
                                 &mut loader,
                                 data.ty_text.as_str(),
@@ -495,13 +499,13 @@ fn type_of_expr_demand_result(
                         // explicit target type, seed the lambda parameter locals from the SAM
                         // signature without type-checking the entire lambda body.
                         if matches!(body.exprs[*init], HirExpr::Lambda { .. })
-                            && body.locals[*local].ty_text.trim() != "var"
+                            && !is_infer_var
                         {
                             let init_range = body.exprs[*init].range();
                             let may_contain = init_range.start <= target_range.start
                                 && target_range.end <= init_range.end;
                             if may_contain && contains_expr_in_expr(&body, *init, target_expr) {
-                                let data = &body.locals[*local];
+                                let data = local_data;
                                 let decl_ty = checker.resolve_source_type(
                                     &mut loader,
                                     data.ty_text.as_str(),
@@ -917,7 +921,7 @@ fn resolve_method_call_demand(
     // Best-effort local type table for locals with explicit types. This improves overload
     // resolution for arguments like `foo(x)` without walking the whole body.
     for (idx, local) in body.locals.iter() {
-        if local.ty_text.trim() == "var" {
+        if local.ty_text.trim() == "var" && checker.var_inference_enabled() {
             continue;
         }
         let idx = idx as usize;
