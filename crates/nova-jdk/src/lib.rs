@@ -151,6 +151,9 @@ impl JdkIndex {
         // java.io
         this.add_type("java.io", "Serializable");
 
+        // java.io
+        this.add_type("java.io", "PrintStream");
+
         // java.util
         this.add_type("java.util", "List");
         this.add_type("java.util", "ArrayList");

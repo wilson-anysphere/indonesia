@@ -908,6 +908,54 @@ impl TypeStore {
             methods: vec![],
         });
 
+        // java.io.PrintStream
+        let print_stream = store.add_class(ClassDef {
+            name: "java.io.PrintStream".to_string(),
+            kind: ClassKind::Class,
+            type_params: vec![],
+            super_class: Some(Type::class(object, vec![])),
+            interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
+            methods: vec![
+                MethodDef {
+                    name: "println".to_string(),
+                    type_params: vec![],
+                    params: vec![Type::class(string, vec![])],
+                    return_type: Type::Void,
+                    is_static: false,
+                    is_varargs: false,
+                    is_abstract: false,
+                },
+                MethodDef {
+                    name: "println".to_string(),
+                    type_params: vec![],
+                    params: vec![Type::Primitive(PrimitiveType::Int)],
+                    return_type: Type::Void,
+                    is_static: false,
+                    is_varargs: false,
+                    is_abstract: false,
+                },
+            ],
+        });
+
+        // java.lang.System
+        let _system = store.add_class(ClassDef {
+            name: "java.lang.System".to_string(),
+            kind: ClassKind::Class,
+            type_params: vec![],
+            super_class: Some(Type::class(object, vec![])),
+            interfaces: vec![],
+            fields: vec![FieldDef {
+                name: "out".to_string(),
+                ty: Type::class(print_stream, vec![]),
+                is_static: true,
+                is_final: true,
+            }],
+            constructors: vec![],
+            methods: vec![],
+        });
+
         // java.util.List<E>
         let list_e = store.add_type_param("E", vec![Type::class(object, vec![])]);
         let list = store.add_class(ClassDef {

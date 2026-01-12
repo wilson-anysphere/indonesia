@@ -594,6 +594,37 @@ class C {
 }
 
 #[test]
+fn system_out_println_has_no_unresolved_member_diags() {
+    let src = r#"
+class C {
+    void m() {
+        System.out.println("x");
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    let unresolved_members = diags
+        .iter()
+        .filter(|d| d.code.as_ref() == "unresolved-field" || d.code.as_ref() == "unresolved-method")
+        .collect::<Vec<_>>();
+    assert!(
+        unresolved_members.is_empty(),
+        "expected no unresolved member diagnostics, got {unresolved_members:?} (all diags: {diags:?})"
+    );
+
+    let offset = src
+        .find("println(")
+        .expect("snippet should contain println call")
+        + "println".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "void");
+}
+
+#[test]
 fn static_method_called_via_instance_emits_warning() {
     let src = r#"
 class C {
