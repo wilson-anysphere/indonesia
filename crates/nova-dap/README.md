@@ -39,6 +39,14 @@ target/debug/nova-dap --listen 127.0.0.1:4711
 target/debug/nova-dap --listen 127.0.0.1:0
 ```
 
+To run from source without building the binary path explicitly, you can also use
+`cargo run` via the agent wrapper:
+
+```bash
+# From the repo root:
+bash scripts/cargo_agent.sh run -p nova-dap -- --listen 127.0.0.1:4711
+```
+
 Note: `--listen` expects a full `host:port` socket address (e.g. `127.0.0.1:0`,
 not just `:0`).
 
