@@ -110,6 +110,66 @@ fn maven_workspace_model_places_automatic_module_name_jars_on_module_path() {
     );
 }
 
+#[test]
+fn gradle_workspace_model_populates_module_path_for_jpms_overrides() {
+    let tmp = tempdir().expect("tempdir");
+    let root = tmp.path();
+
+    // Minimal marker so `detect_build_system` chooses Gradle.
+    std::fs::write(root.join("build.gradle"), "").expect("write build.gradle");
+
+    let src_dir = root.join("src/main/java");
+    std::fs::create_dir_all(&src_dir).expect("mkdir src");
+    std::fs::write(
+        src_dir.join("module-info.java"),
+        "module mod.a { requires mod.b; }",
+    )
+    .expect("write module-info.java");
+    std::fs::write(src_dir.join("Main.java"), "class Main {}").expect("write dummy java");
+
+    let dep_dir = root.join("deps/mod-b");
+    std::fs::create_dir_all(&dep_dir).expect("mkdir dep_dir");
+    std::fs::write(dep_dir.join("module-info.class"), make_module_info_class())
+        .expect("write module-info.class");
+
+    let mut options = LoadOptions::default();
+    options.classpath_overrides.push(dep_dir.clone());
+    let model = load_workspace_model_with_options(root, &options).expect("load workspace model");
+
+    assert_eq!(model.build_system, BuildSystem::Gradle);
+    assert_eq!(model.modules.len(), 1);
+    let module = &model.modules[0];
+
+    assert!(
+        module
+            .module_path
+            .iter()
+            .any(|e| e.path == dep_dir && e.kind == ClasspathEntryKind::Directory),
+        "override directory should be placed on module-path when JPMS is enabled"
+    );
+    assert!(
+        !module.classpath.iter().any(|e| e.path == dep_dir),
+        "override directory should not remain on the classpath when JPMS is enabled"
+    );
+
+    let main_out = root.join("build/classes/java/main");
+    let test_out = root.join("build/classes/java/test");
+    assert!(
+        module
+            .classpath
+            .iter()
+            .any(|e| e.path == main_out && e.kind == ClasspathEntryKind::Directory),
+        "Gradle output dirs should remain on classpath"
+    );
+    assert!(
+        module
+            .classpath
+            .iter()
+            .any(|e| e.path == test_out && e.kind == ClasspathEntryKind::Directory),
+        "Gradle output dirs should remain on classpath"
+    );
+}
+
 fn make_module_info_class() -> Vec<u8> {
     fn push_u2(out: &mut Vec<u8>, v: u16) {
         out.extend_from_slice(&v.to_be_bytes());
