@@ -4312,7 +4312,6 @@ dependencies = [
  "nova-classfile",
  "nova-types",
  "nova-types-signature",
- "thiserror 1.0.69",
 ]
 
 [[package]]
