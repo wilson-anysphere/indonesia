@@ -777,18 +777,31 @@ impl ResolveCtx {
             // rewrite a fully-qualified package name like `z.I` into a nested binary name like
             // `current.z$I`.
             let (first, rest) = segments.split_first().unwrap();
-            if let Some(owner) = self.outer_type_binary_name(store, first) {
-                let mut candidate = owner;
-                for seg in rest {
-                    candidate.push('$');
-                    candidate.push_str(seg);
-                }
+            // Heuristic: avoid treating very short all-caps prefixes like `Y.C` as nested types in
+            // the current package (`a.Y$C`). Those names are ambiguous in pure source syntax, but
+            // in practice single-letter package names are more common than single-letter outer type
+            // names used as qualifiers.
+            let avoid_outer_resolution = segments.len() == 2
+                && first.len() == 1
+                && first.as_bytes()[0].is_ascii_uppercase()
+                && rest[0].len() == 1
+                && rest[0].as_bytes()[0].is_ascii_uppercase()
+                && !self.single_type_imports.contains_key(*first);
 
-                if let Some(id) = store.lookup_class(&candidate) {
-                    return Type::class(id, vec![]);
-                }
+            if !avoid_outer_resolution {
+                if let Some(owner) = self.outer_type_binary_name(store, first) {
+                    let mut candidate = owner;
+                    for seg in rest {
+                        candidate.push('$');
+                        candidate.push_str(seg);
+                    }
 
-                return Type::Named(candidate);
+                    if let Some(id) = store.lookup_class(&candidate) {
+                        return Type::class(id, vec![]);
+                    }
+
+                    return Type::Named(candidate);
+                }
             }
         }
 

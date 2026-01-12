@@ -367,6 +367,37 @@ public class Outer {
 }
 
 #[test]
+fn source_types_resolve_nested_interfaces_from_same_package_even_when_defined_in_later_files() {
+    let mut store = TypeStore::with_minimal_jdk();
+    let mut source = SourceTypeProvider::new();
+
+    source.update_file(
+        &mut store,
+        PathBuf::from("/p/Impl.java"),
+        r#"
+package p;
+class Impl implements Outer.Inner {}
+"#,
+    );
+    source.update_file(
+        &mut store,
+        PathBuf::from("/p/Outer.java"),
+        r#"
+package p;
+public class Outer {
+  public interface Inner {}
+}
+"#,
+    );
+
+    assert!(is_subtype(
+        &store,
+        &Type::Named("p.Impl".to_string()),
+        &Type::Named("p.Outer.Inner".to_string())
+    ));
+}
+
+#[test]
 fn source_types_do_not_misinterpret_uppercase_package_segments_as_nested_types() {
     let mut store = TypeStore::with_minimal_jdk();
     let mut source = SourceTypeProvider::new();
@@ -401,5 +432,37 @@ public interface C {}
         &store,
         &Type::Named("a.Impl2".to_string()),
         &Type::Named("x.Y.C".to_string())
+    ));
+}
+
+#[test]
+fn source_types_do_not_misinterpret_uppercase_package_prefix_as_in_scope_type() {
+    let mut store = TypeStore::with_minimal_jdk();
+    let mut source = SourceTypeProvider::new();
+
+    // `Y` is a legal (if uncommon) top-level package name. When the referenced type hasn't been
+    // loaded yet, avoid guessing that `Y` is a type in the current package and rewriting `Y.C`
+    // into something like `a.Y$C`.
+    source.update_file(
+        &mut store,
+        PathBuf::from("/a/Impl.java"),
+        r#"
+package a;
+class Impl implements Y.C {}
+"#,
+    );
+    source.update_file(
+        &mut store,
+        PathBuf::from("/Y/C.java"),
+        r#"
+package Y;
+public interface C {}
+"#,
+    );
+
+    assert!(is_subtype(
+        &store,
+        &Type::Named("a.Impl".to_string()),
+        &Type::Named("Y.C".to_string())
     ));
 }
