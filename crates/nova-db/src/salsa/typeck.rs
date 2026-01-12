@@ -7280,6 +7280,20 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         let _ = this.infer_expr(loader, *receiver);
                         Type::Unknown
                     }
+                    // Best-effort poly-expression support: some expressions (notably generic
+                    // invocations like `Collections.emptyList()` and diamond class instance
+                    // creation like `new ArrayList<>()`) can depend on the *target type* for
+                    // inference. When they appear as arguments, we don't yet know the parameter
+                    // target type until overload resolution succeeds.
+                    //
+                    // Represent these as `<unknown>` for the initial applicability check (so
+                    // loose-phase resolution can proceed), then re-infer them once we have the
+                    // selected parameter types.
+                    HirExpr::Call {
+                        args: inner_args,
+                        explicit_type_args: inner_type_args,
+                        ..
+                    } if inner_args.is_empty() && inner_type_args.is_empty() => Type::Unknown,
                     // Diamond class instance creation is also target-typed: inferring it without a
                     // target type will default type arguments (often to `Object`) which can cause
                     // overload resolution to fail in common code like:

@@ -4299,7 +4299,7 @@ class C {
 #[test]
 fn explicit_method_type_args_infer_generic_return_without_target_type() {
     let src = r#"
-import java.util.*;
+ import java.util.*;
 class C {
     void m() {
         Collections.<String>emptyList();
@@ -4316,6 +4316,49 @@ class C {
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
     assert_eq!(ty, "List<String>");
+}
+
+#[test]
+fn target_typing_infers_generic_method_return_from_call_argument() {
+    let src = r#"
+ import java.util.*;
+class C {
+    static void take(List<String> xs) {}
+    void m() {
+        take(Collections.emptyList());
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"
+            && d.code.as_ref() != "type-mismatch"),
+        "expected target typing through invocation context to avoid unresolved-method/type-mismatch, got {diags:?}"
+    );
+}
+
+#[test]
+fn target_typing_infers_diamond_new_expr_from_call_argument() {
+    let src = r#"
+ import java.util.*;
+class C {
+    static void take(List<String> xs) {}
+    void m() {
+        take(new ArrayList<>());
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"
+            && d.code.as_ref() != "unresolved-constructor"
+            && d.code.as_ref() != "type-mismatch"),
+        "expected diamond to be target-typed via invocation context, got {diags:?}"
+    );
 }
 
 #[test]
