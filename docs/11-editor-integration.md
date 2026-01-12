@@ -6,6 +6,8 @@
 
 Nova communicates with editors through the Language Server Protocol (LSP). This document covers the `nova-lsp` stdio server implementation, Nova-specific extensions, and multi-editor support strategy.
 
+**Launcher note:** Editors can invoke Nova's LSP server as `nova lsp` (recommended) instead of calling `nova-lsp` directly. The `nova lsp` subcommand is a thin stdio wrapper that locates and spawns the `nova-lsp` binary.
+
 **Implementation note:** Protocol stack decisions are captured in [ADR 0003](adr/0003-protocol-frameworks-lsp-dap.md). The `nova-lsp` binary is currently **stdio-only** (JSON-RPC over stdin/stdout) and is implemented using [`lsp-server`](https://crates.io/crates/lsp-server). The authoritative capability advertisement lives in [`crates/nova-lsp/src/main.rs::initialize_result_json()`](../crates/nova-lsp/src/main.rs).
 
 ---
@@ -519,8 +521,8 @@ class FrameworkDashboardTreeDataProvider implements vscode.TreeDataProvider<Fram
 export function activate(context: vscode.ExtensionContext) {
     // Start language server
     const serverOptions: ServerOptions = {
-        command: 'nova-lsp',
-        args: ['--stdio'],
+        command: 'nova',
+        args: ['lsp'],
     };
     
     const clientOptions: LanguageClientOptions = {
