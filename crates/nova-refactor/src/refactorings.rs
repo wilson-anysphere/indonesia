@@ -1974,6 +1974,35 @@ fn check_extract_variable_name_conflicts(
         }
     }
 
+    // Pattern variables (`instanceof` / record patterns / switch patterns).
+    //
+    // Pattern matching introduces bindings whose scope is typically not block-based (it depends on
+    // control flow and on the shape of the pattern). We use a conservative approximation of scope
+    // based on the nearest enclosing statement, and reject extraction when the new binding's scope
+    // would overlap and collide.
+    for pat in enclosing
+        .body()
+        .syntax()
+        .descendants()
+        .filter_map(ast::TypePattern::cast)
+    {
+        if is_within_nested_type(pat.syntax(), enclosing.body().syntax()) {
+            continue;
+        }
+        let Some(tok) = pat.name_token() else {
+            continue;
+        };
+        if tok.text() != name {
+            continue;
+        }
+        let Some(scope) = pattern_binding_scope_range(&pat) else {
+            continue;
+        };
+        if ranges_overlap(new_scope, scope) {
+            return Err(name_collision());
+        }
+    }
+
     // Catch parameters.
     for catch_clause in enclosing
         .body()
@@ -2048,6 +2077,11 @@ fn check_extract_variable_name_conflicts(
 
 fn ranges_overlap(a: TextRange, b: TextRange) -> bool {
     a.start < b.end && b.start < a.end
+}
+
+fn pattern_binding_scope_range(pat: &ast::TypePattern) -> Option<TextRange> {
+    let stmt = pat.syntax().ancestors().find_map(ast::Statement::cast)?;
+    Some(syntax_range(stmt.syntax()))
 }
 
 #[derive(Clone, Debug)]
