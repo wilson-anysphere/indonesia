@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use nova_project::{load_project, BuildSystem};
+use nova_project::{load_project, load_project_with_options, BuildSystem, LoadOptions};
 
 fn write(path: &Path, contents: &str) {
     if let Some(parent) = path.parent() {
@@ -67,7 +67,13 @@ fn load_project_finds_maven_workspace_root_from_nested_file() {
     let expected_root = fs::canonicalize(root).expect("canonicalize root");
     let nested = root.join("app/src/main/java/com/example/App.java");
 
-    let config = load_project(&nested).expect("load project from nested file");
+    let repo_dir = tempfile::tempdir().expect("tempdir");
+    let options = LoadOptions {
+        maven_repo: Some(repo_dir.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config =
+        load_project_with_options(&nested, &options).expect("load project from nested file");
     assert_eq!(config.build_system, BuildSystem::Maven);
     assert_eq!(config.workspace_root, expected_root);
     // The root pom here is an aggregator (`<packaging>pom</packaging>`), so we
@@ -98,7 +104,13 @@ fn load_project_finds_gradle_workspace_root_from_nested_file() {
     let expected_root = fs::canonicalize(root).expect("canonicalize root");
     let nested = root.join("lib/src/main/java/com/example/Lib.java");
 
-    let config = load_project(&nested).expect("load project from nested file");
+    let gradle_home = tempfile::tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config =
+        load_project_with_options(&nested, &options).expect("load project from nested file");
     assert_eq!(config.build_system, BuildSystem::Gradle);
     assert_eq!(config.workspace_root, expected_root);
     assert_eq!(config.modules.len(), 2);
@@ -147,7 +159,9 @@ fn load_project_finds_bazel_workspace_root_from_nested_file() {
     let expected_root = fs::canonicalize(root).expect("canonicalize root");
     let nested = root.join("java/com/example/Example.java");
 
-    let config = load_project(&nested).expect("load project from nested file");
+    let options = LoadOptions::default();
+    let config =
+        load_project_with_options(&nested, &options).expect("load project from nested file");
     assert_eq!(config.build_system, BuildSystem::Bazel);
     assert_eq!(config.workspace_root, expected_root);
 }

@@ -2,6 +2,8 @@ use assert_cmd::Command;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+mod suite;
+
 fn nova() -> Command {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("nova"));
     cmd.env("NOVA_CACHE_DIR", cache_dir());

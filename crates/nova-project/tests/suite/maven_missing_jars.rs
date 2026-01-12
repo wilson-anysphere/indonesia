@@ -56,6 +56,16 @@ fn maven_project_omits_missing_dependency_jars_until_present_on_disk() {
     let config = load_project_with_options(root, &options).expect("load maven project");
 
     assert!(
+        config.dependencies.iter().any(|d| {
+            d.group_id == "com.example"
+                && d.artifact_id == "dep"
+                && d.version.as_deref() == Some("1.0")
+        }),
+        "expected dependency coordinates to be discovered even when jars are missing, got: {:#?}",
+        config.dependencies
+    );
+
+    assert!(
         !config
             .classpath
             .iter()

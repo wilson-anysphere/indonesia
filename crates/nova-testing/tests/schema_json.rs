@@ -8,10 +8,13 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+mod support;
+mod suite;
+
 /// Golden JSON fixtures for the stable editor-facing schema in `nova_testing::schema`.
 ///
 /// To update the checked-in JSON after an intentional schema change:
-/// `UPDATE_SCHEMA_FIXTURES=1 bash scripts/cargo_agent.sh test --locked -p nova-testing --test integration suite::schema_json`
+/// `UPDATE_SCHEMA_FIXTURES=1 bash scripts/cargo_agent.sh test --locked -p nova-testing --test schema_json`
 fn schema_fixture_path(name: impl AsRef<Path>) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")

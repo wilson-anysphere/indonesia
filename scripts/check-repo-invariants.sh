@@ -169,28 +169,43 @@ for check in "${framework_harness_checks[@]}"; do
   fi
 done
 
-# Enforce the single-harness integration test layout for `nova-project`.
+# Enforce stable integration test harness entrypoints for selected crates.
 #
-# `nova-project` has a large test surface area and its integration tests are intentionally
-# consolidated into a single `tests/harness.rs` binary for compile-time/memory efficiency.
-nova_project_root_tests=()
-while IFS= read -r file; do
-  nova_project_root_tests+=("$file")
-done < <(find crates/nova-project/tests -maxdepth 1 -name '*.rs' -print)
+# Each `tests/*.rs` file becomes a separate Cargo integration test binary, which is expensive under
+# the agent RLIMIT_AS constraints. These crates consolidate their integration tests into a single
+# root-level harness file, and CI/docs/scripts rely on stable `--test <harness>` entrypoints.
+stable_harness_checks=(
+  # `scripts/run-real-project-tests.sh` + docs invoke these by name.
+  "crates/nova-project/tests:crates/nova-project/tests/real_projects.rs:move additional files into crates/nova-project/tests/suite/ and add them to crates/nova-project/tests/suite/mod.rs"
+  "crates/nova-cli/tests:crates/nova-cli/tests/real_projects.rs:move additional files into crates/nova-cli/tests/suite/ and add them to crates/nova-cli/tests/suite/mod.rs"
+  # `nova-testing` docs instruct updating fixtures by running the schema harness by name.
+  "crates/nova-testing/tests:crates/nova-testing/tests/schema_json.rs:move additional files into crates/nova-testing/tests/suite/ and add them to crates/nova-testing/tests/suite/mod.rs"
+  "crates/nova-workspace/tests:crates/nova-workspace/tests/workspace_events.rs:move additional files into crates/nova-workspace/tests/suite/ and add them to crates/nova-workspace/tests/suite/mod.rs"
+  "crates/nova-resolve/tests:crates/nova-resolve/tests/resolve.rs:move additional files into crates/nova-resolve/tests/suite/ and add them to crates/nova-resolve/tests/suite/mod.rs"
+)
 
-if [[ ${#nova_project_root_tests[@]} -ne 1 || "${nova_project_root_tests[0]}" != "crates/nova-project/tests/harness.rs" ]]; then
-  echo "repo invariant failed: nova-project integration tests must be consolidated into crates/nova-project/tests/harness.rs" >&2
-  if [[ ${#nova_project_root_tests[@]} -eq 0 ]]; then
-    echo "  found: <none>" >&2
-  else
-    echo "  found:" >&2
-    for file in "${nova_project_root_tests[@]}"; do
-      echo "    - ${file}" >&2
-    done
+for check in "${stable_harness_checks[@]}"; do
+  IFS=":" read -r test_dir expected_file suggestion <<<"${check}"
+
+  root_tests=()
+  while IFS= read -r file; do
+    root_tests+=("$file")
+  done < <(find "${test_dir}" -maxdepth 1 -name '*.rs' -print)
+
+  if [[ ${#root_tests[@]} -ne 1 || "${root_tests[0]}" != "${expected_file}" ]]; then
+    echo "repo invariant failed: integration tests in ${test_dir} must be consolidated into ${expected_file}" >&2
+    if [[ ${#root_tests[@]} -eq 0 ]]; then
+      echo "  found: <none>" >&2
+    else
+      echo "  found:" >&2
+      for file in "${root_tests[@]}"; do
+        echo "    - ${file}" >&2
+      done
+    fi
+    echo "  suggestion: ${suggestion}" >&2
+    exit 1
   fi
-  echo "  suggestion: move additional files into crates/nova-project/tests/cases/ and add them to crates/nova-project/tests/harness.rs" >&2
-  exit 1
-fi
+done
 
 # Enforce the `nova-types` integration test harness naming.
 #
@@ -240,8 +255,6 @@ banned_test_target_patterns=(
   # `nova-syntax` suites were folded into the `harness` test binary.
   '--test(=|[[:space:]]+)javac_corpus([^[:alnum:]_-]|$)'
   '--test(=|[[:space:]]+)golden_corpus([^[:alnum:]_-]|$)'
-  # `nova-cli` real-project tests are part of the consolidated `harness`.
-  '--test(=|[[:space:]]+)real_projects([^[:alnum:]_-]|$)'
 )
 
 for pat in "${banned_test_target_patterns[@]}"; do

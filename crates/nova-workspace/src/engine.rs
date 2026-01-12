@@ -4489,7 +4489,7 @@ mod tests {
                 !roots.iter().any(|(root, _)| root == config_dir.path()),
                 "expected watch roots not to include the entire config directory; roots: {roots:?}"
             );
-        });
+        })
     }
 
     #[test]

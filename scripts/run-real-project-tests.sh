@@ -113,14 +113,13 @@ run_test() {
 }
 
 if [[ ${#ONLY_PROJECTS[@]} -eq 0 ]]; then
-  run_test bash ./scripts/cargo_agent.sh test --locked -p nova-workspace --test harness -- --ignored suite::real_projects::
-  run_test bash ./scripts/cargo_agent.sh test --locked -p nova-cli --test harness -- --ignored suite::real_projects::
+  run_test NOVA_TEST_PROJECTS= NOVA_REAL_PROJECT= bash ./scripts/cargo_agent.sh test --locked -p nova-project --test real_projects -- --ignored
+  run_test NOVA_TEST_PROJECTS= NOVA_REAL_PROJECT= bash ./scripts/cargo_agent.sh test --locked -p nova-cli --test real_projects -- --ignored
 else
-  for project in "${ONLY_PROJECTS[@]}"; do
-    filter="${project//-/_}"
-    run_test bash ./scripts/cargo_agent.sh test --locked -p nova-workspace --test harness -- --ignored "suite::real_projects::${filter}"
-    run_test bash ./scripts/cargo_agent.sh test --locked -p nova-cli --test harness -- --ignored "suite::real_projects::${filter}"
-  done
+  # Pass fixture selection via environment variables; the individual tests will skip
+  # fixtures not included in the list.
+  run_test NOVA_TEST_PROJECTS="${ONLY_CSV}" NOVA_REAL_PROJECT= bash ./scripts/cargo_agent.sh test --locked -p nova-project --test real_projects -- --ignored
+  run_test NOVA_TEST_PROJECTS="${ONLY_CSV}" NOVA_REAL_PROJECT= bash ./scripts/cargo_agent.sh test --locked -p nova-cli --test real_projects -- --ignored
 fi
 
 if [[ $failures -ne 0 ]]; then
