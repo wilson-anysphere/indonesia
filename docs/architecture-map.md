@@ -558,7 +558,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Key entry points:** `crates/nova-worker/src/main.rs`.
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
-  - Distributed mode is not yet wired into editor-facing features (`nova-lsp`).
+  - Distributed mode is now wired into the shipped `nova-lsp` stdio server behind CLI flags (`--distributed`, `--distributed-worker-command`), but the editor-facing surface area is still intentionally narrow/experimental (primarily `workspace/symbol` + best-effort file update propagation; see `docs/16-distributed-mode.md`).
   - v3 is the current router↔worker protocol; schema evolution is expected within minor versions.
 
 ### `nova-workspace`
