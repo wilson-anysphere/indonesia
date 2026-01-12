@@ -106,6 +106,35 @@ fn cache_roundtrips_via_disk() {
 }
 
 #[test]
+fn bsp_entries_are_not_persisted_to_disk() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("bazel.json");
+
+    let expr_version_hex = "expr-v1".to_string();
+    let mut cache = BazelCache::default();
+    cache.insert(CacheEntry {
+        target: "//:hello".to_string(),
+        expr_version_hex: expr_version_hex.clone(),
+        files: Vec::new(),
+        provider: CompileInfoProvider::Bsp,
+        info: JavaCompileInfo {
+            classpath: vec!["a.jar".to_string()],
+            ..JavaCompileInfo::default()
+        },
+    });
+
+    cache.save(&path).unwrap();
+
+    let loaded = BazelCache::load(&path).unwrap();
+    assert!(
+        loaded
+            .get("//:hello", &expr_version_hex, CompileInfoProvider::Bsp)
+            .is_none(),
+        "expected BSP entries to be session-local (not persisted)"
+    );
+}
+
+#[test]
 fn cache_deserializes_legacy_compile_info_fields() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("bazel.json");

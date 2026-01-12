@@ -1019,6 +1019,9 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         // build definition changes for correctness.
         if changed.iter().any(|path| is_bazel_build_definition_file(path)) {
             self.java_owning_targets_cache.clear();
+            // BSP-based compile info is invalidated conservatively because we do not track the full
+            // transitive BUILD/.bzl closure without invoking `bazel query`.
+            self.cache.invalidate_provider(CompileInfoProvider::Bsp);
         }
         if changed
             .iter()

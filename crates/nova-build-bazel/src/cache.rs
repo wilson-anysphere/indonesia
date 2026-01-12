@@ -117,6 +117,10 @@ impl BazelCache {
         });
     }
 
+    pub fn invalidate_provider(&mut self, provider: CompileInfoProvider) {
+        self.entries.retain(|_, entry| entry.provider != provider);
+    }
+
     pub fn invalidate_changed_build_files(&mut self, changed: &[PathBuf]) {
         self.invalidate_changed_files(changed);
     }
@@ -131,6 +135,10 @@ impl BazelCache {
         };
         let mut cache: Self = serde_json::from_str(&data).unwrap_or_default();
         cache.migrate_keys();
+        // Compile info from BSP is intended to be used as an in-memory optimization only. Avoid
+        // persisting it across sessions because our invalidation inputs are best-effort (and may
+        // omit transitive BUILD/.bzl state).
+        cache.invalidate_provider(CompileInfoProvider::Bsp);
         Ok(cache)
     }
 
@@ -145,7 +153,11 @@ impl BazelCache {
         };
         fs::create_dir_all(parent)?;
 
-        let data = serde_json::to_string_pretty(self)?;
+        // Persist only aquery-derived entries. BSP compile info is cheap to request from the server
+        // and is more robust when kept session-local (see `load`).
+        let mut persisted = self.clone();
+        persisted.invalidate_provider(CompileInfoProvider::Bsp);
+        let data = serde_json::to_string_pretty(&persisted)?;
 
         let (tmp_path, mut file) = open_unique_tmp_file(path, parent)?;
         if let Err(err) = file
