@@ -3365,6 +3365,138 @@ class A {
 }
 
 #[test]
+fn completion_includes_postfix_for_for_array() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    int[] xs = null;
+    xs.for<|>
+  }
+}
+"#,
+    );
+
+    let text_without_caret = db
+        .file_text(file)
+        .expect("expected file content for fixture")
+        .to_string();
+    let expr_start = text_without_caret
+        .find("xs.for")
+        .expect("expected xs.for in fixture");
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "for" && i.kind == Some(lsp_types::CompletionItemKind::SNIPPET))
+        .expect("expected postfix `for` snippet completion");
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+
+    assert_eq!(
+        edit.range.start,
+        offset_to_position(&text_without_caret, expr_start)
+    );
+    assert_eq!(edit.range.end, pos);
+    assert!(
+        edit.new_text.contains("for (int"),
+        "expected snippet to contain `for (int`; got {:?}",
+        edit.new_text
+    );
+}
+
+#[test]
+fn completion_includes_postfix_stream_for_list() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    List l = null;
+    l.stream<|>
+  }
+}
+"#,
+    );
+
+    let text_without_caret = db
+        .file_text(file)
+        .expect("expected file content for fixture")
+        .to_string();
+    let expr_start = text_without_caret
+        .find("l.stream")
+        .expect("expected l.stream in fixture");
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "stream" && i.kind == Some(lsp_types::CompletionItemKind::SNIPPET))
+        .expect("expected postfix `stream` snippet completion");
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+
+    assert_eq!(
+        edit.range.start,
+        offset_to_position(&text_without_caret, expr_start)
+    );
+    assert_eq!(edit.range.end, pos);
+    assert!(
+        edit.new_text.contains(".stream()"),
+        "expected snippet to contain `.stream()`; got {:?}",
+        edit.new_text
+    );
+}
+
+#[test]
+fn completion_includes_postfix_sout() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    String s = "";
+    s.sout<|>
+  }
+}
+"#,
+    );
+
+    let text_without_caret = db
+        .file_text(file)
+        .expect("expected file content for fixture")
+        .to_string();
+    let expr_start = text_without_caret
+        .find("s.sout")
+        .expect("expected s.sout in fixture");
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "sout" && i.kind == Some(lsp_types::CompletionItemKind::SNIPPET))
+        .expect("expected postfix `sout` snippet completion");
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+
+    assert_eq!(
+        edit.range.start,
+        offset_to_position(&text_without_caret, expr_start)
+    );
+    assert_eq!(edit.range.end, pos);
+    assert!(
+        edit.new_text.contains("System.out.println"),
+        "expected snippet to contain `System.out.println`; got {:?}",
+        edit.new_text
+    );
+}
+
+#[test]
 fn completion_in_import_offers_package_segment_and_replaces_only_segment() {
     let (db, file, pos) = fixture(
         r#"

@@ -7181,6 +7181,10 @@ fn postfix_completions(
     let is_collection =
         !receiver_ty.is_errorish() && nova_types::is_subtype(&types, &receiver_ty, &collection_ty);
 
+    // We often infer unresolved types like `Type::Named("List")` when imports aren't in scope.
+    // Keep a simple string-based heuristic so postfix completions remain useful.
+    let is_collectionish = is_collectionish_type(&types, &receiver_ty) || is_list || is_collection;
+
     let replace_range = Range::new(
         text_index.offset_to_position(receiver.span_to_dot.start),
         text_index.offset_to_position(offset),
@@ -7193,6 +7197,11 @@ fn postfix_completions(
         replace_range,
         "var",
         format!("var ${{1:name}} = {};$0", receiver.expr),
+    ));
+    items.push(postfix_completion_item(
+        replace_range,
+        "sout",
+        format!("System.out.println({});$0", receiver.expr),
     ));
 
     // Boolean-only templates.
@@ -7223,8 +7232,8 @@ fn postfix_completions(
         ));
     }
 
-    // `for` loop (arrays or `Iterable`).
-    if is_array || is_iterable {
+    // `for` loop (arrays, collections, or other `Iterable` types).
+    if is_array || is_collectionish || is_iterable {
         let snippet = match &receiver_ty {
             Type::Array(elem) if !elem.is_errorish() => {
                 let elem_ty = format_type_for_postfix_snippet(&types, &import_ctx, elem);
@@ -7238,8 +7247,8 @@ fn postfix_completions(
         items.push(postfix_completion_item(replace_range, "for", snippet));
     }
 
-    // Collection-y templates.
-    if is_list || is_collection {
+    // Collection-ish templates.
+    if is_collectionish {
         items.push(postfix_completion_item(
             replace_range,
             "stream",
@@ -7601,6 +7610,24 @@ fn is_declaration_modifier(ident: &str) -> bool {
             | "sealed"
             | "non-sealed"
     )
+}
+
+fn is_collectionish_type(types: &TypeStore, ty: &Type) -> bool {
+    let name = match ty {
+        Type::Class(nova_types::ClassType { def, .. }) => {
+            types.class(*def).map(|c| c.name.as_str())
+        }
+        Type::Named(name) => Some(name.as_str()),
+        _ => None,
+    };
+    let Some(name) = name else {
+        return false;
+    };
+
+    name.contains("List")
+        || name.contains("Set")
+        || name.contains("Collection")
+        || matches!(name, "java.util.List" | "java.util.ArrayList")
 }
 
 fn infer_simple_expr_type(
@@ -17041,7 +17068,6 @@ fn analyze(text: &str) -> Analysis {
                 idx = j + 2;
                 continue;
             }
-
             idx += 1;
         }
 
