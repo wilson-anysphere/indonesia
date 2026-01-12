@@ -838,7 +838,9 @@ local_only = true
         .expect("method end")
         .saturating_add("    }\n".len());
     let pos = TextPos::new(source);
-    let selection_start = pos.lsp_position(method_start_offset).expect("selection start");
+    let selection_start = pos
+        .lsp_position(method_start_offset)
+        .expect("selection start");
     let selection_end = pos.lsp_position(method_end_offset).expect("selection end");
 
     write_jsonrpc_message(

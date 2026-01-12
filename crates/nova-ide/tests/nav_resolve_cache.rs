@@ -62,12 +62,8 @@ class B {
     assert_eq!(nova_ide::__nav_resolve_workspace_index_build_count(&db), 1);
 
     // Edits should invalidate the cache (content pointer/len changes).
-    db.set_file_text(
-        file_a,
-        "class A { void foo() {} }\n// edit\n".to_string(),
-    );
+    db.set_file_text(file_a, "class A { void foo() {} }\n// edit\n".to_string());
 
     goto_definition(&db, file_b, file_b_pos).expect("expected definition location");
     assert_eq!(nova_ide::__nav_resolve_workspace_index_build_count(&db), 2);
 }
-

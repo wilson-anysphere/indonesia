@@ -5497,7 +5497,8 @@ mod tests {
             "expected truncation marker in output, got: {output:?}"
         );
         assert!(
-            output.len() <= MAX_DEBUGGEE_OUTPUT_LINE_BYTES + DEBUGGEE_OUTPUT_TRUNCATION_MARKER.len(),
+            output.len()
+                <= MAX_DEBUGGEE_OUTPUT_LINE_BYTES + DEBUGGEE_OUTPUT_TRUNCATION_MARKER.len(),
             "expected output length to be bounded (got {}, limit {})",
             output.len(),
             MAX_DEBUGGEE_OUTPUT_LINE_BYTES + DEBUGGEE_OUTPUT_TRUNCATION_MARKER.len()

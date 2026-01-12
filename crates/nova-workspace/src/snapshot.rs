@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use nova_core::ProjectDatabase;
 use nova_db::{Database, FileId, NovaInputs, SalsaDatabase, Snapshot};
 use nova_vfs::FileSystem;
-use nova_vfs::{LocalFs, Vfs};
 use nova_vfs::VfsPath;
+use nova_vfs::{LocalFs, Vfs};
 
 use crate::engine::WorkspaceEngine;
 
@@ -253,8 +253,8 @@ impl WorkspaceDbView {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             nova_db::SourceDatabase::file_content(&self.snapshot, file_id)
         }))
-            .ok()
-            .unwrap_or_else(|| Arc::new(String::new()))
+        .ok()
+        .unwrap_or_else(|| Arc::new(String::new()))
     }
 
     fn cached_file_content_ptr(&self, file_id: FileId) -> *const str {

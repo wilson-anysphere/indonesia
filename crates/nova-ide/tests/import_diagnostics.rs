@@ -28,4 +28,3 @@ class A {}
         "expected unresolved-import diagnostic; got {diags:#?}"
     );
 }
-

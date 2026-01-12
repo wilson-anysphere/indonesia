@@ -2,10 +2,10 @@ mod support;
 
 #[path = "suite/ai_code_actions.rs"]
 mod ai_code_actions;
-#[path = "suite/ai_excluded_paths.rs"]
-mod ai_excluded_paths;
 #[path = "suite/ai_completion_more.rs"]
 mod ai_completion_more;
+#[path = "suite/ai_excluded_paths.rs"]
+mod ai_excluded_paths;
 #[path = "suite/cli_help.rs"]
 mod cli_help;
 #[path = "suite/completion_resolve.rs"]
@@ -36,12 +36,12 @@ mod metrics;
 mod micronaut_extensions;
 #[path = "suite/navigation.rs"]
 mod navigation;
-#[path = "suite/references.rs"]
-mod references;
 #[path = "suite/refactor_variable.rs"]
 mod refactor_variable;
 #[path = "suite/refactor_workspace_snapshot.rs"]
 mod refactor_workspace_snapshot;
+#[path = "suite/references.rs"]
+mod references;
 #[path = "suite/semantic_search_index_status_stdio.rs"]
 mod semantic_search_index_status_stdio;
 #[path = "suite/semantic_search_workspace_indexing.rs"]
@@ -90,10 +90,10 @@ mod stdio_navigation;
 mod stdio_organize_imports;
 #[path = "suite/stdio_project_extensions.rs"]
 mod stdio_project_extensions;
-#[path = "suite/stdio_references.rs"]
-mod stdio_references;
 #[path = "suite/stdio_refactor_code_actions.rs"]
 mod stdio_refactor_code_actions;
+#[path = "suite/stdio_references.rs"]
+mod stdio_references;
 #[path = "suite/stdio_safe_delete.rs"]
 mod stdio_safe_delete;
 #[path = "suite/stdio_safe_mode_enforcement.rs"]

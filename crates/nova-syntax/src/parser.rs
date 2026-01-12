@@ -1870,14 +1870,14 @@ impl<'a> Parser<'a> {
 
         let (block_indent, _brace_is_first_token_on_line) =
             if self.last_non_trivia_kind == SyntaxKind::LBrace {
-            let start = self.last_non_trivia_range.start;
-            let (indent, is_first) = self.line_indent_and_is_first_token(start);
-            (indent, is_first)
-        } else {
-            // `{` is missing; fall back to the indent of the first token in the block.
-            let start = self.current_range().start;
-            (self.line_indent(start), false)
-        };
+                let start = self.last_non_trivia_range.start;
+                let (indent, is_first) = self.line_indent_and_is_first_token(start);
+                (indent, is_first)
+            } else {
+                // `{` is missing; fall back to the indent of the first token in the block.
+                let start = self.current_range().start;
+                (self.line_indent(start), false)
+            };
         // `block_indent` is a best-effort heuristic used for error recovery (to avoid consuming
         // outer-closing braces when an inner `}` is missing). However, it can be misleading when
         // the line containing `{` is itself over-indented (e.g. multi-line headers or simply

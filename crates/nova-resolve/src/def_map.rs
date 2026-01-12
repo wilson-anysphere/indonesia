@@ -390,8 +390,9 @@ impl DefMap {
                     //
                     // Preserve this here so workspace-aware static-import resolution can treat
                     // these members as static even when the source omits the `static` modifier.
-                    let is_implicitly_static = matches!(kind, TypeKind::Interface | TypeKind::Annotation)
-                        || field.kind == FieldKind::EnumConstant;
+                    let is_implicitly_static =
+                        matches!(kind, TypeKind::Interface | TypeKind::Annotation)
+                            || field.kind == FieldKind::EnumConstant;
                     let is_static =
                         is_implicitly_static || (field.modifiers.raw & Modifiers::STATIC) != 0;
                     match type_def.fields.entry(field_name.clone()) {

@@ -149,7 +149,9 @@ class C {
         insertion_strategy: InsertionStrategy::AfterCurrentMethod,
     };
 
-    let analysis = refactoring.analyze(&source).expect("analysis should succeed");
+    let analysis = refactoring
+        .analyze(&source)
+        .expect("analysis should succeed");
     assert!(
         analysis.issues.iter().any(|issue| matches!(
             issue,

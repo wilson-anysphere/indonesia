@@ -1792,7 +1792,8 @@ impl WorkspaceEngine {
             return Vec::new();
         }
         let cap = report.degraded.completion_candidate_cap;
-        self.closed_file_texts.restore_if_evicted(&self.vfs, file_id);
+        self.closed_file_texts
+            .restore_if_evicted(&self.vfs, file_id);
         let view = WorkspaceDbView::new(self.query_db.snapshot(), self.vfs.clone());
         let text = view.file_content(file_id);
         let position = offset_to_lsp_position(text, offset);
@@ -2433,7 +2434,8 @@ impl WorkspaceEngine {
             return self.syntax_diagnostics_only(file, file_id);
         }
 
-        self.closed_file_texts.restore_if_evicted(&self.vfs, file_id);
+        self.closed_file_texts
+            .restore_if_evicted(&self.vfs, file_id);
         let view = WorkspaceDbView::new(self.query_db.snapshot(), self.vfs.clone());
         nova_ide::file_diagnostics_with_semantic_db(&view, view.semantic_db(), file_id)
     }
@@ -6379,7 +6381,8 @@ public class Bar {}"#;
         fs::write(&foo_path, foo_source_new.as_bytes()).unwrap();
 
         // Sanity check: the lazy DB view must still serve the old Salsa contents.
-        let view = crate::snapshot::WorkspaceDbView::new(engine.query_db.snapshot(), engine.vfs.clone());
+        let view =
+            crate::snapshot::WorkspaceDbView::new(engine.query_db.snapshot(), engine.vfs.clone());
         assert!(
             view.file_content(foo_id).contains("class Foo"),
             "expected view to serve old Salsa contents, got: {:?}",
@@ -6403,7 +6406,10 @@ public class Bar {}"#;
 
         // Under critical memory pressure, the engine may intentionally truncate to 0 candidates.
         // Only assert on concrete items when completions are not capped to zero.
-        let cap = engine.memory_report_for_work().degraded.completion_candidate_cap;
+        let cap = engine
+            .memory_report_for_work()
+            .degraded
+            .completion_candidate_cap;
         if cap > 0 {
             assert!(
                 labels.iter().any(|l| *l == "Foo"),

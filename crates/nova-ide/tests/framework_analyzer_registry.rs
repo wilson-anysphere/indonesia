@@ -4,4 +4,3 @@
 // `cargo test -p nova-ide --test framework_analyzer_registry`.
 #[path = "suite/framework_analyzer_registry.rs"]
 mod framework_analyzer_registry;
-

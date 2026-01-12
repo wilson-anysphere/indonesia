@@ -73,8 +73,7 @@ fn framework_analyzer_registry_integration_runs_and_respects_cancellation() {
     let mut state = NovaLspIdeState::new(db, config, ProjectId::new(0));
 
     let analyzer = TestFrameworkAnalyzer;
-    let provider =
-        FrameworkAnalyzerOnTextDbAdapter::new("test.framework.lsp", analyzer).into_arc();
+    let provider = FrameworkAnalyzerOnTextDbAdapter::new("test.framework.lsp", analyzer).into_arc();
     state
         .registry_mut()
         .register_diagnostic_provider(provider.clone())
@@ -162,4 +161,3 @@ fn framework_analyzer_registry_integration_runs_and_respects_cancellation() {
         "expected framework completion item to be suppressed when cancelled; got {labels_cancelled:?}"
     );
 }
-

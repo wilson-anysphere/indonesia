@@ -83,4 +83,3 @@ fn completion_includes_workspace_annotation_types_after_at_sign() {
     );
     assert_eq!(edit.range.end, pos);
 }
-

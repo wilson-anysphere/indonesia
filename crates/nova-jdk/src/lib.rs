@@ -251,9 +251,8 @@ impl JdkIndex {
             bytes = bytes.saturating_add(pkg.capacity() as u64);
         }
 
-        bytes = bytes.saturating_add(
-            (self.builtin_packages_sorted.capacity() * size_of::<String>()) as u64,
-        );
+        bytes = bytes
+            .saturating_add((self.builtin_packages_sorted.capacity() * size_of::<String>()) as u64);
         for pkg in &self.builtin_packages_sorted {
             bytes = bytes.saturating_add(pkg.capacity() as u64);
         }
@@ -699,10 +698,13 @@ impl JdkIndex {
         self.static_members
             .entry(owner.to_string())
             .or_default()
-            .insert(member.to_string(), StaticMemberEntry {
-                id: StaticMemberId::new(format!("{owner}::{member}")),
-                kind,
-            });
+            .insert(
+                member.to_string(),
+                StaticMemberEntry {
+                    id: StaticMemberId::new(format!("{owner}::{member}")),
+                    kind,
+                },
+            );
     }
 }
 

@@ -1557,9 +1557,9 @@ fn inline_variable_find_name_expr(
 
     let node = match element {
         nova_syntax::SyntaxElement::Node(node) => node,
-        nova_syntax::SyntaxElement::Token(token) => token
-            .parent()
-            .ok_or(RefactorError::InlineNotSupported)?,
+        nova_syntax::SyntaxElement::Token(token) => {
+            token.parent().ok_or(RefactorError::InlineNotSupported)?
+        }
     };
 
     node.ancestors()
@@ -3028,7 +3028,8 @@ fn find_local_variable_declaration(
                     return false;
                 };
                 let range = syntax_token_range(&tok);
-                db.symbol_at(file, range.start).is_some_and(|sym| sym == symbol)
+                db.symbol_at(file, range.start)
+                    .is_some_and(|sym| sym == symbol)
             });
         }
 
@@ -3233,7 +3234,9 @@ fn eval_order_guard_scan_root(
     match enclosing_stmt {
         ast::Statement::IfStatement(stmt) => stmt
             .condition()
-            .filter(|cond| contains_range(trim_range(source, syntax_range(cond.syntax())), expr_range))
+            .filter(|cond| {
+                contains_range(trim_range(source, syntax_range(cond.syntax())), expr_range)
+            })
             .map(|cond| cond.syntax().clone())
             .unwrap_or_else(|| enclosing_stmt.syntax().clone()),
         ast::Statement::SwitchStatement(stmt) => stmt
@@ -3431,7 +3434,10 @@ fn initializer_is_order_sensitive(expr: &nova_syntax::SyntaxNode) -> bool {
         )
     }
 
-    if node_is_order_sensitive(expr) || expr.descendants().any(|node| node_is_order_sensitive(&node))
+    if node_is_order_sensitive(expr)
+        || expr
+            .descendants()
+            .any(|node| node_is_order_sensitive(&node))
     {
         return true;
     }

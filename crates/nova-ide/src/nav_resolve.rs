@@ -5,11 +5,11 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use lsp_types::Uri;
-use once_cell::sync::Lazy;
 use nova_core::{path_to_file_uri, AbsPathBuf};
 use nova_db::{Database, FileId};
 use nova_index::{InheritanceEdge, InheritanceIndex};
 use nova_types::Span;
+use once_cell::sync::Lazy;
 
 use crate::parse::{parse_file, ParsedFile, TypeDef};
 

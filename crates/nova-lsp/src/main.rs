@@ -56,8 +56,8 @@ use nova_refactor::{
     code_action_for_edit, move_package_workspace_edit, organize_imports, rename as semantic_rename,
     workspace_edit_to_lsp, workspace_edit_to_lsp_document_changes_with_uri_mapper,
     FileId as RefactorFileId, JavaSymbolKind, MovePackageParams, OrganizeImportsParams,
-    RefactorDatabase, RenameParams as RefactorRenameParams, SafeDeleteTarget, SemanticRefactorError,
-    TextDatabase,
+    RefactorDatabase, RenameParams as RefactorRenameParams, SafeDeleteTarget,
+    SemanticRefactorError, TextDatabase,
 };
 use nova_vfs::{ChangeEvent, DocumentError, FileSystem, LocalFs, Vfs, VfsPath};
 use nova_workspace::Workspace;
@@ -8638,11 +8638,12 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
             (-32603, err.to_string())
         })?;
 
-    let result = apply_code_action_outcome(outcome, "AI: Generate tests", state, rpc_out)
-        .map_err(|err| {
+    let result = apply_code_action_outcome(outcome, "AI: Generate tests", state, rpc_out).map_err(
+        |err| {
             let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
             err
-        })?;
+        },
+    )?;
     send_progress_end(rpc_out, work_done_token.as_ref(), "Done")?;
     if work_done_token.is_some() {
         Ok(result)

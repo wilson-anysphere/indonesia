@@ -2063,8 +2063,8 @@ fn module_info_type_path_completions(
             .unwrap_or(&[]);
 
         let parent_prefix_with_dot = format!("{parent_prefix}.");
-        let start = class_names
-            .partition_point(|name| name.as_str() < parent_prefix_with_dot.as_str());
+        let start =
+            class_names.partition_point(|name| name.as_str() < parent_prefix_with_dot.as_str());
         let mut added = 0usize;
         for name in &class_names[start..] {
             if added >= MAX_JDK_TYPES || items.len() >= MAX_COMPLETIONS {
@@ -8822,10 +8822,9 @@ fn offset_in_ternary_condition(tokens: &[Token], offset: usize) -> bool {
         }
 
         // Skip generic wildcards (`List<?>`, `Map<? extends K, ? super V>`, ...).
-        if tokens
-            .get(q_idx.wrapping_sub(1))
-            .is_some_and(|prev| matches!(prev.kind, TokenKind::Symbol('<') | TokenKind::Symbol(',')))
-        {
+        if tokens.get(q_idx.wrapping_sub(1)).is_some_and(|prev| {
+            matches!(prev.kind, TokenKind::Symbol('<') | TokenKind::Symbol(','))
+        }) {
             continue;
         }
 
@@ -8964,9 +8963,7 @@ fn ternary_condition_start_offset(tokens: &[Token], q_idx: usize) -> usize {
             | TokenKind::Symbol('?')
             | TokenKind::Symbol(':') => return tok.span.end,
             TokenKind::Ident if tok.text == "return" => return tok.span.end,
-            TokenKind::Symbol('=')
-                if is_assignment_eq_token(tokens, idx, &adjacent) =>
-            {
+            TokenKind::Symbol('=') if is_assignment_eq_token(tokens, idx, &adjacent) => {
                 return tok.span.end;
             }
             _ => {}

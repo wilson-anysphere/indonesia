@@ -2,9 +2,7 @@ use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use nova_index::{
-    CandidateStrategy, IndexSymbolKind, SearchSymbol, SymbolSearchIndex,
-};
+use nova_index::{CandidateStrategy, IndexSymbolKind, SearchSymbol, SymbolSearchIndex};
 
 const SYMBOL_COUNT: usize = 100_000;
 const LIMIT: usize = 100;

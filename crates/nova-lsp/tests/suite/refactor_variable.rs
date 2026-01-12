@@ -751,9 +751,7 @@ class C {
         .expect("inline variable action");
 
     assert!(
-        single
-            .disabled
-            .is_none(),
+        single.disabled.is_none(),
         "single-usage inline should still be supported"
     );
     let edit = single.edit.expect("edit");

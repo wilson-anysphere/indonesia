@@ -365,11 +365,8 @@ mod tests {
         {
             let file = std::fs::File::create(&exploded_mr_jar).unwrap();
             let mut zip = ZipWriter::new(file);
-            zip.start_file(
-                "classes/META-INF/versions/9/module-info.class",
-                options,
-            )
-            .unwrap();
+            zip.start_file("classes/META-INF/versions/9/module-info.class", options)
+                .unwrap();
             zip.write_all(b"cafebabe").unwrap();
             zip.finish().unwrap();
         }

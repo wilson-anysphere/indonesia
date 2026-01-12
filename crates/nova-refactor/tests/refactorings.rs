@@ -1,7 +1,8 @@
 use nova_refactor::{
     apply_text_edits, apply_workspace_edit, extract_variable, inline_variable, materialize, rename,
-    Conflict, ExtractVariableParams, FileId, InlineVariableParams, JavaSymbolKind, RefactorDatabase,
-    RefactorJavaDatabase, RenameParams, SemanticChange, SemanticRefactorError, WorkspaceTextRange,
+    Conflict, ExtractVariableParams, FileId, InlineVariableParams, JavaSymbolKind,
+    RefactorDatabase, RefactorJavaDatabase, RenameParams, SemanticChange, SemanticRefactorError,
+    WorkspaceTextRange,
 };
 use nova_test_utils::extract_range;
 use pretty_assertions::assert_eq;
@@ -3285,7 +3286,10 @@ class Test {
 
     let offset = src.find("class Foo").unwrap() + "class ".len() + 1;
     let symbol = db.symbol_at(&file, offset).expect("symbol at Foo");
-    assert_eq!(db.symbol_kind(symbol), Some(nova_refactor::JavaSymbolKind::Type));
+    assert_eq!(
+        db.symbol_kind(symbol),
+        Some(nova_refactor::JavaSymbolKind::Type)
+    );
 
     let edit = rename(
         &db,
@@ -3487,8 +3491,8 @@ fn inline_variable_inline_all_rejected_when_unindexed_occurrence_exists() {
 }
 
 #[test]
-fn inline_variable_inline_one_rejected_when_decl_cannot_be_removed_and_initializer_has_side_effects()
-{
+fn inline_variable_inline_one_rejected_when_decl_cannot_be_removed_and_initializer_has_side_effects(
+) {
     // If `find_references` does not report all textual occurrences, `inline_all=false` must keep the
     // declaration. In that case, inlining a side-effectful initializer would duplicate evaluation,
     // so the refactoring must be rejected.
@@ -4548,7 +4552,6 @@ fn inline_variable_increment_is_rejected() {
     )
     .unwrap_err();
     assert!(matches!(err, SemanticRefactorError::InlineNotSupported));
-
 }
 
 #[test]
@@ -5743,6 +5746,8 @@ fn symbol_at_returns_type_for_nested_class_name() {
     let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
 
     let offset = src.find("class Inner").unwrap() + "class ".len() + 1;
-    let symbol = db.symbol_at(&file, offset).expect("symbol at nested type name");
+    let symbol = db
+        .symbol_at(&file, offset)
+        .expect("symbol at nested type name");
     assert_eq!(db.symbol_kind(symbol), Some(JavaSymbolKind::Type));
 }

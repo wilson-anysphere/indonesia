@@ -23,8 +23,13 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
 pub enum AiCodeAction {
-    ExplainError { diagnostic: Diagnostic },
-    GenerateMethodBody { file: String, insert_range: Range },
+    ExplainError {
+        diagnostic: Diagnostic,
+    },
+    GenerateMethodBody {
+        file: String,
+        insert_range: Range,
+    },
     GenerateTest {
         file: String,
         insert_range: Range,

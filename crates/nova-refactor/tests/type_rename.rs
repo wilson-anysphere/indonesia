@@ -133,7 +133,9 @@ fn rename_type_conflict_name_collision_in_same_package() {
         panic!("expected conflict error, got: {err:?}");
     };
     assert!(
-        conflicts.iter().any(|c| matches!(c, Conflict::NameCollision { name, .. } if name == "Bar")),
+        conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::NameCollision { name, .. } if name == "Bar")),
         "expected NameCollision conflict, got: {conflicts:?}"
     );
 }

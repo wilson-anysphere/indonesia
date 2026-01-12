@@ -60,8 +60,9 @@ fn diagnostics_include_language_level_feature_gate() {
 
     let diags = file_diagnostics(&db, file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "JAVA_FEATURE_RECORDS"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "JAVA_FEATURE_RECORDS"),
         "expected JAVA_FEATURE_RECORDS diagnostic; got {diags:#?}"
     );
 }
-

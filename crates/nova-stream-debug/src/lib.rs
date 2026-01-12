@@ -673,7 +673,8 @@ pub fn debug_stream<C: JdwpClient>(
     }
 
     let mut safe_expr = chain.source.stream_expr().to_string();
-    let sample_eval_expr = |stream_expr: &str| match &chain.source {
+    let sample_eval_expr = |stream_expr: &str| {
+        match &chain.source {
         // `ExistingStream` sources are inherently hard to type-check: without type information we
         // can't reliably tell whether expressions like `Arrays.stream(arr)` return a `Stream` or
         // a primitive stream (e.g. `LongStream` for `long[]`).
@@ -689,6 +690,7 @@ pub fn debug_stream<C: JdwpClient>(
             "{stream_expr}{}",
             sample_suffix(chain.stream_kind, config.max_sample_size)
         ),
+    }
     };
 
     let source_eval_expr = sample_eval_expr(&safe_expr);

@@ -1483,9 +1483,8 @@ fn completion_new_expression_adds_import_after_package_declaration() {
 
 #[test]
 fn completion_new_expression_adds_import_after_existing_imports() {
-    let (db, file, pos) = fixture(
-        "package com.foo;\nimport java.util.List;\nclass A { void m(){ new Arr<|> } }",
-    );
+    let (db, file, pos) =
+        fixture("package com.foo;\nimport java.util.List;\nclass A { void m(){ new Arr<|> } }");
 
     let items = completions(&db, file, pos);
     let item = items
@@ -1709,7 +1708,8 @@ class A {
         "expected non-empty completion list for Math.ma; got empty"
     );
     assert_eq!(
-        items[0].label, "max",
+        items[0].label,
+        "max",
         "expected Math.max to rank first for prefix 'ma'; got {:?}",
         items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
     );

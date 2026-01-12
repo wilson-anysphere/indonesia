@@ -123,7 +123,10 @@ fn parse_enum_declaration(node: syntax_ast::EnumDeclaration, source: &str) -> Op
     })
 }
 
-fn parse_record_declaration(node: syntax_ast::RecordDeclaration, source: &str) -> Option<ClassData> {
+fn parse_record_declaration(
+    node: syntax_ast::RecordDeclaration,
+    source: &str,
+) -> Option<ClassData> {
     let modifiers = node.modifiers();
     let annotations = modifiers
         .as_ref()

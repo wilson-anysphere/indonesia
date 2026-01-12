@@ -61,7 +61,10 @@ spring:
 
     let keys = property_keys_from_configs(&[(path, text)]);
 
-    assert!(keys.contains("server.port"), "expected server.port; got {keys:?}");
+    assert!(
+        keys.contains("server.port"),
+        "expected server.port; got {keys:?}"
+    );
     assert!(
         keys.contains("spring.main.banner-mode"),
         "expected spring.main.banner-mode; got {keys:?}"
@@ -77,6 +80,9 @@ fn property_keys_from_configs_extracts_yaml_keys_with_uppercase_extension() {
 
     let keys = property_keys_from_configs(&[(path, text)]);
 
-    assert!(keys.contains("server.port"), "expected server.port; got {keys:?}");
+    assert!(
+        keys.contains("server.port"),
+        "expected server.port; got {keys:?}"
+    );
     assert!(!keys.contains("spring.application.name"));
 }

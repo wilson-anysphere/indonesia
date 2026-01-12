@@ -2704,8 +2704,11 @@ impl Debugger {
         ) -> Result<Option<JdwpValue>> {
             check_cancel(cancel)?;
 
-            let this_id = match cancellable_jdwp(cancel, jdwp.stack_frame_this_object(thread, frame_id))
-                .await
+            let this_id = match cancellable_jdwp(
+                cancel,
+                jdwp.stack_frame_this_object(thread, frame_id),
+            )
+            .await
             {
                 Ok(id) => id,
                 Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
@@ -2727,11 +2730,12 @@ impl Debugger {
 
             let mut seen_types = std::collections::HashSet::new();
             while type_id != 0 && seen_types.insert(type_id) {
-                let fields = match cancellable_jdwp(cancel, jdwp.reference_type_fields(type_id)).await {
-                    Ok(fields) => fields,
-                    Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
-                    Err(_err) => return Ok(None),
-                };
+                let fields =
+                    match cancellable_jdwp(cancel, jdwp.reference_type_fields(type_id)).await {
+                        Ok(fields) => fields,
+                        Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                        Err(_err) => return Ok(None),
+                    };
 
                 if let Some(field) = fields
                     .into_iter()
@@ -2750,7 +2754,8 @@ impl Debugger {
                     return Ok(values.pop());
                 }
 
-                type_id = match cancellable_jdwp(cancel, jdwp.class_type_superclass(type_id)).await {
+                type_id = match cancellable_jdwp(cancel, jdwp.class_type_superclass(type_id)).await
+                {
                     Ok(id) => id,
                     Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
                     Err(_err) => break,
@@ -2934,9 +2939,14 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                         break;
                     }
 
-                    value =
-                        resolve_field_in_frame(&jdwp, cancel, frame.thread, frame_info.frame_id, name)
-                            .await?;
+                    value = resolve_field_in_frame(
+                        &jdwp,
+                        cancel,
+                        frame.thread,
+                        frame_info.frame_id,
+                        name,
+                    )
+                    .await?;
                     if value.is_some() {
                         break;
                     }
@@ -5876,7 +5886,11 @@ mod tests {
             .object_reference_reference_type(sample_array_id)
             .await
             .unwrap();
-        let array_id = dbg.jdwp.array_type_new_instance(array_type_id, 3).await.unwrap();
+        let array_id = dbg
+            .jdwp
+            .array_type_new_instance(array_type_id, 3)
+            .await
+            .unwrap();
         dbg.jdwp
             .array_reference_set_values(
                 array_id,
@@ -5901,7 +5915,13 @@ mod tests {
         dbg.jdwp
             .object_reference_set_values(
                 this_id,
-                &[(field_id, JdwpValue::Object { tag: b'[', id: array_id })],
+                &[(
+                    field_id,
+                    JdwpValue::Object {
+                        tag: b'[',
+                        id: array_id,
+                    },
+                )],
             )
             .await
             .unwrap();
@@ -5941,7 +5961,10 @@ mod tests {
             .iter()
             .find(|step| step.operation == "map")
             .expect("expected map step");
-        assert_eq!(map_step.output.elements, vec!["4".to_string(), "6".to_string()]);
+        assert_eq!(
+            map_step.output.elements,
+            vec!["4".to_string(), "6".to_string()]
+        );
 
         assert_eq!(
             body.runtime

@@ -1254,10 +1254,7 @@ fn method_parameter_types(
 fn parameter_type_text(source: &str, param: &ast::Parameter) -> Option<String> {
     let ty = param.ty()?;
     let ty_range = syntax_range(ty.syntax());
-    let mut text = source
-        .get(ty_range.start..ty_range.end)?
-        .trim()
-        .to_string();
+    let mut text = source.get(ty_range.start..ty_range.end)?.trim().to_string();
 
     // Varargs: include the ellipsis token (`...`) as part of the type text so we can
     // distinguish `foo(String...)` from `foo(String)`.
@@ -1729,7 +1726,10 @@ fn collect_declared_types_by_name(
         //
         // If this is a multi-catch (`A | B e`), we intentionally skip it to avoid picking an
         // incorrect throws type.
-        let ty_text_full = source.get(lparen_end..name_start).unwrap_or("Object").trim();
+        let ty_text_full = source
+            .get(lparen_end..name_start)
+            .unwrap_or("Object")
+            .trim();
         if ty_text_full.contains('|') {
             continue;
         }
