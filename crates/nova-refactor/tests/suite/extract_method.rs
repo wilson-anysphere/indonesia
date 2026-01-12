@@ -2668,6 +2668,41 @@ class C {
 }
 
 #[test]
+fn extract_method_rejects_yield_statement_inside_anonymous_class_body() {
+    let fixture = r#"
+class C {
+  void m(int x) {
+    Runnable r = new Runnable() {
+      public void run() {
+        int y = switch (x) {
+          case 0 -> {
+            /*start*/yield 1;/*end*/
+          }
+          default -> 2;
+        };
+      }
+    };
+  }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "bad".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let err = refactoring
+        .apply(&source)
+        .expect_err("should reject yield inside anonymous class body");
+    assert!(err.contains("IllegalControlFlow"));
+    assert!(err.contains("Yield"));
+}
+
+#[test]
 fn edits_are_non_overlapping() {
     // Construct a selection whose replacement and insertion could overlap if offsets
     // were computed incorrectly.

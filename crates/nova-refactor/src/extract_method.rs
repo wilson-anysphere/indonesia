@@ -1499,36 +1499,31 @@ fn collect_control_flow_hazards_in_syntax(
 ) {
     // Control flow inside lambda/anonymous-class bodies doesn't affect the extracted method because
     // those bodies are executed later.
-    if control_flow_is_deferred(node) {
-        return;
-    }
-
-    // Returns/break/continue/etc inside lambdas return from / target the lambda body, not the
-    // enclosing method. Skip descending into lambda bodies so statements that *contain* a lambda
-    // (e.g. `Runnable r = () -> { return; };`) don't get rejected.
-    if ast::LambdaExpression::can_cast(node.kind()) {
-        return;
-    }
+    //
+    // Note: we still scan for `yield` statements inside these deferred execution contexts. Nova's
+    // flow IR currently lowers `yield <expr>;` as a `break`, so we must rely on syntax to detect
+    // and reject it, even in nested bodies.
+    let deferred = control_flow_is_deferred(node);
 
     if let Some(stmt) = ast::Statement::cast(node.clone()) {
         match stmt {
-            ast::Statement::ReturnStatement(_) => {
-                push_hazard(hazards, ControlFlowHazard::Return);
-                issues.push(ExtractMethodIssue::IllegalControlFlow {
-                    hazard: ControlFlowHazard::Return,
-                });
-            }
             ast::Statement::YieldStatement(_) => {
                 push_hazard(hazards, ControlFlowHazard::Yield);
                 issues.push(ExtractMethodIssue::IllegalControlFlow {
                     hazard: ControlFlowHazard::Yield,
                 });
             }
-            ast::Statement::ThrowStatement(_) => {
+            ast::Statement::ReturnStatement(_) if !deferred => {
+                push_hazard(hazards, ControlFlowHazard::Return);
+                issues.push(ExtractMethodIssue::IllegalControlFlow {
+                    hazard: ControlFlowHazard::Return,
+                });
+            }
+            ast::Statement::ThrowStatement(_) if !deferred => {
                 // Allowed (best-effort): would be modeled as `throws` in the future.
                 push_hazard(hazards, ControlFlowHazard::Throw);
             }
-            ast::Statement::BreakStatement(brk) => {
+            ast::Statement::BreakStatement(brk) if !deferred => {
                 push_hazard(hazards, ControlFlowHazard::Break);
 
                 if brk.label_token().is_some() {
@@ -1549,7 +1544,7 @@ fn collect_control_flow_hazards_in_syntax(
                     });
                 }
             }
-            ast::Statement::ContinueStatement(cont) => {
+            ast::Statement::ContinueStatement(cont) if !deferred => {
                 push_hazard(hazards, ControlFlowHazard::Continue);
 
                 if cont.label_token().is_some() {
