@@ -51,7 +51,7 @@ async fn wait_for_diagnostics(
 #[tokio::test]
 async fn workspace_diagnostics_use_workspace_salsa_db_for_imports_and_language_level() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let root = tmp.path();
+    let root = tmp.path().canonicalize().expect("canonicalize temp root");
 
     // Configure language level below records (Java 11).
     write(&root.join("pom.xml"), pom_java11());
@@ -69,7 +69,7 @@ async fn workspace_diagnostics_use_workspace_salsa_db_for_imports_and_language_l
         "package r; public record R(int x) {}",
     );
 
-    let ws = Workspace::open(root).expect("workspace open");
+    let ws = Workspace::open(&root).expect("workspace open");
     let events = ws.subscribe();
 
     let b_path = VfsPath::local(root.join("src/q/B.java"));
