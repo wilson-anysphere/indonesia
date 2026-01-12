@@ -379,6 +379,34 @@ pub fn implementation(db: &dyn Database, file: FileId, position: Position) -> Ve
         return Vec::new();
     };
 
+    // MapStruct: prioritize "go to implementation" from mapper interface methods into
+    // generated `*MapperImpl` methods when the generated file exists on disk.
+    if let Some(path) = db.file_path(file) {
+        if path.extension().and_then(|e| e.to_str()) == Some("java")
+            && (parsed.text.contains("@Mapper")
+                || parsed.text.contains("@Mapping")
+                || parsed.text.contains("org.mapstruct"))
+        {
+            let root = framework_cache::project_root_for_path(path);
+            if let Ok(targets) =
+                nova_framework_mapstruct::goto_definition_in_source(&root, path, &parsed.text, offset)
+            {
+                if let Some(target) = targets.into_iter().next() {
+                    if target
+                        .file
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.ends_with("Impl.java"))
+                    {
+                        if let Some(location) = mapstruct_target_location(db, &index, target) {
+                            return vec![location];
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let lookup_type_info = |name: &str| index.type_info(name);
     let lookup_file = |uri: &Uri| index.file_by_uri(uri);
     let lombok_fallback = |receiver_ty: &str, method_name: &str| {
@@ -423,10 +451,6 @@ pub fn implementation(db: &dyn Database, file: FileId, position: Position) -> Ve
     } else {
         Vec::new()
     };
-
-    if locations.is_empty() {
-        locations = mapstruct_fallback_locations(db, &index, file, &parsed.text, offset);
-    }
 
     locations
 }
