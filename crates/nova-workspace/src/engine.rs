@@ -3223,13 +3223,32 @@ fn is_build_tool_input_file(path: &Path) -> bool {
     }
 }
 
-fn should_refresh_build_config(workspace_root: &Path, changed_files: &[PathBuf]) -> bool {
+fn should_refresh_build_config(
+    workspace_root: &Path,
+    module_roots: &[PathBuf],
+    changed_files: &[PathBuf],
+) -> bool {
     changed_files.is_empty()
         || changed_files.iter().any(|path| {
             // Many build inputs are detected based on path components (e.g. ignoring `build/`
-            // output directories). Use paths relative to the workspace root so absolute parent
-            // directories (like `/home/user/build/...`) don't accidentally trip ignore heuristics.
-            let rel = path.strip_prefix(workspace_root).unwrap_or(path.as_path());
+            // output directories). Use paths relative to the workspace root (or module roots) so
+            // absolute parent directories (like `/home/user/build/...`) don't accidentally trip
+            // ignore heuristics.
+            let mut best: Option<&Path> = None;
+            let mut best_len = 0usize;
+            for root in
+                std::iter::once(workspace_root).chain(module_roots.iter().map(PathBuf::as_path))
+            {
+                if let Ok(stripped) = path.strip_prefix(root) {
+                    let len = root.components().count();
+                    if len > best_len {
+                        best_len = len;
+                        best = Some(stripped);
+                    }
+                }
+            }
+            let rel = best.unwrap_or(path.as_path());
+
             is_build_tool_input_file(rel) || is_nova_config_file(rel)
         })
 }
@@ -3575,10 +3594,13 @@ fn reload_project_and_sync(
     // NOTE: For now, only attempt build integration in single-module workspaces. Multi-module
     // build integration requires module-aware invocations (Maven module path / Gradle project
     // path) which are not yet wired through this loader path.
-    let refresh_build = should_refresh_build_config(workspace_root, changed_files);
     if projects.len() == 1 {
         let project = projects[0];
         let current_config = query_db.with_snapshot(|snap| snap.project_config(project));
+        let module_roots: Vec<PathBuf> =
+            current_config.modules.iter().map(|m| m.root.clone()).collect();
+        let refresh_build =
+            should_refresh_build_config(workspace_root, &module_roots, changed_files);
 
         if matches!(
             current_config.build_system,
@@ -4051,61 +4073,63 @@ mod tests {
         let root = PathBuf::from("/tmp/workspace");
 
         assert!(
-            should_refresh_build_config(&root, &[root.join("gradlew")]),
+            should_refresh_build_config(&root, &[], &[root.join("gradlew")]),
             "expected root gradlew to trigger build-tool refresh"
         );
 
         assert!(
-            should_refresh_build_config(&root, &[root.join("gradlew.bat")]),
+            should_refresh_build_config(&root, &[], &[root.join("gradlew.bat")]),
             "expected root gradlew.bat to trigger build-tool refresh"
         );
 
         assert!(
-            !should_refresh_build_config(&root, &[root.join("sub").join("gradlew")]),
+            !should_refresh_build_config(&root, &[], &[root.join("sub").join("gradlew")]),
             "expected nested gradlew to be ignored"
         );
 
         assert!(
-            should_refresh_build_config(&root, &[root.join("libs.versions.toml")]),
+            should_refresh_build_config(&root, &[], &[root.join("libs.versions.toml")]),
             "expected root libs.versions.toml to trigger build-tool refresh"
         );
 
         assert!(
-            !should_refresh_build_config(&root, &[root.join("deps.versions.toml")]),
+            !should_refresh_build_config(&root, &[], &[root.join("deps.versions.toml")]),
             "expected root deps.versions.toml to be ignored (non-canonical version catalog location)"
         );
 
         assert!(
-            should_refresh_build_config(&root, &[root.join("gradle").join("foo.versions.toml")]),
+            should_refresh_build_config(&root, &[], &[root.join("gradle").join("foo.versions.toml")]),
             "expected gradle/foo.versions.toml to trigger build-tool refresh"
         );
 
         assert!(
             !should_refresh_build_config(
                 &root,
+                &[],
                 &[root.join("gradle").join("sub").join("nested.versions.toml")]
             ),
             "expected gradle/sub/nested.versions.toml to be ignored (only direct children of gradle/ are treated as version catalogs)"
         );
 
         assert!(
-            should_refresh_build_config(&root, &[root.join("dependencies.gradle")]),
+            should_refresh_build_config(&root, &[], &[root.join("dependencies.gradle")]),
             "expected dependencies.gradle to trigger build-tool refresh"
         );
 
         assert!(
-            should_refresh_build_config(&root, &[root.join("dependencies.gradle.kts")]),
+            should_refresh_build_config(&root, &[], &[root.join("dependencies.gradle.kts")]),
             "expected dependencies.gradle.kts to trigger build-tool refresh"
         );
 
         assert!(
-            should_refresh_build_config(&root, &[root.join("gradle.lockfile")]),
+            should_refresh_build_config(&root, &[], &[root.join("gradle.lockfile")]),
             "expected gradle.lockfile to trigger build-tool refresh"
         );
 
         assert!(
             should_refresh_build_config(
                 &root,
+                &[],
                 &[root
                     .join("gradle")
                     .join("dependency-locks")
@@ -4115,13 +4139,14 @@ mod tests {
         );
 
         assert!(
-            !should_refresh_build_config(&root, &[root.join("foo.lockfile")]),
+            !should_refresh_build_config(&root, &[], &[root.join("foo.lockfile")]),
             "expected foo.lockfile (outside dependency-locks) to be ignored"
         );
 
         assert!(
             should_refresh_build_config(
                 &root,
+                &[],
                 &[root.join("dependency-locks").join("custom.lockfile")]
             ),
             "expected dependency-locks/*.lockfile to trigger build-tool refresh"
@@ -4129,23 +4154,28 @@ mod tests {
 
         // Build output directories should not trigger build-tool refresh.
         assert!(
-            !should_refresh_build_config(&root, &[root.join("build").join("dependencies.gradle")]),
+            !should_refresh_build_config(
+                &root,
+                &[],
+                &[root.join("build").join("dependencies.gradle")]
+            ),
             "expected build/dependencies.gradle to be ignored"
         );
 
         assert!(
-            !should_refresh_build_config(&root, &[root.join("build").join("gradle.lockfile")]),
+            !should_refresh_build_config(&root, &[], &[root.join("build").join("gradle.lockfile")]),
             "expected build/gradle.lockfile to be ignored"
         );
 
         assert!(
-            !should_refresh_build_config(&root, &[root.join("bazel-out").join("build.gradle")]),
+            !should_refresh_build_config(&root, &[], &[root.join("bazel-out").join("build.gradle")]),
             "expected bazel-out/build.gradle to be ignored"
         );
 
         assert!(
             !should_refresh_build_config(
                 &root,
+                &[],
                 &[root.join("nested").join("bazel-out").join("build.gradle")]
             ),
             "expected nested/bazel-out/build.gradle to be ignored"
@@ -4154,6 +4184,7 @@ mod tests {
         assert!(
             !should_refresh_build_config(
                 &root,
+                &[],
                 &[root
                     .join("nested")
                     .join("bazel-myworkspace")
@@ -4165,6 +4196,7 @@ mod tests {
         assert!(
             !should_refresh_build_config(
                 &root,
+                &[],
                 &[root.join("node_modules").join("dependencies.gradle")]
             ),
             "expected node_modules/dependencies.gradle to be ignored"
@@ -4176,9 +4208,22 @@ mod tests {
         assert!(
             should_refresh_build_config(
                 &root_under_build,
+                &[],
                 &[root_under_build.join("gradle.lockfile")]
             ),
             "expected gradle.lockfile under /tmp/build/... to trigger refresh"
+        );
+
+        // Ensure module roots outside the workspace root also participate in relative path
+        // normalization (important for Gradle composite builds / included builds).
+        let included_root = PathBuf::from("/tmp/build/included");
+        assert!(
+            should_refresh_build_config(
+                &root,
+                &[included_root.clone()],
+                &[included_root.join("gradle.lockfile")]
+            ),
+            "expected included-build gradle.lockfile under /tmp/build/... to trigger refresh"
         );
     }
 
@@ -4220,18 +4265,19 @@ mod tests {
     fn build_config_refresh_triggers_for_gradle_dependency_lockfiles() {
         let root = PathBuf::from("/tmp/workspace");
         assert!(
-            should_refresh_build_config(&root, &[root.join("gradle.lockfile")]),
+            should_refresh_build_config(&root, &[], &[root.join("gradle.lockfile")]),
             "expected gradle.lockfile to trigger build config refresh"
         );
         assert!(
             should_refresh_build_config(
                 &root,
+                &[],
                 &[root.join("gradle/dependency-locks/compileClasspath.lockfile")]
             ),
             "expected dependency-locks/*.lockfile to trigger build config refresh"
         );
         assert!(
-            !should_refresh_build_config(&root, &[root.join("foo.lockfile")]),
+            !should_refresh_build_config(&root, &[], &[root.join("foo.lockfile")]),
             "expected unrelated *.lockfile not to trigger build config refresh"
         );
     }
