@@ -494,7 +494,7 @@
           "type": "number",
           "default": 5,
           "minimum": 0,
-          "description": "Maximum number of AI completion items to request."
+          "description": "Maximum number of AI completion items to request (async multi-token completions). Set to 0 to disable multi-token completions. Applied server-side via NOVA_AI_COMPLETIONS_MAX_ITEMS (read at server startup; restart required)."
         },
         "nova.aiCompletions.requestTimeoutMs": {
           "type": "number",
