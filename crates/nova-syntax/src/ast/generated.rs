@@ -450,8 +450,12 @@ impl RecordDeclaration {
         support::child::<Modifiers>(&self.syntax)
     }
 
-    pub fn name_token(&self) -> Option<SyntaxToken> {
+    pub fn record_kw(&self) -> Option<SyntaxToken> {
         support::ident_token(&self.syntax)
+    }
+
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        support::ident_tokens(&self.syntax).nth(1)
     }
 
     pub fn type_parameters(&self) -> Option<TypeParameters> {
@@ -813,6 +817,14 @@ impl AstNode for CompactConstructorDeclaration {
 }
 
 impl CompactConstructorDeclaration {
+    pub fn modifiers(&self) -> Option<Modifiers> {
+        support::child::<Modifiers>(&self.syntax)
+    }
+
+    pub fn type_parameters(&self) -> Option<TypeParameters> {
+        support::child::<TypeParameters>(&self.syntax)
+    }
+
     pub fn name_token(&self) -> Option<SyntaxToken> {
         support::ident_token(&self.syntax)
     }

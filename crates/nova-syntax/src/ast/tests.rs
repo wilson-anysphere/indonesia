@@ -112,7 +112,15 @@ fn class_and_method_accessors() {
 
 #[test]
 fn record_compact_constructor_member_accessors() {
-    let src = "record Point(int x, int y) { Point { } }";
+    let src = r#"
+        record Point(int x, int y) {
+          Point {
+            if (x < 0) {
+              throw new IllegalArgumentException();
+            }
+          }
+        }
+    "#;
     let parse = parse_java(src);
     assert!(parse.errors.is_empty());
 
@@ -136,7 +144,9 @@ fn record_compact_constructor_member_accessors() {
             _ => None,
         })
         .expect("compact constructor member");
+
     assert_eq!(compact.name_token().unwrap().text(), record_name.text());
+    assert!(compact.body().is_some());
 }
 
 #[test]

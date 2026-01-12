@@ -430,7 +430,7 @@ pub fn parse_java_expression_fragment(text: &str, offset: u32) -> JavaFragmentPa
 
 pub fn parse_java_class_member_fragment(text: &str, offset: u32) -> JavaFragmentParseResult {
     parse_java_fragment(text, offset, SyntaxKind::ClassMemberFragment, |parser| {
-        parser.parse_class_member();
+        parser.parse_class_member(SyntaxKind::ClassBody);
     })
 }
 
@@ -516,7 +516,7 @@ pub(crate) fn parse_class_member_fragment(input: &str) -> JavaParseResult {
     parser
         .builder
         .start_node(SyntaxKind::CompilationUnit.into());
-    parser.parse_class_member();
+    parser.parse_class_member(SyntaxKind::ClassBody);
     parser.eat_trivia();
     parser.expect(SyntaxKind::Eof, "expected end of file");
     parser.builder.finish_node();
@@ -1205,7 +1205,7 @@ impl<'a> Parser<'a> {
             self.bump();
             // Class body declarations after constants.
             while !self.at(SyntaxKind::RBrace) && !self.at(SyntaxKind::Eof) {
-                self.parse_class_member();
+                self.parse_class_member(SyntaxKind::EnumBody);
             }
         }
         self.expect(SyntaxKind::RBrace, "expected `}` to close enum body");
@@ -1280,7 +1280,7 @@ impl<'a> Parser<'a> {
             }
 
             let before = self.tokens.len();
-            self.parse_class_member();
+            self.parse_class_member(body_kind);
             self.force_progress(before, MEMBER_RECOVERY);
         }
 
@@ -1299,7 +1299,7 @@ impl<'a> Parser<'a> {
         self.builder.finish_node();
     }
 
-    fn parse_class_member(&mut self) {
+    fn parse_class_member(&mut self, body_kind: SyntaxKind) {
         let checkpoint = self.builder.checkpoint();
         self.parse_modifiers();
         self.parse_type_parameters_opt();
@@ -1354,7 +1354,7 @@ impl<'a> Parser<'a> {
             return;
         }
 
-        // Record compact constructor: Ident '{'
+        // Record compact constructor: `Ident '{' ... }`.
         //
         // Example (JEP 395):
         //   record Point(int x, int y) { Point { ... } }
@@ -1362,7 +1362,8 @@ impl<'a> Parser<'a> {
         // This is intentionally checked before the `at_type_start` branch below because
         // `Ident '{'` is otherwise misinterpreted as a type+member-name prefix and triggers
         // error recovery across the rest of the record body.
-        if self.at_ident_like()
+        if body_kind == SyntaxKind::RecordBody
+            && self.at_ident_like()
             && matches!(
                 self.nth(1),
                 Some(SyntaxKind::LBrace) | Some(SyntaxKind::ThrowsKw)

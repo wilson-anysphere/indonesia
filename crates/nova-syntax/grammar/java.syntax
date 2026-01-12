@@ -169,6 +169,7 @@ EnumDeclaration {
 
 RecordDeclaration {
   modifiers: Modifiers?
+  record_kw: Ident?
   name_token: Ident?
   type_parameters: TypeParameters?
   parameter_list: ParameterList?
@@ -235,6 +236,8 @@ ConstructorDeclaration {
 }
 
 CompactConstructorDeclaration {
+  modifiers: Modifiers?
+  type_parameters: TypeParameters?
   name_token: Ident?
   body: Block?
 }
