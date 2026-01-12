@@ -468,7 +468,6 @@ export async function activate(context: vscode.ExtensionContext) {
           if (
             typeof type === 'string' &&
             type.startsWith('nova/') &&
-            !SAFE_MODE_EXEMPT_REQUESTS.has(type) &&
             isSafeModeError(err)
           ) {
             setSafeModeEnabled?.(true);
