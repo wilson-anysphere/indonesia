@@ -2196,6 +2196,7 @@ fn extract_variable_rejected_in_annotation_value_nested_expression() {
             expr_range: WorkspaceTextRange::new(expr_start, expr_end),
             name: "tmp".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -2295,6 +2296,7 @@ fn extract_variable_rejected_in_switch_case_label_nested_expression() {
             expr_range: WorkspaceTextRange::new(expr_start, expr_end),
             name: "tmp".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
