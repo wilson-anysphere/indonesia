@@ -338,3 +338,167 @@ class Foo { Foo(){} }"#;
     assert!(!after_a.contains("Foo"), "{after_a}");
     assert!(!after_b.contains("pkg.Foo"), "{after_b}");
 }
+
+#[test]
+fn rename_type_updates_imports_fields_and_method_signatures() {
+    let foo = FileId::new("Foo.java");
+    let use_ = FileId::new("Use.java");
+
+    let src_foo = r#"package p;
+class Foo { Foo(){} }"#;
+
+    let src_use = r#"package q;
+import p.Foo;
+
+class Use {
+    Foo field;
+    Foo m(Foo param) {
+        Foo local = new Foo();
+        return local;
+    }
+}"#;
+
+    let db = RefactorJavaDatabase::new([
+        (foo.clone(), src_foo.to_string()),
+        (use_.clone(), src_use.to_string()),
+    ]);
+
+    let offset = src_foo.find("class Foo").unwrap() + "class ".len() + 1;
+    let symbol = db.symbol_at(&foo, offset).expect("symbol at type Foo");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "Bar".into(),
+        },
+    )
+    .unwrap();
+
+    let mut files = BTreeMap::new();
+    files.insert(foo.clone(), src_foo.to_string());
+    files.insert(use_.clone(), src_use.to_string());
+
+    let out = apply_workspace_edit(&files, &edit).unwrap();
+    let after_foo = out.get(&foo).unwrap();
+    let after_use = out.get(&use_).unwrap();
+
+    assert!(after_foo.contains("class Bar"), "{after_foo}");
+    assert!(after_foo.contains("Bar()"), "{after_foo}");
+
+    assert!(after_use.contains("import p.Bar;"), "{after_use}");
+    assert!(after_use.contains("Bar field;"), "{after_use}");
+    assert!(after_use.contains("Bar m(Bar param)"), "{after_use}");
+    assert!(after_use.contains("Bar local = new Bar()"), "{after_use}");
+    assert!(!after_use.contains("Foo"), "{after_use}");
+}
+
+#[test]
+fn rename_nested_type_outer_segment_is_renamed() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Outer {
+    static class Inner {
+        Inner() {}
+    }
+}
+
+class Use {
+    Outer.Inner field;
+    void m() {
+        new Outer.Inner();
+    }
+}"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("Outer.Inner field").unwrap() + 1;
+    let symbol = db
+        .symbol_at(&file, offset)
+        .expect("symbol at Outer segment in Outer.Inner");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "Top".into(),
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    assert!(after.contains("class Top"), "{after}");
+    assert!(after.contains("Top.Inner field"), "{after}");
+    assert!(after.contains("new Top.Inner()"), "{after}");
+    assert!(!after.contains("Outer."), "{after}");
+}
+
+#[test]
+fn rename_nested_type_inner_segment_is_renamed() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Outer {
+    static class Inner {
+        Inner() {}
+    }
+}
+
+class Use {
+    Outer.Inner field;
+    void m() {
+        new Outer.Inner();
+    }
+}"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("Outer.Inner field").unwrap() + "Outer.".len() + 1;
+    let symbol = db
+        .symbol_at(&file, offset)
+        .expect("symbol at Inner segment in Outer.Inner");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "RenamedInner".into(),
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    assert!(after.contains("class RenamedInner"), "{after}");
+    assert!(after.contains("RenamedInner()"), "{after}");
+    assert!(after.contains("Outer.RenamedInner field"), "{after}");
+    assert!(after.contains("new Outer.RenamedInner()"), "{after}");
+    assert!(!after.contains(".Inner"), "{after}");
+}
+
+#[test]
+fn rename_method_overloads_renames_all_declarations_and_calls() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+    void foo() {}
+    void foo(int x) {}
+    void m() { foo(); foo(1); }
+}"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("void foo()").unwrap() + "void ".len() + 1;
+    let symbol = db.symbol_at(&file, offset).expect("symbol at method foo");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "bar".into(),
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    assert!(after.contains("void bar()"), "{after}");
+    assert!(after.contains("void bar(int x)"), "{after}");
+    assert!(after.contains("bar();"), "{after}");
+    assert!(after.contains("bar(1);"), "{after}");
+    assert!(!after.contains("foo"), "{after}");
+}
