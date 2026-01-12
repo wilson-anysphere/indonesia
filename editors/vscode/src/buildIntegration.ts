@@ -84,6 +84,7 @@ type WorkspaceBuildState = {
   diagnosticsSupported: boolean | 'unknown';
   statusRequestInFlight?: Promise<NovaBuildStatusResult | undefined>;
   silentDiagnosticsRequestInFlight?: Promise<NovaBuildDiagnosticsResult | undefined>;
+  silentDiagnosticsRefreshQueued?: boolean;
   statusTimer?: NodeJS.Timeout;
   buildCommandInFlight?: boolean;
   diagnosticFiles: Set<string>;
@@ -449,10 +450,18 @@ export function registerNovaBuildIntegration(
     if (silent) {
       const existing = state.silentDiagnosticsRequestInFlight;
       if (existing) {
+        state.silentDiagnosticsRefreshQueued = true;
         return await existing;
       }
 
-      const task = run();
+      const task = (async (): Promise<NovaBuildDiagnosticsResult | undefined> => {
+        let result: NovaBuildDiagnosticsResult | undefined;
+        do {
+          state.silentDiagnosticsRefreshQueued = false;
+          result = await run();
+        } while (state.silentDiagnosticsRefreshQueued && state.diagnosticsSupported !== false);
+        return result;
+      })();
       state.silentDiagnosticsRequestInFlight = task;
       try {
         return await task;
