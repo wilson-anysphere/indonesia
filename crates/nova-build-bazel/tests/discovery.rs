@@ -1,6 +1,9 @@
 use nova_build_bazel::BazelWorkspaceDiscovery;
 use std::path::PathBuf;
 
+mod fake_bsp;
+mod suite;
+
 #[test]
 fn discovers_bazel_workspace_root() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/minimal_workspace");

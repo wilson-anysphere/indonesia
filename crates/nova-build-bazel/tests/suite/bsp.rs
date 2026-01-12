@@ -1,8 +1,6 @@
 #![cfg(feature = "bsp")]
 
-mod fake_bsp;
-
-use fake_bsp::{spawn_fake_bsp_server, FakeBspServerConfig};
+use crate::fake_bsp::{spawn_fake_bsp_server, FakeBspServerConfig};
 use nova_build_bazel::bsp::{
     BuildTarget, BuildTargetIdentifier, CompileProvider, Diagnostic, InitializeBuildResult,
     JavacOptionsItem, JavacProvider, Position, PublishDiagnosticsParams, Range, ServerCapabilities,
