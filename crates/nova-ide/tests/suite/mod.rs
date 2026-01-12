@@ -1,8 +1,10 @@
 #[cfg(feature = "ai")]
 mod ai_completion_context;
 mod analysis;
+mod code_actions;
 mod code_intelligence;
 mod completion_cache;
+mod create_class_quick_fix;
 mod dagger_intel;
 mod decompile;
 mod file_navigation;
@@ -15,6 +17,7 @@ mod framework_extensions;
 mod hierarchy_workspace;
 mod jpa_intel;
 mod lombok_intel;
+mod mapstruct_navigation;
 mod micronaut_intel;
 mod nav_resolve_chains;
 mod organize_imports_code_action;

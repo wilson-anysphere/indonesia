@@ -889,6 +889,7 @@ fn completion_includes_workspace_annotation_types_after_at_sign() {
         other => panic!("unexpected text_edit variant: {other:?}"),
     };
 
+    assert_eq!(edit.new_text, "MyAnno");
     assert_eq!(
         edit.range.start,
         offset_to_position(&main_without_caret, my_start)
