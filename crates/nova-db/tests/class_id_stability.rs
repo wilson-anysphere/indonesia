@@ -126,9 +126,6 @@ fn external_class_ids_are_stable_across_bodies_in_same_file() {
     let file = FileId::from_raw(1);
     db.set_file_project(file, project);
     db.set_file_rel_path(file, Arc::new("src/C.java".to_string()));
-    db.set_file_exists(file, true);
-    db.set_all_file_ids(Arc::new(vec![file]));
-    db.set_project_files(project, Arc::new(vec![file]));
 
     let src = r#"
 class C {
@@ -143,7 +140,9 @@ class C {
     }
 }
 "#;
-    db.set_file_content(file, Arc::new(src.to_string()));
+    db.set_file_text(file, src);
+    db.set_all_file_ids(Arc::new(vec![file]));
+    db.set_project_files(project, Arc::new(vec![file]));
 
     let tree = db.hir_item_tree(file);
     let method_a = find_method_named(&tree, "a");
