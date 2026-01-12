@@ -7240,6 +7240,11 @@ pub fn prepare_call_hierarchy(
                                     &target.name,
                                     target.name_span,
                                     target.body_span,
+                                    call_hierarchy_method_detail(
+                                        &target_file.text,
+                                        &target.name,
+                                        target.name_span,
+                                    ),
                                 )]);
                             }
                         }
@@ -7389,6 +7394,7 @@ pub fn call_hierarchy_outgoing_calls(
                 &target.name,
                 target.name_span,
                 target.body_span,
+                call_hierarchy_method_detail(&target_file.text, &target.name, target.name_span),
             ),
             from_ranges: spans
                 .into_iter()
@@ -7596,6 +7602,7 @@ pub fn call_hierarchy_incoming_calls(
                 &caller.name,
                 caller.name_span,
                 caller.body_span,
+                call_hierarchy_method_detail(&caller_parsed.text, &caller.name, caller.name_span),
             ),
             from_ranges: spans
                 .into_iter()
@@ -7637,18 +7644,34 @@ fn call_hierarchy_item_from_parsed_method(
     name: &str,
     name_span: Span,
     body_span: Option<Span>,
+    detail: Option<String>,
 ) -> CallHierarchyItem {
     let range_span = body_span.unwrap_or(name_span);
     CallHierarchyItem {
         name: name.to_string(),
         kind: SymbolKind::METHOD,
         tags: None,
-        detail: None,
+        detail,
         uri: uri.clone(),
         range: text_index.span_to_lsp_range(range_span),
         selection_range: text_index.span_to_lsp_range(name_span),
         data: None,
     }
+}
+
+fn call_hierarchy_method_detail(text: &str, name: &str, name_span: Span) -> Option<String> {
+    let analysis = analyze(text);
+    if let Some(method) = analysis.methods.iter().find(|m| m.name_span == name_span) {
+        return Some(format_method_signature(method));
+    }
+    if let Some(method) = analysis
+        .methods
+        .iter()
+        .find(|m| m.name == name && span_contains(m.name_span, name_span.start))
+    {
+        return Some(format_method_signature(method));
+    }
+    Some(format!("{name}()"))
 }
 
 fn parsed_method_by_name<'a>(
