@@ -1144,8 +1144,7 @@ fn record_body_references(
                     let Some(method) = methods.first().map(|m| m.id) else {
                         return;
                     };
-                    let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Method(method))
-                    else {
+                    let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Method(method)) else {
                         return;
                     };
                     let range = TextRange::new(name_range.start, name_range.end);
@@ -1176,8 +1175,7 @@ fn record_body_references(
                 let Some(method) = methods.first().map(|m| m.id) else {
                     return;
                 };
-                let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Method(method))
-                else {
+                let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Method(method)) else {
                     return;
                 };
                 let range = TextRange::new(name_range.start, name_range.end);

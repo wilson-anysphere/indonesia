@@ -354,6 +354,11 @@ where
     }
 }
 
+// Explicit impls for `DynDb` (`dyn nova_db::Database + Send + Sync`).
+//
+// We keep these separate from the generic `DB` impls above because `Arc<DB>` cannot
+// be coerced into an `Arc<dyn nova_db::Database + Send + Sync>` when `DB` itself is
+// an unsized trait object type parameter.
 impl DiagnosticProvider<dyn nova_db::Database + Send + Sync> for FrameworkAnalyzerRegistryProvider {
     fn id(&self) -> &str {
         FRAMEWORK_ANALYZER_REGISTRY_PROVIDER_ID
@@ -469,6 +474,7 @@ impl InlayHintProvider<dyn nova_db::Database + Send + Sync> for FrameworkAnalyze
             .collect()
     }
 }
+
 pub struct IdeExtensions<DB: ?Sized + Send + Sync + 'static> {
     db: Arc<DB>,
     config: Arc<NovaConfig>,
@@ -588,6 +594,24 @@ where
     where
         FrameworkAnalyzerRegistryProvider: DiagnosticProvider<DB> + CompletionProvider<DB>,
     {
+        let mut this = Self::new(db, config, project);
+        let registry = this.registry_mut();
+        let _ = registry.register_diagnostic_provider(Arc::new(FrameworkDiagnosticProvider));
+        let _ = registry.register_completion_provider(Arc::new(FrameworkCompletionProvider));
+
+        let provider = FrameworkAnalyzerRegistryProvider::empty().into_arc();
+        let _ = registry.register_diagnostic_provider(provider.clone());
+        let _ = registry.register_completion_provider(provider);
+        this
+    }
+}
+
+impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
+    pub fn with_default_registry(
+        db: Arc<dyn nova_db::Database + Send + Sync>,
+        config: Arc<NovaConfig>,
+        project: ProjectId,
+    ) -> Self {
         let mut this = Self::new(db, config, project);
         let registry = this.registry_mut();
         let _ = registry.register_diagnostic_provider(Arc::new(FrameworkDiagnosticProvider));
