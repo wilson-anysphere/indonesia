@@ -987,6 +987,7 @@ where
             // for the whole file.
             actions.extend(type_mismatch_quick_fixes_from_context(
                 source,
+                &cancel,
                 &uri,
                 span,
                 context_diagnostics,
