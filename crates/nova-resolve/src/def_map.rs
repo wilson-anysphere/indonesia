@@ -139,6 +139,121 @@ impl DefMap {
         &self.errors
     }
 
+    /// Best-effort estimate of heap memory usage of this definition map in bytes.
+    ///
+    /// This is intended for cheap, deterministic memory accounting (e.g. Nova's
+    /// `nova-memory` budgets). The heuristic is not exact; it intentionally
+    /// prioritizes stability over precision.
+    #[must_use]
+    pub fn estimated_bytes(&self) -> u64 {
+        use std::mem::size_of;
+
+        fn name_bytes(name: &Name) -> u64 {
+            name.as_str().len() as u64
+        }
+
+        fn package_bytes(pkg: &PackageName) -> u64 {
+            let mut bytes = (pkg.segments().len() as u64).saturating_mul(size_of::<Name>() as u64);
+            for seg in pkg.segments() {
+                bytes = bytes.saturating_add(name_bytes(seg));
+            }
+            bytes
+        }
+
+        fn qualified_bytes(path: &QualifiedName) -> u64 {
+            let mut bytes = (path.segments().len() as u64).saturating_mul(size_of::<Name>() as u64);
+            for seg in path.segments() {
+                bytes = bytes.saturating_add(name_bytes(seg));
+            }
+            bytes
+        }
+
+        fn import_bytes(import: &Import) -> u64 {
+            match import {
+                Import::TypeSingle { ty } => qualified_bytes(ty),
+                Import::TypeStar { path } => qualified_bytes(path),
+                Import::StaticSingle { ty, member } => {
+                    qualified_bytes(ty).saturating_add(name_bytes(member))
+                }
+                Import::StaticStar { ty } => qualified_bytes(ty),
+            }
+        }
+
+        fn error_bytes(err: &DefMapError) -> u64 {
+            match err {
+                DefMapError::DuplicateTopLevelType { name, .. } => name_bytes(name),
+                DefMapError::DuplicateNestedType { name, .. } => name_bytes(name),
+                DefMapError::DuplicateField { name, .. } => name_bytes(name),
+                DefMapError::MalformedStaticImport { path } => path.len() as u64,
+            }
+        }
+
+        let mut bytes = 0u64;
+
+        if let Some(pkg) = &self.package {
+            bytes = bytes.saturating_add(package_bytes(pkg));
+        }
+
+        bytes = bytes.saturating_add(
+            (self.imports.capacity() as u64).saturating_mul(size_of::<Import>() as u64),
+        );
+        for import in &self.imports {
+            bytes = bytes.saturating_add(import_bytes(import));
+        }
+
+        bytes = bytes.saturating_add(
+            (self.top_level_types.capacity() as u64)
+                .saturating_mul(size_of::<(Name, ItemId)>() as u64),
+        );
+        bytes = bytes.saturating_add(self.top_level_types.capacity() as u64);
+        for (name, _) in &self.top_level_types {
+            bytes = bytes.saturating_add(name_bytes(name));
+        }
+
+        bytes = bytes.saturating_add((self.types.capacity() as u64).saturating_mul(size_of::<(
+            ItemId,
+            TypeDef,
+        )>()
+            as u64));
+        bytes = bytes.saturating_add(self.types.capacity() as u64);
+        for (_, ty) in &self.types {
+            bytes = bytes.saturating_add(ty.estimated_bytes());
+        }
+
+        bytes = bytes.saturating_add(
+            (self.field_owners.capacity() as u64)
+                .saturating_mul(size_of::<(FieldId, ItemId)>() as u64),
+        );
+        bytes = bytes.saturating_add(self.field_owners.capacity() as u64);
+
+        bytes = bytes.saturating_add(
+            (self.method_owners.capacity() as u64)
+                .saturating_mul(size_of::<(MethodId, ItemId)>() as u64),
+        );
+        bytes = bytes.saturating_add(self.method_owners.capacity() as u64);
+
+        bytes = bytes.saturating_add(
+            (self.constructor_owners.capacity() as u64)
+                .saturating_mul(size_of::<(ConstructorId, ItemId)>() as u64),
+        );
+        bytes = bytes.saturating_add(self.constructor_owners.capacity() as u64);
+
+        bytes = bytes.saturating_add(
+            (self.initializer_owners.capacity() as u64)
+                .saturating_mul(size_of::<(InitializerId, ItemId)>() as u64),
+        );
+        bytes = bytes.saturating_add(self.initializer_owners.capacity() as u64);
+
+        bytes = bytes.saturating_add(
+            (self.errors.capacity() as u64).saturating_mul(size_of::<DefMapError>() as u64),
+        );
+        for err in &self.errors {
+            bytes = bytes.saturating_add(error_bytes(err));
+        }
+
+        bytes
+    }
+
     #[must_use]
     pub fn type_def(&self, id: ItemId) -> Option<&TypeDef> {
         self.types.get(&id)

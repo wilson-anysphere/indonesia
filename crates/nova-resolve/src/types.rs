@@ -58,7 +58,7 @@ impl TypeDef {
             name.as_str().len() as u64
         }
 
-        let mut bytes = size_of::<TypeDef>() as u64;
+        let mut bytes = 0u64;
 
         bytes = bytes.saturating_add(name_bytes(&self.name));
         bytes = bytes.saturating_add(self.binary_name.as_str().len() as u64);

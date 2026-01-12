@@ -177,6 +177,7 @@ fn def_map(db: &dyn NovaResolve, file: FileId) -> Arc<nova_resolve::DefMap> {
     let tree = db.hir_item_tree(file);
     let map = nova_resolve::DefMap::from_item_tree(file, &tree);
     let result = Arc::new(map);
+    db.record_salsa_memo_bytes(file, TrackedSalsaMemo::DefMap, result.estimated_bytes());
     db.record_query_stat("def_map", start.elapsed());
     result
 }
@@ -192,6 +193,7 @@ fn import_map(db: &dyn NovaResolve, file: FileId) -> Arc<nova_resolve::ImportMap
     let tree = db.hir_item_tree(file);
     let map = nova_resolve::ImportMap::from_item_tree(&tree);
     let result = Arc::new(map);
+    db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ImportMap, result.estimated_bytes());
     db.record_query_stat("import_map", start.elapsed());
     result
 }

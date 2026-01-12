@@ -76,6 +76,66 @@ impl ImportMap {
 
         out
     }
+
+    /// Best-effort estimate of heap memory usage of this import map in bytes.
+    ///
+    /// This is intended for cheap, deterministic memory accounting (e.g. Nova's
+    /// `nova-memory` budgets). The heuristic is not exact; it intentionally
+    /// prioritizes stability over precision.
+    #[must_use]
+    pub fn estimated_bytes(&self) -> u64 {
+        use std::mem::size_of;
+
+        fn name_bytes(name: &Name) -> u64 {
+            name.as_str().len() as u64
+        }
+
+        fn qualified_bytes(path: &QualifiedName) -> u64 {
+            let mut bytes = (path.segments().len() as u64).saturating_mul(size_of::<Name>() as u64);
+            for seg in path.segments() {
+                bytes = bytes.saturating_add(name_bytes(seg));
+            }
+            bytes
+        }
+
+        let mut bytes = 0u64;
+
+        bytes = bytes.saturating_add(
+            (self.type_single.capacity() as u64)
+                .saturating_mul(size_of::<TypeSingleImport>() as u64),
+        );
+        for import in &self.type_single {
+            bytes = bytes.saturating_add(qualified_bytes(&import.path));
+            bytes = bytes.saturating_add(name_bytes(&import.imported));
+        }
+
+        bytes = bytes.saturating_add(
+            (self.type_star.capacity() as u64).saturating_mul(size_of::<TypeStarImport>() as u64),
+        );
+        for import in &self.type_star {
+            bytes = bytes.saturating_add(qualified_bytes(&import.path));
+        }
+
+        bytes = bytes.saturating_add(
+            (self.static_single.capacity() as u64)
+                .saturating_mul(size_of::<StaticSingleImport>() as u64),
+        );
+        for import in &self.static_single {
+            bytes = bytes.saturating_add(qualified_bytes(&import.ty));
+            bytes = bytes.saturating_add(name_bytes(&import.member));
+            bytes = bytes.saturating_add(name_bytes(&import.imported));
+        }
+
+        bytes = bytes.saturating_add(
+            (self.static_star.capacity() as u64)
+                .saturating_mul(size_of::<StaticStarImport>() as u64),
+        );
+        for import in &self.static_star {
+            bytes = bytes.saturating_add(qualified_bytes(&import.ty));
+        }
+
+        bytes
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -268,6 +268,13 @@ pub enum TrackedSalsaMemo {
     /// many files (e.g. during analysis/typeck), so we track it separately from
     /// the HIR item tree.
     ScopeGraph,
+    /// File-level definition map produced by [`NovaResolve::def_map`].
+    ///
+    /// This can be large in projects with many types and members, so we account
+    /// for it separately from the HIR item tree.
+    DefMap,
+    /// File-level import map produced by [`NovaResolve::import_map`].
+    ImportMap,
     /// Per-file `ProjectIndexes` fragment produced by [`NovaIndexing::file_index_delta`].
     ///
     /// This can be large in projects with many symbols and references, so we
@@ -377,6 +384,10 @@ struct FileMemoBytes {
     hir_item_tree: u64,
     /// Bytes recorded for the `scope_graph` memo.
     scope_graph: u64,
+    /// Bytes recorded for the `def_map` memo.
+    def_map: u64,
+    /// Bytes recorded for the `import_map` memo.
+    import_map: u64,
     file_index_delta: u64,
 }
 
@@ -402,6 +413,8 @@ impl FileMemoBytes {
             + self.item_tree.unwrap_or(0)
             + self.hir_item_tree
             + self.scope_graph
+            + self.def_map
+            + self.import_map
             + self.file_index_delta
     }
 }
@@ -453,6 +466,8 @@ impl SalsaMemoFootprint {
             TrackedSalsaMemo::ItemTree => entry.item_tree = Some(bytes),
             TrackedSalsaMemo::HirItemTree => entry.hir_item_tree = bytes,
             TrackedSalsaMemo::ScopeGraph => entry.scope_graph = bytes,
+            TrackedSalsaMemo::DefMap => entry.def_map = bytes,
+            TrackedSalsaMemo::ImportMap => entry.import_map = bytes,
             TrackedSalsaMemo::FileIndexDelta => entry.file_index_delta = bytes,
         }
 
@@ -4796,7 +4811,9 @@ class Foo {
         for (idx, file) in files.iter().copied().enumerate() {
             db.set_file_text(
                 file,
-                format!("package test; class C{idx} {{ int x = {idx}; int y = {idx}; }}"),
+                format!(
+                    "package test;\nimport java.util.List;\nimport static java.lang.Math.max;\nclass C{idx} {{ int x = {idx}; int y = {idx}; }}"
+                ),
             );
             db.set_file_rel_path(file, Arc::new(format!("src/C{idx}.java")));
         }
@@ -4865,6 +4882,32 @@ class Foo {
             "expected scope_graph memos to increase tracked bytes"
         );
 
+        // New tracking: per-file definition maps.
+        db.with_snapshot(|snap| {
+            for file in &files {
+                let _ = snap.def_map(*file);
+            }
+        });
+
+        let after_def_map_bytes = db.salsa_memo_bytes();
+        assert!(
+            after_def_map_bytes > after_scope_bytes,
+            "expected def_map memos to increase tracked bytes"
+        );
+
+        // New tracking: per-file import maps.
+        db.with_snapshot(|snap| {
+            for file in &files {
+                let _ = snap.import_map(*file);
+            }
+        });
+
+        let after_import_map_bytes = db.salsa_memo_bytes();
+        assert!(
+            after_import_map_bytes > after_def_map_bytes,
+            "expected import_map memos to increase tracked bytes"
+        );
+
         // New tracking: per-file index deltas.
         db.with_snapshot(|snap| {
             for file in &files {
@@ -4874,7 +4917,7 @@ class Foo {
 
         let after_index_bytes = db.salsa_memo_bytes();
         assert!(
-            after_index_bytes > after_scope_bytes,
+            after_index_bytes > after_import_map_bytes,
             "expected file_index_delta memos to increase tracked bytes"
         );
 
@@ -4909,6 +4952,8 @@ class Foo {
 
         let hir_exec_before = executions(&db.inner.lock(), "hir_item_tree");
         let scope_exec_before = executions(&db.inner.lock(), "scope_graph");
+        let def_map_exec_before = executions(&db.inner.lock(), "def_map");
+        let import_map_exec_before = executions(&db.inner.lock(), "import_map");
         let delta_exec_before = executions(&db.inner.lock(), "file_index_delta");
         let shard_exec_before = executions(&db.inner.lock(), "project_index_shards");
         let project_exec_before = executions(&db.inner.lock(), "project_indexes");
@@ -4919,6 +4964,8 @@ class Foo {
             for file in &files {
                 let _ = snap.hir_item_tree(*file);
                 let _ = snap.scope_graph(*file);
+                let _ = snap.def_map(*file);
+                let _ = snap.import_map(*file);
                 let _ = snap.file_index_delta(*file);
             }
             let _ = snap.project_indexes(project);
@@ -4938,6 +4985,16 @@ class Foo {
             executions(&db.inner.lock(), "scope_graph"),
             scope_exec_before,
             "expected cached scope_graph results prior to eviction"
+        );
+        assert_eq!(
+            executions(&db.inner.lock(), "def_map"),
+            def_map_exec_before,
+            "expected cached def_map results prior to eviction"
+        );
+        assert_eq!(
+            executions(&db.inner.lock(), "import_map"),
+            import_map_exec_before,
+            "expected cached import_map results prior to eviction"
         );
         assert_eq!(
             executions(&db.inner.lock(), "project_index_shards"),
@@ -4966,6 +5023,8 @@ class Foo {
         // Ensure queries recompute after eviction.
         let hir_exec_after_evict = executions(&db.inner.lock(), "hir_item_tree");
         let scope_exec_after_evict = executions(&db.inner.lock(), "scope_graph");
+        let def_map_exec_after_evict = executions(&db.inner.lock(), "def_map");
+        let import_map_exec_after_evict = executions(&db.inner.lock(), "import_map");
         let delta_exec_after_evict = executions(&db.inner.lock(), "file_index_delta");
         let shard_exec_after_evict = executions(&db.inner.lock(), "project_index_shards");
         let project_exec_after_evict = executions(&db.inner.lock(), "project_indexes");
@@ -4973,6 +5032,8 @@ class Foo {
         db.with_snapshot(|snap| {
             let _ = snap.hir_item_tree(files[0]);
             let _ = snap.scope_graph(files[0]);
+            let _ = snap.def_map(files[0]);
+            let _ = snap.import_map(files[0]);
             let _ = snap.file_index_delta(files[0]);
             let _ = snap.project_indexes(project);
             let _ = snap.workspace_def_map(project);
@@ -4988,6 +5049,14 @@ class Foo {
         assert!(
             executions(&db.inner.lock(), "scope_graph") > scope_exec_after_evict,
             "expected scope_graph to re-execute after memo eviction"
+        );
+        assert!(
+            executions(&db.inner.lock(), "def_map") > def_map_exec_after_evict,
+            "expected def_map to re-execute after memo eviction"
+        );
+        assert!(
+            executions(&db.inner.lock(), "import_map") > import_map_exec_after_evict,
+            "expected import_map to re-execute after memo eviction"
         );
         assert!(
             executions(&db.inner.lock(), "project_index_shards") > shard_exec_after_evict,

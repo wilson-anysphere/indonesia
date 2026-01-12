@@ -187,7 +187,7 @@ impl WorkspaceDefMap {
             bytes
         }
 
-        let mut bytes = size_of::<WorkspaceDefMap>() as u64;
+        let mut bytes = 0u64;
 
         // items_by_type_name: HashMap<TypeName, ItemId>
         bytes = bytes.saturating_add(
