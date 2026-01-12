@@ -1307,6 +1307,19 @@ impl WorkspaceEngine {
             return;
         }
 
+        // Normalize incoming watcher paths so:
+        // - drive letter case on Windows (`c:` vs `C:`) doesn't affect prefix checks
+        // - dot segments (`a/../b`) don't prevent directory-event expansion
+        //
+        // This is purely lexical normalization via `VfsPath::local` (does not resolve symlinks).
+        let normalize_local_path = |path: PathBuf| -> PathBuf {
+            match VfsPath::local(path) {
+                VfsPath::Local(path) => path,
+                // `VfsPath::local` always returns the local variant.
+                _ => unreachable!("VfsPath::local produced a non-local path"),
+            }
+        };
+
         // Coalesce noisy watcher streams by processing each path at most once per batch.
         //
         // Note: watcher backends can emit directory-level events (folder move/delete) without
@@ -1320,6 +1333,7 @@ impl WorkspaceEngine {
         // Helper: return the set of *known* local file paths that are under `dir`.
         // This must not allocate new `FileId`s.
         let known_files_under_dir = |dir: &Path| -> Vec<PathBuf> {
+            let dir = normalize_local_path(dir.to_path_buf());
             let mut files = Vec::new();
             for file_id in self.vfs.all_file_ids() {
                 let Some(vfs_path) = self.vfs.path_for_id(file_id) else {
@@ -1328,11 +1342,11 @@ impl WorkspaceEngine {
                 let Some(local) = vfs_path.as_local_path() else {
                     continue;
                 };
-                if local == dir {
+                if local == dir.as_path() {
                     // Defensive: skip ids accidentally allocated for directories.
                     continue;
                 }
-                if local.starts_with(dir) {
+                if local.starts_with(&dir) {
                     files.push(local.to_path_buf());
                 }
             }
@@ -1344,6 +1358,9 @@ impl WorkspaceEngine {
         for event in events {
             match event {
                 NormalizedEvent::Moved { from, to } => {
+                    let from = normalize_local_path(from);
+                    let to = normalize_local_path(to);
+
                     if is_module_info_java(&from) {
                         module_info_changes.insert(from.clone());
                     }
@@ -1397,6 +1414,7 @@ impl WorkspaceEngine {
                     }
                 }
                 NormalizedEvent::Created(path) | NormalizedEvent::Modified(path) => {
+                    let path = normalize_local_path(path);
                     if is_module_info_java(&path) {
                         module_info_changes.insert(path.clone());
                     }
@@ -1416,6 +1434,7 @@ impl WorkspaceEngine {
                     }
                 }
                 NormalizedEvent::Deleted(path) => {
+                    let path = normalize_local_path(path);
                     if is_module_info_java(&path) {
                         module_info_changes.insert(path.clone());
                     }
@@ -5235,9 +5254,11 @@ mod tests {
         fs::create_dir_all(to_dir.parent().unwrap()).unwrap();
         fs::rename(&from_dir, &to_dir).unwrap();
 
+        let from_event = from_dir.join("..").join("foo");
+        let to_event = to_dir.join("..").join("bar");
         workspace.apply_filesystem_events(vec![NormalizedEvent::Moved {
-            from: from_dir.clone(),
-            to: to_dir.clone(),
+            from: from_event,
+            to: to_event,
         }]);
 
         let a_to = to_dir.join("A.java");
@@ -5304,7 +5325,8 @@ mod tests {
         });
 
         fs::remove_dir_all(&src_dir).unwrap();
-        workspace.apply_filesystem_events(vec![NormalizedEvent::Deleted(src_dir.clone())]);
+        let delete_event = src_dir.join("..").join("example");
+        workspace.apply_filesystem_events(vec![NormalizedEvent::Deleted(delete_event)]);
 
         // Directory deletes should not allocate ids for the directory path itself.
         assert_eq!(engine.vfs.get_id(&VfsPath::local(src_dir.clone())), None);

@@ -101,7 +101,16 @@ impl WatchConfig {
 }
 
 pub fn categorize_event(config: &WatchConfig, event: &NormalizedEvent) -> Option<ChangeCategory> {
-    for path in event.paths() {
+    // Normalize event paths before categorization so drive-letter case (`c:` vs `C:` on Windows)
+    // and dot segments (`a/../b`) don't affect source-root/build-file matching.
+    //
+    // This does **not** resolve symlinks; it is purely lexical normalization via `nova-vfs`.
+    let paths: Vec<PathBuf> = event
+        .paths()
+        .map(|path| normalize_watch_path(path.to_path_buf()))
+        .collect();
+
+    for path in &paths {
         if config
             .nova_config_path
             .as_ref()
@@ -133,7 +142,7 @@ pub fn categorize_event(config: &WatchConfig, event: &NormalizedEvent) -> Option
     };
 
     // We primarily index Java sources.
-    for path in event.paths() {
+    for path in &paths {
         if path.extension().and_then(|s| s.to_str()) == Some("java") && is_in_source_tree(path) {
             return Some(ChangeCategory::Source);
         }
@@ -142,7 +151,7 @@ pub fn categorize_event(config: &WatchConfig, event: &NormalizedEvent) -> Option
     // Directory-level watcher events (rename/move/delete) can arrive without per-file events.
     // Treat directory events inside the source tree as Source changes so the workspace engine can
     // expand them into file-level operations without allocating bogus `FileId`s.
-    for path in event.paths() {
+    for path in &paths {
         if path.is_dir() && is_in_source_tree(path) {
             return Some(ChangeCategory::Source);
         }
@@ -153,13 +162,16 @@ pub fn categorize_event(config: &WatchConfig, event: &NormalizedEvent) -> Option
     // workspace engine can decide whether it corresponds to a tracked directory.
     match event {
         NormalizedEvent::Deleted(path) => {
-            if path.extension().is_none() && is_in_source_tree(path) {
+            let path = normalize_watch_path(path.to_path_buf());
+            if path.extension().is_none() && is_in_source_tree(&path) {
                 return Some(ChangeCategory::Source);
             }
         }
         NormalizedEvent::Moved { from, to } => {
-            if (from.extension().is_none() && is_in_source_tree(from))
-                || (to.extension().is_none() && is_in_source_tree(to))
+            let from = normalize_watch_path(from.to_path_buf());
+            let to = normalize_watch_path(to.to_path_buf());
+            if (from.extension().is_none() && is_in_source_tree(&from))
+                || (to.extension().is_none() && is_in_source_tree(&to))
             {
                 return Some(ChangeCategory::Source);
             }
@@ -653,6 +665,18 @@ mod tests {
             categorize_event(&config, &event),
             Some(ChangeCategory::Source)
         );
+    }
+
+    #[test]
+    fn event_paths_with_dotdot_segments_match_configured_roots() {
+        let config = WatchConfig::with_roots(
+            PathBuf::from("/tmp/ws"),
+            Vec::new(),
+            vec![PathBuf::from("/tmp/ws/gen")],
+        );
+
+        let event = NormalizedEvent::Modified(PathBuf::from("/tmp/ws/module/../gen/A.java"));
+        assert_eq!(categorize_event(&config, &event), Some(ChangeCategory::Source));
     }
 
     #[test]
