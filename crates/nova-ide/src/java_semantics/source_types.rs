@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use nova_core::FileId;
 use nova_hir::ast_id::AstIdMap;
-use nova_hir::item_tree::{Item, ItemTree, Member, Modifiers};
+use nova_hir::item_tree::{FieldKind, Item, ItemTree, Member, Modifiers};
 use nova_hir::lowering::lower_item_tree;
 use nova_types::{
     ClassDef, ClassKind, ConstructorDef, FieldDef, MethodDef, PrimitiveType, Type, TypeEnv,
@@ -156,8 +156,17 @@ fn collect_class_defs(
         match *member {
             Member::Field(id) => {
                 let data = tree.field(id);
-                let is_static = data.modifiers.raw & Modifiers::STATIC != 0;
-                let is_final = data.modifiers.raw & Modifiers::FINAL != 0;
+                let (is_static, is_final) = match data.kind {
+                    FieldKind::EnumConstant => (true, true),
+                    FieldKind::RecordComponent => (false, true),
+                    FieldKind::Field => {
+                        let raw = data.modifiers.raw;
+                        (
+                            raw & Modifiers::STATIC != 0,
+                            raw & Modifiers::FINAL != 0,
+                        )
+                    }
+                };
                 fields.push(FieldDef {
                     name: data.name.clone(),
                     ty: parse_type_ref(ctx, store, &data.ty),

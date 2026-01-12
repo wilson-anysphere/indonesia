@@ -153,3 +153,29 @@ class Statics {
         .expect("method util should exist");
     assert!(method.is_static);
 }
+
+#[test]
+fn source_types_lower_enum_constants_as_static_final_fields() {
+    let mut store = TypeStore::with_minimal_jdk();
+    let mut source = SourceTypeProvider::new();
+
+    source.update_file(
+        &mut store,
+        PathBuf::from("/p/Color.java"),
+        r#"
+package p;
+enum Color { RED, GREEN }
+"#,
+    );
+
+    let color_id = store.class_id("p.Color").expect("expected p.Color to be defined");
+    let color = store.class(color_id).expect("expected p.Color class def");
+
+    let red = color
+        .fields
+        .iter()
+        .find(|f| f.name == "RED")
+        .expect("expected enum constant RED to be lowered as a field");
+    assert!(red.is_static);
+    assert!(red.is_final);
+}
