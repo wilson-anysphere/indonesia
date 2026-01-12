@@ -2825,7 +2825,13 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     };
                 };
                 let tree = self.db.hir_item_tree(field.file);
-                let name = tree.field(field).name.clone();
+                let Some(field_def) = tree.fields.get(&field.ast_id) else {
+                    return ExprInfo {
+                        ty: Type::Unknown,
+                        is_type_ref: false,
+                    };
+                };
+                let name = field_def.name.clone();
                 (owner, name)
             }
             StaticMemberResolution::SourceMethod(method) => {
@@ -2836,7 +2842,13 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     };
                 };
                 let tree = self.db.hir_item_tree(method.file);
-                let name = tree.method(method).name.clone();
+                let Some(method_def) = tree.methods.get(&method.ast_id) else {
+                    return ExprInfo {
+                        ty: Type::Unknown,
+                        is_type_ref: false,
+                    };
+                };
+                let name = method_def.name.clone();
                 (owner, name)
             }
         };

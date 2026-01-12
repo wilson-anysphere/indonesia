@@ -1176,6 +1176,55 @@ fn static_import_resolves_workspace_members_across_files() {
 }
 
 #[test]
+fn static_single_import_resolves_workspace_members_across_files() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let a_file = FileId::from_raw(1);
+    let b_file = FileId::from_raw(2);
+
+    let src_a = r#"
+package p;
+class A {
+  static int F = 1;
+  static String m(int x) { return "x"; }
+}
+"#;
+    let src_b = r#"
+package p;
+import static p.A.F;
+import static p.A.m;
+class B {
+  void test() {
+    int x = F;
+    String s = m(1);
+  }
+}
+"#;
+
+    set_file(&mut db, project, a_file, "src/p/A.java", src_a);
+    set_file(&mut db, project, b_file, "src/p/B.java", src_b);
+    db.set_project_files(project, Arc::new(vec![a_file, b_file]));
+
+    let diags = db.type_diagnostics(b_file);
+    assert!(
+        !diags.iter().any(|d| {
+            (d.code.as_ref() == "unresolved-name" || d.code.as_ref() == "unresolved-method")
+                && (d.message.contains("`F`") || d.message.contains("`m`"))
+        }),
+        "expected static imports to resolve without unresolved-name/unresolved-method; got {diags:?}"
+    );
+}
+
+#[test]
 fn cross_file_signature_type_resolves_in_same_package() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
