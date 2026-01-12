@@ -24,7 +24,7 @@ struct Cli {
     /// Note: `--listen` is only supported for the default (wire-level) adapter.
     /// `--legacy --listen` is rejected.
     #[arg(long)]
-    listen: Option<SocketAddr>,
+    listen: Option<ListenAddr>,
 
     /// Path to a TOML config file.
     ///
@@ -32,6 +32,59 @@ struct Cli {
     /// the adapter uses in-memory defaults.
     #[arg(long)]
     config: Option<PathBuf>,
+}
+
+/// Socket address argument for `--listen`.
+///
+/// We accept:
+/// - `127.0.0.1:4711` (IPv4)
+/// - `[::1]:4711` (IPv6)
+/// - `localhost:4711` (hostname)
+///
+/// We intentionally reject `:4711` to avoid accidentally binding to a public
+/// interface due to an omitted host.
+#[derive(Debug, Clone)]
+struct ListenAddr(String);
+
+impl ListenAddr {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::str::FromStr for ListenAddr {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        if s.is_empty() {
+            return Err("expected host:port (e.g. 127.0.0.1:0)".to_string());
+        }
+
+        // Fast path: accept standard socket address formats (IPv4 and bracketed IPv6).
+        if s.parse::<SocketAddr>().is_ok() {
+            return Ok(Self(s.to_string()));
+        }
+
+        if s.starts_with(':') {
+            return Err("expected host:port (e.g. 127.0.0.1:0), not just :port".to_string());
+        }
+
+        // Hostname support: validate a basic `host:port` shape.
+        let Some((host, port)) = s.rsplit_once(':') else {
+            return Err("expected host:port (e.g. 127.0.0.1:0)".to_string());
+        };
+        if host.is_empty() || port.is_empty() {
+            return Err("expected host:port (e.g. 127.0.0.1:0)".to_string());
+        }
+        if host.contains(['[', ']', ':']) {
+            return Err("invalid listen address; use `[::1]:4711` for IPv6".to_string());
+        }
+        port.parse::<u16>()
+            .map_err(|_| format!("invalid port {port:?} in listen address"))?;
+
+        Ok(Self(s.to_string()))
+    }
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
@@ -62,8 +115,36 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn run_tcp(addr: SocketAddr) -> anyhow::Result<()> {
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+async fn run_tcp(addr: ListenAddr) -> anyhow::Result<()> {
+    // Prefer IPv4 addresses (e.g. for `localhost`) when multiple results are returned.
+    // This keeps the output stable (`127.0.0.1:<port>`) and avoids surprises for
+    // clients that don't expect bracketed IPv6 socket addresses.
+    let mut addrs = tokio::net::lookup_host(addr.as_str())
+        .await?
+        .collect::<Vec<_>>();
+    addrs.sort_by_key(|addr| match addr {
+        SocketAddr::V4(_) => 0,
+        SocketAddr::V6(_) => 1,
+    });
+
+    let mut last_error = None;
+    let mut listener = None;
+    for addr in addrs {
+        match tokio::net::TcpListener::bind(addr).await {
+            Ok(bound) => {
+                listener = Some(bound);
+                break;
+            }
+            Err(err) => last_error = Some(err),
+        }
+    }
+
+    let Some(listener) = listener else {
+        return Err(anyhow::Error::from(last_error.unwrap_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::AddrNotAvailable, "no addresses to bind")
+        })));
+    };
+
     let bound = listener.local_addr()?;
     eprintln!("listening on {bound}");
 

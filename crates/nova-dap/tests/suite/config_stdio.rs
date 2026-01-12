@@ -88,6 +88,15 @@ fn legacy_listen_is_rejected() {
 
 #[tokio::test]
 async fn tcp_server_listens_and_speaks_dap() {
+    tcp_server_listens_and_speaks_dap_inner("127.0.0.1:0").await;
+}
+
+#[tokio::test]
+async fn tcp_server_listen_accepts_hostname() {
+    tcp_server_listens_and_speaks_dap_inner("localhost:0").await;
+}
+
+async fn tcp_server_listens_and_speaks_dap_inner(listen_arg: &str) {
     use nova_dap::dap_tokio::{DapReader, DapWriter};
     use tokio::io::{AsyncBufReadExt, AsyncReadExt};
     use tokio::net::TcpStream;
@@ -96,7 +105,7 @@ async fn tcp_server_listens_and_speaks_dap() {
 
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_nova-dap"))
         .arg("--listen")
-        .arg("127.0.0.1:0")
+        .arg(listen_arg)
         .env_remove("NOVA_CONFIG")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
