@@ -5,6 +5,7 @@ import {
   formatUnsupportedNovaMethodMessage,
   getSupportedNovaRequests,
   isNovaMethodNotFoundError,
+  isNovaNotificationSupported,
   isNovaRequestSupported,
   parseNovaExperimentalCapabilities,
   resetNovaExperimentalCapabilities,
@@ -83,16 +84,29 @@ test('resetNovaExperimentalCapabilities clears only the given workspace key', ()
   resetNovaExperimentalCapabilities('workspace-b');
 
   setNovaExperimentalCapabilities('workspace-a', {
-    capabilities: { experimental: { nova: { requests: ['nova/test/run'], notifications: [] } } },
+    capabilities: { experimental: { nova: { requests: ['nova/test/run'], notifications: ['nova/safeModeChanged'] } } },
   });
   setNovaExperimentalCapabilities('workspace-b', {
-    capabilities: { experimental: { nova: { requests: ['nova/test/discover'], notifications: [] } } },
+    capabilities: { experimental: { nova: { requests: ['nova/test/discover'], notifications: ['nova/memoryStatusChanged'] } } },
   });
 
   resetNovaExperimentalCapabilities('workspace-a');
 
   assert.equal(isNovaRequestSupported('workspace-a', 'nova/test/run'), 'unknown');
   assert.equal(isNovaRequestSupported('workspace-b', 'nova/test/discover'), true);
+  assert.equal(isNovaNotificationSupported('workspace-a', 'nova/safeModeChanged'), 'unknown');
+  assert.equal(isNovaNotificationSupported('workspace-b', 'nova/memoryStatusChanged'), true);
+});
+
+test('isNovaNotificationSupported returns true/false when capability list is known', () => {
+  resetNovaExperimentalCapabilities('workspace-a');
+  setNovaExperimentalCapabilities('workspace-a', {
+    capabilities: { experimental: { nova: { requests: [], notifications: ['nova/safeModeChanged'] } } },
+  });
+
+  assert.equal(isNovaNotificationSupported('workspace-a', 'nova/safeModeChanged'), true);
+  assert.equal(isNovaNotificationSupported('workspace-a', 'nova/memoryStatusChanged'), false);
+  assert.equal(isNovaNotificationSupported('workspace-a', 'textDocument/didOpen'), 'unknown');
 });
 
 test('isNovaMethodNotFoundError detects nova-lsp method-not-found patterns', () => {
