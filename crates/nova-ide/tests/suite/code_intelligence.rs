@@ -3329,6 +3329,35 @@ class A {}
 }
 
 #[test]
+fn completion_in_import_nested_type_segment_with_whitespace_includes_entry() {
+    let text_with_caret = r#"
+import java . util . Map . E<|>;
+class A {}
+"#;
+    let (db, file, pos) = fixture(text_with_caret);
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "Entry")
+        .expect("expected java.util.Map.Entry nested type completion");
+
+    let text = text_with_caret.replace("<|>", "");
+    let segment_start = text
+        .find("Map . E")
+        .expect("expected Map . E in fixture")
+        + "Map . ".len();
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+
+    assert_eq!(edit.range.start, offset_to_position(&text, segment_start));
+    assert_eq!(edit.range.end, pos);
+}
+
+#[test]
 fn completion_type_position_nested_type_includes_entry() {
     let (db, file, pos) = fixture(
         r#"
@@ -3391,6 +3420,26 @@ class A { Map.En<|> e; }
     assert!(
         labels.contains(&"Entry"),
         "expected type-position completion list to contain Map.Entry via star import; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_static_member_on_fully_qualified_type_with_whitespace_includes_empty_list() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void f() {
+    java . util . Collections . empt<|>();
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"emptyList"),
+        "expected completion list to contain java.util.Collections.emptyList even with whitespace around '.'; got {labels:?}"
     );
 }
 

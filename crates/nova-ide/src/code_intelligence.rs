@@ -3709,23 +3709,41 @@ fn import_context(text: &str, offset: usize) -> Option<ImportContext> {
         return None;
     }
 
-    // Avoid trying to complete when the cursor is on whitespace inside the import.
-    let raw_prefix = text.get(path_start..offset)?;
-    if raw_prefix.chars().any(|c| c.is_ascii_whitespace()) {
+    // Avoid trying to complete when the cursor is on whitespace inside the import *unless* it's
+    // whitespace directly after a dot (e.g. `import java.util. <cursor>`).
+    if offset > path_start
+        && text
+            .as_bytes()
+            .get(offset - 1)
+            .is_some_and(|b| (*b as char).is_ascii_whitespace())
+    {
+        let before = skip_whitespace_backwards(text, offset);
+        if before == 0 || text.as_bytes().get(before - 1) != Some(&b'.') {
+            return None;
+        }
+    }
+
+    // Find the current segment prefix using the same identifier scanning logic as general
+    // completions. This ensures `replace_start` points at the actual identifier start even when
+    // there is whitespace after a dot (e.g. `import java.util. Map`).
+    let (replace_start, segment_prefix) = identifier_prefix(text, offset);
+    if replace_start < path_start || replace_start > offset {
         return None;
     }
 
-    let replace_start = match raw_prefix.rfind('.') {
-        Some(dot_rel) => path_start + dot_rel + 1,
-        None => path_start,
-    };
+    let base_prefix: String = text
+        .get(path_start..replace_start)?
+        .chars()
+        .filter(|c| !c.is_ascii_whitespace())
+        .collect();
+    let prefix = format!("{base_prefix}{segment_prefix}");
 
     Some(ImportContext {
         replace_start,
-        prefix: raw_prefix.to_string(),
+        prefix,
         is_static,
-        base_prefix: text.get(path_start..replace_start)?.to_string(),
-        segment_prefix: text.get(replace_start..offset)?.to_string(),
+        base_prefix,
+        segment_prefix,
     })
 }
 
@@ -17555,25 +17573,25 @@ fn method_reference_double_colon_offset(text: &str, prefix_start: usize) -> Opti
 }
 
 pub(crate) fn receiver_before_dot(text: &str, dot_offset: usize) -> String {
-    let bytes = text.as_bytes();
-    let mut end = dot_offset.min(bytes.len());
-    while end > 0
-        && bytes
-            .get(end - 1)
-            .is_some_and(|b| (*b as char).is_ascii_whitespace())
-    {
-        end -= 1;
+    // Prefer the more precise receiver parsing logic used by postfix completions (supports string
+    // literals, numeric literals, and `this`/`super`).
+    if let Some(receiver) = simple_receiver_before_dot(text, dot_offset) {
+        return receiver.expr;
     }
-    let mut start = end;
-    while start > 0 {
-        let ch = bytes.get(start - 1).copied().unwrap_or_default() as char;
-        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '"' || ch == '.' {
-            start -= 1;
-        } else {
-            break;
-        }
+
+    // Fallback: dotted qualified receiver like `java.util.Map` / `pkg.Outer.Inner`.
+    //
+    // Use `dotted_qualifier_prefix` so we tolerate whitespace around dots (`java . util . Map`)
+    // while still producing a whitespace-free dotted name.
+    if dot_offset >= text.len() || text.as_bytes().get(dot_offset) != Some(&b'.') {
+        return String::new();
     }
-    text.get(start..end).unwrap_or("").trim().to_string()
+    let segment_start = skip_whitespace_forwards(text, dot_offset + 1);
+    let (_start, qualifier_prefix) = dotted_qualifier_prefix(text, segment_start);
+    qualifier_prefix
+        .strip_suffix('.')
+        .unwrap_or(qualifier_prefix.as_str())
+        .to_string()
 }
 
 pub(crate) fn receiver_before_double_colon(text: &str, double_colon_offset: usize) -> String {
