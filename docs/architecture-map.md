@@ -36,7 +36,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Distributed mode**: `crates/nova-router/`, `crates/nova-worker/`, `crates/nova-remote-proto/`
 - **Codegen / developer tasks**: `crates/xtask/` (`cargo run --locked -p xtask -- codegen`)
 - **Repo invariants / layering / docs ↔ code checks**: `crates/nova-devtools/`, `scripts/check-repo-invariants.sh`, `crate-layers.toml`
-- **File watching / watcher architecture**: `docs/file-watching.md` (see also `crates/nova-vfs/src/watch.rs`, `crates/nova-workspace/src/engine.rs`, `crates/nova-workspace/src/watch_roots.rs`)
+- **File watching / watcher architecture**: `docs/file-watching.md` (see also `crates/nova-vfs/src/watch.rs`, `crates/nova-workspace/src/engine.rs`, `crates/nova-workspace/src/watch.rs`, `crates/nova-workspace/src/watch_roots.rs`)
 
 ---
 
