@@ -107,6 +107,34 @@ fn validate_extensions(
         return;
     }
 
+    if let Some(allow) = &config.extensions.allow {
+        if allow.is_empty() {
+            out.warnings.push(ConfigWarning::InvalidValue {
+                toml_path: "extensions.allow".to_string(),
+                message: "empty allow list disables all extensions; remove it or set extensions.enabled=false"
+                    .to_string(),
+            });
+        }
+
+        for (idx, pattern) in allow.iter().enumerate() {
+            if pattern.trim().is_empty() {
+                out.warnings.push(ConfigWarning::InvalidValue {
+                    toml_path: format!("extensions.allow[{idx}]"),
+                    message: "must be non-empty".to_string(),
+                });
+            }
+        }
+    }
+
+    for (idx, pattern) in config.extensions.deny.iter().enumerate() {
+        if pattern.trim().is_empty() {
+            out.warnings.push(ConfigWarning::InvalidValue {
+                toml_path: format!("extensions.deny[{idx}]"),
+                message: "must be non-empty".to_string(),
+            });
+        }
+    }
+
     if matches!(config.extensions.wasm_memory_limit_bytes, Some(0)) {
         out.warnings.push(ConfigWarning::InvalidValue {
             toml_path: "extensions.wasm_memory_limit_bytes".to_string(),

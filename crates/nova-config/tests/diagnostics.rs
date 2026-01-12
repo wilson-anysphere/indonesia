@@ -252,6 +252,71 @@ redact_patterns = ["("]
 }
 
 #[test]
+fn warns_when_extensions_allow_is_empty() {
+    let text = r#"
+[extensions]
+enabled = true
+allow = []
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert!(diagnostics.errors.is_empty());
+    assert_eq!(
+        diagnostics.warnings,
+        vec![ConfigWarning::InvalidValue {
+            toml_path: "extensions.allow".to_string(),
+            message:
+                "empty allow list disables all extensions; remove it or set extensions.enabled=false"
+                    .to_string(),
+        }]
+    );
+}
+
+#[test]
+fn warns_when_extensions_allow_contains_empty_pattern() {
+    let text = r#"
+[extensions]
+enabled = true
+allow = [""]
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert!(diagnostics.errors.is_empty());
+    assert_eq!(
+        diagnostics.warnings,
+        vec![ConfigWarning::InvalidValue {
+            toml_path: "extensions.allow[0]".to_string(),
+            message: "must be non-empty".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn warns_when_extensions_deny_contains_empty_pattern() {
+    let text = r#"
+[extensions]
+enabled = true
+deny = [""]
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert!(diagnostics.errors.is_empty());
+    assert_eq!(
+        diagnostics.warnings,
+        vec![ConfigWarning::InvalidValue {
+            toml_path: "extensions.deny[0]".to_string(),
+            message: "must be non-empty".to_string(),
+        }]
+    );
+}
+
+#[test]
 fn validates_extensions_wasm_paths_exist() {
     let dir = tempdir().expect("tempdir");
     let config_path = dir.path().join("nova.toml");
