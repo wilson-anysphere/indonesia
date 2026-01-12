@@ -3546,10 +3546,7 @@ fn instanceof_type_completions(
         });
     }
 
-    let jdk = JDK_INDEX
-        .as_ref()
-        .cloned()
-        .unwrap_or_else(|| Arc::new(JdkIndex::new()));
+    let jdk = jdk_index();
     let classpath = classpath_index_for_file(db, file);
 
     let mut add_binary_type = |binary: String| {
@@ -4121,10 +4118,7 @@ fn qualified_type_name_completions(
 
     let imports = parse_java_imports(java_source);
 
-    let jdk = JDK_INDEX
-        .as_ref()
-        .cloned()
-        .unwrap_or_else(|| Arc::new(JdkIndex::new()));
+    let jdk = jdk_index();
     let fallback_jdk = JdkIndex::new();
 
     let env = completion_cache::completion_env_for_file(db, file);
@@ -6850,10 +6844,7 @@ fn type_completions(
     }
 
     // JDK types.
-    let jdk = JDK_INDEX
-        .as_ref()
-        .cloned()
-        .unwrap_or_else(|| Arc::new(JdkIndex::new()));
+    let jdk = jdk_index();
 
     let mut prefixes = Vec::new();
     if query.qualifier_prefix.is_empty()
@@ -10906,10 +10897,7 @@ fn general_completions(
     // This intentionally does not attempt full Java import/name resolution (which
     // would require a richer semantic model). We only parse `import static ...;`
     // statements and offer the imported members directly as candidates.
-    let jdk = JDK_INDEX
-        .as_ref()
-        .cloned()
-        .unwrap_or_else(|| Arc::new(JdkIndex::new()));
+    let jdk = jdk_index();
     let static_imports = parse_static_imports(&analysis.tokens, jdk.as_ref());
     if !static_imports.is_empty() {
         let mut matcher = FuzzyMatcher::new(prefix);
@@ -12156,7 +12144,7 @@ fn static_import_completion_item(owner: &str, name: &str) -> CompletionItem {
         && !name.chars().any(|c| c.is_ascii_lowercase());
 
     let (kind, insert_text, insert_text_format) = if all_caps {
-        (CompletionItemKind::FIELD, Some(name.to_string()), None)
+        (CompletionItemKind::CONSTANT, Some(name.to_string()), None)
     } else {
         (
             CompletionItemKind::METHOD,
