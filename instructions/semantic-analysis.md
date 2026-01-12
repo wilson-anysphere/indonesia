@@ -26,11 +26,12 @@ This workstream owns Java semantic analysis - the type system, name resolution, 
 
 ## Key Documents
 
-**Required reading:**
-- [06 - Semantic Analysis](../docs/06-semantic-analysis.md) - Type system design
-- [04 - Incremental Computation](../docs/04-incremental-computation.md) - Query architecture
-- [16 - Java Language Levels](../docs/16-java-language-levels.md) - Version-specific semantics
-- [ADR 0011 — Stable `ClassId` and project-level type environments](../docs/adr/0011-stable-classid-and-project-type-environments.md)
+ **Required reading:**
+ - [06 - Semantic Analysis](../docs/06-semantic-analysis.md) - Type system design
+ - [04 - Incremental Computation](../docs/04-incremental-computation.md) - Query architecture
+ - [16 - Java Language Levels](../docs/16-java-language-levels.md) - Version-specific semantics
+ - [ADR 0011 — Stable `ClassId` and project-level type environments](../docs/adr/0011-stable-classid-and-project-type-environments.md)
+ - [ADR 0012 — `ClassId` stability and interning policy](../docs/adr/0012-classid-interning.md)
 
 ---
 
