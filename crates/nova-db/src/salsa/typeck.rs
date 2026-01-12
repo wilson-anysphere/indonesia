@@ -4669,7 +4669,17 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             },
             Resolution::Field(field) => {
                 let tree = self.db.hir_item_tree(field.file);
-                let field_def = tree.field(field);
+                let Some(field_def) = tree.fields.get(&field.ast_id) else {
+                    // Broken HIR / invalid `FieldId` shouldn't crash type checking.
+                    return ExprInfo {
+                        ty: self
+                            .field_types
+                            .get(&field)
+                            .cloned()
+                            .unwrap_or(Type::Unknown),
+                        is_type_ref: false,
+                    };
+                };
 
                 // Enum constants are implicitly `static final`, and interface fields are implicitly
                 // `public static final`. Model both here so static-context diagnostics don't fire
