@@ -47,6 +47,7 @@ pub struct TypeParam {
     pub name: String,
     pub name_range: Span,
     pub bounds: Vec<String>,
+    pub bounds_ranges: Vec<Span>,
 }
 
 impl PartialEq for TypeParam {
@@ -333,8 +334,11 @@ pub struct Class {
     pub annotations: Vec<AnnotationUse>,
     pub type_params: Vec<TypeParam>,
     pub extends: Vec<String>,
+    pub extends_ranges: Vec<Span>,
     pub implements: Vec<String>,
+    pub implements_ranges: Vec<Span>,
     pub permits: Vec<String>,
+    pub permits_ranges: Vec<Span>,
     pub range: Span,
     pub body_range: Span,
     pub members: Vec<Member>,
@@ -363,7 +367,9 @@ pub struct Interface {
     pub annotations: Vec<AnnotationUse>,
     pub type_params: Vec<TypeParam>,
     pub extends: Vec<String>,
+    pub extends_ranges: Vec<Span>,
     pub permits: Vec<String>,
+    pub permits_ranges: Vec<Span>,
     pub range: Span,
     pub body_range: Span,
     pub members: Vec<Member>,
@@ -390,7 +396,9 @@ pub struct Enum {
     pub modifiers: Modifiers,
     pub annotations: Vec<AnnotationUse>,
     pub implements: Vec<String>,
+    pub implements_ranges: Vec<Span>,
     pub permits: Vec<String>,
+    pub permits_ranges: Vec<Span>,
     pub range: Span,
     pub body_range: Span,
     pub members: Vec<Member>,
@@ -417,7 +425,9 @@ pub struct Record {
     pub annotations: Vec<AnnotationUse>,
     pub type_params: Vec<TypeParam>,
     pub implements: Vec<String>,
+    pub implements_ranges: Vec<Span>,
     pub permits: Vec<String>,
+    pub permits_ranges: Vec<Span>,
     pub components: Vec<RecordComponent>,
     pub range: Span,
     pub body_range: Span,
@@ -535,6 +545,7 @@ pub struct Method {
     pub name_range: Span,
     pub params: Vec<Param>,
     pub throws: Vec<String>,
+    pub throws_ranges: Vec<Span>,
     pub body: Option<AstId>,
 }
 
@@ -563,6 +574,7 @@ pub struct Constructor {
     pub name_range: Span,
     pub params: Vec<Param>,
     pub throws: Vec<String>,
+    pub throws_ranges: Vec<Span>,
     pub body: Option<AstId>,
 }
 

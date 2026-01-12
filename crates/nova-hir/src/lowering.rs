@@ -104,9 +104,12 @@ impl ItemTreeLower<'_> {
                 let ast_id = self.ast_id_map.ast_id(&node)?;
                 let id = ClassId::new(self.file, ast_id);
                 let type_params = lower_type_params(&node);
-                let extends = collect_clause_types(&node, SyntaxKind::ExtendsClause);
-                let implements = collect_clause_types(&node, SyntaxKind::ImplementsClause);
-                let permits = collect_clause_types(&node, SyntaxKind::PermitsClause);
+                let (extends, extends_ranges) =
+                    collect_clause_types(&node, SyntaxKind::ExtendsClause);
+                let (implements, implements_ranges) =
+                    collect_clause_types(&node, SyntaxKind::ImplementsClause);
+                let (permits, permits_ranges) =
+                    collect_clause_types(&node, SyntaxKind::PermitsClause);
                 self.tree.classes.insert(
                     ast_id,
                     Class {
@@ -116,8 +119,11 @@ impl ItemTreeLower<'_> {
                         annotations: lower_annotation_uses(&class.annotations),
                         type_params,
                         extends,
+                        extends_ranges,
                         implements,
+                        implements_ranges,
                         permits,
+                        permits_ranges,
                         range: class.range,
                         body_range: class.body_range,
                         members,
@@ -134,8 +140,10 @@ impl ItemTreeLower<'_> {
                 let ast_id = self.ast_id_map.ast_id(&node)?;
                 let id = InterfaceId::new(self.file, ast_id);
                 let type_params = lower_type_params(&node);
-                let extends = collect_clause_types(&node, SyntaxKind::ExtendsClause);
-                let permits = collect_clause_types(&node, SyntaxKind::PermitsClause);
+                let (extends, extends_ranges) =
+                    collect_clause_types(&node, SyntaxKind::ExtendsClause);
+                let (permits, permits_ranges) =
+                    collect_clause_types(&node, SyntaxKind::PermitsClause);
                 self.tree.interfaces.insert(
                     ast_id,
                     Interface {
@@ -145,7 +153,9 @@ impl ItemTreeLower<'_> {
                         annotations: lower_annotation_uses(&interface.annotations),
                         type_params,
                         extends,
+                        extends_ranges,
                         permits,
+                        permits_ranges,
                         range: interface.range,
                         body_range: interface.body_range,
                         members,
@@ -168,12 +178,13 @@ impl ItemTreeLower<'_> {
                 let node = self.syntax_node_for_name(SyntaxKind::EnumDeclaration, enm.name_range)?;
                 let ast_id = self.ast_id_map.ast_id(&node)?;
                 let id = EnumId::new(self.file, ast_id);
-                let implements = collect_direct_child_types_after_token(
+                let (implements, implements_ranges) = collect_direct_child_types_after_token(
                     &node,
                     SyntaxKind::ImplementsKw,
                     SyntaxKind::EnumBody,
                 );
-                let permits = collect_clause_types(&node, SyntaxKind::PermitsClause);
+                let (permits, permits_ranges) =
+                    collect_clause_types(&node, SyntaxKind::PermitsClause);
                 self.tree.enums.insert(
                     ast_id,
                     Enum {
@@ -182,7 +193,9 @@ impl ItemTreeLower<'_> {
                         modifiers: lower_modifiers(enm.modifiers),
                         annotations: lower_annotation_uses(&enm.annotations),
                         implements,
+                        implements_ranges,
                         permits,
+                        permits_ranges,
                         range: enm.range,
                         body_range: enm.body_range,
                         members,
@@ -216,12 +229,13 @@ impl ItemTreeLower<'_> {
                 }
                 let id = RecordId::new(self.file, ast_id);
                 let type_params = lower_type_params(&node);
-                let implements = collect_direct_child_types_after_token(
+                let (implements, implements_ranges) = collect_direct_child_types_after_token(
                     &node,
                     SyntaxKind::ImplementsKw,
                     SyntaxKind::RecordBody,
                 );
-                let permits = collect_clause_types(&node, SyntaxKind::PermitsClause);
+                let (permits, permits_ranges) =
+                    collect_clause_types(&node, SyntaxKind::PermitsClause);
                 self.tree.records.insert(
                     ast_id,
                     Record {
@@ -231,7 +245,9 @@ impl ItemTreeLower<'_> {
                         annotations: lower_annotation_uses(&record.annotations),
                         type_params,
                         implements,
+                        implements_ranges,
                         permits,
+                        permits_ranges,
                         components,
                         range: record.range,
                         body_range: record.body_range,
@@ -311,7 +327,7 @@ impl ItemTreeLower<'_> {
                     }
                     params
                 };
-                let throws = collect_throws_clause_types(&node, SyntaxKind::Block);
+                let (throws, throws_ranges) = collect_throws_clause_types(&node, SyntaxKind::Block);
                 let body = method
                     .body
                     .as_ref()
@@ -329,6 +345,7 @@ impl ItemTreeLower<'_> {
                         name_range: method.name_range,
                         params,
                         throws,
+                        throws_ranges,
                         body,
                     },
                 );
@@ -354,7 +371,7 @@ impl ItemTreeLower<'_> {
                     }
                     params
                 };
-                let throws = collect_throws_clause_types(&node, SyntaxKind::Block);
+                let (throws, throws_ranges) = collect_throws_clause_types(&node, SyntaxKind::Block);
                 let body = self.ast_id_for_range(SyntaxKind::Block, cons.body.range);
                 self.tree.constructors.insert(
                     ast_id,
@@ -367,6 +384,7 @@ impl ItemTreeLower<'_> {
                         name_range: cons.name_range,
                         params,
                         throws,
+                        throws_ranges,
                         body,
                     },
                 );
@@ -702,43 +720,47 @@ fn lower_type_param(node: &SyntaxNode) -> Option<TypeParam> {
 
     let name = name_tok.text().to_string();
     let name_range = token_text_range_to_span(&name_tok);
-    let bounds = node
-        .children()
-        .filter(|child| child.kind() == SyntaxKind::Type)
-        .map(|ty| non_trivia_text(&ty))
-        .collect();
+    let mut bounds = Vec::new();
+    let mut bounds_ranges = Vec::new();
+    for ty in node.children().filter(|child| child.kind() == SyntaxKind::Type) {
+        bounds.push(non_trivia_text(&ty));
+        bounds_ranges.push(non_trivia_span(&ty).unwrap_or_else(|| node_text_range_to_span(&ty)));
+    }
 
     Some(TypeParam {
         name,
         name_range,
         bounds,
+        bounds_ranges,
     })
 }
 
-fn collect_clause_types(decl: &SyntaxNode, clause_kind: SyntaxKind) -> Vec<String> {
+fn collect_clause_types(decl: &SyntaxNode, clause_kind: SyntaxKind) -> (Vec<String>, Vec<Span>) {
     let Some(clause) = decl.children().find(|child| child.kind() == clause_kind) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
 
-    clause
-        .children()
-        .filter(|child| child.kind() == SyntaxKind::Type)
-        .map(|ty| non_trivia_text(&ty))
-        .collect()
+    let mut types = Vec::new();
+    let mut ranges = Vec::new();
+    for ty in clause.children().filter(|child| child.kind() == SyntaxKind::Type) {
+        types.push(non_trivia_text(&ty));
+        ranges.push(non_trivia_span(&ty).unwrap_or_else(|| node_text_range_to_span(&ty)));
+    }
+    (types, ranges)
 }
 
 fn collect_direct_child_types_after_token(
     decl: &SyntaxNode,
     keyword: SyntaxKind,
     end_node_kind: SyntaxKind,
-) -> Vec<String> {
+) -> (Vec<String>, Vec<Span>) {
     let Some(keyword_end) = decl
         .children_with_tokens()
         .filter_map(|child| child.into_token())
         .find(|tok| tok.kind() == keyword)
         .map(|tok| tok.text_range().end())
     else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
 
     let end_start = decl
@@ -747,14 +769,24 @@ fn collect_direct_child_types_after_token(
         .map(|node| node.text_range().start())
         .unwrap_or_else(|| decl.text_range().end());
 
-    decl.children()
+    let mut types = Vec::new();
+    let mut ranges = Vec::new();
+    for ty in decl
+        .children()
         .filter(|child| child.kind() == SyntaxKind::Type)
         .filter(|ty| ty.text_range().start() >= keyword_end && ty.text_range().end() <= end_start)
-        .map(|ty| non_trivia_text(&ty))
-        .collect()
+    {
+        types.push(non_trivia_text(&ty));
+        ranges.push(non_trivia_span(&ty).unwrap_or_else(|| node_text_range_to_span(&ty)));
+    }
+
+    (types, ranges)
 }
 
-fn collect_throws_clause_types(decl: &SyntaxNode, end_node_kind: SyntaxKind) -> Vec<String> {
+fn collect_throws_clause_types(
+    decl: &SyntaxNode,
+    end_node_kind: SyntaxKind,
+) -> (Vec<String>, Vec<Span>) {
     let signature_end = decl
         .children()
         .find(|child| child.kind() == end_node_kind)
@@ -769,7 +801,8 @@ fn collect_throws_clause_types(decl: &SyntaxNode, end_node_kind: SyntaxKind) -> 
 
     // Prefer structured `ThrowsClause` nodes when present in the rowan tree.
     if !throws_clauses.is_empty() {
-        let mut out = Vec::new();
+        let mut types = Vec::new();
+        let mut ranges = Vec::new();
         for clause in throws_clauses {
             for ty in clause.descendants().filter(|n| n.kind() == SyntaxKind::Type) {
                 // Only keep the outermost `Type` nodes within the throws clause. This avoids
@@ -782,10 +815,11 @@ fn collect_throws_clause_types(decl: &SyntaxNode, end_node_kind: SyntaxKind) -> 
                 if nested_in_type {
                     continue;
                 }
-                out.push(non_trivia_text(&ty));
+                types.push(non_trivia_text(&ty));
+                ranges.push(non_trivia_span(&ty).unwrap_or_else(|| node_text_range_to_span(&ty)));
             }
         }
-        return out;
+        return (types, ranges);
     }
 
     // Fallback for syntax trees that don't wrap `throws` in a `ThrowsClause` node: search for

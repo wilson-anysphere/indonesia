@@ -373,6 +373,11 @@ class Foo {
         vec!["T"]
     );
     assert_eq!(method.throws, vec!["Exception"]);
+    assert_eq!(method.throws_ranges.len(), method.throws.len());
+    assert_eq!(
+        &source[method.throws_ranges[0].start..method.throws_ranges[0].end],
+        "Exception"
+    );
 
     let method_id = nova_hir::ids::MethodId::new(file, method_ast_id);
     let body = body(&db, method_id);
@@ -433,6 +438,15 @@ class Foo {
         .find(|method| method.name == "m")
         .expect("m method");
     assert_eq!(method.throws, vec!["java.io.IOException", "RuntimeException"]);
+    assert_eq!(method.throws_ranges.len(), method.throws.len());
+    assert_eq!(
+        &source[method.throws_ranges[0].start..method.throws_ranges[0].end],
+        "java.io.IOException"
+    );
+    assert_eq!(
+        &source[method.throws_ranges[1].start..method.throws_ranges[1].end],
+        "RuntimeException"
+    );
 
     let ctor = tree
         .constructors
@@ -440,6 +454,11 @@ class Foo {
         .find(|ctor| ctor.name == "Foo")
         .expect("Foo constructor");
     assert_eq!(ctor.throws, vec!["Exception"]);
+    assert_eq!(ctor.throws_ranges.len(), ctor.throws.len());
+    assert_eq!(
+        &source[ctor.throws_ranges[0].start..ctor.throws_ranges[0].end],
+        "Exception"
+    );
 }
 
 #[test]
@@ -590,8 +609,31 @@ record R<T>(int x) implements I, J permits A {}
         vec!["T"]
     );
     assert_eq!(class.extends, vec!["Base"]);
+    assert_eq!(class.extends_ranges.len(), class.extends.len());
+    assert_eq!(
+        &source[class.extends_ranges[0].start..class.extends_ranges[0].end],
+        "Base"
+    );
     assert_eq!(class.implements, vec!["I", "J"]);
+    assert_eq!(class.implements_ranges.len(), class.implements.len());
+    assert_eq!(
+        &source[class.implements_ranges[0].start..class.implements_ranges[0].end],
+        "I"
+    );
+    assert_eq!(
+        &source[class.implements_ranges[1].start..class.implements_ranges[1].end],
+        "J"
+    );
     assert_eq!(class.permits, vec!["A", "B"]);
+    assert_eq!(class.permits_ranges.len(), class.permits.len());
+    assert_eq!(
+        &source[class.permits_ranges[0].start..class.permits_ranges[0].end],
+        "A"
+    );
+    assert_eq!(
+        &source[class.permits_ranges[1].start..class.permits_ranges[1].end],
+        "B"
+    );
 
     let interface = tree
         .interfaces
@@ -607,7 +649,21 @@ record R<T>(int x) implements I, J permits A {}
         vec!["T"]
     );
     assert_eq!(interface.extends, vec!["X", "Y"]);
+    assert_eq!(interface.extends_ranges.len(), interface.extends.len());
+    assert_eq!(
+        &source[interface.extends_ranges[0].start..interface.extends_ranges[0].end],
+        "X"
+    );
+    assert_eq!(
+        &source[interface.extends_ranges[1].start..interface.extends_ranges[1].end],
+        "Y"
+    );
     assert_eq!(interface.permits, vec!["Z"]);
+    assert_eq!(interface.permits_ranges.len(), interface.permits.len());
+    assert_eq!(
+        &source[interface.permits_ranges[0].start..interface.permits_ranges[0].end],
+        "Z"
+    );
 
     let record = tree
         .records
@@ -623,7 +679,21 @@ record R<T>(int x) implements I, J permits A {}
         vec!["T"]
     );
     assert_eq!(record.implements, vec!["I", "J"]);
+    assert_eq!(record.implements_ranges.len(), record.implements.len());
+    assert_eq!(
+        &source[record.implements_ranges[0].start..record.implements_ranges[0].end],
+        "I"
+    );
+    assert_eq!(
+        &source[record.implements_ranges[1].start..record.implements_ranges[1].end],
+        "J"
+    );
     assert_eq!(record.permits, vec!["A"]);
+    assert_eq!(record.permits_ranges.len(), record.permits.len());
+    assert_eq!(
+        &source[record.permits_ranges[0].start..record.permits_ranges[0].end],
+        "A"
+    );
 }
 
 #[test]
@@ -853,12 +923,41 @@ sealed class A<T extends java.lang.Cloneable & java.io.Serializable> extends B i
             "java.io.Serializable".to_string()
         ]
     );
+    assert_eq!(
+        class.type_params[0]
+            .bounds_ranges
+            .iter()
+            .map(|r| &source[r.start..r.end])
+            .collect::<Vec<_>>(),
+        vec!["java.lang.Cloneable", "java.io.Serializable"]
+    );
     assert_eq!(class.extends, vec!["B".to_string()]);
+    assert_eq!(
+        class.extends_ranges
+            .iter()
+            .map(|r| &source[r.start..r.end])
+            .collect::<Vec<_>>(),
+        vec!["B"]
+    );
     assert_eq!(
         class.implements,
         vec!["I1".to_string(), "I2".to_string()]
     );
+    assert_eq!(
+        class.implements_ranges
+            .iter()
+            .map(|r| &source[r.start..r.end])
+            .collect::<Vec<_>>(),
+        vec!["I1", "I2"]
+    );
     assert_eq!(class.permits, vec!["C".to_string(), "D".to_string()]);
+    assert_eq!(
+        class.permits_ranges
+            .iter()
+            .map(|r| &source[r.start..r.end])
+            .collect::<Vec<_>>(),
+        vec!["C", "D"]
+    );
 }
 
 #[test]
