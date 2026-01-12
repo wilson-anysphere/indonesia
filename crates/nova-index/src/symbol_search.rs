@@ -1598,4 +1598,55 @@ mod tests {
         assert_eq!(sym.location.line, 3);
         assert_eq!(sym.location.column, 4);
     }
+
+    #[test]
+    fn workspace_symbol_searcher_rebuilds_when_definition_count_changes() {
+        let memory = MemoryManager::new(MemoryBudget::from_total(256 * nova_memory::MB));
+        let searcher = WorkspaceSymbolSearcher::new(&memory);
+
+        let mut symbols = SymbolIndex::default();
+        symbols.insert(
+            "Foo",
+            IndexedSymbol {
+                qualified_name: "pkg.Foo".to_string(),
+                kind: IndexSymbolKind::Class,
+                container_name: Some("pkg".to_string()),
+                location: SymbolLocation {
+                    file: "a/Foo.java".to_string(),
+                    line: 1,
+                    column: 1,
+                },
+                ast_id: 0,
+            },
+        );
+
+        let (results, _stats) = searcher.search_with_stats(&symbols, "Foo", 10, false);
+        assert_eq!(results.len(), 1);
+        assert_eq!(searcher.build_count(), 1, "expected initial index build");
+
+        // Add a second definition under the same name key. Even if the caller forgets to mark
+        // `indexes_changed`, the searcher should rebuild because its cached symbol_count changes.
+        symbols.insert(
+            "Foo",
+            IndexedSymbol {
+                qualified_name: "pkg.Foo".to_string(),
+                kind: IndexSymbolKind::Class,
+                container_name: Some("pkg".to_string()),
+                location: SymbolLocation {
+                    file: "b/Foo.java".to_string(),
+                    line: 1,
+                    column: 1,
+                },
+                ast_id: 1,
+            },
+        );
+
+        let (results, _stats) = searcher.search_with_stats(&symbols, "Foo", 10, false);
+        assert_eq!(results.len(), 2);
+        assert_eq!(
+            searcher.build_count(),
+            2,
+            "expected index rebuild when definition count changes"
+        );
+    }
 }
