@@ -2021,6 +2021,7 @@ fn module_info_completion_items(
 
 const MAX_NEW_TYPE_COMPLETIONS: usize = 100;
 const MAX_NEW_TYPE_JDK_CANDIDATES_PER_PACKAGE: usize = 200;
+const MAX_NEW_TYPE_WORKSPACE_CANDIDATES: usize = 200;
 
 #[derive(Default)]
 struct JavaImportInfo {
@@ -2336,14 +2337,13 @@ fn mark_workspace_completion_item(item: &mut CompletionItem) {
 
 fn new_expression_type_completions(
     db: &dyn Database,
-    _file: FileId,
+    file: FileId,
     text: &str,
     text_index: &TextIndex<'_>,
     prefix: &str,
 ) -> Vec<CompletionItem> {
     let analysis = analyze(text);
     let imports = parse_java_imports(text);
-    let workspace = WorkspaceJavaIndex::build(db);
 
     let jdk = JDK_INDEX
         .as_ref()
@@ -2366,54 +2366,35 @@ fn new_expression_type_completions(
     for ty in &imports.explicit_types {
         let simple = ty.rsplit('.').next().unwrap_or(ty).to_string();
         if seen_labels.insert(simple.clone()) {
-            let mut item = constructor_completion_item(simple, Some(ty.clone()));
-            if workspace.contains_fqn(ty) {
-                mark_workspace_completion_item(&mut item);
-            }
-            items.push(item);
+            items.push(constructor_completion_item(simple, Some(ty.clone())));
         }
     }
 
-    // 3) Workspace types from the current package + any star-imported packages.
+    // 3) Workspace types (cached), best-effort.
     //
-    // This surfaces user-defined types for `new` completions even when they live in other files
-    // within the current `Database`.
-    let mut workspace_packages = imports.star_packages.clone();
-    workspace_packages.push(imports.current_package.clone());
-    workspace_packages.sort();
-    workspace_packages.dedup();
+    // Only include these for non-trivial prefixes: workspaces can contain thousands of types.
+    if prefix.len() >= 2 {
+        if let Some(env) = completion_cache::completion_env_for_file(db, file) {
+            let mut added = 0usize;
+            for ty in env.workspace_index().types_with_prefix(prefix) {
+                if added >= MAX_NEW_TYPE_WORKSPACE_CANDIDATES {
+                    break;
+                }
 
-    const MAX_WORKSPACE_TYPES_PER_PACKAGE: usize = 200;
-    for pkg in workspace_packages {
-        let mut added_for_pkg = 0usize;
-        for ty in workspace.types_in_package(&pkg) {
-            if added_for_pkg >= MAX_WORKSPACE_TYPES_PER_PACKAGE {
-                break;
-            }
-            // Avoid nested (`$`) types for now; they require different syntax (`Outer.Inner`).
-            if ty.contains('$') {
-                continue;
-            }
+                if !seen_labels.insert(ty.simple.clone()) {
+                    continue;
+                }
 
-            let simple = ty.clone();
-            if !seen_labels.insert(simple.clone()) {
-                continue;
+                let mut item =
+                    constructor_completion_item(ty.simple.clone(), Some(ty.qualified.clone()));
+                mark_workspace_completion_item(&mut item);
+                if java_type_needs_import(&imports, &ty.qualified) {
+                    item.additional_text_edits =
+                        Some(vec![java_import_text_edit(text, text_index, &ty.qualified)]);
+                }
+                items.push(item);
+                added += 1;
             }
-
-            let qualified = if pkg.is_empty() {
-                simple.clone()
-            } else {
-                format!("{pkg}.{simple}")
-            };
-
-            let mut item = constructor_completion_item(simple, Some(qualified.clone()));
-            mark_workspace_completion_item(&mut item);
-            if java_type_needs_import(&imports, &qualified) {
-                item.additional_text_edits =
-                    Some(vec![java_import_text_edit(text, text_index, &qualified)]);
-            }
-            items.push(item);
-            added_for_pkg += 1;
         }
     }
 
@@ -2479,6 +2460,7 @@ fn new_expression_type_completions(
 
     // New-expression completions currently don't compute expected-type / scope / recency
     // context, but we still want deterministic, fuzzy-ranked results.
+    deduplicate_completion_items(&mut items);
     let ctx = CompletionRankingContext::default();
     rank_completions(prefix, &mut items, &ctx);
     items.truncate(MAX_NEW_TYPE_COMPLETIONS);
@@ -3075,6 +3057,9 @@ fn package_decl_completions(
     // 1) Workspace packages (primary).
     if let Some(env) = completion_cache::completion_env_for_file(db, file) {
         for pkg in env.workspace_index().packages() {
+            if pkg.is_empty() {
+                continue;
+            }
             add_package_segment_candidates(
                 &mut candidates,
                 pkg,
@@ -3831,7 +3816,7 @@ pub(crate) fn core_completions(
             &text_index,
             prefix_start,
             offset,
-            annotation_type_completions(db, &prefix),
+            annotation_type_completions(db, file, &prefix),
         );
     }
 
@@ -4343,7 +4328,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
             &text_index,
             prefix_start,
             offset,
-            annotation_type_completions(db, &prefix),
+            annotation_type_completions(db, file, &prefix),
         );
     }
 
@@ -5056,7 +5041,7 @@ fn line_text_at_offset(text: &str, offset: usize) -> String {
     text.get(start..end).unwrap_or("").to_string()
 }
 
-fn annotation_type_completions(db: &dyn Database, prefix: &str) -> Vec<CompletionItem> {
+fn annotation_type_completions(db: &dyn Database, file: FileId, prefix: &str) -> Vec<CompletionItem> {
     const WORKSPACE_LIMIT: usize = 200;
     const JDK_LIMIT: usize = 200;
     const TOTAL_LIMIT: usize = 200;
@@ -5064,12 +5049,32 @@ fn annotation_type_completions(db: &dyn Database, prefix: &str) -> Vec<Completio
     let mut items = Vec::new();
     let mut seen = HashSet::new();
 
-    items.extend(workspace_type_completions(
-        db,
-        prefix,
-        &mut seen,
-        WORKSPACE_LIMIT,
-    ));
+    // Prefer the cached workspace type index (fast path).
+    if let Some(env) = completion_cache::completion_env_for_file(db, file) {
+        for ty in env.workspace_index().types_with_prefix(prefix) {
+            if !seen.insert(ty.simple.clone()) {
+                continue;
+            }
+            items.push(CompletionItem {
+                label: ty.simple.clone(),
+                kind: Some(CompletionItemKind::CLASS),
+                detail: (!ty.package.is_empty()).then(|| ty.package.clone()),
+                insert_text: Some(ty.simple.clone()),
+                ..Default::default()
+            });
+            if items.len() >= WORKSPACE_LIMIT {
+                break;
+            }
+        }
+    } else {
+        // Fallback for virtual buffers without a root: scan all Java files.
+        items.extend(workspace_type_completions(
+            db,
+            prefix,
+            &mut seen,
+            WORKSPACE_LIMIT,
+        ));
+    }
 
     items.extend(jdk_type_completions(prefix, &mut seen, JDK_LIMIT));
 
@@ -5413,50 +5418,20 @@ fn parse_source_type_in_context(
 }
 
 fn completion_type_store(db: &dyn Database, file: FileId) -> TypeStore {
-    const MAX_INDEXED_FILES: usize = 256;
-
-    // Fast-path: reuse the cached completion environment (built from workspace Java files + minimal
-    // JDK stubs) and clone the `TypeStore` so per-request completion logic can freely mutate it
-    // (e.g. lazily loading method stubs from the discovered JDK).
+    // Prefer the cached completion environment so we don't rebuild the expensive workspace type
+    // store on every completion request.
     if let Some(env) = completion_cache::completion_env_for_file(db, file) {
         return env.types().clone();
     }
 
+    // Fallback for virtual buffers without a known root/path.
     let mut store = TypeStore::with_minimal_jdk();
     let mut provider = SourceTypeProvider::new();
-
-    let mut java_files: Vec<(FileId, PathBuf)> = Vec::new();
-    for file_id in db.all_file_ids() {
-        let Some(path) = db.file_path(file_id) else {
-            continue;
-        };
-        if path.extension().and_then(|e| e.to_str()) != Some("java") {
-            continue;
-        }
-        java_files.push((file_id, path.to_path_buf()));
-    }
-
-    // Keep the current file at the front so in-file completions work even when
-    // we cap the workspace size for performance.
-    java_files.sort_by_key(|(id, _)| if *id == file { 0 } else { 1 });
-
-    let mut did_update_current_file = false;
-    for (idx, (file_id, path)) in java_files.into_iter().enumerate() {
-        if idx >= MAX_INDEXED_FILES {
-            break;
-        }
-        let text = db.file_content(file_id);
-        provider.update_file(&mut store, path, text);
-        did_update_current_file |= file_id == file;
-    }
-
-    // Best-effort: if we can't get a real path from the DB, still index the
-    // current buffer so same-file completions work in tests and ephemeral files.
-    if !did_update_current_file && db.file_path(file).is_none() {
-        let text = db.file_content(file);
-        provider.update_file(&mut store, PathBuf::from("/unknown.java"), text);
-    }
-
+    let file_path = db
+        .file_path(file)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("/completion.java"));
+    provider.update_file(&mut store, file_path, db.file_content(file));
     store
 }
 
@@ -5931,13 +5906,22 @@ fn infer_call_return_type(
     analysis: &Analysis,
     call: &CallExpr,
 ) -> Option<String> {
-    let mut types = TypeStore::with_minimal_jdk();
-    let mut source_types = SourceTypeProvider::new();
-    let file_path = db
-        .file_path(file)
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("/completion.java"));
-    source_types.update_file(&mut types, file_path, text);
+    // Prefer the cached completion environment so we don't rebuild expensive type state on every
+    // request. We still use a local mutable `TypeStore` clone so we can lazily load JDK method
+    // stubs (`ensure_type_methods_loaded`) without mutating the shared cache entry.
+    let mut types = if let Some(env) = completion_cache::completion_env_for_file(db, file) {
+        env.types().clone()
+    } else {
+        // Fallback for virtual buffers without a known path/root.
+        let mut types = TypeStore::with_minimal_jdk();
+        let mut source_types = SourceTypeProvider::new();
+        let file_path = db
+            .file_path(file)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("/completion.java"));
+        source_types.update_file(&mut types, file_path, text);
+        types
+    };
 
     let file_ctx = JavaFileTypeContext::from_tokens(&analysis.tokens);
 
@@ -6860,12 +6844,9 @@ fn general_completions(
             let mut added = 0usize;
             const MAX_TYPE_ITEMS: usize = 256;
 
-            for ty in env.workspace_index().types() {
+            for ty in env.workspace_index().types_with_prefix(prefix) {
                 if added >= MAX_TYPE_ITEMS {
                     break;
-                }
-                if !ty.simple.starts_with(prefix) {
-                    continue;
                 }
 
                 // The index can contain multiple FQNs for the same simple name; only include a
