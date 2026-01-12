@@ -3,11 +3,14 @@ use std::sync::Arc;
 
 use nova_classpath::{ClasspathEntry as CpEntry, ClasspathIndex, ModuleNameKind};
 use nova_db::{
-    ArcEq, FileId, NovaInputs, NovaResolve, NovaTypeck, ProjectId, SalsaRootDatabase, SourceRootId,
+    salsa::FileExprId, ArcEq, FileId, NovaHir, NovaInputs, NovaResolve, NovaTypeck, ProjectId,
+    SalsaRootDatabase, SourceRootId,
 };
 use nova_hir::module_info::lower_module_info_source_strict;
+use nova_hir::{hir::Stmt as HirStmt, ids::MethodId};
 use nova_jdk::JdkIndex;
 use nova_modules::ModuleName;
+use nova_resolve::ids::DefWithBodyId;
 use nova_project::{
     BuildSystem, ClasspathEntry as ProjectClasspathEntry, ClasspathEntryKind, JavaConfig,
     JpmsModuleRoot, Module, ProjectConfig,
@@ -180,6 +183,109 @@ class Use {
             .iter()
             .any(|d| d.code.as_ref() == "unresolved-method" && d.message.contains("id")),
         "expected unresolved-method diagnostic for id(..), got {diags:?}"
+    );
+}
+
+#[test]
+fn jpms_demand_type_of_expr_does_not_resolve_methods_on_unreadable_types() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+
+    // Include dep.jar in the legacy classpath index as well to ensure we aren't accidentally
+    // "passing" by ignoring the module-path entry entirely.
+    let classpath = ClasspathIndex::build(&[CpEntry::Jar(test_dep_jar())], None).unwrap();
+    db.set_classpath_index(project, Some(ArcEq::new(Arc::new(classpath))));
+
+    let mod_a_root = tmp.path().join("mod-a");
+    let mod_a_src = "module workspace.a { }";
+    let mod_a_info = lower_module_info_source_strict(mod_a_src).unwrap();
+
+    let mut cfg = base_project_config(tmp.path().to_path_buf());
+    cfg.jpms_modules = vec![JpmsModuleRoot {
+        name: ModuleName::new("workspace.a"),
+        root: mod_a_root.clone(),
+        module_info: mod_a_root.join("module-info.java"),
+        info: mod_a_info,
+    }];
+    cfg.module_path = vec![ProjectClasspathEntry {
+        kind: ClasspathEntryKind::Jar,
+        path: test_dep_jar(),
+    }];
+    db.set_project_config(project, Arc::new(cfg));
+
+    let file = FileId::from_raw(1);
+    set_file(
+        &mut db,
+        project,
+        file,
+        "mod-a/src/main/java/com/example/a/Use.java",
+        r#"
+package com.example.a;
+
+class Use {
+    void m() {
+        com.example.dep.Foo f = null;
+        f.id(null);
+    }
+}
+"#,
+    );
+    db.set_project_files(project, Arc::new(vec![file]));
+
+    let tree = db.hir_item_tree(file);
+    let method_ast = tree
+        .methods
+        .iter()
+        .find_map(|(ast_id, m)| (m.name == "m" && m.body.is_some()).then_some(*ast_id))
+        .expect("expected method `m` with a body");
+    let method_id = MethodId::new(file, method_ast);
+    let owner = DefWithBodyId::Method(method_id);
+
+    let body = db.hir_body(method_id);
+    let root = &body.stmts[body.root];
+    let call_expr = match root {
+        HirStmt::Block { statements, .. } => statements
+            .iter()
+            .find_map(|stmt| match &body.stmts[*stmt] {
+                HirStmt::Expr { expr, .. } => Some(*expr),
+                _ => None,
+            })
+            .expect("expected an expression statement for `f.id(null)`"),
+        other => panic!("expected a block root statement, got {other:?}"),
+    };
+
+    db.clear_query_stats();
+    let demand_res = db.type_of_expr_demand_result(
+        file,
+        FileExprId {
+            owner,
+            expr: call_expr,
+        },
+    );
+
+    let diags = &demand_res.diagnostics;
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type"
+                && d.message.contains("com.example.dep.Foo")),
+        "expected unresolved-type diagnostic for com.example.dep.Foo, got {diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-method" && d.message.contains("id")),
+        "expected unresolved-method diagnostic for id(..), got {diags:?}"
+    );
+
+    let stats = db.query_stats();
+    assert!(
+        stats.by_query.get("typeck_body").is_none(),
+        "type_of_expr_demand_result should not execute typeck_body; stats: {:?}",
+        stats.by_query.get("typeck_body")
     );
 }
 
