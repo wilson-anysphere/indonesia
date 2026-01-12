@@ -46,6 +46,56 @@ impl ExcludedPathMatcher {
             return true;
         }
 
+        // Best-effort lexical normalization for paths that include `..` segments. This matters in
+        // particular for relative paths like `public/../secret/file`, which should still match an
+        // excluded pattern like `secret/**`.
+        //
+        // Note: we only apply this normalization as a fallback (when the raw match fails). This
+        // mirrors the absolute-path suffix logic below and errs on the side of over-excluding
+        // rather than risking a bypass.
+        #[derive(Debug, Clone, Copy)]
+        enum NormalizedComponent<'a> {
+            Parent,
+            Normal(&'a std::ffi::OsStr),
+        }
+
+        let is_absolute = path.is_absolute();
+        let mut normalized_components = Vec::<NormalizedComponent<'_>>::new();
+        for component in path.components() {
+            match component {
+                Component::Prefix(_) | Component::RootDir | Component::CurDir => {}
+                Component::ParentDir => match normalized_components.last() {
+                    Some(NormalizedComponent::Normal(_)) => {
+                        normalized_components.pop();
+                    }
+                    Some(NormalizedComponent::Parent) | None => {
+                        // Absolute paths can't meaningfully traverse above root; for relative paths,
+                        // preserve leading `..` segments since they may be semantically relevant.
+                        if !is_absolute {
+                            normalized_components.push(NormalizedComponent::Parent);
+                        }
+                    }
+                },
+                Component::Normal(segment) => {
+                    normalized_components.push(NormalizedComponent::Normal(segment))
+                }
+            }
+        }
+
+        if !normalized_components.is_empty() {
+            let mut normalized = PathBuf::new();
+            for component in &normalized_components {
+                match component {
+                    NormalizedComponent::Parent => normalized.push(".."),
+                    NormalizedComponent::Normal(segment) => normalized.push(segment),
+                }
+            }
+
+            if self.set.is_match(&normalized) {
+                return true;
+            }
+        }
+
         // `globset` patterns are typically configured as paths relative to some workspace root
         // (e.g. "secret/**"), while callers like LSP generally deal in absolute filesystem paths.
         //
@@ -55,22 +105,19 @@ impl ExcludedPathMatcher {
             return false;
         }
 
-        let mut components = Vec::<&std::ffi::OsStr>::new();
-        for component in path.components() {
-            match component {
-                Component::Prefix(_) | Component::RootDir => {}
-                Component::CurDir => {}
-                Component::ParentDir => {
-                    // Lexically normalize away `..` segments to avoid bypasses.
-                    components.pop();
-                }
-                Component::Normal(segment) => components.push(segment),
-            }
-        }
+        // For absolute paths, the normalization above will not include `..` segments, so we can
+        // safely treat the normalized components as plain path segments.
+        let segments: Vec<&std::ffi::OsStr> = normalized_components
+            .iter()
+            .filter_map(|component| match component {
+                NormalizedComponent::Normal(segment) => Some(*segment),
+                NormalizedComponent::Parent => None,
+            })
+            .collect();
 
-        for start in 0..components.len() {
+        for start in 0..segments.len() {
             let mut suffix = PathBuf::new();
-            for segment in &components[start..] {
+            for segment in &segments[start..] {
                 suffix.push(*segment);
             }
             if self.set.is_match(&suffix) {
@@ -419,5 +466,32 @@ class Foo {
 
         let err = ExcludedPathMatcher::from_config(&cfg).expect_err("should fail");
         assert!(matches!(err, AiError::InvalidConfig(_)), "{err:?}");
+    }
+
+    #[test]
+    fn excluded_paths_normalize_parent_dirs_in_relative_paths() {
+        let cfg = AiPrivacyConfig {
+            excluded_paths: vec!["secret/**".into()],
+            ..AiPrivacyConfig::default()
+        };
+
+        let matcher = ExcludedPathMatcher::from_config(&cfg).expect("matcher");
+
+        // `public/../secret/file.txt` should be treated the same as `secret/file.txt`.
+        let rel = PathBuf::from("public")
+            .join("..")
+            .join("secret")
+            .join("file.txt");
+        assert!(
+            matcher.is_match(&rel),
+            "{rel:?} should match excluded_paths"
+        );
+
+        // Ensure we don't drop leading `..` segments for relative paths.
+        let leading_parent = PathBuf::from("..").join("secret").join("file.txt");
+        assert!(
+            !matcher.is_match(&leading_parent),
+            "{leading_parent:?} should not match secret/**"
+        );
     }
 }
