@@ -355,6 +355,25 @@ class Foo {
 }
 
 #[test]
+fn preserves_trailing_line_comment_after_closing_brace_in_ast_formatter() {
+    let input = "class Foo{void m(){if(true){} // c\n}}\n";
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+class Foo {
+    void m() {
+        if (true) {
+        } // c
+    }
+}
+"###
+    );
+}
+
+#[test]
 fn formats_annotated_type_arguments() {
     let input = "class Foo{java.util.List<@Deprecated String>xs;}\n";
     let parse = parse_java(input);

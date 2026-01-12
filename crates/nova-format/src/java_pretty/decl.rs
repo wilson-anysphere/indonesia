@@ -210,9 +210,9 @@ impl<'a> JavaPrettyFormatter<'a> {
 
         let mut parts: Vec<Doc<'a>> = Vec::new();
         let mut has_content = false;
-        let mut at_line_start = true;
         let mut pending_ws: Option<PendingWs> = None;
         let mut consumes_next_line_break = false;
+        let mut at_line_start = true;
         let ctx = FmtCtx::new(0);
 
         for el in node.descendants_with_tokens() {
@@ -262,6 +262,7 @@ impl<'a> JavaPrettyFormatter<'a> {
                     let had_ws = pending_ws.is_some();
                     if let Some(ws) = pending_ws.take() {
                         ws.flush(&mut parts);
+                        at_line_start = matches!(ws, PendingWs::Hardlines(_));
                     }
                     let kind = match tok.kind() {
                         SyntaxKind::LineComment => CommentKind::Line,
@@ -311,7 +312,6 @@ impl<'a> JavaPrettyFormatter<'a> {
                     has_content = true;
                     consumes_next_line_break = kind == CommentKind::Doc;
                     at_line_start = consumes_next_line_break;
-
                     // Ensure block comments cannot glue to the following token when the source has
                     // no whitespace between them (e.g. `/* comment */int x;`).
                     //

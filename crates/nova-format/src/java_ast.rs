@@ -619,7 +619,7 @@ impl<'a> TokenFormatState<'a> {
                             | SyntaxKind::RParen
                             | SyntaxKind::RBracket
                     )
-                );
+                ) || matches!(next_kind, Some(SyntaxKind::LineComment));
                 if matches!(
                     next_kind,
                     Some(
