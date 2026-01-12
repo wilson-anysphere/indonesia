@@ -470,7 +470,9 @@ export function registerNovaBuildIntegration(
       // Project Explorer unit node.
       if (nodeType === 'unit') {
         const workspaceFolder = asWorkspaceFolder(obj.workspace);
-        const projectRoot = asNonEmptyString(obj.projectRoot) ?? workspaceFolder?.uri.fsPath;
+        // Prefer the VS Code workspace folder path for consistency with build-status/diagnostics
+        // polling (which is keyed off `WorkspaceFolder.uri.fsPath`).
+        const projectRoot = workspaceFolder?.uri.fsPath ?? asNonEmptyString(obj.projectRoot);
         if (!projectRoot) {
           return undefined;
         }
