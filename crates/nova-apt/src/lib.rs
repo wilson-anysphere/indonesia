@@ -125,6 +125,12 @@ pub struct GeneratedSourcesStatus {
     pub modules: Vec<ModuleGeneratedSourcesStatus>,
 }
 
+#[derive(Clone, Debug)]
+pub struct GeneratedSourcesStatusWithBuild {
+    pub status: GeneratedSourcesStatus,
+    pub build_metadata_error: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AptProgressEventKind {
     Begin,
@@ -1126,10 +1132,17 @@ impl AptManager {
     pub fn status_with_build(
         &mut self,
         build: &BuildManager,
-    ) -> io::Result<GeneratedSourcesStatus> {
-        let _ = self.apply_build_annotation_processing(build);
+    ) -> io::Result<GeneratedSourcesStatusWithBuild> {
+        let build_metadata_error = self
+            .apply_build_annotation_processing(build)
+            .err()
+            .map(|err| err.to_string());
         let _ = self.write_generated_roots_snapshot();
-        self.status()
+        let status = self.status()?;
+        Ok(GeneratedSourcesStatusWithBuild {
+            status,
+            build_metadata_error,
+        })
     }
 
     fn write_generated_roots_snapshot(&self) -> io::Result<()> {
@@ -2045,12 +2058,16 @@ fn push_default_generated_dirs(
 
 #[cfg(test)]
 mod tests {
+    use nova_build::BuildManager;
     use nova_config::NovaConfig;
     use nova_core::{FileId, Name};
     use nova_hir::queries::HirDatabase;
     use nova_index::ClassIndex;
     use nova_jdk::JdkIndex;
-    use nova_project::{load_project_with_options, LoadOptions, SourceRootOrigin};
+    use nova_project::{
+        load_project_with_options, BuildSystem, JavaConfig, LoadOptions, Module, ProjectConfig,
+        SourceRootOrigin,
+    };
     use nova_resolve::{build_scopes, Resolver};
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
@@ -2217,5 +2234,74 @@ class C {}
         );
 
         assert!(resolved.is_none());
+    }
+
+    #[derive(Debug)]
+    struct ErrorRunner;
+
+    impl nova_build::CommandRunner for ErrorRunner {
+        fn run(
+            &self,
+            _cwd: &Path,
+            _program: &Path,
+            _args: &[String],
+        ) -> std::io::Result<nova_build::CommandOutput> {
+            Err(std::io::Error::new(std::io::ErrorKind::Other, "boom"))
+        }
+    }
+
+    #[test]
+    fn status_with_build_surfaces_build_metadata_errors() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        std::fs::write(
+            root.join("pom.xml"),
+            r#"<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>demo</artifactId>
+  <version>1.0-SNAPSHOT</version>
+</project>
+"#,
+        )
+        .unwrap();
+
+        let project = ProjectConfig {
+            workspace_root: root.to_path_buf(),
+            build_system: BuildSystem::Maven,
+            java: JavaConfig::default(),
+            modules: vec![Module {
+                name: "root".to_string(),
+                root: root.to_path_buf(),
+                annotation_processing: Default::default(),
+            }],
+            jpms_modules: Vec::new(),
+            jpms_workspace: None,
+            source_roots: Vec::new(),
+            module_path: Vec::new(),
+            classpath: Vec::new(),
+            output_dirs: Vec::new(),
+            dependencies: Vec::new(),
+            workspace_model: None,
+        };
+
+        let build = BuildManager::with_runner(
+            root.join(".nova").join("build-cache"),
+            Arc::new(ErrorRunner),
+        );
+
+        let mut apt = crate::AptManager::new(project, NovaConfig::default());
+        let result = apt.status_with_build(&build).unwrap();
+
+        assert!(
+            result
+                .build_metadata_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("boom"),
+            "expected build_metadata_error to include the runner failure: {result:?}"
+        );
+        assert_eq!(result.status.modules.len(), 1);
     }
 }

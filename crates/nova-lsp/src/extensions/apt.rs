@@ -136,8 +136,17 @@ pub fn handle_generated_sources(
     let mut apt = AptManager::new(project, config);
     let mut status_guard = BuildStatusGuard::new(&root);
     let status_result: Result<_> = apt.status_with_build(&build).map_err(map_io_error);
-    status_guard.finish_from_result(&status_result);
-    let mut status = status_result?;
+    match &status_result {
+        Ok(result) => {
+            if let Some(err) = result.build_metadata_error.as_ref() {
+                status_guard.mark_failure(Some(err.clone()));
+            } else {
+                status_guard.mark_success();
+            }
+        }
+        Err(err) => status_guard.mark_failure(Some(err.to_string())),
+    }
+    let mut status = status_result?.status;
 
     if let Some(module_root) = selected_module_root(apt.project(), &params) {
         status
