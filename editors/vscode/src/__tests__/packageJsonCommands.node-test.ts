@@ -147,6 +147,25 @@ test('package.json contributes Nova Frameworks view context-menu commands', asyn
   for (const id of expectedCommands) {
     assert.ok(menuCommands.has(id));
   }
+
+  const openCommand = commands.find((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return false;
+    }
+    return (entry as { command?: unknown }).command === 'nova.frameworks.open';
+  }) as { title?: unknown } | undefined;
+  assert.ok(openCommand);
+  assert.equal(openCommand.title, 'Nova: Open Framework Item');
+
+  const openMenuEntries = (viewItemContext as unknown[]).filter((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return false;
+    }
+    return (entry as { command?: unknown }).command === 'nova.frameworks.open';
+  }) as Array<{ when?: unknown }>;
+  assert.ok(openMenuEntries.length >= 2, 'expected nova.frameworks.open to appear for endpoints and beans');
+  assert.ok(openMenuEntries.some((entry) => typeof entry.when === 'string' && entry.when.includes('viewItem == novaFrameworkEndpoint')));
+  assert.ok(openMenuEntries.some((entry) => typeof entry.when === 'string' && entry.when.includes('viewItem == novaFrameworkBean')));
 });
 
 test('package.json path settings are resource-scoped and describe multi-root resolution', async () => {
