@@ -2262,6 +2262,11 @@ pub(crate) fn core_completions(
         return decorate_completions(&text_index, prefix_start, offset, items);
     }
 
+    // Java annotation element (attribute) completions inside `@Anno(...)`.
+    if let Some(items) = annotation_attribute_completions(db, text, offset, prefix_start, &prefix) {
+        return decorate_completions(&text_index, prefix_start, offset, items);
+    }
+
     if is_new_expression_type_completion_context(text, prefix_start) {
         return decorate_completions(
             &text_index,

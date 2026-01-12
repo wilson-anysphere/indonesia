@@ -112,6 +112,34 @@ class UserRepository {
 }
 
 #[test]
+fn annotation_attribute_completions_are_surfaced_via_ide_extensions() {
+    let anno_path = PathBuf::from("/workspace/src/main/java/p/MyAnno.java");
+    let java_path = PathBuf::from("/workspace/src/main/java/p/Main.java");
+
+    let anno_text = r#"package p; public @interface MyAnno { String value(); int count(); }"#;
+    let java_text = r#"package p; @MyAnno(co<|>) class Main {}"#;
+
+    let fixture =
+        fixture_multi(java_path, java_text, vec![(anno_path, anno_text.to_string())]);
+
+    let items =
+        fixture
+            .ide
+            .completions_lsp(CancellationToken::new(), fixture.file, fixture.position);
+
+    let count = items
+        .iter()
+        .find(|i| i.label == "count")
+        .expect("expected completion list to include MyAnno.count");
+
+    let insert = count.insert_text.as_deref().unwrap_or("");
+    assert!(
+        insert.contains("count ="),
+        "expected completion insert text to contain `count =`; got {insert:?}"
+    );
+}
+
+#[test]
 fn spring_value_completions_replace_full_placeholder_prefix_via_ide_extensions() {
     use crate::framework_harness::offset_to_position;
 
