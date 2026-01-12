@@ -92,6 +92,17 @@ inputs**:
 This is purity-safe and remains correct under `evict_salsa_memos`, because rebuilding `Storage`
 recomputes the same mapping from the same tracked inputs.
 
+**Implementation note (current repo):** Nova currently applies this pattern for **workspace source
+types** by making the mapping a **host-managed Salsa input**:
+
+- `crates/nova-db/src/salsa/workspace.rs:WorkspaceLoader::apply_project_class_ids` enumerates source
+  type binary names deterministically and assigns stable `ClassId`s.
+- The mapping is stored in the input `crates/nova-db/src/salsa/inputs.rs:NovaInputs::project_class_ids`.
+- Lookups are provided by the derived queries `class_id_for_name` / `class_name_for_id`.
+
+This keeps `ClassId` identity stable across workspace reloads and across `evict_salsa_memos`, as long
+as the same `WorkspaceLoader` instance is reused by the host.
+
 `#[ra_salsa::interned]` is acceptable for storing the *key/value data* of classes, but Nova MUST NOT
 rely on the raw interned integer as a stable `nova_ids::ClassId` unless we also ensure one of:
 
