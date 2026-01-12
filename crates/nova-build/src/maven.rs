@@ -1665,25 +1665,6 @@ fn collect_maven_build_files_rec(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(
         let file_name = file_name.to_string_lossy();
 
         if path.is_dir() {
-            // Avoid following directory symlinks: a workspace can contain symlink cycles (e.g. a
-            // symlink pointing to an ancestor directory), which would otherwise lead to infinite
-            // recursion and potentially scanning outside the workspace root.
-            if std::fs::symlink_metadata(&path)?.file_type().is_symlink() {
-                continue;
-            }
-            // Avoid scanning huge non-source directories that commonly show up in mono-repos.
-            // These trees can contain many files that look like build files but should not
-            // influence Nova's build fingerprint (e.g. vendored JS dependencies).
-            if file_name == "node_modules" {
-                continue;
-            }
-            // Bazel output trees are typically created at the workspace root and can be enormous.
-            // Skip any `bazel-*` entries (`bazel-out`, `bazel-bin`, `bazel-testlogs`,
-            // `bazel-<workspace>`, etc).
-            if file_name.starts_with("bazel-") {
-                continue;
-            }
-
             if file_name == ".mvn" {
                 let config = path.join("maven.config");
                 if config.is_file() {
@@ -1710,6 +1691,26 @@ fn collect_maven_build_files_rec(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(
                     out.push(wrapper_jar);
                 }
 
+                continue;
+            }
+
+            // Avoid following directory symlinks: a workspace can contain symlink cycles (e.g. a
+            // symlink pointing to an ancestor directory), which would otherwise lead to infinite
+            // recursion and potentially scanning outside the workspace root.
+            if std::fs::symlink_metadata(&path)?.file_type().is_symlink() {
+                continue;
+            }
+
+            // Avoid scanning huge non-source directories that commonly show up in mono-repos.
+            // These trees can contain many files that look like build files but should not
+            // influence Nova's build fingerprint (e.g. vendored JS dependencies).
+            if file_name == "node_modules" {
+                continue;
+            }
+            // Bazel output trees are typically created at the workspace root and can be enormous.
+            // Skip any `bazel-*` entries (`bazel-out`, `bazel-bin`, `bazel-testlogs`,
+            // `bazel-<workspace>`, etc).
+            if file_name.starts_with("bazel-") {
                 continue;
             }
 
@@ -1942,6 +1943,38 @@ mod tests {
         .collect();
 
         assert_eq!(rel, expected);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_maven_build_files_skips_symlinked_module_dirs() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // Real build files.
+        std::fs::write(root.join("pom.xml"), "<project></project>").unwrap();
+        std::fs::create_dir_all(root.join("module-a")).unwrap();
+        std::fs::write(root.join("module-a/pom.xml"), "<project></project>").unwrap();
+
+        // A directory symlink that would duplicate the module tree if followed.
+        symlink(root.join("module-a"), root.join("linked-module")).unwrap();
+
+        let files = collect_maven_build_files(root).unwrap();
+        let rel: BTreeSet<PathBuf> = files
+            .into_iter()
+            .map(|p| p.strip_prefix(root).unwrap().to_path_buf())
+            .collect();
+
+        assert!(
+            rel.contains(&PathBuf::from("module-a/pom.xml")),
+            "expected real module pom.xml to be collected"
+        );
+        assert!(
+            !rel.contains(&PathBuf::from("linked-module/pom.xml")),
+            "did not expect Maven build file collector to follow directory symlinks"
+        );
     }
 
     #[test]
