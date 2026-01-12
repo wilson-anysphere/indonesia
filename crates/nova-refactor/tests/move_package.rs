@@ -60,7 +60,7 @@ public class C {
         &files,
         MovePackageParams {
             old_package: "com.old".into(),
-            // Note: `com.new` would be rejected by `nova_project::validate_package_name` because
+            // Note: `com.new` would be rejected by `nova_build_model::validate_package_name` because
             // `new` is a reserved Java keyword, so we use a close-but-valid name here.
             new_package: "com.newpkg".into(),
         },
