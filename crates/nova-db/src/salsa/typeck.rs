@@ -5364,15 +5364,45 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     is_type_ref: false,
                 }
             }
-            HirExpr::Literal { kind, .. } => match kind {
-                LiteralKind::Int => ExprInfo {
-                    ty: Type::Primitive(PrimitiveType::Int),
-                    is_type_ref: false,
-                },
-                LiteralKind::Long => ExprInfo {
-                    ty: Type::Primitive(PrimitiveType::Long),
-                    is_type_ref: false,
-                },
+            HirExpr::Literal { kind, value, range } => match kind {
+                LiteralKind::Int => {
+                    if let Err(err) = nova_syntax::parse_int_literal(value) {
+                        let span = Span::new(
+                            range.start.saturating_add(err.span.start),
+                            range.start.saturating_add(err.span.end),
+                        );
+                        self.diagnostics
+                            .push(Diagnostic::error("invalid-literal", err.message, Some(span)));
+                        ExprInfo {
+                            ty: Type::Error,
+                            is_type_ref: false,
+                        }
+                    } else {
+                        ExprInfo {
+                            ty: Type::Primitive(PrimitiveType::Int),
+                            is_type_ref: false,
+                        }
+                    }
+                }
+                LiteralKind::Long => {
+                    if let Err(err) = nova_syntax::parse_long_literal(value) {
+                        let span = Span::new(
+                            range.start.saturating_add(err.span.start),
+                            range.start.saturating_add(err.span.end),
+                        );
+                        self.diagnostics
+                            .push(Diagnostic::error("invalid-literal", err.message, Some(span)));
+                        ExprInfo {
+                            ty: Type::Error,
+                            is_type_ref: false,
+                        }
+                    } else {
+                        ExprInfo {
+                            ty: Type::Primitive(PrimitiveType::Long),
+                            is_type_ref: false,
+                        }
+                    }
+                }
                 LiteralKind::Float => ExprInfo {
                     ty: Type::Primitive(PrimitiveType::Float),
                     is_type_ref: false,
@@ -5965,10 +5995,56 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             HirExpr::Unary {
                 op, expr: operand, ..
             } => {
+                let diag_start = self.diagnostics.len();
                 let operand_info = self.infer_expr(loader, *operand);
-                let inner = operand_info.ty.clone();
+                let mut inner = operand_info.ty.clone();
                 let span = self.body.exprs[expr].range();
                 let env_ro: &dyn TypeEnv = &*loader.store;
+
+                if matches!(op, UnaryOp::Minus) && inner.is_errorish() {
+                    fn parse_decimal_u64(text: &str) -> Option<u64> {
+                        let text: String = text.chars().filter(|c| *c != '_').collect();
+                        if text.is_empty() || !text.chars().all(|c| c.is_ascii_digit()) {
+                            return None;
+                        }
+                        text.parse().ok()
+                    }
+
+                    let replacement = match &self.body.exprs[*operand] {
+                        HirExpr::Literal {
+                            kind: LiteralKind::Int,
+                            value,
+                            ..
+                        } if parse_decimal_u64(value) == Some((i32::MAX as u64) + 1) => {
+                            Some(Type::Primitive(PrimitiveType::Int))
+                        }
+                        HirExpr::Literal {
+                            kind: LiteralKind::Long,
+                            value,
+                            ..
+                        } => {
+                            let digits = value
+                                .strip_suffix('l')
+                                .or_else(|| value.strip_suffix('L'))
+                                .unwrap_or(value);
+                            (parse_decimal_u64(digits) == Some((i64::MAX as u64) + 1))
+                                .then_some(Type::Primitive(PrimitiveType::Long))
+                        }
+                        _ => None,
+                    };
+
+                    if let Some(ty) = replacement {
+                        // Suppress literal out-of-range diagnostics for the special JLS case:
+                        // `-2147483648` / `-9223372036854775808L`.
+                        self.diagnostics.truncate(diag_start);
+                        inner = ty.clone();
+                        self.expr_info[operand.idx()] = Some(ExprInfo {
+                            ty,
+                            is_type_ref: false,
+                        });
+                    }
+                }
+
                 let inner_prim = primitive_like(env_ro, &inner);
                 let operand_range = self.body.exprs[*operand].range();
                 let operand_is_lvalue = !operand_info.is_type_ref

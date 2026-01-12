@@ -137,6 +137,20 @@ class C { char m(){ return 'a'; } }
 }
 
 #[test]
+fn long_initializer_rejects_out_of_range_int_literal() {
+    let src = r#"
+class C { long m(){ return 2147483648; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-literal"),
+        "expected invalid-literal diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn byte_initializer_allows_char_constant_narrowing() {
     let src = r#"
 class C { void m(){ byte b = 'a'; } }
