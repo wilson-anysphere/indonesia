@@ -3789,6 +3789,32 @@ class C {
 }
 
 #[test]
+fn intersection_bounds_with_class_and_interface_allow_member_calls_from_interface_bound() {
+    let src = r#"
+class A { }
+interface I { String b(); }
+class C {
+    <T extends A & I> String m(T t) {
+        return t.b();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected intersection-bounded receiver to resolve methods from interface bound; got {diags:?}"
+    );
+
+    let offset = src.find("t.b()").expect("snippet should contain call") + "t.b".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+}
+
+#[test]
 fn lambda_param_type_is_inferred_from_function_target() {
     let src = r#"
  import java.util.function.Function;

@@ -61,16 +61,20 @@ impl<'env> TyContext<'env> {
                     let replacement = match bounds.len() {
                         0 => object.clone(),
                         1 => bounds[0].clone(),
-                        _ => Type::Intersection(bounds),
+                        // Preserve *all* bounds so member lookup can see methods from any bound.
+                        // Use `make_intersection` to flatten/simplify nested intersections
+                        // and prune redundant supertypes (e.g. `A & B` where `A <: B`).
+                        _ => crate::make_intersection(ctx, bounds),
                     };
                     normalize_inner(ctx, replacement, depth - 1, object)
                 }
-                Type::Intersection(types) => Type::Intersection(
-                    types
+                Type::Intersection(types) => {
+                    let types = types
                         .into_iter()
                         .map(|t| normalize_inner(ctx, t, depth - 1, object))
-                        .collect(),
-                ),
+                        .collect();
+                    crate::make_intersection(ctx, types)
+                }
                 Type::Wildcard(bound) => {
                     let replacement = match bound {
                         WildcardBound::Unbounded => object.clone(),
