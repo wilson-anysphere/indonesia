@@ -79,7 +79,8 @@ Entry points:
     using the discovery order above.
 - `nova` (CLI) supports a global `--config <path>` flag (and otherwise loads config from a workspace
   root derived from the command’s `--path`/`<path>` arguments or the current working directory).
-- `nova-dap` currently starts with `NovaConfig::default()` (no on-disk config loading yet).
+- `nova-dap` supports `--config <path>` (or `NOVA_CONFIG` as a fallback). When neither are provided,
+  it uses `NovaConfig::default()` (it does not currently do workspace-root config discovery).
 - Embedders (editor plugins/hosts) can construct a `NovaConfig` programmatically and call
   `nova_config::init_tracing_with_config(&config)` / `nova_lsp::hardening::init(&config, ...)`.
 

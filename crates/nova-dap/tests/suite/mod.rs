@@ -1,6 +1,7 @@
 // Consolidated integration test suite.
 //
-// This module is compiled by `tests/real_jvm.rs` so `cargo test -p nova-dap --test real_jvm`
+// This module is compiled by `tests/real_jvm.rs` so
+// `bash scripts/cargo_agent.sh test -p nova-dap --test real_jvm`
 // builds a single integration test binary (see AGENTS.md harness pattern).
 
 mod cancel;

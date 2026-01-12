@@ -45,7 +45,7 @@ path = "src/lib.rs"
 # Optional smoke tests that exercise the DAP adapter against a real JVM.
 #
 # These tests are ignored by default and should be enabled explicitly:
-#   cargo test -p nova-dap --features real-jvm-tests
+#   bash scripts/cargo_agent.sh test -p nova-dap --features real-jvm-tests
 real-jvm-tests = []
 
 [[bin]]
