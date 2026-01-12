@@ -904,6 +904,7 @@ fn format_stream_eval_compile_failure(
 
     let (stage, expr) =
         stream_eval_stage_and_expression(source, stage_exprs, terminal_expr, &diagnostics);
+    let javac_loc = parse_first_formatted_javac_location(&diagnostics);
     let user_expr = terminal_expr
         .or_else(|| stage_exprs.last().map(|s| s.as_str()))
         .filter(|s| !s.trim().is_empty());
@@ -923,6 +924,20 @@ fn format_stream_eval_compile_failure(
     if let Some(expr) = expr {
         if user_expr.map(|user| user != expr).unwrap_or(true) {
             out.push_str(&format!("Stage expression: `{expr}`\n"));
+        }
+    }
+
+    if let Some((line, col)) = javac_loc {
+        if let Some(src_line) = source.lines().nth(line.saturating_sub(1)) {
+            let mut preview = src_line.trim_end().to_string();
+            const MAX_PREVIEW_LEN: usize = 200;
+            if preview.len() > MAX_PREVIEW_LEN {
+                preview.truncate(MAX_PREVIEW_LEN);
+                preview.push('…');
+            }
+            out.push_str(&format!(
+                "Generated code (line {line}, col {col}): {preview}\n"
+            ));
         }
     }
     out.push('\n');
