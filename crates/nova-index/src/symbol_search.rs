@@ -1,24 +1,24 @@
-use crate::indexes::{SymbolIndex, SymbolLocation};
+use crate::indexes::{IndexSymbolKind, SymbolIndex, SymbolLocation};
 use nova_core::SymbolId;
-use nova_fuzzy::{FuzzyMatcher, MatchScore, TrigramCandidateScratch, TrigramIndex, TrigramIndexBuilder};
-use nova_hir::ast_id::AstId;
+use nova_fuzzy::{
+    FuzzyMatcher, MatchScore, TrigramCandidateScratch, TrigramIndex, TrigramIndexBuilder,
+};
 use nova_memory::{EvictionRequest, EvictionResult, MemoryCategory, MemoryEvictor, MemoryManager};
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
 
-#[derive(Debug, Clone)]
+/// A single symbol definition within the workspace.
+///
+/// This is re-exported from `nova-index` as [`crate::SearchSymbol`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Symbol {
     pub name: String,
     pub qualified_name: String,
-    /// Optional container name (e.g. enclosing class/package) for display.
+    pub kind: IndexSymbolKind,
     pub container_name: Option<String>,
-    /// Best-effort file/position for the symbol's definition.
-    ///
-    /// This is optional because some callers (e.g. aggregated workspace symbol search)
-    /// may not have a single canonical location.
-    pub location: Option<SymbolLocation>,
-    /// Stable identifier for the definition within a file (when available).
-    pub ast_id: Option<AstId>,
+    pub location: SymbolLocation,
+    pub ast_id: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -143,9 +143,7 @@ impl SymbolSearchIndex {
             if let Some(container_name) = &entry.symbol.container_name {
                 bytes = bytes.saturating_add(container_name.capacity() as u64);
             }
-            if let Some(loc) = &entry.symbol.location {
-                bytes = bytes.saturating_add(loc.file.capacity() as u64);
-            }
+            bytes = bytes.saturating_add(entry.symbol.location.file.capacity() as u64);
         }
 
         bytes = bytes.saturating_add(self.trigram.estimated_bytes());
@@ -313,13 +311,9 @@ impl SymbolSearchIndex {
             .then_with(|| a_sym.name.len().cmp(&b_sym.name.len()))
             .then_with(|| a_sym.name.cmp(&b_sym.name))
             .then_with(|| a_sym.qualified_name.cmp(&b_sym.qualified_name))
-            .then_with(|| {
-                a_sym
-                    .location
-                    .as_ref()
-                    .map(|loc| loc.file.as_str())
-                    .cmp(&b_sym.location.as_ref().map(|loc| loc.file.as_str()))
-            })
+            .then_with(|| a_sym.location.file.cmp(&b_sym.location.file))
+            .then_with(|| a_sym.location.line.cmp(&b_sym.location.line))
+            .then_with(|| a_sym.location.column.cmp(&b_sym.location.column))
             .then_with(|| a_sym.ast_id.cmp(&b_sym.ast_id))
             .then_with(|| a.id.cmp(&b.id))
     }
@@ -455,7 +449,7 @@ impl WorkspaceSymbolSearcher {
     }
 
     fn ensure_index(&self, symbols: &SymbolIndex, force_rebuild: bool) -> Arc<SymbolSearchIndex> {
-        let symbol_count = symbols.symbols.len();
+        let symbol_count: usize = symbols.symbols.values().map(|entries| entries.len()).sum();
 
         let (index, bytes) = {
             let mut inner = self.inner.lock().unwrap();
@@ -470,17 +464,19 @@ impl WorkspaceSymbolSearcher {
                     .clone();
                 (index, None)
             } else {
-                let search_symbols: Vec<Symbol> = symbols
-                    .symbols
-                    .keys()
-                    .map(|name| Symbol {
-                        name: name.clone(),
-                        qualified_name: name.clone(),
-                        container_name: None,
-                        location: None,
-                        ast_id: None,
-                    })
-                    .collect();
+                let mut search_symbols = Vec::with_capacity(symbol_count);
+                for (name, entries) in &symbols.symbols {
+                    for entry in entries {
+                        search_symbols.push(Symbol {
+                            name: name.clone(),
+                            qualified_name: entry.qualified_name.clone(),
+                            kind: entry.kind.clone(),
+                            container_name: entry.container_name.clone(),
+                            location: entry.location.clone(),
+                            ast_id: entry.ast_id,
+                        });
+                    }
+                }
 
                 let index = Arc::new(SymbolSearchIndex::build(search_symbols));
                 inner.symbol_count = symbol_count;
@@ -551,15 +547,24 @@ impl MemoryEvictor for WorkspaceSymbolSearcher {
 mod tests {
     use super::*;
 
+    fn sym(name: &str, qualified_name: &str) -> Symbol {
+        Symbol {
+            name: name.into(),
+            qualified_name: qualified_name.into(),
+            kind: IndexSymbolKind::Class,
+            container_name: None,
+            location: SymbolLocation {
+                file: "A.java".into(),
+                line: 0,
+                column: 0,
+            },
+            ast_id: 0,
+        }
+    }
+
     #[test]
     fn qualified_name_equal_to_name_preserves_results() {
-        let symbol = Symbol {
-            name: "FooBar".into(),
-            qualified_name: "FooBar".into(),
-            container_name: None,
-            location: None,
-            ast_id: None,
-        };
+        let symbol = sym("FooBar", "FooBar");
 
         let index = SymbolSearchIndex::build(vec![symbol.clone()]);
         let results = index.search("fb", 10);
@@ -583,13 +588,7 @@ mod tests {
 
     #[test]
     fn qualified_name_is_used_for_matching_when_different() {
-        let index = SymbolSearchIndex::build(vec![Symbol {
-            name: "Map".into(),
-            qualified_name: "HashMap".into(),
-            container_name: None,
-            location: None,
-            ast_id: None,
-        }]);
+        let index = SymbolSearchIndex::build(vec![sym("Map", "HashMap")]);
 
         // `Map` is too short for this query, so a match is only possible via
         // `qualified_name`.
@@ -601,20 +600,8 @@ mod tests {
     #[test]
     fn symbol_search_uses_trigram_for_long_queries() {
         let index = SymbolSearchIndex::build(vec![
-            Symbol {
-                name: "HashMap".into(),
-                qualified_name: "java.util.HashMap".into(),
-                container_name: None,
-                location: None,
-                ast_id: None,
-            },
-            Symbol {
-                name: "HashSet".into(),
-                qualified_name: "java.util.HashSet".into(),
-                container_name: None,
-                location: None,
-                ast_id: None,
-            },
+            sym("HashMap", "java.util.HashMap"),
+            sym("HashSet", "java.util.HashSet"),
         ]);
 
         let (_results, stats) = index.search_with_stats("Hash", 10);
@@ -624,22 +611,7 @@ mod tests {
 
     #[test]
     fn symbol_search_ranks_prefix_first() {
-        let index = SymbolSearchIndex::build(vec![
-            Symbol {
-                name: "foobar".into(),
-                qualified_name: "pkg.foobar".into(),
-                container_name: None,
-                location: None,
-                ast_id: None,
-            },
-            Symbol {
-                name: "barfoo".into(),
-                qualified_name: "pkg.barfoo".into(),
-                container_name: None,
-                location: None,
-                ast_id: None,
-            },
-        ]);
+        let index = SymbolSearchIndex::build(vec![sym("foobar", "pkg.foobar"), sym("barfoo", "pkg.barfoo")]);
 
         let results = index.search("foo", 10);
         assert_eq!(results[0].symbol.name, "foobar");
@@ -647,22 +619,7 @@ mod tests {
 
     #[test]
     fn short_queries_still_match_acronyms() {
-        let index = SymbolSearchIndex::build(vec![
-            Symbol {
-                name: "HashMap".into(),
-                qualified_name: "java.util.HashMap".into(),
-                container_name: None,
-                location: None,
-                ast_id: None,
-            },
-            Symbol {
-                name: "Hmac".into(),
-                qualified_name: "crypto.Hmac".into(),
-                container_name: None,
-                location: None,
-                ast_id: None,
-            },
-        ]);
+        let index = SymbolSearchIndex::build(vec![sym("HashMap", "java.util.HashMap"), sym("Hmac", "crypto.Hmac")]);
 
         let results = index.search("hm", 10);
         assert!(
@@ -673,13 +630,7 @@ mod tests {
 
     #[test]
     fn short_queries_match_camel_case_initials() {
-        let index = SymbolSearchIndex::build(vec![Symbol {
-            name: "FooBar".into(),
-            qualified_name: "pkg.FooBar".into(),
-            container_name: None,
-            location: None,
-            ast_id: None,
-        }]);
+        let index = SymbolSearchIndex::build(vec![sym("FooBar", "pkg.FooBar")]);
 
         let results = index.search("fb", 10);
         assert_eq!(results[0].symbol.name, "FooBar");
@@ -697,22 +648,10 @@ mod tests {
         // Fill the first 50k entries with symbols that cannot match "co" at all
         // (they contain no 'c').
         for _ in 0..50_000 {
-            symbols.push(Symbol {
-                name: "aa".into(),
-                qualified_name: "bb".into(),
-                container_name: None,
-                location: None,
-                ast_id: None,
-            });
+            symbols.push(sym("aa", "bb"));
         }
         // Put the only matching symbol after the bounded scan window.
-        symbols.push(Symbol {
-            name: "Foo".into(),
-            qualified_name: "com.example.Foo".into(),
-            container_name: None,
-            location: None,
-            ast_id: None,
-        });
+        symbols.push(sym("Foo", "com.example.Foo"));
 
         let index = SymbolSearchIndex::build(symbols);
         let results = index.search("co", 10);
@@ -728,22 +667,7 @@ mod tests {
     fn search_tiebreaks_by_qualified_name_for_duplicate_names() {
         // Insert in the opposite order of the qualified-name lexicographic sort
         // so we can detect accidental insertion-order tie-breaking.
-        let index = SymbolSearchIndex::build(vec![
-            Symbol {
-                name: "Foo".into(),
-                qualified_name: "com.b.Foo".into(),
-                container_name: None,
-                location: None,
-                ast_id: None,
-            },
-            Symbol {
-                name: "Foo".into(),
-                qualified_name: "com.a.Foo".into(),
-                container_name: None,
-                location: None,
-                ast_id: None,
-            },
-        ]);
+        let index = SymbolSearchIndex::build(vec![sym("Foo", "com.b.Foo"), sym("Foo", "com.a.Foo")]);
 
         let results = index.search("Foo", 10);
         assert_eq!(results.len(), 2);
@@ -762,9 +686,14 @@ mod tests {
             symbols.push(Symbol {
                 name: "Foo".into(),
                 qualified_name: format!("com.{ch}.Foo"),
+                kind: IndexSymbolKind::Class,
                 container_name: None,
-                location: None,
-                ast_id: None,
+                location: SymbolLocation {
+                    file: "A.java".into(),
+                    line: 0,
+                    column: 0,
+                },
+                ast_id: 0,
             });
         }
 
@@ -799,13 +728,14 @@ mod tests {
         let index1 = SymbolSearchIndex::build(vec![Symbol {
             name: "Foo".into(),
             qualified_name: "com.example.Foo".into(),
+            kind: IndexSymbolKind::Class,
             container_name: Some(container_name.clone()),
-            location: Some(SymbolLocation {
+            location: SymbolLocation {
                 file: file.clone(),
                 line: 10,
                 column: 20,
-            }),
-            ast_id: None,
+            },
+            ast_id: 0,
         }]);
         let bytes1 = index1.estimated_bytes();
         assert!(bytes1 > 0);
@@ -817,12 +747,7 @@ mod tests {
             .as_ref()
             .expect("container_name should be present")
             .capacity() as u64
-            + sym
-                .location
-                .as_ref()
-                .expect("location should be present")
-                .file
-                .capacity() as u64;
+            + sym.location.file.capacity() as u64;
         assert!(
             bytes1 >= expected_min,
             "expected estimated_bytes to include container_name + location.file capacity"
@@ -832,27 +757,48 @@ mod tests {
             Symbol {
                 name: "Foo".into(),
                 qualified_name: "com.example.Foo".into(),
+                kind: IndexSymbolKind::Class,
                 container_name: Some(container_name.clone()),
-                location: Some(SymbolLocation {
+                location: SymbolLocation {
                     file: file.clone(),
                     line: 10,
                     column: 20,
-                }),
-                ast_id: None,
+                },
+                ast_id: 0,
             },
             Symbol {
                 name: "Foo2".into(),
                 qualified_name: "com.example.Foo2".into(),
+                kind: IndexSymbolKind::Class,
                 container_name: Some(container_name),
-                location: Some(SymbolLocation {
+                location: SymbolLocation {
                     file,
                     line: 30,
                     column: 40,
-                }),
-                ast_id: None,
+                },
+                ast_id: 0,
             },
         ]);
         let bytes2 = index2.estimated_bytes();
         assert!(bytes2 > bytes1);
+    }
+
+    #[test]
+    fn duplicate_names_are_returned_and_qualified_query_ranks_best_match_first() {
+        let index = SymbolSearchIndex::build(vec![
+            sym("Foo", "com.example.Foo"),
+            sym("Foo", "org.other.Foo"),
+            sym("Bar", "com.example.Bar"),
+        ]);
+
+        let results = index.search("Foo", 10);
+        let foos: Vec<_> = results
+            .iter()
+            .filter(|r| r.symbol.name == "Foo")
+            .collect();
+        assert_eq!(foos.len(), 2, "expected both Foo definitions to be returned");
+
+        let results = index.search("com.example.Foo", 10);
+        assert_eq!(results[0].symbol.qualified_name, "com.example.Foo");
     }
 }

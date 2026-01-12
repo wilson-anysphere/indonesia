@@ -27,6 +27,7 @@ mod watch_roots;
 pub use engine::{IndexProgress, WatcherHandle, WorkspaceEvent, WorkspaceStatus};
 pub use snapshot::WorkspaceSnapshot;
 pub use watch::{ChangeCategory, NormalizedEvent, WatchConfig};
+pub use nova_index::SearchSymbol as WorkspaceSymbol;
 
 /// A minimal, library-first backend for the `nova` CLI.
 ///
@@ -1041,11 +1042,15 @@ fn fuzzy_rank_workspace_symbols(
 ) -> (Vec<WorkspaceSymbol>, SearchStats) {
     if query.is_empty() {
         let mut ranked = Vec::new();
-        for (name, locations) in &symbols.symbols {
-            for sym in locations {
+        for (name, defs) in &symbols.symbols {
+            for sym in defs {
                 ranked.push(WorkspaceSymbol {
                     name: name.clone(),
-                    locations: vec![sym.location.clone()],
+                    qualified_name: sym.qualified_name.clone(),
+                    kind: sym.kind.clone(),
+                    container_name: sym.container_name.clone(),
+                    location: sym.location.clone(),
+                    ast_id: sym.ast_id,
                 });
                 if ranked.len() >= limit {
                     break;
@@ -1059,41 +1064,13 @@ fn fuzzy_rank_workspace_symbols(
             ranked,
             SearchStats {
                 strategy: CandidateStrategy::FullScan,
-                candidates_considered: symbols.symbols.len(),
+                candidates_considered: symbols.symbols.values().map(|syms| syms.len()).sum(),
             },
         );
     }
 
     let (results, stats) = searcher.search_with_stats(symbols, query, limit, indexes_changed);
-
-    let mut ranked = Vec::new();
-    for res in results {
-        let name = res.symbol.name;
-        if let Some(syms) = symbols.symbols.get(name.as_str()) {
-            let mut locations: Vec<SymbolLocation> =
-                syms.iter().map(|sym| sym.location.clone()).collect();
-            locations.sort_by(|a, b| {
-                a.file
-                    .cmp(&b.file)
-                    .then_with(|| a.line.cmp(&b.line))
-                    .then_with(|| a.column.cmp(&b.column))
-            });
-            for loc in locations {
-                ranked.push(WorkspaceSymbol {
-                    name: name.clone(),
-                    locations: vec![loc],
-                });
-                if ranked.len() >= limit {
-                    break;
-                }
-            }
-        }
-        if ranked.len() >= limit {
-            break;
-        }
-    }
-
-    (ranked, stats)
+    (results.into_iter().map(|res| res.symbol).collect(), stats)
 }
 
 fn fuzzy_rank_workspace_symbols_sharded(
@@ -1110,8 +1087,8 @@ fn fuzzy_rank_workspace_symbols_sharded(
         struct ShardEntryIter<'a> {
             map_iter: std::collections::btree_map::Iter<'a, String, Vec<IndexedSymbol>>,
             current_name: Option<&'a str>,
-            current_locations: &'a [IndexedSymbol],
-            loc_idx: usize,
+            current_symbols: &'a [IndexedSymbol],
+            sym_idx: usize,
         }
 
         impl<'a> ShardEntryIter<'a> {
@@ -1121,39 +1098,39 @@ fn fuzzy_rank_workspace_symbols_sharded(
                     Self {
                         map_iter,
                         current_name: Some(name.as_str()),
-                        current_locations: locs.as_slice(),
-                        loc_idx: 0,
+                        current_symbols: locs.as_slice(),
+                        sym_idx: 0,
                     }
                 } else {
                     Self {
                         map_iter,
                         current_name: None,
-                        current_locations: &[],
-                        loc_idx: 0,
+                        current_symbols: &[],
+                        sym_idx: 0,
                     }
                 }
             }
 
-            fn next_entry(&mut self) -> Option<(&'a str, &'a SymbolLocation, usize)> {
+            fn next_entry(&mut self) -> Option<(&'a str, &'a IndexedSymbol, usize)> {
                 loop {
                     let name = self.current_name?;
-                    if self.loc_idx < self.current_locations.len() {
-                        let idx = self.loc_idx;
-                        let loc = &self.current_locations[idx].location;
-                        self.loc_idx += 1;
-                        return Some((name, loc, idx));
+                    if self.sym_idx < self.current_symbols.len() {
+                        let idx = self.sym_idx;
+                        let sym = &self.current_symbols[idx];
+                        self.sym_idx += 1;
+                        return Some((name, sym, idx));
                     }
 
                     match self.map_iter.next() {
                         Some((name, locs)) => {
                             self.current_name = Some(name.as_str());
-                            self.current_locations = locs.as_slice();
-                            self.loc_idx = 0;
+                            self.current_symbols = locs.as_slice();
+                            self.sym_idx = 0;
                             continue;
                         }
                         None => {
                             self.current_name = None;
-                            self.current_locations = &[];
+                            self.current_symbols = &[];
                             return None;
                         }
                     }
@@ -1164,20 +1141,22 @@ fn fuzzy_rank_workspace_symbols_sharded(
         #[derive(Copy, Clone, Eq, PartialEq)]
         struct HeapEntry<'a> {
             name: &'a str,
-            location: &'a SymbolLocation,
+            sym: &'a IndexedSymbol,
             shard_idx: usize,
-            location_idx: usize,
+            sym_idx: usize,
         }
 
         impl Ord for HeapEntry<'_> {
             fn cmp(&self, other: &Self) -> Ordering {
                 self.name
                     .cmp(other.name)
-                    .then_with(|| self.location.file.cmp(&other.location.file))
-                    .then_with(|| self.location.line.cmp(&other.location.line))
-                    .then_with(|| self.location.column.cmp(&other.location.column))
+                    .then_with(|| self.sym.qualified_name.cmp(&other.sym.qualified_name))
+                    .then_with(|| self.sym.location.file.cmp(&other.sym.location.file))
+                    .then_with(|| self.sym.location.line.cmp(&other.sym.location.line))
+                    .then_with(|| self.sym.location.column.cmp(&other.sym.location.column))
+                    .then_with(|| self.sym.ast_id.cmp(&other.sym.ast_id))
                     .then_with(|| self.shard_idx.cmp(&other.shard_idx))
-                    .then_with(|| self.location_idx.cmp(&other.location_idx))
+                    .then_with(|| self.sym_idx.cmp(&other.sym_idx))
             }
         }
 
@@ -1194,12 +1173,12 @@ fn fuzzy_rank_workspace_symbols_sharded(
 
         let mut heap = BinaryHeap::<std::cmp::Reverse<HeapEntry<'_>>>::new();
         for (shard_idx, iter) in iters.iter_mut().enumerate() {
-            if let Some((name, location, location_idx)) = iter.next_entry() {
+            if let Some((name, sym, sym_idx)) = iter.next_entry() {
                 heap.push(std::cmp::Reverse(HeapEntry {
                     name,
-                    location,
                     shard_idx,
-                    location_idx,
+                    sym,
+                    sym_idx,
                 }));
             }
         }
@@ -1208,19 +1187,23 @@ fn fuzzy_rank_workspace_symbols_sharded(
         while let Some(std::cmp::Reverse(entry)) = heap.pop() {
             ranked.push(WorkspaceSymbol {
                 name: entry.name.to_string(),
-                locations: vec![entry.location.clone()],
+                qualified_name: entry.sym.qualified_name.clone(),
+                kind: entry.sym.kind.clone(),
+                container_name: entry.sym.container_name.clone(),
+                location: entry.sym.location.clone(),
+                ast_id: entry.sym.ast_id,
             });
 
             if ranked.len() >= limit {
                 break;
             }
 
-            if let Some((name, location, location_idx)) = iters[entry.shard_idx].next_entry() {
+            if let Some((name, sym, sym_idx)) = iters[entry.shard_idx].next_entry() {
                 heap.push(std::cmp::Reverse(HeapEntry {
                     name,
-                    location,
                     shard_idx: entry.shard_idx,
-                    location_idx,
+                    sym,
+                    sym_idx,
                 }));
             }
         }
@@ -1229,63 +1212,43 @@ fn fuzzy_rank_workspace_symbols_sharded(
             ranked,
             SearchStats {
                 strategy: CandidateStrategy::FullScan,
-                candidates_considered: shards.iter().map(|shard| shard.symbols.symbols.len()).sum(),
+                candidates_considered: shards
+                    .iter()
+                    .flat_map(|shard| shard.symbols.symbols.values())
+                    .map(|syms| syms.len())
+                    .sum(),
             },
         );
     }
 
     if indexes_changed || !searcher.has_index() {
-        let mut symbol_names = std::collections::BTreeSet::new();
-        for shard in shards {
-            symbol_names.extend(shard.symbols.symbols.keys().cloned());
-        }
+        let symbol_count: usize = shards
+            .iter()
+            .flat_map(|shard| shard.symbols.symbols.values())
+            .map(|syms| syms.len())
+            .sum();
 
-        let search_symbols: Vec<SearchSymbol> = symbol_names
-            .into_iter()
-            .map(|name| SearchSymbol {
-                qualified_name: name.clone(),
-                name,
-                container_name: None,
-                location: None,
-                ast_id: None,
-            })
-            .collect();
+        let mut search_symbols = Vec::with_capacity(symbol_count);
+        for shard in shards {
+            for (name, syms) in &shard.symbols.symbols {
+                for sym in syms {
+                    search_symbols.push(SearchSymbol {
+                        name: name.clone(),
+                        qualified_name: sym.qualified_name.clone(),
+                        kind: sym.kind.clone(),
+                        container_name: sym.container_name.clone(),
+                        location: sym.location.clone(),
+                        ast_id: sym.ast_id,
+                    });
+                }
+            }
+        }
 
         searcher.rebuild(search_symbols);
     }
 
     let (results, stats) = searcher.search_with_stats_cached(query, limit);
-    let mut ranked = Vec::new();
-    for res in results {
-        let name = res.symbol.name;
-        let mut locations: Vec<SymbolLocation> = Vec::new();
-        for shard in shards {
-            if let Some(found) = shard.symbols.symbols.get(name.as_str()) {
-                locations.extend(found.iter().map(|sym| sym.location.clone()));
-            }
-        }
-        locations.sort_by(|a, b| {
-            a.file
-                .cmp(&b.file)
-                .then_with(|| a.line.cmp(&b.line))
-                .then_with(|| a.column.cmp(&b.column))
-        });
-
-        for loc in locations {
-            ranked.push(WorkspaceSymbol {
-                name: name.clone(),
-                locations: vec![loc],
-            });
-            if ranked.len() >= limit {
-                break;
-            }
-        }
-        if ranked.len() >= limit {
-            break;
-        }
-    }
-
-    (ranked, stats)
+    (results.into_iter().map(|res| res.symbol).collect(), stats)
 }
 
 #[cfg(test)]
@@ -1465,13 +1428,7 @@ mod fuzzy_symbol_tests {
         let order: Vec<(String, String)> = first
             .iter()
             .map(|sym| {
-                (
-                    sym.name.clone(),
-                    sym.locations
-                        .first()
-                        .map(|loc| loc.file.clone())
-                        .unwrap_or_default(),
-                )
+                (sym.name.clone(), sym.location.file.clone())
             })
             .collect();
 
@@ -1555,12 +1512,6 @@ pub struct PerfMetrics {
     pub elapsed_ms: u128,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rss_bytes: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkspaceSymbol {
-    pub name: String,
-    pub locations: Vec<SymbolLocation>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

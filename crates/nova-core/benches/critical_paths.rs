@@ -6,9 +6,11 @@ use once_cell::sync::Lazy;
 
 use nova_core::{CompletionItem, CompletionItemKind, LineIndex, TextSize};
 use nova_db::InMemoryFileStore;
-use nova_hir::ast_id::AstId;
 use nova_ide::{code_intelligence, filter_and_rank_completions};
-use nova_index::{ReferenceIndex, ReferenceLocation, SearchSymbol, SymbolLocation, SymbolSearchIndex};
+use nova_index::{
+    IndexSymbolKind, ReferenceIndex, ReferenceLocation, SearchSymbol, SymbolLocation,
+    SymbolSearchIndex,
+};
 
 static SMALL_JAVA: &str = include_str!("fixtures/small.java");
 static MEDIUM_JAVA: &str = include_str!("fixtures/medium.java");
@@ -291,15 +293,16 @@ fn generate_symbols(count: usize) -> Vec<SearchSymbol> {
         .map(|i| {
             let name = format!("Class{i}");
             SearchSymbol {
+                name: name.clone(),
                 qualified_name: format!("bench.pkg.{name}"),
+                kind: IndexSymbolKind::Class,
                 container_name: Some("bench.pkg".into()),
-                location: Some(SymbolLocation {
+                location: SymbolLocation {
                     file: format!("src/{name}.java"),
                     line: 2,
                     column: 13,
-                }),
-                ast_id: Some(AstId::new(i as u32)),
-                name,
+                },
+                ast_id: i as u32,
             }
         })
         .collect()

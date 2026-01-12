@@ -1518,15 +1518,16 @@ fn workspace_symbols_distributed(args: &SymbolsArgs) -> Result<Vec<WorkspaceSymb
                 "container_name": container_name,
                 "location": location,
                 "locations": locations,
+                // Required for the flattened WorkspaceSymbol representation.
+                "ast_id": 0,
             });
 
             // Try a handful of `kind` encodings (enum-as-string vs LSP numeric kind) to match
             // whatever the current `WorkspaceSymbol.kind` type uses.
             let kind_candidates = [
                 sym_value.get("kind").cloned(),
-                Some(serde_json::json!("object")),
-                Some(serde_json::json!("Object")),
-                Some(serde_json::json!(19)), // LSP SymbolKind::OBJECT
+                // Default kind for remote symbols when the protocol does not include it.
+                Some(serde_json::json!("Class")),
             ];
 
             let mut parsed: Option<WorkspaceSymbol> = None;

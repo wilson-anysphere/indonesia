@@ -6467,6 +6467,9 @@ fn handle_workspace_symbol(
                     "namespace" => LspSymbolKind::NAMESPACE,
                     "package" => LspSymbolKind::PACKAGE,
                     "class" => LspSymbolKind::CLASS,
+                    "record" => LspSymbolKind::STRUCT,
+                    // LSP's `SymbolKind` does not have a dedicated annotation kind; treat as interface.
+                    "annotation" => LspSymbolKind::INTERFACE,
                     "method" => LspSymbolKind::METHOD,
                     "property" => LspSymbolKind::PROPERTY,
                     "field" => LspSymbolKind::FIELD,
