@@ -761,4 +761,45 @@ mod tests {
         assert!(src
             .contains(r#"s.map(x -> x).mapToInt(x -> x).forEach(x -> System.out.println(")"));"#));
     }
+
+    #[test]
+    fn java_source_generation_resolves_param_name_collisions_deterministically() {
+        let src = generate_stream_eval_helper_java_source(
+            "",
+            &[],
+            &[
+                ("this".to_string(), "Foo".to_string()),
+                // All of these sanitize to `foo_bar` and must be disambiguated.
+                ("foo-bar".to_string(), "int".to_string()),
+                ("foo_bar".to_string(), "int".to_string()),
+                ("foo bar".to_string(), "int".to_string()),
+            ],
+            &[],
+            &["this.toString();".to_string()],
+        );
+
+        assert!(
+            src.contains("stage0(Foo __this, int foo_bar, int foo_bar_2, int foo_bar_3)"),
+            "{src}"
+        );
+        // Ensure trailing semicolons are stripped before wrapping in `return ...;`.
+        assert!(src.contains("return __this.toString();"), "{src}");
+    }
+
+    #[test]
+    fn java_source_generation_dedupes_imports() {
+        let src = generate_stream_eval_helper_java_source(
+            "",
+            &[
+                "java.util.List".to_string(),
+                "import java.util.List;".to_string(),
+                "java.util.List;".to_string(),
+            ],
+            &[("this".to_string(), "Object".to_string())],
+            &[],
+            &["this".to_string()],
+        );
+
+        assert_eq!(src.matches("import java.util.List;").count(), 1, "{src}");
+    }
 }
