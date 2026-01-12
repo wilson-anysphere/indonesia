@@ -8998,6 +8998,10 @@ impl CompletionResolveCtx {
         //   import) so dependency types can be loaded later via the classpath index.
         // - otherwise fall back to the raw simple name (important for in-memory fixtures where
         //   workspace types haven't been loaded yet).
+        //
+        // Note: We avoid guessing nested binary `$` names (e.g. `x.Y.C` -> `x.Y$C`) for
+        // uncommon-but-legal uppercase package segments by preferring source spellings first and
+        // only considering `$` forms as fallbacks.
         let fallback = candidates
             .iter()
             .find(|cand| {
@@ -9005,7 +9009,7 @@ impl CompletionResolveCtx {
             })
             .cloned()
             .or_else(|| candidates.last().cloned())
-            .unwrap_or_else(|| canonical_to_binary_name(name));
+            .unwrap_or_else(|| name.to_string());
         Type::Named(fallback)
     }
 
@@ -9041,12 +9045,15 @@ impl CompletionResolveCtx {
         let mut out = Vec::<String>::new();
 
         if let Some(path) = self.single_type_imports.get(raw) {
+            // Keep the original import spelling first; the binary `$` form is only a best-effort
+            // candidate for nested imports like `java.util.Map.Entry`.
+            push_unique(&mut out, path.clone());
             push_unique(&mut out, canonical_to_binary_name(path));
         }
 
         if let Some(pkg) = &self.package {
             if !pkg.is_empty() {
-                push_unique(&mut out, canonical_to_binary_name(&format!("{pkg}.{raw}")));
+                push_unique(&mut out, format!("{pkg}.{raw}"));
             }
         }
 
@@ -9057,7 +9064,15 @@ impl CompletionResolveCtx {
         );
 
         for pkg in &self.star_imports {
-            push_unique(&mut out, canonical_to_binary_name(&format!("{pkg}.{raw}")));
+            let candidate = format!("{pkg}.{raw}");
+            push_unique(&mut out, candidate.clone());
+            // Star imports can target both packages (`java.util.*`) and types (`java.util.Map.*`).
+            // Only the latter need the binary `$` form, but we conservatively include it as a
+            // fallback candidate to support nested types without guessing in the common case.
+            let binary = canonical_to_binary_name(&candidate);
+            if binary != candidate {
+                push_unique(&mut out, binary);
+            }
         }
 
         if let Some(env) = &self.env {
@@ -9079,8 +9094,17 @@ impl CompletionResolveCtx {
         // A leading lowercase segment is typically a package name, so treat the whole string as a
         // canonical qualified name and convert nested types to binary form (`java.util.Map.Entry`
         // -> `java.util.Map$Entry`).
-        if first.chars().next().is_some_and(|c| c.is_ascii_lowercase()) {
-            return vec![canonical_to_binary_name(raw)];
+        if first
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase())
+        {
+            let mut out = vec![raw.to_string()];
+            let binary = canonical_to_binary_name(raw);
+            if binary != raw {
+                out.push(binary);
+            }
+            return out;
         }
 
         // Otherwise interpret as `Outer.Inner` where `Outer` is an in-scope type.
