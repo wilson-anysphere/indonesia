@@ -34,7 +34,7 @@ class Outer {
         ty: QualifiedName::from_dotted("java.util.List"),
     }));
     assert!(def_map.imports().contains(&Import::TypeStar {
-        package: PackageName::from_dotted("java.util"),
+        path: QualifiedName::from_dotted("java.util"),
     }));
     assert!(def_map.imports().contains(&Import::StaticSingle {
         ty: QualifiedName::from_dotted("java.lang.Math"),
@@ -65,4 +65,3 @@ class Outer {
         "p.Outer$Inner$Deep"
     );
 }
-

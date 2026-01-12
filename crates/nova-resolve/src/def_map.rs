@@ -12,8 +12,15 @@ use crate::types::{FieldDef, MethodDef, TypeDef, TypeKind};
 pub enum Import {
     /// `import java.util.List;`
     TypeSingle { ty: QualifiedName },
-    /// `import java.util.*;`
-    TypeStar { package: PackageName },
+    /// `import X.*;` where `X` is a `PackageOrTypeName` (JLS 7.5.2).
+    ///
+    /// `X` can refer to either:
+    /// - a package (`import java.util.*;`), or
+    /// - a type (`import java.util.Map.*;`), in which case member types can be imported.
+    ///
+    /// Higher layers can interpret this via `TypeIndex::package_exists` and/or by resolving `X`
+    /// as a type name.
+    TypeStar { path: QualifiedName },
     /// `import static java.lang.Math.max;`
     StaticSingle { ty: QualifiedName, member: Name },
     /// `import static java.lang.Math.*;`
@@ -195,7 +202,7 @@ impl DefMap {
         if !import.is_static {
             if import.is_star {
                 return Some(Import::TypeStar {
-                    package: PackageName::from_dotted(&import.path),
+                    path: QualifiedName::from_dotted(&import.path),
                 });
             }
             return Some(Import::TypeSingle {
