@@ -1103,13 +1103,24 @@ impl<R: CommandRunner> BazelWorkspace<R> {
 
                 // If we have a canonical workspace root, also handle the inverse scenario: the
                 // changed path may have been reported through a symlinked path prefix. In that case
-                // we can canonicalize the changed path and map it back into the workspace.
-                if abs.exists() {
-                    if let Ok(abs_canon) = fs::canonicalize(&abs) {
-                        if let Ok(rel) = abs_canon.strip_prefix(root_canon) {
-                            changed_norm
-                                .push(normalize_absolute_path_lexically(&self.root.join(rel)));
-                            continue;
+                // we can canonicalize the changed path (or one of its parent directories, if the
+                // file itself no longer exists) and map it back into the workspace.
+                let mut ancestor = abs.as_path();
+                while !ancestor.exists() {
+                    let Some(parent) = ancestor.parent() else {
+                        break;
+                    };
+                    ancestor = parent;
+                }
+                if ancestor.exists() {
+                    if let Ok(ancestor_canon) = fs::canonicalize(ancestor) {
+                        if let Ok(remainder) = abs.strip_prefix(ancestor) {
+                            let abs_canon = ancestor_canon.join(remainder);
+                            if let Ok(rel) = abs_canon.strip_prefix(root_canon) {
+                                changed_norm
+                                    .push(normalize_absolute_path_lexically(&self.root.join(rel)));
+                                continue;
+                            }
                         }
                     }
                 }

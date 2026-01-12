@@ -1607,9 +1607,7 @@ mod tests {
     }
 
     fn set_max_message_bytes_env_var(value: Option<&str>) -> MaxMessageBytesEnvVarGuard {
-        let lock = crate::test_support::ENV_LOCK
-            .lock()
-            .expect("failed to lock env mutex");
+        let lock = crate::test_support::env_lock();
         let previous = std::env::var_os(BSP_MAX_MESSAGE_BYTES_ENV_VAR);
 
         match value {
