@@ -871,7 +871,10 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         if self.base_span.is_none() || name_range.is_empty() {
             return;
         }
-        let text = self.text.get(name_range.clone()).unwrap_or("");
+        let Some(text) = self.text.get(name_range.clone()) else {
+            return;
+        };
+        let text = text.trim();
         if text.is_empty() {
             return;
         }
