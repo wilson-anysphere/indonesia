@@ -14,6 +14,18 @@ pub trait NovaInputs: ra_salsa::Database {
     #[ra_salsa::input]
     fn file_content(&self, file: FileId) -> Arc<String>;
 
+    /// Whether the host considers the file content to be "dirty" (in-memory edits not yet saved
+    /// to disk).
+    ///
+    /// This is used by project indexing warm-start logic: unchanged on-disk files are normally
+    /// validated via fast metadata fingerprints (mtime + size), but purely in-memory edits would
+    /// otherwise be invisible without an explicit, tracked signal.
+    ///
+    /// Hosts should set this to `true` when a file is modified in an editor buffer and back to
+    /// `false` once the buffer state matches the on-disk content again.
+    #[ra_salsa::input]
+    fn file_is_dirty(&self, file: FileId) -> bool;
+
     /// Stable list of all files known to the host.
     ///
     /// This is intentionally an input so Salsa snapshots can enumerate files

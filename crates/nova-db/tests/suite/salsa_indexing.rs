@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use nova_cache::CacheConfig;
+use nova_cache::{CacheConfig, CacheDir};
 use nova_db::{FileId, NovaIndexing, PersistenceConfig, PersistenceMode, ProjectId, SalsaDatabase};
 
 fn executions(db: &SalsaDatabase, query_name: &str) -> u64 {
@@ -138,6 +138,77 @@ fn project_indexes_warm_start_avoids_file_fingerprint_for_unchanged_disk_files()
 }
 
 #[test]
+fn project_indexes_reindex_dirty_file_without_disk_change() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    let cache_root = tmp.path().join("cache-root");
+    std::fs::create_dir_all(&cache_root).unwrap();
+    let cache = CacheConfig {
+        cache_root_override: Some(cache_root),
+    };
+    let persistence = PersistenceConfig {
+        mode: PersistenceMode::ReadWrite,
+        cache: cache.clone(),
+    };
+
+    let project = ProjectId::from_raw(0);
+    let a = FileId::from_raw(1);
+    let b = FileId::from_raw(2);
+
+    // First run: build indexes from scratch and persist.
+    std::fs::write(project_root.join("A.java"), "class A {}").unwrap();
+    std::fs::write(project_root.join("B.java"), "class B {}").unwrap();
+
+    let db1 = SalsaDatabase::new_with_persistence(&project_root, persistence.clone());
+    db1.set_project_files(project, Arc::new(vec![a, b]));
+    db1.set_file_rel_path(a, Arc::new("A.java".to_string()));
+    db1.set_file_rel_path(b, Arc::new("B.java".to_string()));
+    db1.set_file_text(a, "class A {}".to_string());
+    db1.set_file_text(b, "class B {}".to_string());
+
+    let indexes_v1 = db1.with_snapshot(|snap| (*snap.project_indexes(project)).clone());
+    assert!(indexes_v1.symbols.symbols.contains_key("A"));
+    assert!(indexes_v1.symbols.symbols.contains_key("B"));
+    db1.persist_project_indexes(project).unwrap();
+
+    // Second run: warm-start the persisted indexes, but update file B in memory without touching
+    // disk. The dirty flag should force reindexing B even though its on-disk metadata didn't
+    // change.
+    let db2 = SalsaDatabase::new_with_persistence(&project_root, persistence);
+    db2.set_project_files(project, Arc::new(vec![a, b]));
+    db2.set_file_rel_path(a, Arc::new("A.java".to_string()));
+    db2.set_file_rel_path(b, Arc::new("B.java".to_string()));
+    db2.set_file_text(a, "class A {}".to_string());
+    db2.set_file_text(b, "class B { class C {} }".to_string());
+    db2.set_file_is_dirty(b, true);
+
+    db2.clear_query_stats();
+    let indexes_v2 = db2.with_snapshot(|snap| (*snap.project_indexes(project)).clone());
+
+    assert_eq!(
+        executions(&db2, "file_index_delta"),
+        1,
+        "expected only the dirty file to be reindexed"
+    );
+    assert_eq!(executions(&db2, "parse_java"), 1);
+    assert_eq!(
+        executions(&db2, "file_fingerprint"),
+        0,
+        "warm-start should still validate unchanged on-disk files via metadata fingerprints"
+    );
+    assert!(indexes_v2.symbols.symbols.contains_key("C"));
+    assert!(indexes_v2
+        .symbols
+        .symbols
+        .get("C")
+        .unwrap()
+        .iter()
+        .all(|loc| loc.file == "B.java"));
+}
+
+#[test]
 fn project_index_shards_has_fixed_len_and_merges_to_project_indexes() {
     let project = ProjectId::from_raw(0);
     let a = FileId::from_raw(1);
@@ -166,6 +237,46 @@ fn project_index_shards_has_fixed_len_and_merges_to_project_indexes() {
     assert!(
         shards[shard_id].symbols.symbols.contains_key("A"),
         "expected A.java symbols to be placed in its deterministic shard"
+    );
+}
+
+#[test]
+fn persist_project_indexes_is_noop_when_dirty_files_exist() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    std::fs::write(project_root.join("A.java"), "class A {}").unwrap();
+
+    let cache_root = tmp.path().join("cache-root");
+    std::fs::create_dir_all(&cache_root).unwrap();
+    let cache = CacheConfig {
+        cache_root_override: Some(cache_root),
+    };
+    let persistence = PersistenceConfig {
+        mode: PersistenceMode::ReadWrite,
+        cache: cache.clone(),
+    };
+
+    let project = ProjectId::from_raw(0);
+    let a = FileId::from_raw(1);
+
+    let db = SalsaDatabase::new_with_persistence(&project_root, persistence);
+    db.set_project_files(project, Arc::new(vec![a]));
+    db.set_file_rel_path(a, Arc::new("A.java".to_string()));
+    db.set_file_text(a, "class A { class C {} }".to_string());
+    db.set_file_is_dirty(a, true);
+
+    db.persist_project_indexes(project).unwrap();
+
+    let cache_dir = CacheDir::new(&project_root, cache).unwrap();
+    let manifest = cache_dir
+        .indexes_dir()
+        .join("shards")
+        .join("manifest.txt");
+    assert!(
+        !manifest.exists(),
+        "persist_project_indexes should not write sharded index artifacts when dirty files exist"
     );
 }
 

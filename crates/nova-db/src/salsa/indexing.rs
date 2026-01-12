@@ -214,6 +214,19 @@ fn project_index_shards(db: &dyn NovaIndexing, project: ProjectId) -> Arc<Vec<Pr
         if let Some(loaded) = loaded {
             invalidated_files = loaded.invalidated_files;
 
+            // Ensure dirty (in-memory modified) files are reindexed even when their on-disk
+            // metadata fingerprints are unchanged.
+            let mut invalidated: std::collections::BTreeSet<String> =
+                invalidated_files.into_iter().collect();
+            for (idx, &file) in db.project_files(project).iter().enumerate() {
+                cancel::checkpoint_cancelled(db, idx as u32);
+                if db.file_is_dirty(file) {
+                    let rel_path = db.file_rel_path(file);
+                    invalidated.insert(rel_path.as_ref().clone());
+                }
+            }
+            invalidated_files = invalidated.into_iter().collect();
+
             // If every existing file is invalidated, we don't need to load any persisted shards:
             // we'll rebuild everything from scratch anyway.
             let invalidated_set: std::collections::HashSet<&str> =

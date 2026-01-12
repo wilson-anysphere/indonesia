@@ -297,6 +297,7 @@ struct SalsaInputs {
     file_exists: HashMap<FileId, bool>,
     file_project: HashMap<FileId, ProjectId>,
     file_content: HashMap<FileId, Arc<String>>,
+    file_is_dirty: HashMap<FileId, bool>,
     file_rel_path: HashMap<FileId, Arc<String>>,
     source_root: HashMap<FileId, SourceRootId>,
     project_files: HashMap<ProjectId, Arc<Vec<FileId>>>,
@@ -319,6 +320,9 @@ impl SalsaInputs {
         }
         for (&file, content) in &self.file_content {
             db.set_file_content(file, content.clone());
+        }
+        for (&file, &dirty) in &self.file_is_dirty {
+            db.set_file_is_dirty(file, dirty);
         }
         for (&file, path) in &self.file_rel_path {
             db.set_file_rel_path(file, path.clone());
@@ -779,29 +783,59 @@ impl Database {
     }
 
     pub fn set_file_exists(&self, file: FileId, exists: bool) {
-        let mut inputs = self.inputs.lock();
-        inputs.file_exists.insert(file, exists);
-        drop(inputs);
+        use std::collections::hash_map::Entry;
 
-        self.inner.lock().set_file_exists(file, exists);
+        let init_dirty = {
+            let mut inputs = self.inputs.lock();
+            inputs.file_exists.insert(file, exists);
+            match inputs.file_is_dirty.entry(file) {
+                Entry::Vacant(entry) => {
+                    entry.insert(false);
+                    true
+                }
+                Entry::Occupied(_) => false,
+            }
+        };
+
+        let mut db = self.inner.lock();
+        if init_dirty {
+            db.set_file_is_dirty(file, false);
+        }
+        db.set_file_exists(file, exists);
     }
 
     pub fn set_file_content(&self, file: FileId, content: Arc<String>) {
-        let mut inputs = self.inputs.lock();
-        inputs.file_content.insert(file, content.clone());
-        if inputs.file_ids.insert(file) {
-            inputs.file_ids_dirty = true;
-        }
-        drop(inputs);
+        use std::collections::hash_map::Entry;
 
-        self.inner.lock().set_file_content(file, content);
+        let init_dirty = {
+            let mut inputs = self.inputs.lock();
+            inputs.file_content.insert(file, content.clone());
+            if inputs.file_ids.insert(file) {
+                inputs.file_ids_dirty = true;
+            }
+            match inputs.file_is_dirty.entry(file) {
+                Entry::Vacant(entry) => {
+                    entry.insert(false);
+                    true
+                }
+                Entry::Occupied(_) => false,
+            }
+        };
+
+        let mut db = self.inner.lock();
+        if init_dirty {
+            db.set_file_is_dirty(file, false);
+        }
+        db.set_file_content(file, content);
     }
 
     pub fn set_file_text(&self, file: FileId, text: impl Into<String>) {
+        use std::collections::hash_map::Entry;
+
         let text = Arc::new(text.into());
         let default_project = ProjectId::from_raw(0);
         let default_root = SourceRootId::from_raw(0);
-        let (set_default_project, set_default_root) = {
+        let (set_default_project, set_default_root, init_dirty) = {
             let mut inputs = self.inputs.lock();
             inputs.file_exists.insert(file, true);
             inputs.file_content.insert(file, text.clone());
@@ -818,9 +852,21 @@ impl Database {
             if set_default_root {
                 inputs.source_root.insert(file, default_root);
             }
-            (set_default_project, set_default_root)
+
+            let init_dirty = match inputs.file_is_dirty.entry(file) {
+                Entry::Vacant(entry) => {
+                    entry.insert(false);
+                    true
+                }
+                Entry::Occupied(_) => false,
+            };
+
+            (set_default_project, set_default_root, init_dirty)
         };
         let mut db = self.inner.lock();
+        if init_dirty {
+            db.set_file_is_dirty(file, false);
+        }
         db.set_file_exists(file, true);
         if set_default_project {
             db.set_file_project(file, default_project);
@@ -831,24 +877,59 @@ impl Database {
         db.set_file_content(file, text);
     }
 
+    pub fn set_file_is_dirty(&self, file: FileId, dirty: bool) {
+        let mut inputs = self.inputs.lock();
+        inputs.file_is_dirty.insert(file, dirty);
+        drop(inputs);
+
+        self.inner.lock().set_file_is_dirty(file, dirty);
+    }
+
     pub fn set_file_path(&self, file: FileId, path: impl Into<String>) {
         self.inner.lock().set_file_path(file, path);
     }
 
     pub fn set_project_files(&self, project: ProjectId, files: Arc<Vec<FileId>>) {
-        let mut inputs = self.inputs.lock();
-        inputs.project_files.insert(project, files.clone());
-        drop(inputs);
+        use std::collections::hash_map::Entry;
 
-        self.inner.lock().set_project_files(project, files);
+        let mut init_dirty_files = Vec::new();
+        {
+            let mut inputs = self.inputs.lock();
+            inputs.project_files.insert(project, files.clone());
+            for &file in files.as_ref() {
+                if let Entry::Vacant(entry) = inputs.file_is_dirty.entry(file) {
+                    entry.insert(false);
+                    init_dirty_files.push(file);
+                }
+            }
+        }
+
+        let mut db = self.inner.lock();
+        for file in init_dirty_files {
+            db.set_file_is_dirty(file, false);
+        }
+        db.set_project_files(project, files);
     }
 
     pub fn set_file_rel_path(&self, file: FileId, rel_path: Arc<String>) {
-        let mut inputs = self.inputs.lock();
-        inputs.file_rel_path.insert(file, Arc::clone(&rel_path));
-        drop(inputs);
+        use std::collections::hash_map::Entry;
+
+        let init_dirty = {
+            let mut inputs = self.inputs.lock();
+            inputs.file_rel_path.insert(file, Arc::clone(&rel_path));
+            match inputs.file_is_dirty.entry(file) {
+                Entry::Vacant(entry) => {
+                    entry.insert(false);
+                    true
+                }
+                Entry::Occupied(_) => false,
+            }
+        };
 
         let mut db = self.inner.lock();
+        if init_dirty {
+            db.set_file_is_dirty(file, false);
+        }
         db.set_file_rel_path(file, Arc::clone(&rel_path));
         // Keep the non-tracked file path map in sync so existing persistence
         // caches (AST artifacts, derived caches) can reuse the same keys.
@@ -864,11 +945,25 @@ impl Database {
     }
 
     pub fn set_file_project(&self, file: FileId, project: ProjectId) {
-        let mut inputs = self.inputs.lock();
-        inputs.file_project.insert(file, project);
-        drop(inputs);
+        use std::collections::hash_map::Entry;
 
-        self.inner.lock().set_file_project(file, project);
+        let init_dirty = {
+            let mut inputs = self.inputs.lock();
+            inputs.file_project.insert(file, project);
+            match inputs.file_is_dirty.entry(file) {
+                Entry::Vacant(entry) => {
+                    entry.insert(false);
+                    true
+                }
+                Entry::Occupied(_) => false,
+            }
+        };
+
+        let mut db = self.inner.lock();
+        if init_dirty {
+            db.set_file_is_dirty(file, false);
+        }
+        db.set_file_project(file, project);
     }
 
     pub fn set_jdk_index(&self, project: ProjectId, index: Arc<nova_jdk::JdkIndex>) {
@@ -891,11 +986,25 @@ impl Database {
     }
 
     pub fn set_source_root(&self, file: FileId, root: SourceRootId) {
-        let mut inputs = self.inputs.lock();
-        inputs.source_root.insert(file, root);
-        drop(inputs);
+        use std::collections::hash_map::Entry;
 
-        self.inner.lock().set_source_root(file, root);
+        let init_dirty = {
+            let mut inputs = self.inputs.lock();
+            inputs.source_root.insert(file, root);
+            match inputs.file_is_dirty.entry(file) {
+                Entry::Vacant(entry) => {
+                    entry.insert(false);
+                    true
+                }
+                Entry::Occupied(_) => false,
+            }
+        };
+
+        let mut db = self.inner.lock();
+        if init_dirty {
+            db.set_file_is_dirty(file, false);
+        }
+        db.set_source_root(file, root);
     }
 
     /// Best-effort drop of memoized Salsa query results.
@@ -957,6 +1066,18 @@ impl Database {
         let Some(cache_dir) = snap.persistence().cache_dir() else {
             return Ok(());
         };
+
+        // Persisted indexes are validated primarily via on-disk metadata (mtime + size). If any
+        // file is currently "dirty" (contains in-memory edits not reflected on disk), the
+        // in-memory indexes would not correspond to a stable on-disk snapshot and could be reused
+        // incorrectly on the next warm-start. Treat persistence as a no-op in that case.
+        if snap
+            .project_files(project)
+            .iter()
+            .any(|&file| snap.file_is_dirty(file))
+        {
+            return Ok(());
+        }
 
         use std::collections::{BTreeMap, BTreeSet};
 
