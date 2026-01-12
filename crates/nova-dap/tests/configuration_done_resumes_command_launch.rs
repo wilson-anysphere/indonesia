@@ -64,4 +64,3 @@ async fn configuration_done_resumes_command_launch_when_stop_on_entry_is_default
     client.disconnect().await;
     server_task.await.unwrap().unwrap();
 }
-
