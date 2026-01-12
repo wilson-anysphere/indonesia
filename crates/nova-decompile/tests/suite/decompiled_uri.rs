@@ -74,6 +74,13 @@ fn parse_decompiled_uri_round_trips() {
 }
 
 #[test]
+fn parse_decompiled_uri_rejects_binary_name_that_normalizes_to_empty() {
+    let hash = content_hash_for(DECOMPILER_SCHEMA_VERSION);
+    let uri = format!("{NOVA_VIRTUAL_URI_SCHEME}:///decompiled/{hash}/..java");
+    assert!(parse_decompiled_uri(&uri).is_none());
+}
+
+#[test]
 fn parse_decompiled_uri_normalizes_binary_name_dots() {
     let hash = content_hash_for(DECOMPILER_SCHEMA_VERSION);
     let uri = format!("{NOVA_VIRTUAL_URI_SCHEME}:///decompiled/{hash}/com..example..Foo.java");
