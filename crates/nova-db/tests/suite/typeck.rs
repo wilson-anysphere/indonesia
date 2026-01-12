@@ -739,6 +739,48 @@ class C { int x; static int m() { return x; } }
 }
 
 #[test]
+fn enum_constants_are_static_fields() {
+    let src = r#"
+enum E {
+    A;
+    static E m() {
+        return E.A;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "static-context" && d.code.as_ref() != "unresolved-field"),
+        "expected enum constant access to resolve as a static field; got {diags:?}"
+    );
+}
+
+#[test]
+fn interface_fields_are_static_fields() {
+    let src = r#"
+interface I { int X = 1; }
+class C {
+    static int m() {
+        return I.X;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "static-context" && d.code.as_ref() != "unresolved-field"),
+        "expected interface field access to resolve as a static field; got {diags:?}"
+    );
+}
+
+#[test]
 fn foreach_var_infers_element_type_for_array() {
     let src = r#"
 class C {
