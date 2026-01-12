@@ -177,3 +177,18 @@ fn source_db_project_database_indexes_salsa_snapshot() {
     assert!(!results.is_empty(), "expected at least one search result");
     assert_eq!(results[0].path, PathBuf::from("src/Main.java"));
 }
+
+#[test]
+fn trigram_semantic_search_indexes_salsa_database_via_project_database_impl() {
+    let db = SalsaDatabase::new();
+    let file = FileId::from_raw(0);
+    db.set_file_text(file, "class Main { String hello() { return \"hello\"; } }".to_string());
+    db.set_file_path(file, "src/Main.java");
+
+    let mut search = TrigramSemanticSearch::new();
+    search.index_project(&db);
+
+    let results = search.search("hello");
+    assert!(!results.is_empty(), "expected at least one search result");
+    assert_eq!(results[0].path, PathBuf::from("src/Main.java"));
+}

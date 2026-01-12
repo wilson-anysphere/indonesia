@@ -76,14 +76,13 @@ pub use workspace::{AppliedPatch, PatchApplyError, VirtualWorkspace};
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use std::time::Duration;
 
     use futures::executor::block_on;
     use futures::future::BoxFuture;
     use futures::FutureExt;
 
-    use nova_core::ProjectDatabase;
     use nova_core::{CompletionContext, CompletionItem, CompletionItemKind};
 
     use super::*;
@@ -253,30 +252,14 @@ mod tests {
 
     #[test]
     fn trigram_search_finds_best_match() {
-        #[derive(Debug)]
-        struct MemDb(Vec<(PathBuf, String)>);
-
-        impl ProjectDatabase for MemDb {
-            fn project_files(&self) -> Vec<PathBuf> {
-                self.0.iter().map(|(p, _)| p.clone()).collect()
-            }
-
-            fn file_text(&self, path: &Path) -> Option<String> {
-                self.0
-                    .iter()
-                    .find(|(p, _)| p == path)
-                    .map(|(_, text)| text.clone())
-            }
-        }
-
-        let db = MemDb(vec![
+        let db = VirtualWorkspace::new([
             (
-                PathBuf::from("src/A.java"),
-                "class A { void helloWorld() {} }".into(),
+                "src/A.java".to_string(),
+                "class A { void helloWorld() {} }".to_string(),
             ),
             (
-                PathBuf::from("src/B.java"),
-                "class B { void goodbye() {} }".into(),
+                "src/B.java".to_string(),
+                "class B { void goodbye() {} }".to_string(),
             ),
         ]);
 
