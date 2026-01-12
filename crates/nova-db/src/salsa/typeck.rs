@@ -938,6 +938,9 @@ fn type_of_expr_demand_result(
             HirExpr::Lambda { .. }
                 | HirExpr::MethodReference { .. }
                 | HirExpr::ConstructorReference { .. }
+        ) || matches!(
+            &body.exprs[target_expr],
+            HirExpr::New { class, .. } if is_diamond_type_ref_text(class.as_str())
         );
 
         // Target-typed expressions like lambdas and method references can pick up their type from
@@ -6542,6 +6545,13 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     HirExpr::MethodReference { receiver, .. }
                     | HirExpr::ConstructorReference { receiver, .. } => {
                         let _ = this.infer_expr(loader, *receiver);
+                        Type::Unknown
+                    }
+                    // Diamond class instance creation is also target-typed: inferring it without a
+                    // target type will default type arguments (often to `Object`) which can cause
+                    // overload resolution to fail in common code like:
+                    // `take(new ArrayList<>())` where `take` expects `List<String>`.
+                    HirExpr::New { class, .. } if is_diamond_type_ref_text(class.as_str()) => {
                         Type::Unknown
                     }
                     _ => this.infer_expr(loader, *arg).ty,

@@ -4016,7 +4016,7 @@ class C {
 #[test]
 fn diamond_inference_with_constructor_args_resolves_constructor_and_uses_target_type() {
     let src = r#"
-import java.util.*;
+ import java.util.*;
 class C {
     List<String> m() {
         return new ArrayList<>(1);
@@ -4044,9 +4044,40 @@ class C {
 }
 
 #[test]
-fn diamond_inference_for_var_defaults_to_object() {
+fn diamond_inference_uses_target_type_from_call_argument() {
     let src = r#"
 import java.util.*;
+class C {
+    void take(List<String> xs) {}
+    void m() {
+        take(new ArrayList<>());
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"
+            && d.code.as_ref() != "unchecked"
+            && d.code.as_ref() != "unresolved-constructor"),
+        "expected call argument diamond to target-type without warnings; got {diags:?}"
+    );
+
+    let offset = src
+        .find("ArrayList<>")
+        .expect("snippet should contain ArrayList diamond")
+        + "ArrayList".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "ArrayList<String>");
+}
+
+#[test]
+fn diamond_inference_for_var_defaults_to_object() {
+    let src = r#"
+ import java.util.*;
 class C {
     void m() {
         var xs = new ArrayList<>();
