@@ -17,6 +17,7 @@ fn help_mentions_core_commands() {
             .and(predicate::str::contains("cache"))
             .and(predicate::str::contains("perf"))
             .and(predicate::str::contains("parse"))
+            .and(predicate::str::contains("extensions"))
             .and(predicate::str::contains("bugreport")),
     );
 }

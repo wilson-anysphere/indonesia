@@ -3468,6 +3468,7 @@ dependencies = [
  "nova-config",
  "nova-core",
  "nova-deps-cache",
+ "nova-ext",
  "nova-format",
  "nova-perf",
  "nova-refactor",
@@ -3479,6 +3480,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "wat",
 ]
 
 [[package]]

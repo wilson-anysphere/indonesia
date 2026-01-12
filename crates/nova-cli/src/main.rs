@@ -15,6 +15,7 @@ use nova_core::{
     TextEdit as CoreTextEdit, TextSize,
 };
 mod diagnostics_output;
+mod extensions;
 use diagnostics_output::{print_github_annotations, print_sarif, write_sarif, DiagnosticsFormat};
 use nova_deps_cache::DependencyIndexStore;
 use nova_format::{edits_for_document_formatting, edits_for_range_formatting, FormatConfig};
@@ -82,6 +83,8 @@ enum Command {
     /// Generate a diagnostic bundle (logs/config/crash reports) for troubleshooting.
     #[command(name = "bugreport")]
     BugReport(BugReportArgs),
+    /// Inspect and validate WASM extension bundles.
+    Extensions(extensions::ExtensionsArgs),
     /// Local AI utilities (Ollama / OpenAI-compatible endpoints)
     Ai(AiArgs),
 }
@@ -892,6 +895,7 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
 
             Ok(0)
         }
+        Command::Extensions(args) => extensions::run(args),
         Command::Ai(args) => match args.command {
             AiCommand::Models(args) => {
                 let client = AiClient::from_config(&config.ai)?;

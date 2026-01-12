@@ -8,6 +8,9 @@ publish = false
 name = "nova"
 path = "src/main.rs"
 
+[features]
+wasm-extensions = ["dep:nova-ext", "nova-ext/wasm-extensions"]
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
@@ -25,6 +28,7 @@ nova-classpath = { path = "../nova-classpath" }
 nova-config = { path = "../nova-config" }
 nova-bugreport = { path = "../nova-bugreport" }
 nova-deps-cache = { path = "../nova-deps-cache" }
+nova-ext = { path = "../nova-ext", optional = true }
 tracing = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 tokio-util = "0.7"
@@ -34,3 +38,4 @@ assert_cmd = "2"
 assert_fs = "1.1"
 predicates = "3"
 serde_json = "1"
+wat = "1.0"
