@@ -1986,7 +1986,6 @@ fn has_write_to_symbol_between(
     if start >= end {
         return Ok(false);
     }
-
     for reference in db.find_references(symbol) {
         if reference.file != *file {
             continue;
@@ -1994,7 +1993,6 @@ fn has_write_to_symbol_between(
         if reference.range.start < start || reference.range.start >= end {
             continue;
         }
-
         if reference_is_write(parsed, reference.range)? {
             return Ok(true);
         }
@@ -2153,7 +2151,6 @@ fn inline_variable_usage_is_conditionally_or_repeatedly_evaluated(
 
     false
 }
-
 fn inline_variable_has_writes(
     db: &dyn RefactorDatabase,
     symbol: SymbolId,

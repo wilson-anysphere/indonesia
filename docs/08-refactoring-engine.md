@@ -202,6 +202,8 @@ Current implementation policy:
   - do not have an initializer
   - are written to / mutated after initialization (must be effectively final)
   - have an initializer that is not safe to duplicate (side-effectful initializers are rejected, especially when inlining multiple usages)
+  - have initializers that depend on other bindings (locals/parameters/fields) which are written to between the declaration and the target inline site(s) (dependency mutation)
+  - would change name resolution at the inline site due to a shadowing declaration (binding stability / shadowing)
 - **Expression hygiene:** the implementation may introduce parentheses around the inlined initializer to preserve operator precedence and avoid changing evaluation order.
 - **Safe deletion rules:** the declaration is removed only when:
   - the refactoring is run in **inline all usages** mode, or

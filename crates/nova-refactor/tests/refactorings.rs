@@ -4066,7 +4066,13 @@ fn inline_variable_preserves_crlf_newlines_and_removes_decl_cleanly() {
 fn inline_variable_preserves_no_final_newline() {
     let file = FileId::new("Test.java");
     let src =
-        "class Test {\n  void m() {\n    int a = 1 + 2;\n    System.out.println(a);\n    System.out.println(a);\n  }\n}";
+        "class Test {
+  void m() {
+    int a = 1 + 2;
+    System.out.println(a);
+    System.out.println(a);
+  }
+}";
     assert!(
         !src.ends_with('\n') && !src.ends_with('\r'),
         "test precondition: fixture must not end with a newline"
@@ -4093,7 +4099,12 @@ fn inline_variable_preserves_no_final_newline() {
         "expected refactoring to preserve lack of final newline, got: {after:?}"
     );
     let expected =
-        "class Test {\n  void m() {\n    System.out.println((1 + 2));\n    System.out.println((1 + 2));\n  }\n}";
+        "class Test {
+  void m() {
+    System.out.println((1 + 2));
+    System.out.println((1 + 2));
+  }
+}";
     assert_eq!(after, expected);
 }
 
@@ -4358,11 +4369,13 @@ fn inline_variable_rejected_when_initializer_dependency_is_written_before_use() 
     int a = x;
     x = 2;
     System.out.println(a);
+    System.out.println(a);
   }
 }
 "#;
 
     let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
     let offset = src.find("int a").unwrap() + "int ".len();
     let symbol = db.symbol_at(&file, offset).expect("symbol at a");
 
@@ -4396,6 +4409,7 @@ fn inline_variable_rejected_when_initializer_field_dependency_is_written_before_
 "#;
 
     let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
     let offset = src.find("int a").unwrap() + "int ".len();
     let symbol = db.symbol_at(&file, offset).expect("symbol at a");
 
@@ -4405,6 +4419,45 @@ fn inline_variable_rejected_when_initializer_field_dependency_is_written_before_
             symbol,
             inline_all: true,
             usage_range: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, SemanticRefactorError::InlineWouldChangeValue { .. }),
+        "expected InlineWouldChangeValue, got: {err:?}"
+    );
+}
+
+#[test]
+fn inline_variable_rejected_when_initializer_dependency_is_written_before_use_inline_one() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int x = 1;
+    int a = x;
+    x = 2;
+    System.out.println(a);
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let mut refs = db.find_references(symbol);
+    refs.sort_by_key(|r| r.range.start);
+    assert_eq!(refs.len(), 1, "expected one reference");
+    let usage = refs[0].range;
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: false,
+            usage_range: Some(usage),
         },
     )
     .unwrap_err();
