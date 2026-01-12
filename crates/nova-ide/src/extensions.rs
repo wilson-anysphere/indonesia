@@ -1367,6 +1367,7 @@ fn type_mismatch_quick_fixes(
 
 fn type_mismatch_quick_fixes_from_context(
     source: &str,
+    cancel: &CancellationToken,
     uri: &lsp_types::Uri,
     cancel: &CancellationToken,
     selection: Span,
@@ -1401,6 +1402,10 @@ fn type_mismatch_quick_fixes_from_context(
     }
 
     let mut actions = Vec::new();
+    if cancel.is_cancelled() {
+        return actions;
+    }
+
     if cancel.is_cancelled() {
         return actions;
     }
