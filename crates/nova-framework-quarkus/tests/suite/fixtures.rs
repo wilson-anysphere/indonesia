@@ -3,8 +3,6 @@ use nova_framework_quarkus::{
 };
 use pretty_assertions::assert_eq;
 
-mod suite;
-
 #[test]
 fn cdi_reports_unsatisfied_dependency() {
     let src = r#"
