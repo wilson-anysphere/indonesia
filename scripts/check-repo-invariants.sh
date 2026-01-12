@@ -210,7 +210,7 @@ stable_harness_checks=(
   # `nova-db` integration tests are intentionally consolidated into a single harness binary.
   "crates/nova-db/tests:crates/nova-db/tests/harness.rs:move additional files into crates/nova-db/tests/suite/ and add them to crates/nova-db/tests/suite/mod.rs"
   # `scripts/run-real-project-tests.sh` + docs invoke these by name.
-  "crates/nova-project/tests:crates/nova-project/tests/real_projects.rs:move additional files into crates/nova-project/tests/suite/ and add them to crates/nova-project/tests/suite/mod.rs"
+  "crates/nova-project/tests:crates/nova-project/tests/harness.rs:move additional files into crates/nova-project/tests/suite/ and add them to crates/nova-project/tests/suite/mod.rs"
   "crates/nova-cli/tests:crates/nova-cli/tests/real_projects.rs:move additional files into crates/nova-cli/tests/suite/ and add them to crates/nova-cli/tests/suite/mod.rs"
   # `nova-testing` docs instruct updating fixtures by running the schema harness by name.
   "crates/nova-testing/tests:crates/nova-testing/tests/schema_json.rs:move additional files into crates/nova-testing/tests/suite/ and add them to crates/nova-testing/tests/suite/mod.rs"
