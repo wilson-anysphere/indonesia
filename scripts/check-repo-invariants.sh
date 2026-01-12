@@ -68,3 +68,29 @@ if [[ ${#nova_dap_root_tests[@]} -ne 1 || "${nova_dap_root_tests[0]}" != "crates
   echo "  suggestion: move additional files into crates/nova-dap/tests/suite/ and add them to crates/nova-dap/tests/suite/mod.rs" >&2
   exit 1
 fi
+
+# Enforce consolidated integration test harness usage in docs/scripts.
+#
+# After folding many per-file integration test binaries into single harnesses, the old `--test <name>`
+# entrypoints are removed (or at least deprecated). Keep docs/examples aligned with the current harness +
+# filter pattern: `cargo test -p <crate> --test <harness> <filter>`.
+#
+# NOTE: Use `git grep` so we only check tracked files (avoids local scratch noise).
+banned_test_targets=(
+  "--test navigation"
+  "--test format_snapshots"
+  "--test golden_corpus"
+  "--test javac_differential"
+  "--test=navigation"
+  "--test=format_snapshots"
+  "--test=golden_corpus"
+  "--test=javac_differential"
+)
+
+for pat in "${banned_test_targets[@]}"; do
+  if git grep -n -- "${pat}" >/dev/null; then
+    echo "repo invariant failed: found reference to removed integration test target (${pat})" >&2
+    git grep -n -- "${pat}" >&2
+    exit 1
+  fi
+done
