@@ -1552,39 +1552,73 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
 
                 // Handle `var` inference (Java 10+).
                 if data.ty_text.trim() == "var" && self.java_level.supports_var_local_inference() {
+                    let diag_span = if data.ty_range.is_empty() {
+                        data.range
+                    } else {
+                        data.ty_range
+                    };
+
                     let Some(init) = initializer else {
                         self.diagnostics.push(Diagnostic::error(
                             "var-requires-initializer",
                             "`var` variables require an initializer",
-                            Some(data.ty_range),
+                            Some(diag_span),
                         ));
                         self.local_types[local.idx()] = Type::Error;
                         return;
                     };
 
-                    // Java forbids inferring `var` from lambda/method reference expressions.
-                    if matches!(
+                    let init_range = self.body.exprs[*init].range();
+                    let init_is_poly = matches!(
                         &self.body.exprs[*init],
                         HirExpr::Lambda { .. }
                             | HirExpr::MethodReference { .. }
                             | HirExpr::ConstructorReference { .. }
-                    ) {
+                    );
+
+                    // `var` cannot be inferred from target-typed ("poly") expressions without an
+                    // explicit target type.
+                    if init_is_poly {
+                        // Still walk the expression for internal errors/best-effort IDE info.
                         let _ = self.infer_expr(loader, *init);
                         self.diagnostics.push(Diagnostic::error(
-                            "var-cannot-infer",
-                            "cannot infer `var` type from a lambda or method reference",
-                            Some(self.body.exprs[*init].range()),
+                            "var-poly-expression",
+                            "cannot infer `var` from a poly expression without a target type",
+                            Some(init_range),
                         ));
                         self.local_types[local.idx()] = Type::Error;
                         return;
                     }
 
                     let init_ty = self.infer_expr(loader, *init).ty;
-                    if init_ty == Type::Null {
+
+                    let init_is_null = matches!(&self.body.exprs[*init], HirExpr::Null { .. })
+                        || init_ty == Type::Null;
+                    if init_is_null {
                         self.diagnostics.push(Diagnostic::error(
-                            "var-cannot-infer-null",
-                            "cannot infer `var` type from `null`",
-                            Some(self.body.exprs[*init].range()),
+                            "var-null-initializer",
+                            "cannot infer `var` from `null` initializer",
+                            Some(init_range),
+                        ));
+                        self.local_types[local.idx()] = Type::Error;
+                        return;
+                    }
+
+                    if init_ty == Type::Void {
+                        self.diagnostics.push(Diagnostic::error(
+                            "var-void-initializer",
+                            "cannot infer `var` from `void` initializer",
+                            Some(init_range),
+                        ));
+                        self.local_types[local.idx()] = Type::Error;
+                        return;
+                    }
+
+                    if init_ty.is_errorish() {
+                        self.diagnostics.push(Diagnostic::error(
+                            "var-cannot-infer",
+                            "cannot infer `var` type from initializer",
+                            Some(diag_span),
                         ));
                         self.local_types[local.idx()] = Type::Error;
                         return;
@@ -1848,7 +1882,20 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 self.check_stmt(loader, *body, expected_return);
                 for catch in catches {
                     let data = &self.body.locals[catch.param];
-                    let catch_ty = if data.ty_text.trim() != "var" {
+                    let catch_ty = if data.ty_text.trim() == "var" {
+                        let diag_span = if data.ty_range.is_empty() {
+                            data.range
+                        } else {
+                            data.ty_range
+                        };
+                        self.diagnostics.push(Diagnostic::error(
+                            "var-not-allowed",
+                            "`var` is not allowed in catch parameters",
+                            Some(diag_span),
+                        ));
+                        self.local_types[catch.param.idx()] = Type::Error;
+                        Type::Error
+                    } else {
                         let catch_ty = self.resolve_source_type(
                             loader,
                             data.ty_text.as_str(),
@@ -1856,8 +1903,6 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         );
                         self.local_types[catch.param.idx()] = catch_ty.clone();
                         catch_ty
-                    } else {
-                        self.local_types[catch.param.idx()].clone()
                     };
 
                     if !catch_ty.is_errorish() {

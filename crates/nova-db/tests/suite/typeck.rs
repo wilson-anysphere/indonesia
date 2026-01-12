@@ -1926,3 +1926,76 @@ class C2 {
         "expected stable ClassId for classpath type com.example.dep.Foo"
     );
 }
+
+#[test]
+fn var_without_initializer_is_error() {
+    let src = r#"
+class C {
+    void m() {
+        var x;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter()
+            .any(|d| d.code.as_ref() == "var-requires-initializer"),
+        "expected var-requires-initializer diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn var_initialized_with_null_is_error() {
+    let src = r#"
+class C {
+    void m() {
+        var x = null;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "var-null-initializer"),
+        "expected var-null-initializer diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn var_initialized_with_lambda_is_error() {
+    let src = r#"
+class C {
+    void m() {
+        var f = (s) -> s;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "var-poly-expression"),
+        "expected var-poly-expression diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn catch_parameter_var_is_error() {
+    let src = r#"
+class C {
+    void m() {
+        try { } catch (var e) { }
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "var-not-allowed"),
+        "expected var-not-allowed diagnostic; got {diags:?}"
+    );
+}
