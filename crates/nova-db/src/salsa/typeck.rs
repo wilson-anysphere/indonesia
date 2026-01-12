@@ -2457,6 +2457,11 @@ fn define_source_types<'idx>(
                     let method_type_param_ids: Vec<TypeVarId> =
                         type_params.iter().map(|(_, id)| *id).collect();
 
+                    let is_varargs = method
+                        .params
+                        .last()
+                        .is_some_and(|param| param.ty.trim().contains("..."));
+
                     let params = method
                         .params
                         .iter()
@@ -2496,7 +2501,7 @@ fn define_source_types<'idx>(
                         params,
                         return_type,
                         is_static,
-                        is_varargs: false,
+                        is_varargs,
                         is_abstract: method.body.is_none(),
                     });
                 }

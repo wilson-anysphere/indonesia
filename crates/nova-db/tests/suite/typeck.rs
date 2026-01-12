@@ -208,6 +208,23 @@ class C {
 }
 
 #[test]
+fn source_varargs_method_call_resolves() {
+    let src = r#"
+class C {
+    static void foo(int... xs) {}
+    void m() { foo(1, 2); }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected varargs method call to resolve, got {diags:?}"
+    );
+}
+
+#[test]
 fn target_typing_infers_generic_method_return_from_expected_type() {
     let src = r#"
 import java.util.*;
