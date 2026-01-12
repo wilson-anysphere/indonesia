@@ -66,3 +66,53 @@ fn extracts_gradle_version_catalog_bundles() {
     // `junit-jupiter-api` is only referenced through a version catalog bundle.
     assert!(deps.contains(&("org.junit.jupiter", "junit-jupiter-api", Some("5.10.0"))));
 }
+
+#[test]
+fn extracts_gradle_version_catalog_libraries_without_versions() {
+    let root = testdata_path("gradle-version-catalog");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load gradle project");
+
+    let deps: BTreeSet<_> = config
+        .dependencies
+        .iter()
+        .map(|d| {
+            (
+                d.group_id.as_str(),
+                d.artifact_id.as_str(),
+                d.version.as_deref(),
+            )
+        })
+        .collect();
+
+    assert!(deps.contains(&("com.example", "no-version", None)));
+}
+
+#[test]
+fn extracts_gradle_version_catalog_version_tables() {
+    let root = testdata_path("gradle-version-catalog");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load gradle project");
+
+    let deps: BTreeSet<_> = config
+        .dependencies
+        .iter()
+        .map(|d| {
+            (
+                d.group_id.as_str(),
+                d.artifact_id.as_str(),
+                d.version.as_deref(),
+            )
+        })
+        .collect();
+
+    assert!(deps.contains(&("com.example", "strict-lib", Some("1.2.3"))));
+}

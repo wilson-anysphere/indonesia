@@ -2804,11 +2804,28 @@ fn parse_gradle_version_catalog_library(
                     resolve_gradle_properties_placeholder(v, gradle_properties)
                         .unwrap_or_else(|| v.to_string()),
                 ),
-                Some(Value::Table(version_table)) => version_table
-                    .get("ref")
-                    .and_then(Value::as_str)
-                    .and_then(|alias| versions.get(alias))
-                    .cloned(),
+                Some(Value::Table(version_table)) => {
+                    if let Some(alias) = version_table.get("ref").and_then(Value::as_str) {
+                        versions.get(alias).cloned()
+                    } else if let Some(v) = version_table.get("strictly").and_then(Value::as_str) {
+                        Some(
+                            resolve_gradle_properties_placeholder(v, gradle_properties)
+                                .unwrap_or_else(|| v.to_string()),
+                        )
+                    } else if let Some(v) = version_table.get("require").and_then(Value::as_str) {
+                        Some(
+                            resolve_gradle_properties_placeholder(v, gradle_properties)
+                                .unwrap_or_else(|| v.to_string()),
+                        )
+                    } else if let Some(v) = version_table.get("prefer").and_then(Value::as_str) {
+                        Some(
+                            resolve_gradle_properties_placeholder(v, gradle_properties)
+                                .unwrap_or_else(|| v.to_string()),
+                        )
+                    } else {
+                        None
+                    }
+                }
                 _ => None,
             };
 
@@ -3549,11 +3566,13 @@ fn resolve_version_catalog_reference(
 }
 
 fn version_catalog_library_to_dependency(lib: &GradleVersionCatalogLibrary) -> Option<Dependency> {
-    let version = lib.version.clone()?;
+    if lib.group_id.trim().is_empty() || lib.artifact_id.trim().is_empty() {
+        return None;
+    }
     Some(Dependency {
         group_id: lib.group_id.clone(),
         artifact_id: lib.artifact_id.clone(),
-        version: Some(version),
+        version: lib.version.clone(),
         scope: None,
         classifier: None,
         type_: None,
