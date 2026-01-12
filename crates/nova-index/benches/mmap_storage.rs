@@ -5,7 +5,6 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use nova_cache::{CacheConfig, CacheDir, ProjectSnapshot};
 use nova_index::{load_index_archives, load_indexes, save_indexes, ProjectIndexes, SymbolLocation};
 
-#[cfg(nova_index_has_indexed_symbol)]
 use nova_index::{IndexSymbolKind, IndexedSymbol};
 
 fn build_symbol_index_entries(indexes: &mut ProjectIndexes, file: &str, count: usize) {
@@ -18,24 +17,16 @@ fn build_symbol_index_entries(indexes: &mut ProjectIndexes, file: &str, count: u
             column: 1,
         };
 
-        #[cfg(nova_index_has_indexed_symbol)]
-        {
-            indexes.symbols.insert(
-                symbol.clone(),
-                IndexedSymbol {
-                    qualified_name: symbol,
-                    kind: IndexSymbolKind::Class,
-                    container_name: None,
-                    location,
-                    ast_id: i as u32,
-                },
-            );
-        }
-
-        #[cfg(not(nova_index_has_indexed_symbol))]
-        {
-            indexes.symbols.insert(symbol, location);
-        }
+        indexes.symbols.insert(
+            symbol.clone(),
+            IndexedSymbol {
+                qualified_name: symbol,
+                kind: IndexSymbolKind::Class,
+                container_name: None,
+                location,
+                ast_id: i as u32,
+            },
+        );
     }
 }
 
