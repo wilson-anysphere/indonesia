@@ -2018,14 +2018,6 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
     exists_as_jar(&path).then_some(path)
 }
 
-fn exists_as_jar(path: &Path) -> bool {
-    path.is_file()
-        && path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
-}
-
 fn resolve_snapshot_jar_file_name(
     version_dir: &Path,
     artifact_id: &str,
