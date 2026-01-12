@@ -1,5 +1,5 @@
 use crate::{SymbolKey, SymbolRange};
-use nova_cache::{atomic_write, deps_cache_dir, CacheConfig, CacheError};
+use nova_cache::{atomic_write, deps_cache_dir, CacheConfig, CacheError, Fingerprint};
 use nova_core::{Position, Range};
 use serde::{Deserialize, Serialize};
 use std::io;
@@ -17,7 +17,11 @@ use std::path::{Component, Path, PathBuf};
 /// ## On-disk layout
 ///
 /// By default (`from_env`), documents are stored under Nova's global dependency cache:
-/// `<cache_root>/deps/decompiled/<hash>/<binary-name>.java`.
+/// `<cache_root>/deps/decompiled/<hash>/<safe-stem>.java`.
+///
+/// `safe-stem` is a SHA-256 hex digest of the document's `binary_name`. This ensures the store is
+/// robust to Windows-invalid filename characters and reserved device names (e.g. `CON`, `NUL`),
+/// while keeping the external key as `(content_hash, binary_name)`.
 #[derive(Debug, Clone)]
 pub struct DecompiledDocumentStore {
     root: PathBuf,
@@ -56,9 +60,9 @@ impl DecompiledDocumentStore {
 
     /// Persist decompiled source text *and* decompiler symbol mappings.
     ///
-    /// The decompiled text is written to `<binary-name>.java` (same as [`Self::store_text`]).
+    /// The decompiled text is written to `<safe-stem>.java` (same as [`Self::store_text`]).
     /// Mappings are written to a JSON sidecar file next to it:
-    /// `<binary-name>.meta.json`.
+    /// `<safe-stem>.meta.json`.
     pub fn store_document(
         &self,
         content_hash: &str,
@@ -157,20 +161,31 @@ impl DecompiledDocumentStore {
     fn path_for(&self, content_hash: &str, binary_name: &str) -> Result<PathBuf, CacheError> {
         validate_content_hash(content_hash)?;
         validate_binary_name(binary_name)?;
+        let safe_stem = safe_binary_name_stem(binary_name);
         Ok(self
             .root
             .join(content_hash)
-            .join(format!("{binary_name}.java")))
+            .join(format!("{safe_stem}.java")))
     }
 
     fn meta_path_for(&self, content_hash: &str, binary_name: &str) -> Result<PathBuf, CacheError> {
         validate_content_hash(content_hash)?;
         validate_binary_name(binary_name)?;
+        let safe_stem = safe_binary_name_stem(binary_name);
         Ok(self
             .root
             .join(content_hash)
-            .join(format!("{binary_name}.meta.json")))
+            .join(format!("{safe_stem}.meta.json")))
     }
+}
+
+fn safe_binary_name_stem(binary_name: &str) -> Fingerprint {
+    // Hash the binary name to produce an on-disk filename component that:
+    // - is deterministic for a given `binary_name`
+    // - never contains Windows-invalid filename characters (`<>:"/\\|?*`)
+    // - never collides with Windows reserved device names (`CON`, `PRN`, `NUL`, ...), since it's a
+    //   64-character hex digest.
+    Fingerprint::from_bytes(binary_name.as_bytes())
 }
 
 fn read_cache_file_bytes(path: &Path) -> Result<Option<Vec<u8>>, CacheError> {

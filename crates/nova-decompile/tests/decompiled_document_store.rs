@@ -1,9 +1,13 @@
+use nova_cache::Fingerprint;
 use nova_decompile::{decompile_classfile, decompiled_uri_for_classfile, parse_decompiled_uri};
 use nova_decompile::DecompiledDocumentStore;
+use std::path::Path;
 use tempfile::TempDir;
 
 const FOO_CLASS: &[u8] = include_bytes!("fixtures/com/example/Foo.class");
 const FOO_INTERNAL_NAME: &str = "com/example/Foo";
+
+const WINDOWS_INVALID_FILENAME_CHARS: &[char] = &['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
 
 #[test]
 fn store_and_load_round_trip_for_canonical_uri() {
@@ -103,4 +107,115 @@ fn storing_twice_is_ok_and_deterministic() {
         .unwrap()
         .expect("hit");
     assert_eq!(loaded, "hello");
+}
+
+#[test]
+fn store_handles_windows_invalid_characters_in_binary_name() {
+    let temp = TempDir::new().unwrap();
+    let store = DecompiledDocumentStore::new(temp.path().to_path_buf());
+
+    let content_hash = Fingerprint::from_bytes(b"content").to_string();
+    let binary_name = "com.example.<Foo>?";
+
+    store
+        .store_text(&content_hash, binary_name, "first")
+        .unwrap();
+    assert_eq!(
+        store.load_text(&content_hash, binary_name).unwrap().as_deref(),
+        Some("first")
+    );
+
+    let dir = temp.path().join(&content_hash);
+    let first_files = list_java_files(&dir);
+    assert_eq!(first_files.len(), 1, "expected a single .java file");
+    assert_windows_safe_java_filename(&first_files[0]);
+
+    // The mapping must be stable: storing again for the same key should use the same path.
+    store
+        .store_text(&content_hash, binary_name, "second")
+        .unwrap();
+    assert_eq!(
+        store.load_text(&content_hash, binary_name).unwrap().as_deref(),
+        Some("second")
+    );
+
+    let second_files = list_java_files(&dir);
+    assert_eq!(
+        second_files, first_files,
+        "expected the on-disk filename to be stable across writes"
+    );
+}
+
+#[test]
+fn store_handles_windows_reserved_device_names() {
+    let temp = TempDir::new().unwrap();
+    let store = DecompiledDocumentStore::new(temp.path().to_path_buf());
+
+    let content_hash = Fingerprint::from_bytes(b"content-2").to_string();
+    // Use an exact Windows device name to ensure the on-disk filename cannot ever be `CON.java`,
+    // even on Unix filesystems that would otherwise accept it.
+    let binary_name = "CON";
+
+    store.store_text(&content_hash, binary_name, "hello").unwrap();
+    assert_eq!(
+        store.load_text(&content_hash, binary_name).unwrap().as_deref(),
+        Some("hello")
+    );
+
+    let dir = temp.path().join(&content_hash);
+    let files = list_java_files(&dir);
+    assert_eq!(files.len(), 1, "expected a single .java file");
+    assert_windows_safe_java_filename(&files[0]);
+}
+
+fn list_java_files(dir: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let entry = entry.unwrap();
+        if !entry.file_type().unwrap().is_file() {
+            continue;
+        }
+
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.ends_with(".java") {
+            out.push(name);
+        }
+    }
+
+    out.sort();
+    out
+}
+
+fn assert_windows_safe_java_filename(filename: &str) {
+    for &ch in WINDOWS_INVALID_FILENAME_CHARS {
+        assert!(
+            !filename.contains(ch),
+            "expected filename to not contain Windows-invalid character {ch:?}: {filename}"
+        );
+    }
+
+    let stem = filename
+        .strip_suffix(".java")
+        .expect("expected filename to end with .java");
+
+    assert!(
+        !is_windows_reserved_device_name(stem),
+        "expected filename stem to not be a Windows reserved device name: {stem}"
+    );
+}
+
+fn is_windows_reserved_device_name(stem: &str) -> bool {
+    let upper = stem.to_ascii_uppercase();
+    match upper.as_str() {
+        "CON" | "PRN" | "AUX" | "NUL" => true,
+        _ => {
+            let is_com = upper.starts_with("COM");
+            let is_lpt = upper.starts_with("LPT");
+            if !(is_com || is_lpt) {
+                return false;
+            }
+            let num = &upper[3..];
+            matches!(num, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+        }
+    }
 }
