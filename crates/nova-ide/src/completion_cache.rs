@@ -127,6 +127,19 @@ struct CachedCompletionEnv {
     env: Arc<CompletionEnv>,
 }
 
+trait CanEvict {
+    fn can_evict(&self) -> bool;
+}
+
+impl CanEvict for CachedCompletionEnv {
+    fn can_evict(&self) -> bool {
+        // Avoid evicting entries that are still in use outside of the cache (e.g. in-flight
+        // completion requests that hold an `Arc<CompletionEnv>`). This keeps back-to-back requests
+        // stable under concurrent cache pressure and prevents test flakiness.
+        Arc::strong_count(&self.env) <= 1
+    }
+}
+
 impl CompletionEnvCache {
     fn new() -> Self {
         Self {
@@ -428,7 +441,7 @@ struct LruCache<K, V> {
 impl<K, V> LruCache<K, V>
 where
     K: Eq + Hash + Clone,
-    V: Clone,
+    V: Clone + CanEvict,
 {
     fn new(capacity: usize) -> Self {
         Self {
@@ -458,11 +471,29 @@ where
     }
 
     fn evict_if_needed(&mut self) {
-        while self.map.len() > self.capacity {
+        let mut scanned = 0usize;
+        while self.map.len() > self.capacity && !self.order.is_empty() {
             let Some(key) = self.order.pop_front() else {
                 break;
             };
-            self.map.remove(&key);
+
+            let Some(value) = self.map.get(&key) else {
+                continue;
+            };
+
+            if value.can_evict() {
+                self.map.remove(&key);
+                scanned = 0;
+            } else {
+                self.order.push_back(key);
+                scanned += 1;
+
+                // If we made a full pass without evicting anything, all entries are currently in
+                // use. Allow the cache to temporarily exceed capacity instead of spinning.
+                if scanned >= self.order.len() {
+                    break;
+                }
+            }
         }
     }
 }

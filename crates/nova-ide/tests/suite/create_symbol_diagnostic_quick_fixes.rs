@@ -82,6 +82,50 @@ fn unresolved_method_offers_create_method_quick_fix() {
 }
 
 #[test]
+fn unresolved_method_in_static_context_creates_static_method_stub() {
+    let source = r#"class A {
+  static void m() {
+    foo();
+  }
+}
+"#;
+    let uri: Uri = "file:///test.java".parse().expect("valid uri");
+
+    let foo_start = source.find("foo").expect("expected `foo` in fixture");
+    let foo_end = foo_start + "foo".len();
+    let range = Range::new(
+        offset_to_position(source, foo_start),
+        offset_to_position(source, foo_end),
+    );
+
+    let diagnostic = Diagnostic {
+        range: range.clone(),
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String("unresolved-method".to_string())),
+        message: "cannot call instance method `foo` from a static context".to_string(),
+        ..Diagnostic::default()
+    };
+
+    let actions = diagnostic_quick_fixes(source, Some(uri.clone()), range, &[diagnostic]);
+    let action = actions
+        .iter()
+        .find(|action| action.title == "Create method 'foo'")
+        .expect("expected Create method quick fix");
+
+    let edit = action.edit.as_ref().expect("expected workspace edit");
+    let changes = edit.changes.as_ref().expect("expected changes");
+    let edits = changes.get(&uri).expect("expected edit for file");
+    assert_eq!(edits.len(), 1);
+    assert!(
+        edits[0]
+            .new_text
+            .contains("private static Object foo(Object... args)"),
+        "expected static method stub; got {:?}",
+        edits[0].new_text
+    );
+}
+
+#[test]
 fn unresolved_field_offers_create_field_quick_fix() {
     let source = r#"class A {
   void m() {
