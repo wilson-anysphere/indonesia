@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::PathBuf;
 
 use nova_format::NewlineStyle;
 use nova_syntax::ast::{self, AstNode};
@@ -20,6 +21,8 @@ pub enum RefactorError {
     ExtractNotSupportedInAssert,
     #[error(transparent)]
     Materialize(#[from] MaterializeError),
+    #[error(transparent)]
+    MoveJava(#[from] crate::move_java::RefactorError),
     #[error("unknown file {0:?}")]
     UnknownFile(FileId),
     #[error("invalid variable name `{name}`: {reason}")]
@@ -54,6 +57,28 @@ pub fn rename(
     params: RenameParams,
 ) -> Result<WorkspaceEdit, RefactorError> {
     let kind = db.symbol_kind(params.symbol);
+    if matches!(kind, Some(JavaSymbolKind::Package)) {
+        let def = db
+            .symbol_definition(params.symbol)
+            .ok_or(RefactorError::RenameNotSupported { kind })?;
+
+        let mut files: BTreeMap<PathBuf, String> = BTreeMap::new();
+        for file in db.all_files() {
+            let text = db
+                .file_text(&file)
+                .ok_or_else(|| RefactorError::UnknownFile(file.clone()))?;
+            files.insert(PathBuf::from(file.0), text.to_string());
+        }
+
+        return Ok(crate::move_java::move_package_workspace_edit(
+            &files,
+            crate::move_java::MovePackageParams {
+                old_package: def.name,
+                new_package: params.new_name,
+            },
+        )?);
+    }
+
     match kind {
         Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter) => {
             let conflicts = check_rename_conflicts(db, params.symbol, &params.new_name);

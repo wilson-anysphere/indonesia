@@ -35,8 +35,8 @@ impl RefactorDatabase for TextDatabase {
         self.files.get(file).map(String::as_str)
     }
 
-    fn symbol_at(&self, _file: &FileId, _offset: usize) -> Option<SymbolId> {
-        None
+    fn all_files(&self) -> Vec<FileId> {
+        self.files.keys().cloned().collect()
     }
 
     fn symbol_definition(&self, _symbol: SymbolId) -> Option<SymbolDefinition> {
@@ -69,8 +69,8 @@ impl RefactorDatabase for Index {
         Index::file_text(self, &file.0)
     }
 
-    fn symbol_at(&self, _file: &FileId, _offset: usize) -> Option<SymbolId> {
-        None
+    fn all_files(&self) -> Vec<FileId> {
+        Vec::new()
     }
 
     fn symbol_definition(&self, _symbol: SymbolId) -> Option<SymbolDefinition> {

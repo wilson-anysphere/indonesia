@@ -553,9 +553,20 @@ fn package_decl_name_range(source: &str) -> Option<TextRange> {
         .expect("root node is a compilation unit");
     let pkg = unit.package()?;
     let name = pkg.name()?;
-    let range = name.syntax().text_range();
-    let start = u32::from(range.start()) as usize;
-    let end = u32::from(range.end()) as usize;
+
+    // `Name::syntax().text_range()` can include leading trivia in Nova's current tree shapes.
+    // For refactorings we want the range of the actual dotted name tokens.
+    let mut non_trivia_tokens = name
+        .syntax()
+        .children_with_tokens()
+        .filter_map(|it| it.into_token())
+        .filter(|tok| !tok.kind().is_trivia());
+
+    let first = non_trivia_tokens.next()?;
+    let last = non_trivia_tokens.last().unwrap_or_else(|| first.clone());
+
+    let start = u32::from(first.text_range().start()) as usize;
+    let end = u32::from(last.text_range().end()) as usize;
     Some(TextRange::new(start, end))
 }
 
@@ -792,6 +803,10 @@ fn collect_type_candidates(
 impl RefactorDatabase for RefactorJavaDatabase {
     fn file_text(&self, file: &FileId) -> Option<&str> {
         self.files.get(file).map(|text| text.as_ref())
+    }
+
+    fn all_files(&self) -> Vec<FileId> {
+        self.files.keys().cloned().collect()
     }
 
     fn symbol_at(&self, file: &FileId, offset: usize) -> Option<SymbolId> {

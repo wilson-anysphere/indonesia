@@ -99,6 +99,17 @@ pub struct Reference {
 pub trait RefactorDatabase {
     fn file_text(&self, file: &FileId) -> Option<&str>;
 
+    /// Enumerate all known workspace files.
+    ///
+    /// Multi-file refactorings (e.g. Java package moves) use this to build an in-memory workspace
+    /// snapshot.
+    ///
+    /// The default implementation returns an empty list so lightweight database adapters (like
+    /// `nova_index::Index`) do not need to materialize a full file set.
+    fn all_files(&self) -> Vec<FileId> {
+        Vec::new()
+    }
+
     fn symbol_at(&self, _file: &FileId, _offset: usize) -> Option<SymbolId> {
         None
     }
