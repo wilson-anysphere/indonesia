@@ -396,7 +396,7 @@ can run without a JDK. CI runs them separately in `.github/workflows/javac.yml`.
 **Where:**
 
 - Harness: `crates/nova-test-utils/src/javac.rs`
-- Tests: `crates/nova-types/tests/harness.rs`
+- Tests: `crates/nova-types/tests/javac_differential.rs`
 
 **Run locally (requires `javac` on `PATH`):**
 
