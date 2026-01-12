@@ -428,6 +428,44 @@ fn json_schema_requires_non_empty_path_strings() {
 }
 
 #[test]
+fn json_schema_requires_positive_jdk_release() {
+    let schema = json_schema();
+    let value = serde_json::to_value(schema).expect("schema serializes");
+
+    assert_eq!(
+        value
+            .pointer("/definitions/JdkConfig/properties/release/minimum")
+            .and_then(|v| v.as_f64()),
+        Some(1.0)
+    );
+    assert_eq!(
+        value
+            .pointer("/definitions/JdkConfig/properties/target_release/minimum")
+            .and_then(|v| v.as_f64()),
+        Some(1.0)
+    );
+}
+
+#[test]
+fn json_schema_requires_numeric_jdk_toolchain_keys_and_non_empty_values() {
+    let schema = json_schema();
+    let value = serde_json::to_value(schema).expect("schema serializes");
+
+    assert_eq!(
+        value
+            .pointer("/definitions/JdkConfig/properties/toolchains/propertyNames/pattern")
+            .and_then(|v| v.as_str()),
+        Some("^[0-9]+$")
+    );
+    assert_eq!(
+        value
+            .pointer("/definitions/JdkConfig/properties/toolchains/additionalProperties/minLength")
+            .and_then(|v| v.as_u64()),
+        Some(1)
+    );
+}
+
+#[test]
 fn json_schema_requires_non_empty_paths_in_arrays() {
     let schema = json_schema();
     let value = serde_json::to_value(schema).expect("schema serializes");

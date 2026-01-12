@@ -428,6 +428,10 @@ fn apply_semantic_constraints(schema: &mut RootSchema) {
     set_min_length(schema, "AiConfig", "api_key", 1);
     set_min_length(schema, "JdkConfig", "home", 1);
     set_min_length(schema, "JdkConfig", "jdk_home", 1);
+    set_minimum(schema, "JdkConfig", "release", 1.0);
+    set_minimum(schema, "JdkConfig", "target_release", 1.0);
+    set_map_property_names_pattern(schema, "JdkConfig", "toolchains", "^[0-9]+$");
+    set_map_value_min_length(schema, "JdkConfig", "toolchains", 1);
     set_min_length(schema, "LoggingConfig", "file", 1);
     set_min_length(schema, "AuditLogConfig", "path", 1);
     set_min_length(schema, "AiEmbeddingsConfig", "model_dir", 1);
@@ -476,7 +480,7 @@ fn allow_deprecated_aliases(schema: &mut RootSchema) {
             "default": null,
             "type": ["integer", "null"],
             "format": "uint16",
-            "minimum": 0
+            "minimum": 1
         })),
     );
 
@@ -631,6 +635,87 @@ fn set_array_item_min_length(
             }
         }
     }
+}
+
+fn set_minimum(schema: &mut RootSchema, definition_name: &str, property_name: &str, minimum: f64) {
+    let Some(definition) = schema.definitions.get_mut(definition_name) else {
+        return;
+    };
+
+    let Schema::Object(obj) = definition else {
+        return;
+    };
+
+    let object_validation = obj.object();
+    let Some(prop_schema) = object_validation.properties.get_mut(property_name) else {
+        return;
+    };
+
+    let Schema::Object(prop_obj) = prop_schema else {
+        return;
+    };
+
+    prop_obj.number().minimum = Some(minimum);
+}
+
+fn set_map_property_names_pattern(
+    schema: &mut RootSchema,
+    definition_name: &str,
+    property_name: &str,
+    pattern: &str,
+) {
+    let Some(definition) = schema.definitions.get_mut(definition_name) else {
+        return;
+    };
+
+    let Schema::Object(obj) = definition else {
+        return;
+    };
+
+    let object_validation = obj.object();
+    let Some(prop_schema) = object_validation.properties.get_mut(property_name) else {
+        return;
+    };
+
+    let Schema::Object(prop_obj) = prop_schema else {
+        return;
+    };
+
+    prop_obj.object().property_names = Some(Box::new(schema_from_json(json!({
+        "type": "string",
+        "pattern": pattern
+    }))));
+}
+
+fn set_map_value_min_length(
+    schema: &mut RootSchema,
+    definition_name: &str,
+    property_name: &str,
+    min_length: u32,
+) {
+    let Some(definition) = schema.definitions.get_mut(definition_name) else {
+        return;
+    };
+
+    let Schema::Object(obj) = definition else {
+        return;
+    };
+
+    let object_validation = obj.object();
+    let Some(prop_schema) = object_validation.properties.get_mut(property_name) else {
+        return;
+    };
+
+    let Schema::Object(prop_obj) = prop_schema else {
+        return;
+    };
+
+    let object_validation = prop_obj.object();
+    let Some(additional_properties) = object_validation.additional_properties.as_mut() else {
+        return;
+    };
+
+    set_schema_min_length(additional_properties.as_mut(), min_length);
 }
 
 fn set_schema_min_length(schema: &mut Schema, min_length: u32) {

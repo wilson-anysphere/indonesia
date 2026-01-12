@@ -1300,7 +1300,7 @@ expression: schema
             "null"
           ],
           "format": "uint16",
-          "minimum": 0.0
+          "minimum": 1.0
         },
         "target_release": {
           "description": "Deprecated alias for `jdk.release`.",
@@ -1311,14 +1311,19 @@ expression: schema
             "null"
           ],
           "format": "uint16",
-          "minimum": 0.0
+          "minimum": 1.0
         },
         "toolchains": {
           "description": "Per-release JDK installation overrides.\n\nThe TOML representation is a table mapping `release -> jdk_home`: ```toml [jdk] toolchains = { \"8\" = \"/opt/jdks/jdk8\", \"17\" = \"/opt/jdks/jdk-17\" } ```",
           "default": {},
           "type": "object",
           "additionalProperties": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
+          },
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
           }
         }
       },
