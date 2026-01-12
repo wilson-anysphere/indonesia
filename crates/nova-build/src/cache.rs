@@ -1,4 +1,5 @@
 use crate::{BuildSystemKind, JavaCompileConfig, Result};
+use nova_build_model::AnnotationProcessing;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -64,7 +65,7 @@ pub struct CachedModuleData {
     #[serde(default)]
     pub java_compile_config: Option<JavaCompileConfig>,
     pub diagnostics: Option<Vec<CachedDiagnostic>>,
-    pub annotation_processing: Option<nova_project::AnnotationProcessing>,
+    pub annotation_processing: Option<AnnotationProcessing>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

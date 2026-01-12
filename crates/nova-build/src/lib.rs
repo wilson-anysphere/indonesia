@@ -37,7 +37,7 @@ pub use orchestrator::{
 pub use nova_build_model::BuildSystemBackend as BuildSystem;
 
 use nova_core::Diagnostic;
-use nova_project::AnnotationProcessing;
+use nova_build_model::AnnotationProcessing;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -65,9 +65,6 @@ pub enum BuildError {
 
     #[error(transparent)]
     Cache(#[from] cache::CacheError),
-
-    #[error(transparent)]
-    Project(#[from] nova_project::ProjectError),
 
     #[error("unsupported project layout: {0}")]
     Unsupported(String),

@@ -5,8 +5,8 @@
 // builds a single integration test binary containing most of the crate's
 // end-to-end tests (see repo guidance about using one integration test harness
 // per crate).
-mod cancel;
 mod attach_hostname;
+mod cancel;
 mod breakpoint_locations;
 mod config_stdio;
 mod configuration_done_before_launch;
@@ -24,16 +24,17 @@ mod enable_method_return_values;
 mod exception_breakpoints;
 mod jdwp_client;
 mod logpoints_hitcounts;
+mod output_truncation;
 mod pre_attach_breakpoints;
 mod pre_attach_function_breakpoints;
 mod real_jvm;
 mod source_mapping;
 mod stack_trace_paging;
 mod stream_debug;
+mod watchpoints;
+mod wire_stream_eval;
 mod wire_stream_debug;
 mod wire_stream_debug_deadlock;
-mod wire_stream_eval;
-mod watchpoints;
 mod wire_breakpoint_mapping;
 mod wire_format;
 mod wire_variables_preview;

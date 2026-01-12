@@ -122,9 +122,10 @@ banned_test_target_patterns=(
 )
 
 for pat in "${banned_test_target_patterns[@]}"; do
-  if git grep -n -E -- "${pat}" >/dev/null; then
+  # Exclude this script itself: the patterns are listed here intentionally.
+  if git grep -n -E -- "${pat}" -- ':!scripts/check-repo-invariants.sh' >/dev/null; then
     echo "repo invariant failed: found reference to removed integration test target (${pat})" >&2
-    git grep -n -E -- "${pat}" >&2
+    git grep -n -E -- "${pat}" -- ':!scripts/check-repo-invariants.sh' >&2
     exit 1
   fi
 done

@@ -5,7 +5,7 @@ use crate::{
     BuildError, BuildResult, BuildSystemKind, Classpath, CommandOutput, CommandRunner,
     DefaultCommandRunner, JavaCompileConfig, MavenBuildGoal, Result,
 };
-use nova_project::{AnnotationProcessing, AnnotationProcessingConfig};
+use nova_build_model::{AnnotationProcessing, AnnotationProcessingConfig};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 

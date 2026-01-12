@@ -5,7 +5,7 @@ use crate::{
     BuildError, BuildResult, BuildSystemKind, Classpath, CommandOutput, CommandRunner,
     DefaultCommandRunner, GradleBuildTask, JavaCompileConfig, Result,
 };
-use nova_project::{AnnotationProcessing, AnnotationProcessingConfig};
+use nova_build_model::{AnnotationProcessing, AnnotationProcessingConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;

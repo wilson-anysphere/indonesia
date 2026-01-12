@@ -3379,7 +3379,6 @@ dependencies = [
  "nova-build-model",
  "nova-core",
  "nova-process",
- "nova-project",
  "roxmltree",
  "serde",
  "serde_json",
