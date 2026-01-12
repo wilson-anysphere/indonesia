@@ -280,6 +280,12 @@ pub enum Expr {
         ty: ExprId,
         range: Span,
     },
+    Cast {
+        ty_text: String,
+        ty_range: Span,
+        expr: ExprId,
+        range: Span,
+    },
     Call {
         callee: ExprId,
         args: Vec<ExprId>,
@@ -362,6 +368,7 @@ impl Expr {
             | Expr::MethodReference { range, .. }
             | Expr::ConstructorReference { range, .. }
             | Expr::ClassLiteral { range, .. }
+            | Expr::Cast { range, .. }
             | Expr::New { range, .. }
             | Expr::Unary { range, .. }
             | Expr::Binary { range, .. }

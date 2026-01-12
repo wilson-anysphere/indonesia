@@ -1398,6 +1398,15 @@ impl<'a> BodyLower<'a> {
                     range: lambda.range,
                 })
             }
+            syntax::Expr::Cast(cast) => {
+                let inner = self.lower_expr(cast.expr.as_ref());
+                self.alloc_expr(Expr::Cast {
+                    ty_text: cast.ty.text.clone(),
+                    ty_range: cast.ty.range,
+                    expr: inner,
+                    range: cast.range,
+                })
+            }
             syntax::Expr::Invalid { children, range } => {
                 let mut lowered = Vec::with_capacity(children.len());
                 for child in children {

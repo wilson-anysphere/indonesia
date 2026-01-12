@@ -1178,7 +1178,7 @@ fn resolve_method_call_demand(
                     set_parent(parent_expr, *inner);
                     visit_expr(body, *inner, parent_expr, visited_expr);
                 }
-                HirExpr::Instanceof { expr: inner, .. } => {
+                HirExpr::Cast { expr: inner, .. } | HirExpr::Instanceof { expr: inner, .. } => {
                     set_parent(parent_expr, *inner);
                     visit_expr(body, *inner, parent_expr, visited_expr);
                 }
@@ -4352,6 +4352,42 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     ExprInfo {
                         ty: Type::Unknown,
                         is_type_ref: false,
+                    }
+                }
+            }
+            HirExpr::Cast {
+                ty_text,
+                ty_range,
+                expr: inner,
+                range,
+            } => {
+                let from = self.infer_expr(loader, *inner).ty;
+                let to = self.resolve_source_type(loader, ty_text.as_str(), Some(*ty_range));
+
+                if from.is_errorish() || to.is_errorish() {
+                    ExprInfo {
+                        ty: to,
+                        is_type_ref: false,
+                    }
+                } else {
+                    let env_ro: &dyn TypeEnv = &*loader.store;
+                    if cast_conversion(env_ro, &from, &to).is_none() {
+                        let from = format_type(env_ro, &from);
+                        let to_display = format_type(env_ro, &to);
+                        self.diagnostics.push(Diagnostic::error(
+                            "invalid-cast",
+                            format!("cannot cast from {from} to {to_display}"),
+                            Some(*range),
+                        ));
+                        ExprInfo {
+                            ty: Type::Error,
+                            is_type_ref: false,
+                        }
+                    } else {
+                        ExprInfo {
+                            ty: to,
+                            is_type_ref: false,
+                        }
                     }
                 }
             }
@@ -7565,6 +7601,7 @@ fn contains_expr_in_expr(body: &HirBody, expr: HirExprId, target: HirExprId) -> 
     }
 
     match &body.exprs[expr] {
+        HirExpr::Cast { expr: inner, .. } => contains_expr_in_expr(body, *inner, target),
         HirExpr::FieldAccess { receiver, .. } => contains_expr_in_expr(body, *receiver, target),
         HirExpr::ArrayAccess { array, index, .. } => {
             contains_expr_in_expr(body, *array, target)
@@ -7636,6 +7673,9 @@ fn find_best_expr_in_expr(
     }
 
     match &body.exprs[expr] {
+        HirExpr::Cast { expr: inner, .. } => {
+            find_best_expr_in_expr(body, *inner, offset, owner, best);
+        }
         HirExpr::FieldAccess { receiver, .. } => {
             find_best_expr_in_expr(body, *receiver, offset, owner, best);
         }

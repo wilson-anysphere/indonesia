@@ -356,6 +356,9 @@ impl Builder {
             Expr::Unary { expr, .. } => {
                 self.visit_expr(body, *expr, scope);
             }
+            Expr::Cast { expr, .. } => {
+                self.visit_expr(body, *expr, scope);
+            }
             Expr::Binary { lhs, rhs, .. } => {
                 self.visit_expr(body, *lhs, scope);
                 self.visit_expr(body, *rhs, scope);

@@ -728,6 +728,9 @@ impl<'a> ScopeBuilder<'a> {
             hir::Expr::Unary { expr, .. } => {
                 self.record_expr_scopes(scope, owner, body, *expr);
             }
+            hir::Expr::Cast { expr, .. } => {
+                self.record_expr_scopes(scope, owner, body, *expr);
+            }
             hir::Expr::Binary { lhs, rhs, .. } => {
                 self.record_expr_scopes(scope, owner, body, *lhs);
                 self.record_expr_scopes(scope, owner, body, *rhs);

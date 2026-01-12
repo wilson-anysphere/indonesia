@@ -178,6 +178,43 @@ class C {
 }
 
 #[test]
+fn cast_expression_changes_type() {
+    let src = r#"
+class C {
+    void m() {
+        Object o = "x";
+        String s = (String) o;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected cast expression to provide the target type; got {diags:?}"
+    );
+}
+
+#[test]
+fn invalid_cast_produces_diagnostic() {
+    let src = r#"
+class C {
+    void m() {
+        String s = (String) 1;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-cast"),
+        "expected invalid-cast diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn rejects_non_statement_expression() {
     let src = r#"
 class C {

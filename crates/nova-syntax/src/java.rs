@@ -412,6 +412,7 @@ pub mod ast {
         Assign(AssignExpr),
         Conditional(ConditionalExpr),
         Lambda(LambdaExpr),
+        Cast(CastExpr),
         /// A syntactically valid expression kind that we don't lower precisely yet.
         ///
         /// We still preserve any direct child expressions so downstream passes (resolver,
@@ -445,6 +446,7 @@ pub mod ast {
                 Expr::Assign(expr) => expr.range,
                 Expr::Conditional(expr) => expr.range,
                 Expr::Lambda(expr) => expr.range,
+                Expr::Cast(expr) => expr.range,
                 Expr::Invalid { range, .. } => *range,
                 Expr::Missing(range) => *range,
             }
@@ -502,6 +504,13 @@ pub mod ast {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct ClassLiteralExpr {
         pub ty: Box<Expr>,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct CastExpr {
+        pub ty: TypeRef,
+        pub expr: Box<Expr>,
         pub range: Span,
     }
 
@@ -2060,11 +2069,25 @@ impl Lowerer {
                 .find(|child| is_expression_kind(child.kind()))
                 .map(|expr| self.lower_expr(&expr))
                 .unwrap_or_else(|| ast::Expr::Missing(self.spans.map_node(node))),
-            SyntaxKind::CastExpression => node
-                .children()
-                .find(|child| is_expression_kind(child.kind()))
-                .map(|expr| self.lower_expr(&expr))
-                .unwrap_or_else(|| ast::Expr::Missing(self.spans.map_node(node))),
+            SyntaxKind::CastExpression => {
+                let range = self.spans.map_node(node);
+                let ty_node = node.children().find(|child| child.kind() == SyntaxKind::Type);
+                let expr_node = node
+                    .children()
+                    .find(|child| is_expression_kind(child.kind()));
+
+                let (Some(ty_node), Some(expr_node)) = (ty_node, expr_node) else {
+                    return ast::Expr::Missing(range);
+                };
+
+                let ty = self.lower_type_ref(&ty_node);
+                let expr = self.lower_expr(&expr_node);
+                ast::Expr::Cast(ast::CastExpr {
+                    ty,
+                    expr: Box::new(expr),
+                    range,
+                })
+            }
             // For expression kinds we don't handle precisely (including parse recovery via
             // `SyntaxKind::Error`), preserve nested expressions (e.g. array dimension
             // expressions, string template interpolations) so name resolution and refactoring
@@ -3005,6 +3028,28 @@ mod tests {
             panic!("expected primitive class literal type name");
         };
         assert_eq!(ty_name.name, "int");
+    }
+
+    #[test]
+    fn parse_block_lowers_cast_expression() {
+        let text = "{ String s = (String) o; }";
+        let block = parse_block(text, 0);
+
+        assert_eq!(block.statements.len(), 1);
+
+        let ast::Stmt::LocalVar(decl) = &block.statements[0] else {
+            panic!("expected local var statement");
+        };
+
+        let Some(ast::Expr::Cast(cast)) = &decl.initializer else {
+            panic!("expected cast initializer");
+        };
+
+        assert_eq!(cast.ty.text.trim(), "String");
+        assert!(
+            matches!(cast.expr.as_ref(), ast::Expr::Name(name) if name.name == "o"),
+            "expected cast operand to be name expression"
+        );
     }
 
     #[test]
