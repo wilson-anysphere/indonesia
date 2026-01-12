@@ -471,7 +471,6 @@ fn loads_gradle_root_buildscript_dependencies() {
         ..LoadOptions::default()
     };
     let config = load_project_with_options(&root, &options).expect("load gradle project");
-
     let deps: BTreeSet<_> = config
         .dependencies
         .iter()
@@ -526,6 +525,41 @@ fn loads_gradle_root_buildscript_dependencies_with_version_catalog() {
         "guava".to_string(),
         Some("33.0.0-jre".to_string())
     )));
+}
+
+#[test]
+fn loads_gradle_composite_workspace() {
+    let root = testdata_path("gradle-composite/root");
+    let workspace_root = std::fs::canonicalize(&root).expect("canonicalize workspace root");
+    let included_root = std::fs::canonicalize(workspace_root.join("../included"))
+        .expect("canonicalize included build root");
+    let included_src = included_root.join("src/main/java");
+
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load gradle project");
+
+    assert_eq!(config.build_system, BuildSystem::Gradle);
+    assert!(
+        config.modules.iter().any(|m| m.root == included_root),
+        "expected included build root module to be discovered; got: {:?}",
+        config.modules
+    );
+    assert!(
+        config
+            .source_roots
+            .iter()
+            .any(|sr| sr.kind == SourceRootKind::Main && sr.path == included_src),
+        "expected included build source root to be discovered; got: {:?}",
+        config.source_roots
+    );
+
+    // Ensure config is deterministic.
+    let config2 = load_project_with_options(&root, &options).expect("load gradle project again");
+    assert_eq!(config, config2);
 }
 
 #[test]
@@ -1232,7 +1266,6 @@ fn loads_gradle_includebuild_workspace_model() {
         gradle_user_home: Some(gradle_home.path().to_path_buf()),
         ..LoadOptions::default()
     };
-
     let model =
         load_workspace_model_with_options(&root, &options).expect("load gradle workspace model");
     assert_eq!(model.build_system, BuildSystem::Gradle);
@@ -1253,6 +1286,30 @@ fn loads_gradle_includebuild_workspace_model() {
         .expect("module for build-logic java file");
     assert_eq!(match_java.module.id, build_logic.id);
     assert_eq!(match_java.source_root.kind, SourceRootKind::Main);
+}
+
+#[test]
+fn loads_gradle_composite_workspace_model() {
+    let root = testdata_path("gradle-composite/root");
+    let included_root =
+        std::fs::canonicalize(root.join("../included")).expect("canonicalize included build root");
+
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let model =
+        load_workspace_model_with_options(&root, &options).expect("load gradle workspace model");
+
+    assert_eq!(model.build_system, BuildSystem::Gradle);
+
+    let included = model
+        .modules
+        .iter()
+        .find(|m| m.root == included_root)
+        .expect("expected included build module to be discovered via includeBuild");
+    assert_eq!(included.id, "gradle::__includedBuild_included");
 }
 
 #[test]
