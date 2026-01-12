@@ -275,6 +275,8 @@ Notes:
 - `buildProject` enqueues a background build and returns immediately.
 - `diagnostics` contains the **last known** diagnostics. Clients should poll `nova/build/status` and
   `nova/build/diagnostics` to observe the build completion and retrieve updated diagnostics.
+- For Bazel workspaces, builds are executed via BSP; Nova resolves the BSP launcher from standard
+  `.bsp/*.json` config files (when present) and/or `NOVA_BSP_PROGRAM` / `NOVA_BSP_ARGS`.
 
 ---
 
