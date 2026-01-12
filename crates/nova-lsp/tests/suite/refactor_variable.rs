@@ -186,7 +186,10 @@ class C {
     };
 
     let actions = extract_variable_code_actions(&uri, &source, range);
-    assert!(actions.is_empty());
+    assert!(
+        actions.is_empty(),
+        "expected extract variable to be unavailable for side-effectful expression, got: {actions:?}"
+    );
 }
 
 #[test]

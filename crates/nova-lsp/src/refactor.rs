@@ -225,8 +225,8 @@ pub fn extract_variable_code_actions(
         return Vec::new();
     }
 
-    // Probe the refactoring with a placeholder name to avoid offering the action
-    // when it can't be applied.
+    // Probe the refactoring with a placeholder name to avoid offering actions when they can't be
+    // applied.
     let file_path = uri.to_string();
     let file = FileId::new(file_path.clone());
     let db = TextDatabase::new([(file.clone(), source.to_string())]);
@@ -267,7 +267,7 @@ pub fn extract_variable_code_actions(
 
         None
     }
-
+ 
     let mut actions = Vec::new();
     // Only offer Extract Variable when the `var` extraction variant is applicable. This preserves
     // the refactoring's "safe by default" behavior (e.g. we do not offer extraction for
@@ -289,10 +289,10 @@ pub fn extract_variable_code_actions(
                 name: Some(placeholder_name.clone()),
             })
             .expect("serializable"),
-        ),
-        ..CodeAction::default()
-    }));
-
+            ),
+            ..CodeAction::default()
+        }));
+ 
     // Offer the explicit-type extraction variant when type inference is available.
     if extract_variable(
         &db,

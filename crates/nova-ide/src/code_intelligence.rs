@@ -1485,6 +1485,7 @@ pub(crate) fn core_file_diagnostics_cancelable(
         return Vec::new();
     }
 
+    sort_and_dedupe_diagnostics(&mut diagnostics);
     diagnostics
 }
 

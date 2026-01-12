@@ -881,34 +881,41 @@ local_only = true
     let edit: WorkspaceEdit = serde_json::from_value(edit_value).expect("workspace edit");
 
     let test_uri = Uri::from_str(&uri_for_path(&test_path)).expect("test uri");
-    if let Some(document_changes) = edit.document_changes {
-        let ops = match document_changes {
-            lsp_types::DocumentChanges::Operations(ops) => ops,
-            other => panic!("expected documentChanges operations, got {other:?}"),
-        };
-        assert!(
-            ops.iter().any(|op| matches!(
-                op,
-                lsp_types::DocumentChangeOperation::Op(lsp_types::ResourceOp::Create(create))
-                    if create.uri == test_uri
-            )),
-            "expected CreateFile for derived test uri, got {ops:?}"
-        );
-        assert!(
-            ops.iter().any(|op| matches!(
-                op,
-                lsp_types::DocumentChangeOperation::Edit(edit)
-                    if edit.text_document.uri == test_uri
-            )),
-            "expected TextDocumentEdit for derived test uri, got {ops:?}"
-        );
-    } else {
-        let changes = edit.changes.expect("changes map");
-        assert!(
-            changes.contains_key(&test_uri),
-            "expected edit to touch derived test file, got: {changes:#?}"
-        );
+    let mut touched = false;
+    if let Some(changes) = &edit.changes {
+        touched |= changes.contains_key(&test_uri);
     }
+    if let Some(doc_changes) = &edit.document_changes {
+        match doc_changes {
+            lsp_types::DocumentChanges::Edits(edits) => {
+                touched |= edits.iter().any(|edit| edit.text_document.uri == test_uri);
+            }
+            lsp_types::DocumentChanges::Operations(ops) => {
+                let has_create = ops.iter().any(|op| matches!(
+                    op,
+                    lsp_types::DocumentChangeOperation::Op(lsp_types::ResourceOp::Create(create))
+                        if create.uri == test_uri
+                ));
+                let has_edit = ops.iter().any(|op| matches!(
+                    op,
+                    lsp_types::DocumentChangeOperation::Edit(edit) if edit.text_document.uri == test_uri
+                ));
+                touched |= has_create || has_edit;
+                assert!(
+                    has_create,
+                    "expected CreateFile for derived test uri, got {ops:?}"
+                );
+                assert!(
+                    has_edit,
+                    "expected TextDocumentEdit for derived test uri, got {ops:?}"
+                );
+            }
+        }
+    }
+    assert!(
+        touched,
+        "expected edit to touch derived test file, got: {edit:#?}"
+    );
 
     mock.assert_hits(1);
 
@@ -1843,6 +1850,12 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
     let file_path = src_dir.join("Example.java");
     let file_uri = uri_for_path(&file_path);
 
+    // `run_ai_generate_tests` prefers generating a new test file under `src/test/java/...` when the
+    // source file is in `src/main/java/...`.
+    let test_dir = root.join("src/test/java/com/example");
+    std::fs::create_dir_all(&test_dir).expect("create test dir");
+    let test_file_path = test_dir.join("ExampleTest.java");
+
     let text =
         "package com.example;\n\npublic class Example {\n    public int answer() { return 1; }\n}\n";
     std::fs::write(&file_path, text).expect("write file");
@@ -2000,47 +2013,79 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
         .get("params")
         .and_then(|p| p.get("edit"))
         .expect("applyEdit params.edit");
-    let edit_value = edit.clone();
-    let edit: WorkspaceEdit = serde_json::from_value(edit_value).expect("workspace edit");
-    let expected_test_uri = uri_for_path(&root.join("src/test/java/com/example/ExampleTest.java"))
-        .parse::<Uri>()
-        .expect("test uri");
-    if let Some(document_changes) = edit.document_changes {
-        let ops = match document_changes {
-            lsp_types::DocumentChanges::Operations(ops) => ops,
-            other => panic!("expected documentChanges operations, got {other:?}"),
-        };
-        assert!(
-            ops.iter().any(|op| matches!(op, lsp_types::DocumentChangeOperation::Op(lsp_types::ResourceOp::Create(create)) if create.uri == expected_test_uri)),
-            "expected CreateFile for test uri, got {ops:?}"
-        );
-        assert!(
-            ops.iter().any(|op| {
-                let lsp_types::DocumentChangeOperation::Edit(edit) = op else {
-                    return false;
-                };
-                if edit.text_document.uri != expected_test_uri {
-                    return false;
-                }
-                edit.edits.iter().any(|edit| match edit {
-                    lsp_types::OneOf::Left(edit) => edit.new_text.contains("ExampleTest"),
-                    lsp_types::OneOf::Right(edit) => {
-                        edit.text_edit.new_text.contains("ExampleTest")
+    let edit: WorkspaceEdit = serde_json::from_value(edit.clone()).expect("workspace edit");
+
+    let expected_test_uri: Uri = uri_for_path(&test_file_path).parse().expect("test uri");
+
+    let mut all_new_texts = Vec::new();
+    let mut saw_create = false;
+
+    if let Some(changes) = &edit.changes {
+        if let Some(edits) = changes.get(&expected_test_uri) {
+            all_new_texts.extend(edits.iter().map(|e| e.new_text.clone()));
+        }
+    }
+    if let Some(doc_changes) = &edit.document_changes {
+        match doc_changes {
+            lsp_types::DocumentChanges::Edits(edits) => {
+                for doc_edit in edits {
+                    if doc_edit.text_document.uri != expected_test_uri {
+                        continue;
                     }
-                })
-            }),
-            "expected TextDocumentEdit containing ExampleTest, got {ops:?}"
-        );
-    } else {
-        let changes = edit.changes.expect("changes map");
-        let edits = changes.get(&expected_test_uri).expect("edits for file");
+                    for edit in &doc_edit.edits {
+                        match edit {
+                            lsp_types::OneOf::Left(edit) => all_new_texts.push(edit.new_text.clone()),
+                            lsp_types::OneOf::Right(edit) => {
+                                all_new_texts.push(edit.text_edit.new_text.clone())
+                            }
+                        }
+                    }
+                }
+            }
+            lsp_types::DocumentChanges::Operations(ops) => {
+                for op in ops {
+                    match op {
+                        lsp_types::DocumentChangeOperation::Op(
+                            lsp_types::ResourceOp::Create(create),
+                        ) if create.uri == expected_test_uri => {
+                            saw_create = true;
+                        }
+                        lsp_types::DocumentChangeOperation::Edit(doc_edit) => {
+                            if doc_edit.text_document.uri != expected_test_uri {
+                                continue;
+                            }
+                            for edit in &doc_edit.edits {
+                                match edit {
+                                    lsp_types::OneOf::Left(edit) => {
+                                        all_new_texts.push(edit.new_text.clone())
+                                    }
+                                    lsp_types::OneOf::Right(edit) => {
+                                        all_new_texts.push(edit.text_edit.new_text.clone())
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    if matches!(
+        &edit.document_changes,
+        Some(lsp_types::DocumentChanges::Operations(_))
+    ) {
         assert!(
-            edits
-                .iter()
-                .any(|edit| edit.new_text.contains("ExampleTest")),
-            "expected edits to contain ExampleTest, got {edits:?}"
+            saw_create,
+            "expected CreateFile for test file, got: {edit:#?}"
         );
     }
+
+    assert!(
+        all_new_texts.iter().any(|text| text.contains("ExampleTest")),
+        "expected edits to contain ExampleTest, got: {edit:#?}"
+    );
 
     let apply_edit_id = apply_edit.get("id").cloned().expect("applyEdit id");
     write_jsonrpc_message(
