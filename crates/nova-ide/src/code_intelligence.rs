@@ -5194,11 +5194,30 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         .unwrap_or_else(|| text.len())
         .min(text.len());
     let (prefix_start, prefix) = identifier_prefix(text, offset);
-
-    if db
+    let is_java = db
         .file_path(file)
-        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
-    {
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"));
+
+    // Javadoc tag snippets should be available even though general completion is
+    // suppressed inside comments.
+    if is_java {
+        if let Some(comment) = java_comment_at_offset(text, offset) {
+            if comment.kind == JavaCommentKind::Doc {
+                if let Some(items) = javadoc_tag_snippet_completions(
+                    text,
+                    &text_index,
+                    offset,
+                    comment.start,
+                    comment.end,
+                ) {
+                    return items;
+                }
+            }
+            return Vec::new();
+        }
+    }
+
+    if is_java {
         // Prefer `import static Foo.<member>` completions over generic import completions so we
         // don't hide member suggestions when the cursor is positioned after the final `.`.
         if let Some(items) = static_import_completions(text, offset, prefix_start, &prefix) {
@@ -5259,29 +5278,6 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
                 offset,
                 spring_completions_to_lsp(items),
             );
-        }
-    }
-
-    let is_java = db
-        .file_path(file)
-        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"));
-
-    // Javadoc tag snippets should be available even though general completion is
-    // suppressed inside comments.
-    if is_java {
-        if let Some(comment) = java_comment_at_offset(text, offset) {
-            if comment.kind == JavaCommentKind::Doc {
-                if let Some(items) = javadoc_tag_snippet_completions(
-                    text,
-                    &text_index,
-                    offset,
-                    comment.start,
-                    comment.end,
-                ) {
-                    return items;
-                }
-            }
-            return Vec::new();
         }
     }
 

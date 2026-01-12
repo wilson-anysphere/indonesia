@@ -2939,6 +2939,16 @@ fn completion_inside_block_comment_is_empty() {
 }
 
 #[test]
+fn completion_inside_block_comment_import_is_empty() {
+    let (db, file, pos) = fixture("/*\nimport java.util.Arr<|>\n*/");
+    let items = completions(&db, file, pos);
+    assert!(
+        items.is_empty(),
+        "expected no completions inside commented-out import; got {items:#?}"
+    );
+}
+
+#[test]
 fn completion_inside_string_literal_is_empty() {
     let (db, file, pos) = fixture(r#"class A { void m(){ String s = "ret<|>"; } }"#);
     let items = completions(&db, file, pos);
