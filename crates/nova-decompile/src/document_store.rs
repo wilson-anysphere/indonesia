@@ -490,28 +490,19 @@ fn delete_single_path_best_effort(
     }
 
     // Lexical check only; do not follow symlinks.
-    if path.strip_prefix(root).is_err() {
-        return;
-    }
-
-    let meta = match std::fs::symlink_metadata(path) {
-        Ok(meta) => meta,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            deleted.insert(path.to_path_buf());
-            return;
-        }
+    let rel = match path.strip_prefix(root) {
+        Ok(rel) => rel,
         Err(_) => return,
     };
 
-    // Only delete regular files; never follow symlinks.
-    if meta.file_type().is_symlink() || !meta.is_file() {
+    // Best-effort: avoid deleting anything that isn't strictly under the store root.
+    // (`strip_prefix` above is lexical, but we additionally reject any non-normal components.)
+    if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
         return;
     }
 
-    match std::fs::remove_file(path) {
-        Ok(()) => {}
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => return,
+    if !unlink_under_root_best_effort(root, rel) {
+        return;
     }
 
     deleted.insert(path.to_path_buf());
@@ -521,8 +512,6 @@ fn delete_single_path_best_effort(
         *deleted_bytes = deleted_bytes.saturating_add(*size);
         *remaining_estimate = remaining_estimate.saturating_sub(*size);
     }
-
-    remove_empty_parents_best_effort(root, path);
 }
 
 fn companion_path(path: &Path) -> Option<PathBuf> {
@@ -536,21 +525,85 @@ fn companion_path(path: &Path) -> Option<PathBuf> {
     }
 }
 
-fn remove_empty_parents_best_effort(root: &Path, file_path: &Path) {
-    let mut dir = file_path.parent();
-    while let Some(candidate) = dir {
-        if candidate == root {
-            break;
+fn unlink_under_root_best_effort(root: &Path, rel: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt as _;
+        use std::os::unix::io::{AsRawFd as _, FromRawFd as _};
+
+        let Ok(root_c) = CString::new(root.as_os_str().as_bytes()) else {
+            return false;
+        };
+        let root_fd = unsafe {
+            libc::open(
+                root_c.as_ptr(),
+                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+            )
+        };
+        if root_fd < 0 {
+            let err = io::Error::last_os_error();
+            return err.raw_os_error() == Some(libc::ENOENT);
         }
-        if candidate.strip_prefix(root).is_err() {
-            break;
+        let mut dir = unsafe { std::fs::File::from_raw_fd(root_fd) };
+
+        let mut components = rel.components().peekable();
+        while let Some(component) = components.next() {
+            let Component::Normal(segment) = component else {
+                return false;
+            };
+            let Ok(seg_c) = CString::new(segment.as_bytes()) else {
+                return false;
+            };
+
+            if components.peek().is_none() {
+                // Last component: unlink within current dir.
+                let rc = unsafe { libc::unlinkat(dir.as_raw_fd(), seg_c.as_ptr(), 0) };
+                if rc == 0 {
+                    return true;
+                }
+                let err = io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::ENOENT) {
+                    return true;
+                }
+                if err.raw_os_error() == Some(libc::EISDIR) {
+                    let rc = unsafe {
+                        libc::unlinkat(dir.as_raw_fd(), seg_c.as_ptr(), libc::AT_REMOVEDIR)
+                    };
+                    if rc == 0 {
+                        return true;
+                    }
+                    let err = io::Error::last_os_error();
+                    return err.raw_os_error() == Some(libc::ENOENT);
+                }
+                return false;
+            }
+
+            // Intermediate component: open as a directory without following symlinks.
+            let child_fd = unsafe {
+                libc::openat(
+                    dir.as_raw_fd(),
+                    seg_c.as_ptr(),
+                    libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+                )
+            };
+            if child_fd < 0 {
+                let err = io::Error::last_os_error();
+                return err.raw_os_error() == Some(libc::ENOENT);
+            }
+            dir = unsafe { std::fs::File::from_raw_fd(child_fd) };
         }
 
-        match std::fs::remove_dir(candidate) {
-            Ok(()) => {
-                dir = candidate.parent();
-            }
-            Err(_) => break,
+        true
+    }
+
+    #[cfg(not(unix))]
+    {
+        let path = root.join(rel);
+        match std::fs::remove_file(&path) {
+            Ok(()) => true,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => true,
+            Err(_) => false,
         }
     }
 }
