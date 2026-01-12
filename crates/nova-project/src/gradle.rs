@@ -3406,6 +3406,20 @@ fn sort_dedup_dependencies(deps: &mut Vec<Dependency>) {
             return;
         };
 
+        // `compile` is the closest single-scope approximation for dependencies that are needed at
+        // both compile-time (`compileOnly` -> `provided`) and runtime (`runtimeOnly` -> `runtime`).
+        //
+        // Example: if a dependency is declared in both `compileOnly` and `runtimeOnly`, it must be
+        // present on both the compile classpath and runtime classpath, so collapsing it to
+        // `compile` is the most permissive stable scope.
+        if matches!(
+            (existing.as_deref(), incoming.as_str()),
+            (Some("runtime"), "provided") | (Some("provided"), "runtime")
+        ) {
+            *existing = Some("compile".to_string());
+            return;
+        }
+
         let existing_rank = scope_precedence(existing.as_deref());
         let incoming_rank = scope_precedence(Some(incoming.as_str()));
         if incoming_rank > existing_rank {
@@ -3886,6 +3900,32 @@ dependencies {
         for (key, scope) in expected_scopes {
             assert_eq!(scopes.get(&key), Some(&Some(scope.to_string())));
         }
+    }
+
+    #[test]
+    fn gradle_dependency_scope_merges_compile_only_and_runtime_only_to_compile() {
+        let build_script = r#"
+dependencies {
+    compileOnly("g:a:1")
+    runtimeOnly("g:a:1")
+}
+"#;
+        let gradle_properties = GradleProperties::new();
+        let deps = parse_gradle_dependencies_from_text(build_script, None, &gradle_properties);
+
+        assert_eq!(
+            deps.len(),
+            1,
+            "expected duplicate coordinates to be collapsed"
+        );
+        assert_eq!(deps[0].group_id, "g");
+        assert_eq!(deps[0].artifact_id, "a");
+        assert_eq!(deps[0].version.as_deref(), Some("1"));
+        assert_eq!(
+            deps[0].scope.as_deref(),
+            Some("compile"),
+            "a dependency needed on both compile and runtime classpaths should collapse to `compile`"
+        );
     }
 
     #[test]

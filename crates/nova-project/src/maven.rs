@@ -2029,8 +2029,9 @@ fn exists_as_jar(path: &Path) -> bool {
 
     // Maven dependency artifacts are typically `.jar` files, but some build systems (and test
     // fixtures) can "explode" jars into directories (often still ending with `.jar`).
-    // Missing artifacts are treated as absent so downstream indexing doesn't try to open
-    // non-existent archives.
+    //
+    // Accept both files and directories. Missing artifacts are treated as absent so downstream
+    // indexing doesn't try to open non-existent archives.
     path.extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
@@ -2095,6 +2096,7 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
     let path = version_dir.join(default_file_name(version));
     exists_as_jar(&path).then_some(path)
 }
+
 fn resolve_snapshot_jar_file_name(
     version_dir: &Path,
     base_version: &str,
