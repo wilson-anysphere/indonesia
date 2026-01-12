@@ -93,6 +93,28 @@ mod workspace_hierarchy;
 
 pub use crate::db::{Database, DatabaseSnapshot};
 
+// -----------------------------------------------------------------------------
+// Test-only / debug-only helpers
+// -----------------------------------------------------------------------------
+
+/// Returns how many times `nav_resolve::WorkspaceIndex` has been rebuilt for the current
+/// workspace (as identified by the set of Java files).
+///
+/// This is intentionally `#[doc(hidden)]` and only available in debug/test builds: it's
+/// used by integration tests to assert caching behavior.
+#[cfg(any(test, debug_assertions))]
+#[doc(hidden)]
+pub fn __nav_resolve_workspace_index_build_count(db: &dyn nova_db::Database) -> usize {
+    nav_resolve::workspace_index_build_count(db)
+}
+
+/// Resets the `nav_resolve` workspace index cache + build counters.
+#[cfg(any(test, debug_assertions))]
+#[doc(hidden)]
+pub fn __nav_resolve_reset_workspace_index_build_counts() {
+    nav_resolve::reset_workspace_index_build_counts();
+}
+
 #[cfg(feature = "ai")]
 mod ai_completion_context;
 #[cfg(feature = "ai")]

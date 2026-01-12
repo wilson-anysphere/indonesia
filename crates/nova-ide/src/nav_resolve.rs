@@ -1,14 +1,158 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{hash_map::DefaultHasher, BTreeSet, HashMap, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::{Arc, Mutex};
 
 use lsp_types::Uri;
+use once_cell::sync::Lazy;
 use nova_core::{path_to_file_uri, AbsPathBuf};
 use nova_db::{Database, FileId};
 use nova_index::{InheritanceEdge, InheritanceIndex};
 use nova_types::Span;
 
 use crate::parse::{parse_file, ParsedFile, TypeDef};
+
+const MAX_CACHED_WORKSPACES: usize = 8;
+
+#[derive(Debug, Clone)]
+struct CachedWorkspaceIndex {
+    fingerprint: u64,
+    index: Arc<WorkspaceIndex>,
+}
+
+#[derive(Debug)]
+struct LruCache<K, V> {
+    capacity: usize,
+    map: HashMap<K, V>,
+    order: VecDeque<K>,
+}
+
+impl<K, V> LruCache<K, V>
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
+{
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            map: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    fn get_cloned(&mut self, key: &K) -> Option<V> {
+        let value = self.map.get(key)?.clone();
+        self.touch(key);
+        Some(value)
+    }
+
+    fn insert(&mut self, key: K, value: V) {
+        self.map.insert(key.clone(), value);
+        self.touch(&key);
+        self.evict_if_needed();
+    }
+
+    fn touch(&mut self, key: &K) {
+        if let Some(pos) = self.order.iter().position(|k| k == key) {
+            self.order.remove(pos);
+        }
+        self.order.push_back(key.clone());
+    }
+
+    fn evict_if_needed(&mut self) {
+        while self.map.len() > self.capacity {
+            let Some(key) = self.order.pop_front() else {
+                break;
+            };
+            self.map.remove(&key);
+        }
+    }
+}
+
+static WORKSPACE_INDEX_CACHE: Lazy<Mutex<LruCache<u64, CachedWorkspaceIndex>>> =
+    Lazy::new(|| Mutex::new(LruCache::new(MAX_CACHED_WORKSPACES)));
+
+// Test-only instrumentation: count how often we rebuild the workspace index.
+//
+// This intentionally lives in `nav_resolve` because `code_intelligence` creates a
+// fresh resolver on each request; we want to assert that repeated navigation
+// requests reuse the cached index.
+#[cfg(any(test, debug_assertions))]
+static WORKSPACE_INDEX_BUILDS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(any(test, debug_assertions))]
+static WORKSPACE_INDEX_BUILDS_BY_WORKSPACE: Lazy<Mutex<HashMap<u64, usize>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(any(test, debug_assertions))]
+fn record_workspace_index_build(workspace_id: u64) {
+    let mut counts = WORKSPACE_INDEX_BUILDS_BY_WORKSPACE
+        .lock()
+        .expect("nav workspace index build counter lock poisoned");
+    *counts.entry(workspace_id).or_insert(0) += 1;
+}
+
+#[cfg(any(test, debug_assertions))]
+pub(crate) fn workspace_index_build_count(db: &dyn Database) -> usize {
+    let (workspace_id, _) = workspace_id_and_fingerprint(db);
+    let counts = WORKSPACE_INDEX_BUILDS_BY_WORKSPACE
+        .lock()
+        .expect("nav workspace index build counter lock poisoned");
+    counts.get(&workspace_id).copied().unwrap_or(0)
+}
+
+#[cfg(any(test, debug_assertions))]
+pub(crate) fn reset_workspace_index_build_counts() {
+    use std::sync::atomic::Ordering;
+    WORKSPACE_INDEX_BUILDS.store(0, Ordering::Relaxed);
+
+    {
+        let mut counts = WORKSPACE_INDEX_BUILDS_BY_WORKSPACE
+            .lock()
+            .expect("nav workspace index build counter lock poisoned");
+        counts.clear();
+    }
+
+    // Keep tests deterministic by resetting the global LRU.
+    let mut cache = WORKSPACE_INDEX_CACHE
+        .lock()
+        .expect("nav workspace index cache lock poisoned");
+    cache.map.clear();
+    cache.order.clear();
+}
+
+fn workspace_id_and_fingerprint(db: &dyn Database) -> (u64, u64) {
+    let mut file_ids = db.all_file_ids();
+    file_ids.sort_by_key(|id| id.to_raw());
+
+    let mut workspace_hasher = DefaultHasher::new();
+    let mut fingerprint_hasher = DefaultHasher::new();
+
+    for file_id in file_ids {
+        let Some(path) = db.file_path(file_id) else {
+            continue;
+        };
+        if path.extension().and_then(|e| e.to_str()) != Some("java") {
+            continue;
+        }
+
+        // Workspace identity is derived from the set of Java file paths.
+        path.hash(&mut workspace_hasher);
+
+        // Best-effort content fingerprint: path + pointer + len.
+        //
+        // NOTE: We intentionally avoid hashing full contents here; this runs on every
+        // navigation request and would be prohibitively expensive in large workspaces.
+        path.hash(&mut fingerprint_hasher);
+        let text = db.file_content(file_id);
+        text.len().hash(&mut fingerprint_hasher);
+        (text.as_ptr() as usize).hash(&mut fingerprint_hasher);
+    }
+
+    (workspace_hasher.finish(), fingerprint_hasher.finish())
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct SymbolKey {
@@ -65,6 +209,12 @@ struct WorkspaceIndex {
 
 impl WorkspaceIndex {
     fn new(db: &dyn Database) -> Self {
+        #[cfg(any(test, debug_assertions))]
+        {
+            use std::sync::atomic::Ordering;
+            WORKSPACE_INDEX_BUILDS.fetch_add(1, Ordering::Relaxed);
+        }
+
         let mut files = HashMap::new();
         let mut file_ids = db.all_file_ids();
         file_ids.sort_by_key(|id| id.to_raw());
@@ -425,14 +575,48 @@ impl WorkspaceIndex {
 /// and textual context around the cursor to resolve common symbols (locals, fields,
 /// types, and member calls).
 pub(crate) struct Resolver {
-    index: WorkspaceIndex,
+    index: Arc<WorkspaceIndex>,
 }
 
 impl Resolver {
     pub(crate) fn new(db: &dyn Database) -> Self {
-        Self {
-            index: WorkspaceIndex::new(db),
+        let (workspace_id, fingerprint) = workspace_id_and_fingerprint(db);
+
+        {
+            let mut cache = WORKSPACE_INDEX_CACHE
+                .lock()
+                .expect("nav workspace index cache lock poisoned");
+            if let Some(entry) = cache
+                .get_cloned(&workspace_id)
+                .filter(|e| e.fingerprint == fingerprint)
+            {
+                return Self { index: entry.index };
+            }
         }
+
+        let built = Arc::new(WorkspaceIndex::new(db));
+        #[cfg(any(test, debug_assertions))]
+        record_workspace_index_build(workspace_id);
+
+        let mut cache = WORKSPACE_INDEX_CACHE
+            .lock()
+            .expect("nav workspace index cache lock poisoned");
+        if let Some(entry) = cache
+            .get_cloned(&workspace_id)
+            .filter(|e| e.fingerprint == fingerprint)
+        {
+            return Self { index: entry.index };
+        }
+
+        cache.insert(
+            workspace_id,
+            CachedWorkspaceIndex {
+                fingerprint,
+                index: Arc::clone(&built),
+            },
+        );
+
+        Self { index: built }
     }
 
     pub(crate) fn parsed_file(&self, file: FileId) -> Option<&ParsedFile> {
