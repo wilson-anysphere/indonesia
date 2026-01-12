@@ -230,6 +230,8 @@ cargo +nightly fuzz run format_java -- -max_total_time=60 -max_len=262144
 cargo +nightly fuzz run --features refactor refactor_smoke -- -max_total_time=60 -max_len=262144
 ```
 
+- `parse_java` exercises additional parser entrypoints (expressions, fragments, and
+  `module-info.java`) at arbitrary offsets.
 - `format_java` asserts formatter idempotence (`format(format(x)) == format(x)`).
 - `refactor_smoke` (requires the `refactor` Cargo feature) treats refactoring errors as expected and
   ignored; the target only enforces that Nova never panics or hangs while attempting a small set of
