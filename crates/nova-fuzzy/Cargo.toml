@@ -4,14 +4,17 @@ version.workspace = true
 edition = "2021"
 
 [features]
-# Enables Unicode-aware preprocessing (NFKC normalization + full case folding)
-# for trigram indexing and matching.
-unicode = ["dep:unicode-normalization", "dep:unicode-casefold"]
+# Enables Unicode-aware fuzzy matching and trigram preprocessing:
+# - NFKC normalization
+# - Unicode case folding (including expansions like ß -> ss)
+# - grapheme-cluster aware scoring (for non-ASCII inputs)
+unicode = ["dep:unicode-normalization", "dep:unicode-casefold", "dep:unicode-segmentation"]
 
 [dependencies]
 nova-core = { path = "../nova-core" }
 unicode-normalization = { version = "0.1.24", optional = true }
 unicode-casefold = { version = "0.2.0", optional = true }
+unicode-segmentation = { version = "1.12.0", optional = true }
 
 [dev-dependencies]
 criterion = "0.5"
