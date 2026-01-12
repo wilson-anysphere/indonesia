@@ -759,3 +759,40 @@ class A {
     let err = extract_field("A.java", &code, range, ExtractOptions::default()).unwrap_err();
     assert_eq!(err, ExtractError::UnsupportedExpression);
 }
+
+#[test]
+fn extract_field_rejects_catch_parameter_dependency() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    void m() {
+        try {
+        } catch (Exception e) {
+            Object x = /*[*/e/*]*/;
+        }
+    }
+}
+"#,
+    );
+
+    let err = extract_field("A.java", &code, range, ExtractOptions::default()).unwrap_err();
+    assert_eq!(err, ExtractError::DependsOnLocal);
+}
+
+#[test]
+fn extract_field_rejects_enhanced_for_variable_dependency() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    void m(java.util.List<String> xs) {
+        for (String s : xs) {
+            Object x = /*[*/s/*]*/;
+        }
+    }
+}
+"#,
+    );
+
+    let err = extract_field("A.java", &code, range, ExtractOptions::default()).unwrap_err();
+    assert_eq!(err, ExtractError::DependsOnLocal);
+}

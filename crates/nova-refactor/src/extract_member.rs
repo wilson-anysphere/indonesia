@@ -310,6 +310,58 @@ fn collect_local_names(container: &nova_syntax::SyntaxNode) -> HashSet<String> {
         }
     }
 
+    // Some binders (enhanced-for loop variables, try-with-resources, etc.) are represented as
+    // `VariableDeclaratorId` nodes instead of full `VariableDeclarator`s.
+    for node in container
+        .descendants()
+        .filter(|node| node.kind() == SyntaxKind::VariableDeclaratorId)
+    {
+        if let Some(tok) = node
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .find(|tok| tok.kind().is_identifier_like())
+        {
+            out.insert(tok.text().to_string());
+        }
+    }
+
+    // Catch parameters are currently parsed as a bare identifier token inside `CatchClause`.
+    for catch_clause in container
+        .descendants()
+        .filter(|node| node.kind() == SyntaxKind::CatchClause)
+    {
+        let Some(r_paren) = catch_clause
+            .children_with_tokens()
+            .filter_map(|el| el.into_token())
+            .find(|tok| tok.kind() == SyntaxKind::RParen)
+        else {
+            continue;
+        };
+
+        let header_end = u32::from(r_paren.text_range().start());
+        let mut last_ident: Option<(u32, String)> = None;
+        for tok in catch_clause
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+        {
+            let start = u32::from(tok.text_range().start());
+            if start >= header_end {
+                continue;
+            }
+            if tok.kind().is_identifier_like() {
+                let name = tok.text().to_string();
+                match &last_ident {
+                    Some((best_start, _)) if start <= *best_start => {}
+                    _ => last_ident = Some((start, name)),
+                }
+            }
+        }
+
+        if let Some((_, name)) = last_ident {
+            out.insert(name);
+        }
+    }
+
     out
 }
 
