@@ -580,3 +580,117 @@ class C {
         "expected super-in-static-context diagnostic; got {diags:?}"
     );
 }
+
+#[test]
+fn string_concatenation_has_string_type() {
+    let src = r#"
+class C { String m(){ return "a" + 1; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected string concatenation to type-check; got {diags:?}"
+    );
+
+    let offset = src.find('+').expect("snippet should contain +");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+}
+
+#[test]
+fn conditional_numeric_promotion_infers_long() {
+    let src = r#"
+class C { long m(){ return true ? 1 : 2L; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src.find('?').expect("snippet should contain ?");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "long");
+}
+
+#[test]
+fn conditional_reference_lub_infers_object() {
+    let src = r#"
+class C { Object m(){ return true ? "a" : new Object(); } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src.find('?').expect("snippet should contain ?");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Object");
+}
+
+#[test]
+fn logical_and_requires_boolean_operands() {
+    let src = r#"
+class C { void m(){ boolean b = 1 && 2; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "type-mismatch"),
+        "expected type-mismatch diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn bitwise_boolean_has_boolean_type() {
+    let src = r#"
+class C { void m(){ boolean b = true & false; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src.find('&').expect("snippet should contain &");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "boolean");
+}
+
+#[test]
+fn shift_expression_with_long_lhs_types_as_long() {
+    let src = r#"
+class C { long m(){ return 1L << 2; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src.find("<<").expect("snippet should contain <<");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "long");
+}
