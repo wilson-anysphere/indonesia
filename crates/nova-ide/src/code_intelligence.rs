@@ -8032,15 +8032,15 @@ fn java_package_and_top_level_types(text: &str) -> (Option<String>, Vec<String>)
 // -----------------------------------------------------------------------------
 
 #[derive(Debug, Default)]
-struct JavaFileTypeContext {
+struct CompletionResolveCtx {
     package: Option<String>,
     single_type_imports: HashMap<String, String>,
     star_imports: Vec<String>,
 }
 
-impl JavaFileTypeContext {
+impl CompletionResolveCtx {
     fn from_tokens(tokens: &[Token]) -> Self {
-        let mut ctx = JavaFileTypeContext::default();
+        let mut ctx = CompletionResolveCtx::default();
 
         let mut i = 0usize;
         while i < tokens.len() {
@@ -8120,39 +8120,157 @@ impl JavaFileTypeContext {
         if name.is_empty() {
             return Type::Unknown;
         }
-
-        if name.contains('.') {
-            return ensure_class_id(types, name)
-                .map(|id| Type::class(id, vec![]))
-                .unwrap_or_else(|| Type::Named(name.to_string()));
-        }
-
-        let mut candidates = Vec::<String>::new();
-        if let Some(import) = self.single_type_imports.get(name) {
-            candidates.push(import.clone());
-        }
-        if let Some(pkg) = &self.package {
-            candidates.push(format!("{pkg}.{name}"));
-        }
-        candidates.push(format!("java.lang.{name}"));
-        for pkg in &self.star_imports {
-            candidates.push(format!("{pkg}.{name}"));
-        }
-        candidates.push(name.to_string());
-
-        for candidate in candidates {
+        for candidate in self.type_name_candidates(name) {
             if let Some(id) = ensure_class_id(types, &candidate) {
                 return Type::class(id, vec![]);
             }
         }
-
-        Type::Named(name.to_string())
+        Type::Named(canonical_to_binary_name(name))
     }
+
+    fn resolve_type_name(&self, raw: &str) -> String {
+        self.type_name_candidates(raw)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| raw.trim().to_string())
+    }
+
+    fn type_name_candidates(&self, raw: &str) -> Vec<String> {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return Vec::new();
+        }
+
+        if raw.contains('.') {
+            return self.dotted_name_candidates(raw);
+        }
+        if raw.contains('$') {
+            return self.dollar_name_candidates(raw);
+        }
+        self.simple_name_candidates(raw)
+    }
+
+    fn simple_name_candidates(&self, raw: &str) -> Vec<String> {
+        fn push_unique(out: &mut Vec<String>, value: String) {
+            if !out.contains(&value) {
+                out.push(value);
+            }
+        }
+
+        let mut out = Vec::<String>::new();
+
+        if let Some(path) = self.single_type_imports.get(raw) {
+            push_unique(&mut out, canonical_to_binary_name(path));
+        }
+
+        if let Some(pkg) = &self.package {
+            if !pkg.is_empty() {
+                push_unique(&mut out, canonical_to_binary_name(&format!("{pkg}.{raw}")));
+            }
+        }
+
+        // `java.lang.*` is implicitly imported.
+        push_unique(&mut out, canonical_to_binary_name(&format!("java.lang.{raw}")));
+
+        for pkg in &self.star_imports {
+            push_unique(&mut out, canonical_to_binary_name(&format!("{pkg}.{raw}")));
+        }
+
+        push_unique(&mut out, raw.to_string());
+
+        out
+    }
+
+    fn dotted_name_candidates(&self, raw: &str) -> Vec<String> {
+        let Some((first, rest)) = raw.split_once('.') else {
+            return vec![raw.to_string()];
+        };
+
+        // A leading lowercase segment is typically a package name, so treat the whole string as a
+        // canonical qualified name and convert nested types to binary form (`java.util.Map.Entry`
+        // -> `java.util.Map$Entry`).
+        if first
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase())
+        {
+            return vec![canonical_to_binary_name(raw)];
+        }
+
+        // Otherwise interpret as `Outer.Inner` where `Outer` is an in-scope type.
+        let mut out = Vec::<String>::new();
+        for outer in self.simple_name_candidates(first) {
+            let mut name = canonical_to_binary_name(&outer);
+            for seg in rest.split('.') {
+                name.push('$');
+                name.push_str(seg);
+            }
+            if !out.contains(&name) {
+                out.push(name);
+            }
+        }
+
+        out
+    }
+
+    fn dollar_name_candidates(&self, raw: &str) -> Vec<String> {
+        let Some((first, rest)) = raw.split_once('$') else {
+            return vec![raw.to_string()];
+        };
+
+        let mut out = Vec::<String>::new();
+        for outer in self.simple_name_candidates(first) {
+            let mut name = canonical_to_binary_name(&outer);
+            for seg in rest.split('$') {
+                name.push('$');
+                name.push_str(seg);
+            }
+            if !out.contains(&name) {
+                out.push(name);
+            }
+        }
+
+        out
+    }
+}
+
+fn canonical_to_binary_name(raw: &str) -> String {
+    let parts: Vec<&str> = raw.split('.').collect();
+    if parts.len() < 2 {
+        return raw.to_string();
+    }
+
+    // Find the first "type-ish" segment (Outer class). Java package segments are conventionally
+    // lowercase, so this converts `java.util.Map.Entry` to `java.util.Map$Entry`.
+    let Some(first_type_idx) = parts.iter().position(|seg| {
+        seg.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_uppercase() || c == '_' || c == '$')
+    }) else {
+        return raw.to_string();
+    };
+
+    let (pkg, tys) = parts.split_at(first_type_idx);
+    let Some((outer, nested)) = tys.split_first() else {
+        return raw.to_string();
+    };
+
+    let mut out = String::new();
+    if !pkg.is_empty() {
+        out.push_str(&pkg.join("."));
+        out.push('.');
+    }
+    out.push_str(outer);
+    for seg in nested {
+        out.push('$');
+        out.push_str(seg);
+    }
+    out
 }
 
 fn parse_source_type_in_context(
     types: &mut TypeStore,
-    ctx: &JavaFileTypeContext,
+    ctx: &CompletionResolveCtx,
     source: &str,
 ) -> Type {
     fn strip_generic_arguments(source: &str) -> String {
@@ -8249,7 +8367,7 @@ fn member_completions(
     let text = db.file_content(file);
     let analysis = analyze(text);
     let mut types = completion_type_store(db, file);
-    let file_ctx = JavaFileTypeContext::from_tokens(&analysis.tokens);
+    let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens);
 
     // Explicitly handle `this.` / `super.` member access.
     //
@@ -8381,7 +8499,7 @@ fn method_reference_completions(
     fn infer_chained_field_access(
         types: &mut TypeStore,
         analysis: &Analysis,
-        file_ctx: &JavaFileTypeContext,
+        file_ctx: &CompletionResolveCtx,
         receiver: &str,
         offset: usize,
     ) -> Option<(Type, CallKind)> {
@@ -8420,7 +8538,7 @@ fn method_reference_completions(
     let analysis = analyze(text);
 
     let mut types = completion_type_store(db, file);
-    let file_ctx = JavaFileTypeContext::from_tokens(&analysis.tokens);
+    let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens);
 
     let receiver = receiver_before_double_colon(text, double_colon_offset);
 
@@ -8609,7 +8727,7 @@ fn member_completions_for_receiver_type(
     let analysis = analyze(text);
 
     let mut types = completion_type_store(db, file);
-    let file_ctx = JavaFileTypeContext::from_tokens(&analysis.tokens);
+    let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens);
 
     let receiver_ty = parse_source_type_in_context(&mut types, &file_ctx, receiver_type);
     if matches!(receiver_ty, Type::Unknown | Type::Error) {
@@ -8966,12 +9084,12 @@ fn infer_call_return_type(
         types
     };
 
-    let file_ctx = JavaFileTypeContext::from_tokens(&analysis.tokens);
+    let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens);
 
     // `new Foo()` is tokenized as an `Ident` call (`Foo(` ... `)`), but for completion purposes we
     // want the constructed type, not overload resolution.
     if is_constructor_call(analysis, call) {
-        let ty = parse_source_type(&mut types, call.name.as_str());
+        let ty = parse_source_type_in_context(&mut types, &file_ctx, call.name.as_str());
         return Some(nova_types::format_type(&types, &ty));
     }
 
@@ -8985,7 +9103,7 @@ fn infer_call_return_type(
     let args = call
         .arg_starts
         .iter()
-        .map(|start| infer_expr_type_at(&mut types, analysis, *start))
+        .map(|start| infer_expr_type_at(&mut types, analysis, &file_ctx, *start))
         .collect::<Vec<_>>();
 
     let call = MethodCall {
@@ -9036,7 +9154,7 @@ fn is_constructor_call(analysis: &Analysis, call: &CallExpr) -> bool {
 fn infer_call_receiver_lexical(
     types: &mut TypeStore,
     analysis: &Analysis,
-    file_ctx: &JavaFileTypeContext,
+    file_ctx: &CompletionResolveCtx,
     text: &str,
     call: &CallExpr,
 ) -> (Type, CallKind) {
@@ -9097,7 +9215,7 @@ fn enclosing_class<'a>(analysis: &'a Analysis, offset: usize) -> Option<&'a Clas
 fn infer_receiver_type_of_expr_ending_at(
     types: &mut TypeStore,
     analysis: &Analysis,
-    file_ctx: &JavaFileTypeContext,
+    file_ctx: &CompletionResolveCtx,
     text: &str,
     expr_end: usize,
 ) -> Option<Type> {
@@ -9114,7 +9232,7 @@ fn infer_receiver_type_of_expr_ending_at(
     // Prefer constructor calls like `new Foo()`.
     if let Some(call) = analysis.calls.iter().find(|c| c.close_paren == end) {
         if is_constructor_call(analysis, call) {
-            return Some(parse_source_type(types, call.name.as_str()));
+            return Some(parse_source_type_in_context(types, file_ctx, call.name.as_str()));
         }
 
         // Best-effort: avoid recursive semantic resolution to keep completion fast.
@@ -9126,7 +9244,7 @@ fn infer_receiver_type_of_expr_ending_at(
     // Calls outside method bodies won't be in `analysis.calls`. Try scanning tokens.
     if let Some(call) = scan_call_expr_ending_at(text, analysis, end) {
         if is_constructor_call(analysis, &call) {
-            return Some(parse_source_type(types, call.name.as_str()));
+            return Some(parse_source_type_in_context(types, file_ctx, call.name.as_str()));
         }
         if let Some(ty) = fallback_receiver_type_for_call(call.name.as_str()) {
             return Some(Type::Named(ty));
@@ -11049,6 +11167,7 @@ fn general_completions(
     prefix: &str,
 ) -> Vec<CompletionItem> {
     let analysis = analyze(text);
+    let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens);
     let mut types = TypeStore::with_minimal_jdk();
     let expected_arg_ty =
         expected_argument_type_for_completion(&mut types, &analysis, text, offset);
@@ -11113,7 +11232,7 @@ fn general_completions(
 
     for m in &analysis.methods {
         if let Some(expected) = expected_arg_ty.as_ref() {
-            let ret = parse_source_type(&mut types, &m.ret_ty);
+            let ret = parse_source_type_in_context(&mut types, &file_ctx, &m.ret_ty);
             if nova_types::assignment_conversion(&types, &ret, expected).is_none() {
                 continue;
             }
@@ -11141,7 +11260,7 @@ fn general_completions(
         // Method params are always in scope within the body.
         for p in &method.params {
             if let Some(expected) = expected_arg_ty.as_ref() {
-                let ty = parse_source_type(&mut types, &p.ty);
+                let ty = parse_source_type_in_context(&mut types, &file_ctx, &p.ty);
                 if nova_types::assignment_conversion(&types, &ty, expected).is_none() {
                     continue;
                 }
@@ -11176,7 +11295,7 @@ fn general_completions(
                 }
             }
             if let Some(expected) = expected_arg_ty.as_ref() {
-                let ty = parse_source_type(&mut types, &v.ty);
+                let ty = parse_source_type_in_context(&mut types, &file_ctx, &v.ty);
                 if nova_types::assignment_conversion(&types, &ty, expected).is_none() {
                     continue;
                 }
@@ -11193,7 +11312,7 @@ fn general_completions(
     for f in &analysis.fields {
         if f.name.starts_with(prefix) {
             if let Some(expected) = expected_arg_ty.as_ref() {
-                let ty = parse_source_type(&mut types, &f.ty);
+                let ty = parse_source_type_in_context(&mut types, &file_ctx, &f.ty);
                 if nova_types::assignment_conversion(&types, &ty, expected).is_none() {
                     continue;
                 }
@@ -11310,7 +11429,7 @@ fn general_completions(
         .map(|ty| nova_types::format_type(&types, ty))
         .or_else(|| infer_expected_type(&analysis, offset, prefix_start, &in_scope_types));
 
-    filter_completions_by_expected_type(&analysis, expected_type.as_deref(), &mut items);
+    filter_completions_by_expected_type(&analysis, &file_ctx, expected_type.as_deref(), &mut items);
     if let Some(expected) = expected_type.as_deref() {
         add_expected_type_literal_completions(expected, &mut items);
     }
@@ -11756,6 +11875,7 @@ fn expected_type_for_completion(
 ) -> Option<Type> {
     let bytes = text.as_bytes();
     let before = skip_whitespace_backwards(text, prefix_start);
+    let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens);
 
     // 1) Assignment / initializer: `x = <cursor>`
     if before > 0 && bytes.get(before - 1) == Some(&b'=') && is_simple_assignment_op(bytes, before)
@@ -11777,7 +11897,12 @@ fn expected_type_for_completion(
                         .map(|f| f.ty.as_str())
                 })
             {
-                return Some(parse_source_type_for_expected(types, workspace_index, ty));
+                return Some(parse_source_type_for_expected(
+                    types,
+                    &file_ctx,
+                    workspace_index,
+                    ty,
+                ));
             }
         }
     }
@@ -11792,6 +11917,7 @@ fn expected_type_for_completion(
         {
             return Some(parse_source_type_for_expected(
                 types,
+                &file_ctx,
                 workspace_index,
                 &method.ret_ty,
             ));
@@ -11814,7 +11940,7 @@ fn expected_type_for_call_argument(
     call: &CallExpr,
     arg_index: usize,
 ) -> Option<Type> {
-    let file_ctx = JavaFileTypeContext::from_tokens(&analysis.tokens);
+    let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens);
 
     let Some(receiver) = call.receiver.as_deref() else {
         // Receiverless calls: fall back to same-file method declarations (best-effort).
@@ -11844,7 +11970,7 @@ fn expected_type_for_call_argument(
     let mut args = call
         .arg_starts
         .iter()
-        .map(|start| infer_expr_type_at(types, analysis, *start))
+        .map(|start| infer_expr_type_at(types, analysis, &file_ctx, *start))
         .collect::<Vec<_>>();
 
     // If we're completing the Nth argument but haven't parsed a token for it yet (e.g. `foo(x, <|>)`),
@@ -11984,22 +12110,62 @@ fn fallback_expected_type_for_receiver_call_argument(
 
 fn parse_source_type_for_expected(
     types: &mut TypeStore,
+    file_ctx: &CompletionResolveCtx,
     workspace_index: Option<&completion_cache::WorkspaceTypeIndex>,
     source: &str,
 ) -> Type {
-    let trimmed = source.trim();
+    fn is_resolved(types: &TypeStore, ty: &Type) -> bool {
+        match ty {
+            Type::Unknown | Type::Error => false,
+            Type::Named(name) => types.lookup_class(name).is_some(),
+            Type::Array(elem) => is_resolved(types, elem),
+            _ => true,
+        }
+    }
+
+    let mut trimmed = source.trim();
     if trimmed.is_empty() {
         return Type::Unknown;
     }
 
-    if trimmed.contains('.') {
-        return parse_source_type(types, trimmed);
+    // Strip generics.
+    if let Some(idx) = trimmed.find('<') {
+        trimmed = &trimmed[..idx];
     }
 
-    let resolved = workspace_index
-        .and_then(|idx| idx.unique_fqn_for_simple_name(trimmed))
-        .unwrap_or(trimmed);
-    parse_source_type(types, resolved)
+    // Strip array dims.
+    let mut array_dims = 0usize;
+    while let Some(stripped) = trimmed.strip_suffix("[]") {
+        array_dims += 1;
+        trimmed = stripped.trim_end();
+    }
+    trimmed = trimmed.trim();
+    if trimmed.is_empty() {
+        return Type::Unknown;
+    }
+
+    // First attempt: resolve using the file's package/import context.
+    let parsed = parse_source_type_in_context(types, file_ctx, source);
+    if is_resolved(types, &parsed) || trimmed.contains('.') || trimmed.contains('$') {
+        return parsed;
+    }
+
+    // Workspace fallback: if the name is globally unambiguous, prefer that FQN.
+    let Some(resolved_name) = workspace_index.and_then(|idx| idx.unique_fqn_for_simple_name(trimmed))
+    else {
+        return parsed;
+    };
+
+    let mut resolved_source = resolved_name.to_string();
+    for _ in 0..array_dims {
+        resolved_source.push_str("[]");
+    }
+    let resolved = parse_source_type_in_context(types, file_ctx, &resolved_source);
+    if is_resolved(types, &resolved) {
+        resolved
+    } else {
+        parsed
+    }
 }
 
 fn sam_param_count(types: &TypeStore, ty: &Type) -> Option<usize> {
@@ -12066,6 +12232,7 @@ fn is_simple_assignment_op(bytes: &[u8], before: usize) -> bool {
 
 fn filter_completions_by_expected_type(
     analysis: &Analysis,
+    file_ctx: &CompletionResolveCtx,
     expected_src: Option<&str>,
     items: &mut Vec<CompletionItem>,
 ) {
@@ -12074,7 +12241,7 @@ fn filter_completions_by_expected_type(
     };
 
     let mut types = type_store_for_completion(analysis);
-    let expected_ty = parse_source_type(&mut types, expected_src);
+    let expected_ty = parse_source_type_in_context(&mut types, file_ctx, expected_src);
     if !is_resolved_type(&types, &expected_ty) {
         return;
     }
@@ -12107,7 +12274,7 @@ fn filter_completions_by_expected_type(
             return true;
         };
 
-        let candidate_ty = parse_source_type(&mut types, candidate_src);
+        let candidate_ty = parse_source_type_in_context(&mut types, file_ctx, candidate_src);
         if !is_resolved_type(&types, &candidate_ty) {
             return true;
         }
@@ -15233,7 +15400,7 @@ fn semantic_call_signatures(
         return Vec::new();
     };
 
-    let file_ctx = JavaFileTypeContext::from_tokens(&analysis.tokens);
+    let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens);
     let (receiver_ty, call_kind) =
         infer_receiver(types, analysis, &file_ctx, receiver, call.name_span.start);
     if matches!(receiver_ty, Type::Unknown | Type::Error) {
@@ -15244,7 +15411,7 @@ fn semantic_call_signatures(
     let args = call
         .arg_starts
         .iter()
-        .map(|start| infer_expr_type_at(types, analysis, *start))
+        .map(|start| infer_expr_type_at(types, analysis, &file_ctx, *start))
         .collect::<Vec<_>>();
 
     let call = MethodCall {
@@ -15278,7 +15445,7 @@ fn semantic_call_for_inlay(
         return None;
     };
 
-    let file_ctx = JavaFileTypeContext::from_tokens(&analysis.tokens);
+    let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens);
     let (receiver_ty, call_kind) =
         infer_receiver(types, analysis, &file_ctx, receiver, call.name_span.start);
     if matches!(receiver_ty, Type::Unknown | Type::Error) {
@@ -15289,7 +15456,7 @@ fn semantic_call_for_inlay(
     let args = call
         .arg_starts
         .iter()
-        .map(|start| infer_expr_type_at(types, analysis, *start))
+        .map(|start| infer_expr_type_at(types, analysis, &file_ctx, *start))
         .collect::<Vec<_>>();
 
     let call = MethodCall {
@@ -15363,7 +15530,7 @@ fn receiver_is_value_receiver(analysis: &Analysis, receiver: &str, offset: usize
 fn infer_receiver(
     types: &mut TypeStore,
     analysis: &Analysis,
-    file_ctx: &JavaFileTypeContext,
+    file_ctx: &CompletionResolveCtx,
     receiver: &str,
     offset: usize,
 ) -> (Type, CallKind) {
@@ -15486,7 +15653,12 @@ fn infer_receiver(
     )
 }
 
-fn infer_expr_type_at(types: &mut TypeStore, analysis: &Analysis, offset: usize) -> Type {
+fn infer_expr_type_at(
+    types: &mut TypeStore,
+    analysis: &Analysis,
+    file_ctx: &CompletionResolveCtx,
+    offset: usize,
+) -> Type {
     // `CallExpr::arg_starts` points at the beginning of the first token in the
     // argument. Prefer an exact span-start match to avoid `token_at_offset`
     // picking the preceding delimiter token (e.g. `(` or `,`) at a boundary.
@@ -15514,14 +15686,14 @@ fn infer_expr_type_at(types: &mut TypeStore, analysis: &Analysis, offset: usize)
                 .vars
                 .iter()
                 .find(|v| v.name == ident)
-                .map(|v| parse_source_type(types, &v.ty))
+                .map(|v| parse_source_type_in_context(types, file_ctx, &v.ty))
                 .or_else(|| {
                     analysis
                         .methods
                         .iter()
                         .find(|m| span_contains(m.body_span, offset))
                         .and_then(|m| m.params.iter().find(|p| p.name == ident))
-                        .map(|p| parse_source_type(types, &p.ty))
+                        .map(|p| parse_source_type_in_context(types, file_ctx, &p.ty))
                 })
                 .or_else(|| {
                     analysis
@@ -15529,14 +15701,14 @@ fn infer_expr_type_at(types: &mut TypeStore, analysis: &Analysis, offset: usize)
                         .iter()
                         .flat_map(|m| m.params.iter())
                         .find(|p| p.name == ident)
-                        .map(|p| parse_source_type(types, &p.ty))
+                        .map(|p| parse_source_type_in_context(types, file_ctx, &p.ty))
                 })
                 .or_else(|| {
                     analysis
                         .fields
                         .iter()
                         .find(|f| f.name == ident)
-                        .map(|f| parse_source_type(types, &f.ty))
+                        .map(|f| parse_source_type_in_context(types, file_ctx, &f.ty))
                 })
                 .unwrap_or(Type::Unknown),
         },
@@ -15551,7 +15723,7 @@ fn expected_argument_type_for_completion(
 ) -> Option<Type> {
     let (call, active_parameter) = call_expr_for_argument_list(analysis, offset)?;
 
-    let file_ctx = JavaFileTypeContext::from_tokens(&analysis.tokens);
+    let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens);
     let (receiver_ty, call_kind) =
         infer_call_receiver_lexical(types, analysis, &file_ctx, text, call);
     if matches!(receiver_ty, Type::Unknown | Type::Error) {
@@ -15569,7 +15741,7 @@ fn expected_argument_type_for_completion(
     let mut args = Vec::with_capacity(arity);
     for idx in 0..arity {
         match call.arg_starts.get(idx) {
-            Some(start) => args.push(infer_expr_type_at(types, analysis, *start)),
+            Some(start) => args.push(infer_expr_type_at(types, analysis, &file_ctx, *start)),
             None => args.push(Type::Unknown),
         }
     }
@@ -15711,6 +15883,7 @@ fn ensure_local_class_id(types: &mut TypeStore, analysis: &Analysis, class: &Cla
         })
     });
 
+    let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens);
     let methods = analysis
         .methods
         .iter()
@@ -15726,9 +15899,9 @@ fn ensure_local_class_id(types: &mut TypeStore, analysis: &Analysis, class: &Cla
             params: m
                 .params
                 .iter()
-                .map(|p| parse_source_type(types, &p.ty))
+                .map(|p| parse_source_type_in_context(types, &file_ctx, &p.ty))
                 .collect(),
-            return_type: parse_source_type(types, &m.ret_ty),
+            return_type: parse_source_type_in_context(types, &file_ctx, &m.ret_ty),
             is_static: false,
             is_varargs: false,
             is_abstract: false,

@@ -918,3 +918,46 @@ class A {
     assert_eq!(zero_item.kind, Some(CompletionItemKind::VALUE));
     assert_eq!(zero_item.detail.as_deref(), Some("int"));
 }
+
+#[test]
+fn completion_resolves_imported_list_members() {
+    let (db, file, pos, _text) = fixture(
+        r#"
+import java.util.List;
+class A {
+  void m() {
+    List l = null;
+    l.<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"get"),
+        "expected completion list to contain java.util.List.get; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_nested_imported_type() {
+    let (db, file, pos, _text) = fixture(
+        r#"
+import java.util.Map;
+class A {
+  void m() {
+    Map.Entry e = null;
+    e.<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        !items.is_empty(),
+        "expected non-empty completions for Map.Entry receiver; got {items:#?}"
+    );
+}
