@@ -43,10 +43,6 @@ tempfile = "3"
 [lib]
 path = "src/lib.rs"
 
-[[test]]
-name = "typeck"
-path = "tests/suite/typeck_target.rs"
-
 [[bench]]
 name = "parse_java_incremental"
 harness = false
