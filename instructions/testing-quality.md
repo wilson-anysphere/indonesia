@@ -193,6 +193,9 @@ bash scripts/cargo_agent.sh +nightly fuzz list
 # Run a fuzz target (from the repo root).
 bash scripts/cargo_agent.sh +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
 
+# IDE completions robustness (never panic on malformed Java + arbitrary cursor positions).
+bash scripts/cargo_agent.sh +nightly fuzz run fuzz_completion -- -max_total_time=60 -max_len=262144
+
 # Incremental parsing invariants (`nova_syntax::reparse_java`).
 bash scripts/cargo_agent.sh +nightly fuzz run fuzz_reparse_java -- -max_total_time=60 -max_len=262144
 
@@ -215,6 +218,7 @@ fuzz/
 │   ├── fuzz_on_type_format/
 │   ├── fuzz_classfile/
 │   ├── fuzz_junit_report/
+│   ├── fuzz_completion/
 │   ├── fuzz_yaml_parse/
 │   ├── fuzz_properties_parse/
 │   ├── fuzz_config_metadata/
@@ -231,6 +235,7 @@ fuzz/
     ├── fuzz_on_type_format.rs
     ├── fuzz_classfile.rs
     ├── fuzz_junit_report.rs
+    ├── fuzz_completion.rs
     ├── fuzz_yaml_parse.rs
     ├── fuzz_properties_parse.rs
     ├── fuzz_config_metadata.rs
