@@ -83,24 +83,27 @@ impl JdkSymbolIndex {
     pub fn discover_with_cache(
         config: Option<&JdkConfig>,
         cache_dir: Option<&Path>,
+        allow_write: bool,
         stats: Option<&IndexingStats>,
     ) -> Result<Self, JdkIndexError> {
         let install = JdkInstallation::discover(config)?;
-        Self::from_jmods_dir_with_cache(install.jmods_dir(), cache_dir, stats)
+        Self::from_jmods_dir_with_cache(install.jmods_dir(), cache_dir, allow_write, stats)
     }
 
     pub fn from_jdk_root_with_cache(
         root: impl AsRef<Path>,
         cache_dir: Option<&Path>,
+        allow_write: bool,
         stats: Option<&IndexingStats>,
     ) -> Result<Self, JdkIndexError> {
         let install = JdkInstallation::from_root(root)?;
-        Self::from_jmods_dir_with_cache(install.jmods_dir(), cache_dir, stats)
+        Self::from_jmods_dir_with_cache(install.jmods_dir(), cache_dir, allow_write, stats)
     }
 
     pub fn from_jmods_dir_with_cache(
         jmods_dir: impl AsRef<Path>,
         cache_dir: Option<&Path>,
+        allow_write: bool,
         stats: Option<&IndexingStats>,
     ) -> Result<Self, JdkIndexError> {
         let jmods_dir = jmods_dir.as_ref().to_path_buf();
@@ -207,14 +210,16 @@ impl JdkSymbolIndex {
             .map(|(k, v)| (k.clone(), *v as u32))
             .collect();
 
-        if persist::store_symbol_index(
-            cache_dir,
-            &jmods_dir,
-            fingerprints,
-            class_to_module,
-            packages_sorted,
-            binary_names_sorted,
-        ) {
+        if allow_write
+            && persist::store_symbol_index(
+                cache_dir,
+                &jmods_dir,
+                fingerprints,
+                class_to_module,
+                packages_sorted,
+                binary_names_sorted,
+            )
+        {
             record_cache_write(stats);
         }
 

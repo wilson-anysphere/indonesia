@@ -1,6 +1,8 @@
 use std::ffi::OsString;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use nova_classfile::ClassFile;
 use nova_core::{JdkConfig, Name, StaticMemberId, TypeIndex, TypeName};
@@ -13,6 +15,35 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn fake_jdk_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/fake-jdk")
+}
+
+fn find_jdk_symbol_index_cache_file(cache_root: &Path) -> PathBuf {
+    fn visit(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                visit(&path, out);
+                continue;
+            }
+
+            if path.file_name().and_then(|name| name.to_str()) == Some("jdk-symbol-index.idx") {
+                out.push(path);
+            }
+        }
+    }
+
+    let mut matches = Vec::new();
+    visit(cache_root, &mut matches);
+    assert_eq!(
+        matches.len(),
+        1,
+        "expected exactly one jdk-symbol-index.idx file under {}",
+        cache_root.display()
+    );
+    matches.pop().expect("checked matches length")
 }
 
 struct EnvVarGuard {
@@ -422,6 +453,78 @@ fn reuses_persisted_jmod_class_map_cache() -> Result<(), Box<dyn std::error::Err
 
     // Ensure the loaded mapping is actually used to locate classes.
     assert!(index.lookup_type("java.lang.String")?.is_some());
+
+    Ok(())
+}
+
+#[test]
+fn corrupted_persisted_jmod_class_map_cache_is_treated_as_miss(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cache_dir = tempdir()?;
+
+    let stats_first = IndexingStats::default();
+    let _ = JdkIndex::from_jdk_root_with_cache_and_stats(
+        fake_jdk_root(),
+        Some(cache_dir.path()),
+        Some(&stats_first),
+    )?;
+    assert_eq!(stats_first.cache_writes(), 1);
+
+    let cache_file = find_jdk_symbol_index_cache_file(cache_dir.path());
+    let file = std::fs::OpenOptions::new().write(true).open(&cache_file)?;
+    file.set_len(0)?;
+    drop(file);
+
+    let stats_second = IndexingStats::default();
+    let _ = JdkIndex::from_jdk_root_with_cache_and_stats(
+        fake_jdk_root(),
+        Some(cache_dir.path()),
+        Some(&stats_second),
+    )?;
+
+    assert_eq!(stats_second.cache_hits(), 0);
+    assert!(stats_second.module_scans() > 0);
+    assert_eq!(stats_second.cache_writes(), 1);
+
+    Ok(())
+}
+
+#[test]
+fn fingerprint_mismatch_forces_cache_miss() -> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempdir()?;
+    let jdk_root = temp.path();
+    let jmods_dir = jdk_root.join("jmods");
+    std::fs::create_dir_all(&jmods_dir)?;
+
+    let source_jmod = fake_jdk_root().join("jmods/java.base.jmod");
+    let jmod_path = jmods_dir.join("java.base.jmod");
+    std::fs::copy(&source_jmod, &jmod_path)?;
+
+    let cache_dir = tempdir()?;
+
+    let stats_first = IndexingStats::default();
+    let _ = JdkIndex::from_jdk_root_with_cache_and_stats(
+        jdk_root,
+        Some(cache_dir.path()),
+        Some(&stats_first),
+    )?;
+    assert_eq!(stats_first.cache_writes(), 1);
+
+    // Ensure the fingerprint changes even on file systems with coarse mtime resolution.
+    std::thread::sleep(Duration::from_secs(2));
+    let bytes = std::fs::read(&jmod_path)?;
+    std::fs::write(&jmod_path, bytes)?;
+
+    let stats_second = IndexingStats::default();
+    let _ = JdkIndex::from_jdk_root_with_cache_and_stats(
+        jdk_root,
+        Some(cache_dir.path()),
+        Some(&stats_second),
+    )?;
+
+    assert_eq!(stats_second.cache_hits(), 0);
+    assert!(stats_second.module_scans() > 0);
+    assert_eq!(stats_second.cache_writes(), 1);
 
     Ok(())
 }

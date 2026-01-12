@@ -20,6 +20,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use nova_cache::CacheConfig;
 use nova_core::{JdkConfig, Name, PackageName, QualifiedName, StaticMemberId, TypeIndex, TypeName};
 use nova_modules::{ModuleGraph, ModuleInfo, ModuleName};
 use nova_types::{FieldStub, MethodStub, TypeDefStub, TypeProvider};
@@ -115,14 +116,18 @@ impl JdkIndex {
 
     /// Build an index backed by a JDK installation's `jmods/` directory.
     pub fn from_jdk_root(root: impl AsRef<Path>) -> Result<Self, JdkIndexError> {
-        let cache_dir = cache_dir_from_env();
-        Self::from_jdk_root_with_cache_and_stats(root, cache_dir.as_deref(), None)
+        let policy = cache_policy_from_env();
+        let cache_dir = policy.as_ref().map(|p| p.dir.as_path());
+        let allow_write = policy.as_ref().is_some_and(|p| p.allow_write);
+        Self::from_jdk_root_with_cache_and_stats_policy(root, cache_dir, allow_write, None)
     }
 
     /// Discover a JDK installation and build an index backed by its `jmods/`.
     pub fn discover(config: Option<&JdkConfig>) -> Result<Self, JdkIndexError> {
-        let cache_dir = cache_dir_from_env();
-        Self::discover_with_cache_and_stats(config, cache_dir.as_deref(), None)
+        let policy = cache_policy_from_env();
+        let cache_dir = policy.as_ref().map(|p| p.dir.as_path());
+        let allow_write = policy.as_ref().is_some_and(|p| p.allow_write);
+        Self::discover_with_cache_and_stats_policy(config, cache_dir, allow_write, None)
     }
 
     /// Build an index backed by a JDK installation's `jmods/` directory and an optional persisted cache.
@@ -140,11 +145,7 @@ impl JdkIndex {
         cache_dir: Option<&Path>,
         stats: Option<&IndexingStats>,
     ) -> Result<Self, JdkIndexError> {
-        let mut this = Self::new();
-        this.symbols = Some(index::JdkSymbolIndex::from_jdk_root_with_cache(
-            root, cache_dir, stats,
-        )?);
-        Ok(this)
+        Self::from_jdk_root_with_cache_and_stats_policy(root, cache_dir, cache_dir.is_some(), stats)
     }
 
     /// Discover a JDK installation and build an index backed by its `jmods/` and an optional persisted cache.
@@ -162,11 +163,7 @@ impl JdkIndex {
         cache_dir: Option<&Path>,
         stats: Option<&IndexingStats>,
     ) -> Result<Self, JdkIndexError> {
-        let mut this = Self::new();
-        this.symbols = Some(index::JdkSymbolIndex::discover_with_cache(
-            config, cache_dir, stats,
-        )?);
-        Ok(this)
+        Self::discover_with_cache_and_stats_policy(config, cache_dir, cache_dir.is_some(), stats)
     }
 
     /// Lookup a parsed class stub by binary name (`java.lang.String`), internal
@@ -278,6 +275,38 @@ impl JdkIndex {
     pub fn module_of_type(&self, binary_or_internal: &str) -> Option<ModuleName> {
         let symbols = self.symbols.as_ref()?;
         symbols.module_of_type(binary_or_internal).ok().flatten()
+    }
+
+    fn from_jdk_root_with_cache_and_stats_policy(
+        root: impl AsRef<Path>,
+        cache_dir: Option<&Path>,
+        allow_write: bool,
+        stats: Option<&IndexingStats>,
+    ) -> Result<Self, JdkIndexError> {
+        let mut this = Self::new();
+        this.symbols = Some(index::JdkSymbolIndex::from_jdk_root_with_cache(
+            root,
+            cache_dir,
+            allow_write,
+            stats,
+        )?);
+        Ok(this)
+    }
+
+    fn discover_with_cache_and_stats_policy(
+        config: Option<&JdkConfig>,
+        cache_dir: Option<&Path>,
+        allow_write: bool,
+        stats: Option<&IndexingStats>,
+    ) -> Result<Self, JdkIndexError> {
+        let mut this = Self::new();
+        this.symbols = Some(index::JdkSymbolIndex::discover_with_cache(
+            config,
+            cache_dir,
+            allow_write,
+            stats,
+        )?);
+        Ok(this)
     }
 
     fn add_type(&mut self, package: &str, name: &str) {
@@ -415,8 +444,78 @@ pub fn internal_name_to_source_entry_path(internal_name: &str) -> String {
     }
 }
 
-fn cache_dir_from_env() -> Option<PathBuf> {
-    std::env::var_os("NOVA_JDK_CACHE_DIR").map(PathBuf::from)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PersistenceMode {
+    Disabled,
+    ReadOnly,
+    ReadWrite,
+}
+
+impl PersistenceMode {
+    fn from_env() -> Self {
+        let Some(raw) = std::env::var_os("NOVA_PERSISTENCE") else {
+            return Self::default();
+        };
+
+        let raw = raw.to_string_lossy();
+        let raw = raw.trim().to_ascii_lowercase();
+        match raw.as_str() {
+            "" => Self::default(),
+            "0" | "off" | "disabled" | "false" | "no" => Self::Disabled,
+            "ro" | "read-only" | "readonly" => Self::ReadOnly,
+            "rw" | "read-write" | "readwrite" | "on" | "enabled" | "true" | "1" => Self::ReadWrite,
+            _ => Self::default(),
+        }
+    }
+
+    fn allows_read(self) -> bool {
+        matches!(self, Self::ReadOnly | Self::ReadWrite)
+    }
+
+    fn allows_write(self) -> bool {
+        matches!(self, Self::ReadWrite)
+    }
+}
+
+impl Default for PersistenceMode {
+    fn default() -> Self {
+        // Default to RW in release builds, but keep debug/test builds deterministic and free of
+        // surprise disk I/O unless explicitly enabled.
+        if cfg!(test) || cfg!(debug_assertions) {
+            Self::Disabled
+        } else {
+            Self::ReadWrite
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct CachePolicy {
+    dir: PathBuf,
+    allow_write: bool,
+}
+
+fn cache_policy_from_env() -> Option<CachePolicy> {
+    if let Some(dir) = std::env::var_os("NOVA_JDK_CACHE_DIR") {
+        // Deprecated: prefer `NOVA_CACHE_DIR` (shared global cache root) which feeds the
+        // `deps/` cache directory.
+        return Some(CachePolicy {
+            dir: PathBuf::from(dir),
+            allow_write: true,
+        });
+    }
+
+    let mode = PersistenceMode::from_env();
+    if !mode.allows_read() {
+        return None;
+    }
+
+    let config = CacheConfig::from_env();
+    let deps = nova_cache::deps_cache_dir(&config).ok()?;
+    Some(CachePolicy {
+        dir: deps.join("jdk"),
+        allow_write: mode.allows_write(),
+    })
 }
 // === Minimal class/method/type model (used by nova-types) ====================
 

@@ -28,6 +28,8 @@ pub enum ArtifactKind {
     DepsIndexBundle = 101,
     /// Per-project cache metadata (`metadata.bin`).
     ProjectMetadata = 102,
+    /// JDK symbol index cache stored in the global deps cache.
+    JdkSymbolIndex = 103,
 }
 
 impl ArtifactKind {
@@ -41,6 +43,7 @@ impl ArtifactKind {
             100 => Some(Self::AstArtifacts),
             101 => Some(Self::DepsIndexBundle),
             102 => Some(Self::ProjectMetadata),
+            103 => Some(Self::JdkSymbolIndex),
             _ => None,
         }
     }

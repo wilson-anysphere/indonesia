@@ -1,19 +1,15 @@
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::fs;
-use std::hash::{Hash, Hasher};
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
+use nova_cache::Fingerprint;
+use nova_storage::{ArtifactKind, Compression, PersistedArchive};
 
-const CACHE_VERSION: u32 = 1;
+pub(crate) const JDK_SYMBOL_INDEX_SCHEMA_VERSION: u32 = 1;
+const CACHE_FILE_NAME: &str = "jdk-symbol-index.idx";
 
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[archive(check_bytes)]
 pub(crate) struct JmodFingerprint {
     pub(crate) file_name: String,
     pub(crate) len: u64,
@@ -41,11 +37,13 @@ impl JmodFingerprint {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[archive(check_bytes)]
 struct SymbolIndexCacheFile {
-    version: u32,
+    saved_at_millis: u64,
+    jmods_dir: String,
     jmods: Vec<JmodFingerprint>,
-    class_to_module: HashMap<String, u32>,
+    class_to_module: Vec<(String, u32)>,
     packages_sorted: Vec<String>,
     binary_names_sorted: Vec<String>,
 }
@@ -69,17 +67,49 @@ pub(crate) fn load_symbol_index(
     fingerprints: &[JmodFingerprint],
 ) -> Option<LoadedSymbolIndex> {
     let cache_path = cache_file_path(cache_dir, jmods_dir);
-    let bytes = std::fs::read(cache_path).ok()?;
-    let file = bincode::deserialize::<SymbolIndexCacheFile>(&bytes).ok()?;
+    let archive = match PersistedArchive::<SymbolIndexCacheFile>::open_optional(
+        &cache_path,
+        ArtifactKind::JdkSymbolIndex,
+        JDK_SYMBOL_INDEX_SCHEMA_VERSION,
+    ) {
+        Ok(Some(archive)) => archive,
+        Ok(None) => return None,
+        Err(_) => {
+            let _ = std::fs::remove_file(&cache_path);
+            return None;
+        }
+    };
 
-    if file.version != CACHE_VERSION || file.jmods != fingerprints {
+    if !fingerprints_match(&archive.jmods, fingerprints) {
         return None;
     }
 
+    let module_count = fingerprints.len() as u32;
+    let mut class_to_module = HashMap::with_capacity(archive.class_to_module.len());
+    for entry in archive.class_to_module.iter() {
+        let module_idx = entry.1;
+        if module_idx >= module_count {
+            let _ = std::fs::remove_file(&cache_path);
+            return None;
+        }
+        class_to_module.insert(entry.0.as_str().to_owned(), module_idx);
+    }
+
+    let packages_sorted: Vec<String> = archive
+        .packages_sorted
+        .iter()
+        .map(|p| p.as_str().to_owned())
+        .collect();
+    let binary_names_sorted: Vec<String> = archive
+        .binary_names_sorted
+        .iter()
+        .map(|n| n.as_str().to_owned())
+        .collect();
+
     Some(LoadedSymbolIndex {
-        class_to_module: file.class_to_module,
-        packages_sorted: file.packages_sorted,
-        binary_names_sorted: file.binary_names_sorted,
+        class_to_module,
+        packages_sorted,
+        binary_names_sorted,
     })
 }
 
@@ -91,30 +121,34 @@ pub(crate) fn store_symbol_index(
     packages_sorted: Vec<String>,
     binary_names_sorted: Vec<String>,
 ) -> bool {
-    if std::fs::create_dir_all(cache_dir).is_err() {
-        return false;
-    }
-
     let cache_path = cache_file_path(cache_dir, jmods_dir);
+    let mut class_to_module: Vec<(String, u32)> = class_to_module.into_iter().collect();
+    class_to_module.sort_by(|a, b| a.0.cmp(&b.0));
+
     let file = SymbolIndexCacheFile {
-        version: CACHE_VERSION,
+        saved_at_millis: now_millis(),
+        jmods_dir: jmods_dir.to_string_lossy().to_string(),
         jmods: fingerprints,
         class_to_module,
         packages_sorted,
         binary_names_sorted,
     };
-
-    let Ok(bytes) = bincode::serialize(&file) else {
-        return false;
-    };
-    atomic_write(&cache_path, &bytes).is_ok()
+    nova_storage::write_archive_atomic(
+        &cache_path,
+        ArtifactKind::JdkSymbolIndex,
+        JDK_SYMBOL_INDEX_SCHEMA_VERSION,
+        &file,
+        Compression::None,
+    )
+    .is_ok()
 }
 
 fn cache_file_path(cache_dir: &Path, jmods_dir: &Path) -> PathBuf {
-    let mut hasher = DefaultHasher::new();
-    jmods_dir.to_string_lossy().hash(&mut hasher);
-    let key = hasher.finish();
-    cache_dir.join(format!("jdk-symbol-index-{key:016x}.bin"))
+    let canonical = jmods_dir.to_string_lossy().replace('\\', "/");
+    let fingerprint = Fingerprint::from_bytes(canonical.as_bytes());
+    cache_dir
+        .join(fingerprint.as_str())
+        .join(CACHE_FILE_NAME)
 }
 
 fn system_time_parts(time: SystemTime) -> (u64, u32) {
@@ -124,90 +158,31 @@ fn system_time_parts(time: SystemTime) -> (u64, u32) {
     (duration.as_secs(), duration.subsec_nanos())
 }
 
-fn atomic_write(dest: &Path, bytes: &[u8]) -> io::Result<()> {
-    let parent = dest.parent().unwrap_or_else(|| Path::new("."));
-    let parent = if parent.as_os_str().is_empty() {
-        Path::new(".")
-    } else {
-        parent
-    };
-
-    fs::create_dir_all(parent)?;
-
-    let (tmp_path, mut file) = open_unique_tmp_file(dest, parent)?;
-    let write_result = (|| -> io::Result<()> {
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        Ok(())
-    })();
-    if let Err(err) = write_result {
-        drop(file);
-        let _ = fs::remove_file(&tmp_path);
-        return Err(err);
-    }
-    drop(file);
-
-    if let Err(err) = rename_overwrite(&tmp_path, dest) {
-        let _ = fs::remove_file(&tmp_path);
-        return Err(err);
+fn fingerprints_match(
+    archived: &rkyv::vec::ArchivedVec<ArchivedJmodFingerprint>,
+    current: &[JmodFingerprint],
+) -> bool {
+    if archived.len() != current.len() {
+        return false;
     }
 
-    #[cfg(unix)]
-    {
-        let _ = fs::File::open(parent).and_then(|dir| dir.sync_all());
-    }
-
-    Ok(())
-}
-
-fn open_unique_tmp_file(dest: &Path, parent: &Path) -> io::Result<(PathBuf, fs::File)> {
-    let file_name = dest
-        .file_name()
-        .ok_or_else(|| io::Error::other("destination path has no file name"))?;
-    let pid = std::process::id();
-
-    loop {
-        let counter = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let mut tmp_name = file_name.to_os_string();
-        tmp_name.push(format!(".tmp.{pid}.{counter}"));
-        let tmp_path = parent.join(tmp_name);
-
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp_path)
+    for (archived, current) in archived.iter().zip(current) {
+        if archived.file_name.as_str() != current.file_name
+            || archived.len != current.len
+            || archived.mtime_secs != current.mtime_secs
+            || archived.mtime_nanos != current.mtime_nanos
         {
-            Ok(file) => return Ok((tmp_path, file)),
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(err) => return Err(err),
+            return false;
         }
     }
+
+    true
 }
 
-fn rename_overwrite(src: &Path, dest: &Path) -> io::Result<()> {
-    const MAX_RENAME_ATTEMPTS: usize = 1024;
-    let mut attempts = 0usize;
-
-    loop {
-        match fs::rename(src, dest) {
-            Ok(()) => return Ok(()),
-            Err(err)
-                if cfg!(windows)
-                    && (err.kind() == io::ErrorKind::AlreadyExists || dest.exists()) =>
-            {
-                match fs::remove_file(dest) {
-                    Ok(()) => {}
-                    Err(remove_err) if remove_err.kind() == io::ErrorKind::NotFound => {}
-                    Err(remove_err) => return Err(remove_err),
-                }
-
-                attempts += 1;
-                if attempts >= MAX_RENAME_ATTEMPTS {
-                    return Err(err);
-                }
-                continue;
-            }
-            Err(err) => return Err(err),
-        }
-    }
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
 }
