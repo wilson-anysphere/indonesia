@@ -1066,9 +1066,45 @@ pub(crate) fn with_salsa_snapshot_for_single_file<T>(
 ) -> T {
     // Fast-path: if the host provides a shared `SalsaDatabase`, treat it as the
     // authoritative incremental state and keep this helper strictly read-only.
+    //
+    // However, some hosts may expose a Salsa DB handle while serving file text from a different
+    // source (e.g. an editor overlay, or `nova-workspace` closed-file eviction that replaces
+    // `file_content` with an empty placeholder). In those cases, the Salsa inputs can be out of
+    // sync with the `text` snapshot passed by the caller; running semantic queries against the
+    // shared DB would compute diagnostics/quick-fixes for the wrong text.
+    //
+    // To keep this helper correct and panic-resistant, we only reuse the host Salsa DB when the
+    // file inputs are present *and* the Salsa `file_content` matches `text`. Otherwise we fall
+    // back to a best-effort single-file Salsa DB seeded with `text`.
     if let Some(salsa) = db.salsa_db() {
         let snap = salsa.snapshot();
-        return f(&snap);
+        let file_is_known = snap
+            .all_file_ids()
+            .as_ref()
+            .binary_search(&file)
+            .is_ok();
+        if file_is_known {
+            let exists = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                snap.file_exists(file)
+            }))
+            .ok();
+
+            match exists {
+                Some(true) => {
+                    let salsa_text = snap.file_content(file);
+                    if salsa_text.len() == text.len() && salsa_text.as_ptr() == text.as_ptr() {
+                        return f(&snap);
+                    }
+                    if salsa_text.as_str() == text {
+                        return f(&snap);
+                    }
+                }
+                Some(false) if text.is_empty() => {
+                    return f(&snap);
+                }
+                _ => {}
+            }
+        }
     }
 
     let project = nova_db::ProjectId::from_raw(0);

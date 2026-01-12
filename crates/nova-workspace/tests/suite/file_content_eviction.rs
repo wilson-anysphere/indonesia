@@ -1,6 +1,7 @@
 use std::fs;
 
 use nova_db::Database as _;
+use nova_ide::file_diagnostics;
 use nova_memory::{MemoryBudget, MemoryManager, MemoryPressureThresholds};
 use nova_vfs::VfsPath;
 use nova_workspace::Workspace;
@@ -21,7 +22,10 @@ fn closed_file_texts_evict_and_reload_while_open_docs_pinned() {
     fs::write(&open_path, "class Open { /* disk */ }").unwrap();
 
     // Make closed-file texts large enough to exceed the small memory budget.
-    let closed_a_text = format!("class ClosedA {{ /* {} */ }}", "a".repeat(256 * 1024));
+    let closed_a_text = format!(
+        "class ClosedA {{ void m() {{ Object o = null; String s = o; }} /* {} */ }}",
+        "a".repeat(256 * 1024)
+    );
     let closed_b_text = format!("class ClosedB {{ /* {} */ }}", "b".repeat(256 * 1024));
     fs::write(&closed_a_path, &closed_a_text).unwrap();
     fs::write(&closed_b_path, &closed_b_text).unwrap();
@@ -124,6 +128,15 @@ fn closed_file_texts_evict_and_reload_while_open_docs_pinned() {
     assert_eq!(
         snap_after_evict.file_content(closed_b_id),
         closed_b_text.as_str()
+    );
+
+    // Semantic diagnostics should remain correct when computed on snapshots after eviction.
+    // `nova_ide::file_diagnostics` will reuse `Database::salsa_db()` when available; make sure it
+    // does not accidentally run semantic queries against the evicted placeholder contents.
+    let diags = file_diagnostics(&snap_after_evict, closed_a_id);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "type-mismatch"),
+        "expected type mismatch diagnostics for ClosedA even after eviction, got: {diags:?}"
     );
 
     // On-demand reload: a Salsa query that needs `file_content` should transparently reload the
