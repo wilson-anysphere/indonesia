@@ -20,6 +20,25 @@ use std::sync::Arc;
 
 use crate::text::TextIndex;
 
+trait AsDynNovaDb {
+    fn as_dyn_nova_db(&self) -> &dyn nova_db::Database;
+}
+
+impl<DB> AsDynNovaDb for DB
+where
+    DB: nova_db::Database,
+{
+    fn as_dyn_nova_db(&self) -> &dyn nova_db::Database {
+        self
+    }
+}
+
+impl AsDynNovaDb for dyn nova_db::Database + Send + Sync {
+    fn as_dyn_nova_db(&self) -> &dyn nova_db::Database {
+        self
+    }
+}
+
 /// Adapter that exposes a `nova-framework` [`FrameworkAnalyzer`] via the unified `nova-ext` traits.
 ///
 /// This allows framework analyzers (Lombok, Spring, etc.) to coexist with third-party `nova-ext`
@@ -556,9 +575,10 @@ impl<DB: ?Sized + Send + Sync + 'static> IdeExtensions<DB> {
     }
 }
 
-impl<DB> IdeExtensions<DB>
+#[allow(private_bounds)]
+impl<DB: ?Sized> IdeExtensions<DB>
 where
-    DB: Send + Sync + 'static + nova_db::Database,
+    DB: Send + Sync + 'static + nova_db::Database + AsDynNovaDb,
 {
     pub fn with_default_registry(db: Arc<DB>, config: Arc<NovaConfig>, project: ProjectId) -> Self {
         let mut this = Self::new(db, config, project);
@@ -573,27 +593,10 @@ where
     }
 }
 
-impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
-    pub fn with_default_registry(
-        db: Arc<dyn nova_db::Database + Send + Sync>,
-        config: Arc<NovaConfig>,
-        project: ProjectId,
-    ) -> Self {
-        let mut this = Self::new(db, config, project);
-        let registry = this.registry_mut();
-        let _ = registry.register_diagnostic_provider(Arc::new(FrameworkDiagnosticProvider));
-        let _ = registry.register_completion_provider(Arc::new(FrameworkCompletionProvider));
-
-        let provider = FrameworkAnalyzerRegistryProvider::empty().into_arc();
-        let _ = registry.register_diagnostic_provider(provider.clone());
-        let _ = registry.register_completion_provider(provider);
-        this
-    }
-}
-
-impl<DB> IdeExtensions<DB>
+#[allow(private_bounds)]
+impl<DB: ?Sized> IdeExtensions<DB>
 where
-    DB: Send + Sync + 'static + nova_db::Database,
+    DB: Send + Sync + 'static + nova_db::Database + AsDynNovaDb,
 {
     /// Combine Nova's built-in diagnostics with registered extension diagnostics.
     pub fn all_diagnostics(
@@ -601,8 +604,10 @@ where
         cancel: CancellationToken,
         file: nova_ext::FileId,
     ) -> Vec<Diagnostic> {
-        let mut diagnostics =
-            crate::code_intelligence::core_file_diagnostics(self.db.as_ref(), file);
+        let mut diagnostics = crate::code_intelligence::core_file_diagnostics(
+            self.db.as_ref().as_dyn_nova_db(),
+            file,
+        );
         diagnostics.extend(self.diagnostics(cancel, file));
         diagnostics
     }
@@ -614,8 +619,11 @@ where
         file: nova_ext::FileId,
         position: lsp_types::Position,
     ) -> Vec<lsp_types::CompletionItem> {
-        let mut completions =
-            crate::code_intelligence::core_completions(self.db.as_ref(), file, position);
+        let mut completions = crate::code_intelligence::core_completions(
+            self.db.as_ref().as_dyn_nova_db(),
+            file,
+            position,
+        );
         let text = self.db.file_content(file);
         let text_index = TextIndex::new(text);
         let offset = text_index.position_to_offset(position).unwrap_or(text.len());
@@ -736,201 +744,8 @@ where
         let start_offset = text_index.position_to_offset(range.start).unwrap_or(0);
         let end_offset = text_index.position_to_offset(range.end).unwrap_or(text.len());
 
-        let mut hints = crate::code_intelligence::inlay_hints(self.db.as_ref(), file, range);
-
-        let mut seen: HashSet<(u32, u32, String)> = hints
-            .iter()
-            .map(|hint| {
-                (
-                    hint.position.line,
-                    hint.position.character,
-                    match &hint.label {
-                        lsp_types::InlayHintLabel::String(label) => label.clone(),
-                        lsp_types::InlayHintLabel::LabelParts(parts) => parts
-                            .iter()
-                            .map(|part| part.value.as_str())
-                            .collect::<Vec<_>>()
-                            .join(""),
-                    },
-                )
-            })
-            .collect();
-
-        for hint in self.inlay_hints(cancel, file) {
-            let Some(span) = hint.span else {
-                continue;
-            };
-
-            if span.start < start_offset || span.start > end_offset {
-                continue;
-            }
-
-            let position = text_index.offset_to_position(span.start);
-            let label = hint.label;
-            let key = (position.line, position.character, label.clone());
-            if !seen.insert(key) {
-                continue;
-            }
-
-            hints.push(lsp_types::InlayHint {
-                position,
-                label: lsp_types::InlayHintLabel::String(label),
-                kind: None,
-                text_edits: None,
-                tooltip: None,
-                padding_left: None,
-                padding_right: None,
-                data: None,
-            });
-        }
-
-        hints
-    }
-}
-
-impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
-    /// Combine Nova's built-in diagnostics with registered extension diagnostics.
-    pub fn all_diagnostics(
-        &self,
-        cancel: CancellationToken,
-        file: nova_ext::FileId,
-    ) -> Vec<Diagnostic> {
-        let mut diagnostics =
-            crate::code_intelligence::core_file_diagnostics(self.db.as_ref(), file);
-        diagnostics.extend(self.diagnostics(cancel, file));
-        diagnostics
-    }
-
-    /// Combine Nova's built-in completion items with extension-provided completion items.
-    pub fn completions_lsp(
-        &self,
-        cancel: CancellationToken,
-        file: nova_ext::FileId,
-        position: lsp_types::Position,
-    ) -> Vec<lsp_types::CompletionItem> {
-        let mut completions =
-            crate::code_intelligence::core_completions(self.db.as_ref(), file, position);
-        let text = self.db.file_content(file);
-        let text_index = TextIndex::new(text);
-        let offset = text_index.position_to_offset(position).unwrap_or(text.len());
-
-        let extension_items = self
-            .completions(cancel, file, offset)
-            .into_iter()
-            .map(|item| {
-                let label = item.label;
-                let mut out = lsp_types::CompletionItem {
-                    label: label.clone(),
-                    detail: item.detail,
-                    ..lsp_types::CompletionItem::default()
-                };
-
-                if let Some(span) = item.replace_span {
-                    out.text_edit =
-                        Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
-                            range: text_index.span_to_lsp_range(span),
-                            new_text: label,
-                        }));
-                }
-
-                out
-            });
-
-        completions.extend(extension_items);
-        completions
-    }
-
-    /// Combine Nova's built-in refactor code actions with extension-provided code actions.
-    pub fn code_actions_lsp(
-        &self,
-        cancel: CancellationToken,
-        file: nova_ext::FileId,
-        span: Option<Span>,
-    ) -> Vec<lsp_types::CodeActionOrCommand> {
-        let mut actions = Vec::new();
-
-        let source = self.db.file_content(file);
-        let uri: Option<lsp_types::Uri> = self
-            .db
-            .file_path(file)
-            .and_then(|path| nova_core::AbsPathBuf::new(path.to_path_buf()).ok())
-            .and_then(|path| nova_core::path_to_file_uri(&path).ok())
-            .and_then(|uri| uri.parse().ok());
-
-        if let Some(uri) = uri.clone() {
-            if source.contains("import") {
-                let file = RefactorFileId::new(uri.to_string());
-                let db = TextDatabase::new([(file.clone(), source.to_string())]);
-                if let Ok(edit) = organize_imports(&db, OrganizeImportsParams { file: file.clone() })
-                {
-                    if !edit.is_empty() {
-                        if let Ok(lsp_edit) = workspace_edit_to_lsp(&db, &edit) {
-                            actions.push(lsp_types::CodeActionOrCommand::CodeAction(
-                                lsp_types::CodeAction {
-                                    title: "Organize imports".to_string(),
-                                    kind: Some(
-                                        lsp_types::CodeActionKind::SOURCE_ORGANIZE_IMPORTS,
-                                    ),
-                                    edit: Some(lsp_edit),
-                                    ..lsp_types::CodeAction::default()
-                                },
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-
-        if let (Some(uri), Some(span)) = (uri, span) {
-            let source_index = TextIndex::new(source);
-            let selection = source_index.span_to_lsp_range(span);
-
-            actions.extend(crate::refactor::extract_member_code_actions(
-                &uri, source, selection,
-            ));
-
-            if let Some(action) =
-                crate::code_action::extract_method_code_action(source, uri.clone(), selection)
-            {
-                actions.push(lsp_types::CodeActionOrCommand::CodeAction(action));
-            }
-
-            actions.extend(crate::refactor::inline_method_code_actions(
-                &uri,
-                source,
-                selection.start,
-            ));
-        }
-
-        let extension_actions = self
-            .code_actions(cancel, file, span)
-            .into_iter()
-            .map(|action| {
-                let kind = action.kind.map(lsp_types::CodeActionKind::from);
-                lsp_types::CodeActionOrCommand::CodeAction(lsp_types::CodeAction {
-                    title: action.title,
-                    kind,
-                    ..lsp_types::CodeAction::default()
-                })
-            });
-        actions.extend(extension_actions);
-
-        actions
-    }
-
-    /// Combine Nova's built-in inlay hints with extension-provided inlay hints.
-    pub fn inlay_hints_lsp(
-        &self,
-        cancel: CancellationToken,
-        file: nova_ext::FileId,
-        range: lsp_types::Range,
-    ) -> Vec<lsp_types::InlayHint> {
-        let text = self.db.file_content(file);
-        let text_index = TextIndex::new(text);
-        let start_offset = text_index.position_to_offset(range.start).unwrap_or(0);
-        let end_offset = text_index.position_to_offset(range.end).unwrap_or(text.len());
-
-        let mut hints = crate::code_intelligence::inlay_hints(self.db.as_ref(), file, range);
+        let mut hints =
+            crate::code_intelligence::inlay_hints(self.db.as_ref().as_dyn_nova_db(), file, range);
 
         let mut seen: HashSet<(u32, u32, String)> = hints
             .iter()
@@ -984,9 +799,9 @@ impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
 
 struct FrameworkDiagnosticProvider;
 
-impl<DB> DiagnosticProvider<DB> for FrameworkDiagnosticProvider
+impl<DB: ?Sized> DiagnosticProvider<DB> for FrameworkDiagnosticProvider
 where
-    DB: Send + Sync + 'static + nova_db::Database,
+    DB: Send + Sync + 'static + nova_db::Database + AsDynNovaDb,
 {
     fn id(&self) -> &str {
         "nova.framework.diagnostics"
@@ -997,60 +812,31 @@ where
         ctx: ExtensionContext<DB>,
         params: DiagnosticParams,
     ) -> Vec<Diagnostic> {
-        crate::framework_cache::framework_diagnostics(ctx.db.as_ref(), params.file, &ctx.cancel)
-    }
-}
-
-impl DiagnosticProvider<dyn nova_db::Database + Send + Sync> for FrameworkDiagnosticProvider {
-    fn id(&self) -> &str {
-        "nova.framework.diagnostics"
-    }
-
-    fn provide_diagnostics(
-        &self,
-        ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
-        params: DiagnosticParams,
-    ) -> Vec<Diagnostic> {
-        crate::framework_cache::framework_diagnostics(ctx.db.as_ref(), params.file, &ctx.cancel)
-    }
-}
-
-struct FrameworkCompletionProvider;
-
-impl<DB> CompletionProvider<DB> for FrameworkCompletionProvider
-where
-    DB: Send + Sync + 'static + nova_db::Database,
-{
-    fn id(&self) -> &str {
-        "nova.framework.completions"
-    }
-
-    fn provide_completions(
-        &self,
-        ctx: ExtensionContext<DB>,
-        params: CompletionParams,
-    ) -> Vec<CompletionItem> {
-        crate::framework_cache::framework_completions(
-            ctx.db.as_ref(),
+        crate::framework_cache::framework_diagnostics(
+            ctx.db.as_ref().as_dyn_nova_db(),
             params.file,
-            params.offset,
             &ctx.cancel,
         )
     }
 }
 
-impl CompletionProvider<dyn nova_db::Database + Send + Sync> for FrameworkCompletionProvider {
+struct FrameworkCompletionProvider;
+
+impl<DB: ?Sized> CompletionProvider<DB> for FrameworkCompletionProvider
+where
+    DB: Send + Sync + 'static + nova_db::Database + AsDynNovaDb,
+{
     fn id(&self) -> &str {
         "nova.framework.completions"
     }
 
     fn provide_completions(
         &self,
-        ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
+        ctx: ExtensionContext<DB>,
         params: CompletionParams,
     ) -> Vec<CompletionItem> {
         crate::framework_cache::framework_completions(
-            ctx.db.as_ref(),
+            ctx.db.as_ref().as_dyn_nova_db(),
             params.file,
             params.offset,
             &ctx.cancel,
