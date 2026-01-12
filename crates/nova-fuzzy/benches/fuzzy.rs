@@ -117,8 +117,11 @@ fn bench_fuzzy_score(c: &mut Criterion) {
 fn bench_trigram_candidates(c: &mut Criterion) {
     // Keep the corpus size large enough to be representative but small enough
     // to keep `cargo bench` runs reasonable in CI-ish environments.
-    const SYMBOLS: usize = 100_000;
-    let index = build_trigram_index(SYMBOLS);
+    let symbols: usize = std::env::var("NOVA_FUZZY_BENCH_SYMBOLS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100_000);
+    let index = build_trigram_index(symbols);
 
     let dense_count: usize = std::env::var("NOVA_FUZZY_BENCH_DENSE_SYMBOLS")
         .ok()
