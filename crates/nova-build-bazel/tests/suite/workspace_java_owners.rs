@@ -299,6 +299,32 @@ fn workspace_file_label_is_cached_until_build_file_invalidation() {
 }
 
 #[test]
+fn workspace_package_cache_is_reused_across_multiple_files() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
+    write_file(&dir.path().join("java/BUILD"), "# java package\n");
+    create_file(&dir.path().join("java/A.java"));
+    create_file(&dir.path().join("java/B.java"));
+
+    let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), NoopRunner).unwrap();
+    let label = workspace.workspace_file_label(Path::new("java/A.java")).unwrap();
+    assert_eq!(label.as_deref(), Some("//java:A.java"));
+
+    // Remove the BUILD file. Without a package-dir cache, a fresh lookup for a different file in
+    // the same directory would now return `None`.
+    std::fs::remove_file(dir.path().join("java/BUILD")).unwrap();
+
+    let cached = workspace.workspace_file_label(Path::new("java/B.java")).unwrap();
+    assert_eq!(cached.as_deref(), Some("//java:B.java"));
+
+    workspace
+        .invalidate_changed_files(&[PathBuf::from("java/BUILD")])
+        .unwrap();
+    let label = workspace.workspace_file_label(Path::new("java/B.java")).unwrap();
+    assert_eq!(label, None);
+}
+
+#[test]
 fn workspace_file_label_cache_is_not_cleared_by_bazelrc_changes() {
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();

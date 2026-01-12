@@ -126,6 +126,7 @@ pub struct BazelWorkspace<R: CommandRunner> {
     supports_same_pkg_direct_rdeps: Option<bool>,
     java_owning_targets_cache: HashMap<String, Vec<String>>,
     preferred_java_compile_info_targets: HashMap<String, String>,
+    workspace_package_cache: Mutex<HashMap<PathBuf, Option<PathBuf>>>,
     workspace_file_label_cache: Mutex<HashMap<PathBuf, Option<(String, String)>>>,
     #[cfg(feature = "bsp")]
     bsp: BspConnection,
@@ -148,6 +149,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             supports_same_pkg_direct_rdeps: None,
             java_owning_targets_cache: HashMap::new(),
             preferred_java_compile_info_targets: HashMap::new(),
+            workspace_package_cache: Mutex::new(HashMap::new()),
             workspace_file_label_cache: Mutex::new(HashMap::new()),
             #[cfg(feature = "bsp")]
             bsp: BspConnection::NotTried,
@@ -831,20 +833,76 @@ impl<R: CommandRunner> BazelWorkspace<R> {
 
         let abs_file = self.root.join(&rel);
 
-        let Some(mut dir) = abs_file.parent() else {
+        let Some(mut dir_abs) = abs_file.parent() else {
             return Ok(None);
         };
 
-        loop {
-            if contains_build_file(dir) {
-                let package_rel = dir
-                    .strip_prefix(&self.root)
-                    .expect("package dir must be under workspace root");
+        // Resolve the Bazel package directory for the file. We cache directory -> package mappings
+        // so multiple files in the same package do not repeatedly scan for BUILD files.
+        let mut visited: Vec<PathBuf> = Vec::new();
+        let package_dir_rel: Option<PathBuf> = loop {
+            let dir_rel = dir_abs
+                .strip_prefix(&self.root)
+                .expect("package dir must be under workspace root")
+                .to_path_buf();
+
+            if let Some(cached) = self
+                .workspace_package_cache
+                .lock()
+                .expect("workspace_package_cache lock poisoned")
+                .get(&dir_rel)
+                .cloned()
+            {
+                if !visited.is_empty() {
+                    let mut cache = self
+                        .workspace_package_cache
+                        .lock()
+                        .expect("workspace_package_cache lock poisoned");
+                    for v in visited {
+                        cache.insert(v, cached.clone());
+                    }
+                }
+                break cached;
+            }
+
+            visited.push(dir_rel.clone());
+
+            if contains_build_file(dir_abs) {
+                let cached = Some(dir_rel);
+                let mut cache = self
+                    .workspace_package_cache
+                    .lock()
+                    .expect("workspace_package_cache lock poisoned");
+                for v in visited {
+                    cache.insert(v, cached.clone());
+                }
+                break cached;
+            }
+
+            if dir_abs == self.root {
+                let mut cache = self
+                    .workspace_package_cache
+                    .lock()
+                    .expect("workspace_package_cache lock poisoned");
+                for v in visited {
+                    cache.insert(v, None);
+                }
+                break None;
+            }
+
+            dir_abs = dir_abs
+                .parent()
+                .expect("workspace root must have a parent unless it is filesystem root");
+        };
+
+        let out = match package_dir_rel {
+            Some(package_dir_rel) => {
+                let package_dir_abs = self.root.join(&package_dir_rel);
                 let name_rel = abs_file
-                    .strip_prefix(dir)
+                    .strip_prefix(&package_dir_abs)
                     .expect("file must be under its package dir");
 
-                let package_rel = path_to_bazel_path(package_rel)?;
+                let package_rel = path_to_bazel_path(&package_dir_rel)?;
                 let name_rel = path_to_bazel_path(name_rel)?;
 
                 let label = if package_rel.is_empty() {
@@ -852,26 +910,17 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                 } else {
                     format!("//{package_rel}:{name_rel}")
                 };
-
-                let out = Some((label, package_rel));
-                self.workspace_file_label_cache
-                    .lock()
-                    .expect("workspace_file_label_cache lock poisoned")
-                    .insert(rel, out.clone());
-                return Ok(out);
+                Some((label, package_rel))
             }
+            None => None,
+        };
 
-            if dir == self.root {
-                self.workspace_file_label_cache
-                    .lock()
-                    .expect("workspace_file_label_cache lock poisoned")
-                    .insert(rel, None);
-                return Ok(None);
-            }
-            dir = dir
-                .parent()
-                .expect("workspace root must have a parent unless it is filesystem root");
-        }
+        self.workspace_file_label_cache
+            .lock()
+            .expect("workspace_file_label_cache lock poisoned")
+            .insert(rel, out.clone());
+
+        Ok(out)
     }
 
     fn query_label_kind(&self, expr: &str) -> Result<Vec<(String, String)>> {
@@ -1310,6 +1359,10 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             true
         });
         if saw_package_boundary_change {
+            self.workspace_package_cache
+                .lock()
+                .expect("workspace_package_cache lock poisoned")
+                .clear();
             self.workspace_file_label_cache
                 .lock()
                 .expect("workspace_file_label_cache lock poisoned")
@@ -1320,6 +1373,10 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             .any(|path| path.file_name().and_then(|n| n.to_str()) == Some(".bazelignore"))
         {
             let _ = self.ignored_prefixes.take();
+            self.workspace_package_cache
+                .lock()
+                .expect("workspace_package_cache lock poisoned")
+                .clear();
             self.workspace_file_label_cache
                 .lock()
                 .expect("workspace_file_label_cache lock poisoned")
