@@ -515,7 +515,7 @@ impl WorkspaceEngine {
                             let mut java_events = Vec::new();
                             let mut changed = Vec::new();
                             for ev in events {
-                                let is_java = ev.paths().iter().any(|path| {
+                                let is_java = ev.paths().any(|path| {
                                     path.extension().and_then(|ext| ext.to_str()) == Some("java")
                                 });
                                 if is_java {
