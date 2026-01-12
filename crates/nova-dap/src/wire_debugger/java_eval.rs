@@ -220,7 +220,7 @@ impl Debugger {
         // If we don't have a resolved build-system language level, default to a conservative
         // `--release 8` so the injected helper class can load on older debuggee JVMs.
         let javac = crate::javac::apply_stream_eval_defaults(javac);
-        let compiled = match compile_java_to_dir(cancel, &javac, &source_path, output_dir).await {
+        let compiled = match compile_java_to_dir(cancel, &javac, &source_path, &output_dir).await {
             Ok(classes) => classes,
             Err(err) => {
                 if cancel.is_cancelled() {
@@ -243,8 +243,8 @@ impl Debugger {
                     }
 
                     // Ensure a clean output directory so we don't accidentally load stale classes.
-                    let _ = std::fs::remove_dir_all(output_dir);
-                    std::fs::create_dir_all(output_dir).map_err(|err| {
+                    let _ = std::fs::remove_dir_all(&output_dir);
+                    std::fs::create_dir_all(&output_dir).map_err(|err| {
                         DebuggerError::InvalidRequest(format!(
                             "failed to recreate javac output dir {}: {err}",
                             output_dir.display()
@@ -254,10 +254,10 @@ impl Debugger {
                         DebuggerError::InvalidRequest(format!(
                             "failed to write generated eval source {}: {err}",
                             source_path.display()
-                            ))
-                        })?;
+                        ))
+                    })?;
 
-                    match compile_java_to_dir(cancel, &fallback, &source_path, output_dir).await {
+                    match compile_java_to_dir(cancel, &fallback, &source_path, &output_dir).await {
                         Ok(classes) => classes,
                         Err(err2) => {
                             let original = format_stream_eval_compile_failure(

@@ -890,12 +890,12 @@ where
 
             actions.extend(type_mismatch_quick_fixes(
                 self.db.as_ref().as_dyn_nova_db(),
-                &cancel,
                 file,
                 source,
                 &cancel,
                 &uri,
                 span,
+                &cancel,
             ));
         }
 
@@ -1072,12 +1072,12 @@ where
 
 fn type_mismatch_quick_fixes(
     db: &dyn nova_db::Database,
-    cancel: &CancellationToken,
     file: nova_ext::FileId,
     source: &str,
     cancel: &CancellationToken,
     uri: &lsp_types::Uri,
     selection: Span,
+    cancel: &CancellationToken,
 ) -> Vec<lsp_types::CodeActionOrCommand> {
     fn spans_overlap(a: Span, b: Span) -> bool {
         a.start < b.end && b.start < a.end
