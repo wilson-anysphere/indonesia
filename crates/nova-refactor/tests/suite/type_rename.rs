@@ -105,6 +105,54 @@ fn rename_type_does_not_rename_local_variable_named_same() {
 }
 
 #[test]
+fn rename_type_does_not_rename_shadowing_method_type_parameter() {
+    let foo_file = FileId::new("p/Types.java");
+    let use_file = FileId::new("q/Use.java");
+
+    let foo_src = "package p; public class Foo {}";
+    let use_src = "package q; import p.Foo; class Use { Foo field; <Foo> Foo id(Foo x){ Foo y = x; return y; } void m(){ new Foo(); } }";
+
+    let db = RefactorJavaDatabase::new([
+        (foo_file.clone(), foo_src.to_string()),
+        (use_file.clone(), use_src.to_string()),
+    ]);
+
+    let offset = foo_src.find("class Foo").unwrap() + "class ".len() + 1;
+    let symbol = db.symbol_at(&foo_file, offset).expect("type symbol at Foo");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "Bar".into(),
+        },
+    )
+    .unwrap();
+
+    let mut files = BTreeMap::new();
+    files.insert(foo_file.clone(), foo_src.to_string());
+    files.insert(use_file.clone(), use_src.to_string());
+
+    let out = apply_workspace_edit(&files, &edit).unwrap();
+
+    let foo_after = out.get(&foo_file).expect("Types.java exists");
+    assert!(foo_after.contains("public class Bar"));
+
+    let use_after = out.get(&use_file).expect("Use.java exists");
+    assert!(use_after.contains("import p.Bar;"));
+    assert!(use_after.contains("Bar field;"));
+    assert!(
+        use_after.contains("<Foo> Foo id(Foo x)"),
+        "expected shadowing type parameter to remain untouched: {use_after}"
+    );
+    assert!(
+        use_after.contains("Foo y = x;"),
+        "expected local type parameter usage to remain untouched: {use_after}"
+    );
+    assert!(use_after.contains("new Bar();"));
+}
+
+#[test]
 fn rename_type_conflict_name_collision_in_same_package() {
     let foo_file = FileId::new("p/Foo.java");
     let other_file = FileId::new("p/Other.java");

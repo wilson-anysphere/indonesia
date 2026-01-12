@@ -705,10 +705,38 @@ fn lower_param(param: &syntax::ParamDecl) -> Param {
 }
 
 fn lower_type_params(node: &SyntaxNode) -> Vec<TypeParam> {
-    let Some(type_params) = node
+    // `TypeParameters` is a direct child for some declarations (e.g. classes), but can also be
+    // nested inside a header node for others (notably methods/constructors). Prefer scanning
+    // direct children first (cheaper), then fall back to a bounded descendant search that stops
+    // at the declaration body.
+    let type_params = node
         .children()
         .find(|child| child.kind() == SyntaxKind::TypeParameters)
-    else {
+        .or_else(|| {
+            // Identify the start of the declaration body so we don't accidentally collect type
+            // parameters from nested declarations inside the body (e.g. local classes).
+            let body_start = node
+                .children()
+                .find(|child| {
+                    matches!(
+                        child.kind(),
+                        SyntaxKind::ClassBody
+                            | SyntaxKind::InterfaceBody
+                            | SyntaxKind::EnumBody
+                            | SyntaxKind::RecordBody
+                            | SyntaxKind::AnnotationBody
+                            | SyntaxKind::Block
+                    )
+                })
+                .map(|body| body.text_range().start())
+                .unwrap_or_else(|| node.text_range().end());
+
+            node.descendants().find(|desc| {
+                desc.kind() == SyntaxKind::TypeParameters && desc.text_range().end() <= body_start
+            })
+        });
+
+    let Some(type_params) = type_params else {
         return Vec::new();
     };
 

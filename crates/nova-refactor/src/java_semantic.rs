@@ -2345,12 +2345,17 @@ fn record_non_body_type_references_in_item(
                 );
             }
             Member::Method(method_id) => {
+                let signature_scope = scope_result
+                    .method_scopes
+                    .get(method_id)
+                    .copied()
+                    .unwrap_or(class_scope);
                 let method = tree.method(*method_id);
                 record_annotations(
                     file,
                     file_text,
                     &method.annotations,
-                    class_scope,
+                    signature_scope,
                     &scope_result.scopes,
                     resolver,
                     resolution_to_symbol,
@@ -2361,7 +2366,7 @@ fn record_non_body_type_references_in_item(
                     file,
                     file_text,
                     &method.type_params,
-                    class_scope,
+                    signature_scope,
                     &scope_result.scopes,
                     resolver,
                     resolution_to_symbol,
@@ -2372,7 +2377,7 @@ fn record_non_body_type_references_in_item(
                     file,
                     file_text,
                     method.return_ty_range,
-                    class_scope,
+                    signature_scope,
                     &scope_result.scopes,
                     resolver,
                     resolution_to_symbol,
@@ -2384,7 +2389,7 @@ fn record_non_body_type_references_in_item(
                         file,
                         file_text,
                         &param.annotations,
-                        class_scope,
+                        signature_scope,
                         &scope_result.scopes,
                         resolver,
                         resolution_to_symbol,
@@ -2395,7 +2400,7 @@ fn record_non_body_type_references_in_item(
                         file,
                         file_text,
                         param.ty_range,
-                        class_scope,
+                        signature_scope,
                         &scope_result.scopes,
                         resolver,
                         resolution_to_symbol,
@@ -2408,7 +2413,7 @@ fn record_non_body_type_references_in_item(
                         file,
                         file_text,
                         *span,
-                        class_scope,
+                        signature_scope,
                         &scope_result.scopes,
                         resolver,
                         resolution_to_symbol,
@@ -2418,6 +2423,11 @@ fn record_non_body_type_references_in_item(
                 }
             }
             Member::Constructor(ctor_id) => {
+                let signature_scope = scope_result
+                    .constructor_scopes
+                    .get(ctor_id)
+                    .copied()
+                    .unwrap_or(class_scope);
                 let ctor = tree.constructor(*ctor_id);
 
                 // Canonical record constructors (including compact constructors) declare the record
@@ -2474,7 +2484,7 @@ fn record_non_body_type_references_in_item(
                     file,
                     file_text,
                     &ctor.annotations,
-                    class_scope,
+                    signature_scope,
                     &scope_result.scopes,
                     resolver,
                     resolution_to_symbol,
@@ -2485,7 +2495,7 @@ fn record_non_body_type_references_in_item(
                     file,
                     file_text,
                     &ctor.type_params,
-                    class_scope,
+                    signature_scope,
                     &scope_result.scopes,
                     resolver,
                     resolution_to_symbol,
@@ -2497,7 +2507,7 @@ fn record_non_body_type_references_in_item(
                         file,
                         file_text,
                         &param.annotations,
-                        class_scope,
+                        signature_scope,
                         &scope_result.scopes,
                         resolver,
                         resolution_to_symbol,
@@ -2508,7 +2518,7 @@ fn record_non_body_type_references_in_item(
                         file,
                         file_text,
                         param.ty_range,
-                        class_scope,
+                        signature_scope,
                         &scope_result.scopes,
                         resolver,
                         resolution_to_symbol,
@@ -2521,7 +2531,7 @@ fn record_non_body_type_references_in_item(
                         file,
                         file_text,
                         *span,
-                        class_scope,
+                        signature_scope,
                         &scope_result.scopes,
                         resolver,
                         resolution_to_symbol,
@@ -2600,11 +2610,9 @@ fn record_body_references(
         while let Some(id) = current {
             let data = scopes.scope(id);
             match data.kind() {
-                ScopeKind::Block { .. }
-                | ScopeKind::Lambda { .. }
-                | ScopeKind::Method { .. }
-                | ScopeKind::Constructor { .. }
-                | ScopeKind::Initializer { .. } => {
+                // Skip value-only scopes so type resolution still sees type parameters declared on
+                // methods/constructors.
+                ScopeKind::Block { .. } | ScopeKind::Lambda { .. } => {
                     current = data.parent();
                 }
                 _ => return id,
@@ -3614,15 +3622,45 @@ fn record_syntax_type_references(
     let parse = nova_syntax::parse_java(file_text);
     let root = parse.syntax();
 
-    let mut type_bodies: Vec<(ItemId, nova_types::Span)> = Vec::new();
-    for item in &tree.items {
-        collect_type_body_ranges_in_item(tree, item_to_item_id(*item), &mut type_bodies);
+    // Map syntactic ranges to semantic scopes so type resolution honors method/constructor type
+    // parameters (which can shadow imported or same-package types).
+    let mut type_scopes: Vec<(TextRange, nova_resolve::ScopeId)> = Vec::new();
+    for (&item, &class_scope) in &scope_result.class_scopes {
+        let span = match item {
+            ItemId::Class(id) => tree.class(id).range,
+            ItemId::Interface(id) => tree.interface(id).range,
+            ItemId::Enum(id) => tree.enum_(id).range,
+            ItemId::Record(id) => tree.record(id).range,
+            ItemId::Annotation(id) => tree.annotation(id).range,
+        };
+        if span.start < span.end {
+            type_scopes.push((TextRange::new(span.start, span.end), class_scope));
+        }
+    }
+    for (&method, &method_scope) in &scope_result.method_scopes {
+        let span = tree.method(method).range;
+        if span.start < span.end {
+            type_scopes.push((TextRange::new(span.start, span.end), method_scope));
+        }
+    }
+    for (&ctor, &ctor_scope) in &scope_result.constructor_scopes {
+        let span = tree.constructor(ctor).range;
+        if span.start < span.end {
+            type_scopes.push((TextRange::new(span.start, span.end), ctor_scope));
+        }
+    }
+    for (&init, &init_scope) in &scope_result.initializer_scopes {
+        let span = tree.initializer(init).range;
+        if span.start < span.end {
+            type_scopes.push((TextRange::new(span.start, span.end), init_scope));
+        }
     }
 
     for node in root.descendants() {
         if let Some(ty) = ast::Type::cast(node.clone()) {
             let range = syntax_node_text_range(ty.syntax());
-            let scope = scope_for_syntax_offset(range.start, &type_bodies, scope_result);
+            let scope =
+                scope_for_offset_in_type_scopes(&type_scopes, scope_result.file_scope, range.start);
             record_type_references_in_range(
                 file,
                 file_text,
@@ -3640,7 +3678,8 @@ fn record_syntax_type_references(
 
         if let Some(type_args) = ast::TypeArguments::cast(node) {
             let range = syntax_node_text_range(type_args.syntax());
-            let scope = scope_for_syntax_offset(range.start, &type_bodies, scope_result);
+            let scope =
+                scope_for_offset_in_type_scopes(&type_scopes, scope_result.file_scope, range.start);
             record_type_references_in_range(
                 file,
                 file_text,
@@ -3664,58 +3703,6 @@ fn syntax_node_text_range(node: &nova_syntax::SyntaxNode) -> TextRange {
         u32::from(range.start()) as usize,
         u32::from(range.end()) as usize,
     )
-}
-
-fn scope_for_syntax_offset(
-    offset: usize,
-    type_bodies: &[(ItemId, nova_types::Span)],
-    scope_result: &ScopeBuildResult,
-) -> nova_resolve::ScopeId {
-    let mut best: Option<(ItemId, usize)> = None;
-    for (item, body_range) in type_bodies {
-        if body_range.start <= offset && offset < body_range.end {
-            let len = body_range.end.saturating_sub(body_range.start);
-            match best {
-                None => best = Some((*item, len)),
-                Some((_, best_len)) if len < best_len => best = Some((*item, len)),
-                _ => {}
-            }
-        }
-    }
-
-    match best {
-        Some((item, _)) => scope_result
-            .class_scopes
-            .get(&item)
-            .copied()
-            .unwrap_or(scope_result.file_scope),
-        None => scope_result.file_scope,
-    }
-}
-
-fn collect_type_body_ranges_in_item(
-    tree: &nova_hir::item_tree::ItemTree,
-    item: ItemId,
-    out: &mut Vec<(ItemId, nova_types::Span)>,
-) {
-    out.push((item, item_body_range(tree, item)));
-
-    for member in item_members(tree, item) {
-        let Member::Type(child) = member else {
-            continue;
-        };
-        collect_type_body_ranges_in_item(tree, item_to_item_id(*child), out);
-    }
-}
-
-fn item_body_range(tree: &nova_hir::item_tree::ItemTree, item: ItemId) -> nova_types::Span {
-    match item {
-        ItemId::Class(id) => tree.class(id).body_range,
-        ItemId::Interface(id) => tree.interface(id).body_range,
-        ItemId::Enum(id) => tree.enum_(id).body_range,
-        ItemId::Record(id) => tree.record(id).body_range,
-        ItemId::Annotation(id) => tree.annotation(id).body_range,
-    }
 }
 
 fn record_type_references_in_range(
@@ -6128,15 +6115,44 @@ fn record_syntax_only_references(
         return;
     };
 
-    // Map type body ranges to their class scopes so we can pick an appropriate resolution scope
-    // for annotations and enum constant arguments.
+    // Map declaration spans to their semantic scopes so we can pick an appropriate type-resolution
+    // scope when walking the syntax tree.
+    //
+    // This is intentionally broader than "type bodies": method/constructor scopes are required so
+    // type parameters declared on methods/constructors correctly shadow imported/top-level types
+    // in signatures and bodies.
     let mut type_scopes: Vec<(TextRange, nova_resolve::ScopeId)> = Vec::new();
+
     for (&item, &class_scope) in &scope_result.class_scopes {
-        let body_span = item_body_range(tree, item);
-        if body_span.start >= body_span.end {
-            continue;
+        let span = match item {
+            ItemId::Class(id) => tree.class(id).range,
+            ItemId::Interface(id) => tree.interface(id).range,
+            ItemId::Enum(id) => tree.enum_(id).range,
+            ItemId::Record(id) => tree.record(id).range,
+            ItemId::Annotation(id) => tree.annotation(id).range,
+        };
+        if span.start < span.end {
+            type_scopes.push((TextRange::new(span.start, span.end), class_scope));
         }
-        type_scopes.push((TextRange::new(body_span.start, body_span.end), class_scope));
+    }
+
+    for (&method, &method_scope) in &scope_result.method_scopes {
+        let span = tree.method(method).range;
+        if span.start < span.end {
+            type_scopes.push((TextRange::new(span.start, span.end), method_scope));
+        }
+    }
+    for (&ctor, &ctor_scope) in &scope_result.constructor_scopes {
+        let span = tree.constructor(ctor).range;
+        if span.start < span.end {
+            type_scopes.push((TextRange::new(span.start, span.end), ctor_scope));
+        }
+    }
+    for (&init, &init_scope) in &scope_result.initializer_scopes {
+        let span = tree.initializer(init).range;
+        if span.start < span.end {
+            type_scopes.push((TextRange::new(span.start, span.end), init_scope));
+        }
     }
 
     let type_scope_at = |start: usize| -> Option<ScopeId> {
@@ -6215,20 +6231,8 @@ fn record_syntax_only_references(
         let range = ty.syntax().text_range();
         let start = u32::from(range.start()) as usize;
 
-        // Prefer the innermost enclosing type body scope (so nested types resolve correctly).
-        let mut scope = scope_result.file_scope;
-        let mut best: Option<(usize, nova_resolve::ScopeId)> = None;
-        for (body_range, class_scope) in &type_scopes {
-            if body_range.start <= start && start < body_range.end {
-                let len = body_range.len();
-                if best.map(|(best_len, _)| len < best_len).unwrap_or(true) {
-                    best = Some((len, *class_scope));
-                }
-            }
-        }
-        if let Some((_, class_scope)) = best {
-            scope = class_scope;
-        }
+        let scope =
+            scope_for_offset_in_type_scopes(&type_scopes, scope_result.file_scope, start);
 
         // Resolve each prefix (`Outer`, `Outer.Inner`, ...) so renames can target both outer and
         // inner identifiers within a qualified type reference.
