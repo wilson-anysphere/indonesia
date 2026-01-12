@@ -4427,6 +4427,59 @@ class Foo {
     }
 
     #[test]
+    fn item_tree_store_eviction_restores_salsa_memo_bytes_for_open_documents() {
+        use nova_memory::{EvictionRequest, MemoryEvictor};
+        use nova_vfs::OpenDocuments;
+
+        let manager = MemoryManager::new(MemoryBudget::from_total(10 * 1024 * 1024));
+        let open_docs = Arc::new(OpenDocuments::default());
+
+        let db = Database::new_with_memory_manager(&manager);
+        let store = db.attach_item_tree_store(&manager, open_docs.clone());
+
+        let file = FileId::from_raw(422);
+        let text = "class Foo { int x; int y; int z; }\n".repeat(128);
+        let text_len = text.len() as u64;
+
+        db.set_file_text(file, text);
+        open_docs.open(file);
+        db.with_snapshot(|snap| {
+            let it = snap.item_tree(file);
+            assert!(!it.items.is_empty(), "expected item_tree to contain items");
+        });
+
+        let pinned = manager.report();
+        assert!(
+            pinned.usage.syntax_trees > 0,
+            "expected item_tree store to report usage while pinned"
+        );
+        assert!(
+            pinned.usage.query_cache < text_len.saturating_mul(3) / 2,
+            "expected item_tree memo bytes to be suppressed while pinned (query_cache={}, text_len={text_len})",
+            pinned.usage.query_cache
+        );
+
+        // Simulate critical eviction of the store: the pinned allocation is now only held by Salsa
+        // memo tables and should be attributed back to `QueryCache`.
+        store.evict(EvictionRequest {
+            pressure: MemoryPressure::Critical,
+            target_bytes: 0,
+        });
+
+        let after = manager.report();
+        assert!(
+            after.usage.syntax_trees < text_len / 4,
+            "expected item_tree store to be cleared after eviction (syntax_trees={}, text_len={text_len})",
+            after.usage.syntax_trees
+        );
+        assert!(
+            after.usage.query_cache >= text_len.saturating_mul(3) / 2,
+            "expected item_tree memo bytes to be restored after store eviction (query_cache={}, text_len={text_len})",
+            after.usage.query_cache
+        );
+    }
+
+    #[test]
     fn open_doc_parse_java_is_not_double_counted_between_query_cache_and_syntax_trees() {
         use nova_syntax::JavaParseStore;
         use nova_vfs::OpenDocuments;
