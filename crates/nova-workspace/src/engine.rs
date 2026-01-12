@@ -1211,7 +1211,23 @@ fn reload_project_and_sync(
     if !had_classpath_fingerprint || config_changed {
         query_db.set_project_config(project, Arc::clone(&config));
     }
-    query_db.set_jdk_index(project, Arc::new(nova_jdk::JdkIndex::new()));
+
+    // Best-effort JDK index discovery.
+    //
+    // We intentionally do not fail workspace loading when JDK discovery or indexing fails: Nova can
+    // still operate with a tiny built-in JDK index (used by unit tests / bootstrapping), but many
+    // IDE features (decompilation, richer type info) benefit from a real platform index.
+    let (workspace_config, _) =
+        nova_config::load_for_workspace(workspace_root).unwrap_or_else(|_| {
+            // If config loading fails, fall back to defaults; the workspace should still open.
+            (nova_config::NovaConfig::default(), None)
+        });
+    let jdk_config = workspace_config.jdk_config();
+
+    let jdk_index = nova_jdk::JdkIndex::discover(Some(&jdk_config))
+        .or_else(|_| nova_jdk::JdkIndex::discover(None))
+        .unwrap_or_else(|_| nova_jdk::JdkIndex::new());
+    query_db.set_jdk_index(project, Arc::new(jdk_index));
 
     if !had_classpath_fingerprint || classpath_changed {
         // Best-effort classpath index. This can be expensive, so fall back to `None` if it fails.
@@ -1335,10 +1351,35 @@ mod tests {
     use nova_memory::MemoryBudget;
     use nova_project::BuildSystem;
     use std::fs;
+    use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
     use tokio::time::timeout;
 
     use super::*;
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct EnvVarGuard {
+        key: &'static str,
+        prev: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<std::path::Path>) -> Self {
+            let prev = std::env::var_os(key);
+            std::env::set_var(key, value.as_ref());
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     async fn wait_for_indexing_ready(rx: &async_channel::Receiver<WorkspaceEvent>) {
         let mut saw_started = false;
@@ -1965,6 +2006,36 @@ mod tests {
             let workspace = config.jpms_workspace.as_ref().expect("jpms workspace present");
             assert!(workspace.graph.get(&old_name).is_none());
             assert!(workspace.graph.get(&config.jpms_modules[0].name).is_some());
+        });
+    }
+
+    #[test]
+    fn project_reload_discovers_jdk_index_from_workspace_config_and_environment() {
+        let _lock = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock poisoned");
+
+        let fake_jdk = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../nova-jdk/testdata/fake-jdk");
+        let fake_jdk = fake_jdk.canonicalize().unwrap_or(fake_jdk);
+        let _java_home = EnvVarGuard::set("JAVA_HOME", &fake_jdk);
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/Main.java"), "class Main {}".as_bytes()).unwrap();
+
+        let workspace = crate::Workspace::open(root).unwrap();
+        let engine = workspace.engine_for_tests();
+        let project = ProjectId::from_raw(0);
+
+        engine.query_db.with_snapshot(|snap| {
+            let stub = snap
+                .jdk_index(project)
+                .lookup_type("String")
+                .expect("jdk lookup should not error");
+            assert!(stub.is_some(), "expected String to be indexed from fake JDK");
         });
     }
 
