@@ -222,6 +222,8 @@ impl WorkspaceSnapshot {
 pub(crate) struct WorkspaceDbView {
     snapshot: Snapshot,
     vfs: Vfs<LocalFs>,
+    salsa_file_ids: Arc<Vec<FileId>>,
+    empty_text: Arc<String>,
     file_contents: Mutex<HashMap<FileId, Arc<String>>>,
     file_paths: Mutex<HashMap<FileId, Option<PathBuf>>>,
     all_file_ids: OnceLock<Vec<FileId>>,
@@ -229,9 +231,12 @@ pub(crate) struct WorkspaceDbView {
 
 impl WorkspaceDbView {
     pub(crate) fn new(snapshot: Snapshot, vfs: Vfs<LocalFs>) -> Self {
+        let salsa_file_ids = nova_db::SourceDatabase::all_file_ids(&snapshot);
         Self {
             snapshot,
             vfs,
+            salsa_file_ids,
+            empty_text: Arc::new(String::new()),
             file_contents: Mutex::new(HashMap::new()),
             file_paths: Mutex::new(HashMap::new()),
             all_file_ids: OnceLock::new(),
@@ -250,11 +255,16 @@ impl WorkspaceDbView {
     }
 
     fn snapshot_file_content(&self, file_id: FileId) -> Arc<String> {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if self
+            .salsa_file_ids
+            .as_ref()
+            .binary_search(&file_id)
+            .is_ok()
+        {
             nova_db::SourceDatabase::file_content(&self.snapshot, file_id)
-        }))
-        .ok()
-        .unwrap_or_else(|| Arc::new(String::new()))
+        } else {
+            Arc::clone(&self.empty_text)
+        }
     }
 
     fn cached_file_content_ptr(&self, file_id: FileId) -> *const str {
