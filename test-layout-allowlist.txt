@@ -15,9 +15,6 @@ nova-ai
 nova-db
 nova-build
 nova-project
-nova-decompile
 nova-classpath
 nova-refactor
 nova-framework-spring
-nova-framework-dagger
-nova-framework-micronaut
