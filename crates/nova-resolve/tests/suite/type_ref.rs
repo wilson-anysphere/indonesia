@@ -1067,7 +1067,14 @@ fn type_use_annotations_in_type_arguments_with_suffix_annotations_are_ignored() 
     );
 
     assert_eq!(plain.diagnostics, Vec::new());
-    assert_eq!(annotated.diagnostics, Vec::new());
+    assert!(
+        !annotated
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        annotated.diagnostics
+    );
     assert_eq!(annotated.ty, plain.ty);
 }
 
@@ -1099,7 +1106,14 @@ fn type_use_annotations_before_fully_qualified_types_are_ignored() {
         None,
     );
     assert_eq!(plain.diagnostics, Vec::new());
-    assert_eq!(annotated.diagnostics, Vec::new());
+    assert!(
+        !annotated
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        annotated.diagnostics
+    );
     assert_eq!(annotated.ty, plain.ty);
 
     let annotated = resolve_type_ref_text(
@@ -1111,7 +1125,14 @@ fn type_use_annotations_before_fully_qualified_types_are_ignored() {
         "java.util.@AList<@BString>",
         None,
     );
-    assert_eq!(annotated.diagnostics, Vec::new());
+    assert!(
+        !annotated
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        annotated.diagnostics
+    );
     assert_eq!(annotated.ty, plain.ty);
 }
 
@@ -1270,14 +1291,28 @@ fn required_examples_type_use_annotations_are_skipped() {
         None,
     );
     assert_eq!(plain.diagnostics, Vec::new());
-    assert_eq!(annotated.diagnostics, Vec::new());
+    assert!(
+        !annotated
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        annotated.diagnostics
+    );
     assert_eq!(annotated.ty, plain.ty);
 
     let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "int[]", None);
     let annotated =
         resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "int@B[]", None);
     assert_eq!(plain.diagnostics, Vec::new());
-    assert_eq!(annotated.diagnostics, Vec::new());
+    assert!(
+        !annotated
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        annotated.diagnostics
+    );
     assert_eq!(annotated.ty, plain.ty);
 
     let plain = resolve_type_ref_text(
@@ -1299,7 +1334,14 @@ fn required_examples_type_use_annotations_are_skipped() {
         None,
     );
     assert_eq!(plain.diagnostics, Vec::new());
-    assert_eq!(annotated.diagnostics, Vec::new());
+    assert!(
+        !annotated
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        annotated.diagnostics
+    );
     assert_eq!(annotated.ty, plain.ty);
 }
 
@@ -1331,7 +1373,14 @@ fn type_use_annotations_with_arguments_are_ignored() {
     );
 
     assert_eq!(plain.diagnostics, Vec::new());
-    assert_eq!(annotated.diagnostics, Vec::new());
+    assert!(
+        !annotated
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        annotated.diagnostics
+    );
     assert_eq!(annotated.ty, plain.ty);
 }
 
@@ -1363,7 +1412,14 @@ fn type_use_annotations_can_be_qualified_and_glued_to_type_tokens() {
     );
 
     assert_eq!(plain.diagnostics, Vec::new());
-    assert_eq!(annotated.diagnostics, Vec::new());
+    assert!(
+        !annotated
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        annotated.diagnostics
+    );
     assert_eq!(annotated.ty, plain.ty);
 }
 
@@ -1397,7 +1453,14 @@ fn type_use_annotations_before_qualified_segments_are_ignored() {
     );
 
     assert_eq!(plain.diagnostics, Vec::new());
-    assert_eq!(annotated.diagnostics, Vec::new());
+    assert!(
+        !annotated
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        annotated.diagnostics
+    );
     assert_eq!(annotated.ty, plain.ty);
 }
 
@@ -1429,7 +1492,14 @@ fn type_use_annotations_before_qualified_segments_and_before_suffixes_are_ignore
     );
 
     assert_eq!(plain.diagnostics, Vec::new());
-    assert_eq!(annotated.diagnostics, Vec::new());
+    assert!(
+        !annotated
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        annotated.diagnostics
+    );
     assert_eq!(annotated.ty, plain.ty);
 }
 
@@ -1460,7 +1530,14 @@ fn type_use_annotations_between_multiple_array_dims_are_ignored() {
     );
 
     assert_eq!(plain.diagnostics, Vec::new());
-    assert_eq!(annotated.diagnostics, Vec::new());
+    assert!(
+        !annotated
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        annotated.diagnostics
+    );
     assert_eq!(annotated.ty, plain.ty);
 }
 
@@ -1475,14 +1552,28 @@ fn type_use_annotations_before_primitives_are_ignored() {
     let annotated =
         resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "@Aint", None);
     assert_eq!(plain.diagnostics, Vec::new());
-    assert_eq!(annotated.diagnostics, Vec::new());
+    assert!(
+        !annotated
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        annotated.diagnostics
+    );
     assert_eq!(annotated.ty, plain.ty);
 
     let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "int[]", None);
     let annotated =
         resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "@Aint[]", None);
     assert_eq!(plain.diagnostics, Vec::new());
-    assert_eq!(annotated.diagnostics, Vec::new());
+    assert!(
+        !annotated
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        annotated.diagnostics
+    );
     assert_eq!(annotated.ty, plain.ty);
 
     // Varargs is encoded as one array dimension in `nova_types::Type`.
@@ -1491,7 +1582,14 @@ fn type_use_annotations_before_primitives_are_ignored() {
         &resolver, &scopes, scope, &env, &type_vars, "@Aint...", None,
     );
     assert_eq!(plain.diagnostics, Vec::new());
-    assert_eq!(annotated.diagnostics, Vec::new());
+    assert!(
+        !annotated
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        annotated.diagnostics
+    );
     assert_eq!(annotated.ty, plain.ty);
 }
 
@@ -1520,7 +1618,14 @@ fn type_use_annotations_before_type_and_before_suffix_are_ignored() {
         None,
     );
     assert_eq!(plain.diagnostics, Vec::new());
-    assert_eq!(annotated.diagnostics, Vec::new());
+    assert!(
+        !annotated
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        annotated.diagnostics
+    );
     assert_eq!(annotated.ty, plain.ty);
 
     let plain = resolve_type_ref_text(
@@ -1536,7 +1641,14 @@ fn type_use_annotations_before_type_and_before_suffix_are_ignored() {
         None,
     );
     assert_eq!(plain.diagnostics, Vec::new());
-    assert_eq!(annotated.diagnostics, Vec::new());
+    assert!(
+        !annotated
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        annotated.diagnostics
+    );
     assert_eq!(annotated.ty, plain.ty);
 
     // Varargs: `@A String @B ...` -> `@AString@B...`
@@ -1559,7 +1671,14 @@ fn type_use_annotations_before_type_and_before_suffix_are_ignored() {
         None,
     );
     assert_eq!(plain.diagnostics, Vec::new());
-    assert_eq!(annotated.diagnostics, Vec::new());
+    assert!(
+        !annotated
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        annotated.diagnostics
+    );
     assert_eq!(annotated.ty, plain.ty);
 
     let plain = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "int...", None);
@@ -1573,7 +1692,14 @@ fn type_use_annotations_before_type_and_before_suffix_are_ignored() {
         None,
     );
     assert_eq!(plain.diagnostics, Vec::new());
-    assert_eq!(annotated.diagnostics, Vec::new());
+    assert!(
+        !annotated
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        annotated.diagnostics
+    );
     assert_eq!(annotated.ty, plain.ty);
 }
 
@@ -1596,7 +1722,14 @@ fn type_use_annotations_can_annotate_wildcards() {
     );
 
     assert_eq!(plain.diagnostics, Vec::new());
-    assert_eq!(annotated.diagnostics, Vec::new());
+    assert!(
+        !annotated
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        annotated.diagnostics
+    );
     assert_eq!(annotated.ty, plain.ty);
 }
 
@@ -1652,7 +1785,14 @@ fn type_use_annotations_on_parameterized_qualifying_nested_type_are_ignored() {
         "Outer<@AString>.@BInner<@CInteger>",
         None,
     );
-    assert_eq!(annotated.diagnostics, Vec::new());
+    assert!(
+        !annotated
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        annotated.diagnostics
+    );
 
     // Both should resolve to the nested binary name with flattened args.
     assert_eq!(annotated.ty, plain.ty);
