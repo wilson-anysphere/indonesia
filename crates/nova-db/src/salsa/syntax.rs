@@ -375,6 +375,7 @@ mod tests {
 
     use nova_project::{BuildSystem, JavaConfig, JavaVersion, ProjectConfig};
 
+    use crate::salsa::Database as SalsaDatabase;
     use crate::salsa::RootDatabase;
     use crate::SourceRootId;
 
@@ -473,5 +474,39 @@ mod tests {
         );
         let diags = db.syntax_feature_diagnostics(file);
         assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn parse_java_incremental_single_edit_round_trip() {
+        let db = SalsaDatabase::new();
+        let file = FileId::from_raw(1);
+
+        let old_text = "class Foo {}".to_string();
+        db.set_file_text(file, old_text.clone());
+
+        // Seed the Java parse cache so the next parse can attempt incremental reparsing.
+        db.with_snapshot(|snap| {
+            let parse = snap.parse_java(file);
+            assert_eq!(parse.syntax().text().to_string(), old_text);
+        });
+
+        let new_text = "class Bar {}".to_string();
+        let start = old_text
+            .find("Foo")
+            .expect("expected fixture to contain `Foo`");
+        let end = start + "Foo".len();
+        let edit = nova_core::TextEdit::new(
+            nova_core::TextRange::new(
+                nova_core::TextSize::from(start as u32),
+                nova_core::TextSize::from(end as u32),
+            ),
+            "Bar",
+        );
+        db.apply_file_text_edit(file, edit, Arc::new(new_text.clone()));
+
+        db.with_snapshot(|snap| {
+            let parse = snap.parse_java(file);
+            assert_eq!(parse.syntax().text().to_string(), new_text);
+        });
     }
 }

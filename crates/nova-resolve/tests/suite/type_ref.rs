@@ -909,6 +909,15 @@ fn type_use_annotation_missing_type_is_diagnosed_when_anchored() {
         Some(base_span),
     );
 
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        result.diagnostics
+    );
+
     // Even though Nova's `Type` model doesn't represent type-use annotations yet,
     // the annotation type names should still be resolved for diagnostics when we
     // have a base span to anchor them.

@@ -20,7 +20,7 @@ fn setup_db(text: &str) -> (SalsaRootDatabase, FileId) {
     db.set_source_root(file, SourceRootId::from_raw(0));
     db.set_file_exists(file, true);
     db.set_file_is_dirty(file, false);
-    db.set_file_content(file, Arc::new(text.to_string()));
+    db.set_file_text(file, text.to_string());
 
     db.set_project_files(project, Arc::new(vec![file]));
     db.set_all_file_ids(Arc::new(vec![file]));

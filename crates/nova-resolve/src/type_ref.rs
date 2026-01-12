@@ -875,6 +875,7 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         if text.is_empty() {
             return;
         }
+
         let segments: Vec<String> = text
             .split('.')
             .filter(|seg| !seg.is_empty())
@@ -883,6 +884,7 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         if segments.is_empty() {
             return;
         }
+
         let per_segment_args = vec![Vec::new(); segments.len()];
         let _ = self.resolve_named_type(segments, per_segment_args, name_range);
     }
