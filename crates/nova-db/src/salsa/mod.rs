@@ -4759,6 +4759,19 @@ class Foo {
     }
 
     #[test]
+    fn salsa_inputs_tracker_is_registered_under_other_category() {
+        let manager = MemoryManager::new(MemoryBudget::from_total(1_000));
+        let _db = Database::new_with_memory_manager(&manager);
+
+        let (_report, components) = manager.report_detailed();
+        let tracker = components
+            .iter()
+            .find(|c| c.name == "salsa_inputs")
+            .expect("expected salsa_inputs to be registered in MemoryManager");
+        assert_eq!(tracker.category, MemoryCategory::Other);
+    }
+
+    #[test]
     fn java_parse_cache_is_tracked_via_memo_evictor_registration() {
         let manager = MemoryManager::new(MemoryBudget::from_total(1_000));
         let db = Database::new();
