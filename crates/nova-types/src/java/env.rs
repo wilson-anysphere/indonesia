@@ -181,26 +181,10 @@ impl<'env> TyContext<'env> {
 }
 
 fn simplify_upper_bounds(env: &dyn TypeEnv, bounds: Vec<Type>) -> Vec<Type> {
-    let mut unique: Vec<Type> = Vec::new();
-    for bound in bounds {
-        if !unique.contains(&bound) {
-            unique.push(bound);
-        }
+    match crate::make_intersection(env, bounds) {
+        Type::Intersection(parts) => parts,
+        other => vec![other],
     }
-
-    let mut out = Vec::new();
-    'outer: for (idx, bound) in unique.iter().enumerate() {
-        for (jdx, other) in unique.iter().enumerate() {
-            if idx == jdx {
-                continue;
-            }
-            if crate::is_subtype(env, other, bound) {
-                continue 'outer;
-            }
-        }
-        out.push(bound.clone());
-    }
-    out
 }
 
 impl TypeEnv for TyContext<'_> {

@@ -103,6 +103,68 @@ fn capture_conversion_substitutes_self_referential_bounds() {
 }
 
 #[test]
+fn capture_conversion_sorts_capture_upper_bounds() {
+    let mut env = TypeStore::with_minimal_jdk();
+    let object = env.well_known().object;
+
+    let cloneable = Type::class(env.well_known().cloneable, vec![]);
+    let serializable = Type::class(env.well_known().serializable, vec![]);
+
+    let t1 = env.add_type_param("T1", vec![cloneable.clone(), serializable.clone()]);
+    let t2 = env.add_type_param("T2", vec![serializable.clone(), cloneable.clone()]);
+
+    let foo1 = env.add_class(ClassDef {
+        name: "com.example.Foo1".to_string(),
+        kind: ClassKind::Class,
+        type_params: vec![t1],
+        super_class: Some(Type::class(object, vec![])),
+        interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
+        methods: vec![],
+    });
+    let foo2 = env.add_class(ClassDef {
+        name: "com.example.Foo2".to_string(),
+        kind: ClassKind::Class,
+        type_params: vec![t2],
+        super_class: Some(Type::class(object, vec![])),
+        interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
+        methods: vec![],
+    });
+
+    let mut ctx = TyContext::new(&env);
+    let captured1 = ctx.capture_conversion(&Type::class(
+        foo1,
+        vec![Type::Wildcard(WildcardBound::Unbounded)],
+    ));
+    let captured2 = ctx.capture_conversion(&Type::class(
+        foo2,
+        vec![Type::Wildcard(WildcardBound::Unbounded)],
+    ));
+
+    let Type::Class(ClassType { args: args1, .. }) = captured1 else {
+        panic!("expected captured class type");
+    };
+    let Type::TypeVar(cap1) = args1[0] else {
+        panic!("expected capture type var");
+    };
+    let Type::Class(ClassType { args: args2, .. }) = captured2 else {
+        panic!("expected captured class type");
+    };
+    let Type::TypeVar(cap2) = args2[0] else {
+        panic!("expected capture type var");
+    };
+
+    // Capture upper bounds should be normalized deterministically regardless of the formal
+    // type parameter's bound ordering.
+    let expected = vec![serializable, cloneable];
+    assert_eq!(ctx.type_param(cap1).unwrap().upper_bounds, expected);
+    assert_eq!(ctx.type_param(cap2).unwrap().upper_bounds, expected);
+}
+
+#[test]
 fn method_resolution_applies_capture_conversion_for_extends_wildcard() {
     let env = TypeStore::with_minimal_jdk();
     let list = env.class_id("java.util.List").unwrap();
