@@ -2910,8 +2910,8 @@ fn extend_type_ref_diagnostics(
     file_text: &str,
     diags: Vec<Diagnostic>,
 ) {
-    // NOTE: Type-use annotations are currently ignored by Nova's type checker. The type-ref
-    // parser is resilient to annotations (and can optionally diagnose them when anchored), but we
+    // NOTE: Type-use annotations are currently ignored by Nova's type checker. The type-ref parser
+    // is resilient to annotations (and can optionally diagnose them when anchored), but we
     // intentionally suppress diagnostics for annotation *type names* in type-use positions when
     // reporting type-check diagnostics.
     //

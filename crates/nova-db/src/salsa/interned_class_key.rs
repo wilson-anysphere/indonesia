@@ -311,6 +311,39 @@ mod tests {
     }
 
     #[test]
+    fn interned_ids_created_from_a_snapshot_survive_memo_eviction() {
+        let db = SalsaDatabase::new();
+        let project = ProjectId::from_raw(0);
+        let snap = db.snapshot();
+
+        // Intern a "sentinel" first so `Foo` does not receive the first intern id.
+        let _sentinel = snap.intern_class_key(InternedClassKey {
+            project,
+            binary_name: "Sentinel".to_string(),
+        });
+
+        let key = InternedClassKey {
+            project,
+            binary_name: "Foo".to_string(),
+        };
+        let id_from_snapshot = snap.intern_class_key(key.clone());
+
+        db.evict_salsa_memos(MemoryPressure::Critical);
+
+        // After eviction, the live database is backed by a fresh Salsa storage.
+        // Interned tables are snapshotted and restored, so ids created via an
+        // outstanding snapshot remain valid.
+        let id_from_live = db.with_write(|db| db.intern_class_key(key.clone()));
+        assert_eq!(id_from_live, id_from_snapshot);
+
+        assert_eq!(snap.lookup_intern_class_key(id_from_snapshot), key);
+        assert_eq!(
+            db.with_write(|db| db.lookup_intern_class_key(id_from_snapshot)),
+            key
+        );
+    }
+
+    #[test]
     fn interned_ids_survive_memory_manager_driven_memo_eviction() {
         // Use a tiny query-cache budget to force the memory manager to evict Salsa memo tables via
         // `SalsaMemoEvictor::evict`, while keeping overall pressure low.
