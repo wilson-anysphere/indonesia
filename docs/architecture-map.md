@@ -181,10 +181,11 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
   - `crates/nova-devtools/src/graph.rs` (`graph::generate`) — emits a DOT/GraphViz dependency graph annotated by layer.
   - `crates/nova-devtools/src/main.rs` — CLI wrapper used by CI (`cargo run -p nova-devtools -- <command>`).
   - `crate-layers.toml` — policy + layer mapping configuration.
-  - `scripts/check-deps.sh` — convenience wrapper (`cargo run -p nova-devtools -- check-deps`).
+  - `scripts/check-deps.sh` — convenience wrapper for `check-deps`.
+  - `scripts/check-repo-invariants.sh` — convenience wrapper to run the full suite (CI-equivalent).
 - **Maturity:** productionizing
 - **Known gaps vs intended docs:**
-  - Some “repo hygiene” checks still live outside `nova-devtools` (e.g. `scripts/check-docs-consistency.py`); over time we should consolidate invariants here.
+  - Some “repo hygiene” checks still live outside `nova-devtools` (e.g. version sync scripts, actionlint); over time we should consolidate invariants here where it makes sense.
 
 ### `nova-ext`
 - **Purpose:** extension/plugin abstractions (code actions, diagnostics, completions) + registry.
