@@ -138,6 +138,39 @@ class Use {
 }
 
 #[test]
+fn rename_annotation_value_element_rewrites_named_value_pairs() {
+    let file = FileId::new("Test.java");
+    let src = r#"@interface A {
+    int value();
+}
+
+@A(value = 1)
+class Use {
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int value").unwrap() + "int ".len() + 1;
+    let symbol = db
+        .symbol_at(&file, offset)
+        .expect("symbol at annotation element value()");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "v".into(),
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    assert!(after.contains("int v();"), "{after}");
+    assert!(after.contains("@A(v = 1)"), "{after}");
+    assert!(!after.contains("@A(value = 1)"), "{after}");
+}
+
+#[test]
 fn rename_type_updates_declaration_constructor_and_cross_file_new() {
     let a = FileId::new("A.java");
     let b = FileId::new("B.java");

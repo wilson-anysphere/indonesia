@@ -119,8 +119,6 @@ fn annotation_value_shorthand_updates(
     symbol: SymbolId,
     new_name: &str,
 ) -> Vec<SemanticChange> {
-    use std::collections::HashSet;
-
     if new_name == "value" {
         return Vec::new();
     }
@@ -181,6 +179,8 @@ fn annotation_value_shorthand_updates(
         return Vec::new();
     };
 
+    let existing_refs = db.find_references(symbol);
+
     fn annotation_args_inner_range(
         source: &str,
         args: &ast::AnnotationElementValuePairList,
@@ -237,34 +237,63 @@ fn annotation_value_shorthand_updates(
                 continue;
             }
 
-            let Some(value) = value else {
-                continue;
-            };
-            if has_pairs {
-                continue;
-            }
+            if let Some(value) = value {
+                // Shorthand `@Anno(expr)` form.
+                if has_pairs {
+                    continue;
+                }
 
-            let Some(inner_range) = annotation_args_inner_range(source, &args) else {
-                continue;
-            };
-            if !seen.insert((file.clone(), inner_range)) {
-                continue;
-            }
+                let Some(inner_range) = annotation_args_inner_range(source, &args) else {
+                    continue;
+                };
+                if !seen.insert((file.clone(), inner_range)) {
+                    continue;
+                }
 
-            let value_range = syntax_range(value.syntax());
-            let value_text = source
-                .get(value_range.start..value_range.end)
-                .unwrap_or_default()
-                .trim();
-            if value_text.is_empty() {
-                continue;
-            }
+                let value_range = syntax_range(value.syntax());
+                let value_text = source
+                    .get(value_range.start..value_range.end)
+                    .unwrap_or_default()
+                    .trim();
+                if value_text.is_empty() {
+                    continue;
+                }
 
-            out.push(SemanticChange::UpdateReferences {
-                file: file.clone(),
-                range: inner_range,
-                new_text: format!("{new_name} = {value_text}"),
-            });
+                out.push(SemanticChange::UpdateReferences {
+                    file: file.clone(),
+                    range: inner_range,
+                    new_text: format!("{new_name} = {value_text}"),
+                });
+            } else if has_pairs {
+                // Named pair `@Anno(value = expr)` form.
+                for pair in args.pairs() {
+                    let Some(name_tok) = pair.name_token() else {
+                        continue;
+                    };
+                    if name_tok.text() != "value" {
+                        continue;
+                    }
+
+                    let name_range = syntax_token_range(&name_tok);
+                    // If the semantic DB already records this as a reference, rely on the normal
+                    // rename path to avoid overlapping edits.
+                    if existing_refs.iter().any(|r| {
+                        r.file == file && ranges_overlap(r.range, name_range)
+                    }) {
+                        continue;
+                    }
+
+                    if !seen.insert((file.clone(), name_range)) {
+                        continue;
+                    }
+
+                    out.push(SemanticChange::UpdateReferences {
+                        file: file.clone(),
+                        range: name_range,
+                        new_text: new_name.to_string(),
+                    });
+                }
+            }
         }
     }
 
