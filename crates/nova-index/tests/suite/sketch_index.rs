@@ -101,6 +101,29 @@ fn method_param_parsing_ignores_block_comments_with_parens() {
 }
 
 #[test]
+fn overload_lookup_ignores_whitespace_in_param_types() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        "A.java".to_string(),
+        r#"class A {
+    void foo(Map<String, Integer> m) {}
+}
+"#
+        .to_string(),
+    );
+    let index = Index::new(files);
+
+    let sig = vec!["Map<String,Integer>".to_string()];
+    let id = index
+        .method_overload_by_param_types("A", "foo", &sig)
+        .expect("expected foo(Map<String,Integer>) to match foo(Map<String, Integer>)");
+    assert_eq!(
+        index.method_param_types(id).unwrap(),
+        ["Map<String, Integer>"]
+    );
+}
+
+#[test]
 fn method_decl_range_includes_annotations() {
     let mut files = BTreeMap::new();
     files.insert(

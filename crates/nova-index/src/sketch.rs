@@ -431,9 +431,7 @@ impl Index {
     }
 
     pub fn class_implements(&self, class_name: &str) -> Option<&[String]> {
-        self.class_implements
-            .get(class_name)
-            .map(|v| v.as_slice())
+        self.class_implements.get(class_name).map(|v| v.as_slice())
     }
 
     pub fn interface_extends(&self, interface_name: &str) -> Option<&[String]> {
@@ -481,8 +479,8 @@ impl Index {
 
     /// Return the unique method overload matching `class_name.method_name(param_types...)`.
     ///
-    /// This is a best-effort lexical match. Parameter type strings are compared verbatim against
-    /// [`Symbol::param_types`] after the parser's normalization.
+    /// This is a best-effort lexical match. Parameter type strings are compared in a
+    /// whitespace-insensitive way against [`Symbol::param_types`].
     pub fn method_overload_by_param_types(
         &self,
         class_name: &str,
@@ -491,7 +489,18 @@ impl Index {
     ) -> Option<SymbolId> {
         self.method_overloads(class_name, method_name)
             .into_iter()
-            .find(|id| self.method_param_types(*id) == Some(param_types))
+            .find(|id| {
+                let Some(stored) = self.method_param_types(*id) else {
+                    return false;
+                };
+                if stored.len() != param_types.len() {
+                    return false;
+                }
+                stored
+                    .iter()
+                    .zip(param_types)
+                    .all(|(a, b)| eq_ignore_ascii_ws(a, b))
+            })
     }
 
     /// Best-effort parameter type strings for a method symbol.
@@ -584,6 +593,26 @@ fn is_ident_start(b: u8) -> bool {
 
 fn is_ident_continue(b: u8) -> bool {
     is_ident_start(b) || (b as char).is_ascii_digit()
+}
+
+fn eq_ignore_ascii_ws(a: &str, b: &str) -> bool {
+    let mut ia = a
+        .as_bytes()
+        .iter()
+        .copied()
+        .filter(|c| !c.is_ascii_whitespace());
+    let mut ib = b
+        .as_bytes()
+        .iter()
+        .copied()
+        .filter(|c| !c.is_ascii_whitespace());
+    loop {
+        match (ia.next(), ib.next()) {
+            (None, None) => return true,
+            (Some(x), Some(y)) if x == y => {}
+            _ => return false,
+        }
+    }
 }
 
 fn skip_java_string(bytes: &[u8], mut i: usize) -> usize {
