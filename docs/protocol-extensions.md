@@ -1751,3 +1751,130 @@ to use this endpoint reliably.
 
 - `-32602` for invalid params / unknown document.
 - `-32603` for internal errors (refactoring engine failures, serialization).
+
+---
+
+### AI patch-based code actions via `workspace/executeCommand`
+
+Nova’s AI code actions are surfaced to clients as standard LSP `workspace/executeCommand` commands
+(emitted by `textDocument/codeAction` in `crates/nova-lsp/src/main.rs`; argument types are defined in
+`crates/nova-ide/src/ai.rs`).
+
+These commands are intended to support **patch-based code edits**. When patch edits are allowed by
+privacy policy, the server returns a `WorkspaceEdit` and also asks the client to apply it via
+`workspace/applyEdit` (similar to Safe Delete / Organize Imports).
+
+Clients should support both:
+
+1) the returned JSON-RPC response object, and
+2) the `workspace/applyEdit` side-effect when `applied=true`.
+
+#### `nova.ai.generateMethodBody`
+
+- **Kind:** `workspace/executeCommand` command
+- **Rust types:** `crates/nova-ide/src/ai.rs` (`GenerateMethodBodyArgs`)
+
+##### ExecuteCommand params
+
+The first (and only) entry in `arguments` is a `GenerateMethodBodyArgs` object:
+
+```json
+{
+  "command": "nova.ai.generateMethodBody",
+  "arguments": [
+    {
+      "method_signature": "public int add(int a, int b)",
+      "context": "optional surrounding code",
+      "uri": "file:///…",
+      "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 10 } }
+    }
+  ],
+  "workDoneToken": "optional"
+}
+```
+
+Note: the argument object uses **snake_case** field names (e.g. `method_signature`) because the Rust
+type does not use `rename_all = "camelCase"`.
+
+##### Response
+
+When the edit is applied:
+
+```json
+{
+  "applied": true,
+  "edit": { /* standard LSP WorkspaceEdit */ }
+}
+```
+
+If the server does not apply an edit (e.g. because patch edits are blocked by privacy policy), it
+returns:
+
+```json
+{ "applied": false }
+```
+
+Compatibility note: older servers may return a JSON string result (the generated snippet) instead
+of an `{applied,edit}` object.
+
+##### Side effects
+
+When `applied` is `true`, the server also sends a `workspace/applyEdit` request containing the same
+`WorkspaceEdit`.
+
+##### Privacy gating (code edits)
+
+Patch-based AI code edits are gated by `ai.privacy`:
+
+- **Local-only mode**: `ai.privacy.local_only=true` allows patch edits.
+- **Cloud mode**: `ai.privacy.local_only=false` requires **all** of:
+  - `ai.privacy.allow_cloud_code_edits=true`
+  - `ai.privacy.allow_code_edits_without_anonymization=true`
+  - `ai.privacy.anonymize_identifiers=false`
+
+If these conditions are not met, the server will not apply patch edits.
+
+---
+
+#### `nova.ai.generateTests`
+
+- **Kind:** `workspace/executeCommand` command
+- **Rust types:** `crates/nova-ide/src/ai.rs` (`GenerateTestsArgs`)
+
+##### ExecuteCommand params
+
+The first (and only) entry in `arguments` is a `GenerateTestsArgs` object:
+
+```json
+{
+  "command": "nova.ai.generateTests",
+  "arguments": [
+    {
+      "target": "public int add(int a, int b)",
+      "context": "optional surrounding code",
+      "uri": "file:///…",
+      "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 10 } }
+    }
+  ],
+  "workDoneToken": "optional"
+}
+```
+
+##### Response
+
+Same shape as `nova.ai.generateMethodBody`:
+
+```json
+{
+  "applied": true,
+  "edit": { /* standard LSP WorkspaceEdit */ }
+}
+```
+
+```json
+{ "applied": false }
+```
+
+##### Side effects
+
+When `applied` is `true`, the server also sends `workspace/applyEdit`.
