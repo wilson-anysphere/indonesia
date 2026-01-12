@@ -35,6 +35,16 @@ impl CommandRunner for RecordingRunner {
                     stderr: String::new(),
                 })
             }
+            ["query", expr, "--output=label_kind"]
+                if *expr == "rdeps(deps(//app:run), (//java:Hello.java), 1)" =>
+            {
+                Ok(CommandOutput {
+                    // Intentionally unsorted.
+                    stdout: "java_library rule //java:lib_b\njava_library rule //java:lib_a\n"
+                        .to_string(),
+                    stderr: String::new(),
+                })
+            }
             ["query", expr, "--output=label"] if expr.starts_with("buildfiles(deps(") => {
                 Ok(CommandOutput {
                     stdout: "//java:BUILD\n".to_string(),
@@ -150,5 +160,53 @@ fn compile_info_for_file_resolves_owner_returns_compile_info_and_caches_aquery()
         owner_queries.len(),
         1,
         "expected owning-target resolution to be cached"
+    );
+}
+
+#[test]
+fn compile_info_for_file_in_run_target_closure_uses_scoped_rdeps_and_caches() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
+    write_file(&dir.path().join("java/BUILD"), "# test\n");
+    let file = dir.path().join("java/Hello.java");
+    create_file(&file);
+
+    let runner = RecordingRunner::default();
+    let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), runner.clone()).unwrap();
+    let run_target = "//app:run";
+
+    let info1 = workspace
+        .compile_info_for_file_in_run_target_closure(&file, run_target)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        info1.classpath,
+        vec!["a.jar".to_string(), "b.jar".to_string()]
+    );
+
+    let info2 = workspace
+        .compile_info_for_file_in_run_target_closure(PathBuf::from("java/Hello.java"), run_target)
+        .unwrap()
+        .unwrap();
+    assert_eq!(info2, info1);
+
+    let calls = runner.calls();
+
+    let aquery_calls: Vec<Vec<String>> = calls
+        .iter()
+        .cloned()
+        .filter(|args| args.first().map(String::as_str) == Some("aquery"))
+        .collect();
+    assert_eq!(aquery_calls.len(), 1, "expected exactly one aquery call");
+
+    let scoped_owner_queries: Vec<Vec<String>> = calls
+        .iter()
+        .cloned()
+        .filter(|args| args.as_slice() == ["query", "rdeps(deps(//app:run), (//java:Hello.java), 1)", "--output=label_kind"])
+        .collect();
+    assert_eq!(
+        scoped_owner_queries.len(),
+        1,
+        "expected scoped owning-target query to be cached"
     );
 }

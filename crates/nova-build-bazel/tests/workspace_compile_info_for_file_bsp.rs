@@ -91,10 +91,18 @@ fn compile_info_for_file_prefers_bsp_inverse_sources_and_javac_options_without_b
         .unwrap()
         .with_bsp_workspace(bsp_workspace);
 
-    let info = workspace.compile_info_for_file(&file_path).unwrap().unwrap();
-    assert_eq!(info.classpath, vec!["a.jar".to_string()]);
-    assert_eq!(info.output_dir.as_deref(), Some("out/classes"));
-    assert_eq!(info.release.as_deref(), Some("17"));
+    let info1 = workspace.compile_info_for_file(&file_path).unwrap().unwrap();
+    assert_eq!(info1.classpath, vec!["a.jar".to_string()]);
+    assert_eq!(info1.output_dir.as_deref(), Some("out/classes"));
+    assert_eq!(info1.release.as_deref(), Some("17"));
+
+    // Second call should hit both the owning-target cache and compile-info cache (no additional BSP
+    // requests).
+    let info2 = workspace
+        .compile_info_for_file(Path::new("src/Hello.java"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(info2, info1);
 
     let requests = server.requests();
     let inverse_request = requests
@@ -115,6 +123,27 @@ fn compile_info_for_file_prefers_bsp_inverse_sources_and_javac_options_without_b
     assert_eq!(
         javac_request.get("params").unwrap(),
         &serde_json::json!({ "targets": [ { "uri": "test://java" } ] })
+    );
+
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|msg| {
+                msg.get("method").and_then(|v| v.as_str()) == Some("buildTarget/inverseSources")
+            })
+            .count(),
+        1,
+        "expected inverseSources to be cached"
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|msg| {
+                msg.get("method").and_then(|v| v.as_str()) == Some("buildTarget/javacOptions")
+            })
+            .count(),
+        1,
+        "expected javacOptions to be cached"
     );
 
     drop(workspace);
