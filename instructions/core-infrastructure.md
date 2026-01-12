@@ -74,7 +74,8 @@ The VFS abstracts file access and provides overlay support for unsaved editor bu
 
 **File watching:**
 - `nova-vfs` owns OS watcher integration (feature-gated, e.g. `watch-notify`) and path/rename
-  normalization for watcher streams.
+  normalization for watcher streams. The watcher API is `FileWatcher::watch_path(path, WatchMode)`
+  (recursive vs non-recursive), not `notify`-specific types.
 - Higher layers like `nova-workspace` consume the `nova_vfs::FileWatcher` abstraction rather than
   depending on `notify` directly.
 
