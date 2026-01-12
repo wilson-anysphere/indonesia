@@ -73,6 +73,79 @@ impl MemoryEvictor for TestEvictor {
     }
 }
 
+struct OrderingEvictor {
+    name: String,
+    category: MemoryCategory,
+    bytes: Mutex<u64>,
+    calls: Arc<Mutex<Vec<&'static str>>>,
+    registration: OnceLock<nova_memory::MemoryRegistration>,
+    tracker: OnceLock<nova_memory::MemoryTracker>,
+}
+
+impl OrderingEvictor {
+    fn new(
+        manager: &MemoryManager,
+        name: &str,
+        category: MemoryCategory,
+        calls: Arc<Mutex<Vec<&'static str>>>,
+    ) -> Arc<Self> {
+        let evictor = Arc::new(Self {
+            name: name.to_string(),
+            category,
+            bytes: Mutex::new(0),
+            calls,
+            registration: OnceLock::new(),
+            tracker: OnceLock::new(),
+        });
+
+        let registration = manager.register_evictor(name.to_string(), category, evictor.clone());
+        evictor
+            .tracker
+            .set(registration.tracker())
+            .unwrap_or_else(|_| panic!("tracker only set once"));
+        evictor
+            .registration
+            .set(registration)
+            .unwrap_or_else(|_| panic!("registration only set once"));
+
+        evictor
+    }
+
+    fn set_bytes(&self, bytes: u64) {
+        *self.bytes.lock().unwrap() = bytes;
+        self.tracker.get().unwrap().set_bytes(bytes);
+    }
+}
+
+impl MemoryEvictor for OrderingEvictor {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn category(&self) -> MemoryCategory {
+        self.category
+    }
+
+    fn flush_to_disk(&self) -> std::io::Result<()> {
+        self.calls.lock().unwrap().push("flush_to_disk");
+        Ok(())
+    }
+
+    fn evict(&self, request: EvictionRequest) -> EvictionResult {
+        self.calls.lock().unwrap().push("evict");
+
+        let mut bytes = self.bytes.lock().unwrap();
+        let before = *bytes;
+        let after = before.min(request.target_bytes);
+        *bytes = after;
+        self.tracker.get().unwrap().set_bytes(after);
+        EvictionResult {
+            before_bytes: before,
+            after_bytes: after,
+        }
+    }
+}
+
 #[test]
 fn evicts_over_category_budget_even_under_low_pressure() {
     let budget = MemoryBudget::from_total(1_000_000_000_000);
@@ -240,6 +313,54 @@ fn report_detailed_is_sorted_by_bytes_desc() {
             },
         ]
     );
+}
+
+#[test]
+fn enforce_flushes_to_disk_before_evicting_under_high_and_critical_pressure() {
+    fn run(thresholds: MemoryPressureThresholds, budget_total: u64, bytes: u64) {
+        let budget = MemoryBudget::from_total(budget_total);
+        let manager = MemoryManager::with_thresholds(budget, thresholds);
+
+        let calls: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let evictor = OrderingEvictor::new(
+            &manager,
+            "ordering_evictor",
+            MemoryCategory::QueryCache,
+            calls.clone(),
+        );
+        evictor.set_bytes(bytes);
+
+        manager.enforce();
+
+        let calls = calls.lock().unwrap();
+        let flush_pos = calls
+            .iter()
+            .position(|entry| *entry == "flush_to_disk")
+            .expect("expected flush_to_disk to be called");
+        let evict_pos = calls
+            .iter()
+            .position(|entry| *entry == "evict")
+            .expect("expected evict to be called");
+        assert!(
+            flush_pos < evict_pos,
+            "expected flush_to_disk before evict, got calls={calls:?}"
+        );
+    }
+
+    // Force `High` without accidentally hitting `Critical` due to process RSS by making the
+    // critical threshold unreachable.
+    run(
+        MemoryPressureThresholds {
+            medium: 0.0,
+            high: 0.0,
+            critical: 1e18,
+        },
+        100,
+        1000,
+    );
+
+    // Default thresholds with a tiny budget reliably produce `Critical` pressure.
+    run(MemoryPressureThresholds::default(), 1, 1);
 }
 
 #[test]
