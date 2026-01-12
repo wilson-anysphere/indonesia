@@ -138,6 +138,24 @@ mod tests {
     }
 
     #[test]
+    fn file_id_is_stable_when_local_path_contains_dot_segments() {
+        let mut registry = FileIdRegistry::new();
+        let dir = tempfile::tempdir().unwrap();
+        let normalized_path = dir.path().join("Main.java");
+        let abs = AbsPathBuf::new(normalized_path.clone()).unwrap();
+        let uri_string = path_to_file_uri(&abs).unwrap();
+
+        let unnormalized_path = dir.path().join("x").join("..").join("Main.java");
+        let uri = VfsPath::uri(uri_string);
+        let local = VfsPath::local(unnormalized_path);
+
+        let id1 = registry.file_id(uri);
+        let id2 = registry.file_id(local);
+
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
     fn rename_path_preserves_id() {
         let mut registry = FileIdRegistry::new();
         let dir = tempfile::tempdir().unwrap();
