@@ -68,6 +68,13 @@ fn lub_equivalent_intersections_is_normalized_and_commutative() {
 }
 
 #[test]
+fn lub_errorish_is_commutative() {
+    let env = TypeStore::with_minimal_jdk();
+    assert_eq!(lub(&env, &Type::Unknown, &Type::Error), Type::Error);
+    assert_eq!(lub(&env, &Type::Error, &Type::Unknown), Type::Error);
+}
+
+#[test]
 fn lub_is_order_independent_for_intersection_with_conflicting_generic_instances() {
     let env = TypeStore::with_minimal_jdk();
     let list = env.class_id("java.util.List").unwrap();

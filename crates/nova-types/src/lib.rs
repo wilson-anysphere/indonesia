@@ -3486,11 +3486,15 @@ fn lub_via_supertypes(env: &dyn TypeEnv, a: &Type, b: &Type) -> Type {
 pub fn lub(env: &dyn TypeEnv, a: &Type, b: &Type) -> Type {
     // Error recovery: don't try to build synthetic intersection/wildcard types on top of
     // already-unknown data.
-    if a.is_errorish() {
-        return a.clone();
-    }
-    if b.is_errorish() {
-        return b.clone();
+    //
+    // Keep this deterministic: `lub(Unknown, Error)` and `lub(Error, Unknown)` should yield the
+    // same result.
+    if a.is_errorish() || b.is_errorish() {
+        return if type_sort_key(env, a) <= type_sort_key(env, b) {
+            a.clone()
+        } else {
+            b.clone()
+        };
     }
 
     // Preserve exact equality (including unresolved `Named` types).

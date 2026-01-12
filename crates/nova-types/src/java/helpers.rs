@@ -427,6 +427,13 @@ fn merge_return_types(env: &dyn TypeEnv, a: Type, b: Type) -> Option<Type> {
     }
 
     // Prefer non-errorish types when possible.
+    if a.is_errorish() && b.is_errorish() {
+        return Some(if crate::type_sort_key(env, &a) <= crate::type_sort_key(env, &b) {
+            a
+        } else {
+            b
+        });
+    }
     if a.is_errorish() {
         return Some(b);
     }
