@@ -1,9 +1,12 @@
 use nova_core::SymbolId;
 
-/// A packed 3-byte trigram.
+/// Trigram key used for indexing.
 ///
-/// The bytes are stored in big-endian order:
-/// `b0 << 16 | b1 << 8 | b2`.
+/// - For ASCII-only trigrams, this is a packed 3-byte value stored in big-endian
+///   order: `b0 << 16 | b1 << 8 | b2` (matching the original implementation).
+/// - When the `unicode` feature is enabled and the text contains non-ASCII
+///   units, we hash the three normalized+casefolded Unicode units into a `u32`
+///   instead. Collisions are acceptable (they only introduce false positives).
 pub type Trigram = u32;
 
 #[inline]
