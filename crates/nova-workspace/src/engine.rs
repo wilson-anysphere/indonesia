@@ -2945,22 +2945,20 @@ fn is_build_tool_input_file(path: &Path) -> bool {
 
     // Mirror `nova-build`'s build-file fingerprinting exclusions to avoid treating build output /
     // cache directories as project-changing inputs.
-    // Bazel output trees are typically created at the workspace root and can be enormous. Skip
-    // any top-level `bazel-*` entries (`bazel-out`, `bazel-bin`, `bazel-testlogs`, etc).
-    let root_component_is_bazel_output = match path.components().next() {
-        Some(std::path::Component::Normal(name)) => name.to_string_lossy().starts_with("bazel-"),
-        _ => false,
-    };
-    let in_ignored_dir = root_component_is_bazel_output
-        || path.components().any(|c| {
-            c.as_os_str() == std::ffi::OsStr::new(".git")
-                || c.as_os_str() == std::ffi::OsStr::new(".gradle")
-                || c.as_os_str() == std::ffi::OsStr::new("build")
-                || c.as_os_str() == std::ffi::OsStr::new("target")
-                || c.as_os_str() == std::ffi::OsStr::new(".nova")
-                || c.as_os_str() == std::ffi::OsStr::new(".idea")
-                || c.as_os_str() == std::ffi::OsStr::new("node_modules")
-        });
+    // Bazel output trees can be enormous. Skip any `bazel-*` directories (`bazel-out`, `bazel-bin`,
+    // `bazel-testlogs`, `bazel-<workspace>`, etc) at any depth.
+    let in_ignored_dir = path.components().any(|c| {
+        c.as_os_str() == std::ffi::OsStr::new(".git")
+            || c.as_os_str() == std::ffi::OsStr::new(".gradle")
+            || c.as_os_str() == std::ffi::OsStr::new("build")
+            || c.as_os_str() == std::ffi::OsStr::new("target")
+            || c.as_os_str() == std::ffi::OsStr::new(".nova")
+            || c.as_os_str() == std::ffi::OsStr::new(".idea")
+            || c.as_os_str() == std::ffi::OsStr::new("node_modules")
+            || c.as_os_str()
+                .to_str()
+                .is_some_and(|component| component.starts_with("bazel-"))
+    });
 
     // Gradle script plugins can influence dependencies and tasks.
     if !in_ignored_dir && (name.ends_with(".gradle") || name.ends_with(".gradle.kts")) {
@@ -3764,6 +3762,28 @@ mod tests {
         assert!(
             !should_refresh_build_config(&root, &[root.join("bazel-out").join("build.gradle")]),
             "expected bazel-out/build.gradle to be ignored"
+        );
+
+        assert!(
+            !should_refresh_build_config(
+                &root,
+                &[root
+                    .join("nested")
+                    .join("bazel-out")
+                    .join("build.gradle")]
+            ),
+            "expected nested/bazel-out/build.gradle to be ignored"
+        );
+
+        assert!(
+            !should_refresh_build_config(
+                &root,
+                &[root
+                    .join("nested")
+                    .join("bazel-myworkspace")
+                    .join("build.gradle")]
+            ),
+            "expected nested/bazel-<workspace>/build.gradle to be ignored"
         );
 
         assert!(
