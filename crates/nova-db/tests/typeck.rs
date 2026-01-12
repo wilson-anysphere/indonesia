@@ -85,6 +85,25 @@ class C {
 }
 
 #[test]
+fn unqualified_method_call_resolves_against_enclosing_class() {
+    let src = r#"
+class C {
+    void bar() {}
+    void m() {
+        bar();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected unqualified method call to resolve via implicit receiver, got {diags:?}"
+    );
+}
+
+#[test]
 fn differential_javac_type_mismatch() {
     use nova_test_utils::javac::{javac_available, run_javac_snippet};
 

@@ -10,7 +10,7 @@ use nova_hir::hir::{
 use nova_hir::ids::{FieldId, MethodId};
 use nova_resolve::expr_scopes::{ExprScopes, ResolvedValue as ResolvedLocal};
 use nova_resolve::ids::{DefWithBodyId, ParamId};
-use nova_resolve::{NameResolution, Resolution, StaticMemberResolution, TypeResolution};
+use nova_resolve::{NameResolution, Resolution, ScopeKind, StaticMemberResolution, TypeResolution};
 use nova_types::{
     assignment_conversion, binary_numeric_promotion, format_type, CallKind, ClassDef, ClassKind,
     Diagnostic, FieldDef, MethodCall, MethodDef, MethodResolution, PrimitiveType, ResolvedMethod,
@@ -980,6 +980,54 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 }
             }
             HirExpr::Name { name, range } => {
+                let arg_types = args
+                    .iter()
+                    .map(|arg| self.infer_expr(loader, *arg).ty)
+                    .collect::<Vec<_>>();
+
+                // Unqualified calls like `foo()` are usually shorthand for `this.foo()`.
+                // Resolve them against the enclosing class first, then fall back to
+                // static-imported methods.
+                if let Some(this_ty) = self.enclosing_class_type(loader) {
+                    ensure_type_loaded(loader, &this_ty);
+
+                    let call = MethodCall {
+                        receiver: this_ty,
+                        call_kind: CallKind::Instance,
+                        name: name.as_str(),
+                        args: arg_types.clone(),
+                        expected_return: None,
+                        explicit_type_args: Vec::new(),
+                    };
+
+                    let env_ro: &dyn TypeEnv = &*loader.store;
+                    let mut ctx = TyContext::new(env_ro);
+                    match nova_types::resolve_method_call(&mut ctx, &call) {
+                        MethodResolution::Found(method) => {
+                            self.call_resolutions[expr.idx()] = Some(method.clone());
+                            return ExprInfo {
+                                ty: method.return_type,
+                                is_type_ref: false,
+                            };
+                        }
+                        MethodResolution::Ambiguous(amb) => {
+                            self.diagnostics.push(Diagnostic::error(
+                                "ambiguous-call",
+                                format!("ambiguous call `{}`", name),
+                                Some(self.body.exprs[expr].range()),
+                            ));
+                            if let Some(first) = amb.candidates.first() {
+                                self.call_resolutions[expr.idx()] = Some(first.clone());
+                                return ExprInfo {
+                                    ty: first.return_type.clone(),
+                                    is_type_ref: false,
+                                };
+                            }
+                        }
+                        MethodResolution::NotFound(_) => {}
+                    }
+                }
+
                 // Handle static-imported methods.
                 let NameResolution::Resolved(Resolution::StaticMember(
                     StaticMemberResolution::External(id),
@@ -1012,11 +1060,6 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     .map(|id| Type::class(id, vec![]))
                     .unwrap_or_else(|| Type::Named(owner.to_string()));
                 ensure_type_loaded(loader, &recv_ty);
-
-                let arg_types = args
-                    .iter()
-                    .map(|arg| self.infer_expr(loader, *arg).ty)
-                    .collect::<Vec<_>>();
 
                 let call = MethodCall {
                     receiver: recv_ty,
@@ -1074,6 +1117,22 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 is_type_ref: false,
             },
         }
+    }
+
+    fn enclosing_class_type(&self, loader: &mut ExternalTypeLoader<'_>) -> Option<Type> {
+        let mut scope = Some(self.scope_id);
+        while let Some(id) = scope {
+            let data = self.scopes.scope(id);
+            if let ScopeKind::Class { item } = data.kind() {
+                let ty_name = self.scopes.type_name(*item)?;
+                let class_id = loader.store.intern_class_id(ty_name.as_str());
+                return Some(Type::class(class_id, Vec::new()));
+            }
+
+            scope = data.parent();
+        }
+
+        None
     }
 
     fn infer_binary(
