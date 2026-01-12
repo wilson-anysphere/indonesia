@@ -217,12 +217,36 @@ impl Index {
         self.files.get(file).map(String::as_str)
     }
 
+    /// Find a method declaration in `class_name` named `method_name`.
+    ///
+    /// Overloads are supported: this returns `Some` only when the `(class_name, method_name)` pair
+    /// is **unambiguous** (exactly one declaration exists). If there are zero declarations or
+    /// multiple overloads, this returns `None`.
+    ///
+    /// Use [`Index::find_method_by_signature`] to disambiguate overloaded methods.
     pub fn find_method(&self, class_name: &str, method_name: &str) -> Option<&Symbol> {
-        self.symbols.iter().find(|sym| {
-            sym.kind == SymbolKind::Method
-                && sym.container.as_deref() == Some(class_name)
-                && sym.name == method_name
-        })
+        let overloads = self
+            .method_symbols
+            .get(&(class_name.to_string(), method_name.to_string()))?;
+        if overloads.len() != 1 {
+            return None;
+        }
+        self.find_symbol(overloads[0])
+    }
+
+    /// Find a method declaration in `class_name` by its signature.
+    ///
+    /// `param_types` should contain the best-effort textual parameter types as they appear in the
+    /// declaration (whitespace-insensitive).
+    pub fn find_method_by_signature(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        param_types: &[&str],
+    ) -> Option<&Symbol> {
+        let normalized: Vec<String> = param_types.iter().map(|ty| normalize_ws(ty)).collect();
+        let id = self.method_overload_by_param_types(class_name, method_name, &normalized)?;
+        self.find_symbol(id)
     }
 
     pub fn find_symbol(&self, id: SymbolId) -> Option<&Symbol> {
