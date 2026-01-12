@@ -11,7 +11,8 @@ Guide](docs/00-operational-guide.md)**.
 
 In those environments:
 - Prefer `bash scripts/cargo_agent.sh …` over invoking `cargo …` directly (enforces memory limits).
-- Scope builds/tests to what you’re changing (for example `-p <crate>`, `--lib`, `--test <name>`).
+- Scope builds/tests to what you’re changing (for example `-p <crate>` or `--manifest-path <path>`, and for tests
+  further scope with `--lib` / `--test <name>` / `--bin <name>`).
 
 Note: CI uses `cargo nextest run` for the main suite and still runs raw `cargo test` for doctests
 (and as a fallback) on dedicated runners.

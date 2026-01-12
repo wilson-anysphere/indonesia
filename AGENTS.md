@@ -18,7 +18,8 @@ When running hundreds of concurrent agents on a shared system (e.g., 192 vCPU / 
 
 **Key Rules:**
 1. **ALWAYS USE WRAPPER SCRIPTS** - `bash scripts/cargo_agent.sh` for all cargo commands
-2. **NEVER RUN UNSCOPED CARGO** - Always use `-p <crate>`, `--test <name>`, or `--lib`
+2. **NEVER RUN UNSCOPED `cargo test`** - Always include `-p/--package <crate>` or `--manifest-path <path>`
+   (then optionally further scope with `--lib`, `--bin <name>`, or `--test <name>`)
 3. **GO FAST** - Use all cores for builds. Only memory matters.
 4. **FAIL FAST** - Let RLIMIT_AS kill runaway processes, not the whole system.
 
