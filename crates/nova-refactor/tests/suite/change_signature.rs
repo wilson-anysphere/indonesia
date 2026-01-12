@@ -385,6 +385,46 @@ class Use {
 }
 
 #[test]
+fn rename_annotation_value_element_rewrites_named_pairs() {
+    let (index, mut files) = build_index(vec![(
+        "file:///A.java",
+        r#"@interface A {
+    int value();
+}
+
+@A(value = 1)
+class Use {
+}
+"#,
+    )]);
+
+    let target = method_id(&index, "A", "value", &[]);
+    let change = ChangeSignature {
+        target,
+        new_name: Some("v".to_string()),
+        parameters: vec![],
+        new_return_type: None,
+        new_throws: None,
+        propagate_hierarchy: HierarchyPropagation::None,
+    };
+
+    let edit = change_signature(&index, &change).expect("refactor succeeds");
+    apply_workspace_edit(&mut files, edit);
+
+    assert_eq!(
+        files.get("file:///A.java").unwrap(),
+        r#"@interface A {
+    int v();
+}
+
+@A(v = 1)
+class Use {
+}
+"#
+    );
+}
+
+#[test]
 fn conflict_removed_param_still_used_in_body() {
     let (index, _files) = build_index(vec![(
         "file:///A.java",
