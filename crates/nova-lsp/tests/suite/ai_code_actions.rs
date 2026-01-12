@@ -18,6 +18,297 @@ fn uri_for_path(path: &Path) -> String {
 }
 
 #[test]
+fn stdio_server_hides_ai_code_edit_actions_when_privacy_policy_disallows_edits() {
+    let _lock = crate::support::stdio_server_lock();
+    let ai_server = crate::support::TestAiServer::start(json!({ "completion": "mock" }));
+
+    let temp = TempDir::new().expect("tempdir");
+
+    let config_path = temp.path().join("nova.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "http"
+url = "{endpoint}"
+model = "default"
+
+[ai.privacy]
+local_only = false
+"#,
+            endpoint = format!("{}/complete", ai_server.base_url())
+        ),
+    )
+    .expect("write config");
+
+    let file_path = temp.path().join("Main.java");
+    let file_uri = uri_for_path(&file_path);
+    let text = "class Test { void foo() { } }";
+    std::fs::write(&file_path, text).expect("write Main.java");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // initialize
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    // open a document
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": text
+                }
+            }
+        }),
+    );
+
+    // request code actions on an empty method body selection (would normally offer AI code edits).
+    let selection = "void foo() { }";
+    let start_offset = text.find(selection).expect("selection start");
+    let end_offset = start_offset + selection.len();
+    let pos = TextPos::new(text);
+    let range = Range {
+        start: pos.lsp_position(start_offset).expect("start"),
+        end: pos.lsp_position(end_offset).expect("end"),
+    };
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": { "uri": file_uri },
+                "range": range,
+                "context": {
+                    "diagnostics": [{
+                        "range": range,
+                        "message": "cannot find symbol"
+                    }]
+                }
+            }
+        }),
+    );
+
+    let code_actions_resp = read_response_with_id(&mut stdout, 2);
+    let actions = code_actions_resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .expect("code actions array");
+
+    assert!(
+        actions
+            .iter()
+            .any(|a| a.get("title").and_then(|t| t.as_str()) == Some("Explain this error")),
+        "expected explain-error action to remain available"
+    );
+
+    assert!(
+        !actions.iter().any(|a| a.get("title").and_then(|t| t.as_str())
+            == Some("Generate method body with AI")),
+        "generate-method-body action should be hidden when code edits are disallowed"
+    );
+    assert!(
+        !actions.iter().any(|a| a.get("title").and_then(|t| t.as_str()) == Some("Generate tests with AI")),
+        "generate-tests action should be hidden when code edits are disallowed"
+    );
+
+    // shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
+fn stdio_server_hides_ai_code_edit_actions_for_excluded_paths() {
+    let _lock = crate::support::stdio_server_lock();
+    let ai_server = crate::support::TestAiServer::start(json!({ "completion": "mock" }));
+
+    let temp = TempDir::new().expect("tempdir");
+
+    let config_path = temp.path().join("nova.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "http"
+url = "{endpoint}"
+model = "default"
+
+[ai.privacy]
+local_only = true
+excluded_paths = ["secret/**"]
+"#,
+            endpoint = format!("{}/complete", ai_server.base_url())
+        ),
+    )
+    .expect("write config");
+
+    let secret_dir = temp.path().join("secret");
+    std::fs::create_dir_all(&secret_dir).expect("create secret dir");
+    let file_path = secret_dir.join("Main.java");
+    let file_uri = uri_for_path(&file_path);
+    let text = "class Test { void foo() { } }";
+    std::fs::write(&file_path, text).expect("write secret/Main.java");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // initialize
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    // open a document
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": text
+                }
+            }
+        }),
+    );
+
+    // request code actions on an empty method body selection (would normally offer AI code edits).
+    let selection = "void foo() { }";
+    let start_offset = text.find(selection).expect("selection start");
+    let end_offset = start_offset + selection.len();
+    let pos = TextPos::new(text);
+    let range = Range {
+        start: pos.lsp_position(start_offset).expect("start"),
+        end: pos.lsp_position(end_offset).expect("end"),
+    };
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": { "uri": file_uri },
+                "range": range,
+                "context": {
+                    "diagnostics": [{
+                        "range": range,
+                        "message": "cannot find symbol"
+                    }]
+                }
+            }
+        }),
+    );
+
+    let code_actions_resp = read_response_with_id(&mut stdout, 2);
+    let actions = code_actions_resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .expect("code actions array");
+
+    assert!(
+        actions
+            .iter()
+            .any(|a| a.get("title").and_then(|t| t.as_str()) == Some("Explain this error")),
+        "expected explain-error action to remain available"
+    );
+
+    assert!(
+        !actions.iter().any(|a| a.get("title").and_then(|t| t.as_str())
+            == Some("Generate method body with AI")),
+        "generate-method-body action should be hidden for excluded paths"
+    );
+    assert!(
+        !actions.iter().any(|a| a.get("title").and_then(|t| t.as_str()) == Some("Generate tests with AI")),
+        "generate-tests action should be hidden for excluded paths"
+    );
+
+    // shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
 fn stdio_server_handles_ai_explain_error_code_action() {
     let _lock = crate::support::stdio_server_lock();
     let ai_server =

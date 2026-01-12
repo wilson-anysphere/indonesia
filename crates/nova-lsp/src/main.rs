@@ -3968,7 +3968,10 @@ fn handle_code_action(
             .as_deref()
             .is_some_and(|path| is_excluded_by_ai_privacy(state, path));
 
-    if ai_enabled && !ai_excluded {
+    if ai_enabled {
+        let allow_code_edit_actions =
+            nova_ai::enforce_code_edit_policy(&state.ai_config.privacy).is_ok() && !ai_excluded;
+
         // Explain error (diagnostic-driven).
         if let Some(diagnostic) = params.context.diagnostics.first() {
             let code = text.map(|t| extract_snippet(t, &diagnostic.range, 2));
@@ -3981,36 +3984,38 @@ fn handle_code_action(
             actions.push(code_action_to_lsp(action));
         }
 
-        if let Some(text) = text {
-            if let Some(selected) = extract_range_text(text, &params.range) {
-                // Generate method body (empty method selection).
-                if let Some(signature) = detect_empty_method_signature(&selected) {
-                    let context = Some(extract_snippet(text, &params.range, 8));
-                    let action = generate_method_body_action(GenerateMethodBodyArgs {
-                        method_signature: signature,
-                        context,
-                        uri: Some(params.text_document.uri.clone()),
-                        range: Some(to_ide_range(&params.range)),
-                    });
-                    actions.push(code_action_to_lsp(action));
-                }
+        if allow_code_edit_actions {
+            if let Some(text) = text {
+                if let Some(selected) = extract_range_text(text, &params.range) {
+                    // Generate method body (empty method selection).
+                    if let Some(signature) = detect_empty_method_signature(&selected) {
+                        let context = Some(extract_snippet(text, &params.range, 8));
+                        let action = generate_method_body_action(GenerateMethodBodyArgs {
+                            method_signature: signature,
+                            context,
+                            uri: Some(params.text_document.uri.clone()),
+                            range: Some(to_ide_range(&params.range)),
+                        });
+                        actions.push(code_action_to_lsp(action));
+                    }
 
-                // Generate tests (best-effort: offer when there is a non-empty selection).
-                if !selected.trim().is_empty() {
-                    let target = selected
-                        .lines()
-                        .find(|l| !l.trim().is_empty())
-                        .unwrap_or(selected.trim())
-                        .trim()
-                        .to_string();
-                    let context = Some(extract_snippet(text, &params.range, 8));
-                    let action = generate_tests_action(GenerateTestsArgs {
-                        target,
-                        context,
-                        uri: Some(params.text_document.uri.clone()),
-                        range: Some(to_ide_range(&params.range)),
-                    });
-                    actions.push(code_action_to_lsp(action));
+                    // Generate tests (best-effort: offer when there is a non-empty selection).
+                    if !selected.trim().is_empty() {
+                        let target = selected
+                            .lines()
+                            .find(|l| !l.trim().is_empty())
+                            .unwrap_or(selected.trim())
+                            .trim()
+                            .to_string();
+                        let context = Some(extract_snippet(text, &params.range, 8));
+                        let action = generate_tests_action(GenerateTestsArgs {
+                            target,
+                            context,
+                            uri: Some(params.text_document.uri.clone()),
+                            range: Some(to_ide_range(&params.range)),
+                        });
+                        actions.push(code_action_to_lsp(action));
+                    }
                 }
             }
         }
