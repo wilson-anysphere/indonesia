@@ -40,6 +40,9 @@ jobs:
       - name: fuzz_classfile
         run: cargo +nightly fuzz run --codegen-units 16 fuzz_classfile -- -max_total_time=60 -max_len=262144
 
+      - name: fuzz_junit_report
+        run: cargo +nightly fuzz run --codegen-units 16 fuzz_junit_report -- -max_total_time=60 -max_len=262144
+
       - name: Upload fuzz artifacts
         if: failure()
         uses: actions/upload-artifact@v4
