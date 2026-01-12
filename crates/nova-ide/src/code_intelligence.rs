@@ -855,11 +855,31 @@ fn resolve_type_receiver(
     package: Option<&PackageName>,
     receiver: &str,
 ) -> Option<TypeName> {
-    if receiver.contains('.') {
-        resolver.resolve_qualified_name(&QualifiedName::from_dotted(receiver))
-    } else {
-        resolver.resolve_import(imports, package, &Name::from(receiver))
+    // Fast path for simple names.
+    if !receiver.contains('.') {
+        return resolver.resolve_import(imports, package, &Name::from(receiver));
     }
+
+    // 1) Try the receiver as a fully-qualified name, but consider `$` binary-name variants for
+    // nested types (`java.util.Map.Entry` -> `java.util.Map$Entry`).
+    for candidate in nested_binary_prefixes(receiver) {
+        if let Some(ty) = resolver.resolve_qualified_name(&QualifiedName::from_dotted(&candidate)) {
+            return Some(ty);
+        }
+    }
+
+    // 2) Otherwise, resolve the leading segment via imports / current package / java.lang and then
+    // append the remaining segments as nested types (again considering `$` variants).
+    let (head, tail) = receiver.split_once('.')?;
+    let head_ty = resolver.resolve_import(imports, package, &Name::from(head))?;
+    let full = format!("{}.{}", head_ty.as_str(), tail);
+    for candidate in nested_binary_prefixes(&full) {
+        if let Some(ty) = resolver.resolve_qualified_name(&QualifiedName::from_dotted(&candidate)) {
+            return Some(ty);
+        }
+    }
+
+    None
 }
 
 #[derive(Debug, Default)]
@@ -18525,5 +18545,32 @@ class A {
 
         // Basic happy-path: `Foo::` ends with a method reference delimiter.
         assert_eq!(method_reference_double_colon_offset("Foo::", 5), Some(3));
+    }
+
+    #[test]
+    fn resolve_type_receiver_supports_nested_types() {
+        let java = r#"
+import java.util.Map;
+class A {}
+"#;
+        let imports = parse_java_type_import_map(java);
+        let package = parse_java_package_name(java)
+            .and_then(|pkg| (!pkg.is_empty()).then(|| PackageName::from_dotted(&pkg)));
+
+        let jdk = JdkIndex::new();
+        let resolver = ImportResolver::new(&jdk);
+
+        let imported = resolve_type_receiver(&resolver, &imports, package.as_ref(), "Map.Entry")
+            .expect("expected Map.Entry to resolve via single-type import");
+        assert_eq!(imported.as_str(), "java.util.Map$Entry");
+
+        let fully_qualified = resolve_type_receiver(
+            &resolver,
+            &imports,
+            package.as_ref(),
+            "java.util.Map.Entry",
+        )
+        .expect("expected java.util.Map.Entry to resolve as a nested type");
+        assert_eq!(fully_qualified.as_str(), "java.util.Map$Entry");
     }
 }
