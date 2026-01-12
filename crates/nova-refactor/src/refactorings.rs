@@ -2594,7 +2594,7 @@ pub fn inline_variable(
 
         // 1) Ensure the usage statement is the immediate next statement after the declaration.
         // Side-effectful inlining is only sound when we preserve statement-level evaluation order.
-        check_side_effectful_inline_order(&root, &decl_stmt, &targets, &def.file)?;
+        check_order_sensitive_inline_order(&root, &decl_stmt, &targets, &def.file)?;
 
         // 2) Reject when the usage is nested under an execution boundary relative to the
         // declaration (conservative).

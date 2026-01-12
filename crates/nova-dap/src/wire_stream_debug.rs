@@ -243,6 +243,7 @@ fn should_execute_terminal(op: &StreamOperation, config: &StreamDebugConfig) -> 
     config.allow_terminal_ops && !(op.is_side_effecting() && !config.allow_side_effects)
 }
 
+#[cfg(test)]
 fn is_mock_thread(thread: ThreadId) -> bool {
     thread == nova_jdwp::wire::mock::THREAD_ID || thread == nova_jdwp::wire::mock::WORKER_THREAD_ID
 }
@@ -460,8 +461,9 @@ pub(crate) async fn debug_stream_wire_in_frame(
     config: &StreamDebugConfig,
     cancel: &CancellationToken,
 ) -> Result<StreamDebugResult, WireStreamDebugError> {
+    #[cfg(test)]
     if is_mock_thread(thread) {
-        debug_stream_wire_in_frame_with_compiler(
+        return debug_stream_wire_in_frame_with_compiler(
             jdwp,
             thread,
             frame_id,
@@ -471,20 +473,20 @@ pub(crate) async fn debug_stream_wire_in_frame(
             cancel,
             &DummyStreamEvalCompiler,
         )
-        .await
-    } else {
-        debug_stream_wire_in_frame_with_compiler(
-            jdwp,
-            thread,
-            frame_id,
-            location,
-            chain,
-            config,
-            cancel,
-            &JavacStreamEvalCompiler,
-        )
-        .await
+        .await;
     }
+
+    debug_stream_wire_in_frame_with_compiler(
+        jdwp,
+        thread,
+        frame_id,
+        location,
+        chain,
+        config,
+        cancel,
+        &JavacStreamEvalCompiler,
+    )
+    .await
 }
 
 // Test-facing helper that auto-selects the first thread/frame in the VM. This keeps the unit tests

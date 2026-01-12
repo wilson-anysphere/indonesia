@@ -67,13 +67,6 @@ fn is_valid_signature_type_string(ty: &str) -> bool {
     true
 }
 
-fn strip_java_lang_prefix(ty: &str) -> &str {
-    // `java.lang` types are implicitly imported in Java. Prefer the simple name when typeck reports
-    // a fully-qualified `java.lang.*` type so Extract Method doesn't introduce redundant package
-    // qualifiers (e.g. `RuntimeException` instead of `java.lang.RuntimeException`).
-    ty.strip_prefix("java.lang.").unwrap_or(ty)
-}
-
 fn type_at_offset_fully_qualified(
     snapshot: &SalsaSnapshot,
     file: DbFileId,
@@ -95,18 +88,18 @@ fn type_at_offset_fully_qualified(
 
     let (owner, expr, _) = best?;
     let expr_res = snapshot.type_of_expr_demand_result(file, FileExprId { owner, expr });
-    Some(strip_java_lang_prefix(format_type_fully_qualified(
+    Some(strip_java_lang_prefix(&format_type_fully_qualified(
         &*expr_res.env,
         &expr_res.ty,
     )))
 }
 
-fn strip_java_lang_prefix(ty: String) -> String {
+fn strip_java_lang_prefix(ty: &str) -> String {
     // Java implicitly imports `java.lang.*`, but not subpackages (e.g. `java.lang.reflect`).
     // Strip the prefix only for "direct" `java.lang` types to keep emitted signatures readable.
     const PREFIX: &str = "java.lang.";
     let Some(rest) = ty.strip_prefix(PREFIX) else {
-        return ty;
+        return ty.to_string();
     };
 
     // Heuristic: `java.lang` type names start with an uppercase letter, while subpackages are
@@ -118,7 +111,7 @@ fn strip_java_lang_prefix(ty: String) -> String {
     {
         rest.to_string()
     } else {
-        ty
+        ty.to_string()
     }
 }
 
