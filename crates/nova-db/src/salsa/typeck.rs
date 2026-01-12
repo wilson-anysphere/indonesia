@@ -5330,29 +5330,34 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 let array_ty = self.infer_expr(loader, *array).ty;
                 let index_ty = self.infer_expr(loader, *index).ty;
 
-                let env_ro: &dyn TypeEnv = &*loader.store;
-                let index_prim = primitive_like(env_ro, &index_ty);
-                if !index_ty.is_errorish()
-                    && !matches!(
-                        index_prim,
-                        Some(
-                            PrimitiveType::Byte
-                                | PrimitiveType::Short
-                                | PrimitiveType::Char
-                                | PrimitiveType::Int
-                        )
-                    )
-                {
-                    self.diagnostics.push(Diagnostic::error(
-                        "invalid-array-index",
-                        "array index must be an integral type",
-                        Some(*range),
-                    ));
-                }
+                match array_ty {
+                    Type::Array(elem) => {
+                        let index_prim = primitive_like(&*loader.store, &index_ty);
+                        if !index_ty.is_errorish()
+                            && !matches!(
+                                index_prim,
+                                Some(
+                                    PrimitiveType::Byte
+                                        | PrimitiveType::Short
+                                        | PrimitiveType::Char
+                                        | PrimitiveType::Int
+                                )
+                            )
+                        {
+                            self.diagnostics.push(Diagnostic::error(
+                                "invalid-array-index",
+                                "array index must be an integral type",
+                                Some(self.body.exprs[*index].range()),
+                            ));
+                        }
 
-                match &array_ty {
-                    Type::Array(elem) => ExprInfo {
-                        ty: elem.as_ref().clone(),
+                        ExprInfo {
+                            ty: elem.as_ref().clone(),
+                            is_type_ref: false,
+                        }
+                    }
+                    ty if ty.is_errorish() => ExprInfo {
+                        ty,
                         is_type_ref: false,
                     },
                     _ => {

@@ -1790,6 +1790,26 @@ class C { int m(int a){ return a[0]; } }
 }
 
 #[test]
+fn indexing_non_array_does_not_also_report_invalid_index() {
+    let src = r#"
+class C { int m(int a, boolean b){ return a[b]; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-array-access"),
+        "expected invalid-array-access diagnostic; got {diags:?}"
+    );
+    assert!(
+        !diags.iter().any(|d| d.code.as_ref() == "invalid-array-index"),
+        "did not expect invalid-array-index when receiver is not an array; got {diags:?}"
+    );
+}
+
+#[test]
 fn indexing_with_non_integral_index_is_error() {
     let src = r#"
 class C { int m(int[] a, boolean b){ return a[b]; } }
