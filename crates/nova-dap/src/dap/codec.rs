@@ -68,13 +68,22 @@ pub fn write_json_message<W: Write, T: Serialize>(writer: &mut W, message: &T) -
 
 pub fn read_raw_message<R: BufRead>(reader: &mut R) -> io::Result<Option<Vec<u8>>> {
     let mut content_length: Option<usize> = None;
+    let mut saw_header_line = false;
 
     // Read header lines until the blank separator line.
     loop {
         let Some(line) = read_line_limited(reader, MAX_DAP_HEADER_LINE_BYTES)? else {
             // EOF without a message.
-            return Ok(None);
+            if !saw_header_line {
+                return Ok(None);
+            }
+
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "EOF while reading DAP headers",
+            ));
         };
+        saw_header_line = true;
 
         let line = line.trim_end_matches(['\r', '\n']);
         if line.is_empty() {
@@ -194,5 +203,16 @@ mod tests {
         let err = read_raw_message(&mut cursor).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert!(err.to_string().contains("Content-Length"));
+    }
+
+    #[test]
+    fn eof_mid_headers_returns_unexpected_eof() {
+        // The message starts, but the stream ends before the blank header separator line.
+        // This should not be treated as a clean EOF.
+        let framed = "Content-Length: 2\r\n";
+        let mut cursor = Cursor::new(framed.as_bytes().to_vec());
+        let err = read_raw_message(&mut cursor).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        assert!(err.to_string().contains("EOF while reading DAP headers"));
     }
 }

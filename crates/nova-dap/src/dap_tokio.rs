@@ -129,12 +129,20 @@ impl<R: AsyncRead + Unpin> DapReader<R> {
 
     pub async fn read_value(&mut self) -> Result<Option<Value>> {
         let mut content_length: Option<usize> = None;
+        let mut saw_header_line = false;
 
         loop {
             let Some(line) = read_line_limited(&mut self.reader, MAX_DAP_HEADER_LINE_BYTES).await?
             else {
+                if saw_header_line {
+                    return Err(DapError::Io(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "EOF while reading DAP headers",
+                    )));
+                }
                 return Ok(None);
             };
+            saw_header_line = true;
 
             let trimmed = line.trim_end_matches(['\r', '\n']);
             if trimmed.is_empty() {
@@ -280,6 +288,25 @@ mod tests {
         match err {
             DapError::Protocol(msg) => assert!(msg.contains("Content-Length")),
             other => panic!("expected protocol error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn eof_mid_headers_returns_unexpected_eof() {
+        let (mut writer, reader) = tokio::io::duplex(1024);
+
+        writer.write_all(b"Content-Length: 2\r\n").await.unwrap();
+        writer.shutdown().await.unwrap();
+        drop(writer);
+
+        let mut reader = DapReader::new(reader);
+        let err = reader.read_value().await.unwrap_err();
+        match err {
+            DapError::Io(io_err) => {
+                assert_eq!(io_err.kind(), io::ErrorKind::UnexpectedEof);
+                assert!(io_err.to_string().contains("EOF while reading DAP headers"));
+            }
+            other => panic!("expected io error, got {other:?}"),
         }
     }
 }
