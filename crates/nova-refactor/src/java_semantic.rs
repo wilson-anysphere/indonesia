@@ -4432,6 +4432,7 @@ fn record_syntax_only_references(
 
         visit_value(
             file,
+            text,
             value,
             scope,
             scope_result,
