@@ -350,6 +350,99 @@ fn is_generic_type_suffix(tokens: &[Token], close_angle_idx: usize) -> bool {
     false
 }
 
+fn sort_dedup_vars(vars: &mut Vec<VarDef>) {
+    vars.sort_by(|a, b| a.name.cmp(&b.name));
+    vars.dedup_by(|a, b| a.name == b.name);
+}
+
+fn parse_method_parameters(tokens: &[Token], open_paren: usize, close_paren: usize) -> Vec<VarDef> {
+    if open_paren >= close_paren {
+        return Vec::new();
+    }
+
+    let mut params = Vec::new();
+
+    // Split by top-level commas, skipping commas inside generic type arguments
+    // (`Map<K, V>`) and annotation arguments (`@Ann(x, y)`).
+    let mut start = open_paren + 1;
+    let mut angle_depth = 0usize;
+    let mut paren_depth = 0usize;
+    let mut i = start;
+    while i < close_paren {
+        match tokens[i].symbol() {
+            Some('<') => angle_depth += 1,
+            Some('>') => angle_depth = angle_depth.saturating_sub(1),
+            Some('(') => paren_depth += 1,
+            Some(')') => paren_depth = paren_depth.saturating_sub(1),
+            Some(',') if angle_depth == 0 && paren_depth == 0 => {
+                if let Some(param) = parse_parameter(&tokens[start..i]) {
+                    params.push(param);
+                }
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    if let Some(param) = parse_parameter(&tokens[start..close_paren]) {
+        params.push(param);
+    }
+
+    sort_dedup_vars(&mut params);
+    params
+}
+
+fn parse_parameter(tokens: &[Token]) -> Option<VarDef> {
+    // Best-effort: assume the last identifier in the segment is the parameter name.
+    let name_idx = tokens.iter().rposition(|t| t.ident().is_some())?;
+    let name = tokens[name_idx].ident()?.to_string();
+    let name_span = tokens[name_idx].span;
+
+    // Find the best-effort type identifier, skipping identifiers inside generic
+    // args (`<...>`) and annotation args (`(...)`).
+    let mut angle_depth = 0usize;
+    let mut paren_depth = 0usize;
+    for idx in (0..name_idx).rev() {
+        match tokens[idx].symbol() {
+            Some('>') => {
+                angle_depth += 1;
+                continue;
+            }
+            Some('<') => {
+                angle_depth = angle_depth.saturating_sub(1);
+                continue;
+            }
+            Some(')') => {
+                paren_depth += 1;
+                continue;
+            }
+            Some('(') => {
+                paren_depth = paren_depth.saturating_sub(1);
+                continue;
+            }
+            _ => {}
+        }
+
+        if angle_depth > 0 || paren_depth > 0 {
+            continue;
+        }
+
+        if let Some(ty) = tokens[idx].ident() {
+            if qualifies_as_type(ty) {
+                return Some(VarDef {
+                    ty: ty.to_string(),
+                    ty_span: tokens[idx].span,
+                    name,
+                    name_span,
+                });
+            }
+        }
+    }
+
+    None
+}
+
 fn parse_method_body(
     tokens: &[Token],
     body_start: usize,
@@ -473,8 +566,7 @@ fn parse_method_body(
         i += 1;
     }
 
-    locals.sort_by(|a, b| a.name.cmp(&b.name));
-    locals.dedup_by(|a, b| a.name == b.name);
+    sort_dedup_vars(&mut locals);
 
     (locals, calls)
 }
@@ -528,6 +620,8 @@ fn parse_type_body(
 
             let close_paren = find_matching(tokens, i + 1, '(', ')');
             if let Some(close_paren) = close_paren {
+                let params = parse_method_parameters(tokens, i + 1, close_paren);
+
                 let mut j = close_paren + 1;
                 while j < body_end {
                     if let Some(sym) = tokens[j].symbol() {
@@ -546,17 +640,24 @@ fn parse_type_body(
                                 name_span,
                                 is_abstract: true,
                                 body_span: None,
-                                locals: Vec::new(),
+                                locals: params,
                             });
                             i = j + 1;
                             continue;
                         }
                         Some('{') => {
                             if let Some(body_end_idx) = find_matching(tokens, j, '{', '}') {
-                                let body_span =
-                                    Span::new(tokens[j].span.start, tokens[body_end_idx].span.end);
-                                let (locals, mut method_calls) =
+                                // Include the method signature so that navigation can resolve
+                                // parameter identifiers within it.
+                                let body_span = Span::new(
+                                    tokens[i].span.start,
+                                    tokens[body_end_idx].span.end,
+                                );
+
+                                let (mut locals, mut method_calls) =
                                     parse_method_body(tokens, j, body_end_idx);
+                                locals.extend(params);
+                                sort_dedup_vars(&mut locals);
                                 calls.append(&mut method_calls);
 
                                 methods.push(MethodDef {

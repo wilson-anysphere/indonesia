@@ -275,6 +275,52 @@ class C implements I {
     assert_eq!(got.range.start, fixture.marker_position(1));
 }
 
+#[test]
+fn go_to_type_definition_on_parameter_returns_class() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Foo.java
+class $1Foo {}
+//- /Main.java
+class Main {
+    void test(Foo $0foo) {
+        foo.toString();
+    }
+}
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = type_definition(&fixture.db, file, pos).expect("expected type definition location");
+
+    assert_eq!(got.uri, fixture.marker_uri(1));
+    assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
+fn go_to_declaration_on_parameter_returns_parameter() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Foo.java
+class $1Foo {}
+//- /Main.java
+class Main {
+    void test(Foo $0foo) {
+        foo.toString();
+    }
+}
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = declaration(&fixture.db, file, pos).expect("expected declaration location");
+
+    assert_eq!(got.uri, fixture.marker_uri(0));
+    assert_eq!(got.range.start, fixture.marker_position(0));
+}
+
 fn uri_for_path(path: &Path) -> Uri {
     let abs = AbsPathBuf::new(path.to_path_buf()).expect("fixture paths should be absolute");
     let uri = path_to_file_uri(&abs).expect("path should convert to a file URI");

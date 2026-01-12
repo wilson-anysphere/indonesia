@@ -1292,8 +1292,7 @@ impl Database {
             set_default_root,
             set_default_rel_path,
             rel_path,
-            set_project_files,
-            project_files,
+            project_files_update,
             set_default_classpath_index,
             project,
             init_dirty,
@@ -1324,30 +1323,36 @@ impl Database {
                 (true, path)
             };
 
-            let (set_project_files, project_files) = if set_default_project
-                && !inputs.project_files.contains_key(&default_project)
-            {
-                // Provide a minimal `project_files` input so workspace-wide queries
-                // (e.g. import diagnostics) can run without requiring the host to
-                // manually populate project metadata for single-file use-cases.
-                //
-                // Keep deterministic ordering by sorting by `file_rel_path`.
-                let mut files = vec![file];
-                files.sort_by_key(|file| {
-                    inputs
-                        .file_rel_path
-                        .get(file)
-                        .map(|p| p.as_ref().clone())
-                        .unwrap_or_else(|| format!("file-{}.java", file.to_raw()))
-                });
-                let files = Arc::new(files);
-                inputs.project_files.insert(default_project, files.clone());
-                (true, Some(files))
-            } else {
-                (false, None)
-            };
-
             let project = *inputs.file_project.get(&file).unwrap_or(&default_project);
+
+            // Provide a minimal `project_files` input so workspace-wide queries can run
+            // in single-file / test scenarios where the host hasn't populated a full
+            // workspace model. Keep deterministic ordering by sorting by `file_rel_path`.
+            let mut project_files_update: Option<Arc<Vec<FileId>>> = None;
+            match inputs.project_files.get(&project) {
+                Some(existing) if existing.as_ref().contains(&file) => {}
+                Some(existing) => {
+                    let mut files = existing.as_ref().clone();
+                    files.push(file);
+                    files.sort_by_key(|file| {
+                        inputs
+                            .file_rel_path
+                            .get(file)
+                            .map(|p| p.as_ref().clone())
+                            .unwrap_or_else(|| format!("file-{}.java", file.to_raw()))
+                    });
+                    files.dedup();
+                    let files = Arc::new(files);
+                    inputs.project_files.insert(project, files.clone());
+                    project_files_update = Some(files);
+                }
+                None => {
+                    let files = Arc::new(vec![file]);
+                    inputs.project_files.insert(project, files.clone());
+                    project_files_update = Some(files);
+                }
+            }
+
             let set_default_classpath_index = !inputs.classpath_index.contains_key(&project);
             if set_default_classpath_index {
                 // Optional input used by name resolution; default to `None` so
@@ -1369,8 +1374,7 @@ impl Database {
                 set_default_root,
                 set_default_rel_path,
                 rel_path,
-                set_project_files,
-                project_files,
+                project_files_update.map(|files| (project, files)),
                 set_default_classpath_index,
                 project,
                 init_dirty,
@@ -1390,10 +1394,8 @@ impl Database {
         if set_default_rel_path {
             db.set_file_rel_path(file, rel_path);
         }
-        if set_project_files {
-            if let Some(files) = project_files {
-                db.set_project_files(default_project, files);
-            }
+        if let Some((project, files)) = project_files_update {
+            db.set_project_files(project, files);
         }
         if set_default_classpath_index {
             db.set_classpath_index(project, None);
@@ -1429,7 +1431,7 @@ impl Database {
         let default_project = ProjectId::from_raw(0);
         let default_root = SourceRootId::from_raw(0);
 
-        let (new_text, set_default_project, set_default_root, init_dirty) = {
+        let (new_text, set_default_project, set_default_root, init_dirty, project_files_update) = {
             let mut inputs = self.inputs.lock();
 
             inputs.file_exists.insert(file, true);
@@ -1478,7 +1480,33 @@ impl Database {
             let new_text = Arc::new(new_text);
             inputs.file_content.insert(file, new_text.clone());
 
-            (new_text, set_default_project, set_default_root, init_dirty)
+            let project = inputs.file_project.get(&file).copied().unwrap_or(default_project);
+            let mut update: Option<Arc<Vec<FileId>>> = None;
+            match inputs.project_files.get(&project) {
+                Some(existing) if existing.as_ref().contains(&file) => {}
+                Some(existing) => {
+                    let mut files = existing.as_ref().clone();
+                    files.push(file);
+                    files.sort_by_key(|f| f.to_raw());
+                    files.dedup();
+                    let files = Arc::new(files);
+                    inputs.project_files.insert(project, Arc::clone(&files));
+                    update = Some(files);
+                }
+                None => {
+                    let files = Arc::new(vec![file]);
+                    inputs.project_files.insert(project, Arc::clone(&files));
+                    update = Some(files);
+                }
+            }
+
+            (
+                new_text,
+                set_default_project,
+                set_default_root,
+                init_dirty,
+                update.map(|v| (project, v)),
+            )
         };
 
         self.input_footprint
@@ -1494,6 +1522,9 @@ impl Database {
         }
         if set_default_root {
             db.set_source_root(file, default_root);
+        }
+        if let Some((project, files)) = project_files_update {
+            db.set_project_files(project, files);
         }
         db.set_file_content(file, new_text);
     }
