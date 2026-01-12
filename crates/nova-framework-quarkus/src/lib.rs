@@ -147,10 +147,12 @@ impl QuarkusAnalyzer {
 
         let mut java_sources = Vec::with_capacity(java_files.len());
         let mut file_to_source_idx = HashMap::with_capacity(java_files.len());
-        for (idx, file) in java_files.iter().copied().enumerate() {
-            let text = db.file_text(file)?;
+        for file in java_files.iter().copied() {
+            let Some(text) = db.file_text(file) else {
+                continue;
+            };
+            file_to_source_idx.insert(file, java_sources.len());
             java_sources.push(text.to_string());
-            file_to_source_idx.insert(file, idx);
         }
         let refs: Vec<&str> = java_sources.iter().map(|s| s.as_str()).collect();
         let analysis = analyze_java_sources_with_spans(&refs);
@@ -249,11 +251,19 @@ fn fingerprint_project_sources(db: &dyn Database, files: &[FileId]) -> u64 {
         };
         src.len().hash(&mut hasher);
 
-        // Hash a small prefix/suffix for change detection without scanning entire sources.
+        // Hash a few small slices for best-effort change detection without scanning
+        // entire sources. This intentionally trades perfect invalidation for speed.
         let bytes = src.as_bytes();
-        let prefix_len = bytes.len().min(64);
+        let len = bytes.len();
+
+        let prefix_len = len.min(64);
         bytes[..prefix_len].hash(&mut hasher);
-        let suffix_start = bytes.len().saturating_sub(64);
+
+        let mid_start = len / 2;
+        let mid_end = (mid_start + 64).min(len);
+        bytes[mid_start..mid_end].hash(&mut hasher);
+
+        let suffix_start = len.saturating_sub(64);
         bytes[suffix_start..].hash(&mut hasher);
     }
     hasher.finish()
