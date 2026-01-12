@@ -704,7 +704,7 @@ mod tests {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
-            .is_ok()
+            .is_ok_and(|status| status.success())
     }
 
     fn is_valid_java_ident_ascii(s: &str) -> bool {

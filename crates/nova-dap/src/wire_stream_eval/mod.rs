@@ -274,7 +274,7 @@ fn package_from_signature(signature: &str) -> Option<String> {
 /// Convert a `java.util.List` returned by an invoked helper method into a [`StreamSample`].
 ///
 /// This is intended for stream-debug sampling stages that return `List` instances (e.g.
-/// `stream.limit(N).collect(toList())`).
+/// `sampleStream(stream, N)` which clamps the limit and handles primitive streams by boxing).
 pub async fn list_to_stream_sample(
     jdwp: &JdwpClient,
     value: &JdwpValue,
