@@ -488,6 +488,97 @@ fn lexer_reports_invalid_string_escape_sequences() {
 }
 
 #[test]
+fn lexer_string_templates_lex_interpolations_without_escape_errors() {
+    let input = r#"STR."hello \{name}""#;
+    let (tokens, errors) = lex_with_errors(input);
+    assert_eq!(errors, Vec::new());
+
+    let tokens: Vec<_> = tokens
+        .into_iter()
+        .filter(|t| !t.kind.is_trivia())
+        .map(|t| (t.kind, t.text(input).to_string()))
+        .collect();
+
+    assert_eq!(
+        tokens,
+        vec![
+            (SyntaxKind::Identifier, "STR".into()),
+            (SyntaxKind::Dot, ".".into()),
+            (SyntaxKind::StringTemplateStart, "\"".into()),
+            (SyntaxKind::StringTemplateText, "hello ".into()),
+            (SyntaxKind::StringTemplateExprStart, r"\{".into()),
+            (SyntaxKind::Identifier, "name".into()),
+            (SyntaxKind::RBrace, "}".into()),
+            (SyntaxKind::StringTemplateEnd, "\"".into()),
+            (SyntaxKind::Eof, "".into()),
+        ]
+    );
+}
+
+#[test]
+fn lexer_non_template_strings_still_reject_escape_brace() {
+    let input = r#""hello \{name}""#;
+    let (tokens, errors) = lex_with_errors(input);
+
+    let tokens: Vec<_> = tokens
+        .into_iter()
+        .filter(|t| !t.kind.is_trivia())
+        .map(|t| t.kind)
+        .collect();
+
+    assert_eq!(tokens, vec![SyntaxKind::StringLiteral, SyntaxKind::Eof]);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("invalid escape sequence in string literal")),
+        "expected invalid escape error, got: {errors:?}"
+    );
+}
+
+#[test]
+fn lexer_string_templates_do_not_start_interpolation_when_backslash_is_escaped() {
+    let input = r#"STR."\\{not_interp}""#;
+    let (tokens, errors) = lex_with_errors(input);
+    assert_eq!(errors, Vec::new());
+
+    let non_trivia: Vec<_> = tokens
+        .into_iter()
+        .filter(|t| !t.kind.is_trivia())
+        .map(|t| (t.kind, t.text(input).to_string()))
+        .collect();
+
+    assert_eq!(
+        non_trivia,
+        vec![
+            (SyntaxKind::Identifier, "STR".into()),
+            (SyntaxKind::Dot, ".".into()),
+            (SyntaxKind::StringTemplateStart, "\"".into()),
+            (SyntaxKind::StringTemplateText, r"\\{not_interp}".into()),
+            (SyntaxKind::StringTemplateEnd, "\"".into()),
+            (SyntaxKind::Eof, "".into()),
+        ]
+    );
+    assert!(
+        !non_trivia
+            .iter()
+            .any(|(kind, _)| *kind == SyntaxKind::StringTemplateExprStart),
+        "did not expect an interpolation start token, got: {non_trivia:?}"
+    );
+}
+
+#[test]
+fn lexer_text_block_templates_lex_without_error_tokens() {
+    let input = "STR.\"\"\"\nhello \\{name}\n\"\"\"";
+    let (tokens, errors) = lex_with_errors(input);
+    assert_eq!(errors, Vec::new());
+
+    assert!(
+        !tokens.iter().any(|t| t.kind == SyntaxKind::Error),
+        "did not expect error tokens, got: {tokens:?}"
+    );
+}
+
+#[test]
 fn lexer_translates_unicode_escapes_before_tokenization() {
     // `\u003B` is `;`, and `\u005C` is `\` so the second literal exercises the "translated
     // backslash starts another escape" rule: `\u005Cu003B` => `;`.

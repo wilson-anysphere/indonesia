@@ -130,7 +130,7 @@ impl<'a> Lexer<'a> {
 
     pub fn lex_with_errors(mut self) -> (Vec<Token>, Vec<LexError>) {
         let mut tokens = Vec::new();
-        while !self.is_eof() {
+        loop {
             let start = self.pos;
             let kind = self.next_kind();
             let end = self.pos;
@@ -138,14 +138,13 @@ impl<'a> Lexer<'a> {
                 kind,
                 range: self.range(start, end),
             });
-            if !kind.is_trivia() {
+            if !kind.is_trivia() && kind != SyntaxKind::Eof {
                 self.last_non_trivia_kind = kind;
             }
+            if kind == SyntaxKind::Eof {
+                break;
+            }
         }
-        tokens.push(Token {
-            kind: SyntaxKind::Eof,
-            range: self.range(self.pos, self.pos),
-        });
         (tokens, self.errors)
     }
 
@@ -164,6 +163,46 @@ impl<'a> Lexer<'a> {
     }
 
     fn next_kind(&mut self) -> SyntaxKind {
+        if self.is_eof() {
+            // If the file ends while we're still in a string template, emit an error token and a
+            // diagnostic. We keep the token stream lossless by leaving already-emitted template
+            // tokens intact and surfacing a zero-length `Error` sentinel at EOF.
+            if !self.mode_stack.is_empty() {
+                let mut delimiter = None;
+                let mut in_expr = false;
+                for mode in self.mode_stack.iter().rev() {
+                    match *mode {
+                        LexMode::Template(d) => {
+                            delimiter = Some(d);
+                            break;
+                        }
+                        LexMode::TemplateInterpolation { .. } => {
+                            in_expr = true;
+                        }
+                    }
+                }
+                in_expr |= self
+                    .mode_stack
+                    .iter()
+                    .any(|m| matches!(m, LexMode::TemplateInterpolation { .. }));
+                let delimiter = delimiter.unwrap_or(TemplateDelimiter::Quote);
+
+                let message = match (delimiter, in_expr) {
+                    (TemplateDelimiter::Quote, false) => "unterminated string template",
+                    (TemplateDelimiter::Quote, true) => "unterminated string template interpolation",
+                    (TemplateDelimiter::TextBlock, false) => "unterminated text block template",
+                    (TemplateDelimiter::TextBlock, true) => {
+                        "unterminated text block template interpolation"
+                    }
+                };
+                self.push_error(message, self.pos, self.pos);
+                self.mode_stack.clear();
+                return SyntaxKind::Error;
+            }
+
+            return SyntaxKind::Eof;
+        }
+
         match self.mode_stack.last().copied() {
             Some(LexMode::Template(delim)) => {
                 return self.scan_string_template_token(delim);
@@ -384,7 +423,7 @@ impl<'a> Lexer<'a> {
         }
 
         // Interpolation start?
-        if self.peek_byte(0) == Some(b'\\') && self.peek_byte(1) == Some(b'{') {
+        if self.at_template_expr_start() {
             self.pos += 2;
             self.mode_stack
                 .push(LexMode::TemplateInterpolation { brace_depth: 1 });
@@ -393,9 +432,10 @@ impl<'a> Lexer<'a> {
 
         // Consume template text until we reach an interpolation start or the closing delimiter.
         let start = self.pos;
+        let mut unterminated = false;
         while !self.is_eof() {
             // Stop before the next interpolation.
-            if self.peek_byte(0) == Some(b'\\') && self.peek_byte(1) == Some(b'{') {
+            if self.at_template_expr_start() {
                 break;
             }
 
@@ -415,7 +455,8 @@ impl<'a> Lexer<'a> {
             match self.peek_char() {
                 Some('\\') => {
                     // Preserve escape sequences as part of the text, but do not treat `\{` as an
-                    // escape (it begins an interpolation and is handled above).
+                    // escape (it begins an interpolation and is handled above, but only when the
+                    // backslash itself is not escaped).
                     self.bump_char();
 
                     match self.peek_char() {
@@ -423,6 +464,7 @@ impl<'a> Lexer<'a> {
                             // A backslash at end-of-line or end-of-file can't start an escape.
                             self.push_error("unterminated string template", start, self.pos);
                             self.mode_stack.pop(); // Template
+                            unterminated = true;
                             break;
                         }
                         Some(_) => {
@@ -434,6 +476,7 @@ impl<'a> Lexer<'a> {
                     // Normal string templates can't contain raw newlines.
                     self.push_error("unterminated string template", start, self.pos);
                     self.mode_stack.pop(); // Template
+                    unterminated = true;
                     break;
                 }
                 Some(_) => {
@@ -441,6 +484,10 @@ impl<'a> Lexer<'a> {
                 }
                 None => break,
             }
+        }
+
+        if unterminated {
+            return SyntaxKind::Error;
         }
 
         if self.pos == start {
@@ -550,11 +597,7 @@ impl<'a> Lexer<'a> {
                         Some(next) => {
                             match next {
                                 // Single-character escapes.
-                                // `\{` is used by Java string templates (preview) to start an
-                                // embedded expression. Nova lexes a superset grammar, so accept
-                                // it here to avoid a lex error; feature gating handles language
-                                // level diagnostics.
-                                'b' | 't' | 'n' | 'f' | 'r' | '"' | '\'' | '\\' | 's' | '{' => {
+                                'b' | 't' | 'n' | 'f' | 'r' | '"' | '\'' | '\\' | 's' => {
                                     self.bump_char();
                                 }
                                 // Octal escape: \0 to \377
@@ -729,6 +772,29 @@ impl<'a> Lexer<'a> {
             count += 1;
         }
         count % 2 == 1
+    }
+
+    fn at_template_expr_start(&self) -> bool {
+        self.peek_byte(0) == Some(b'\\') && self.peek_byte(1) == Some(b'{') && self.is_unescaped()
+    }
+
+    fn is_unescaped(&self) -> bool {
+        // Count consecutive backslashes immediately before the current position.
+        //
+        // A `\{` interpolation start is recognized only when the `\` is not itself escaped.
+        // That is equivalent to requiring an even number of consecutive `\` characters
+        // immediately before the `\` (including zero).
+        if self.pos == 0 {
+            return true;
+        }
+        let bytes = self.input.as_bytes();
+        let mut idx = self.pos;
+        let mut count = 0usize;
+        while idx > 0 && bytes[idx - 1] == b'\\' {
+            idx -= 1;
+            count += 1;
+        }
+        count % 2 == 0
     }
 
     fn scan_identifier_or_keyword(&mut self) -> SyntaxKind {
