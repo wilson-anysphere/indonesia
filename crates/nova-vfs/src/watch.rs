@@ -111,6 +111,8 @@ pub enum WatchEvent {
     Changes { changes: Vec<FileChange> },
     /// Indicates the watcher dropped events due to overflow/backpressure and downstream consumers
     /// should rescan watched paths/roots.
+    ///
+    /// This commonly corresponds to `notify::event::Flag::Rescan`.
     Rescan,
 }
 
@@ -368,6 +370,13 @@ mod notify_impl {
     #[cfg(feature = "watch-notify")]
     use std::collections::HashMap;
 
+    fn notify_event_requests_rescan(event: &notify::Event) -> bool {
+        // `notify` signals dropped events / overflows by marking the event with `Flag::Rescan`.
+        // Some backends also emit a path-less `EventKind::Other`.
+        matches!(event.attrs.flag(), Some(notify::event::Flag::Rescan))
+            || (matches!(event.kind, EventKind::Other) && event.paths.is_empty())
+    }
+
     #[derive(Debug, Default)]
     pub struct EventNormalizer {
         pending_renames: VecDeque<(Instant, VfsPath)>,
@@ -617,6 +626,13 @@ mod notify_impl {
                     };
                     match res {
                         Ok(event) => {
+                            if notify_event_requests_rescan(&event) {
+                                // `notify` signals dropped/coalesced events using a special rescan
+                                // marker. The only safe recovery is a full rescan, so reuse the
+                                // existing overflow recovery path.
+                                overflowed.store(true, Ordering::Release);
+                                continue;
+                            }
                             let now = Instant::now();
                             let changes = normalizer.push(event, now);
                             if !changes.is_empty() {
@@ -1269,6 +1285,39 @@ mod notify_impl {
                 }
             );
 
+            let _ = thread.join();
+        }
+
+        #[test]
+        fn rescan_flag_yields_rescan_event() {
+            let (raw_tx, raw_rx) = channel::bounded::<notify::Result<notify::Event>>(16);
+            let (events_tx, events_rx) = channel::bounded::<WatchMessage>(16);
+            let (stop_tx, stop_rx) = channel::bounded::<()>(0);
+            let overflowed = Arc::new(AtomicBool::new(false));
+
+            let mut attrs = notify::event::EventAttributes::default();
+            attrs.set_flag(notify::event::Flag::Rescan);
+
+            let ev = notify::Event {
+                kind: EventKind::Other,
+                paths: Vec::new(),
+                attrs,
+            };
+
+            raw_tx.send(Ok(ev)).unwrap();
+
+            let overflowed_for_thread = Arc::clone(&overflowed);
+            let thread = std::thread::spawn(move || {
+                run_notify_drain_loop(raw_rx, events_tx, stop_rx, overflowed_for_thread);
+            });
+
+            let msg = events_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("expected watcher message")
+                .expect("expected ok watcher event");
+            assert_eq!(msg, WatchEvent::Rescan);
+
+            let _ = stop_tx.send(());
             let _ = thread.join();
         }
 

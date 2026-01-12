@@ -956,7 +956,6 @@ impl WorkspaceEngine {
                                         }
                                     }
                                 }
-
                                 if !java_events.is_empty() {
                                     engine.apply_filesystem_events(java_events);
                                 }
@@ -6250,5 +6249,56 @@ enabled = false
         };
         changed_files.sort();
         assert_eq!(changed_files, vec![config_path]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn rescan_event_reloads_project_and_refreshes_file_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path().join("project");
+        fs::create_dir_all(project_root.join("src")).unwrap();
+        fs::write(
+            project_root.join("src/Main.java"),
+            "class Main {}".as_bytes(),
+        )
+        .unwrap();
+
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let project_root = project_root.canonicalize().unwrap();
+        let file = project_root.join("src/Main.java");
+
+        let workspace = crate::Workspace::open(&project_root).unwrap();
+        let engine = workspace.engine.clone();
+        let vfs_path = VfsPath::local(file.clone());
+        let file_id = engine.vfs.get_id(&vfs_path).expect("file id allocated");
+        engine.query_db.with_snapshot(|snap| {
+            assert_eq!(snap.file_content(file_id).as_str(), "class Main {}");
+        });
+
+        let manual = ManualFileWatcher::new();
+        let handle: ManualFileWatcherHandle = manual.handle();
+        let _watcher = engine
+            .start_watching_with_watcher(Box::new(manual), WatchDebounceConfig::ZERO)
+            .unwrap();
+
+        // Modify the file on disk without injecting a normal file-change event; the workspace
+        // should remain stale until it receives a rescan request.
+        fs::write(&file, "class Main { int x; }".as_bytes()).unwrap();
+        engine.query_db.with_snapshot(|snap| {
+            assert_eq!(snap.file_content(file_id).as_str(), "class Main {}");
+        });
+
+        handle.push(WatchEvent::Rescan).unwrap();
+
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let text = engine.query_db.with_snapshot(|snap| snap.file_content(file_id));
+                if text.as_str() == "class Main { int x; }" {
+                    break;
+                }
+                yield_now().await;
+            }
+        })
+        .await
+        .expect("timed out waiting for rescan to refresh file_content");
     }
 }
