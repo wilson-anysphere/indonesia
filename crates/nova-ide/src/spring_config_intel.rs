@@ -137,8 +137,8 @@ fn collect_relevant_files(db: &dyn Database, root: &Path) -> Vec<(PathBuf, FileI
         }
 
         if path.extension().and_then(|e| e.to_str()) == Some("java")
-            || is_spring_properties_file(path)
-            || is_spring_yaml_file(path)
+            || framework_cache::is_application_properties(path)
+            || framework_cache::is_application_yaml(path)
         {
             out.push((path.to_path_buf(), id));
         }
@@ -190,30 +190,17 @@ fn build_workspace_index(
     for (path, id) in files {
         let text = db.file_content(*id);
         if path.extension().and_then(|e| e.to_str()) == Some("java") {
-            index.add_java_file(path.clone(), text);
+            // Avoid scanning every Java file in the workspace; only files that might contain
+            // Spring config usages can contribute anything to the index.
+            if text.contains("@Value") || text.contains("@ConfigurationProperties") {
+                index.add_java_file(path.clone(), text);
+            }
         } else {
             index.add_config_file(path.clone(), text);
         }
     }
 
     index
-}
-
-fn is_spring_properties_file(path: &Path) -> bool {
-    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-    name.starts_with("application")
-        && path.extension().and_then(|e| e.to_str()) == Some("properties")
-}
-
-fn is_spring_yaml_file(path: &Path) -> bool {
-    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-    if !name.starts_with("application") {
-        return false;
-    }
-    matches!(
-        path.extension().and_then(|e| e.to_str()),
-        Some("yml" | "yaml")
-    )
 }
 
 #[cfg(test)]
