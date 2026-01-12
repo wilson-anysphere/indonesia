@@ -413,6 +413,13 @@ impl GradleBuild {
 
         let combined = output.combined();
         let json = parse_gradle_java_compile_config_json(&combined)?;
+        let project_path_for_snapshot = json
+            .project_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| project_path.unwrap_or(":").to_string());
 
         // Aggregator roots often don't apply the Java plugin and thus do not
         // expose `compileClasspath`. When querying the workspace-level config
@@ -453,6 +460,16 @@ impl GradleBuild {
                     m.classpath = Some(union.compile_classpath.clone());
                 },
             )?;
+
+            // Best-effort: record the union config for the root project so `nova-project`
+            // can at least reuse a workspace-level classpath without invoking Gradle.
+            let _ = update_gradle_snapshot_java_compile_config(
+                project_root,
+                &fingerprint,
+                ":",
+                project_root,
+                &union,
+            );
 
             return Ok(union);
         }
@@ -499,15 +516,13 @@ impl GradleBuild {
 
         // Best-effort: persist a workspace-local Gradle model snapshot so `nova-project`
         // can reuse resolved source roots/classpaths without invoking Gradle during discovery.
-        if let Some(project_path) = project_path {
-            let _ = update_gradle_snapshot_java_compile_config(
-                project_root,
-                &fingerprint,
-                project_path,
-                &project_dir,
-                &config,
-            );
-        }
+        let _ = update_gradle_snapshot_java_compile_config(
+            project_root,
+            &fingerprint,
+            &project_path_for_snapshot,
+            &project_dir,
+            &config,
+        );
 
         Ok(config)
     }
