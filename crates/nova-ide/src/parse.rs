@@ -256,6 +256,17 @@ fn parse_var_decl(
     let name = tokens.get(i).and_then(|t| t.ident())?.to_string();
     let name_span = tokens.get(i).map(|t| t.span)?;
     i += 1;
+
+    // Best-effort: support C-style array declarators (`Foo x[]`).
+    //
+    // We intentionally do not encode array-ness into the type; the rest of this
+    // token-based parser generally treats `Foo[]` as `Foo` for type navigation.
+    while i + 1 < end
+        && tokens.get(i).and_then(|t| t.symbol()) == Some('[')
+        && tokens.get(i + 1).and_then(|t| t.symbol()) == Some(']')
+    {
+        i += 2;
+    }
     Some((ty, ty_span, name, name_span, i))
 }
 
@@ -825,7 +836,7 @@ fn parse_method_body(
                         name_span,
                     });
                 }
-            } else if matches!(next_sym, Some(':') | Some(')')) {
+            } else if matches!(next_sym, Some(':') | Some(')') | Some('&')) {
                 locals.push(VarDef {
                     ty,
                     ty_span,
