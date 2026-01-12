@@ -1,7 +1,7 @@
 use nova_refactor::{
     apply_text_edits, apply_workspace_edit, extract_variable, inline_variable, materialize, rename,
     Conflict, ExtractVariableParams, FileId, InlineVariableParams, JavaSymbolKind,
-    RefactorDatabase, RefactorJavaDatabase, Reference, RenameParams, SemanticChange,
+    RefactorDatabase, RefactorJavaDatabase, Reference, ReferenceKind, RenameParams, SemanticChange,
     SemanticRefactorError, SymbolDefinition, SymbolId, TextDatabase, WorkspaceTextRange,
 };
 use nova_test_utils::extract_range;
@@ -8589,6 +8589,8 @@ fn inline_variable_allows_inlining_within_same_anonymous_class_body() {
     let refs = vec![Reference {
         file: file.clone(),
         range: usage_range,
+        scope: Some(def.scope),
+        kind: ReferenceKind::Name,
     }];
 
     struct SingleSymbolDb {
