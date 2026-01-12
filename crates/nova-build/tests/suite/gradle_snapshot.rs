@@ -1004,3 +1004,134 @@ fn java_compile_configs_all_preserves_existing_buildsrc_snapshot_entries() {
         "expected snapshot to preserve :__buildSrc after batch query"
     );
 }
+
+#[test]
+fn java_compile_configs_all_preserves_existing_buildsrc_subproject_snapshot_entries() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+    std::fs::write(project_root.join("settings.gradle"), "include(':app')\n").unwrap();
+
+    let app_dir = project_root.join("app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+
+    let plugins_dir = project_root.join("buildSrc").join("plugins");
+    std::fs::create_dir_all(&plugins_dir).unwrap();
+
+    let dep_jar = plugins_dir.join("deps.jar");
+    std::fs::write(&dep_jar, b"not a real jar").unwrap();
+
+    let buildsrc_payload = serde_json::json!({
+        // When running Gradle against `--project-dir buildSrc`, nested subproject paths are
+        // relative to that build (so `:plugins`, not `:__buildSrc:plugins`).
+        "projectPath": ":plugins",
+        "projectDir": plugins_dir.to_string_lossy(),
+        "compileClasspath": [dep_jar.to_string_lossy()],
+        "testCompileClasspath": [],
+        "mainSourceRoots": [],
+        "testSourceRoots": [],
+        "mainOutputDirs": [],
+        "testOutputDirs": [],
+        "compileCompilerArgs": [],
+        "testCompilerArgs": [],
+        "inferModulePath": false
+    });
+    let stdout_buildsrc = format!(
+        "NOVA_JSON_BEGIN\n{}\nNOVA_JSON_END\n",
+        serde_json::to_string(&buildsrc_payload).unwrap()
+    );
+
+    let payload_all = serde_json::json!({
+        "projects": [
+            {
+                "path": ":",
+                "projectDir": project_root.to_string_lossy(),
+                "config": {
+                    "projectPath": ":",
+                    "projectDir": project_root.to_string_lossy(),
+                    "compileClasspath": [],
+                    "testCompileClasspath": [],
+                    "mainSourceRoots": [],
+                    "testSourceRoots": [],
+                    "mainOutputDirs": [],
+                    "testOutputDirs": [],
+                    "compileCompilerArgs": [],
+                    "testCompilerArgs": [],
+                    "inferModulePath": false
+                }
+            },
+            {
+                "path": ":app",
+                "projectDir": app_dir.to_string_lossy(),
+                "config": {
+                    "projectPath": ":app",
+                    "projectDir": app_dir.to_string_lossy(),
+                    "compileClasspath": [],
+                    "testCompileClasspath": [],
+                    "mainSourceRoots": [],
+                    "testSourceRoots": [],
+                    "mainOutputDirs": [],
+                    "testOutputDirs": [],
+                    "compileCompilerArgs": [],
+                    "testCompilerArgs": [],
+                    "inferModulePath": false
+                }
+            }
+        ]
+    });
+    let stdout_all = format!(
+        "NOVA_ALL_JSON_BEGIN\n{}\nNOVA_ALL_JSON_END\n",
+        serde_json::to_string(&payload_all).unwrap()
+    );
+
+    let runner = Arc::new(MultiOutputRunner::new(
+        CommandOutput {
+            status: exit_status(0),
+            stdout: stdout_buildsrc,
+            stderr: String::new(),
+            truncated: false,
+        },
+        CommandOutput {
+            status: exit_status(0),
+            stdout: stdout_all,
+            stderr: String::new(),
+            truncated: false,
+        },
+    ));
+    let gradle = GradleBuild::with_runner(GradleConfig::default(), runner.clone());
+    let cache = BuildCache::new(tmp.path().join("cache"));
+
+    let _buildsrc_cfg = gradle
+        .java_compile_config(&project_root, Some(":__buildSrc:plugins"), &cache)
+        .expect("buildSrc plugins java compile config");
+
+    let snapshot_path = project_root.join(GRADLE_SNAPSHOT_REL_PATH);
+    assert!(snapshot_path.is_file(), "snapshot file should be created");
+
+    let bytes = std::fs::read(&snapshot_path).unwrap();
+    let snapshot: SnapshotFile = serde_json::from_slice(&bytes).unwrap();
+    assert!(
+        snapshot
+            .java_compile_configs
+            .contains_key(":__buildSrc:plugins"),
+        "expected snapshot to include :__buildSrc:plugins after buildSrc query"
+    );
+
+    let _all_cfgs = gradle
+        .java_compile_configs_all(&project_root, &cache)
+        .expect("java compile configs all");
+    assert_eq!(runner.invocations(), 2);
+
+    let bytes = std::fs::read(&snapshot_path).unwrap();
+    let snapshot: SnapshotFile = serde_json::from_slice(&bytes).unwrap();
+    assert!(
+        snapshot.java_compile_configs.contains_key(":app"),
+        "expected snapshot to include :app after batch query"
+    );
+    assert!(
+        snapshot
+            .java_compile_configs
+            .contains_key(":__buildSrc:plugins"),
+        "expected snapshot to preserve :__buildSrc:plugins after batch query"
+    );
+}
