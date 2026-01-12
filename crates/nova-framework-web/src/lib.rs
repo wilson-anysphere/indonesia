@@ -1,6 +1,17 @@
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use regex::Regex;
+
+static JAXRS_METHOD_SIG_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"^\s*(?:public|protected|private|static|final|\s)+\s*[\w<>\[\].$]+\s+(\w+)\s*\("#)
+        .unwrap()
+});
+
+static JAVA_METHOD_SIG_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"^\s*(?:(?:public|protected|private|static|final|synchronized|abstract|default)\s+)*[A-Za-z0-9_<>\[\].$,@?&\s,]+?\s+[A-Za-z_][A-Za-z0-9_]*\s*\("#)
+        .unwrap()
+});
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Endpoint {
@@ -116,11 +127,6 @@ struct PendingAnnotation {
 }
 
 fn extract_jaxrs_endpoints_from_source(source: &str, file: Option<PathBuf>) -> Vec<Endpoint> {
-    let method_sig_re = Regex::new(
-        r#"^\s*(?:public|protected|private|static|final|\s)+\s*[\w<>\[\].$]+\s+(\w+)\s*\("#,
-    )
-    .unwrap();
-
     let mut endpoints = Vec::new();
     let mut pending_annotations: Vec<PendingAnnotation> = Vec::new();
     let mut class_path: Option<String> = None;
@@ -157,7 +163,7 @@ fn extract_jaxrs_endpoints_from_source(source: &str, file: Option<PathBuf>) -> V
                 })
                 .collect();
 
-            if !http_methods.is_empty() && method_sig_re.is_match(line) {
+            if !http_methods.is_empty() && JAXRS_METHOD_SIG_RE.is_match(line) {
                 let method_path = pending_annotations
                     .iter()
                     .find(|ann| ann.name == "Path")
@@ -194,15 +200,10 @@ pub fn extract_spring_mvc_endpoints(sources: &[(&str, Option<PathBuf>)]) -> Vec<
 }
 
 fn extract_spring_mvc_endpoints_from_source(source: &str, file: Option<PathBuf>) -> Vec<Endpoint> {
-    let method_sig_re = Regex::new(
-        r#"^\s*(?:(?:public|protected|private|static|final|synchronized|abstract|default)\s+)*[A-Za-z0-9_<>\[\].$,@?&\s,]+?\s+[A-Za-z_][A-Za-z0-9_]*\s*\("#,
-    )
-    .unwrap();
-
     let mut endpoints = Vec::new();
     let mut pending_annotations: Vec<PendingAnnotation> = Vec::new();
 
-    let mut class_base_path: Option<String> = None;
+    let mut class_base_paths: Vec<String> = Vec::new();
     let mut in_class = false;
     let mut class_body_started = false;
     let mut brace_depth: i32 = 0;
@@ -228,26 +229,41 @@ fn extract_spring_mvc_endpoints_from_source(source: &str, file: Option<PathBuf>)
                         "RestController" | "Controller" | "RequestMapping"
                     )
                 });
-                class_base_path = pending_annotations
+                class_base_paths = pending_annotations
                     .iter()
                     .find(|ann| ann.name == "RequestMapping")
-                    .and_then(|ann| ann.args.as_deref().and_then(extract_spring_mapping_path));
+                    .and_then(|ann| ann.args.as_deref().map(extract_spring_mapping_paths))
+                    .unwrap_or_default();
                 pending_annotations.clear();
                 in_class = true;
                 class_body_started = false;
             }
         } else if brace_depth == 1 {
-            if is_controller_class && method_sig_re.is_match(line) {
+            if is_controller_class && JAVA_METHOD_SIG_RE.is_match(line) {
                 if let Some(mapping) = parse_spring_method_mapping(&pending_annotations) {
-                    let full_path = join_paths(class_base_path.as_deref(), mapping.path.as_deref());
-                    endpoints.push(Endpoint {
-                        path: full_path,
-                        methods: mapping.methods,
-                        handler: HandlerLocation {
-                            file: file.clone(),
-                            line: line_no,
-                        },
-                    });
+                    let base_paths: Vec<Option<&str>> = if class_base_paths.is_empty() {
+                        vec![None]
+                    } else {
+                        class_base_paths.iter().map(|p| Some(p.as_str())).collect()
+                    };
+                    let method_paths: Vec<Option<&str>> = if mapping.paths.is_empty() {
+                        vec![None]
+                    } else {
+                        mapping.paths.iter().map(|p| Some(p.as_str())).collect()
+                    };
+                    for base_path in base_paths {
+                        for method_path in &method_paths {
+                            let full_path = join_paths(base_path, *method_path);
+                            endpoints.push(Endpoint {
+                                path: full_path,
+                                methods: mapping.methods.clone(),
+                                handler: HandlerLocation {
+                                    file: file.clone(),
+                                    line: line_no,
+                                },
+                            });
+                        }
+                    }
                 }
             }
             pending_annotations.clear();
@@ -262,7 +278,7 @@ fn extract_spring_mvc_endpoints_from_source(source: &str, file: Option<PathBuf>)
             // Reset once we leave the class body so multiple classes per file still work.
             in_class = false;
             is_controller_class = false;
-            class_base_path = None;
+            class_base_paths.clear();
             class_body_started = false;
             pending_annotations.clear();
         }
@@ -273,7 +289,7 @@ fn extract_spring_mvc_endpoints_from_source(source: &str, file: Option<PathBuf>)
 
 struct ParsedMapping {
     methods: Vec<String>,
-    path: Option<String>,
+    paths: Vec<String>,
 }
 
 fn parse_spring_method_mapping(annotations: &[PendingAnnotation]) -> Option<ParsedMapping> {
@@ -287,13 +303,14 @@ fn parse_spring_method_mapping(annotations: &[PendingAnnotation]) -> Option<Pars
             _ => continue,
         };
 
-        let path = ann
+        let paths = ann
             .args
             .as_deref()
-            .and_then(|args| extract_mapping_path(args, path_keys));
+            .map(|args| extract_mapping_paths(args, path_keys))
+            .unwrap_or_default();
         return Some(ParsedMapping {
             methods: vec![method.to_string()],
-            path,
+            paths,
         });
     }
 
@@ -303,12 +320,13 @@ fn parse_spring_method_mapping(annotations: &[PendingAnnotation]) -> Option<Pars
         }
 
         let methods = spring_request_mapping_methods(ann.args.as_deref());
-        let path = ann
+        let paths = ann
             .args
             .as_deref()
-            .and_then(|args| extract_mapping_path(args, &["path", "value"]));
+            .map(|args| extract_mapping_paths(args, &["path", "value"]))
+            .unwrap_or_default();
 
-        return Some(ParsedMapping { methods, path });
+        return Some(ParsedMapping { methods, paths });
     }
 
     None
@@ -340,8 +358,8 @@ fn spring_request_mapping_methods(args: Option<&str>) -> Vec<String> {
     }
 }
 
-fn extract_spring_mapping_path(args: &str) -> Option<String> {
-    extract_mapping_path(args, &["path", "value"])
+fn extract_spring_mapping_paths(args: &str) -> Vec<String> {
+    extract_mapping_paths(args, &["path", "value"])
 }
 
 pub fn extract_micronaut_endpoints(sources: &[(&str, Option<PathBuf>)]) -> Vec<Endpoint> {
@@ -352,15 +370,10 @@ pub fn extract_micronaut_endpoints(sources: &[(&str, Option<PathBuf>)]) -> Vec<E
 }
 
 fn extract_micronaut_endpoints_from_source(source: &str, file: Option<PathBuf>) -> Vec<Endpoint> {
-    let method_sig_re = Regex::new(
-        r#"^\s*(?:(?:public|protected|private|static|final|synchronized|abstract|default)\s+)*[A-Za-z0-9_<>\[\].$,@?&\s,]+?\s+[A-Za-z_][A-Za-z0-9_]*\s*\("#,
-    )
-    .unwrap();
-
     let mut endpoints = Vec::new();
     let mut pending_annotations: Vec<PendingAnnotation> = Vec::new();
 
-    let mut class_base_path: Option<String> = None;
+    let mut class_base_paths: Vec<String> = Vec::new();
     let mut in_class = false;
     let mut class_body_started = false;
     let mut brace_depth: i32 = 0;
@@ -381,26 +394,41 @@ fn extract_micronaut_endpoints_from_source(source: &str, file: Option<PathBuf>) 
                 is_controller_class = pending_annotations
                     .iter()
                     .any(|ann| ann.name == "Controller");
-                class_base_path = pending_annotations
+                class_base_paths = pending_annotations
                     .iter()
                     .find(|ann| ann.name == "Controller")
-                    .and_then(|ann| ann.args.as_deref().and_then(extract_micronaut_mapping_path));
+                    .and_then(|ann| ann.args.as_deref().map(extract_micronaut_mapping_paths))
+                    .unwrap_or_default();
                 pending_annotations.clear();
                 in_class = true;
                 class_body_started = false;
             }
         } else if brace_depth == 1 {
-            if is_controller_class && method_sig_re.is_match(line) {
+            if is_controller_class && JAVA_METHOD_SIG_RE.is_match(line) {
                 if let Some(mapping) = parse_micronaut_method_mapping(&pending_annotations) {
-                    let full_path = join_paths(class_base_path.as_deref(), mapping.path.as_deref());
-                    endpoints.push(Endpoint {
-                        path: full_path,
-                        methods: mapping.methods,
-                        handler: HandlerLocation {
-                            file: file.clone(),
-                            line: line_no,
-                        },
-                    });
+                    let base_paths: Vec<Option<&str>> = if class_base_paths.is_empty() {
+                        vec![None]
+                    } else {
+                        class_base_paths.iter().map(|p| Some(p.as_str())).collect()
+                    };
+                    let method_paths: Vec<Option<&str>> = if mapping.paths.is_empty() {
+                        vec![None]
+                    } else {
+                        mapping.paths.iter().map(|p| Some(p.as_str())).collect()
+                    };
+                    for base_path in base_paths {
+                        for method_path in &method_paths {
+                            let full_path = join_paths(base_path, *method_path);
+                            endpoints.push(Endpoint {
+                                path: full_path,
+                                methods: mapping.methods.clone(),
+                                handler: HandlerLocation {
+                                    file: file.clone(),
+                                    line: line_no,
+                                },
+                            });
+                        }
+                    }
                 }
             }
             pending_annotations.clear();
@@ -413,7 +441,7 @@ fn extract_micronaut_endpoints_from_source(source: &str, file: Option<PathBuf>) 
         if in_class && class_body_started && brace_depth <= 0 {
             in_class = false;
             is_controller_class = false;
-            class_base_path = None;
+            class_base_paths.clear();
             class_body_started = false;
             pending_annotations.clear();
         }
@@ -437,17 +465,18 @@ fn parse_micronaut_method_mapping(annotations: &[PendingAnnotation]) -> Option<P
         let path = ann
             .args
             .as_deref()
-            .and_then(|args| extract_mapping_path(args, &["uri", "value"]));
+            .map(|args| extract_mapping_paths(args, &["uri", "value"]))
+            .unwrap_or_default();
         return Some(ParsedMapping {
             methods: vec![method.to_string()],
-            path,
+            paths: path,
         });
     }
     None
 }
 
-fn extract_micronaut_mapping_path(args: &str) -> Option<String> {
-    extract_mapping_path(args, &["uri", "value"])
+fn extract_micronaut_mapping_paths(args: &str) -> Vec<String> {
+    extract_mapping_paths(args, &["uri", "value"])
 }
 
 fn join_paths(class_path: Option<&str>, method_path: Option<&str>) -> String {
@@ -564,27 +593,112 @@ fn consume_leading_annotations<'a>(line: &'a str, pending: &mut Vec<PendingAnnot
 }
 
 fn extract_first_string_literal(args: &str) -> Option<String> {
-    let start = args.find('"')?;
-    let rest = &args[start + 1..];
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
+    extract_string_literals(args).into_iter().next()
 }
 
-fn extract_mapping_path(args: &str, keys: &[&str]) -> Option<String> {
-    for key in keys {
-        if let Some(value) = extract_named_string_literal(args, key) {
-            return Some(value);
+fn extract_string_literals(input: &str) -> Vec<String> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::new();
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        if bytes[idx] != b'"' {
+            idx += 1;
+            continue;
+        }
+        let start = idx + 1;
+        idx += 1;
+        while idx < bytes.len() {
+            match bytes[idx] {
+                b'\\' => idx = (idx + 2).min(bytes.len()),
+                b'"' => {
+                    if let Some(value) = input.get(start..idx) {
+                        out.push(value.to_string());
+                    }
+                    idx += 1;
+                    break;
+                }
+                _ => idx += 1,
+            }
         }
     }
-    extract_first_string_literal(args)
+    out
 }
 
-fn extract_named_string_literal(args: &str, key: &str) -> Option<String> {
+fn skip_string_literal(bytes: &[u8], mut idx: usize) -> usize {
+    // Skip starting quote.
+    idx += 1;
+    while idx < bytes.len() {
+        match bytes[idx] {
+            b'\\' => idx = (idx + 2).min(bytes.len()),
+            b'"' => return idx + 1,
+            _ => idx += 1,
+        }
+    }
+    bytes.len()
+}
+
+fn slice_until_top_level_comma(s: &str, start: usize) -> &str {
+    let bytes = s.as_bytes();
+    let mut idx = start;
+    let mut paren_depth = 0i32;
+    let mut brace_depth = 0i32;
+    let mut bracket_depth = 0i32;
+
+    while idx < bytes.len() {
+        match bytes[idx] {
+            b'"' => {
+                idx = skip_string_literal(bytes, idx);
+                continue;
+            }
+            b'(' => paren_depth += 1,
+            b')' => paren_depth = (paren_depth - 1).max(0),
+            b'{' => brace_depth += 1,
+            b'}' => brace_depth = (brace_depth - 1).max(0),
+            b'[' => bracket_depth += 1,
+            b']' => bracket_depth = (bracket_depth - 1).max(0),
+            b',' if paren_depth == 0 && brace_depth == 0 && bracket_depth == 0 => break,
+            _ => {}
+        }
+        idx += 1;
+    }
+
+    s.get(start..idx).unwrap_or("")
+}
+
+fn extract_mapping_paths(args: &str, keys: &[&str]) -> Vec<String> {
+    for key in keys {
+        let values = extract_named_string_literals(args, key);
+        if !values.is_empty() {
+            return values;
+        }
+    }
+
+    let bytes = args.as_bytes();
+    let mut idx = 0usize;
+    while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+        idx += 1;
+    }
+    if idx >= bytes.len() {
+        return Vec::new();
+    }
+
+    let expr = slice_until_top_level_comma(args, idx);
+    extract_string_literals(expr)
+}
+
+fn extract_named_string_literals(args: &str, key: &str) -> Vec<String> {
     let bytes = args.as_bytes();
     let key_bytes = key.as_bytes();
 
     let mut idx = 0usize;
-    while idx + key_bytes.len() <= bytes.len() {
+    while idx < bytes.len() {
+        if bytes[idx] == b'"' {
+            idx = skip_string_literal(bytes, idx);
+            continue;
+        }
+        if idx + key_bytes.len() > bytes.len() {
+            break;
+        }
         if &bytes[idx..idx + key_bytes.len()] != key_bytes {
             idx += 1;
             continue;
@@ -611,10 +725,11 @@ fn extract_named_string_literal(args: &str, key: &str) -> Option<String> {
             j += 1;
         }
 
-        return extract_first_string_literal(args.get(j..).unwrap_or(""));
+        let expr = slice_until_top_level_comma(args, j);
+        return extract_string_literals(expr);
     }
 
-    None
+    Vec::new()
 }
 
 fn is_ident_byte(b: u8) -> bool {

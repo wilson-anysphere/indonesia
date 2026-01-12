@@ -171,3 +171,122 @@ public class HelloController
     );
     assert_eq!(endpoints[0].handler.line, 7);
 }
+
+#[test]
+fn spring_mvc_extraction_supports_multi_value_get_mapping() {
+    let src = r#"import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class UserController {
+    @GetMapping({"/a", "/b"})
+    public String list() { return ""; }
+}
+"#;
+
+    let endpoints =
+        extract_spring_mvc_endpoints(&[(src, Some(PathBuf::from("UserController.java")))]);
+    assert_eq!(endpoints.len(), 2);
+
+    assert_eq!(endpoints[0].path, "/a");
+    assert_eq!(endpoints[0].methods, vec!["GET".to_string()]);
+    assert_eq!(
+        endpoints[0].handler.file,
+        Some(PathBuf::from("UserController.java"))
+    );
+    assert_eq!(endpoints[0].handler.line, 6);
+
+    assert_eq!(endpoints[1].path, "/b");
+    assert_eq!(endpoints[1].methods, vec!["GET".to_string()]);
+    assert_eq!(
+        endpoints[1].handler.file,
+        Some(PathBuf::from("UserController.java"))
+    );
+    assert_eq!(endpoints[1].handler.line, 6);
+}
+
+#[test]
+fn spring_mvc_extraction_supports_multi_value_request_mapping_paths_and_methods() {
+    let src = r#"import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api")
+public class UserController {
+    @RequestMapping(path = {"/a", "/b"}, method = {RequestMethod.GET, RequestMethod.POST})
+    public String both() { return ""; }
+}
+"#;
+
+    let endpoints =
+        extract_spring_mvc_endpoints(&[(src, Some(PathBuf::from("UserController.java")))]);
+    assert_eq!(endpoints.len(), 2);
+
+    assert_eq!(endpoints[0].path, "/api/a");
+    assert_eq!(
+        endpoints[0].methods,
+        vec!["GET".to_string(), "POST".to_string()]
+    );
+    assert_eq!(
+        endpoints[0].handler.file,
+        Some(PathBuf::from("UserController.java"))
+    );
+    assert_eq!(endpoints[0].handler.line, 7);
+
+    assert_eq!(endpoints[1].path, "/api/b");
+    assert_eq!(
+        endpoints[1].methods,
+        vec!["GET".to_string(), "POST".to_string()]
+    );
+    assert_eq!(
+        endpoints[1].handler.file,
+        Some(PathBuf::from("UserController.java"))
+    );
+    assert_eq!(endpoints[1].handler.line, 7);
+}
+
+#[test]
+fn micronaut_extraction_supports_multi_value_controller_and_method_mappings() {
+    let src = r#"import io.micronaut.http.annotation.*;
+
+@Controller({"/base1", "/base2"})
+public class HelloController {
+    @Get({"/a", "/b"})
+    public String hello() { return "hi"; }
+}
+"#;
+
+    let endpoints =
+        extract_micronaut_endpoints(&[(src, Some(PathBuf::from("HelloController.java")))]);
+    assert_eq!(endpoints.len(), 4);
+
+    assert_eq!(endpoints[0].path, "/base1/a");
+    assert_eq!(endpoints[0].methods, vec!["GET".to_string()]);
+    assert_eq!(
+        endpoints[0].handler.file,
+        Some(PathBuf::from("HelloController.java"))
+    );
+    assert_eq!(endpoints[0].handler.line, 6);
+
+    assert_eq!(endpoints[1].path, "/base1/b");
+    assert_eq!(endpoints[1].methods, vec!["GET".to_string()]);
+    assert_eq!(
+        endpoints[1].handler.file,
+        Some(PathBuf::from("HelloController.java"))
+    );
+    assert_eq!(endpoints[1].handler.line, 6);
+
+    assert_eq!(endpoints[2].path, "/base2/a");
+    assert_eq!(endpoints[2].methods, vec!["GET".to_string()]);
+    assert_eq!(
+        endpoints[2].handler.file,
+        Some(PathBuf::from("HelloController.java"))
+    );
+    assert_eq!(endpoints[2].handler.line, 6);
+
+    assert_eq!(endpoints[3].path, "/base2/b");
+    assert_eq!(endpoints[3].methods, vec!["GET".to_string()]);
+    assert_eq!(
+        endpoints[3].handler.file,
+        Some(PathBuf::from("HelloController.java"))
+    );
+    assert_eq!(endpoints[3].handler.line, 6);
+}
