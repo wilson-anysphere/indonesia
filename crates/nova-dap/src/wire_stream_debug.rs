@@ -942,7 +942,11 @@ mod tests {
         writeln!(file, "").unwrap();
         writeln!(file, "").unwrap();
         writeln!(file, "").unwrap();
-        writeln!(file, "        return list.stream().collect(Collectors.toList());").unwrap();
+        writeln!(
+            file,
+            "        return list.stream().collect(Collectors.toList());"
+        )
+        .unwrap();
 
         let path: PathBuf = file.path().to_path_buf();
 

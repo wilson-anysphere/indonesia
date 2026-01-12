@@ -4699,8 +4699,14 @@ class Use {
     assert!(after.contains("class Renamed"));
     assert!(after.contains("(Renamed.Inner)"), "{after}");
     assert!(after.contains("instanceof Renamed.Inner"), "{after}");
-    assert!(after.contains("Renamed.Inner[] a = new Renamed.Inner[1];"), "{after}");
-    assert!(after.contains("new Renamed.Inner[1].getClass();"), "{after}");
+    assert!(
+        after.contains("Renamed.Inner[] a = new Renamed.Inner[1];"),
+        "{after}"
+    );
+    assert!(
+        after.contains("new Renamed.Inner[1].getClass();"),
+        "{after}"
+    );
     assert!(after.contains("this.<Renamed.Inner>m();"), "{after}");
     assert!(!after.contains("Outer.Inner"), "{after}");
 }

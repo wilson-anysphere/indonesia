@@ -25,11 +25,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use once_cell::sync::Lazy;
 use nova_config_metadata::MetadataIndex;
 use nova_db::{Database, FileId};
 use nova_scheduler::CancellationToken;
 use nova_types::{CompletionItem, Diagnostic};
+use once_cell::sync::Lazy;
 
 const MAX_CACHED_ROOTS: usize = 32;
 

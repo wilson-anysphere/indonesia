@@ -7231,8 +7231,8 @@ fn method_reference_completions(
     let (mut receiver_ty, mut call_kind) = if receiver.is_empty() {
         // Best-effort: handle receivers like `new Foo()::bar` / `foo()::bar` / `(foo)::bar` by
         // inferring the type of the expression immediately before the `::`.
-        let receiver_type = infer_receiver_type_before_dot(db, file, double_colon_offset)
-            .unwrap_or_default();
+        let receiver_type =
+            infer_receiver_type_before_dot(db, file, double_colon_offset).unwrap_or_default();
         if receiver_type.is_empty() {
             return Vec::new();
         }
@@ -15794,10 +15794,8 @@ fn method_reference_double_colon_offset(text: &str, prefix_start: usize) -> Opti
 
     // Note: `bool::then_some` eagerly evaluates its argument, so we must not write
     // `cond.then_some(before - 2)` here or we'll underflow when `before < 2`.
-    (before >= 2
-        && bytes.get(before - 1) == Some(&b':')
-        && bytes.get(before - 2) == Some(&b':'))
-    .then(|| before - 2)
+    (before >= 2 && bytes.get(before - 1) == Some(&b':') && bytes.get(before - 2) == Some(&b':'))
+        .then(|| before - 2)
 }
 
 pub(crate) fn receiver_before_dot(text: &str, dot_offset: usize) -> String {

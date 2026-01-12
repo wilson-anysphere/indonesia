@@ -2054,7 +2054,11 @@ mod tests {
         let outer = tmp.path();
         let workspace_root = outer.join("workspace");
         std::fs::create_dir_all(&workspace_root).unwrap();
-        std::fs::write(workspace_root.join("settings.gradle"), "includeFlat 'app'\n").unwrap();
+        std::fs::write(
+            workspace_root.join("settings.gradle"),
+            "includeFlat 'app'\n",
+        )
+        .unwrap();
 
         let src_root = outer.join("app/src/main/java");
         std::fs::create_dir_all(&src_root).unwrap();
@@ -2070,11 +2074,7 @@ mod tests {
 
         let metadata = load_build_metadata(&params);
         let expected = src_root.canonicalize().unwrap();
-        let actual: Vec<PathBuf> = metadata
-            .source_roots
-            .iter()
-            .map(PathBuf::from)
-            .collect();
+        let actual: Vec<PathBuf> = metadata.source_roots.iter().map(PathBuf::from).collect();
 
         assert!(
             actual.iter().any(|root| *root == expected),

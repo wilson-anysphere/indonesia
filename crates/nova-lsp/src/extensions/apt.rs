@@ -583,7 +583,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let workspace_root = dir.path().join("workspace");
         std::fs::create_dir_all(&workspace_root).unwrap();
-        std::fs::write(workspace_root.join("settings.gradle"), "includeFlat 'app'\n").unwrap();
+        std::fs::write(
+            workspace_root.join("settings.gradle"),
+            "includeFlat 'app'\n",
+        )
+        .unwrap();
         std::fs::create_dir_all(dir.path().join("app")).unwrap();
 
         let (project, _config) = load_project_with_workspace_config(&workspace_root).unwrap();

@@ -497,9 +497,6 @@ mod tests {
         // `java.util.function` is common in modern Java and included in the built-in JDK index.
         let jdk = JdkIndex::new();
         let candidates = import_candidates_with_index("Function", &jdk);
-        assert_eq!(
-            candidates,
-            vec!["java.util.function.Function".to_string()]
-        );
+        assert_eq!(candidates, vec!["java.util.function.Function".to_string()]);
     }
 }
