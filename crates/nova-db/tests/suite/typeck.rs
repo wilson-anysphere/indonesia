@@ -2940,6 +2940,81 @@ class C {
 }
 
 #[test]
+fn qualified_this_types_as_qualifier_and_resolves_fields() {
+    let src = r#"
+class Outer {
+    int x;
+    class Inner {
+        int m() {
+            return Outer.this.x;
+        }
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-field"),
+        "expected `Outer.this` to type as `Outer` and resolve `x`; got {diags:?}"
+    );
+
+    let offset = src.find("this").expect("snippet should contain `this`") + 1;
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Outer");
+}
+
+#[test]
+fn super_types_as_declared_superclass() {
+    let src = r#"
+class Base { void foo() {} }
+class C extends Base {
+    void m() { super.foo(); }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected `super.foo()` to resolve against the declared superclass; got {diags:?}"
+    );
+
+    let offset = src.find("super").expect("snippet should contain `super`") + 1;
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Base");
+}
+
+#[test]
+fn qualified_super_types_as_declared_superclass() {
+    let src = r#"
+class Base { void foo() {} }
+class Outer extends Base {
+    class Inner {
+        void m() { Outer.super.foo(); }
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected `Outer.super.foo()` to resolve against the declared superclass; got {diags:?}"
+    );
+
+    let offset = src.find("super").expect("snippet should contain `super`") + 1;
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Base");
+}
+
+#[test]
 fn this_in_static_method_is_error() {
     let src = r#"
 class C {
