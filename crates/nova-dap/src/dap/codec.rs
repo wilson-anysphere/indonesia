@@ -2,12 +2,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::io::{self, BufRead, Write};
 
-/// Maximum allowed DAP message payload size (in bytes).
-///
-/// DAP clients are untrusted. Without an upper bound, a hostile client can send a
-/// huge `Content-Length` header and trigger an unbounded allocation before we
-/// attempt to read the body.
-const MAX_DAP_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+use super::MAX_DAP_MESSAGE_BYTES;
 
 /// Read a single DAP-framed JSON message from `reader`.
 ///
@@ -56,7 +51,13 @@ pub fn read_raw_message<R: BufRead>(reader: &mut R) -> io::Result<Option<Vec<u8>
 
         if let Some((name, value)) = line.split_once(':') {
             if name.eq_ignore_ascii_case("Content-Length") {
-                content_length = value.trim().parse::<usize>().ok();
+                let value = value.trim();
+                content_length = Some(value.parse::<usize>().map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("invalid Content-Length {value:?}: {err}"),
+                    )
+                })?);
             }
         }
     }

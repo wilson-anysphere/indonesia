@@ -11,6 +11,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 nova-dap = { path = ".." }
 serde_json = "1"
+tokio = { version = "1", features = ["io-util", "macros", "rt", "time"] }
 
 [[bin]]
 name = "read_dap_message"

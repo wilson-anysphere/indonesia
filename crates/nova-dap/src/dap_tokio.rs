@@ -1,5 +1,6 @@
 use std::io;
 
+use crate::dap::MAX_DAP_MESSAGE_BYTES;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -125,6 +126,12 @@ impl<R: AsyncRead + Unpin> DapReader<R> {
             ));
         };
 
+        if len > MAX_DAP_MESSAGE_BYTES {
+            return Err(DapError::Protocol(format!(
+                "message too large ({len} bytes > {MAX_DAP_MESSAGE_BYTES})",
+            )));
+        }
+
         let mut buf = vec![0u8; len];
         self.reader.read_exact(&mut buf).await?;
         Ok(Some(serde_json::from_slice::<Value>(&buf)?))
@@ -165,5 +172,26 @@ impl<W: AsyncWrite + Unpin> DapWriter<W> {
     pub async fn write_event(&mut self, event: &Event) -> Result<()> {
         let value = serde_json::to_value(event)?;
         self.write_value(&value).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn rejects_messages_larger_than_max() {
+        let framed = format!("Content-Length: {}\r\n\r\n{{}}", MAX_DAP_MESSAGE_BYTES + 1);
+        let (mut writer, reader) = tokio::io::duplex(framed.len());
+        writer.write_all(framed.as_bytes()).await.unwrap();
+        writer.shutdown().await.unwrap();
+        drop(writer);
+
+        let mut reader = DapReader::new(reader);
+        let err = reader.read_value().await.unwrap_err();
+        match err {
+            DapError::Protocol(msg) => assert!(msg.contains("too large")),
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }
