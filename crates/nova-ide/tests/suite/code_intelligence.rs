@@ -1253,6 +1253,40 @@ class A {
 }
 
 #[test]
+fn completion_includes_lambda_snippet_for_generic_jdk_function_expected_type() {
+    let (db, file, pos) = fixture(
+        r#"
+import java.util.function.Function;
+class A {
+  void m() {
+    Function<String, String> f = <|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let lambda_item = items
+        .iter()
+        .find(|item| {
+            item.kind == Some(lsp_types::CompletionItemKind::SNIPPET)
+                && item
+                    .insert_text
+                    .as_deref()
+                    .is_some_and(|text| text.contains("->"))
+        })
+        .expect(
+            "expected completion list to contain a lambda snippet item for generic java.util.function.Function",
+        );
+
+    assert_eq!(
+        lambda_item.insert_text_format,
+        Some(InsertTextFormat::SNIPPET),
+        "expected lambda completion to use snippet insert text format; got {lambda_item:#?}"
+    );
+}
+
+#[test]
 fn completion_includes_lambda_snippet_in_receiver_call_argument_expected_type() {
     let (db, file, pos) = fixture(
         r#"
