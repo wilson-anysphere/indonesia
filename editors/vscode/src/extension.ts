@@ -2783,6 +2783,9 @@ async function discoverTestsForWorkspaces(
     if (!response) {
       return undefined;
     }
+    if (token?.isCancellationRequested) {
+      return undefined;
+    }
     discovered.push({ workspaceFolder: workspace, response });
   }
   return discovered;
@@ -2793,6 +2796,9 @@ async function refreshTests(
   opts?: { token?: vscode.CancellationToken },
 ): Promise<void> {
   if (!testController) {
+    return;
+  }
+  if (opts?.token?.isCancellationRequested) {
     return;
   }
 
@@ -2818,6 +2824,9 @@ async function refreshTests(
   }
 
   if (!discoveredWorkspaces) {
+    return;
+  }
+  if (opts?.token?.isCancellationRequested) {
     return;
   }
 
