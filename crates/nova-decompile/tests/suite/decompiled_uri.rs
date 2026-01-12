@@ -71,6 +71,12 @@ fn parse_decompiled_uri_normalizes_binary_name_dots() {
     let parsed = parse_decompiled_uri(&uri).expect("parse");
     assert_eq!(parsed.binary_name, "com.example.Foo");
 
+    let parsed_vfs_path = nova_vfs::VfsPath::uri(uri.clone());
+    let (_, parsed_vfs_binary_name) = parsed_vfs_path
+        .as_decompiled()
+        .expect("parsed vfs path should be decompiled");
+    assert_eq!(parsed_vfs_binary_name, parsed.binary_name);
+
     let rebuilt = format!(
         "{NOVA_VIRTUAL_URI_SCHEME}:///decompiled/{}/{}.java",
         parsed.content_hash, parsed.binary_name
@@ -88,6 +94,12 @@ fn parse_decompiled_uri_normalizes_binary_name_backslashes() {
 
     let parsed = parse_decompiled_uri(&uri).expect("parse");
     assert_eq!(parsed.binary_name, "com.example.Foo");
+
+    let parsed_vfs_path = nova_vfs::VfsPath::uri(uri.clone());
+    let (_, parsed_vfs_binary_name) = parsed_vfs_path
+        .as_decompiled()
+        .expect("parsed vfs path should be decompiled");
+    assert_eq!(parsed_vfs_binary_name, parsed.binary_name);
 
     let rebuilt = format!(
         "{NOVA_VIRTUAL_URI_SCHEME}:///decompiled/{}/{}.java",

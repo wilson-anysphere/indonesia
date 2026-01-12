@@ -677,8 +677,9 @@ impl ParsedDecompiledUri {
 fn normalize_decompiled_binary_name(binary_name: &str) -> String {
     // Keep this logic in sync with `nova-vfs/src/path.rs:normalize_decompiled_binary_name`.
     let binary_name = binary_name
-        .replace('\\', ".")
-        .replace('/', ".")
+        .strip_suffix(".java")
+        .unwrap_or(binary_name)
+        .replace(['\\', '/'], ".")
         .trim_matches('.')
         .to_string();
 
