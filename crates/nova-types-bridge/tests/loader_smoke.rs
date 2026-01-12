@@ -26,6 +26,7 @@ fn does_not_overwrite_non_placeholder_minimal_jdk_types() {
     // overloads) and `java.util.Collections.emptyList` (losing generics), which then broke target
     // typing and overload resolution in downstream type checking.
     let mut store = TypeStore::with_minimal_jdk();
+    let type_params_before = store.type_param_count();
 
     let math_stub = TypeDefStub {
         binary_name: "java.lang.Math".to_string(),
@@ -77,13 +78,23 @@ fn does_not_overwrite_non_placeholder_minimal_jdk_types() {
 
     {
         let mut loader = ExternalTypeLoader::new(&mut store, &provider);
-        loader
+        let ensured_math = loader
             .ensure_class("java.lang.Math")
             .expect("math should still be present");
-        loader
+        assert_eq!(ensured_math, math_id, "expected ensure_class to reuse Math ClassId");
+        let ensured_collections = loader
             .ensure_class("java.util.Collections")
             .expect("collections should still be present");
+        assert_eq!(
+            ensured_collections, collections_id,
+            "expected ensure_class to reuse Collections ClassId"
+        );
     }
+    assert_eq!(
+        store.type_param_count(),
+        type_params_before,
+        "expected ensure_class to avoid allocating extra type params when skipping non-placeholder defs"
+    );
 
     // Ensure `Math.max(float, float)` survived (built-in stub only provides int overload).
     let math_def = store.class(math_id).expect("math def should exist");
