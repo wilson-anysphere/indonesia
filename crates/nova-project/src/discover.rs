@@ -484,25 +484,11 @@ fn simple_workspace_root(start: &Path) -> Option<PathBuf> {
 /// - `WORKSPACE.bazel`
 /// - `MODULE.bazel`
 pub fn bazel_workspace_root(start: impl AsRef<Path>) -> Option<PathBuf> {
-    let start = start.as_ref();
-    let mut dir = if start.is_file() {
-        start.parent()?
-    } else {
-        start
-    };
-
-    loop {
-        if is_bazel_workspace(dir) {
-            return Some(dir.to_path_buf());
-        }
-        dir = dir.parent()?;
-    }
+    nova_build_model::bazel_workspace_root(start)
 }
 
 pub fn is_bazel_workspace(root: &Path) -> bool {
-    ["WORKSPACE", "WORKSPACE.bazel", "MODULE.bazel"]
-        .iter()
-        .any(|marker| root.join(marker).is_file())
+    nova_build_model::is_bazel_workspace(root)
 }
 
 /// Check whether a file change should trigger a full project reload for a given build system.
@@ -607,6 +593,47 @@ mod tests {
             assert!(
                 is_build_file(BuildSystem::Maven, Path::new(path)),
                 "expected {path} to be treated as a Maven build marker"
+            );
+        }
+    }
+
+    #[test]
+    fn bazel_workspace_root_picks_nearest_marker_and_matches_other_crates() {
+        let tmp = tempdir().expect("tempdir");
+        let outer = tmp.path();
+
+        // Outer workspace marker.
+        std::fs::write(outer.join("WORKSPACE"), "").expect("write outer WORKSPACE");
+
+        // Nested workspace marker that should only be considered when starting inside it.
+        let inner = outer.join("inner");
+        std::fs::create_dir_all(inner.join("deep")).expect("mkdir inner/deep");
+        std::fs::write(inner.join("WORKSPACE"), "").expect("write inner WORKSPACE");
+
+        // A sibling subtree without its own marker; discovery should not walk *down* into `inner/`.
+        let sibling = outer.join("sibling/deep");
+        std::fs::create_dir_all(&sibling).expect("mkdir sibling/deep");
+
+        // Starting inside `inner/` should resolve to the inner marker.
+        let start_inner = inner.join("deep");
+        let expected_inner = Some(inner.clone());
+        assert_eq!(nova_build_model::bazel_workspace_root(&start_inner), expected_inner);
+        assert_eq!(bazel_workspace_root(&start_inner), Some(inner.clone()));
+
+        // Starting outside `inner/` should resolve to the outer marker, ignoring the deeper one.
+        let expected_outer = Some(outer.to_path_buf());
+        assert_eq!(nova_build_model::bazel_workspace_root(&sibling), expected_outer);
+        assert_eq!(bazel_workspace_root(&sibling), Some(outer.to_path_buf()));
+
+        #[cfg(feature = "bazel")]
+        {
+            assert_eq!(
+                nova_build_bazel::bazel_workspace_root(&start_inner),
+                Some(inner.clone())
+            );
+            assert_eq!(
+                nova_build_bazel::bazel_workspace_root(&sibling),
+                Some(outer.to_path_buf())
             );
         }
     }

@@ -94,25 +94,11 @@ fn compile_info_expr_version_hex() -> String {
 /// - `WORKSPACE.bazel`
 /// - `MODULE.bazel`
 pub fn bazel_workspace_root(start: impl AsRef<Path>) -> Option<PathBuf> {
-    let start = start.as_ref();
-    let mut dir = if start.is_file() {
-        start.parent()?
-    } else {
-        start
-    };
-
-    loop {
-        if is_bazel_workspace(dir) {
-            return Some(dir.to_path_buf());
-        }
-        dir = dir.parent()?;
-    }
+    nova_build_model::bazel_workspace_root(start)
 }
 
 pub fn is_bazel_workspace(root: &Path) -> bool {
-    ["WORKSPACE", "WORKSPACE.bazel", "MODULE.bazel"]
-        .iter()
-        .any(|marker| root.join(marker).is_file())
+    nova_build_model::is_bazel_workspace(root)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

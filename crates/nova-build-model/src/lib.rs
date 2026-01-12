@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ClasspathEntryKind {
@@ -43,3 +43,29 @@ pub struct AnnotationProcessing {
     pub test: Option<AnnotationProcessingConfig>,
 }
 
+/// Returns `true` if the given directory looks like a Bazel workspace root.
+///
+/// A Bazel workspace root is identified by the presence of one of:
+/// - `WORKSPACE`
+/// - `WORKSPACE.bazel`
+/// - `MODULE.bazel`
+pub fn is_bazel_workspace(root: &Path) -> bool {
+    ["WORKSPACE", "WORKSPACE.bazel", "MODULE.bazel"]
+        .iter()
+        .any(|marker| root.join(marker).is_file())
+}
+
+/// Walk upwards from `start` to find the Bazel workspace root.
+///
+/// `start` may be either a directory or a file path within a workspace.
+pub fn bazel_workspace_root(start: impl AsRef<Path>) -> Option<PathBuf> {
+    let start = start.as_ref();
+    let mut dir = if start.is_file() { start.parent()? } else { start };
+
+    loop {
+        if is_bazel_workspace(dir) {
+            return Some(dir.to_path_buf());
+        }
+        dir = dir.parent()?;
+    }
+}
