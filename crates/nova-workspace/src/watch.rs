@@ -126,25 +126,53 @@ pub fn categorize_event(config: &WatchConfig, event: &NormalizedEvent) -> Option
         }
     }
 
-    // We only index Java sources.
-    for path in event.paths() {
-        if path.extension().and_then(|s| s.to_str()) != Some("java") {
-            continue;
-        }
-        let has_configured_roots =
-            !config.source_roots.is_empty() || !config.generated_source_roots.is_empty();
+    let has_configured_roots =
+        !config.source_roots.is_empty() || !config.generated_source_roots.is_empty();
 
+    let is_in_source_tree = |path: &Path| {
         if has_configured_roots {
-            if is_within_any(path, &config.source_roots)
+            is_within_any(path, &config.source_roots)
                 || is_within_any(path, &config.generated_source_roots)
+        } else {
+            // Fall back to treating the entire workspace root as a source root when we don't have
+            // more specific roots (e.g. simple projects).
+            path.starts_with(&config.workspace_root)
+        }
+    };
+
+    // We primarily index Java sources.
+    for path in event.paths() {
+        if path.extension().and_then(|s| s.to_str()) == Some("java") && is_in_source_tree(path) {
+            return Some(ChangeCategory::Source);
+        }
+    }
+
+    // Directory-level watcher events (rename/move/delete) can arrive without per-file events.
+    // Treat directory events inside the source tree as Source changes so the workspace engine can
+    // expand them into file-level operations without allocating bogus `FileId`s.
+    for path in event.paths() {
+        if path.is_dir() && is_in_source_tree(path) {
+            return Some(ChangeCategory::Source);
+        }
+    }
+
+    // Deleted directories no longer exist, so `is_dir()` can't detect them. Heuristic: if the
+    // deleted/moved path has no extension and lives under the source tree, pass it through so the
+    // workspace engine can decide whether it corresponds to a tracked directory.
+    match event {
+        NormalizedEvent::Deleted(path) => {
+            if path.extension().is_none() && is_in_source_tree(path) {
+                return Some(ChangeCategory::Source);
+            }
+        }
+        NormalizedEvent::Moved { from, to } => {
+            if (from.extension().is_none() && is_in_source_tree(from))
+                || (to.extension().is_none() && is_in_source_tree(to))
             {
                 return Some(ChangeCategory::Source);
             }
-        } else if path.starts_with(&config.workspace_root) {
-            // Fall back to treating the entire workspace root as a source root when we don't have
-            // more specific roots (e.g. simple projects).
-            return Some(ChangeCategory::Source);
         }
+        _ => {}
     }
 
     None

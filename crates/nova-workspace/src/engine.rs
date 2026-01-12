@@ -938,9 +938,38 @@ impl WorkspaceEngine {
         }
 
         // Coalesce noisy watcher streams by processing each path at most once per batch.
+        //
+        // Note: watcher backends can emit directory-level events (folder move/delete) without
+        // emitting per-file events for the contained files. We expand those directory events into
+        // file-level operations here to preserve stable `FileId` mappings and open-document
+        // overlays.
         let mut move_events: Vec<(PathBuf, PathBuf)> = Vec::new();
         let mut other_paths: HashSet<PathBuf> = HashSet::new();
         let mut module_info_changes: HashSet<PathBuf> = HashSet::new();
+
+        // Helper: return the set of *known* local file paths that are under `dir`.
+        // This must not allocate new `FileId`s.
+        let known_files_under_dir = |dir: &Path| -> Vec<PathBuf> {
+            let mut files = Vec::new();
+            for file_id in self.vfs.all_file_ids() {
+                let Some(vfs_path) = self.vfs.path_for_id(file_id) else {
+                    continue;
+                };
+                let Some(local) = vfs_path.as_local_path() else {
+                    continue;
+                };
+                if local == dir {
+                    // Defensive: skip ids accidentally allocated for directories.
+                    continue;
+                }
+                if local.starts_with(dir) {
+                    files.push(local.to_path_buf());
+                }
+            }
+            files.sort();
+            files.dedup();
+            files
+        };
 
         for event in events {
             match event {
@@ -951,15 +980,98 @@ impl WorkspaceEngine {
                     if is_module_info_java(&to) {
                         module_info_changes.insert(to.clone());
                     }
-                    move_events.push((from, to))
+
+                    // Directory moves can arrive as a single watcher event. Expand to per-file moves
+                    // using the currently-known VFS paths under `from`.
+                    let from_is_dir = fs::metadata(&from).map(|m| m.is_dir()).unwrap_or(false);
+                    let to_is_dir = fs::metadata(&to).map(|m| m.is_dir()).unwrap_or(false);
+                    let from_vfs = VfsPath::local(from.clone());
+                    let to_vfs = VfsPath::local(to.clone());
+                    let from_known_as_file = self.vfs.get_id(&from_vfs).is_some();
+                    let to_known_as_file = self.vfs.get_id(&to_vfs).is_some();
+
+                    let dir_move_files = if from_is_dir || to_is_dir {
+                        known_files_under_dir(&from)
+                    } else if !from_known_as_file {
+                        // The directory might already be gone by the time we observe the event. Fall
+                        // back to checking whether we have any known file paths nested under `from`.
+                        known_files_under_dir(&from)
+                    } else {
+                        Vec::new()
+                    };
+
+                    if !dir_move_files.is_empty() {
+                        for from_file in dir_move_files {
+                            let rel = match from_file.strip_prefix(&from) {
+                                Ok(rel) => rel.to_path_buf(),
+                                Err(_) => continue,
+                            };
+                            let to_file = to.join(rel);
+                            if is_module_info_java(&from_file) {
+                                module_info_changes.insert(from_file.clone());
+                            }
+                            if is_module_info_java(&to_file) {
+                                module_info_changes.insert(to_file.clone());
+                            }
+                            move_events.push((from_file, to_file));
+                        }
+                    } else {
+                        let from_java =
+                            from.extension().and_then(|ext| ext.to_str()) == Some("java");
+                        let to_java = to.extension().and_then(|ext| ext.to_str()) == Some("java");
+                        // Avoid allocating ids for non-Java, untracked file moves. Directory moves
+                        // are handled above by expanding into moves for already-known paths.
+                        if from_java || to_java || from_known_as_file || to_known_as_file {
+                            move_events.push((from, to));
+                        }
+                    }
                 }
-                NormalizedEvent::Created(path)
-                | NormalizedEvent::Modified(path)
-                | NormalizedEvent::Deleted(path) => {
+                NormalizedEvent::Created(path) | NormalizedEvent::Modified(path) => {
                     if is_module_info_java(&path) {
                         module_info_changes.insert(path.clone());
                     }
-                    other_paths.insert(path);
+
+                    // If a directory event makes it through categorization, ignore it. We only
+                    // care about directory moves/deletes; treating a directory as a file would
+                    // allocate a bogus `FileId`.
+                    if fs::metadata(&path).map(|m| m.is_dir()).unwrap_or(false) {
+                        continue;
+                    }
+
+                    let vfs_path = VfsPath::local(path.clone());
+                    let is_known = self.vfs.get_id(&vfs_path).is_some();
+                    let is_java = path.extension().and_then(|ext| ext.to_str()) == Some("java");
+                    if is_java || is_known {
+                        other_paths.insert(path);
+                    }
+                }
+                NormalizedEvent::Deleted(path) => {
+                    if is_module_info_java(&path) {
+                        module_info_changes.insert(path.clone());
+                    }
+
+                    // Directory deletes can arrive as a single watcher event without per-file
+                    // deletes. If the deleted path isn't a known file but *is* a prefix of known
+                    // file paths, expand it as a directory deletion.
+                    let vfs_path = VfsPath::local(path.clone());
+                    let is_known_file = self.vfs.get_id(&vfs_path).is_some();
+                    if !is_known_file {
+                        let dir_files = known_files_under_dir(&path);
+                        if !dir_files.is_empty() {
+                            for file in dir_files {
+                                if is_module_info_java(&file) {
+                                    module_info_changes.insert(file.clone());
+                                }
+                                other_paths.insert(file);
+                            }
+                            continue;
+                        }
+                    }
+
+                    let is_java = path.extension().and_then(|ext| ext.to_str()) == Some("java");
+                    if is_java || is_known_file {
+                        other_paths.insert(path);
+                    }
                 }
             }
         }
@@ -4010,7 +4122,10 @@ mod tests {
             components
                 .iter()
                 .find(|c| c.name == "vfs_documents")
-                .map(|c| c.bytes)
+                .map(|c| {
+                    assert_eq!(c.category, MemoryCategory::Other);
+                    c.bytes
+                })
                 .unwrap_or(0)
         }
 
@@ -4463,6 +4578,120 @@ mod tests {
             assert!(snap.file_exists(file_id));
             assert_eq!(snap.file_content(file_id).as_str(), "class A { overlay }");
             assert_eq!(snap.file_rel_path(file_id).as_str(), "src/B.java");
+        });
+    }
+
+    #[test]
+    fn directory_move_events_preserve_file_ids_and_open_document_overlays() {
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
+
+        let from_dir = root.join("src/main/java/com/foo");
+        fs::create_dir_all(&from_dir).unwrap();
+
+        let a_from = from_dir.join("A.java");
+        let b_from = from_dir.join("B.java");
+        fs::write(&a_from, "class A { disk }".as_bytes()).unwrap();
+        fs::write(&b_from, "class B { disk }".as_bytes()).unwrap();
+
+        let workspace = crate::Workspace::open(&root).unwrap();
+        let engine = workspace.engine_for_tests();
+
+        let vfs_a_from = VfsPath::local(a_from.clone());
+        let vfs_b_from = VfsPath::local(b_from.clone());
+        let id_a = engine.vfs.get_id(&vfs_a_from).expect("A file id allocated");
+        let id_b = engine.vfs.get_id(&vfs_b_from).expect("B file id allocated");
+
+        // Open A so we can verify overlay preservation across a directory move.
+        let opened =
+            workspace.open_document(vfs_a_from.clone(), "class A { overlay }".to_string(), 1);
+        assert_eq!(opened, id_a);
+        assert!(engine.vfs.open_documents().is_open(id_a));
+
+        let to_dir = root.join("src/main/java/com/bar");
+        fs::create_dir_all(to_dir.parent().unwrap()).unwrap();
+        fs::rename(&from_dir, &to_dir).unwrap();
+
+        workspace.apply_filesystem_events(vec![NormalizedEvent::Moved {
+            from: from_dir.clone(),
+            to: to_dir.clone(),
+        }]);
+
+        let a_to = to_dir.join("A.java");
+        let b_to = to_dir.join("B.java");
+        let vfs_a_to = VfsPath::local(a_to.clone());
+        let vfs_b_to = VfsPath::local(b_to.clone());
+
+        assert_eq!(engine.vfs.get_id(&vfs_a_from), None);
+        assert_eq!(engine.vfs.get_id(&vfs_b_from), None);
+        assert_eq!(engine.vfs.get_id(&vfs_a_to), Some(id_a));
+        assert_eq!(engine.vfs.get_id(&vfs_b_to), Some(id_b));
+
+        // Directory moves should not allocate ids for the directory paths themselves.
+        assert_eq!(engine.vfs.get_id(&VfsPath::local(from_dir.clone())), None);
+        assert_eq!(engine.vfs.get_id(&VfsPath::local(to_dir.clone())), None);
+
+        // Overlay contents should move along with the file.
+        assert_eq!(
+            engine.vfs.read_to_string(&vfs_a_to).unwrap(),
+            "class A { overlay }"
+        );
+
+        engine.query_db.with_snapshot(|snap| {
+            assert!(snap.file_exists(id_a));
+            assert!(snap.file_exists(id_b));
+            assert_eq!(
+                snap.file_rel_path(id_a).as_str(),
+                "src/main/java/com/bar/A.java"
+            );
+            assert_eq!(
+                snap.file_rel_path(id_b).as_str(),
+                "src/main/java/com/bar/B.java"
+            );
+            assert!(snap.project_files(ProjectId::from_raw(0)).contains(&id_a));
+            assert!(snap.project_files(ProjectId::from_raw(0)).contains(&id_b));
+        });
+    }
+
+    #[test]
+    fn directory_deletion_events_mark_nested_files_as_missing_and_remove_from_project_files() {
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
+
+        let src_dir = root.join("src/main/java/com/example");
+        fs::create_dir_all(&src_dir).unwrap();
+
+        let a = src_dir.join("A.java");
+        let b = src_dir.join("B.java");
+        fs::write(&a, "class A {}".as_bytes()).unwrap();
+        fs::write(&b, "class B {}".as_bytes()).unwrap();
+
+        let workspace = crate::Workspace::open(&root).unwrap();
+        let engine = workspace.engine_for_tests();
+        let project = ProjectId::from_raw(0);
+
+        let id_a = engine.vfs.get_id(&VfsPath::local(a.clone())).expect("A id");
+        let id_b = engine.vfs.get_id(&VfsPath::local(b.clone())).expect("B id");
+        engine.query_db.with_snapshot(|snap| {
+            assert!(snap.project_files(project).contains(&id_a));
+            assert!(snap.project_files(project).contains(&id_b));
+            assert!(snap.file_exists(id_a));
+            assert!(snap.file_exists(id_b));
+        });
+
+        fs::remove_dir_all(&src_dir).unwrap();
+        workspace.apply_filesystem_events(vec![NormalizedEvent::Deleted(src_dir.clone())]);
+
+        // Directory deletes should not allocate ids for the directory path itself.
+        assert_eq!(engine.vfs.get_id(&VfsPath::local(src_dir.clone())), None);
+
+        engine.query_db.with_snapshot(|snap| {
+            assert!(!snap.file_exists(id_a));
+            assert!(!snap.file_exists(id_b));
+            assert!(!snap.project_files(project).contains(&id_a));
+            assert!(!snap.project_files(project).contains(&id_b));
         });
     }
 
