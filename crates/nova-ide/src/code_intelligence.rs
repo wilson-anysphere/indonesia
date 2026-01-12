@@ -6231,6 +6231,18 @@ pub(crate) fn core_completions(
         return Vec::new();
     }
 
+    // JPMS `module-info.java` completions (keywords/directives/modules/packages).
+    if is_module_descriptor(db, file, text) {
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
+        let items = module_info_completion_items(db, file, text, offset, prefix_start, &prefix);
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
+        return decorate_completions(&text_index, prefix_start, offset, items);
+    }
+
     // Prefer `import static Foo.<member>` completions over generic import path completions so we
     // surface static members (e.g. `max`) instead of only offering `*`.
     if let Some(items) = static_import_completions(text, offset, prefix_start, &prefix) {
@@ -6682,6 +6694,39 @@ class A {
             });
         assert_eq!(unicode.insert_text.as_deref(), Some(r#"\u0${1:000}"#));
         assert_eq!(unicode.insert_text_format, Some(InsertTextFormat::SNIPPET));
+    }
+
+    #[test]
+    fn core_completions_in_module_info_suggests_directive_snippets() {
+        let mut db = InMemoryFileStore::new();
+        let file = db.file_id_for_path(PathBuf::from("/workspace/module-info.java"));
+        let source_with_caret = "module my.mod { <|> }";
+        let caret = source_with_caret
+            .find("<|>")
+            .expect("expected <|> caret marker");
+        let source = source_with_caret.replace("<|>", "");
+        db.set_file_text(file, source.clone());
+
+        let position = crate::text::offset_to_position(&source, caret);
+        let cancel = nova_scheduler::CancellationToken::new();
+        let items = core_completions(&db, file, position, &cancel);
+        let requires = items
+            .iter()
+            .find(|item| item.label == "requires")
+            .expect("expected `requires` completion item");
+
+        assert_eq!(
+            requires.insert_text_format,
+            Some(InsertTextFormat::SNIPPET),
+            "expected requires completion to be a snippet; got {requires:#?}"
+        );
+        assert!(
+            requires
+                .insert_text
+                .as_deref()
+                .is_some_and(|t| t.contains("requires ${1:module};")),
+            "expected requires snippet text; got {requires:#?}"
+        );
     }
 }
 
