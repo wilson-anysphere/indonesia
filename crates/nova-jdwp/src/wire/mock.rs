@@ -3694,6 +3694,12 @@ mod tests {
             other => panic!("expected list to be an object value, got {other:?}"),
         };
 
+        // Ensure the mock provides a collection-like runtime type for `list` so higher-level
+        // stream-eval/stream-debug code can resolve `stream()` and similar methods.
+        let (_tag, type_id) = client.object_reference_reference_type(list_id).await.unwrap();
+        let signature = client.reference_type_signature(type_id).await.unwrap();
+        assert_eq!(signature, "Ljava/util/ArrayList;");
+
         // Ensure higher-level helpers can treat `list` like an actual list (regression guard for
         // stream-debug, which samples the backing collection via inspection).
         let mut inspector = Inspector::new(client.clone());
