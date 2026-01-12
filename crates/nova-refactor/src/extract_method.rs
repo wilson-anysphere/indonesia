@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use nova_format::NewlineStyle;
 use serde::{Deserialize, Serialize};
 
 use nova_core::Name;
@@ -225,6 +226,8 @@ impl ExtractMethod {
             ));
         }
 
+        let newline = NewlineStyle::detect(source).as_str();
+
         let selection = trim_range(source, self.selection);
         let parsed = parse_java(source);
         if !parsed.errors.is_empty() {
@@ -246,7 +249,9 @@ impl ExtractMethod {
 
         let insertion_offset = match self.insertion_strategy {
             InsertionStrategy::AfterCurrentMethod => syntax_range(method.syntax()).end,
-            InsertionStrategy::EndOfClass => insertion_offset_end_of_class(source, &class_decl),
+            InsertionStrategy::EndOfClass => {
+                insertion_offset_end_of_class(source, &class_decl, newline)
+            }
         };
 
         let extracted_text = source
@@ -255,20 +260,20 @@ impl ExtractMethod {
             .to_string();
 
         let new_body_indent = format!("{method_indent}    ");
-        let extracted_body = reindent(&extracted_text, &call_indent, &new_body_indent);
+        let extracted_body = reindent(&extracted_text, &call_indent, &new_body_indent, newline);
 
         let mut method_body_text = extracted_body;
-        if !method_body_text.ends_with('\n') {
-            method_body_text.push('\n');
+        if !method_body_text.ends_with(newline) {
+            method_body_text.push_str(newline);
         }
 
         if let Some(ret) = &analysis.return_value {
             let declared_as_param = analysis.parameters.iter().any(|p| p.name == ret.name);
             if !ret.declared_in_selection && !declared_as_param {
-                let decl = format!("{new_body_indent}{} {};\n", ret.ty, ret.name);
+                let decl = format!("{new_body_indent}{} {};{newline}", ret.ty, ret.name);
                 method_body_text = format!("{decl}{method_body_text}");
             }
-            method_body_text.push_str(&format!("{new_body_indent}return {};\n", ret.name));
+            method_body_text.push_str(&format!("{new_body_indent}return {};{newline}", ret.name));
         }
 
         let return_ty = analysis
@@ -287,25 +292,26 @@ impl ExtractMethod {
         let vis_kw = self.visibility.keyword();
         let signature = match (vis_kw.is_empty(), enclosing_method_is_static) {
             (true, false) => format!(
-                "{method_indent}{return_ty} {}({params_sig}) {{\n",
+                "{method_indent}{return_ty} {}({params_sig}) {{{newline}",
                 self.name
             ),
             (true, true) => format!(
-                "{method_indent}static {return_ty} {}({params_sig}) {{\n",
+                "{method_indent}static {return_ty} {}({params_sig}) {{{newline}",
                 self.name
             ),
             (false, false) => format!(
-                "{method_indent}{vis_kw} {return_ty} {}({params_sig}) {{\n",
+                "{method_indent}{vis_kw} {return_ty} {}({params_sig}) {{{newline}",
                 self.name
             ),
             (false, true) => format!(
-                "{method_indent}{vis_kw} static {return_ty} {}({params_sig}) {{\n",
+                "{method_indent}{vis_kw} static {return_ty} {}({params_sig}) {{{newline}",
                 self.name
             ),
         };
 
         let mut new_method_text = String::new();
-        new_method_text.push_str("\n\n");
+        new_method_text.push_str(newline);
+        new_method_text.push_str(newline);
         new_method_text.push_str(&signature);
         new_method_text.push_str(&method_body_text);
         new_method_text.push_str(&method_indent);
@@ -1207,7 +1213,11 @@ fn add_expr_uses(body: &Body, expr: ExprId, live: &mut HashSet<LocalId>) {
     }
 }
 
-fn insertion_offset_end_of_class(source: &str, class_decl: &ast::ClassDeclaration) -> usize {
+fn insertion_offset_end_of_class(
+    source: &str,
+    class_decl: &ast::ClassDeclaration,
+    newline: &str,
+) -> usize {
     let Some(body) = class_decl.body() else {
         return syntax_range(class_decl.syntax()).end;
     };
@@ -1224,7 +1234,7 @@ fn insertion_offset_end_of_class(source: &str, class_decl: &ast::ClassDeclaratio
     }
     let close = close.unwrap_or_else(|| syntax_range(body.syntax()).end);
     let line_start = line_start_offset(source, close);
-    line_start.saturating_sub(1)
+    line_start.saturating_sub(newline.len())
 }
 
 fn trim_range(source: &str, mut range: TextRange) -> TextRange {
@@ -1239,7 +1249,10 @@ fn trim_range(source: &str, mut range: TextRange) -> TextRange {
 }
 
 fn line_start_offset(source: &str, offset: usize) -> usize {
-    source[..offset].rfind('\n').map(|p| p + 1).unwrap_or(0)
+    source[..offset]
+        .rfind(['\n', '\r'])
+        .map(|p| p + 1)
+        .unwrap_or(0)
 }
 
 fn indentation_at(source: &str, offset: usize) -> String {
@@ -1250,9 +1263,10 @@ fn indentation_at(source: &str, offset: usize) -> String {
         .collect()
 }
 
-fn reindent(block: &str, old_indent: &str, new_indent: &str) -> String {
+fn reindent(block: &str, old_indent: &str, new_indent: &str, newline: &str) -> String {
+    let normalized = block.replace("\r\n", "\n").replace('\r', "\n");
     let mut out = String::new();
-    for line in block.split_inclusive('\n') {
+    for line in normalized.split_inclusive('\n') {
         let has_newline = line.ends_with('\n');
         let line = line.strip_suffix('\n').unwrap_or(line);
         let line = line.strip_prefix(old_indent).unwrap_or(line);
@@ -1264,10 +1278,14 @@ fn reindent(block: &str, old_indent: &str, new_indent: &str) -> String {
             out.push('\n');
         }
     }
-    if !block.ends_with('\n') && out.ends_with('\n') {
+    if !normalized.ends_with('\n') && out.ends_with('\n') {
         out.pop();
     }
-    out
+    if newline == "\n" {
+        out
+    } else {
+        out.replace('\n', newline)
+    }
 }
 
 fn is_valid_java_identifier(name: &str) -> bool {

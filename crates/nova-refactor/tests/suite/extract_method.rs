@@ -18,6 +18,24 @@ fn assert_no_overlaps(edit: &WorkspaceEdit) {
         .expect("edits should normalize without overlaps");
 }
 
+fn assert_crlf_only(text: &str) {
+    let bytes = text.as_bytes();
+    for (idx, b) in bytes.iter().enumerate() {
+        if *b == b'\n' {
+            assert!(
+                idx > 0 && bytes[idx - 1] == b'\r',
+                "found bare LF at byte offset {idx}"
+            );
+        }
+        if *b == b'\r' {
+            assert!(
+                idx + 1 < bytes.len() && bytes[idx + 1] == b'\n',
+                "found bare CR at byte offset {idx}"
+            );
+        }
+    }
+}
+
 #[test]
 fn extract_method_with_parameters() {
     let fixture = r#"
@@ -459,7 +477,59 @@ class C {
     }
 }
 "#;
+    assert_eq!(actual, expected);
+}
 
+#[test]
+fn extract_method_preserves_crlf_newlines() {
+    let fixture_lf = r#"
+class C {
+    void m(int a) {
+        int b = 1;
+        /*start*/System.out.println(a + b);/*end*/
+        System.out.println("done");
+    }
+
+    void n() {
+        System.out.println("n");
+    }
+}
+"#;
+
+    let fixture = fixture_lf.replace('\n', "\r\n");
+    let (source, selection) = extract_range(&fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::EndOfClass,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    assert_crlf_only(&actual);
+
+    let expected_lf = r#"
+class C {
+    void m(int a) {
+        int b = 1;
+        extracted(a, b);
+        System.out.println("done");
+    }
+
+    void n() {
+        System.out.println("n");
+    }
+
+    private void extracted(int a, int b) {
+        System.out.println(a + b);
+    }
+}
+"#;
+    let expected = expected_lf.replace('\n', "\r\n");
     assert_eq!(actual, expected);
 }
 

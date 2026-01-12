@@ -912,7 +912,6 @@ fn infer_var_type_in_scope_any(text: &str, offset: usize, var_name: &str) -> Opt
             if b.is_ascii_whitespace() {
                 break;
             }
-
             if is_type_token_char(b) {
                 start -= 1;
                 continue;
@@ -1010,7 +1009,9 @@ fn resolve_method_in_hierarchy(
                 if sig_types == param_types {
                     return Some(id);
                 }
-                continue;
+                // Best-effort: fall back to parsing the declaration when the index signature
+                // doesn't match. The index signature is derived from a lightweight parser and may
+                // normalize whitespace or split generic type arguments differently.
             }
 
             let parsed = match parse_method(index, sym, id) {
