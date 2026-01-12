@@ -378,6 +378,16 @@ mod tests {
     }
 
     #[test]
+    fn rewrite_this_respects_identifier_boundaries_and_multiple_occurrences() {
+        let expr = "this + thisThing + otherthis + _this + this.foo() + this";
+        let rewritten = rewrite_this_tokens(expr, "__this");
+        assert_eq!(
+            rewritten,
+            "__this + thisThing + otherthis + _this + __this.foo() + __this"
+        );
+    }
+
+    #[test]
     fn sanitize_java_param_name_handles_tricky_and_invalid_identifiers() {
         let tricky = ["$x", "_x", "x1"];
         for name in tricky {
@@ -425,5 +435,12 @@ mod tests {
         assert!(src.contains("public static Object stage1"));
         assert!(src.contains("return __this.foo();"));
         assert!(src.contains("return __this.bar();"));
+    }
+
+    #[test]
+    fn sanitize_java_param_name_handles_keywords() {
+        assert_eq!(sanitize_java_param_name("class"), "class_");
+        assert_eq!(sanitize_java_param_name("return"), "return_");
+        assert_eq!(sanitize_java_param_name("this"), "__this");
     }
 }

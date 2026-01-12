@@ -581,7 +581,10 @@ impl<DB: ?Sized> IdeExtensions<DB>
 where
     DB: Send + Sync + 'static + nova_db::Database + AsDynNovaDb,
 {
-    pub fn with_default_registry(db: Arc<DB>, config: Arc<NovaConfig>, project: ProjectId) -> Self {
+    pub fn with_default_registry(db: Arc<DB>, config: Arc<NovaConfig>, project: ProjectId) -> Self
+    where
+        FrameworkAnalyzerRegistryProvider: DiagnosticProvider<DB> + CompletionProvider<DB>,
+    {
         let mut this = Self::new(db, config, project);
         let registry = this.registry_mut();
         let _ = registry.register_diagnostic_provider(Arc::new(FrameworkDiagnosticProvider));
