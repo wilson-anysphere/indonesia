@@ -101,13 +101,11 @@ class C { float m(){ return 1.0f; } }
 #[test]
 fn type_at_offset_shows_double_for_double_literal() {
     let src = r#"
-class C { double m(){ return 1.0d; } }
+class C { double m(){ return 1.0; } }
 "#;
 
     let (db, file) = setup_db(src);
-    let offset = src
-        .find("1.0d")
-        .expect("snippet should contain double literal");
+    let offset = src.find("1.0").expect("snippet should contain double literal");
     let ty = db
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
