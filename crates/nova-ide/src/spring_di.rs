@@ -394,7 +394,7 @@ pub(crate) fn annotation_string_context(
     let name = &before[at_pos + 1..end];
     let simple = name.rsplit('.').next().unwrap_or(name);
     let kind = match simple {
-        "Qualifier" => AnnotationStringContext::Qualifier,
+        "Qualifier" | "Named" => AnnotationStringContext::Qualifier,
         "Profile" => AnnotationStringContext::Profile,
         _ => return None,
     };

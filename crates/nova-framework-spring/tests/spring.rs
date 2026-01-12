@@ -241,6 +241,39 @@ fn rest_controller_is_discovered_as_component() {
 }
 
 #[test]
+fn inject_and_named_work_for_di_resolution() {
+    let api = r#"
+        import javax.inject.Named;
+        import org.springframework.stereotype.Component;
+
+        interface Foo {}
+
+        @Component
+        @Named("specialFoo")
+        class FooImpl implements Foo {}
+    "#;
+    let consumer = r#"
+        import javax.inject.Inject;
+        import javax.inject.Named;
+        import org.springframework.stereotype.Component;
+
+        @Component
+        class Consumer {
+            @Inject
+            @Named("specialFoo")
+            Foo foo;
+        }
+    "#;
+
+    let analysis = analyze_java_sources(&[api, consumer]);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "unexpected diagnostics: {:#?}",
+        analysis.diagnostics
+    );
+}
+
+#[test]
 fn no_bean_diagnostic_triggers() {
     let bar = r#"
         import org.springframework.stereotype.Component;

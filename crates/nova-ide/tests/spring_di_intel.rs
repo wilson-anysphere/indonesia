@@ -204,6 +204,89 @@ class FooImpl implements Foo {}
 }
 
 #[test]
+fn spring_named_completion_returns_bean_names() {
+    let consumer_path = PathBuf::from("/spring-named/src/main/java/Consumer.java");
+    let consumer_text = r#"import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Component;
+ import javax.inject.Named;
+ 
+ interface Foo {}
+ 
+ @Component
+ class Consumer {
+   @Autowired @Named("<|>") Foo foo;
+ }
+ "#;
+ 
+     let foo_impl_1 = (
+         PathBuf::from("/spring-named/src/main/java/FooImpl1.java"),
+         r#"import org.springframework.stereotype.Component;
+ 
+ @Component
+ class FooImpl1 implements Foo {}
+ "#
+         .to_string(),
+     );
+ 
+     let foo_impl_2 = (
+         PathBuf::from("/spring-named/src/main/java/FooImpl2.java"),
+         r#"import org.springframework.stereotype.Component;
+ 
+ @Component
+ class FooImpl2 implements Foo {}
+ "#
+         .to_string(),
+     );
+ 
+     let (db, file, pos) = fixture_multi(consumer_path, consumer_text, vec![foo_impl_1, foo_impl_2]);
+     let items = completions(&db, file, pos);
+     let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+ 
+     assert!(
+         labels.contains(&"fooImpl1") && labels.contains(&"fooImpl2"),
+         "expected @Named completions to include bean names; got {labels:?}"
+     );
+ }
+ 
+#[test]
+fn spring_goto_definition_from_named_string_jumps_to_matching_bean() {
+    let consumer_path = PathBuf::from("/spring-named-nav/src/main/java/Consumer.java");
+    let consumer_text = r#"import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Component;
+ import javax.inject.Named;
+ 
+ interface Foo {}
+ 
+ @Component
+ class Consumer {
+   @Autowired @Named("specialFo<|>o") Foo foo;
+ }
+ "#;
+ 
+     let bean_path = PathBuf::from("/spring-named-nav/src/main/java/FooImpl.java");
+     let bean_text = r#"import org.springframework.stereotype.Component;
+ import javax.inject.Named;
+ 
+ @Component
+ @Named("specialFoo")
+ class FooImpl implements Foo {}
+ "#;
+ 
+     let (db, file, pos) = fixture_multi(
+         consumer_path,
+         consumer_text,
+         vec![(bean_path, bean_text.to_string())],
+     );
+ 
+     let loc = goto_definition(&db, file, pos).expect("expected bean definition location");
+     assert!(
+         loc.uri.as_str().contains("FooImpl.java"),
+         "expected definition URI to point at FooImpl; got {:?}",
+         loc.uri
+     );
+ }
+ 
+#[test]
 fn spring_goto_definition_from_injection_jumps_to_component() {
     let consumer_path = PathBuf::from("/spring-nav/src/main/java/Consumer.java");
     let consumer_text = r#"import org.springframework.beans.factory.annotation.Autowired;

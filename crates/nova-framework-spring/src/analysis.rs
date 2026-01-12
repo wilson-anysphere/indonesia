@@ -538,17 +538,7 @@ fn parse_component_bean(
 
     let name = explicit_name.unwrap_or_else(|| lower_camel_case(class_name));
 
-    let qualifiers = annotations
-        .iter()
-        .filter(|a| a.simple_name == "Qualifier")
-        .filter_map(|a| {
-            a.args
-                .get("value")
-                .cloned()
-                .or_else(|| a.args.get("name").cloned())
-        })
-        .filter(|q| !q.is_empty())
-        .collect::<Vec<_>>();
+    let qualifiers = bean_qualifiers_from_annotations(annotations);
 
     let primary = annotations.iter().any(|a| a.simple_name == "Primary");
     let profiles = extract_profiles(annotations);
@@ -636,20 +626,16 @@ fn parse_field_injections(
         .map(|m| collect_annotations(m, source))
         .unwrap_or_default();
 
-    if !annotations.iter().any(|a| a.simple_name == "Autowired") {
+    if !annotations.iter().any(|a| {
+        matches!(
+            a.simple_name.as_str(),
+            "Autowired" | "Inject" | "Resource"
+        )
+    }) {
         return;
     }
 
-    let qualifier = annotations
-        .iter()
-        .find(|a| a.simple_name == "Qualifier")
-        .and_then(|a| {
-            a.args
-                .get("value")
-                .cloned()
-                .or_else(|| a.args.get("name").cloned())
-        })
-        .filter(|s| !s.is_empty());
+    let qualifier = qualifier_from_annotations(&annotations);
 
     let ty_node = node
         .child_by_field_name("type")
@@ -710,7 +696,9 @@ fn parse_constructor(
     let annotations = modifier_node(node)
         .map(|m| collect_annotations(m, source))
         .unwrap_or_default();
-    let is_autowired = annotations.iter().any(|a| a.simple_name == "Autowired");
+    let is_autowired = annotations
+        .iter()
+        .any(|a| matches!(a.simple_name.as_str(), "Autowired" | "Inject"));
 
     let params_node = node
         .child_by_field_name("parameters")
@@ -741,16 +729,7 @@ fn parse_constructor_param(node: Node<'_>, source: &str) -> Option<ConstructorPa
     let annotations = modifier_node(node)
         .map(|m| collect_annotations(m, source))
         .unwrap_or_default();
-    let qualifier = annotations
-        .iter()
-        .find(|a| a.simple_name == "Qualifier")
-        .and_then(|a| {
-            a.args
-                .get("value")
-                .cloned()
-                .or_else(|| a.args.get("name").cloned())
-        })
-        .filter(|s| !s.is_empty());
+    let qualifier = qualifier_from_annotations(&annotations);
 
     let name_node = node
         .child_by_field_name("name")
@@ -845,7 +824,10 @@ fn parse_autowired_method_param_injections(
         .map(|m| collect_annotations(m, source))
         .unwrap_or_default();
 
-    if !annotations.iter().any(|a| a.simple_name == "Autowired") {
+    if !annotations
+        .iter()
+        .any(|a| matches!(a.simple_name.as_str(), "Autowired" | "Inject"))
+    {
         return;
     }
     // `@Bean` methods already have their parameters modeled as BeanMethodParam injections.
@@ -912,17 +894,7 @@ fn parse_bean_method(node: Node<'_>, source_idx: usize, source: &str) -> Option<
         (explicit_names[0].clone(), explicit_names[1..].to_vec())
     };
 
-    let mut qualifiers = annotations
-        .iter()
-        .filter(|a| a.simple_name == "Qualifier")
-        .filter_map(|a| {
-            a.args
-                .get("value")
-                .cloned()
-                .or_else(|| a.args.get("name").cloned())
-        })
-        .filter(|q| !q.is_empty())
-        .collect::<Vec<_>>();
+    let mut qualifiers = bean_qualifiers_from_annotations(&annotations);
     // Treat additional `@Bean(name={...})` entries as aliases (qualifier matches).
     qualifiers.extend(aliases);
     qualifiers.sort();
@@ -1217,6 +1189,47 @@ fn extract_profiles(annotations: &[ParsedAnnotation]) -> Vec<String> {
             out.extend(parse_string_list(raw));
         }
     }
+    out
+}
+
+fn qualifier_from_annotations(annotations: &[ParsedAnnotation]) -> Option<String> {
+    for ann in annotations {
+        let value = match ann.simple_name.as_str() {
+            "Qualifier" | "Named" => ann
+                .args
+                .get("value")
+                .cloned()
+                .or_else(|| ann.args.get("name").cloned()),
+            "Resource" => ann
+                .args
+                .get("name")
+                .cloned()
+                .or_else(|| ann.args.get("value").cloned()),
+            _ => None,
+        };
+
+        if let Some(value) = value.filter(|s| !s.is_empty()) {
+            return Some(value);
+        }
+    }
+
+    None
+}
+
+fn bean_qualifiers_from_annotations(annotations: &[ParsedAnnotation]) -> Vec<String> {
+    let mut out = annotations
+        .iter()
+        .filter(|ann| matches!(ann.simple_name.as_str(), "Qualifier" | "Named"))
+        .filter_map(|ann| {
+            ann.args
+                .get("value")
+                .cloned()
+                .or_else(|| ann.args.get("name").cloned())
+        })
+        .filter(|q| !q.is_empty())
+        .collect::<Vec<_>>();
+    out.sort();
+    out.dedup();
     out
 }
 
