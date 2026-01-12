@@ -2016,9 +2016,14 @@ pub fn cast_conversion(env: &dyn TypeEnv, from: &Type, to: &Type) -> Option<Conv
 
     // Intersection casts: `(A & B) expr` is valid iff `expr` is castable to each component.
     if let Type::Intersection(parts) = &to {
-        let conv = Conversion::new(ConversionStep::NarrowingReference);
+        let mut conv = Conversion::new(ConversionStep::NarrowingReference);
         for p in parts {
-            cast_conversion(env, &from, p)?;
+            let part_conv = cast_conversion(env, &from, p)?;
+            for warning in part_conv.warnings {
+                if !conv.warnings.contains(&warning) {
+                    conv.warnings.push(warning);
+                }
+            }
         }
         return Some(conv);
     }

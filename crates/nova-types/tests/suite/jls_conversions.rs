@@ -148,6 +148,23 @@ fn parameterized_casts_are_unchecked() {
 }
 
 #[test]
+fn intersection_casts_preserve_component_warnings() {
+    let env = TypeStore::with_minimal_jdk();
+    let list_id = env.class_id("java.util.List").unwrap();
+
+    let list_string = Type::class(list_id, vec![Type::class(env.well_known().string, vec![])]);
+    let list_int = Type::class(list_id, vec![Type::class(env.well_known().integer, vec![])]);
+
+    let serializable = env.well_known().serializable;
+    let target = Type::Intersection(vec![list_int.clone(), Type::class(serializable, vec![])]);
+
+    let conv = cast_conversion(&env, &list_string, &target).unwrap();
+    assert!(conv
+        .warnings
+        .contains(&TypeWarning::Unchecked(UncheckedReason::UncheckedCast)));
+}
+
+#[test]
 fn conversion_cost_ordering() {
     let env = TypeStore::with_minimal_jdk();
 
