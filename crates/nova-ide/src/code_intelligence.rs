@@ -2186,15 +2186,28 @@ fn module_info_type_path_completions(
                 .as_ref()
                 .cloned()
                 .unwrap_or_else(|| EMPTY_JDK_INDEX.clone());
-            if let Ok(pkgs) = jdk.packages_with_prefix(&pkg_prefix) {
-                for pkg in pkgs.into_iter().take(MAX_JDK_PACKAGES) {
-                    add_package_segment_candidates(
-                        &mut package_candidates,
-                        &pkg,
-                        &parent_segments,
-                        prefix,
-                    );
+            let fallback_jdk = JdkIndex::new();
+            let packages: &[String] = jdk
+                .all_packages()
+                .or_else(|_| fallback_jdk.all_packages())
+                .unwrap_or(&[]);
+            let pkg_prefix = normalize_binary_prefix(&pkg_prefix);
+            let start = packages.partition_point(|pkg| pkg.as_str() < pkg_prefix.as_ref());
+            let mut added = 0usize;
+            for pkg in &packages[start..] {
+                if added >= MAX_JDK_PACKAGES {
+                    break;
                 }
+                if !pkg.starts_with(pkg_prefix.as_ref()) {
+                    break;
+                }
+                added += 1;
+                add_package_segment_candidates(
+                    &mut package_candidates,
+                    pkg,
+                    &parent_segments,
+                    prefix,
+                );
             }
         }
     }
