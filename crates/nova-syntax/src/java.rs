@@ -1439,6 +1439,10 @@ impl Lowerer {
                 Some(ast::Stmt::LocalVar(self.lower_local_var_stmt(node)))
             }
             SyntaxKind::ExpressionStatement => Some(ast::Stmt::Expr(self.lower_expr_stmt(node))),
+            // Treat `this(...);` / `super(...);` as an expression statement.
+            //
+            // The Java grammar restricts explicit constructor invocations to constructors, but
+            // semantic layers need to handle (and diagnose) misplaced invocations too.
             SyntaxKind::ExplicitConstructorInvocation => {
                 Some(ast::Stmt::Expr(self.lower_expr_stmt(node)))
             }

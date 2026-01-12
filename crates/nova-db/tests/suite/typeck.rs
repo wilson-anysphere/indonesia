@@ -1468,6 +1468,64 @@ class C {
 }
 
 #[test]
+fn super_invocation_outside_constructor_is_error() {
+    let src = r#"
+class C {
+    void m() {
+        super();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter()
+            .any(|d| d.code.as_ref() == "invalid-constructor-invocation"),
+        "expected invalid-constructor-invocation diagnostic, got {diags:?}"
+    );
+}
+
+#[test]
+fn super_invocation_not_first_is_error() {
+    let src = r#"
+class C {
+    C() {
+        int x = 0;
+        super();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter()
+            .any(|d| d.code.as_ref() == "constructor-invocation-not-first"),
+        "expected constructor-invocation-not-first diagnostic, got {diags:?}"
+    );
+}
+
+#[test]
+fn explicit_super_invocation_resolves_object_ctor() {
+    let src = r#"
+class C {
+    C() {
+        super();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter()
+            .all(|d| d.code.as_ref() != "unresolved-constructor"),
+        "expected super() to resolve against Object(), got {diags:?}"
+    );
+}
+
+#[test]
 fn unqualified_method_call_resolves_against_enclosing_class() {
     let src = r#"
 class C {

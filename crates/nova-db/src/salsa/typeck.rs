@@ -3177,6 +3177,21 @@ struct BodyChecker<'a, 'idx> {
     steps: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExplicitConstructorInvocationKind {
+    This,
+    Super,
+}
+
+impl ExplicitConstructorInvocationKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            ExplicitConstructorInvocationKind::This => "this",
+            ExplicitConstructorInvocationKind::Super => "super",
+        }
+    }
+}
+
 impl<'a, 'idx> BodyChecker<'a, 'idx> {
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -3277,8 +3292,73 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
     }
 
     fn check_body(&mut self, loader: &mut ExternalTypeLoader<'_>) {
+        if matches!(self.owner, DefWithBodyId::Constructor(_)) {
+            self.check_explicit_constructor_invocation_placement();
+        }
+
         let expected_return = self.expected_return.clone();
         self.check_stmt(loader, self.body.root, &expected_return);
+    }
+
+    /// Best-effort enforcement that `this(...);` / `super(...);` is the first statement in a
+    /// constructor body.
+    fn check_explicit_constructor_invocation_placement(&mut self) {
+        let DefWithBodyId::Constructor(_) = self.owner else {
+            return;
+        };
+
+        let HirStmt::Block { statements, .. } = &self.body.stmts[self.body.root] else {
+            return;
+        };
+
+        for (idx, stmt) in statements.iter().enumerate() {
+            if !self.is_explicit_constructor_invocation_stmt(*stmt) {
+                continue;
+            }
+
+            if idx > 0 {
+                self.diagnostics.push(Diagnostic::error(
+                    "constructor-invocation-not-first",
+                    "constructor invocation must be the first statement in a constructor",
+                    Some(self.stmt_range(*stmt)),
+                ));
+            }
+        }
+    }
+
+    fn is_explicit_constructor_invocation_stmt(&self, stmt: nova_hir::hir::StmtId) -> bool {
+        let HirStmt::Expr { expr, .. } = &self.body.stmts[stmt] else {
+            return false;
+        };
+
+        let HirExpr::Call { callee, .. } = &self.body.exprs[*expr] else {
+            return false;
+        };
+
+        matches!(
+            &self.body.exprs[*callee],
+            HirExpr::This { .. } | HirExpr::Super { .. }
+        )
+    }
+
+    fn stmt_range(&self, stmt: nova_hir::hir::StmtId) -> Span {
+        match &self.body.stmts[stmt] {
+            HirStmt::Block { range, .. }
+            | HirStmt::Let { range, .. }
+            | HirStmt::Expr { range, .. }
+            | HirStmt::Return { range, .. }
+            | HirStmt::If { range, .. }
+            | HirStmt::While { range, .. }
+            | HirStmt::For { range, .. }
+            | HirStmt::ForEach { range, .. }
+            | HirStmt::Synchronized { range, .. }
+            | HirStmt::Switch { range, .. }
+            | HirStmt::Try { range, .. }
+            | HirStmt::Throw { range, .. }
+            | HirStmt::Break { range }
+            | HirStmt::Continue { range }
+            | HirStmt::Empty { range } => *range,
+        }
     }
 
     fn ensure_workspace_class(
@@ -6017,6 +6097,18 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             };
 
         match &self.body.exprs[callee] {
+            HirExpr::This { .. } => self.infer_explicit_constructor_invocation(
+                loader,
+                ExplicitConstructorInvocationKind::This,
+                args,
+                expr,
+            ),
+            HirExpr::Super { .. } => self.infer_explicit_constructor_invocation(
+                loader,
+                ExplicitConstructorInvocationKind::Super,
+                args,
+                expr,
+            ),
             HirExpr::FieldAccess { receiver, name, .. } => {
                 let recv_info = self.infer_expr(loader, *receiver);
                 if recv_info.ty == Type::Error {
@@ -6396,6 +6488,137 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 ty: Type::Unknown,
                 is_type_ref: false,
             },
+        }
+    }
+
+    fn infer_explicit_constructor_invocation(
+        &mut self,
+        loader: &mut ExternalTypeLoader<'_>,
+        kind: ExplicitConstructorInvocationKind,
+        args: &[HirExprId],
+        expr: HirExprId,
+    ) -> ExprInfo {
+        let arg_types = args
+            .iter()
+            .map(|arg| self.infer_expr(loader, *arg).ty)
+            .collect::<Vec<_>>();
+
+        if !matches!(self.owner, DefWithBodyId::Constructor(_)) {
+            self.diagnostics.push(Diagnostic::error(
+                "invalid-constructor-invocation",
+                "`this(...)`/`super(...)` constructor invocations are only allowed in constructors",
+                Some(self.body.exprs[expr].range()),
+            ));
+            return ExprInfo {
+                ty: Type::Error,
+                is_type_ref: false,
+            };
+        }
+
+        let target_ty = match kind {
+            ExplicitConstructorInvocationKind::This => self.enclosing_class_type(loader),
+            ExplicitConstructorInvocationKind::Super => {
+                let object_ty = loader
+                    .store
+                    .lookup_class("java.lang.Object")
+                    .map(|id| Type::class(id, vec![]))
+                    .unwrap_or(Type::Unknown);
+
+                let super_ty = match self.enclosing_class_type(loader) {
+                    Some(enclosing) => {
+                        self.ensure_type_loaded(loader, &enclosing);
+                        match enclosing {
+                            Type::Class(class_ty) => loader
+                                .store
+                                .class(class_ty.def)
+                                .and_then(|def| def.super_class.clone())
+                                .unwrap_or(object_ty),
+                            _ => object_ty,
+                        }
+                    }
+                    None => object_ty,
+                };
+
+                Some(super_ty)
+            }
+        };
+
+        let Some(target_ty) = target_ty else {
+            self.diagnostics.push(Diagnostic::error(
+                "unresolved-constructor",
+                format!(
+                    "unable to resolve `{}` constructor invocation target type",
+                    kind.as_str()
+                ),
+                Some(self.body.exprs[expr].range()),
+            ));
+            return ExprInfo {
+                ty: Type::Error,
+                is_type_ref: false,
+            };
+        };
+
+        self.ensure_type_loaded(loader, &target_ty);
+
+        let class_id = match &target_ty {
+            Type::Class(class_ty) => Some(class_ty.def),
+            Type::Named(name) => self
+                .ensure_workspace_class(loader, name)
+                .or_else(|| loader.ensure_class(name)),
+            _ => None,
+        };
+
+        let Some(class_id) = class_id else {
+            self.diagnostics.push(Diagnostic::error(
+                "unresolved-constructor",
+                format!(
+                    "unable to resolve `{}` constructor invocation target type",
+                    kind.as_str()
+                ),
+                Some(self.body.exprs[expr].range()),
+            ));
+            return ExprInfo {
+                ty: Type::Error,
+                is_type_ref: false,
+            };
+        };
+
+        let env_ro: &dyn TypeEnv = &*loader.store;
+        match nova_types::resolve_constructor_call(env_ro, class_id, &arg_types, None) {
+            MethodResolution::Found(method) => {
+                self.call_resolutions[expr.idx()] = Some(method);
+                ExprInfo {
+                    ty: Type::Void,
+                    is_type_ref: false,
+                }
+            }
+            MethodResolution::Ambiguous(amb) => {
+                self.diagnostics.push(self.ambiguous_constructor_diag(
+                    env_ro,
+                    class_id,
+                    &amb.candidates,
+                    self.body.exprs[expr].range(),
+                ));
+                if let Some(first) = amb.candidates.first() {
+                    self.call_resolutions[expr.idx()] = Some(first.clone());
+                }
+                ExprInfo {
+                    ty: Type::Void,
+                    is_type_ref: false,
+                }
+            }
+            MethodResolution::NotFound(not_found) => {
+                self.diagnostics.push(self.unresolved_constructor_diag(
+                    env_ro,
+                    class_id,
+                    &not_found,
+                    self.body.exprs[expr].range(),
+                ));
+                ExprInfo {
+                    ty: Type::Error,
+                    is_type_ref: false,
+                }
+            }
         }
     }
 
@@ -8324,9 +8547,6 @@ fn find_enclosing_call_with_arg_in_expr(
         HirExpr::ClassLiteral { ty, .. } => {
             find_enclosing_call_with_arg_in_expr(body, *ty, target, target_range, best);
         }
-        HirExpr::Cast { expr, .. } => {
-            find_enclosing_call_with_arg_in_expr(body, *expr, target, target_range, best);
-        }
         HirExpr::Call { callee, args, .. } => {
             if args.iter().any(|arg| *arg == target) {
                 let len = range.len();
@@ -8650,7 +8870,6 @@ fn is_primitive_or_keyword(word: &str) -> bool {
             | "var"
     )
 }
-
 fn type_binary_name(env: &TypeStore, ty: &Type) -> Option<String> {
     match ty {
         Type::Class(nova_types::ClassType { def, .. }) => env.class(*def).map(|c| c.name.clone()),
