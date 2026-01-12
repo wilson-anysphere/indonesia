@@ -949,7 +949,8 @@ class Foo {
                 | LiteralKind::Long
                 | LiteralKind::Float
                 | LiteralKind::Double
-                | LiteralKind::Char => {}
+                | LiteralKind::Char
+                | LiteralKind::TextBlock => {}
             }
         }
     }

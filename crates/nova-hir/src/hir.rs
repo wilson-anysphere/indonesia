@@ -246,6 +246,7 @@ pub enum LiteralKind {
     Double,
     Char,
     String,
+    TextBlock,
     Bool,
 }
 

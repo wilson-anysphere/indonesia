@@ -199,7 +199,14 @@ fn const_value_for_expr(body: &HirBody, expr: HirExprId) -> Option<ConstValue> {
             kind: LiteralKind::Int,
             value,
             ..
-        } => parse_java_int_literal(value).map(ConstValue::Int),
+        } => nova_syntax::parse_int_literal(value)
+            .ok()
+            .map(|v| ConstValue::Int(i64::from(v))),
+        HirExpr::Literal {
+            kind: LiteralKind::Long,
+            value,
+            ..
+        } => nova_syntax::parse_long_literal(value).ok().map(ConstValue::Int),
         HirExpr::Literal {
             kind: LiteralKind::Char,
             value,
@@ -5206,6 +5213,10 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     is_type_ref: false,
                 },
                 LiteralKind::String => ExprInfo {
+                    ty: Type::class(loader.store.well_known().string, vec![]),
+                    is_type_ref: false,
+                },
+                LiteralKind::TextBlock => ExprInfo {
                     ty: Type::class(loader.store.well_known().string, vec![]),
                     is_type_ref: false,
                 },
@@ -10674,64 +10685,6 @@ fn is_java_lang_string(store: &TypeStore, ty: &Type) -> bool {
         Type::Named(name) => name == "java.lang.String",
         _ => false,
     }
-}
-
-fn parse_java_int_literal(text: &str) -> Option<i64> {
-    let mut s = text.trim();
-    let has_long_suffix =
-        if let Some(stripped) = s.strip_suffix('l').or_else(|| s.strip_suffix('L')) {
-            s = stripped;
-            true
-        } else {
-            false
-        };
-    let s: String = s.chars().filter(|c| *c != '_').collect();
-    let s = s.as_str();
-
-    let (radix, digits) = if let Some(rest) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X"))
-    {
-        (16, rest)
-    } else if let Some(rest) = s.strip_prefix("0b").or_else(|| s.strip_prefix("0B")) {
-        (2, rest)
-    } else if s.starts_with('0') && s.len() > 1 {
-        (8, &s[1..])
-    } else {
-        (10, s)
-    };
-
-    if has_long_suffix {
-        // Best-effort support for long literals. Note that the syntax layer may not lower long
-        // literals precisely yet, so this is mostly defensive.
-        if radix == 10 {
-            let value = u64::from_str_radix(digits, radix).ok()?;
-            if value == (i64::MAX as u64) + 1 {
-                // `-9223372036854775808L`
-                return Some(i64::MIN);
-            }
-            return i64::try_from(value).ok();
-        }
-        // For non-decimal, Java long literals are interpreted as signed 64-bit two's complement.
-        let value = u64::from_str_radix(digits, radix).ok()?;
-        return Some(value as i64);
-    }
-
-    // Java int literals are 32-bit two's complement values.
-    if radix == 10 {
-        let value = u64::from_str_radix(digits, radix).ok()?;
-        if value == (i32::MAX as u64) + 1 {
-            // `-2147483648` is the only valid use of this literal.
-            return Some(i64::from(i32::MIN));
-        }
-        return i32::try_from(value).ok().map(i64::from);
-    }
-
-    // Non-decimal integer literals without `L` must fit in 32 bits and are interpreted as signed
-    // two's complement (e.g. `0xffffffff == -1`).
-    let value = u64::from_str_radix(digits, radix).ok()?;
-    if value > u64::from(u32::MAX) {
-        return None;
-    }
-    Some(i64::from(value as u32 as i32))
 }
 
 fn is_diamond_type_ref_text(text: &str) -> bool {

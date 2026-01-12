@@ -1254,7 +1254,7 @@ impl<'a> BodyLower<'a> {
                 range: lit.range,
             }),
             syntax::Expr::TextBlock(lit) => self.alloc_expr(Expr::Literal {
-                kind: LiteralKind::String,
+                kind: LiteralKind::TextBlock,
                 value: lit.value.clone(),
                 range: lit.range,
             }),
