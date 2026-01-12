@@ -425,6 +425,27 @@ class Main { void test(){ A a$var = new A(); a$var.$0bar.toString(); } }
 }
 
 #[test]
+fn go_to_type_definition_on_static_field_access_returns_field_type() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Foo.java
+class $1Foo {}
+//- /A.java
+class A { static Foo bar; }
+//- /Main.java
+class Main { void test(){ A.$0bar.toString(); } }
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = type_definition(&fixture.db, file, pos).expect("expected type definition location");
+
+    assert_eq!(got.uri, fixture.marker_uri(1));
+    assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
 fn go_to_type_definition_on_field_access_with_dollar_in_receiver_returns_field_type() {
     let fixture = FileIdFixture::parse(
         r#"
