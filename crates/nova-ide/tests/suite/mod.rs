@@ -29,6 +29,7 @@ mod framework_db_spring_metadata_from_jars;
 mod framework_extensions;
 mod framework_no_duplicate_diagnostics;
 mod hierarchy_workspace;
+mod import_diagnostics;
 mod jpa_intel;
 mod lombok_intel;
 mod mapstruct_completions;
