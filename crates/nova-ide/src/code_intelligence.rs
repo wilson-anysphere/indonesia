@@ -1014,7 +1014,6 @@ pub(crate) fn with_salsa_snapshot_for_single_file<T>(
         .as_ref()
         .cloned()
         .unwrap_or_else(|| EMPTY_JDK_INDEX.clone());
-
     let (file_rel_path, project_config) = salsa_inputs_for_single_file(db, file);
     let salsa = SalsaDatabase::new();
     seed_salsa_inputs_for_single_file(
@@ -1281,6 +1280,7 @@ pub fn core_file_diagnostics(
                 return;
             }
             diagnostics.extend(snap.flow_diagnostics_for_file(file).iter().cloned());
+            diagnostics.extend(snap.import_diagnostics(file).iter().cloned());
         });
     }
 
@@ -1386,6 +1386,7 @@ pub(crate) fn core_file_diagnostics_cancelable(
                 return;
             }
             diagnostics.extend(snap.flow_diagnostics_for_file(file).iter().cloned());
+            diagnostics.extend(snap.import_diagnostics(file).iter().cloned());
         });
     }
 
