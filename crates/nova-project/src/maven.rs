@@ -1946,7 +1946,6 @@ fn exists_as_jar(path: &Path) -> bool {
     // non-existent archives.
     path.is_file() || path.is_dir()
 }
-
 fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<PathBuf> {
     let version = dep.version.as_deref()?;
     if version.contains("${") {
