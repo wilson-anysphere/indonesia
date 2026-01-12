@@ -589,6 +589,10 @@ impl WorkspaceEngine {
         );
     }
 
+    /// Subscribe to workspace events.
+    ///
+    /// This channel is bounded to avoid unbounded memory growth; if a subscriber does not keep up,
+    /// events may be dropped.
     pub fn subscribe(&self) -> Receiver<WorkspaceEvent> {
         let (tx, rx) = async_channel::bounded(SUBSCRIBER_QUEUE_CAPACITY);
         self.subscribers

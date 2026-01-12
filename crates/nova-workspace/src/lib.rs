@@ -150,6 +150,9 @@ impl Workspace {
     // ---------------------------------------------------------------------
 
     /// Subscribe to workspace events (diagnostics, indexing progress, file changes).
+    ///
+    /// This stream is **bounded** to avoid unbounded memory growth under event storms. If a
+    /// subscriber does not keep up, events may be dropped.
     pub fn subscribe(&self) -> async_channel::Receiver<WorkspaceEvent> {
         self.engine.subscribe()
     }
