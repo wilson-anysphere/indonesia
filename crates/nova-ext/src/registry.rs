@@ -1,11 +1,11 @@
 use crate::context::ExtensionContext;
+use crate::metrics::{ExtensionMetricsSink, NovaMetricsSink};
 use crate::outcome::{ProviderError, ProviderErrorKind};
 use crate::traits::{
     CodeActionParams, CodeActionProvider, CompletionParams, CompletionProvider, DiagnosticParams,
     DiagnosticProvider, InlayHintParams, InlayHintProvider, NavigationParams, NavigationProvider,
 };
 use crate::types::{CodeAction, InlayHint, NavigationTarget};
-use nova_metrics::MetricsRegistry;
 use nova_scheduler::{run_with_timeout, TaskError};
 use nova_types::{CompletionItem, Diagnostic};
 use std::collections::BTreeMap;
@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ExtensionRegistryOptions {
     pub diagnostic_timeout: Duration,
     pub completion_timeout: Duration,
@@ -36,6 +36,51 @@ pub struct ExtensionRegistryOptions {
     pub max_code_actions_per_provider: usize,
     pub max_navigation_targets_per_provider: usize,
     pub max_inlay_hints_per_provider: usize,
+
+    pub metrics: Option<Arc<dyn ExtensionMetricsSink>>,
+}
+
+impl fmt::Debug for ExtensionRegistryOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExtensionRegistryOptions")
+            .field("diagnostic_timeout", &self.diagnostic_timeout)
+            .field("completion_timeout", &self.completion_timeout)
+            .field("code_action_timeout", &self.code_action_timeout)
+            .field("navigation_timeout", &self.navigation_timeout)
+            .field("inlay_hint_timeout", &self.inlay_hint_timeout)
+            .field(
+                "circuit_breaker_failure_threshold",
+                &self.circuit_breaker_failure_threshold,
+            )
+            .field("circuit_breaker_cooldown", &self.circuit_breaker_cooldown)
+            .field("max_diagnostics", &self.max_diagnostics)
+            .field("max_completions", &self.max_completions)
+            .field("max_code_actions", &self.max_code_actions)
+            .field("max_navigation_targets", &self.max_navigation_targets)
+            .field("max_inlay_hints", &self.max_inlay_hints)
+            .field(
+                "max_diagnostics_per_provider",
+                &self.max_diagnostics_per_provider,
+            )
+            .field(
+                "max_completions_per_provider",
+                &self.max_completions_per_provider,
+            )
+            .field(
+                "max_code_actions_per_provider",
+                &self.max_code_actions_per_provider,
+            )
+            .field(
+                "max_navigation_targets_per_provider",
+                &self.max_navigation_targets_per_provider,
+            )
+            .field("max_inlay_hints_per_provider", &self.max_inlay_hints_per_provider)
+            .field(
+                "metrics",
+                &self.metrics.as_ref().map(|_| "<ExtensionMetricsSink>"),
+            )
+            .finish()
+    }
 }
 
 impl Default for ExtensionRegistryOptions {
@@ -61,6 +106,8 @@ impl Default for ExtensionRegistryOptions {
             max_code_actions_per_provider: 256,
             max_navigation_targets_per_provider: 256,
             max_inlay_hints_per_provider: 256,
+
+            metrics: Some(Arc::new(NovaMetricsSink)),
         }
     }
 }
@@ -76,7 +123,6 @@ const CAPABILITY_COMPLETIONS: &str = "completions";
 const CAPABILITY_CODE_ACTIONS: &str = "code_actions";
 const CAPABILITY_NAVIGATION: &str = "navigation";
 const CAPABILITY_INLAY_HINTS: &str = "inlay_hints";
-
 const METRICS_KEY_DIAGNOSTICS: &str = "ext/diagnostics";
 const METRICS_KEY_COMPLETIONS: &str = "ext/completions";
 const METRICS_KEY_CODE_ACTIONS: &str = "ext/code_actions";
@@ -396,7 +442,9 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
         });
         let elapsed = started_at.elapsed();
 
-        MetricsRegistry::global().record_request(metrics_key, elapsed);
+        if let Some(metrics) = &self.options.metrics {
+            metrics.record_request(metrics_key, elapsed);
+        }
 
         let mut provider_error: Option<ProviderError> = None;
         let (outcome, call_result) = match result {
@@ -422,17 +470,13 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
 
         let circuit_opened = self.record_provider_call(kind, id, outcome, elapsed);
 
-        match outcome {
-            ProviderInvocationOutcome::Timeout => {
-                MetricsRegistry::global().record_timeout(metrics_key)
+        if let Some(metrics) = &self.options.metrics {
+            match outcome {
+                ProviderInvocationOutcome::Timeout => metrics.record_timeout(metrics_key),
+                ProviderInvocationOutcome::PanicTrap => metrics.record_panic(metrics_key),
+                ProviderInvocationOutcome::InvalidResponse => metrics.record_error(metrics_key),
+                ProviderInvocationOutcome::Ok | ProviderInvocationOutcome::Cancelled => {}
             }
-            ProviderInvocationOutcome::PanicTrap => {
-                MetricsRegistry::global().record_panic(metrics_key)
-            }
-            ProviderInvocationOutcome::InvalidResponse => {
-                MetricsRegistry::global().record_error(metrics_key)
-            }
-            ProviderInvocationOutcome::Ok | ProviderInvocationOutcome::Cancelled => {}
         }
 
         {
@@ -883,6 +927,7 @@ impl std::error::Error for RegisterError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metrics::TestMetricsSink;
     use crate::outcome::{ProviderError, ProviderErrorKind, ProviderResult};
     use crate::traits::{CompletionParams, CompletionProvider, DiagnosticProvider};
     use nova_config::NovaConfig;
@@ -892,6 +937,16 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
+
+    fn options_without_metrics() -> ExtensionRegistryOptions {
+        let mut options = ExtensionRegistryOptions::default();
+        options.metrics = None;
+        options
+    }
+
+    fn registry_without_metrics() -> ExtensionRegistry<()> {
+        ExtensionRegistry::new(options_without_metrics())
+    }
 
     fn ctx() -> ExtensionContext<()> {
         ExtensionContext::new(
@@ -949,7 +1004,7 @@ mod tests {
             }
         }
 
-        let mut registry_a = ExtensionRegistry::default();
+        let mut registry_a = registry_without_metrics();
         registry_a
             .register_diagnostic_provider(Arc::new(Provider {
                 id: "b".into(),
@@ -963,7 +1018,7 @@ mod tests {
             }))
             .unwrap();
 
-        let mut registry_b = ExtensionRegistry::default();
+        let mut registry_b = registry_without_metrics();
         registry_b
             .register_diagnostic_provider(Arc::new(Provider {
                 id: "a".into(),
@@ -988,6 +1043,49 @@ mod tests {
             out_a.into_iter().map(|d| d.message).collect::<Vec<_>>(),
             vec!["from-a".to_string(), "from-b".to_string()]
         );
+    }
+
+    #[test]
+    fn metrics_are_recorded_for_successful_provider_call() {
+        struct Provider;
+
+        impl DiagnosticProvider<()> for Provider {
+            fn id(&self) -> &str {
+                "ok"
+            }
+
+            fn provide_diagnostics(
+                &self,
+                _ctx: ExtensionContext<()>,
+                _params: DiagnosticParams,
+            ) -> Vec<Diagnostic> {
+                vec![diag("ok")]
+            }
+        }
+
+        let metrics = Arc::new(TestMetricsSink::default());
+        let mut options = options_without_metrics();
+        options.metrics = Some(metrics.clone() as Arc<dyn ExtensionMetricsSink>);
+        let mut registry = ExtensionRegistry::new(options);
+        registry
+            .register_diagnostic_provider(Arc::new(Provider))
+            .unwrap();
+
+        let out = registry.diagnostics(
+            ctx(),
+            DiagnosticParams {
+                file: FileId::from_raw(1),
+            },
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].message, "ok");
+
+        let recorded = metrics.snapshot_for(METRICS_KEY_DIAGNOSTICS);
+        assert_eq!(recorded.request_count, 1);
+        assert_eq!(recorded.timeout_count, 0);
+        assert_eq!(recorded.panic_count, 0);
+        assert_eq!(recorded.error_count, 0);
+        assert_eq!(recorded.durations.len(), 1);
     }
 
     #[test]
@@ -1025,7 +1123,10 @@ mod tests {
             }
         }
 
-        let mut registry = ExtensionRegistry::default();
+        let metrics = Arc::new(TestMetricsSink::default());
+        let mut options = options_without_metrics();
+        options.metrics = Some(metrics.clone() as Arc<dyn ExtensionMetricsSink>);
+        let mut registry = ExtensionRegistry::new(options);
         registry.options_mut().diagnostic_timeout = Duration::from_millis(20);
         registry
             .register_diagnostic_provider(Arc::new(SlowProvider))
@@ -1049,6 +1150,13 @@ mod tests {
         );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].message, "fast");
+
+        let recorded = metrics.snapshot_for(METRICS_KEY_DIAGNOSTICS);
+        assert_eq!(recorded.request_count, 2);
+        assert_eq!(recorded.timeout_count, 1);
+        assert_eq!(recorded.panic_count, 0);
+        assert_eq!(recorded.error_count, 0);
+        assert_eq!(recorded.durations.len(), 2);
 
         let stats = registry.stats();
         let slow_stats = stats
@@ -1104,7 +1212,7 @@ mod tests {
             }
         }
 
-        let mut registry = ExtensionRegistry::default();
+        let mut registry = registry_without_metrics();
         registry.options_mut().diagnostic_timeout = Duration::from_millis(1);
         registry
             .register_diagnostic_provider(Arc::new(BlockingProvider {
@@ -1158,7 +1266,7 @@ mod tests {
             }
         }
 
-        let mut registry = ExtensionRegistry::default();
+        let mut registry = registry_without_metrics();
         registry.options_mut().max_diagnostics_per_provider = 2;
         registry.options_mut().max_diagnostics = 3;
 
@@ -1203,7 +1311,7 @@ mod tests {
             }
         }
 
-        let mut registry_a = ExtensionRegistry::default();
+        let mut registry_a = registry_without_metrics();
         registry_a
             .register_completion_provider(Arc::new(Provider {
                 id: "b",
@@ -1217,7 +1325,7 @@ mod tests {
             }))
             .unwrap();
 
-        let mut registry_b = ExtensionRegistry::default();
+        let mut registry_b = registry_without_metrics();
         registry_b
             .register_completion_provider(Arc::new(Provider {
                 id: "a",
@@ -1281,7 +1389,7 @@ mod tests {
             }
         }
 
-        let mut registry = ExtensionRegistry::default();
+        let mut registry = registry_without_metrics();
         registry
             .register_diagnostic_provider(Arc::new(Inapplicable))
             .unwrap();
@@ -1331,7 +1439,10 @@ mod tests {
             }
         }
 
-        let mut registry = ExtensionRegistry::default();
+        let metrics = Arc::new(TestMetricsSink::default());
+        let mut options = options_without_metrics();
+        options.metrics = Some(metrics.clone() as Arc<dyn ExtensionMetricsSink>);
+        let mut registry = ExtensionRegistry::new(options);
         registry
             .register_diagnostic_provider(Arc::new(PanicProvider))
             .unwrap();
@@ -1347,6 +1458,13 @@ mod tests {
         );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].message, "fast");
+
+        let recorded = metrics.snapshot_for(METRICS_KEY_DIAGNOSTICS);
+        assert_eq!(recorded.request_count, 2);
+        assert_eq!(recorded.timeout_count, 0);
+        assert_eq!(recorded.panic_count, 1);
+        assert_eq!(recorded.error_count, 0);
+        assert_eq!(recorded.durations.len(), 2);
 
         let stats = registry.stats();
         let panic_stats = stats
@@ -1402,7 +1520,10 @@ mod tests {
             }
         }
 
-        let mut registry = ExtensionRegistry::default();
+        let metrics = Arc::new(TestMetricsSink::default());
+        let mut options = options_without_metrics();
+        options.metrics = Some(metrics.clone() as Arc<dyn ExtensionMetricsSink>);
+        let mut registry = ExtensionRegistry::new(options);
         registry
             .register_diagnostic_provider(Arc::new(ErrorProvider))
             .unwrap();
@@ -1419,6 +1540,13 @@ mod tests {
 
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].message, "fast");
+
+        let recorded = metrics.snapshot_for(METRICS_KEY_DIAGNOSTICS);
+        assert_eq!(recorded.request_count, 2);
+        assert_eq!(recorded.timeout_count, 0);
+        assert_eq!(recorded.panic_count, 0);
+        assert_eq!(recorded.error_count, 1);
+        assert_eq!(recorded.durations.len(), 2);
 
         let stats = registry.stats();
         let error_stats = stats
@@ -1471,7 +1599,7 @@ mod tests {
 
         let calls = Arc::new(AtomicUsize::new(0));
 
-        let mut registry = ExtensionRegistry::default();
+        let mut registry = registry_without_metrics();
         registry.options_mut().circuit_breaker_failure_threshold = 2;
         registry.options_mut().circuit_breaker_cooldown = Duration::from_secs(60);
         registry
@@ -1538,7 +1666,7 @@ mod tests {
 
         let calls = Arc::new(AtomicUsize::new(0));
 
-        let mut registry = ExtensionRegistry::default();
+        let mut registry = registry_without_metrics();
         registry.options_mut().circuit_breaker_failure_threshold = 1;
         registry.options_mut().circuit_breaker_cooldown = Duration::from_millis(20);
         registry

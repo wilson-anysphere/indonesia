@@ -24,6 +24,7 @@ nova-core = { path = "../nova-core" }
 nova-metrics = { path = "../nova-metrics" }
 nova-types = { path = "../nova-types" }
 nova-scheduler = { path = "../nova-scheduler" }
+parking_lot = "0.12"
 tracing = { workspace = true }
 
 nova-ext-abi = { path = "../nova-ext-abi", optional = true }

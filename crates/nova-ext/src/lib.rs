@@ -1,4 +1,5 @@
 mod context;
+mod metrics;
 mod outcome;
 mod registry;
 mod traits;
@@ -13,6 +14,7 @@ mod manifest;
 pub mod wasm;
 
 pub use context::ExtensionContext;
+pub use metrics::{ExtensionMetricsSink, NovaMetricsSink, TestMetricsSink, TestMetricsSnapshot};
 pub use outcome::{ProviderError, ProviderErrorKind, ProviderResult};
 pub use registry::{
     ExtensionRegistry, ExtensionRegistryOptions, ExtensionRegistryStats, ProviderLastError,

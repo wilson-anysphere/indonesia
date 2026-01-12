@@ -3651,6 +3651,7 @@ dependencies = [
  "nova-metrics",
  "nova-scheduler",
  "nova-types",
+ "parking_lot",
  "semver",
  "serde",
  "serde_json",

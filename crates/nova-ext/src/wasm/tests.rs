@@ -5,7 +5,7 @@ use crate::traits::{
 };
 use crate::types::{CodeAction, InlayHint, NavigationTarget};
 use crate::ProviderLastError;
-use crate::{ExtensionContext, ExtensionRegistry, RegisterError};
+use crate::{ExtensionContext, ExtensionRegistry, ExtensionRegistryOptions, RegisterError};
 use nova_config::NovaConfig;
 use nova_core::FileId;
 use nova_core::ProjectId;
@@ -92,6 +92,12 @@ fn ctx_with_config(db: Arc<TestDb>, config: NovaConfig) -> ExtensionContext<Test
         ProjectId::new(0),
         CancellationToken::new(),
     )
+}
+
+fn registry_without_metrics() -> ExtensionRegistry<TestDb> {
+    let mut options = ExtensionRegistryOptions::default();
+    options.metrics = None;
+    ExtensionRegistry::new(options)
 }
 
 const WAT_DIAG_AND_COMPLETIONS: &str = r#"
@@ -525,7 +531,7 @@ fn unknown_capability_bits_are_ignored() {
     );
     assert_eq!(plugin.capabilities().bits(), 0);
 
-    let mut registry = ExtensionRegistry::<TestDb>::default();
+    let mut registry = registry_without_metrics();
     plugin.register(&mut registry).unwrap();
 
     // Since no known capabilities were set, we should be able to register providers under the same
@@ -598,7 +604,7 @@ fn capabilities_drive_registry_registration() {
         .capabilities()
         .contains(WasmCapabilities::INLAY_HINTS));
 
-    let mut registry = ExtensionRegistry::<TestDb>::default();
+    let mut registry = registry_without_metrics();
     plugin.register(&mut registry).unwrap();
 
     // These should now collide due to registration.
@@ -827,7 +833,7 @@ fn all_provider_kinds_roundtrip() {
     );
     assert_eq!(plugin.capabilities().bits(), 31);
 
-    let mut registry = ExtensionRegistry::<TestDb>::default();
+    let mut registry = registry_without_metrics();
     plugin.register(&mut registry).unwrap();
 
     let id = plugin.id().to_string();

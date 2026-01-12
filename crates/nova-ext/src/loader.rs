@@ -887,6 +887,12 @@ capabilities = ["diagnostics"]
             )
         }
 
+        fn registry_without_metrics() -> ExtensionRegistry<TestDb> {
+            let mut options = crate::ExtensionRegistryOptions::default();
+            options.metrics = None;
+            ExtensionRegistry::new(options)
+        }
+
         fn write_wat_wasm(dir: &Path, file: &str, wat: &str) {
             let bytes = wat::parse_str(wat).unwrap();
             fs::write(dir.join(file), bytes).unwrap();
@@ -1021,7 +1027,7 @@ capabilities = ["diagnostics"]
             let (loaded, errors) = ExtensionManager::load_all(&[root.to_path_buf()]);
             assert!(errors.is_empty(), "{errors:?}");
 
-            let mut registry = ExtensionRegistry::<TestDb>::default();
+            let mut registry = registry_without_metrics();
             let report = ExtensionManager::register_all_best_effort(&mut registry, &loaded);
             assert!(report.errors.is_empty(), "{:?}", report.errors);
             assert_eq!(
@@ -1075,7 +1081,7 @@ capabilities = ["diagnostics", "completions"]
             let (loaded, errors) = ExtensionManager::load_all(&[root.to_path_buf()]);
             assert!(errors.is_empty(), "{errors:?}");
 
-            let mut registry = ExtensionRegistry::<TestDb>::default();
+            let mut registry = registry_without_metrics();
             let report = ExtensionManager::register_all_best_effort(&mut registry, &loaded);
             assert!(report.errors.is_empty(), "{:?}", report.errors);
             assert_eq!(report.registered.len(), 1);
