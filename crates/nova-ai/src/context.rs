@@ -36,9 +36,10 @@ impl ContextBuilder {
             anonymize_identifiers: req.privacy.anonymize_identifiers,
             redact_sensitive_strings: req.privacy.redaction.redact_string_literals,
             redact_numeric_literals: req.privacy.redaction.redact_numeric_literals,
-            // When we're anonymizing identifiers, comment contents are likely to
-            // contain project-specific identifiers and secrets; strip them.
-            strip_or_redact_comments: req.privacy.anonymize_identifiers,
+            // Comments often contain sensitive information (tokens, passwords, internal
+            // identifiers). When configured, strip the bodies while leaving delimiters
+            // so the surrounding code stays readable.
+            strip_or_redact_comments: req.privacy.redaction.redact_comments,
         };
         let mut anonymizer = CodeAnonymizer::new(options);
 
@@ -1416,9 +1417,44 @@ mod tests {
     }
 
     #[test]
+    fn context_builder_redacts_comments_without_identifier_anonymization_when_configured() {
+        let builder = ContextBuilder::new();
+        let req = ContextRequest {
+            file_path: None,
+            focal_code: "// token: sk-verysecretstringthatislong\nclass Foo {}\n".to_string(),
+            enclosing_context: None,
+            related_symbols: Vec::new(),
+            related_code: Vec::new(),
+            cursor: None,
+            diagnostics: Vec::new(),
+            extra_files: Vec::new(),
+            doc_comments: None,
+            include_doc_comments: false,
+            token_budget: 1_000,
+            privacy: PrivacyMode {
+                anonymize_identifiers: false,
+                include_file_paths: false,
+                redaction: crate::RedactionConfig {
+                    redact_string_literals: false,
+                    redact_numeric_literals: false,
+                    redact_comments: true,
+                },
+            },
+        };
+
+        let built = builder.build(req);
+        assert!(
+            built.text.contains("class Foo"),
+            "identifiers should be preserved"
+        );
+        assert!(built.text.contains("// [REDACTED]"), "{:?}", built.text);
+        assert!(!built.text.contains("sk-verysecret"), "{:?}", built.text);
+    }
+
+    #[test]
     fn java_source_range_extracts_enclosing_context_and_docs() {
         let source = r#"
-package com.example;
+ package com.example;
  
 /** Class docs */
 public class Foo {

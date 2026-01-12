@@ -1,4 +1,5 @@
 use crate::anonymizer::{CodeAnonymizer, CodeAnonymizerOptions};
+use nova_config::AiPrivacyConfig;
 
 /// Privacy controls that apply when building prompts for cloud models.
 #[derive(Debug, Clone)]
@@ -19,6 +20,24 @@ impl Default for PrivacyMode {
             anonymize_identifiers: false,
             redaction: RedactionConfig::default(),
             include_file_paths: false,
+        }
+    }
+}
+
+impl PrivacyMode {
+    /// Build a [`PrivacyMode`] from the user-facing [`AiPrivacyConfig`].
+    ///
+    /// This is primarily used by prompt builders (e.g. LSP AI actions) that need
+    /// to apply the same privacy defaults as the provider client.
+    pub fn from_ai_privacy_config(config: &AiPrivacyConfig) -> Self {
+        Self {
+            anonymize_identifiers: config.effective_anonymize_identifiers(),
+            redaction: RedactionConfig {
+                redact_string_literals: config.effective_redact_sensitive_strings(),
+                redact_numeric_literals: config.effective_redact_numeric_literals(),
+                redact_comments: config.effective_strip_or_redact_comments(),
+            },
+            include_file_paths: true,
         }
     }
 }
@@ -65,9 +84,35 @@ mod tests {
     #[test]
     fn redacts_sensitive_comments() {
         let code = r#"// token: sk-verysecretstringthatislong
-class Foo {}"#;
+ class Foo {}"#;
         let redacted = redact_suspicious_literals(code, &RedactionConfig::default());
         assert!(redacted.contains("// [REDACTED]"));
         assert!(!redacted.contains("sk-verysecret"));
+    }
+
+    #[test]
+    fn privacy_mode_from_config_respects_local_only_defaults() {
+        let cfg = AiPrivacyConfig {
+            local_only: true,
+            ..AiPrivacyConfig::default()
+        };
+        let mode = PrivacyMode::from_ai_privacy_config(&cfg);
+        assert!(!mode.anonymize_identifiers);
+        assert!(!mode.redaction.redact_string_literals);
+        assert!(!mode.redaction.redact_numeric_literals);
+        assert!(!mode.redaction.redact_comments);
+    }
+
+    #[test]
+    fn privacy_mode_from_config_respects_cloud_defaults() {
+        let cfg = AiPrivacyConfig {
+            local_only: false,
+            ..AiPrivacyConfig::default()
+        };
+        let mode = PrivacyMode::from_ai_privacy_config(&cfg);
+        assert!(mode.anonymize_identifiers);
+        assert!(mode.redaction.redact_string_literals);
+        assert!(mode.redaction.redact_numeric_literals);
+        assert!(mode.redaction.redact_comments);
     }
 }

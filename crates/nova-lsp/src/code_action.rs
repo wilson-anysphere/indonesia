@@ -85,6 +85,7 @@ impl<'a> AiCodeActionExecutor<'a> {
                     &file,
                     insert_range,
                     workspace,
+                    &self.privacy,
                 );
 
                 let mut config = self.config.clone();
@@ -123,6 +124,7 @@ impl<'a> AiCodeActionExecutor<'a> {
                     &file,
                     insert_range,
                     workspace,
+                    &self.privacy,
                 );
 
                 let mut config = self.config.clone();
@@ -186,10 +188,11 @@ fn build_insert_prompt(
     file: &str,
     insert_range: Range,
     workspace: &VirtualWorkspace,
+    privacy: &AiPrivacyConfig,
 ) -> String {
     let contents = workspace.get(file).unwrap_or("");
     let annotated = annotate_file_with_range_markers(contents, insert_range);
-    let context = build_prompt_context(contents, insert_range)
+    let context = build_prompt_context(contents, insert_range, privacy)
         .map(|ctx| format!("\nExtracted context:\n{ctx}\n"))
         .unwrap_or_default();
 
@@ -225,16 +228,18 @@ fn annotate_file_with_range_markers(contents: &str, range: Range) -> String {
     out
 }
 
-fn build_prompt_context(contents: &str, range: Range) -> Option<String> {
+fn build_prompt_context(contents: &str, range: Range, privacy: &AiPrivacyConfig) -> Option<String> {
     let (start, end) = lsp_range_to_offsets(contents, range)?;
     let selection = start..end;
 
     let builder = ContextBuilder::new();
+    let mut privacy_mode = PrivacyMode::from_ai_privacy_config(privacy);
+    privacy_mode.include_file_paths = false;
     let req = ContextRequest::for_java_source_range(
         contents,
         selection,
         /*token_budget=*/ 800,
-        PrivacyMode::default(),
+        privacy_mode,
         /*include_doc_comments=*/ true,
     );
     Some(builder.build(req).text)

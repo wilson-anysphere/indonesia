@@ -737,10 +737,10 @@ impl ServerState {
         ai_config: nova_config::AiConfig,
         privacy_override: Option<nova_ai::PrivacyMode>,
     ) -> Self {
-        let privacy = privacy_override.unwrap_or_else(|| nova_ai::PrivacyMode {
-            anonymize_identifiers: ai_config.privacy.effective_anonymize_identifiers(),
-            include_file_paths: false,
-            ..nova_ai::PrivacyMode::default()
+        let privacy = privacy_override.unwrap_or_else(|| {
+            let mut privacy = nova_ai::PrivacyMode::from_ai_privacy_config(&ai_config.privacy);
+            privacy.include_file_paths = false;
+            privacy
         });
 
         let (ai, runtime) = if ai_config.enabled {
@@ -3828,11 +3828,8 @@ fn load_ai_config_from_env() -> Result<Option<(nova_config::AiConfig, nova_ai::P
         );
     }
 
-    let privacy = nova_ai::PrivacyMode {
-        anonymize_identifiers,
-        include_file_paths,
-        ..nova_ai::PrivacyMode::default()
-    };
+    let mut privacy = nova_ai::PrivacyMode::from_ai_privacy_config(&cfg.privacy);
+    privacy.include_file_paths = include_file_paths;
 
     Ok(Some((cfg, privacy)))
 }
