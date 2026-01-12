@@ -552,6 +552,24 @@ mod tests {
     }
 
     #[test]
+    fn parse_java_reuses_parser_instance_within_thread() {
+        fn parser_ptr() -> usize {
+            JAVA_PARSER.with(|cell| {
+                let borrowed = cell.borrow();
+                let parser = borrowed
+                    .as_ref()
+                    .expect("thread-local parser should initialize");
+                parser as *const Parser as usize
+            })
+        }
+
+        let ptr_before = parser_ptr();
+        parse_java("class A {}").expect("parse");
+        let ptr_after = parser_ptr();
+        assert_eq!(ptr_before, ptr_after);
+    }
+
+    #[test]
     fn parses_positional_and_named_args() {
         let ann = parse_annotation_text("@X(\"foo\", name = \"bar\")", Span::new(0, 0))
             .expect("annotation");
