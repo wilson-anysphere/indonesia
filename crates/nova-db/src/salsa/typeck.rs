@@ -4156,6 +4156,16 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         member: StaticMemberResolution,
         range: Span,
     ) -> ExprInfo {
+        if let StaticMemberResolution::SourceField(field) = member {
+            // Static field imports carry the stable `FieldId`; prefer the already-resolved declared
+            // type over name-based lookup.
+            let ty = self.field_types.get(&field).cloned().unwrap_or(Type::Unknown);
+            return ExprInfo {
+                ty,
+                is_type_ref: false,
+            };
+        }
+
         let (owner, name) = match member {
             StaticMemberResolution::External(id) => match id.as_str().split_once("::") {
                 Some((owner, name)) => (owner.to_string(), name.to_string()),
@@ -4166,22 +4176,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     };
                 }
             },
-            StaticMemberResolution::SourceField(field) => {
-                let Some(owner) = self.field_owners.get(&field).cloned() else {
-                    return ExprInfo {
-                        ty: Type::Unknown,
-                        is_type_ref: false,
-                    };
+            StaticMemberResolution::SourceField(_) => {
+                return ExprInfo {
+                    ty: Type::Unknown,
+                    is_type_ref: false,
                 };
-                let tree = self.db.hir_item_tree(field.file);
-                let Some(field_def) = tree.fields.get(&field.ast_id) else {
-                    return ExprInfo {
-                        ty: Type::Unknown,
-                        is_type_ref: false,
-                    };
-                };
-                let name = field_def.name.clone();
-                (owner, name)
             }
             StaticMemberResolution::SourceMethod(method) => {
                 let Some(owner) = self.method_owners.get(&method).cloned() else {
