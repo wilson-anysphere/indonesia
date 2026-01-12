@@ -581,6 +581,30 @@ impl SymbolSearchIndex {
         q_bytes: &[u8],
         matcher: &mut FuzzyMatcher,
     ) -> Option<MatchScore> {
+        // If `qualified_name` itself is a prefix match, it will always dominate
+        // any fuzzy match on `name`, and we can compute the prefix score without
+        // invoking the DP scorer on `name`.
+        //
+        // This is a common pattern when users type package/module prefixes.
+        if entry.qualified_name_differs
+            && starts_with_case_insensitive(entry.symbol.qualified_name.as_bytes(), q_bytes)
+        {
+            let qn_len = entry.symbol.qualified_name.len();
+            if starts_with_case_insensitive(entry.symbol.name.as_bytes(), q_bytes)
+                && entry.symbol.name.len() < qn_len
+            {
+                return Some(MatchScore {
+                    kind: MatchKind::Prefix,
+                    score: 1_000_000 - entry.symbol.name.len() as i32,
+                });
+            }
+
+            return Some(MatchScore {
+                kind: MatchKind::Prefix,
+                score: 1_000_000 - qn_len as i32,
+            });
+        }
+
         // Prefer name matches but allow qualified-name matches too.
         let mut best = matcher.score(&entry.symbol.name);
         if entry.qualified_name_differs {
@@ -1031,6 +1055,16 @@ mod tests {
         let results = index.search("Foo", 10);
         assert_eq!(results.len(), 1);
         assert_eq!(Some(results[0].score), baseline_best_score("Foo", &symbol));
+    }
+
+    #[test]
+    fn qualified_name_prefix_match_preserves_baseline_scoring() {
+        let symbol = sym("Foo", "com.example.Foo");
+        let index = SymbolSearchIndex::build(vec![symbol.clone()]);
+
+        let results = index.search("com", 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(Some(results[0].score), baseline_best_score("com", &symbol));
     }
 
     #[test]
