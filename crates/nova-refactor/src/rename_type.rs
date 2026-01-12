@@ -641,6 +641,11 @@ fn expr_scope_for_offset(
                     visit_expr(body, *init, offset, best_expr, best_stmt);
                 }
             }
+            Expr::ArrayInitializer { items, .. } => {
+                for item in items {
+                    visit_expr(body, *item, offset, best_expr, best_stmt);
+                }
+            }
             Expr::Unary { expr, .. } => visit_expr(body, *expr, offset, best_expr, best_stmt),
             Expr::Binary { lhs, rhs, .. } => {
                 visit_expr(body, *lhs, offset, best_expr, best_stmt);
@@ -819,12 +824,6 @@ fn expr_scope_for_offset(
                 }
                 if let Some(stmt) = finally {
                     visit_stmt(body, *stmt, offset, best_expr, best_stmt);
-                }
-            }
-            Stmt::Assert { condition, message, .. } => {
-                visit_expr(body, *condition, offset, best_expr, best_stmt);
-                if let Some(message) = message {
-                    visit_expr(body, *message, offset, best_expr, best_stmt);
                 }
             }
             Stmt::Throw { expr, .. } => visit_expr(body, *expr, offset, best_expr, best_stmt),
