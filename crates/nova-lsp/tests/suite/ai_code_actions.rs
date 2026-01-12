@@ -2617,9 +2617,6 @@ fn stdio_server_rejects_surrogate_pair_interior_ranges_for_ai_code_actions() {
             format!("{}/complete", ai_server.base_url()),
         )
         .env("NOVA_AI_MODEL", "default")
-        // Force local-only mode so AI code-edit actions would normally be offered
-        // (and the absence of actions is attributable to invalid UTF-16 ranges).
-        .env("NOVA_AI_LOCAL_ONLY", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -2829,9 +2826,8 @@ local_only = false
         end: pos.lsp_position(end_offset).expect("end"),
     };
 
-    // Even though code-edit actions are hidden from `textDocument/codeAction` when privacy policy
-    // disallows edits, `workspace/executeCommand` must still enforce the policy for clients that
-    // attempt to invoke the command directly.
+    // Even when privacy policy disallows edits, `workspace/executeCommand` must still enforce the
+    // policy for clients that attempt to invoke the command directly.
     write_jsonrpc_message(
         &mut stdin,
         &json!({

@@ -568,6 +568,12 @@ pub fn diagnostics_with_extensions(
 ) -> Vec<lsp_types::Diagnostic> {
     let db = extensions.db();
     let text = db.file_content(file);
+    // Preserve the exact built-in diagnostic ordering returned by `nova_ide::file_diagnostics_lsp`
+    // (via `diagnostics()`), then append extension diagnostics in deterministic provider-id order.
+    //
+    // Note: `IdeExtensions::all_diagnostics` uses `core_file_diagnostics`, which can differ in
+    // ordering/format from `file_diagnostics_lsp`. Keep stdio/LSP behavior consistent by using
+    // `file_diagnostics_lsp` here too.
     let mut diagnostics = crate::diagnostics(db.as_ref(), file);
 
     // Append extension-provided diagnostics after built-ins. `IdeExtensions::diagnostics` is

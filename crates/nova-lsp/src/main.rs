@@ -7253,17 +7253,18 @@ fn is_java_identifier(s: &str) -> bool {
 mod tests {
     use super::*;
     use httpmock::prelude::*;
+    use std::ffi::{OsStr, OsString};
     use tempfile::TempDir;
 
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    struct ScopedEnvVar {
+    struct EnvVarGuard {
         key: &'static str,
-        prev: Option<std::ffi::OsString>,
+        prev: Option<OsString>,
     }
 
-    impl ScopedEnvVar {
-        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
             let prev = std::env::var_os(key);
             std::env::set_var(key, value);
             Self { key, prev }
@@ -7276,9 +7277,9 @@ mod tests {
         }
     }
 
-    impl Drop for ScopedEnvVar {
+    impl Drop for EnvVarGuard {
         fn drop(&mut self) {
-            match &self.prev {
+            match self.prev.take() {
                 Some(value) => std::env::set_var(self.key, value),
                 None => std::env::remove_var(self.key),
             }
@@ -7289,21 +7290,21 @@ mod tests {
     fn load_ai_config_from_env_exposes_privacy_opt_ins() {
         let _lock = ENV_LOCK.lock().unwrap();
 
-        let _provider = ScopedEnvVar::set("NOVA_AI_PROVIDER", "http");
-        let _endpoint = ScopedEnvVar::set("NOVA_AI_ENDPOINT", "http://localhost:1234/complete");
-        let _model = ScopedEnvVar::set("NOVA_AI_MODEL", "default");
+        let _provider = EnvVarGuard::set("NOVA_AI_PROVIDER", "http");
+        let _endpoint = EnvVarGuard::set("NOVA_AI_ENDPOINT", "http://localhost:1234/complete");
+        let _model = EnvVarGuard::set("NOVA_AI_MODEL", "default");
 
         // Baseline: no explicit code-edit opt-ins.
-        let _local_only = ScopedEnvVar::remove("NOVA_AI_LOCAL_ONLY");
-        let _allow_cloud_code_edits = ScopedEnvVar::remove("NOVA_AI_ALLOW_CLOUD_CODE_EDITS");
+        let _local_only = EnvVarGuard::remove("NOVA_AI_LOCAL_ONLY");
+        let _allow_cloud_code_edits = EnvVarGuard::remove("NOVA_AI_ALLOW_CLOUD_CODE_EDITS");
         let _allow_code_edits_without_anonymization =
-            ScopedEnvVar::remove("NOVA_AI_ALLOW_CODE_EDITS_WITHOUT_ANONYMIZATION");
-        let _anonymize = ScopedEnvVar::remove("NOVA_AI_ANONYMIZE_IDENTIFIERS");
-        let _include_file_paths = ScopedEnvVar::remove("NOVA_AI_INCLUDE_FILE_PATHS");
+            EnvVarGuard::remove("NOVA_AI_ALLOW_CODE_EDITS_WITHOUT_ANONYMIZATION");
+        let _anonymize = EnvVarGuard::remove("NOVA_AI_ANONYMIZE_IDENTIFIERS");
+        let _include_file_paths = EnvVarGuard::remove("NOVA_AI_INCLUDE_FILE_PATHS");
 
-        let _redact_sensitive_strings = ScopedEnvVar::remove("NOVA_AI_REDACT_SENSITIVE_STRINGS");
-        let _redact_numeric_literals = ScopedEnvVar::remove("NOVA_AI_REDACT_NUMERIC_LITERALS");
-        let _strip_or_redact_comments = ScopedEnvVar::remove("NOVA_AI_STRIP_OR_REDACT_COMMENTS");
+        let _redact_sensitive_strings = EnvVarGuard::remove("NOVA_AI_REDACT_SENSITIVE_STRINGS");
+        let _redact_numeric_literals = EnvVarGuard::remove("NOVA_AI_REDACT_NUMERIC_LITERALS");
+        let _strip_or_redact_comments = EnvVarGuard::remove("NOVA_AI_STRIP_OR_REDACT_COMMENTS");
 
         let (cfg, privacy) = load_ai_config_from_env()
             .expect("load_ai_config_from_env")
@@ -7319,16 +7320,16 @@ mod tests {
 
         // Explicit opt-in for patch-based code edits (cloud-mode gating).
         {
-            let _anonymize = ScopedEnvVar::set("NOVA_AI_ANONYMIZE_IDENTIFIERS", "0");
-            let _allow_cloud_code_edits = ScopedEnvVar::set("NOVA_AI_ALLOW_CLOUD_CODE_EDITS", "1");
+            let _anonymize = EnvVarGuard::set("NOVA_AI_ANONYMIZE_IDENTIFIERS", "0");
+            let _allow_cloud_code_edits = EnvVarGuard::set("NOVA_AI_ALLOW_CLOUD_CODE_EDITS", "1");
             let _allow_code_edits_without_anonymization =
-                ScopedEnvVar::set("NOVA_AI_ALLOW_CODE_EDITS_WITHOUT_ANONYMIZATION", "true");
+                EnvVarGuard::set("NOVA_AI_ALLOW_CODE_EDITS_WITHOUT_ANONYMIZATION", "true");
             let _redact_sensitive_strings =
-                ScopedEnvVar::set("NOVA_AI_REDACT_SENSITIVE_STRINGS", "0");
+                EnvVarGuard::set("NOVA_AI_REDACT_SENSITIVE_STRINGS", "0");
             let _redact_numeric_literals =
-                ScopedEnvVar::set("NOVA_AI_REDACT_NUMERIC_LITERALS", "false");
+                EnvVarGuard::set("NOVA_AI_REDACT_NUMERIC_LITERALS", "false");
             let _strip_or_redact_comments =
-                ScopedEnvVar::set("NOVA_AI_STRIP_OR_REDACT_COMMENTS", "1");
+                EnvVarGuard::set("NOVA_AI_STRIP_OR_REDACT_COMMENTS", "1");
 
             let (cfg, privacy) = load_ai_config_from_env()
                 .expect("load_ai_config_from_env")
@@ -7345,7 +7346,7 @@ mod tests {
 
         // `NOVA_AI_INCLUDE_FILE_PATHS` explicitly opts into including paths in prompts.
         {
-            let _include_file_paths = ScopedEnvVar::set("NOVA_AI_INCLUDE_FILE_PATHS", "1");
+            let _include_file_paths = EnvVarGuard::set("NOVA_AI_INCLUDE_FILE_PATHS", "1");
             let (_cfg, privacy) = load_ai_config_from_env()
                 .expect("load_ai_config_from_env")
                 .expect("config should be present");
@@ -7354,7 +7355,7 @@ mod tests {
 
         // `NOVA_AI_LOCAL_ONLY` forces local-only mode regardless of provider.
         {
-            let _force_local_only = ScopedEnvVar::set("NOVA_AI_LOCAL_ONLY", "1");
+            let _force_local_only = EnvVarGuard::set("NOVA_AI_LOCAL_ONLY", "1");
             let (cfg, _privacy) = load_ai_config_from_env()
                 .expect("load_ai_config_from_env")
                 .expect("config should be present");
@@ -7501,10 +7502,10 @@ mod tests {
         // Point JDK discovery at the tiny fake JDK shipped in this repository.
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let fake_jdk_root = manifest_dir.join("../nova-jdk/testdata/fake-jdk");
-        let _java_home = ScopedEnvVar::set("JAVA_HOME", &fake_jdk_root);
+        let _java_home = EnvVarGuard::set("JAVA_HOME", &fake_jdk_root);
 
         let cache_dir = TempDir::new().expect("cache dir");
-        let _cache_dir = ScopedEnvVar::set("NOVA_CACHE_DIR", cache_dir.path());
+        let _cache_dir = EnvVarGuard::set("NOVA_CACHE_DIR", cache_dir.path());
 
         let mut state = ServerState::new(
             nova_config::NovaConfig::default(),

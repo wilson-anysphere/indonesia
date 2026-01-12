@@ -40,9 +40,9 @@ fn ensure_worker_binary() -> PathBuf {
         // duplicate `--jobs` flags).
         .arg("--profile")
         .arg("test")
-        .env("NOVA_CARGO_JOBS", "1")
         .arg("-p")
         .arg("nova-worker")
+        .env("NOVA_CARGO_JOBS", "1")
         .current_dir(&repo_root)
         .status()
         .expect("spawn scripts/cargo_agent.sh build -p nova-worker");
