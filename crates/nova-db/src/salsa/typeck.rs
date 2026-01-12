@@ -4055,22 +4055,15 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 }
             }
             HirExpr::ClassLiteral { ty, .. } => {
-                let inner = self.infer_expr(loader, *ty).ty;
-
-                let class_id = loader
-                    .store
-                    .class_id("java.lang.Class")
-                    .or_else(|| self.ensure_workspace_class(loader, "java.lang.Class"))
-                    .or_else(|| loader.ensure_class("java.lang.Class"));
-                if let Some(class_id) = class_id {
-                    let arg = if inner.is_reference() {
-                        inner
-                    } else {
-                        Type::Wildcard(WildcardBound::Unbounded)
+                let inner = self.infer_expr(loader, *ty);
+                if inner.is_type_ref {
+                    let class_id = loader.ensure_class("java.lang.Class");
+                    let ty = match class_id {
+                        Some(class_id) => Type::class(class_id, vec![inner.ty.clone()]),
+                        None => Type::Named("java.lang.Class".to_string()),
                     };
-
                     ExprInfo {
-                        ty: Type::class(class_id, vec![arg]),
+                        ty,
                         is_type_ref: false,
                     }
                 } else {
