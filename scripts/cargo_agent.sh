@@ -257,6 +257,36 @@ run_cargo() {
      export RUST_TEST_THREADS="${rust_test_threads}"
    fi
 
+  # `cargo fuzz run` defaults to AddressSanitizer, which reserves a huge virtual
+  # address range for its shadow memory. Under the default RLIMIT_AS cap enforced
+  # by this wrapper, ASAN cannot reserve that shadow memory and crashes before the
+  # fuzz target even starts executing.
+  #
+  # To keep fuzzing usable in constrained multi-agent environments, default to
+  # `-s none` when an address-space cap is active *unless* the caller explicitly
+  # selected a sanitizer.
+  if [[ "${subcommand}" == "fuzz" ]] \
+    && [[ -n "${limit_as}" && "${limit_as}" != "0" && "${limit_as}" != "off" && "${limit_as}" != "unlimited" ]] \
+    && [[ $# -ge 1 ]]
+  then
+    local fuzz_subcommand="$1"
+    case "${fuzz_subcommand}" in
+      run|r|cmin|tmin|coverage|cov)
+        local has_sanitizer=""
+        local arg
+        for arg in "$@"; do
+          if [[ "${arg}" == "-s" || "${arg}" == "--sanitizer" || "${arg}" == --sanitizer=* ]]; then
+            has_sanitizer=1
+            break
+          fi
+        done
+        if [[ -z "${has_sanitizer}" ]]; then
+          set -- "${fuzz_subcommand}" -s none "${@:2}"
+        fi
+        ;;
+    esac
+  fi
+
   # On multi-agent hosts we apply strict RLIMIT_AS ceilings. Some environments
   # also configure a global rustc wrapper (commonly `sccache`) via cargo config.
   # This can crash in low address-space environments and cause failures like:
