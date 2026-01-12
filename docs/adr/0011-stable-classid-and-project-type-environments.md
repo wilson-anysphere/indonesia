@@ -123,6 +123,12 @@ Notes:
   and names found by the workspace scan) to avoid base-store blow-up. If we observe remaining
   `ClassId` instability due to transitive JDK loads, we should expand the pre-intern set (e.g.
   enumerate JDK names) or move sooner to a true global interner.
+- **JPMS caveat (current repo):** `project_base_type_store_for_module` pre-interns only the external
+  types that are *accessible* from the given “from” module. Because `TypeStore` ids are allocated by
+  insertion order, this can still lead to different raw `ClassId` values for the same external class
+  when typechecking from different modules (if their accessible-type sets differ). This is another
+  reason the long-term solution must move identity allocation to a true global interner keyed by a
+  canonical class key (ADR 0012).
 - Cloning a large `TypeStore` is likely too expensive long-term.
   - **Implementation note (current repo):** `TypeStore::clone` is a *deep clone* of the internal
     `Vec`/`HashMap` tables. This means base-store size directly impacts per-body latency and memory.
