@@ -146,6 +146,147 @@ pub fn rewrite_this_tokens(source: &str, replacement: &str) -> String {
     out
 }
 
+/// Rewrites *unqualified* method call sites to compile in injected helper contexts.
+///
+/// The injected stream-eval helper is a separate top-level class, so unqualified method calls like
+/// `getNums()` or `helper(x)` (which are valid inside the paused frame due to implicit `this`)
+/// will not compile unless qualified.
+///
+/// This pass:
+/// - skips string (`"..."`) and char (`'a'`) literals
+/// - detects identifier tokens immediately followed by optional whitespace + `(`
+/// - refuses to rewrite calls already qualified via `.`
+/// - rewrites:
+///   - instance methods: `foo(` -> `__this.foo(`
+///   - static methods: `foo(` -> `<DeclaringClassFqcn>.foo(`
+///
+/// Rewrites are selective: only identifiers present in `instance_method_names`/`static_method_names`
+/// are modified, so static-import calls like `toList()` are preserved.
+pub fn rewrite_unqualified_method_calls(
+    source: &str,
+    instance_method_names: &HashSet<String>,
+    static_method_names: &HashSet<String>,
+    has_this_object: bool,
+    declaring_class_fqcn: &str,
+) -> String {
+    // Fast path: avoid allocation if there are no call sites.
+    if !source.contains('(') {
+        return source.to_string();
+    }
+    if instance_method_names.is_empty() && static_method_names.is_empty() {
+        return source.to_string();
+    }
+
+    let mut out = String::with_capacity(source.len());
+    let mut chars = source.char_indices().peekable();
+    let mut in_str = false;
+    let mut in_char = false;
+    let mut escape = false;
+    let mut prev_non_ws = None::<char>;
+
+    while let Some((_idx, ch)) = chars.next() {
+        if in_str {
+            out.push(ch);
+            if escape {
+                escape = false;
+            } else if ch == '\\' {
+                escape = true;
+            } else if ch == '"' {
+                in_str = false;
+            }
+            if !ch.is_whitespace() {
+                prev_non_ws = Some(ch);
+            }
+            continue;
+        }
+
+        if in_char {
+            out.push(ch);
+            if escape {
+                escape = false;
+            } else if ch == '\\' {
+                escape = true;
+            } else if ch == '\'' {
+                in_char = false;
+            }
+            if !ch.is_whitespace() {
+                prev_non_ws = Some(ch);
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => {
+                in_str = true;
+                out.push(ch);
+                prev_non_ws = Some(ch);
+                continue;
+            }
+            '\'' => {
+                in_char = true;
+                out.push(ch);
+                prev_non_ws = Some(ch);
+                continue;
+            }
+            _ if is_java_identifier_start_ascii(ch) => {
+                let mut ident = String::new();
+                ident.push(ch);
+                while let Some((_, next_ch)) = chars.peek().copied() {
+                    if is_java_identifier_part_ascii(next_ch) {
+                        ident.push(next_ch);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+
+                let is_keyword = is_java_keyword(&ident);
+                let is_call = if !is_keyword {
+                    let mut lookahead = chars.clone();
+                    while let Some((_, next_ch)) = lookahead.peek().copied() {
+                        if next_ch.is_whitespace() {
+                            lookahead.next();
+                            continue;
+                        }
+                        break;
+                    }
+                    lookahead.peek().is_some_and(|(_, next_ch)| *next_ch == '(')
+                } else {
+                    false
+                };
+
+                let is_unqualified = is_call && prev_non_ws != Some('.');
+                if is_unqualified {
+                    if has_this_object && instance_method_names.contains(&ident) {
+                        out.push_str("__this.");
+                        out.push_str(&ident);
+                    } else if static_method_names.contains(&ident) && !declaring_class_fqcn.is_empty()
+                    {
+                        out.push_str(declaring_class_fqcn);
+                        out.push('.');
+                        out.push_str(&ident);
+                    } else {
+                        out.push_str(&ident);
+                    }
+                } else {
+                    out.push_str(&ident);
+                }
+
+                prev_non_ws = ident.chars().last();
+                continue;
+            }
+            _ => {}
+        }
+
+        out.push(ch);
+        if !ch.is_whitespace() {
+            prev_non_ws = Some(ch);
+        }
+    }
+
+    out
+}
+
 /// Generate Java source for a stream-evaluation helper class.
 ///
 /// The generated class is intended to be compiled and injected into the target JVM. This function
@@ -758,6 +899,71 @@ mod tests {
             rewritten,
             "__this + thisThing + otherthis + _this + __this.foo() + __this"
         );
+    }
+
+    #[test]
+    fn rewrite_unqualified_method_calls_rewrites_instance_methods_only_at_unqualified_call_sites() {
+        let instance: HashSet<String> = ["getNums".to_string()].into_iter().collect();
+        let static_: HashSet<String> = HashSet::new();
+        let rewritten = rewrite_unqualified_method_calls(
+            "getNums().stream()",
+            &instance,
+            &static_,
+            true,
+            "com.example.Foo",
+        );
+        assert_eq!(rewritten, "__this.getNums().stream()");
+    }
+
+    #[test]
+    fn rewrite_unqualified_method_calls_does_not_rewrite_unknown_methods() {
+        let instance: HashSet<String> = HashSet::new();
+        let static_: HashSet<String> = HashSet::new();
+        let rewritten =
+            rewrite_unqualified_method_calls("toList()", &instance, &static_, true, "Foo");
+        assert_eq!(rewritten, "toList()");
+    }
+
+    #[test]
+    fn rewrite_unqualified_method_calls_rewrites_inside_lambda_bodies() {
+        let instance: HashSet<String> = ["helper".to_string()].into_iter().collect();
+        let static_: HashSet<String> = HashSet::new();
+        let rewritten = rewrite_unqualified_method_calls(
+            "x -> helper(x)",
+            &instance,
+            &static_,
+            true,
+            "com.example.Foo",
+        );
+        assert_eq!(rewritten, "x -> __this.helper(x)");
+    }
+
+    #[test]
+    fn rewrite_unqualified_method_calls_rewrites_static_methods_when_no_this_object() {
+        let instance: HashSet<String> = HashSet::new();
+        let static_: HashSet<String> = ["staticHelper".to_string()].into_iter().collect();
+        let rewritten = rewrite_unqualified_method_calls(
+            "staticHelper(1)",
+            &instance,
+            &static_,
+            false,
+            "com.example.Foo",
+        );
+        assert_eq!(rewritten, "com.example.Foo.staticHelper(1)");
+    }
+
+    #[test]
+    fn rewrite_unqualified_method_calls_does_not_rewrite_inside_string_literals() {
+        let instance: HashSet<String> = ["helper".to_string()].into_iter().collect();
+        let static_: HashSet<String> = HashSet::new();
+        let rewritten = rewrite_unqualified_method_calls(
+            "\"helper(\" + helper(x)",
+            &instance,
+            &static_,
+            true,
+            "com.example.Foo",
+        );
+        assert_eq!(rewritten, "\"helper(\" + __this.helper(x)");
     }
 
     #[tokio::test]

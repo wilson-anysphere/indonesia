@@ -881,7 +881,54 @@ erased generic types). Try adding explicit casts or types, e.g. \
         );
     }
 
+    // Unqualified method calls (compile+inject helpers are top-level classes).
+    if lower.contains("cannot find symbol") {
+        if let Some(name) = javac_output
+            .lines()
+            .find_map(|line| extract_missing_method_name(line))
+        {
+            hints.push(format!(
+                "Javac could not resolve `{name}(...)`. The stream debugger evaluates expressions in an injected helper class, \
+so unqualified method calls from your source file may need to be qualified. Try `this.{name}(...)` (instance) or \
+`DeclaringClass.{name}(...)` (static)."
+            ));
+        }
+    }
+
     hints
+}
+
+fn extract_missing_method_name(line: &str) -> Option<String> {
+    // `javac` continuation line:
+    // `symbol:   method helper(int)`
+    let trimmed = line.trim();
+    let rest = trimmed.strip_prefix("symbol:")?.trim_start();
+    let rest = rest.strip_prefix("method")?.trim_start();
+
+    let start = rest
+        .char_indices()
+        .find(|(_, ch)| is_ident_start(*ch))
+        .map(|(idx, _)| idx)?;
+    let after = &rest[start..];
+    let end = after
+        .char_indices()
+        .find(|(_, ch)| !is_ident_part(*ch))
+        .map(|(idx, _)| idx)
+        .unwrap_or(after.len());
+    let name = &after[..end];
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+fn is_ident_start(ch: char) -> bool {
+    ch == '_' || ch == '$' || ch.is_alphabetic()
+}
+
+fn is_ident_part(ch: char) -> bool {
+    is_ident_start(ch) || ch.is_ascii_digit()
 }
 
 #[cfg(test)]
@@ -974,6 +1021,29 @@ mod tests {
         assert!(
             message.contains("return list.stream().collect(Collectors.toList());"),
             "expected snippet to contain the offending line:\n{message}"
+        );
+    }
+
+    #[test]
+    fn stream_debug_compile_failure_includes_hint_for_unqualified_method_calls() {
+        let raw_javac_stderr = concat!(
+            "/tmp/NovaStreamDebugHelper.java:10: error: cannot find symbol\n",
+            "        return helper(1);\n",
+            "               ^\n",
+            "  symbol:   method helper(int)\n",
+            "  location: class NovaStreamDebugHelper\n",
+            "1 error\n",
+        );
+
+        let diagnostics = crate::javac::format_javac_failure(&[], raw_javac_stderr.as_bytes());
+        let message = format_stream_debug_helper_compile_failure(
+            Path::new("/tmp/NovaStreamDebugHelper.java"),
+            &diagnostics,
+        );
+
+        assert!(
+            message.contains("this.helper"),
+            "expected unqualified-method hint in message:\n{message}"
         );
     }
 

@@ -10,7 +10,7 @@ pub mod java_gen;
 pub mod java_types;
 pub mod javac_config;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use nova_jdwp::wire::inspect::Inspector;
@@ -119,6 +119,43 @@ pub(crate) async fn compile_and_inject_helper(
     // --- Source generation -------------------------------------------------
     let class_sig = jdwp.reference_type_signature(location.class_id).await?;
     let package = package_from_signature(&class_sig).unwrap_or_default();
+    let declaring_class_fqcn = java_types::java_type_from_signatures(&class_sig, None);
+
+    let (instance_method_names, static_method_names) =
+        collect_declaring_class_method_names(jdwp, location.class_id).await?;
+
+    let has_this_object = match &bindings.this.value {
+        JdwpValue::Object { id, .. } => *id != 0,
+        _ => false,
+    };
+
+    let rewritten_stages: Vec<String> = stages
+        .iter()
+        .map(|stage| {
+            let stage = stage.trim();
+            let stage = stage.strip_suffix(';').unwrap_or(stage).trim();
+            java_gen::rewrite_unqualified_method_calls(
+                stage,
+                &instance_method_names,
+                &static_method_names,
+                has_this_object,
+                &declaring_class_fqcn,
+            )
+        })
+        .collect();
+
+    let rewritten_terminal: Option<String> = terminal.map(|expr| {
+        let expr = expr.trim();
+        let expr = expr.strip_suffix(';').unwrap_or(expr).trim();
+        java_gen::rewrite_unqualified_method_calls(
+            expr,
+            &instance_method_names,
+            &static_method_names,
+            has_this_object,
+            &declaring_class_fqcn,
+        )
+    });
+
     let nonce = STREAM_EVAL_CLASS_COUNTER.fetch_add(1, Ordering::Relaxed);
     let simple_name = format!("__NovaStreamEvalHelper_{}_{}", std::process::id(), nonce);
     let fqcn = if package.is_empty() {
@@ -137,8 +174,8 @@ pub(crate) async fn compile_and_inject_helper(
         &locals_for_java_gen,
         &fields_for_java_gen,
         &static_fields_for_java_gen,
-        stages,
-        terminal,
+        &rewritten_stages,
+        rewritten_terminal.as_deref(),
         max_sample_size,
     );
 
@@ -188,7 +225,7 @@ pub(crate) async fn compile_and_inject_helper(
         stage_method_ids.push(id);
     }
 
-    let terminal_method_id = match terminal {
+    let terminal_method_id = match rewritten_terminal.as_deref() {
         Some(expr) if !expr.trim().is_empty() => Some(
             by_name
                 .get("terminal")
@@ -206,6 +243,41 @@ pub(crate) async fn compile_and_inject_helper(
         stage_method_ids,
         terminal_method_id,
     })
+}
+
+async fn collect_declaring_class_method_names(
+    jdwp: &JdwpClient,
+    class_id: ReferenceTypeId,
+) -> Result<(HashSet<String>, HashSet<String>), JdwpError> {
+    const MODIFIER_STATIC: u32 = 0x0008;
+
+    let mut instance = HashSet::new();
+    let mut static_ = HashSet::new();
+
+    let mut seen_types: HashSet<ReferenceTypeId> = HashSet::new();
+    let mut current = class_id;
+    while current != 0 && seen_types.insert(current) {
+        let methods = jdwp.reference_type_methods(current).await?;
+        for method in methods {
+            let name = method.name.as_str();
+            if name == "<init>" || name == "<clinit>" {
+                continue;
+            }
+            if (method.mod_bits & MODIFIER_STATIC) != 0 {
+                static_.insert(name.to_string());
+            } else {
+                instance.insert(name.to_string());
+            }
+        }
+
+        current = match jdwp.class_type_superclass(current).await {
+            Ok(id) => id,
+            Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled),
+            Err(_) => break,
+        };
+    }
+
+    Ok((instance, static_))
 }
 
 async fn invoke_helper_method(
