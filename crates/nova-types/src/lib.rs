@@ -4219,8 +4219,8 @@ fn class_substitution_for_owner(
 /// given a receiver type `C<...>` and a desired supertype/interface `S`, compute
 /// `S<...>` by substituting type parameters through `C`'s declared supertypes.
 ///
-/// Returns `None` if `ty` is not a class type, the inheritance chain cannot be
-/// traversed, or `target_def` is not a supertype of `ty`.
+/// Returns `None` if the inheritance chain cannot be traversed, or `target_def` is not a supertype
+/// of `ty`.
 pub fn instantiate_supertype(
     env: &dyn TypeEnv,
     ty: &Type,
@@ -4232,6 +4232,13 @@ pub fn instantiate_supertype(
             let def = env.lookup_class(name)?;
             instantiate_as(env, def, vec![], target_def)
         }
+        Type::TypeVar(id) => env
+            .type_param(*id)
+            .and_then(|tp| tp.upper_bounds.first())
+            .and_then(|b| instantiate_supertype(env, b, target_def)),
+        Type::Intersection(parts) => parts
+            .iter()
+            .find_map(|p| instantiate_supertype(env, p, target_def)),
         _ => None,
     }
 }

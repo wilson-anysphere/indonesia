@@ -1912,6 +1912,7 @@ impl Lowerer {
             SyntaxKind::ThisExpression => ast::Expr::This(self.spans.map_node(node)),
             SyntaxKind::SuperExpression => ast::Expr::Super(self.spans.map_node(node)),
             SyntaxKind::NewExpression => self.lower_new_expr(node),
+            SyntaxKind::ArrayCreationExpression => self.lower_array_creation_expr(node),
             SyntaxKind::MethodCallExpression => self.lower_call_expr(node),
             SyntaxKind::FieldAccessExpression => self.lower_field_access_expr(node),
             SyntaxKind::MethodReferenceExpression => self.lower_method_reference_expr(node),
@@ -2268,6 +2269,54 @@ impl Lowerer {
         })
     }
 
+    fn lower_array_creation_expr(&self, node: &SyntaxNode) -> ast::Expr {
+        let ty_node = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::Type);
+        let mut class = ty_node
+            .as_ref()
+            .map(|n| self.lower_type_ref(n))
+            .unwrap_or_else(|| ast::TypeRef {
+                text: String::new(),
+                range: self.spans.map_node(node),
+            });
+
+        // Best-effort: lower dimension expressions (`new T[expr]`) as "args" so downstream HIR
+        // traversal still visits nested expressions.
+        let mut args = Vec::new();
+
+        let mut dims = 0usize;
+        if let Some(dim_exprs) = node.children().find(|child| child.kind() == SyntaxKind::DimExprs) {
+            for dim_expr in dim_exprs.children().filter(|child| child.kind() == SyntaxKind::DimExpr)
+            {
+                dims += 1;
+                if let Some(expr) = dim_expr
+                    .children()
+                    .find(|child| is_expression_kind(child.kind()))
+                {
+                    args.push(self.lower_expr(&expr));
+                }
+            }
+        }
+
+        if let Some(dims_node) = node.children().find(|child| child.kind() == SyntaxKind::Dims) {
+            dims += dims_node
+                .children()
+                .filter(|child| child.kind() == SyntaxKind::Dim)
+                .count();
+        }
+
+        if dims > 0 {
+            class.text = format!("{}{}", class.text, "[]".repeat(dims));
+        }
+
+        ast::Expr::New(ast::NewExpr {
+            class,
+            args,
+            range: self.spans.map_node(node),
+        })
+    }
+
     fn lower_unary_expr(&self, node: &SyntaxNode) -> ast::Expr {
         let first_token = node
             .children_with_tokens()
@@ -2599,6 +2648,7 @@ fn is_expression_kind(kind: SyntaxKind) -> bool {
             | SyntaxKind::SuperExpression
             | SyntaxKind::ParenthesizedExpression
             | SyntaxKind::NewExpression
+            | SyntaxKind::ArrayCreationExpression
             | SyntaxKind::MethodCallExpression
             | SyntaxKind::FieldAccessExpression
             | SyntaxKind::ArrayAccessExpression

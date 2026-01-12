@@ -13,6 +13,7 @@ use nova_resolve::expr_scopes::{ExprScopes, ResolvedValue as ResolvedLocal};
 use nova_resolve::ids::{DefWithBodyId, ParamId};
 use nova_resolve::jpms_env::JpmsCompilationEnvironment;
 use nova_resolve::{NameResolution, Resolution, ScopeKind, StaticMemberResolution, TypeResolution};
+use nova_syntax::JavaLanguageLevel;
 use nova_types::{
     assignment_conversion, assignment_conversion_with_const, binary_numeric_promotion,
     cast_conversion, format_resolved_method, format_type, is_subtype, CallKind, ClassDef, ClassId,
@@ -314,6 +315,7 @@ fn resolve_method_call_demand(
 
     let owner = call_site.owner;
     let file = def_file(owner);
+    let java_level = db.java_language_level(file);
     let project = db.file_project(file);
     let jdk = db.jdk_index(project);
     let classpath = db.classpath_index(project);
@@ -439,6 +441,7 @@ fn resolve_method_call_demand(
         method_types,
         field_owners,
         method_owners,
+        java_level,
     );
 
     // Best-effort local type table for locals with explicit types. This improves overload
@@ -856,6 +859,7 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
     cancel::check_cancelled(db);
 
     let file = def_file(owner);
+    let java_level = db.java_language_level(file);
     let project = db.file_project(file);
     let jdk = db.jdk_index(project);
     let classpath = db.classpath_index(project);
@@ -996,6 +1000,7 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
         method_types,
         field_owners,
         method_owners,
+        java_level,
     );
     checker.diagnostics.extend(signature_diags);
     checker.diagnostics.extend(param_diags);
@@ -1218,6 +1223,7 @@ struct BodyChecker<'a, 'idx> {
     diagnostics: Vec<Diagnostic>,
     workspace_in_progress: HashSet<String>,
     workspace_loaded: HashSet<String>,
+    java_level: JavaLanguageLevel,
     steps: u32,
 }
 
@@ -1239,6 +1245,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         method_types: HashMap<MethodId, (Vec<Type>, Type)>,
         field_owners: HashMap<FieldId, String>,
         method_owners: HashMap<MethodId, String>,
+        java_level: JavaLanguageLevel,
     ) -> Self {
         let local_types = vec![Type::Unknown; body.locals.len()];
         let expr_info = vec![None; body.exprs.len()];
@@ -1264,6 +1271,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             expr_info,
             call_resolutions,
             diagnostics: Vec::new(),
+            java_level,
             workspace_in_progress: HashSet::new(),
             workspace_loaded: HashSet::new(),
             steps: 0,
@@ -1539,12 +1547,47 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             } => {
                 let data = &self.body.locals[*local];
 
-                // Handle `var` inference.
-                if data.ty_text.trim() == "var" {
-                    if let Some(init) = initializer {
-                        let init_ty = self.infer_expr(loader, *init).ty;
-                        self.local_types[local.idx()] = init_ty;
+                // Handle `var` inference (Java 10+).
+                if data.ty_text.trim() == "var" && self.java_level.supports_var_local_inference() {
+                    let Some(init) = initializer else {
+                        self.diagnostics.push(Diagnostic::error(
+                            "var-requires-initializer",
+                            "`var` variables require an initializer",
+                            Some(data.ty_range),
+                        ));
+                        self.local_types[local.idx()] = Type::Error;
+                        return;
+                    };
+
+                    // Java forbids inferring `var` from lambda/method reference expressions.
+                    if matches!(
+                        &self.body.exprs[*init],
+                        HirExpr::Lambda { .. }
+                            | HirExpr::MethodReference { .. }
+                            | HirExpr::ConstructorReference { .. }
+                    ) {
+                        let _ = self.infer_expr(loader, *init);
+                        self.diagnostics.push(Diagnostic::error(
+                            "var-cannot-infer",
+                            "cannot infer `var` type from a lambda or method reference",
+                            Some(self.body.exprs[*init].range()),
+                        ));
+                        self.local_types[local.idx()] = Type::Error;
+                        return;
                     }
+
+                    let init_ty = self.infer_expr(loader, *init).ty;
+                    if init_ty == Type::Null {
+                        self.diagnostics.push(Diagnostic::error(
+                            "var-cannot-infer-null",
+                            "cannot infer `var` type from `null`",
+                            Some(self.body.exprs[*init].range()),
+                        ));
+                        self.local_types[local.idx()] = Type::Error;
+                        return;
+                    }
+
+                    self.local_types[local.idx()] = init_ty;
                     return;
                 }
 
@@ -1714,31 +1757,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             } => {
                 let data = &self.body.locals[*local];
                 let iterable_ty = self.infer_expr(loader, *iterable).ty;
-                let object_ty = Type::class(loader.store.well_known().object, vec![]);
-                let (is_iterable, element_ty) = match &iterable_ty {
-                    Type::Array(elem) => (true, elem.as_ref().clone()),
-                    Type::Class(class_ty) => {
-                        let name = loader
-                            .store
-                            .class(class_ty.def)
-                            .map(|def| def.name.as_str());
-                        match name {
-                            Some("java.lang.Iterable" | "java.util.List" | "java.util.ArrayList") => (
-                                true,
-                                class_ty
-                                    .args
-                                    .get(0)
-                                    .cloned()
-                                    .unwrap_or_else(|| object_ty.clone()),
-                            ),
-                            _ => (false, Type::Unknown),
-                        }
-                    }
-                    _ => (false, Type::Unknown),
-                };
+                let element_ty = self.infer_foreach_element_type(loader, &iterable_ty);
+                let is_iterable =
+                    matches!(iterable_ty, Type::Array(_)) || !element_ty.is_errorish();
 
                 // Emit an error if the iterable expression is not something we can iterate.
-                // For now we only support arrays and a small subset of `Iterable<T>`.
                 if !iterable_ty.is_errorish() && !is_iterable {
                     let env_ro: &dyn TypeEnv = &*loader.store;
                     let found = format_type(env_ro, &iterable_ty);
@@ -1787,7 +1810,6 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         self.local_types[local.idx()] = element_ty;
                     }
                 }
-
                 self.check_stmt(loader, *body, expected_return);
             }
             HirStmt::Switch { selector, body, .. } => {
@@ -2059,14 +2081,27 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 class,
                 class_range,
                 args,
-                ..
+                range,
             } => {
                 for arg in args {
                     let _ = self.infer_expr(loader, *arg);
                 }
 
+                let mut ty =
+                    self.resolve_source_type(loader, class.as_str(), Some(*class_range));
+
+                // Best-effort: recover array-ness for `new T[0]` expressions when the lowered type
+                // text only contains the base element type.
+                if !matches!(ty, Type::Array(_)) {
+                    if let Some(dims) = self.new_expr_array_dims(*class_range, *range) {
+                        for _ in 0..dims {
+                            ty = Type::Array(Box::new(ty));
+                        }
+                    }
+                }
+
                 ExprInfo {
-                    ty: self.resolve_source_type(loader, class.as_str(), Some(*class_range)),
+                    ty,
                     is_type_ref: false,
                 }
             }
@@ -2424,6 +2459,85 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
 
         self.expr_info[expr.idx()] = Some(info.clone());
         info
+    }
+
+    fn infer_foreach_element_type(
+        &mut self,
+        loader: &mut ExternalTypeLoader<'_>,
+        iterable_ty: &Type,
+    ) -> Type {
+        match iterable_ty {
+            Type::Array(elem) => (**elem).clone(),
+            other => {
+                self.ensure_type_loaded(loader, other);
+
+                let Some(iterable_def) = loader.ensure_class("java.lang.Iterable") else {
+                    return Type::Unknown;
+                };
+
+                let env_ro: &dyn TypeEnv = &*loader.store;
+                let Some(args) = nova_types::instantiate_supertype(env_ro, other, iterable_def) else {
+                    return Type::Unknown;
+                };
+
+                if let Some(first) = args.first() {
+                    first.clone()
+                } else {
+                    Type::class(env_ro.well_known().object, vec![])
+                }
+            }
+        }
+    }
+
+    fn new_expr_array_dims(&self, class_range: Span, expr_range: Span) -> Option<usize> {
+        if class_range.end > expr_range.end {
+            return None;
+        }
+
+        let file = def_file(self.owner);
+        let text = self.db.file_content(file);
+        let bytes = text.as_bytes();
+        if expr_range.end > bytes.len() {
+            return None;
+        }
+
+        let mut i = class_range.end;
+        while i < expr_range.end && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+
+        // `new Foo()` => not an array creation expression.
+        if i >= expr_range.end || bytes[i] != b'[' {
+            return None;
+        }
+
+        // Count top-level bracket groups (`[<expr>]` / `[]`) after the type name, but stop once we
+        // hit an array initializer (`{ ... }`) so we don't count `[` that appear inside initializer
+        // expressions.
+        let mut dims = 0usize;
+        let mut nesting = 0usize;
+        while i < expr_range.end {
+            match bytes[i] {
+                b'[' => {
+                    if nesting == 0 {
+                        dims += 1;
+                    }
+                    nesting += 1;
+                }
+                b']' => {
+                    nesting = nesting.saturating_sub(1);
+                }
+                b'{' | b'(' => {
+                    if nesting == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+
+        (dims > 0).then_some(dims)
     }
 
     fn infer_name(
@@ -3204,8 +3318,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
     fn var_inference_enabled(&self) -> bool {
         // `var` local variable type inference was added in Java 10 (JEP 286),
         // including support in enhanced-for loops.
-        let file = def_file(self.owner);
-        self.db.java_language_level(file).major >= 10
+        self.java_level.supports_var_local_inference()
     }
 
     fn enclosing_class_type(&self, loader: &mut ExternalTypeLoader<'_>) -> Option<Type> {

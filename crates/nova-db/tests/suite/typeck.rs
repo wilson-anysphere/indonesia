@@ -1112,6 +1112,36 @@ class Test {
 }
 
 #[test]
+fn foreach_var_infers_array_element_type() {
+    let src = r#"
+class C {
+    void m() {
+        for (var s : new String[0]) {
+            s.length();
+        }
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .all(|d| !(d.code.as_ref() == "unresolved-method" && d.message.contains("length"))),
+        "expected foreach var element type to resolve String.length(), got {diags:?}"
+    );
+
+    let offset = src
+        .find("s.length()")
+        .expect("snippet should contain `s.length()`");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+}
+
+#[test]
 fn unresolved_signature_types_are_anchored() {
     let src = r#"
 class C {
