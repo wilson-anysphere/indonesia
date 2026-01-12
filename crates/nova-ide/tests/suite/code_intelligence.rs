@@ -294,6 +294,66 @@ fn completion_in_incomplete_implements_keyword_suggests_implements() {
 }
 
 #[test]
+fn completion_in_incomplete_public_keyword_suggests_public() {
+    let (db, file, pos) = fixture("publ<|>");
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "public"),
+        "expected `public` keyword completion for incomplete `publ`; got {items:#?}"
+    );
+}
+
+#[test]
+fn completion_in_incomplete_protected_keyword_suggests_protected() {
+    let (db, file, pos) = fixture("protec<|>");
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "protected"),
+        "expected `protected` keyword completion for incomplete `protec`; got {items:#?}"
+    );
+}
+
+#[test]
+fn completion_in_incomplete_private_keyword_suggests_private() {
+    let (db, file, pos) = fixture("privat<|>");
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "private"),
+        "expected `private` keyword completion for incomplete `privat`; got {items:#?}"
+    );
+}
+
+#[test]
+fn completion_in_incomplete_static_keyword_suggests_static() {
+    let (db, file, pos) = fixture("stat<|>");
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "static"),
+        "expected `static` keyword completion for incomplete `stat`; got {items:#?}"
+    );
+}
+
+#[test]
+fn completion_in_incomplete_final_keyword_suggests_final() {
+    let (db, file, pos) = fixture("fina<|>");
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "final"),
+        "expected `final` keyword completion for incomplete `fina`; got {items:#?}"
+    );
+}
+
+#[test]
+fn completion_in_incomplete_abstract_keyword_suggests_abstract() {
+    let (db, file, pos) = fixture("abstrac<|>");
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "abstract"),
+        "expected `abstract` keyword completion for incomplete `abstrac`; got {items:#?}"
+    );
+}
+
+#[test]
 fn completion_in_incomplete_call_does_not_panic() {
     let (db, file, pos) = fixture(
         r#"

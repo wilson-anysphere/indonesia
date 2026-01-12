@@ -8981,10 +8981,19 @@ fn general_completions(
         // declaration keyword) and the specialized clause completions cannot trigger yet.
         ("import", None),
         ("package", None),
+        // Common declaration modifiers.
+        ("public", None),
+        ("protected", None),
+        ("private", None),
+        ("static", None),
+        ("final", None),
+        ("abstract", None),
+        // Type declarations.
         ("class", None),
         ("interface", None),
         ("enum", None),
         ("record", None),
+        // Type header clauses.
         ("extends", None),
         ("implements", None),
         ("new", None),
