@@ -1,8 +1,10 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use regex::Regex;
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
 use crate::discover::{LoadOptions, ProjectError};
@@ -30,6 +32,241 @@ fn root_project_has_sources(root: &Path) -> bool {
             return false;
         };
         src_dir.join(source_set).join("java").is_dir()
+    })
+}
+
+const GRADLE_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BuildFileFingerprint {
+    digest: String,
+}
+
+impl BuildFileFingerprint {
+    fn from_files(project_root: &Path, mut files: Vec<PathBuf>) -> std::io::Result<Self> {
+        files.sort();
+        files.dedup();
+
+        let mut hasher = Sha256::new();
+        for path in files {
+            let rel = path.strip_prefix(project_root).unwrap_or(&path);
+            hasher.update(rel.to_string_lossy().as_bytes());
+            hasher.update([0]);
+
+            let bytes = std::fs::read(&path)?;
+            hasher.update(&bytes);
+            hasher.update([0]);
+        }
+
+        Ok(Self {
+            digest: hex::encode(hasher.finalize()),
+        })
+    }
+}
+
+fn collect_gradle_build_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    collect_gradle_build_files_rec(root, root, &mut out)?;
+    // Stable sort for hashing.
+    out.sort_by(|a, b| {
+        let ra = a.strip_prefix(root).unwrap_or(a);
+        let rb = b.strip_prefix(root).unwrap_or(b);
+        ra.cmp(rb)
+    });
+    out.dedup();
+    Ok(out)
+}
+
+fn collect_gradle_build_files_rec(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+
+        if path.is_dir() {
+            if file_name == ".git"
+                || file_name == ".gradle"
+                || file_name == "build"
+                || file_name == "target"
+                || file_name == ".nova"
+                || file_name == ".idea"
+            {
+                continue;
+            }
+            collect_gradle_build_files_rec(root, &path, out)?;
+            continue;
+        }
+
+        let name = file_name.as_ref();
+
+        // Match `nova-build` build-file watcher semantics by including any
+        // `build.gradle*` / `settings.gradle*` variants.
+        if name.starts_with("build.gradle") || name.starts_with("settings.gradle") {
+            out.push(path);
+            continue;
+        }
+
+        match name {
+            "gradle.properties" => out.push(path),
+            "gradlew" | "gradlew.bat" => {
+                if path == root.join(name) {
+                    out.push(path);
+                }
+            }
+            "gradle-wrapper.properties" => {
+                if path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.properties")) {
+                    out.push(path);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn gradle_build_fingerprint(project_root: &Path) -> std::io::Result<BuildFileFingerprint> {
+    let build_files = collect_gradle_build_files(project_root)?;
+    BuildFileFingerprint::from_files(project_root, build_files)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GradleSnapshotV1 {
+    schema_version: u32,
+    build_fingerprint: String,
+    #[serde(default)]
+    projects: Vec<GradleSnapshotProject>,
+    #[serde(default)]
+    java_compile_configs: BTreeMap<String, GradleSnapshotJavaCompileConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GradleSnapshotProject {
+    path: String,
+    project_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GradleSnapshotJavaCompileConfig {
+    project_dir: PathBuf,
+    #[serde(default)]
+    compile_classpath: Vec<PathBuf>,
+    #[serde(default)]
+    test_classpath: Vec<PathBuf>,
+    #[serde(default)]
+    module_path: Vec<PathBuf>,
+    #[serde(default)]
+    main_source_roots: Vec<PathBuf>,
+    #[serde(default)]
+    test_source_roots: Vec<PathBuf>,
+    main_output_dir: Option<PathBuf>,
+    test_output_dir: Option<PathBuf>,
+    source: Option<String>,
+    target: Option<String>,
+    release: Option<String>,
+    #[serde(default)]
+    enable_preview: bool,
+}
+
+fn gradle_snapshot_path(workspace_root: &Path) -> PathBuf {
+    workspace_root
+        .join(".nova")
+        .join("queries")
+        .join("gradle.json")
+}
+
+fn load_gradle_snapshot(workspace_root: &Path) -> Option<GradleSnapshotV1> {
+    let path = gradle_snapshot_path(workspace_root);
+    let bytes = std::fs::read(&path).ok()?;
+    let snapshot: GradleSnapshotV1 = serde_json::from_slice(&bytes).ok()?;
+    if snapshot.schema_version != GRADLE_SNAPSHOT_SCHEMA_VERSION {
+        return None;
+    }
+
+    let fingerprint = gradle_build_fingerprint(workspace_root).ok()?;
+    if snapshot.build_fingerprint != fingerprint.digest {
+        return None;
+    }
+
+    Some(snapshot)
+}
+
+fn resolve_snapshot_project_dir(workspace_root: &Path, dir: &Path) -> PathBuf {
+    if dir.is_absolute() {
+        dir.to_path_buf()
+    } else {
+        workspace_root.join(dir)
+    }
+}
+
+fn classpath_entry_kind_for_path(path: &Path) -> ClasspathEntryKind {
+    if path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
+    {
+        return ClasspathEntryKind::Jar;
+    }
+
+    // Best-effort: Gradle classpaths often include output directories that might not exist yet
+    // (pre-build). Treat non-`.jar` entries as directories to avoid misclassifying outputs.
+    ClasspathEntryKind::Directory
+}
+
+fn java_language_level_from_snapshot(cfg: &GradleSnapshotJavaCompileConfig) -> JavaLanguageLevel {
+    JavaLanguageLevel {
+        release: cfg
+            .release
+            .as_deref()
+            .and_then(JavaVersion::parse),
+        source: cfg
+            .source
+            .as_deref()
+            .and_then(JavaVersion::parse),
+        target: cfg
+            .target
+            .as_deref()
+            .and_then(JavaVersion::parse),
+        preview: cfg.enable_preview,
+    }
+}
+
+fn java_config_from_snapshot(snapshot: &GradleSnapshotV1) -> Option<JavaConfig> {
+    let mut source: Option<JavaVersion> = None;
+    let mut target: Option<JavaVersion> = None;
+    let mut enable_preview = false;
+
+    for cfg in snapshot.java_compile_configs.values() {
+        enable_preview |= cfg.enable_preview;
+
+        // `--release` implies both source + target.
+        let release = cfg.release.as_deref().and_then(JavaVersion::parse);
+        let cfg_source = cfg.source.as_deref().and_then(JavaVersion::parse);
+        let cfg_target = cfg.target.as_deref().and_then(JavaVersion::parse);
+
+        if let Some(v) = release.or(cfg_source) {
+            source = Some(source.map_or(v, |cur| cur.max(v)));
+        }
+        if let Some(v) = release.or(cfg_target) {
+            target = Some(target.map_or(v, |cur| cur.max(v)));
+        }
+    }
+
+    if source.is_none() && target.is_none() && !enable_preview {
+        return None;
+    }
+
+    Some(JavaConfig {
+        source: source.unwrap_or(JavaVersion::JAVA_17),
+        target: target.unwrap_or(JavaVersion::JAVA_17),
+        enable_preview,
     })
 }
 
@@ -64,10 +301,28 @@ pub(crate) fn load_gradle_project(
         module_names.insert(0, ".".to_string());
     }
 
+    let snapshot = load_gradle_snapshot(root);
+    let mut snapshot_project_dirs: HashMap<String, PathBuf> = HashMap::new();
+    if let Some(snapshot) = snapshot.as_ref() {
+        for project in &snapshot.projects {
+            snapshot_project_dirs.insert(
+                project.path.clone(),
+                resolve_snapshot_project_dir(root, &project.project_dir),
+            );
+        }
+        // Redundant projectDir copy in `javaCompileConfigs`.
+        for (project_path, cfg) in &snapshot.java_compile_configs {
+            snapshot_project_dirs
+                .entry(project_path.clone())
+                .or_insert_with(|| resolve_snapshot_project_dir(root, &cfg.project_dir));
+        }
+    }
+
     let mut modules = Vec::new();
     let mut source_roots = Vec::new();
     let mut output_dirs = Vec::new();
     let mut dependencies = Vec::new();
+    let mut module_path = Vec::new();
     let mut classpath = Vec::new();
     let mut dependency_entries = Vec::new();
 
@@ -79,11 +334,24 @@ pub(crate) fn load_gradle_project(
         .or_else(default_gradle_user_home);
 
     // Best-effort: parse Java level and deps from build scripts.
-    let root_java = parse_gradle_java_config(root).unwrap_or_default();
+    let mut root_java = parse_gradle_java_config(root).unwrap_or_default();
+    if let Some(snapshot) = snapshot.as_ref() {
+        if let Some(java) = java_config_from_snapshot(snapshot) {
+            root_java = java;
+        }
+    }
 
     for module_name in module_names {
+        let project_path = if module_name == "." {
+            ":".to_string()
+        } else {
+            format!(":{}", module_name.replace('/', ":"))
+        };
+
         let module_root = if module_name == "." {
             root.to_path_buf()
+        } else if let Some(dir) = snapshot_project_dirs.get(&project_path) {
+            dir.clone()
         } else {
             root.join(&module_name)
         };
@@ -102,37 +370,125 @@ pub(crate) fn load_gradle_project(
             annotation_processing: Default::default(),
         });
 
-        let _module_java = parse_gradle_java_config(&module_root).unwrap_or(root_java);
+        if let Some(cfg) = snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.java_compile_configs.get(&project_path))
+        {
+            for src_root in &cfg.main_source_roots {
+                let path = resolve_snapshot_project_dir(root, src_root);
+                if !path.as_os_str().is_empty() {
+                    source_roots.push(SourceRoot {
+                        kind: SourceRootKind::Main,
+                        origin: SourceRootOrigin::Source,
+                        path,
+                    });
+                }
+            }
+            for src_root in &cfg.test_source_roots {
+                let path = resolve_snapshot_project_dir(root, src_root);
+                if !path.as_os_str().is_empty() {
+                    source_roots.push(SourceRoot {
+                        kind: SourceRootKind::Test,
+                        origin: SourceRootOrigin::Source,
+                        path,
+                    });
+                }
+            }
+            crate::generated::append_generated_source_roots(
+                &mut source_roots,
+                root,
+                &module_root,
+                BuildSystem::Gradle,
+                &options.nova_config,
+            );
 
-        append_source_set_java_roots(&mut source_roots, &module_root);
-        crate::generated::append_generated_source_roots(
-            &mut source_roots,
-            root,
-            &module_root,
-            BuildSystem::Gradle,
-            &options.nova_config,
-        );
+            append_source_set_java_roots(&mut source_roots, &module_root);
+            let main_output = cfg
+                .main_output_dir
+                .as_deref()
+                .map(|p| resolve_snapshot_project_dir(root, p))
+                .unwrap_or_else(|| module_root.join("build/classes/java/main"));
+            let test_output = cfg
+                .test_output_dir
+                .as_deref()
+                .map(|p| resolve_snapshot_project_dir(root, p))
+                .unwrap_or_else(|| module_root.join("build/classes/java/test"));
 
-        let main_output = module_root.join("build/classes/java/main");
-        let test_output = module_root.join("build/classes/java/test");
+            output_dirs.push(OutputDir {
+                kind: OutputDirKind::Main,
+                path: main_output.clone(),
+            });
+            output_dirs.push(OutputDir {
+                kind: OutputDirKind::Test,
+                path: test_output.clone(),
+            });
 
-        output_dirs.push(OutputDir {
-            kind: OutputDirKind::Main,
-            path: main_output.clone(),
-        });
-        output_dirs.push(OutputDir {
-            kind: OutputDirKind::Test,
-            path: test_output.clone(),
-        });
+            // Ensure output directories appear on the classpath even if the snapshot is partial.
+            classpath.push(ClasspathEntry {
+                kind: ClasspathEntryKind::Directory,
+                path: main_output,
+            });
+            classpath.push(ClasspathEntry {
+                kind: ClasspathEntryKind::Directory,
+                path: test_output,
+            });
 
-        classpath.push(ClasspathEntry {
-            kind: ClasspathEntryKind::Directory,
-            path: main_output,
-        });
-        classpath.push(ClasspathEntry {
-            kind: ClasspathEntryKind::Directory,
-            path: test_output,
-        });
+            for entry in cfg
+                .compile_classpath
+                .iter()
+                .chain(cfg.test_classpath.iter())
+            {
+                let path = resolve_snapshot_project_dir(root, entry);
+                if path.as_os_str().is_empty() {
+                    continue;
+                }
+                classpath.push(ClasspathEntry {
+                    kind: classpath_entry_kind_for_path(&path),
+                    path,
+                });
+            }
+            for entry in &cfg.module_path {
+                let path = resolve_snapshot_project_dir(root, entry);
+                if path.as_os_str().is_empty() {
+                    continue;
+                }
+                module_path.push(ClasspathEntry {
+                    kind: classpath_entry_kind_for_path(&path),
+                    path,
+                });
+            }
+        } else {
+            let _module_java = parse_gradle_java_config(&module_root).unwrap_or(root_java);
+            append_source_set_java_roots(&mut source_roots, &module_root);
+            crate::generated::append_generated_source_roots(
+                &mut source_roots,
+                root,
+                &module_root,
+                BuildSystem::Gradle,
+                &options.nova_config,
+            );
+
+            let main_output = module_root.join("build/classes/java/main");
+            let test_output = module_root.join("build/classes/java/test");
+
+            output_dirs.push(OutputDir {
+                kind: OutputDirKind::Main,
+                path: main_output.clone(),
+            });
+            output_dirs.push(OutputDir {
+                kind: OutputDirKind::Test,
+                path: test_output.clone(),
+            });
+
+            classpath.push(ClasspathEntry {
+                kind: ClasspathEntryKind::Directory,
+                path: main_output,
+            });
+            classpath.push(ClasspathEntry {
+                kind: ClasspathEntryKind::Directory,
+                path: test_output,
+            });
+        }
 
         // Dependency extraction is best-effort; useful for later external jar resolution.
         dependencies.extend(parse_gradle_dependencies(&module_root));
@@ -174,12 +530,14 @@ pub(crate) fn load_gradle_project(
     sort_dedup_source_roots(&mut source_roots);
     sort_dedup_output_dirs(&mut output_dirs);
     sort_dedup_classpath(&mut dependency_entries);
+    sort_dedup_classpath(&mut module_path);
     sort_dedup_classpath(&mut classpath);
     // `dependencies` was already sorted/deduped above.
 
     let jpms_modules = crate::jpms::discover_jpms_modules(&modules);
-    let (mut module_path, classpath_deps) =
+    let (mut extra_module_path, classpath_deps) =
         crate::jpms::classify_dependency_entries(&jpms_modules, dependency_entries);
+    module_path.extend(extra_module_path.drain(..));
     classpath.extend(classpath_deps);
     sort_dedup_classpath(&mut module_path);
     sort_dedup_classpath(&mut classpath);
@@ -230,10 +588,31 @@ pub(crate) fn load_gradle_workspace_model(
         module_refs.insert(0, GradleModuleRef::root());
     }
 
-    let (root_java, root_java_provenance) = match parse_gradle_java_config_with_path(root) {
+    let snapshot = load_gradle_snapshot(root);
+    let mut snapshot_project_dirs: HashMap<String, PathBuf> = HashMap::new();
+    if let Some(snapshot) = snapshot.as_ref() {
+        for project in &snapshot.projects {
+            snapshot_project_dirs.insert(
+                project.path.clone(),
+                resolve_snapshot_project_dir(root, &project.project_dir),
+            );
+        }
+        for (project_path, cfg) in &snapshot.java_compile_configs {
+            snapshot_project_dirs
+                .entry(project_path.clone())
+                .or_insert_with(|| resolve_snapshot_project_dir(root, &cfg.project_dir));
+        }
+    }
+
+    let (mut root_java, root_java_provenance) = match parse_gradle_java_config_with_path(root) {
         Some((java, path)) => (java, LanguageLevelProvenance::BuildFile(path)),
         None => (JavaConfig::default(), LanguageLevelProvenance::Default),
     };
+    if let Some(snapshot) = snapshot.as_ref() {
+        if let Some(java) = java_config_from_snapshot(snapshot) {
+            root_java = java;
+        }
+    }
 
     // Best-effort Gradle cache resolution. This does not execute Gradle; it only
     // adds jars that already exist in the local Gradle cache.
@@ -246,6 +625,8 @@ pub(crate) fn load_gradle_workspace_model(
     for module_ref in module_refs {
         let module_root = if module_ref.dir_rel == "." {
             root.to_path_buf()
+        } else if let Some(dir) = snapshot_project_dirs.get(&module_ref.project_path) {
+            dir.clone()
         } else {
             root.join(&module_ref.dir_rel)
         };
@@ -270,12 +651,52 @@ pub(crate) fn load_gradle_workspace_model(
             None => (root_java, root_java_provenance.clone()),
         };
 
-        let language_level = ModuleLanguageLevel {
+        let mut language_level = ModuleLanguageLevel {
             level: JavaLanguageLevel::from_java_config(module_java),
             provenance,
         };
+        if let Some(cfg) = snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.java_compile_configs.get(&module_ref.project_path))
+        {
+            let snapshot_level = java_language_level_from_snapshot(cfg);
+            if snapshot_level.release.is_some()
+                || snapshot_level.source.is_some()
+                || snapshot_level.target.is_some()
+                || snapshot_level.preview
+            {
+                language_level.level = snapshot_level;
+            }
+        }
 
         let mut source_roots = Vec::new();
+        if let Some(cfg) = snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.java_compile_configs.get(&module_ref.project_path))
+        {
+            for src_root in &cfg.main_source_roots {
+                let path = resolve_snapshot_project_dir(root, src_root);
+                if path.as_os_str().is_empty() {
+                    continue;
+                }
+                source_roots.push(SourceRoot {
+                    kind: SourceRootKind::Main,
+                    origin: SourceRootOrigin::Source,
+                    path,
+                });
+            }
+            for src_root in &cfg.test_source_roots {
+                let path = resolve_snapshot_project_dir(root, src_root);
+                if path.as_os_str().is_empty() {
+                    continue;
+                }
+                source_roots.push(SourceRoot {
+                    kind: SourceRootKind::Test,
+                    origin: SourceRootOrigin::Source,
+                    path,
+                });
+            }
+        }
         append_source_set_java_roots(&mut source_roots, &module_root);
         crate::generated::append_generated_source_roots(
             &mut source_roots,
@@ -285,8 +706,27 @@ pub(crate) fn load_gradle_workspace_model(
             &options.nova_config,
         );
 
-        let main_output = module_root.join("build/classes/java/main");
-        let test_output = module_root.join("build/classes/java/test");
+        let (main_output, test_output) = if let Some(cfg) = snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.java_compile_configs.get(&module_ref.project_path))
+        {
+            let main_output = cfg
+                .main_output_dir
+                .as_deref()
+                .map(|p| resolve_snapshot_project_dir(root, p))
+                .unwrap_or_else(|| module_root.join("build/classes/java/main"));
+            let test_output = cfg
+                .test_output_dir
+                .as_deref()
+                .map(|p| resolve_snapshot_project_dir(root, p))
+                .unwrap_or_else(|| module_root.join("build/classes/java/test"));
+            (main_output, test_output)
+        } else {
+            (
+                module_root.join("build/classes/java/main"),
+                module_root.join("build/classes/java/test"),
+            )
+        };
         let mut output_dirs = vec![
             OutputDir {
                 kind: OutputDirKind::Main,
@@ -298,20 +738,62 @@ pub(crate) fn load_gradle_workspace_model(
             },
         ];
 
+        let mut module_path = Vec::new();
         let mut classpath = vec![
             ClasspathEntry {
                 kind: ClasspathEntryKind::Directory,
-                path: main_output,
+                path: main_output.clone(),
             },
             ClasspathEntry {
                 kind: ClasspathEntryKind::Directory,
-                path: test_output,
+                path: test_output.clone(),
             },
         ];
+
+        if let Some(cfg) = snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.java_compile_configs.get(&module_ref.project_path))
+        {
+            for entry in cfg
+                .compile_classpath
+                .iter()
+                .chain(cfg.test_classpath.iter())
+            {
+                let path = resolve_snapshot_project_dir(root, entry);
+                if path.as_os_str().is_empty() {
+                    continue;
+                }
+                classpath.push(ClasspathEntry {
+                    kind: classpath_entry_kind_for_path(&path),
+                    path,
+                });
+            }
+            for entry in &cfg.module_path {
+                let path = resolve_snapshot_project_dir(root, entry);
+                if path.as_os_str().is_empty() {
+                    continue;
+                }
+                module_path.push(ClasspathEntry {
+                    kind: classpath_entry_kind_for_path(&path),
+                    path,
+                });
+            }
+        }
 
         // Best-effort: add local jars/directories referenced via `files(...)` / `fileTree(...)`.
         // This intentionally does not attempt full Gradle dependency resolution.
         classpath.extend(parse_gradle_local_classpath_entries(&module_root));
+
+        for entry in &options.classpath_overrides {
+            classpath.push(ClasspathEntry {
+                kind: if entry.extension().is_some_and(|ext| ext == "jar") {
+                    ClasspathEntryKind::Jar
+                } else {
+                    ClasspathEntryKind::Directory
+                },
+                path: entry.clone(),
+            });
+        }
         let mut dependencies = parse_gradle_dependencies(&module_root);
 
         // Sort/dedup before resolving jars so we don't scan the cache repeatedly
@@ -333,6 +815,7 @@ pub(crate) fn load_gradle_workspace_model(
 
         sort_dedup_source_roots(&mut source_roots);
         sort_dedup_output_dirs(&mut output_dirs);
+        sort_dedup_classpath(&mut module_path);
         sort_dedup_classpath(&mut classpath);
         // `dependencies` was already sorted/deduped above.
 
@@ -346,7 +829,7 @@ pub(crate) fn load_gradle_workspace_model(
             language_level,
             source_roots,
             output_dirs,
-            module_path: Vec::new(),
+            module_path,
             classpath,
             dependencies,
         });

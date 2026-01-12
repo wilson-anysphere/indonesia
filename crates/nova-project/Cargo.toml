@@ -19,6 +19,8 @@ thiserror = "1.0.56"
 walkdir = "2.5.0"
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
+sha2 = "0.10"
+hex = "0.4"
 nova-archive = { path = "../nova-archive" }
 nova-build-model = { path = "../nova-build-model" }
 nova-classfile = { path = "../nova-classfile" }

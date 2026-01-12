@@ -6,10 +6,12 @@ use crate::{
     DefaultCommandRunner, GradleBuildTask, JavaCompileConfig, Result,
 };
 use nova_project::{AnnotationProcessing, AnnotationProcessingConfig};
-use serde::Deserialize;
-use std::collections::HashSet;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const NOVA_JSON_BEGIN: &str = "NOVA_JSON_BEGIN";
 const NOVA_JSON_END: &str = "NOVA_JSON_END";
@@ -112,6 +114,10 @@ impl GradleBuild {
             .unwrap_or_default();
         data.projects = Some(cached_projects);
         cache.store(project_root, BuildSystemKind::Gradle, &fingerprint, &data)?;
+
+        // Best-effort: persist a workspace-local Gradle model snapshot so `nova-project`
+        // can reuse the richer projectDir mapping without invoking Gradle.
+        let _ = update_gradle_snapshot_projects(project_root, &fingerprint, &projects);
 
         Ok(projects)
     }
@@ -400,6 +406,18 @@ impl GradleBuild {
                 m.classpath = Some(config.compile_classpath.clone());
             },
         )?;
+
+        // Best-effort: persist a workspace-local Gradle model snapshot so `nova-project`
+        // can reuse resolved source roots/classpaths without invoking Gradle during discovery.
+        if let Some(project_path) = project_path {
+            let _ = update_gradle_snapshot_java_compile_config(
+                project_root,
+                &fingerprint,
+                project_path,
+                &project_dir,
+                &config,
+            );
+        }
 
         Ok(config)
     }
@@ -2140,4 +2158,253 @@ fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf
         }
     }
     Ok(())
+}
+
+// -----------------------------------------------------------------------------
+// Gradle build model snapshot handoff (`.nova/queries/gradle.json`).
+// -----------------------------------------------------------------------------
+
+static GRADLE_SNAPSHOT_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct GradleSnapshotV1 {
+    schema_version: u32,
+    build_fingerprint: String,
+    projects: Vec<GradleSnapshotProject>,
+    java_compile_configs: BTreeMap<String, GradleSnapshotJavaCompileConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct GradleSnapshotProject {
+    path: String,
+    project_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct GradleSnapshotJavaCompileConfig {
+    project_dir: PathBuf,
+    compile_classpath: Vec<PathBuf>,
+    test_classpath: Vec<PathBuf>,
+    module_path: Vec<PathBuf>,
+    main_source_roots: Vec<PathBuf>,
+    test_source_roots: Vec<PathBuf>,
+    main_output_dir: Option<PathBuf>,
+    test_output_dir: Option<PathBuf>,
+    source: Option<String>,
+    target: Option<String>,
+    release: Option<String>,
+    enable_preview: bool,
+}
+
+fn gradle_snapshot_path(project_root: &Path) -> PathBuf {
+    project_root
+        .join(".nova")
+        .join("queries")
+        .join("gradle.json")
+}
+
+fn update_gradle_snapshot_projects(
+    project_root: &Path,
+    fingerprint: &BuildFileFingerprint,
+    projects: &[GradleProjectInfo],
+) -> std::io::Result<()> {
+    update_gradle_snapshot(project_root, fingerprint, |snapshot| {
+        let mut snapshot_projects: Vec<GradleSnapshotProject> = projects
+            .iter()
+            .map(|p| GradleSnapshotProject {
+                path: p.path.clone(),
+                project_dir: p.dir.clone(),
+            })
+            .collect();
+        snapshot_projects.sort_by(|a, b| a.path.cmp(&b.path));
+        snapshot_projects.dedup_by(|a, b| a.path == b.path);
+        snapshot.projects = snapshot_projects;
+
+        // Keep compile config `projectDir` in sync with the authoritative mapping.
+        let dir_map: HashMap<String, PathBuf> = snapshot
+            .projects
+            .iter()
+            .map(|p| (p.path.clone(), p.project_dir.clone()))
+            .collect();
+        for (path, cfg) in snapshot.java_compile_configs.iter_mut() {
+            if let Some(dir) = dir_map.get(path) {
+                cfg.project_dir = dir.clone();
+            }
+        }
+    })
+}
+
+fn update_gradle_snapshot_java_compile_config(
+    project_root: &Path,
+    fingerprint: &BuildFileFingerprint,
+    project_path: &str,
+    project_dir: &Path,
+    config: &JavaCompileConfig,
+) -> std::io::Result<()> {
+    update_gradle_snapshot(project_root, fingerprint, |snapshot| {
+        snapshot
+            .java_compile_configs
+            .insert(project_path.to_string(), GradleSnapshotJavaCompileConfig {
+                project_dir: project_dir.to_path_buf(),
+                compile_classpath: config.compile_classpath.clone(),
+                test_classpath: config.test_classpath.clone(),
+                module_path: config.module_path.clone(),
+                main_source_roots: config.main_source_roots.clone(),
+                test_source_roots: config.test_source_roots.clone(),
+                main_output_dir: config.main_output_dir.clone(),
+                test_output_dir: config.test_output_dir.clone(),
+                source: config.source.clone(),
+                target: config.target.clone(),
+                release: config.release.clone(),
+                enable_preview: config.enable_preview,
+            });
+
+        // If the projects mapping is missing, best-effort: record at least the known project.
+        if !snapshot.projects.iter().any(|p| p.path == project_path) {
+            snapshot.projects.push(GradleSnapshotProject {
+                path: project_path.to_string(),
+                project_dir: project_dir.to_path_buf(),
+            });
+        }
+    })
+}
+
+fn update_gradle_snapshot(
+    project_root: &Path,
+    fingerprint: &BuildFileFingerprint,
+    update: impl FnOnce(&mut GradleSnapshotV1),
+) -> std::io::Result<()> {
+    const SCHEMA_VERSION: u32 = 1;
+
+    let path = gradle_snapshot_path(project_root);
+    let mut snapshot = read_gradle_snapshot_file(&path).unwrap_or_default();
+    if snapshot.schema_version != SCHEMA_VERSION || snapshot.build_fingerprint != fingerprint.digest {
+        snapshot = GradleSnapshotV1 {
+            schema_version: SCHEMA_VERSION,
+            build_fingerprint: fingerprint.digest.clone(),
+            projects: Vec::new(),
+            java_compile_configs: BTreeMap::new(),
+        };
+    }
+
+    update(&mut snapshot);
+    snapshot.schema_version = SCHEMA_VERSION;
+    snapshot.build_fingerprint = fingerprint.digest.clone();
+
+    // Best-effort determinism: stable sort + dedup for any path lists.
+    snapshot.projects.sort_by(|a, b| a.path.cmp(&b.path));
+    snapshot.projects.dedup_by(|a, b| a.path == b.path);
+    for cfg in snapshot.java_compile_configs.values_mut() {
+        sort_dedup_paths(&mut cfg.compile_classpath);
+        sort_dedup_paths(&mut cfg.test_classpath);
+        sort_dedup_paths(&mut cfg.module_path);
+        sort_dedup_paths(&mut cfg.main_source_roots);
+        sort_dedup_paths(&mut cfg.test_source_roots);
+    }
+
+    let json = serde_json::to_vec_pretty(&snapshot)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+    write_file_atomic(&path, &json)
+}
+
+fn read_gradle_snapshot_file(path: &Path) -> Option<GradleSnapshotV1> {
+    let bytes = std::fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn sort_dedup_paths(paths: &mut Vec<PathBuf>) {
+    paths.sort();
+    paths.dedup();
+}
+
+fn write_file_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+    std::fs::create_dir_all(parent)?;
+
+    let (tmp_path, mut file) = open_unique_tmp_file(path, parent)?;
+    let write_result = (|| -> std::io::Result<()> {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        Ok(())
+    })();
+    if let Err(err) = write_result {
+        drop(file);
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(err);
+    }
+    drop(file);
+
+    if let Err(err) = rename_overwrite(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(err);
+    }
+
+    #[cfg(unix)]
+    {
+        let _ = std::fs::File::open(parent).and_then(|dir| dir.sync_all());
+    }
+
+    Ok(())
+}
+
+fn open_unique_tmp_file(dest: &Path, parent: &Path) -> std::io::Result<(PathBuf, std::fs::File)> {
+    let file_name = dest
+        .file_name()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "destination path has no file name"))?;
+    let pid = std::process::id();
+
+    loop {
+        let counter = GRADLE_SNAPSHOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let mut tmp_name = file_name.to_os_string();
+        tmp_name.push(format!(".tmp.{pid}.{counter}"));
+        let tmp_path = parent.join(tmp_name);
+
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)
+        {
+            Ok(file) => return Ok((tmp_path, file)),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+fn rename_overwrite(src: &Path, dest: &Path) -> std::io::Result<()> {
+    const MAX_RENAME_ATTEMPTS: usize = 1024;
+    let mut attempts = 0usize;
+
+    loop {
+        match std::fs::rename(src, dest) {
+            Ok(()) => return Ok(()),
+            Err(err)
+                if cfg!(windows)
+                    && (err.kind() == std::io::ErrorKind::AlreadyExists || dest.exists()) =>
+            {
+                match std::fs::remove_file(dest) {
+                    Ok(()) => {}
+                    Err(remove_err) if remove_err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(remove_err) => return Err(remove_err),
+                }
+
+                attempts += 1;
+                if attempts >= MAX_RENAME_ATTEMPTS {
+                    return Err(err);
+                }
+                continue;
+            }
+            Err(err) => return Err(err),
+        }
+    }
 }
