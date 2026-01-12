@@ -3610,6 +3610,28 @@ fn expr_might_be_void(expr: &ast::Expression) -> bool {
 }
 
 fn pattern_binding_scope_range(pat: &ast::TypePattern) -> Option<TextRange> {
+    // Switch pattern variables are scoped to the enclosing switch arm/group (not the entire switch
+    // statement/expression). For example, Java allows:
+    //
+    // ```
+    // switch (o) {
+    //   case String s -> ...
+    //   case Integer i -> { int s = 0; }
+    // }
+    // ```
+    //
+    // So we must not treat `s` as being in scope across other arms/groups when doing extract-variable
+    // name collision checks.
+    if let Some(rule) = pat.syntax().ancestors().find_map(ast::SwitchRule::cast) {
+        if let Some(body) = rule.body() {
+            return Some(syntax_range(body.syntax()));
+        }
+        return Some(syntax_range(rule.syntax()));
+    }
+    if let Some(group) = pat.syntax().ancestors().find_map(ast::SwitchGroup::cast) {
+        return Some(syntax_range(group.syntax()));
+    }
+
     let stmt = pat.syntax().ancestors().find_map(ast::Statement::cast)?;
     let stmt_range = syntax_range(stmt.syntax());
 

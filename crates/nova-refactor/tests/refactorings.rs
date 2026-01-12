@@ -1496,6 +1496,56 @@ fn extract_variable_allows_try_resource_shadowing_in_catch_clause() {
 }
 
 #[test]
+fn extract_variable_allows_name_collision_with_switch_pattern_in_other_case_group() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  void m(Object o) {
+    switch (o) {
+      case String s:
+        System.out.println(s);
+        break;
+      default:
+        System.out.println(/*select*/1 + 2/*end*/);
+        break;
+    }
+  }
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "s".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  void m(Object o) {
+    switch (o) {
+      case String s:
+        System.out.println(s);
+        break;
+      default:
+        var s = 1 + 2;
+        System.out.println(s);
+        break;
+    }
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn extract_variable_rejects_name_starting_with_digit() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
