@@ -17,7 +17,7 @@ fn tool_available(name: &str) -> bool {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .is_ok()
+        .is_ok_and(|status| status.success())
 }
 
 fn hot_swap_compile_temp_dirs() -> Vec<PathBuf> {

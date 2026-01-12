@@ -26,7 +26,7 @@ fn tool_available(name: &str) -> bool {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .is_ok()
+        .is_ok_and(|status| status.success())
 }
 
 fn compile_fixture(classes_dir: &Path) -> anyhow::Result<PathBuf> {
