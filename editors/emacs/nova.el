@@ -27,6 +27,11 @@
 ;; so `nova-lsp` starts with the correct workspace root even for non-git checkouts.
 (defcustom nova-project-root-files
   '(
+    ;; Nova config (works for "simple" projects without build tools).
+    "nova.toml"
+    ".nova.toml"
+    "nova.config.toml"
+    ".nova/config.toml"
     ;; Maven
     "pom.xml"
     ;; Gradle (Groovy + Kotlin DSL)
@@ -47,12 +52,17 @@
 
 (defun nova--project-root (dir)
   "Return the nearest ancestor of DIR containing a known Nova project root marker."
-  (catch 'found
-    (dolist (marker nova-project-root-files)
-      (let ((root (locate-dominating-file dir marker)))
-        (when root
-          (throw 'found (expand-file-name root)))))
-    nil))
+  (let ((root
+         (locate-dominating-file
+          dir
+          (lambda (parent)
+            (catch 'found
+              (dolist (marker nova-project-root-files)
+                (when (file-exists-p (expand-file-name marker parent))
+                  (throw 'found t)))
+              nil)))))
+    (when root
+      (expand-file-name root))))
 
 ;;;###autoload
 (defun nova-project-root-setup ()

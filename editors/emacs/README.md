@@ -26,8 +26,8 @@ Emacs' built-in project system (`project.el`) is often VCS-based. If you open a 
 workspace that is not checked into git (or if you're opening a nested file), `eglot`/`lsp-mode` may
 start `nova-lsp` with the wrong workspace root.
 
-The template provides an opt-in helper that treats common build-system marker files as project
-roots (`pom.xml`, `build.gradle(.kts)`, `settings.gradle(.kts)`, `WORKSPACE(.bazel)`, `MODULE.bazel`):
+The template provides an opt-in helper that treats common Nova/build-system marker files as project
+roots (`nova.toml`, `pom.xml`, `build.gradle(.kts)`, `settings.gradle(.kts)`, `WORKSPACE(.bazel)`, `MODULE.bazel`):
 
 ```elisp
 (nova-project-root-setup)

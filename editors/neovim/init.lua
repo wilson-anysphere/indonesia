@@ -24,6 +24,11 @@ if not configs.nova_lsp then
       cmd = { "nova-lsp", "--stdio" },
       filetypes = { "java" },
       root_dir = util.root_pattern(
+        -- Nova config.
+        "nova.toml",
+        ".nova.toml",
+        "nova.config.toml",
+        ".nova/config.toml",
         "pom.xml",
         "build.gradle",
         "build.gradle.kts",

@@ -21,6 +21,10 @@ name = "java"
 language-id = "java"
 language-servers = ["nova-lsp"]
 roots = [
+  "nova.toml",
+  ".nova.toml",
+  "nova.config.toml",
+  ".nova/config.toml",
   "pom.xml",
   "build.gradle",
   "build.gradle.kts",
