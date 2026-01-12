@@ -2500,7 +2500,15 @@ async function sendNovaRequest<R>(
   if (token?.isCancellationRequested) {
     return undefined;
   }
-  const c = await requireClient({ token });
+  let c: LanguageClient;
+  try {
+    c = await requireClient({ token });
+  } catch (err) {
+    if (token?.isCancellationRequested || isRequestCancelledError(err)) {
+      return undefined;
+    }
+    throw err;
+  }
   if (token?.isCancellationRequested) {
     return undefined;
   }
