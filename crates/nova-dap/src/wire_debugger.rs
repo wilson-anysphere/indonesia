@@ -2200,6 +2200,32 @@ impl Debugger {
 
                 (value, Some(type_name))
             }
+            EvalBase::Pinned(handle) => {
+                let Some(object_id) = self.objects.object_id(handle) else {
+                    return Ok(Some(json!({
+                        "result": format!("pinned object {handle} is not available"),
+                        "variablesReference": 0,
+                    })));
+                };
+
+                if self.objects.is_invalid(handle) {
+                    return Ok(Some(
+                        json!({"result": format!("{handle} <collected>"), "variablesReference": 0}),
+                    ));
+                }
+
+                let tag = self
+                    .objects
+                    .runtime_type(handle)
+                    .is_some_and(|ty| ty.ends_with("[]"))
+                    .then_some(b'[')
+                    .unwrap_or(b'L');
+
+                (
+                    JdwpValue::Object { tag, id: object_id },
+                    self.objects.runtime_type(handle).map(|s| s.to_string()),
+                )
+            }
         };
 
         for segment in segments {
@@ -4465,6 +4491,7 @@ enum EvalSegment {
 enum EvalBase {
     This,
     Local(String),
+    Pinned(ObjectHandle),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4498,13 +4525,28 @@ fn parse_eval_expression(expr: &str) -> std::result::Result<ParsedEvalExpression
     }
 
     let mut rest = expr.trim();
-    let (base_ident, next) = split_identifier_prefix(rest).ok_or(())?;
-    rest = next;
-
-    let base = if base_ident == "this" {
-        EvalBase::This
+    let base = if let Some(after_pinned) = rest.strip_prefix("__novaPinned") {
+        let after_pinned = after_pinned.trim_start();
+        let after_bracket = after_pinned.strip_prefix('[').ok_or(())?;
+        let close = after_bracket.find(']').ok_or(())?;
+        let raw = after_bracket[..close].trim();
+        if raw.is_empty() {
+            return Err(());
+        }
+        let handle = raw.parse::<u32>().map_err(|_| ())?;
+        let variables_reference = OBJECT_HANDLE_BASE + i64::from(handle);
+        let handle = ObjectHandle::from_variables_reference(variables_reference).ok_or(())?;
+        rest = &after_bracket[close + 1..];
+        EvalBase::Pinned(handle)
     } else {
-        EvalBase::Local(base_ident.to_string())
+        let (base_ident, next) = split_identifier_prefix(rest).ok_or(())?;
+        rest = next;
+
+        if base_ident == "this" {
+            EvalBase::This
+        } else {
+            EvalBase::Local(base_ident.to_string())
+        }
     };
 
     let mut segments = Vec::new();

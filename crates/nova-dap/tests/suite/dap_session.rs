@@ -1763,6 +1763,35 @@ async fn dap_evaluate_supports_pinned_objects_via_nova_pinned_scope() {
         "expected pinned field eval to return 7: {eval_field}"
     );
 
+    // Unknown handles should return a friendly result string rather than failing the request.
+    let eval_unknown = client
+        .request(
+            "evaluate",
+            json!({
+                "expression": "__novaPinned[9999999].field",
+                "frameId": frame_id,
+            }),
+        )
+        .await;
+    assert_eq!(
+        eval_unknown.get("success").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        eval_unknown
+            .pointer("/body/variablesReference")
+            .and_then(|v| v.as_i64()),
+        Some(0)
+    );
+    let unknown_result = eval_unknown
+        .pointer("/body/result")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert!(
+        unknown_result.contains("pinned object"),
+        "unexpected response: {eval_unknown}"
+    );
+
     client.disconnect().await;
     server_task.await.unwrap().unwrap();
 }
