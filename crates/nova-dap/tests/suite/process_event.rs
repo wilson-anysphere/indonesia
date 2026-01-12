@@ -243,9 +243,7 @@ async fn dap_attach_emits_process_event() {
 
     let process_evt = read_until_event(&mut reader, &mut messages, "process", 100).await;
     assert_eq!(
-        process_evt
-            .pointer("/body/startMethod")
-            .and_then(|v| v.as_str()),
+        process_evt.pointer("/body/startMethod").and_then(|v| v.as_str()),
         Some("attach")
     );
 

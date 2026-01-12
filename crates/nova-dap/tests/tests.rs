@@ -38,6 +38,11 @@ fn harness_is_single_root_test_file() {
     root_rs_files.sort();
 
     assert_eq!(
+        expected, "tests.rs",
+        "expected nova-dap integration test harness to be named tests.rs (so `cargo test -p nova-dap --test tests` works); got: {expected}"
+    );
+
+    assert_eq!(
         root_rs_files,
         [expected.clone()],
         "expected a single root integration test harness file (tests/{expected}); found: {root_rs_files:?}"
