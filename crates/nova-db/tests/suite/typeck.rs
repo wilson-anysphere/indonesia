@@ -2256,6 +2256,183 @@ class Use {
 }
 
 #[test]
+fn resolve_method_call_demand_resolves_inherited_method_via_extends() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let base_file = FileId::from_raw(1);
+    let derived_file = FileId::from_raw(2);
+    let use_file = FileId::from_raw(3);
+
+    set_file(
+        &mut db,
+        project,
+        base_file,
+        "src/p/Base.java",
+        r#"package p; class Base { String foo() { return ""; } }"#,
+    );
+    set_file(
+        &mut db,
+        project,
+        derived_file,
+        "src/p/Derived.java",
+        r#"package p; class Derived extends Base {}"#,
+    );
+    let src_use = r#"package p; class Use { String m() { return new Derived().foo(); } }"#;
+    set_file(&mut db, project, use_file, "src/p/Use.java", src_use);
+    db.set_project_files(project, Arc::new(vec![base_file, derived_file, use_file]));
+
+    // Find the call expression inside `Use.m`.
+    let tree = db.hir_item_tree(use_file);
+    let (&m_ast_id, _) = tree
+        .methods
+        .iter()
+        .find(|(_, method)| method.name == "m")
+        .expect("expected method m");
+    let m_id = nova_hir::ids::MethodId::new(use_file, m_ast_id);
+    let body = db.hir_body(m_id);
+    let call_expr = body
+        .stmts
+        .iter()
+        .find_map(|(_, stmt)| match stmt {
+            nova_hir::hir::Stmt::Return {
+                expr: Some(expr), ..
+            } => Some(*expr),
+            _ => None,
+        })
+        .expect("expected return statement with expression");
+
+    assert!(
+        matches!(&body.exprs[call_expr], nova_hir::hir::Expr::Call { .. }),
+        "expected return expression to be a Call"
+    );
+
+    let call_site = FileExprId {
+        owner: DefWithBodyId::Method(m_id),
+        expr: call_expr,
+    };
+
+    db.clear_query_stats();
+    let resolved = db
+        .resolve_method_call_demand(use_file, call_site)
+        .expect("expected inherited method call resolution");
+
+    assert_eq!(resolved.name, "foo");
+
+    let types = TypeStore::with_minimal_jdk();
+    assert_eq!(
+        resolved.return_type,
+        Type::class(types.well_known().string, vec![])
+    );
+
+    let stats = db.query_stats();
+    let typeck_body_activity = stats
+        .by_query
+        .get("typeck_body")
+        .map(|s| (s.executions, s.validated_memoized))
+        .unwrap_or((0, 0));
+    assert_eq!(
+        typeck_body_activity,
+        (0, 0),
+        "resolve_method_call_demand should not invoke full-body type checking"
+    );
+}
+
+#[test]
+fn resolve_method_call_demand_resolves_inherited_interface_method_via_extends() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let i_file = FileId::from_raw(1);
+    let j_file = FileId::from_raw(2);
+    let use_file = FileId::from_raw(3);
+
+    set_file(
+        &mut db,
+        project,
+        i_file,
+        "src/p/I.java",
+        r#"package p; interface I { int foo(); }"#,
+    );
+    set_file(
+        &mut db,
+        project,
+        j_file,
+        "src/p/J.java",
+        r#"package p; interface J extends I {}"#,
+    );
+    let src_use = r#"package p; class Use { int m(J j) { return j.foo(); } }"#;
+    set_file(&mut db, project, use_file, "src/p/Use.java", src_use);
+    db.set_project_files(project, Arc::new(vec![i_file, j_file, use_file]));
+
+    // Find the call expression inside `Use.m`.
+    let tree = db.hir_item_tree(use_file);
+    let (&m_ast_id, _) = tree
+        .methods
+        .iter()
+        .find(|(_, method)| method.name == "m")
+        .expect("expected method m");
+    let m_id = nova_hir::ids::MethodId::new(use_file, m_ast_id);
+    let body = db.hir_body(m_id);
+    let call_expr = body
+        .stmts
+        .iter()
+        .find_map(|(_, stmt)| match stmt {
+            nova_hir::hir::Stmt::Return {
+                expr: Some(expr), ..
+            } => Some(*expr),
+            _ => None,
+        })
+        .expect("expected return statement with expression");
+
+    assert!(
+        matches!(&body.exprs[call_expr], nova_hir::hir::Expr::Call { .. }),
+        "expected return expression to be a Call"
+    );
+
+    let call_site = FileExprId {
+        owner: DefWithBodyId::Method(m_id),
+        expr: call_expr,
+    };
+
+    db.clear_query_stats();
+    let resolved = db
+        .resolve_method_call_demand(use_file, call_site)
+        .expect("expected inherited interface method call resolution");
+
+    assert_eq!(resolved.name, "foo");
+    assert_eq!(resolved.return_type, Type::Primitive(PrimitiveType::Int));
+
+    let stats = db.query_stats();
+    let typeck_body_activity = stats
+        .by_query
+        .get("typeck_body")
+        .map(|s| (s.executions, s.validated_memoized))
+        .unwrap_or((0, 0));
+    assert_eq!(
+        typeck_body_activity,
+        (0, 0),
+        "resolve_method_call_demand should not invoke full-body type checking"
+    );
+}
+
+#[test]
 fn resolve_method_call_demand_does_not_load_java_types_from_classpath_stubs() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
@@ -3067,6 +3244,108 @@ fn cross_file_varargs_method_call_resolves_on_workspace_class() {
         diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
         "expected cross-file varargs method call to resolve, got {diags:?}"
     );
+}
+
+#[test]
+fn cross_file_inherited_method_call_resolves_via_extends() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let base_file = FileId::from_raw(1);
+    let derived_file = FileId::from_raw(2);
+    let use_file = FileId::from_raw(3);
+
+    set_file(
+        &mut db,
+        project,
+        base_file,
+        "src/p/Base.java",
+        r#"package p; class Base { String foo() { return ""; } }"#,
+    );
+    set_file(
+        &mut db,
+        project,
+        derived_file,
+        "src/p/Derived.java",
+        r#"package p; class Derived extends Base {}"#,
+    );
+    let src_use = r#"package p; class Use { String m() { return new Derived().foo(); } }"#;
+    set_file(&mut db, project, use_file, "src/p/Use.java", src_use);
+    db.set_project_files(project, Arc::new(vec![base_file, derived_file, use_file]));
+
+    let diags = db.type_diagnostics(use_file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected inherited workspace method call to resolve, got {diags:?}"
+    );
+
+    let offset = src_use
+        .find("foo()")
+        .expect("snippet should contain foo call")
+        + "foo".len();
+    let ty = db
+        .type_at_offset_display(use_file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+}
+
+#[test]
+fn cross_file_inherited_interface_method_call_resolves_via_extends() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let i_file = FileId::from_raw(1);
+    let j_file = FileId::from_raw(2);
+    let use_file = FileId::from_raw(3);
+
+    set_file(
+        &mut db,
+        project,
+        i_file,
+        "src/p/I.java",
+        r#"package p; interface I { int foo(); }"#,
+    );
+    set_file(
+        &mut db,
+        project,
+        j_file,
+        "src/p/J.java",
+        r#"package p; interface J extends I {}"#,
+    );
+    let src_use = r#"package p; class Use { int m(J j) { return j.foo(); } }"#;
+    set_file(&mut db, project, use_file, "src/p/Use.java", src_use);
+    db.set_project_files(project, Arc::new(vec![i_file, j_file, use_file]));
+
+    let diags = db.type_diagnostics(use_file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected inherited interface method call to resolve, got {diags:?}"
+    );
+
+    let offset = src_use
+        .find("foo()")
+        .expect("snippet should contain foo call")
+        + "foo".len();
+    let ty = db
+        .type_at_offset_display(use_file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "int");
 }
 
 #[test]

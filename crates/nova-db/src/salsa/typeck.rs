@@ -3095,6 +3095,16 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             class_id,
         );
 
+        // Ensure any referenced supertypes are loaded so inherited members can be discovered even
+        // when this helper is used in demand-driven queries (which only define types in the
+        // current file).
+        if let Some(sc) = &super_class {
+            self.ensure_type_loaded(loader, sc);
+        }
+        for iface in &interfaces {
+            self.ensure_type_loaded(loader, iface);
+        }
+
         let members = match item {
             nova_hir::ids::ItemId::Class(id) => tree
                 .classes
@@ -6749,23 +6759,12 @@ fn define_workspace_source_types<'idx>(
 ) -> SourceTypes {
     let files = db.project_files(project);
 
-    // First pass: intern ids for every workspace type so cross-file references can resolve to
-    // `Type::Class` during member signature resolution.
-    for (idx, file) in files.iter().copied().enumerate() {
-        cancel::checkpoint_cancelled_every(db, idx as u32, 32);
-        let tree = db.hir_item_tree(file);
-        let scopes = db.scope_graph(file);
-
-        let mut items = Vec::new();
-        for item in &tree.items {
-            collect_item_ids(&tree, *item, &mut items);
-        }
-
-        for item in items {
-            if let Some(name) = scopes.scopes.type_name(item) {
-                loader.store.intern_class_id(name.as_str());
-            }
-        }
+    // First pass: intern ids for every workspace type in deterministic order so cross-file
+    // references can resolve to `Type::Class` during member signature resolution.
+    let workspace = db.workspace_def_map(project);
+    for (idx, name) in workspace.iter_type_names().enumerate() {
+        cancel::checkpoint_cancelled_every(db, idx as u32, 4096);
+        loader.store.intern_class_id(name.as_str());
     }
 
     // Second pass: define skeleton class defs + collect member typing/ownership info.
