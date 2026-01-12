@@ -446,7 +446,7 @@
               },
               "projectRoot": {
                 "type": "string",
-                "description": "Workspace root used to infer source roots for stack frame and breakpoint source mapping."
+                "description": "Workspace folder root used to infer source roots for stack frame and breakpoint source mapping."
               },
               "sourceRoots": {
                 "type": "array",
@@ -475,7 +475,7 @@
               },
               "projectRoot": {
                 "type": "string",
-                "description": "Workspace root used to infer source roots for stack frame and breakpoint source mapping."
+                "description": "Workspace folder root used to infer source roots for stack frame and breakpoint source mapping."
               },
               "sourceRoots": {
                 "type": "array",
