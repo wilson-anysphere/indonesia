@@ -50,6 +50,18 @@ cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
 
 This target runs both `nova_syntax::parse` and `nova_syntax::parse_java` on the input.
 
+### Reparse Java (incremental)
+
+```bash
+cargo +nightly fuzz run fuzz_reparse_java -- -max_total_time=60 -max_len=262144
+```
+
+This target exercises incremental reparsing (`nova_syntax::reparse_java`) by applying random text edits and
+asserting that:
+
+- the resulting syntax tree is lossless (roundtrips back to the edited text)
+- incremental diagnostics match a full reparse’s diagnostics
+
 ### Format Java
 
 ```bash
