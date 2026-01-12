@@ -732,6 +732,17 @@ mod tests {
 
     #[cfg(feature = "unicode")]
     #[test]
+    fn unicode_nfkc_makes_compatibility_characters_match() {
+        // U+212A KELVIN SIGN is compatibility-equivalent to ASCII 'K'.
+        let mut builder = TrigramIndexBuilder::new();
+        builder.insert(1, "\u{212A}elvin");
+        let index = builder.build();
+
+        assert_eq!(index.candidates("kelvin"), vec![1]);
+    }
+
+    #[cfg(feature = "unicode")]
+    #[test]
     fn unicode_trigrams_are_over_units_not_utf8_bytes() {
         // "éa" is 3 UTF-8 bytes but only 2 Unicode scalar values.
         let mut out = Vec::new();
