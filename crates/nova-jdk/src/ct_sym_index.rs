@@ -446,3 +446,131 @@ impl CtSymReleaseIndex {
             .expect("binary_names_sorted OnceLock should be initialized"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs::File;
+    use std::io::Write;
+    use std::path::PathBuf;
+
+    use nova_modules::ModuleName;
+    use tempfile::tempdir;
+    use zip::write::FileOptions;
+
+    use super::CtSymReleaseIndex;
+    use crate::index::JdkIndexError;
+
+    fn fake_jdk_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/fake-jdk")
+    }
+
+    #[test]
+    fn loads_symbols_from_ct_sym_release() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let ct_sym_path = temp.path().join("ct.sym");
+
+        let java_base_jmod = fake_jdk_root().join("jmods/java.base.jmod");
+        let string_bytes = crate::jmod::read_class_bytes(&java_base_jmod, "java/lang/String")?
+            .expect("fixture should contain java/lang/String");
+        let module_info_bytes = crate::jmod::read_module_info_class_bytes(&java_base_jmod)?
+            .expect("fixture should contain module-info.class");
+
+        let file = File::create(&ct_sym_path)?;
+        let mut zip = zip::ZipWriter::new(file);
+        let opts = FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+
+        // Write an invalid `.class` first to ensure we prefer `.sig` stubs.
+        zip.start_file("META-INF/sym/8/java.base/java/lang/String.class", opts)?;
+        zip.write_all(&[0x00, 0x01, 0x02])?;
+
+        zip.start_file("META-INF/sym/8/java.base/java/lang/String.sig", opts)?;
+        zip.write_all(&string_bytes)?;
+
+        zip.start_file("META-INF/sym/8/java.base/module-info.sig", opts)?;
+        zip.write_all(&module_info_bytes)?;
+
+        // Also include another release so we can validate filtering + error messages.
+        zip.start_file("META-INF/sym/11/java.base/java/lang/String.sig", opts)?;
+        zip.write_all(&string_bytes)?;
+
+        zip.finish()?;
+
+        let index = CtSymReleaseIndex::from_ct_sym_path(&ct_sym_path, 8)?;
+        assert_eq!(
+            index.modules()[0].as_str(),
+            "java.base",
+            "java.base should be first when present"
+        );
+
+        let string = index
+            .lookup_type("java.lang.String")?
+            .expect("java.lang.String should be present for release 8");
+        assert_eq!(string.internal_name, "java/lang/String");
+        assert_eq!(string.binary_name, "java.lang.String");
+        assert!(index.lookup_type("java/lang/String")?.is_some());
+        assert!(
+            index.lookup_type("String")?.is_some(),
+            "universe-scope lookup"
+        );
+
+        let bytes = index
+            .read_class_bytes("java/lang/String")?
+            .expect("java/lang/String bytes should be present");
+        assert!(
+            bytes.starts_with(&[0xCA, 0xFE, 0xBA, 0xBE]),
+            "class files should start with CAFEBABE"
+        );
+
+        let graph = index
+            .module_graph()
+            .expect("module graph should be present when module-info is available");
+        assert!(
+            graph.get(&ModuleName::new("java.base")).is_some(),
+            "module graph should include java.base"
+        );
+
+        let module = index
+            .module_of_type("java.lang.String")?
+            .expect("module_of_type should resolve java.lang.String");
+        assert_eq!(module.as_str(), "java.base");
+
+        let pkgs = index.packages()?;
+        assert!(pkgs.contains(&"java.lang".to_owned()));
+        assert!(index
+            .packages_with_prefix("java.l")?
+            .contains(&"java.lang".to_owned()));
+        assert!(index
+            .class_names_with_prefix("java.lang.S")?
+            .contains(&"java.lang.String".to_owned()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn errors_when_release_is_missing() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let ct_sym_path = temp.path().join("ct.sym");
+
+        let java_base_jmod = fake_jdk_root().join("jmods/java.base.jmod");
+        let string_bytes = crate::jmod::read_class_bytes(&java_base_jmod, "java/lang/String")?
+            .expect("fixture should contain java/lang/String");
+
+        let file = File::create(&ct_sym_path)?;
+        let mut zip = zip::ZipWriter::new(file);
+        let opts = FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("META-INF/sym/11/java.base/java/lang/String.sig", opts)?;
+        zip.write_all(&string_bytes)?;
+        zip.finish()?;
+
+        let err = CtSymReleaseIndex::from_ct_sym_path(&ct_sym_path, 8).unwrap_err();
+        match err {
+            JdkIndexError::CtSymReleaseNotFound { release, available } => {
+                assert_eq!(release, 8);
+                assert_eq!(available, vec![11]);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        Ok(())
+    }
+}
