@@ -5082,7 +5082,13 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     self.resolve_source_type(loader, ty_text.as_str(), Some(*ty_range))
                 };
 
-                if matches!(rhs, Type::Primitive(_) | Type::Void) {
+                if rhs == Type::Void {
+                    self.diagnostics.push(Diagnostic::error(
+                        "instanceof-void",
+                        "`void` is not a valid `instanceof` target",
+                        Some(*ty_range),
+                    ));
+                } else if matches!(rhs, Type::Primitive(_)) {
                     self.diagnostics.push(Diagnostic::error(
                         "instanceof-invalid-type",
                         "`instanceof` requires a reference type",
@@ -5092,7 +5098,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
 
                 if !lhs.is_errorish() && matches!(lhs, Type::Primitive(_)) {
                     self.diagnostics.push(Diagnostic::error(
-                        "instanceof-on-primitive",
+                        "instanceof-primitive",
                         "`instanceof` cannot be applied to a primitive expression",
                         Some(self.body.exprs[*lhs_expr].range()),
                     ));
@@ -5112,7 +5118,6 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         Some(*range),
                     ));
                 }
-
                 ExprInfo {
                     ty: Type::Primitive(PrimitiveType::Boolean),
                     is_type_ref: false,

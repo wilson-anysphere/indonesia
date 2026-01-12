@@ -1753,6 +1753,24 @@ class C {
 }
 
 #[test]
+fn instanceof_rhs_void_is_error() {
+    let src = r#"
+class C {
+    boolean m(Object o){
+        return o instanceof void;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "instanceof-void"),
+        "expected instanceof-void diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn instanceof_lhs_primitive_is_error() {
     let src = r#"
 class C {
@@ -1767,8 +1785,8 @@ class C {
     assert!(
         diags
             .iter()
-            .any(|d| d.code.as_ref() == "instanceof-on-primitive"),
-        "expected instanceof-on-primitive diagnostic; got {diags:?}"
+            .any(|d| d.code.as_ref() == "instanceof-primitive"),
+        "expected instanceof-primitive diagnostic; got {diags:?}"
     );
 }
 
