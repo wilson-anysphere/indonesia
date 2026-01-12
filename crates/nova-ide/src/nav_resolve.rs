@@ -503,31 +503,43 @@ impl WorkspaceIndex {
             .iter()
             .find(|ty| span_contains(ty.body_span, offset))?;
 
-        let segments: Vec<&str> = receiver
+        let segments: Vec<(&str, bool)> = receiver
             .split('.')
             .map(str::trim)
             .filter(|s| !s.is_empty())
+            .map(|seg| seg.strip_suffix("()").map(|name| (name, true)).unwrap_or((seg, false)))
+            .filter(|(name, _)| !name.is_empty())
             .collect();
-        let first = *segments.first()?;
+        let &(first, first_is_call) = segments.first()?;
 
-        let mut cur_ty = match first {
-            "this" => Some(containing_type.name.clone()),
-            "super" => containing_type.super_class.clone(),
-            name => {
-                // locals/fields
-                if let Some(ty) = self.resolve_name_type(parsed, offset, name) {
-                    Some(ty)
-                } else if self.type_info(name).is_some() {
-                    // Type name (static access)
-                    Some(name.to_string())
-                } else {
-                    None
+        let mut cur_ty = if first_is_call {
+            // Best-effort: treat receiverless calls like `foo().bar` as `this.foo().bar`.
+            let this_ty = containing_type.name.clone();
+            self.resolve_method_return_type_name(&this_ty, first)?
+        } else {
+            match first {
+                "this" => containing_type.name.clone(),
+                "super" => containing_type.super_class.clone()?,
+                name => {
+                    // locals/fields
+                    if let Some(ty) = self.resolve_name_type(parsed, offset, name) {
+                        ty
+                    } else if self.type_info(name).is_some() {
+                        // Type name (static access)
+                        name.to_string()
+                    } else {
+                        return None;
+                    }
                 }
             }
-        }?;
+        };
 
-        for field in segments.into_iter().skip(1) {
-            cur_ty = self.resolve_field_type_name(&cur_ty, field)?;
+        for (seg, is_call) in segments.into_iter().skip(1) {
+            cur_ty = if is_call {
+                self.resolve_method_return_type_name(&cur_ty, seg)?
+            } else {
+                self.resolve_field_type_name(&cur_ty, seg)?
+            };
         }
 
         Some(cur_ty)
@@ -566,6 +578,45 @@ impl WorkspaceIndex {
         }
 
         go(self, ty_name, field_name, &mut Vec::new())
+    }
+
+    fn resolve_method_return_type_name(&self, ty_name: &str, method_name: &str) -> Option<String> {
+        fn go(
+            index: &WorkspaceIndex,
+            ty_name: &str,
+            method_name: &str,
+            visited: &mut Vec<String>,
+        ) -> Option<String> {
+            if visited.iter().any(|t| t == ty_name) {
+                return None;
+            }
+            visited.push(ty_name.to_string());
+
+            let info = index.type_info(ty_name)?;
+            if let Some(method) = info.def.methods.iter().find(|m| m.name == method_name) {
+                let ret = method.ret_ty.clone()?;
+                if ret == "void" {
+                    return None;
+                }
+                return Some(ret);
+            }
+
+            if let Some(super_name) = info.def.super_class.as_deref() {
+                if let Some(found) = go(index, super_name, method_name, visited) {
+                    return Some(found);
+                }
+            }
+
+            for iface in &info.def.interfaces {
+                if let Some(found) = go(index, iface, method_name, visited) {
+                    return Some(found);
+                }
+            }
+
+            None
+        }
+
+        go(self, ty_name, method_name, &mut Vec::new())
     }
 }
 
@@ -910,49 +961,119 @@ fn is_import_statement_line(text: &str, offset: usize) -> bool {
 }
 
 fn receiver_before_dot(text: &str, bytes: &[u8], dot_idx: usize) -> Option<String> {
-    // Best-effort support for chained receivers like `a.b.c` (receiver for `c` is `a.b`).
+    // Best-effort support for chained receivers like:
+    // - `a.b.c` (receiver for `c` is `a.b`)
+    // - `a.b().c` (receiver for `c` is `a.b()`, but only for empty-arg calls)
     //
-    // We only accept identifier chains separated by dots with optional whitespace around dots:
+    // We accept identifier chains separated by dots with optional whitespace around dots.
+    // Segments may also be empty-arg calls (`ident()`) with optional whitespace inside `()`.
     //
     //     a.b.c
     //     a . b . c
     //     this.a.b
+    //     a.b().c
     //
-    // We intentionally do *not* try to parse arbitrary expressions like `a.b().c`,
-    // indexing, or parenthesized expressions.
+    // We intentionally do *not* try to parse arbitrary expressions like calls with
+    // arguments, indexing, or parenthesized expressions.
     let mut recv_end = dot_idx;
     while recv_end > 0 && (bytes[recv_end - 1] as char).is_ascii_whitespace() {
         recv_end -= 1;
     }
 
-    let mut segments_rev: Vec<&str> = Vec::new();
+    let mut segments_rev: Vec<String> = Vec::new();
     let mut end = recv_end;
     loop {
-        let mut start = end;
-        while start > 0 && is_ident_continue(bytes[start - 1]) {
-            start -= 1;
-        }
-        if start == end {
-            if segments_rev.is_empty() {
-                return receiver_type_from_new_expression(text, bytes, recv_end);
-            }
+        if end == 0 {
             return None;
         }
-        if !is_ident_start(bytes[start]) {
-            if segments_rev.is_empty() {
-                return receiver_type_from_new_expression(text, bytes, recv_end);
-            }
-            return None;
-        }
-        segments_rev.push(&text[start..end]);
 
-        // Skip whitespace before this identifier.
-        let mut i = start;
+        // Best-effort: handle constructor receivers like `new Type(...).member`.
+        //
+        // This is intentionally limited to extracting the constructed type name so we can
+        // resolve member navigation for patterns like `new C().foo()` and `new pkg.C().foo()`.
+        if let Some(ty) = receiver_type_from_new_expression(text, bytes, end) {
+            segments_rev.push(ty);
+            segments_rev.reverse();
+            return Some(segments_rev.join("."));
+        }
+
+        // Segment can be either:
+        // - identifier (`foo`)
+        // - empty-arg call (`foo()`)
+        let (seg_start, seg_end, seg_is_call) = if bytes.get(end - 1) == Some(&b')') {
+            // Best-effort parse `foo()` (no args; allow whitespace inside parens).
+            let close_paren_idx = end - 1;
+            let mut open_search = close_paren_idx;
+            while open_search > 0 && (bytes[open_search - 1] as char).is_ascii_whitespace() {
+                open_search -= 1;
+            }
+            if open_search == 0 || bytes[open_search - 1] != b'(' {
+                return None;
+            }
+            let open_paren_idx = open_search - 1;
+
+            let mut name_end = open_paren_idx;
+            while name_end > 0 && (bytes[name_end - 1] as char).is_ascii_whitespace() {
+                name_end -= 1;
+            }
+            let mut name_start = name_end;
+            while name_start > 0 && is_ident_continue(bytes[name_start - 1]) {
+                name_start -= 1;
+            }
+            if name_start == name_end {
+                return None;
+            }
+            if !is_ident_start(bytes[name_start]) {
+                return None;
+            }
+
+            // Special-case constructor receivers like `new C().m()`:
+            // treat `new C()` as a receiver of type `C`, not as a call `C()`.
+            let mut is_constructor_call = false;
+            let mut kw_end = name_start;
+            while kw_end > 0 && (bytes[kw_end - 1] as char).is_ascii_whitespace() {
+                kw_end -= 1;
+            }
+            if kw_end < name_start {
+                let mut kw_start = kw_end;
+                while kw_start > 0 && is_ident_continue(bytes[kw_start - 1]) {
+                    kw_start -= 1;
+                }
+                let kw = text.get(kw_start..kw_end).unwrap_or("");
+                if kw == "new" && (kw_start == 0 || !is_ident_continue(bytes[kw_start - 1])) {
+                    is_constructor_call = true;
+                }
+            }
+
+            (name_start, name_end, !is_constructor_call)
+        } else {
+            let mut start = end;
+            while start > 0 && is_ident_continue(bytes[start - 1]) {
+                start -= 1;
+            }
+            if start == end {
+                return None;
+            }
+            if !is_ident_start(bytes[start]) {
+                return None;
+            }
+            (start, end, false)
+        };
+
+        let seg = &text[seg_start..seg_end];
+        segments_rev.push(if seg_is_call {
+            format!("{seg}()")
+        } else {
+            seg.to_string()
+        });
+
+        // Skip whitespace before this segment.
+        let mut i = seg_start;
         while i > 0 && (bytes[i - 1] as char).is_ascii_whitespace() {
             i -= 1;
         }
 
-        // Continue only if there's a dot before the identifier (with optional whitespace).
+        // Continue only if there's a dot before the segment (with optional whitespace).
         if i > 0 && bytes[i - 1] == b'.' {
             i -= 1;
             while i > 0 && (bytes[i - 1] as char).is_ascii_whitespace() {

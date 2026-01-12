@@ -132,6 +132,27 @@ class Outer { Inner inner; void test(){ Outer o=null; o.inner.$0m(); } }
     assert_eq!(got.range.start, fixture.marker_position(1));
 }
 
+#[test]
+fn goto_definition_resolves_chained_receiver_with_noarg_call_in_chain() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Leaf.java
+class Leaf { void $1m(){} }
+//- /Inner.java
+class Inner { Leaf getLeaf(){ return null; } }
+//- /Outer.java
+class Outer { Inner inner; void test(){ Outer o=null; o.inner.getLeaf().$0m(); } }
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = goto_definition(&fixture.db, file, pos).expect("expected definition location");
+
+    assert_eq!(got.uri, fixture.marker_uri(1));
+    assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
 fn uri_for_path(path: &Path) -> Uri {
     let abs = AbsPathBuf::new(path.to_path_buf()).expect("fixture paths should be absolute");
     let uri = path_to_file_uri(&abs).expect("path should convert to a file URI");

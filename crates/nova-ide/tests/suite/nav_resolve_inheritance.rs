@@ -224,12 +224,12 @@ class C extends Base {
 
     let file = fixture.marker_file(0);
     let pos = fixture.marker_position(0);
-    let got = goto_definition(&fixture.db, file, pos);
+    let got = goto_definition(&fixture.db, file, pos).expect("expected definition location");
 
-    assert!(
-        got.is_none(),
-        "expected goto-definition to avoid resolving `makeFoo().bar()` as `this.bar()`; got {got:?}"
-    );
+    // `makeFoo()` is a receiverless call (implicitly `this.makeFoo()`), and `bar()` should
+    // resolve on the call's return type (`Foo`), not on `this` (`C`, which inherits `Base.bar()`).
+    assert_eq!(got.uri, fixture.marker_uri(1));
+    assert_eq!(got.range.start, fixture.marker_position(1));
 }
 
 fn uri_for_path(path: &Path) -> Uri {

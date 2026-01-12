@@ -35,6 +35,8 @@ pub struct MethodDef {
     pub name: String,
     pub name_span: Span,
     pub is_abstract: bool,
+    /// Best-effort return type name (simple name, no generics).
+    pub ret_ty: Option<String>,
     /// Byte span that includes `{` and `}`.
     pub body_span: Option<Span>,
     pub locals: Vec<VarDef>,
@@ -520,6 +522,65 @@ fn is_generic_type_suffix(tokens: &[Token], close_angle_idx: usize) -> bool {
     false
 }
 
+fn type_name_before_generic_suffix(tokens: &[Token], close_angle_idx: usize) -> Option<String> {
+    // Best-effort: return the identifier immediately preceding the matching `<`
+    // for a generic type suffix like `Foo<...>`.
+    let Some('>') = tokens.get(close_angle_idx).and_then(|t| t.symbol()) else {
+        return None;
+    };
+
+    let mut depth = 0usize;
+    let mut j = close_angle_idx;
+    loop {
+        match tokens.get(j).and_then(|t| t.symbol()) {
+            Some('>') => depth += 1,
+            Some('<') => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    let name = tokens.get(j.wrapping_sub(1)).and_then(|t| t.ident())?;
+                    if !qualifies_as_type(name) {
+                        return None;
+                    }
+                    return Some(name.to_string());
+                }
+            }
+            _ => {}
+        }
+
+        if j == 0 {
+            break;
+        }
+        j -= 1;
+    }
+
+    None
+}
+
+fn return_type_before_method_name(tokens: &[Token], name_idx: usize) -> Option<String> {
+    // Best-effort parsing for method return types, used for receiver-chain
+    // navigation like `a.b().c` (where `b()`'s return type becomes the receiver
+    // type for `.c`).
+    let mut i = name_idx.checked_sub(1)?;
+
+    // Skip array suffixes: Foo[] / Foo[][].
+    while i > 0
+        && tokens.get(i).and_then(|t| t.symbol()) == Some(']')
+        && tokens.get(i - 1).and_then(|t| t.symbol()) == Some('[')
+    {
+        i = i.checked_sub(2)?;
+    }
+
+    if let Some(ident) = tokens.get(i).and_then(|t| t.ident()) {
+        return Some(ident.to_string());
+    }
+
+    if tokens.get(i).and_then(|t| t.symbol()) == Some('>') {
+        return type_name_before_generic_suffix(tokens, i);
+    }
+
+    None
+}
+
 fn sort_dedup_vars(vars: &mut Vec<VarDef>) {
     vars.sort_by(|a, b| a.name.cmp(&b.name));
     vars.dedup_by(|a, b| a.name == b.name);
@@ -849,6 +910,7 @@ fn parse_type_body(
                                 name,
                                 name_span,
                                 is_abstract: true,
+                                ret_ty: return_type_before_method_name(tokens, i),
                                 body_span: None,
                                 locals: params,
                             });
@@ -872,6 +934,7 @@ fn parse_type_body(
                                     name,
                                     name_span,
                                     is_abstract: false,
+                                    ret_ty: return_type_before_method_name(tokens, i),
                                     body_span: Some(body_span),
                                     locals,
                                 });
