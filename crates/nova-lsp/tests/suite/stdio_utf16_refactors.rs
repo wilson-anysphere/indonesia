@@ -269,7 +269,7 @@ fn stdio_server_rename_does_not_touch_type_arguments_or_annotations() {
 }
 
 #[test]
-fn stdio_server_rejects_field_rename() {
+fn stdio_server_supports_field_rename() {
     let uri = Uri::from_str("file:///Test.java").unwrap();
     let source = r#"class Test {
   int foo = 0;
@@ -282,6 +282,8 @@ fn stdio_server_rejects_field_rename() {
 
     let foo_offset = source.find("int foo = 0").expect("field foo declaration") + "int ".len() + 1;
     let foo_position = lsp_position_utf16(source, foo_offset);
+    let foo_name_offset = source.find("foo").expect("field foo identifier");
+    let foo_range = lsp_range_utf16(source, foo_name_offset, foo_name_offset + "foo".len());
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -327,7 +329,7 @@ fn stdio_server_rejects_field_rename() {
         }),
     );
 
-    // 3) prepareRename on field => null
+    // 3) prepareRename on field
     write_jsonrpc_message(
         &mut stdin,
         &json!({
@@ -341,9 +343,11 @@ fn stdio_server_rejects_field_rename() {
         }),
     );
     let resp = read_jsonrpc_response_with_id(&mut stdout, 2);
-    assert_eq!(resp.get("result"), Some(&serde_json::Value::Null));
+    let result = resp.get("result").cloned().expect("prepareRename result");
+    let range: Range = serde_json::from_value(result).expect("decode prepareRename range");
+    assert_eq!(range, foo_range);
 
-    // 4) rename on field => InvalidParams
+    // 4) rename on field
     write_jsonrpc_message(
         &mut stdin,
         &json!({
@@ -358,16 +362,14 @@ fn stdio_server_rejects_field_rename() {
         }),
     );
     let rename_resp = read_jsonrpc_response_with_id(&mut stdout, 3);
-    let error = rename_resp.get("error").expect("expected error response");
-    assert_eq!(error.get("code").and_then(|c| c.as_i64()), Some(-32602));
-    let message = error
-        .get("message")
-        .and_then(|m| m.as_str())
-        .unwrap_or_default();
-    assert!(
-        message.contains("rename is only supported"),
-        "unexpected error message: {message}"
-    );
+    let result = rename_resp.get("result").cloned().expect("workspace edit");
+    let edit: WorkspaceEdit = serde_json::from_value(result).expect("decode workspace edit");
+    let changes = edit.changes.expect("changes map");
+    let edits = changes.get(&uri).expect("edits for uri");
+
+    let actual = apply_lsp_text_edits(source, edits);
+    let expected = source.replace("foo", "bar");
+    assert_eq!(actual, expected);
 
     // 5) shutdown + exit
     write_jsonrpc_message(

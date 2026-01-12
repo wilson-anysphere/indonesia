@@ -948,13 +948,12 @@ fn distributed_listen_addr(_run_dir: &Path) -> nova_router::ListenAddr {
         .as_millis();
     nova_router::ListenAddr::NamedPipe(format!("nova-router-{}-{ts}", std::process::id()))
 }
-
-#[derive(Debug)]
 struct AnalysisState {
     vfs: Vfs<LocalFs>,
     file_paths: HashMap<nova_db::FileId, PathBuf>,
     file_exists: HashMap<nova_db::FileId, bool>,
     file_contents: HashMap<nova_db::FileId, String>,
+    salsa: nova_db::SalsaDatabase,
 }
 
 impl AnalysisState {
@@ -967,6 +966,8 @@ impl AnalysisState {
         let file_id = self.vfs.file_id(path.clone());
         if let Some(local) = path.as_local_path() {
             self.file_paths.insert(file_id, local.to_path_buf());
+            self.salsa
+                .set_file_path(file_id, local.to_string_lossy().to_string());
         }
         (file_id, path)
     }
@@ -985,9 +986,12 @@ impl AnalysisState {
         let id = self.vfs.open_document(path.clone(), text.clone(), version);
         if let Some(local) = path.as_local_path() {
             self.file_paths.insert(id, local.to_path_buf());
+            self.salsa.set_file_path(id, local.to_string_lossy().to_string());
         }
         self.file_exists.insert(id, true);
-        self.file_contents.insert(id, text);
+        self.file_contents.insert(id, text.clone());
+        self.salsa.set_file_exists(id, true);
+        self.salsa.set_file_text(id, text);
         id
     }
 
@@ -1003,7 +1007,9 @@ impl AnalysisState {
         if let ChangeEvent::DocumentChanged { file_id, path, .. } = &evt {
             self.file_exists.insert(*file_id, true);
             if let Ok(text) = self.vfs.read_to_string(path) {
-                self.file_contents.insert(*file_id, text);
+                self.file_contents.insert(*file_id, text.clone());
+                self.salsa.set_file_exists(*file_id, true);
+                self.salsa.set_file_text(*file_id, text);
             }
         }
         Ok(evt)
@@ -1018,6 +1024,8 @@ impl AnalysisState {
         let (file_id, _) = self.file_id_for_uri(uri);
         self.file_exists.insert(file_id, false);
         self.file_contents.remove(&file_id);
+        self.salsa.set_file_text(file_id, String::new());
+        self.salsa.set_file_exists(file_id, false);
     }
 
     fn refresh_from_disk(&mut self, uri: &lsp_types::Uri) {
@@ -1025,11 +1033,15 @@ impl AnalysisState {
         match self.vfs.read_to_string(&path) {
             Ok(text) => {
                 self.file_exists.insert(file_id, true);
-                self.file_contents.insert(file_id, text);
+                self.file_contents.insert(file_id, text.clone());
+                self.salsa.set_file_exists(file_id, true);
+                self.salsa.set_file_text(file_id, text);
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 self.file_exists.insert(file_id, false);
                 self.file_contents.remove(&file_id);
+                self.salsa.set_file_text(file_id, String::new());
+                self.salsa.set_file_exists(file_id, false);
             }
             Err(_) => {
                 // Treat other IO errors as a cache miss; keep previous state.
@@ -1075,8 +1087,10 @@ impl AnalysisState {
         let id = self.vfs.rename_path(&from_path, to_path.clone());
         if let Some(local) = to_path.as_local_path() {
             self.file_paths.insert(id, local.to_path_buf());
+            self.salsa.set_file_path(id, local.to_string_lossy().to_string());
         } else {
             self.file_paths.remove(&id);
+            self.salsa.set_file_path(id, String::new());
         }
         // Keep content/existence under the preserved id; callers should refresh content from disk if needed.
         id
@@ -1085,11 +1099,16 @@ impl AnalysisState {
 
 impl Default for AnalysisState {
     fn default() -> Self {
+        let salsa = nova_db::SalsaDatabase::new();
+        let project = nova_db::ProjectId::from_raw(0);
+        salsa.set_jdk_index(project, Arc::new(nova_jdk::JdkIndex::new()));
+        salsa.set_classpath_index(project, None);
         Self {
             vfs: Vfs::new(LocalFs::new()),
             file_paths: HashMap::new(),
             file_exists: HashMap::new(),
             file_contents: HashMap::new(),
+            salsa,
         }
     }
 }
@@ -1104,6 +1123,10 @@ impl nova_db::Database for AnalysisState {
 
     fn file_path(&self, file_id: nova_db::FileId) -> Option<&std::path::Path> {
         self.file_paths.get(&file_id).map(PathBuf::as_path)
+    }
+
+    fn salsa_db(&self) -> Option<nova_db::SalsaDatabase> {
+        Some(self.salsa.clone())
     }
 
     fn all_file_ids(&self) -> Vec<nova_db::FileId> {
@@ -3356,7 +3379,9 @@ fn handle_notification(
                         // of the file until we receive a file-watch refresh.
                         let (file_id, _path) = state.analysis.file_id_for_uri(&uri);
                         state.analysis.file_exists.insert(file_id, true);
-                        state.analysis.file_contents.insert(file_id, text);
+                        state.analysis.file_contents.insert(file_id, text.clone());
+                        state.analysis.salsa.set_file_exists(file_id, true);
+                        state.analysis.salsa.set_file_text(file_id, text);
                     }
                 }
                 None => {
@@ -4168,7 +4193,13 @@ fn handle_prepare_rename(
 
     if !matches!(
         db.symbol_kind(symbol),
-        Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter)
+        Some(
+            JavaSymbolKind::Local
+                | JavaSymbolKind::Parameter
+                | JavaSymbolKind::Field
+                | JavaSymbolKind::Method
+                | JavaSymbolKind::Type
+        )
     ) {
         return Ok(serde_json::Value::Null);
     }
@@ -6599,6 +6630,52 @@ mod tests {
         assert!(
             state.analysis.file_content(file_id).contains(&stored_text),
             "expected reloaded content to contain stored text"
+        );
+    }
+
+    #[test]
+    fn lsp_analysis_state_reuses_salsa_memoization_for_type_diagnostics() {
+        let mut analysis = AnalysisState::default();
+        let dir = tempfile::tempdir().unwrap();
+        let abs = nova_core::AbsPathBuf::new(dir.path().join("Main.java")).unwrap();
+        let uri: lsp_types::Uri = nova_core::path_to_file_uri(&abs).unwrap().parse().unwrap();
+
+        let text = "class Main { int add(int a, int b) { return a + b; } }".to_string();
+        let file_id = analysis.open_document(uri, text, 1);
+
+        analysis.salsa.clear_query_stats();
+
+        let _ = nova_ide::core_file_diagnostics(&analysis, file_id);
+        let after_first = analysis.salsa.query_stats();
+        let first = after_first
+            .by_query
+            .get("type_diagnostics")
+            .copied()
+            .unwrap_or_default();
+        assert!(
+            first.executions > 0,
+            "expected type_diagnostics to execute at least once"
+        );
+
+        analysis.salsa.with_write(|db| {
+            ra_salsa::Database::synthetic_write(db, ra_salsa::Durability::LOW);
+        });
+
+        let _ = nova_ide::core_file_diagnostics(&analysis, file_id);
+        let after_second = analysis.salsa.query_stats();
+        let second = after_second
+            .by_query
+            .get("type_diagnostics")
+            .copied()
+            .unwrap_or_default();
+
+        assert_eq!(
+            second.executions, first.executions,
+            "expected type_diagnostics to be memoized instead of re-executed"
+        );
+        assert!(
+            second.validated_memoized > first.validated_memoized,
+            "expected type_diagnostics memo to be validated after synthetic write"
         );
     }
 

@@ -26,15 +26,20 @@ fn ensure_worker_binary() -> PathBuf {
     // `cargo test -p nova-lsp --tests` does not build the `nova-worker` binary by default.
     // Build it on demand so distributed mode can spawn local workers.
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let status = Command::new("cargo")
+    let repo_root = manifest_dir.join("../..");
+    let status = Command::new("bash")
+        .arg(repo_root.join("scripts/cargo_agent.sh"))
         .arg("build")
         .arg("--quiet")
         .arg("-p")
         .arg("nova-worker")
-        .current_dir(manifest_dir.join("../.."))
+        .current_dir(&repo_root)
         .status()
-        .expect("spawn cargo build -p nova-worker");
-    assert!(status.success(), "cargo build -p nova-worker failed");
+        .expect("spawn scripts/cargo_agent.sh build -p nova-worker");
+    assert!(
+        status.success(),
+        "scripts/cargo_agent.sh build -p nova-worker failed"
+    );
 
     // Best-effort: check common locations.
     if worker_bin.is_file() {

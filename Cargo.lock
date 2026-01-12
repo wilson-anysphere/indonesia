@@ -4045,6 +4045,7 @@ dependencies = [
  "nova-vfs",
  "nova-workspace",
  "pretty_assertions",
+ "ra_ap_salsa",
  "schemars",
  "serde",
  "serde_json",
