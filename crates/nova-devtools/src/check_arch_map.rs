@@ -601,6 +601,38 @@ mod tests {
     }
 
     #[test]
+    fn reports_duplicate_headings() {
+        let doc = load_fixture("architecture-map-duplicate-heading.md");
+        let tmp = TempDir::new().unwrap();
+
+        let workspace = BTreeSet::from(["crate-a".to_string(), "crate-b".to_string()]);
+        let diags = validate_architecture_map(
+            &doc,
+            tmp.path(),
+            Path::new("docs/architecture-map.md"),
+            &workspace,
+            false,
+        );
+        assert!(diags.iter().any(|d| d.code == "duplicate-crate-section"));
+    }
+
+    #[test]
+    fn reports_heading_order_mismatches() {
+        let doc = load_fixture("architecture-map-wrong-order.md");
+        let tmp = TempDir::new().unwrap();
+
+        let workspace = BTreeSet::from(["crate-a".to_string(), "crate-b".to_string()]);
+        let diags = validate_architecture_map(
+            &doc,
+            tmp.path(),
+            Path::new("docs/architecture-map.md"),
+            &workspace,
+            false,
+        );
+        assert!(diags.iter().any(|d| d.code == "crate-heading-order"));
+    }
+
+    #[test]
     fn quick_links_ignore_non_paths_and_accept_globs() {
         let doc = r#"
 # Architecture map
