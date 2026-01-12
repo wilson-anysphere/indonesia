@@ -3354,6 +3354,7 @@ name = "nova-archive"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "tempfile",
  "zip 2.4.2",
 ]
 

@@ -10,6 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 lsp-types = "0.97"
+nova-archive = { path = "../crates/nova-archive" }
 nova-classfile = { path = "../crates/nova-classfile" }
 nova-decompile = { path = "../crates/nova-decompile" }
 nova-config-metadata = { path = "../crates/nova-config-metadata" }
@@ -22,6 +23,7 @@ nova-properties = { path = "../crates/nova-properties" }
 nova-syntax = { path = "../crates/nova-syntax" }
 nova-testing = { path = "../crates/nova-testing" }
 nova-yaml = { path = "../crates/nova-yaml" }
+tempfile = "3"
 
 [features]
 refactor = ["dep:nova-refactor"]
@@ -142,6 +144,13 @@ bench = false
 [[bin]]
 name = "fuzz_reparse_java_sequence"
 path = "fuzz_targets/fuzz_reparse_java_sequence.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_archive_read"
+path = "fuzz_targets/fuzz_archive_read.rs"
 test = false
 doc = false
 bench = false

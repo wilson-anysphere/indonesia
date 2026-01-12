@@ -1,0 +1,10 @@
+# Fuzz builds are compiled with sanitizers (ASAN) and `-Ccodegen-units=1`, which
+# can be very memory hungry. On large-CPU hosts, Cargo's default parallelism can
+# spawn so many `rustc` processes that we OOM even with a modest per-process
+# address space limit.
+#
+# Keep the fuzz harnesses buildable in constrained CI / multi-agent sandboxes by
+# capping parallelism for the `fuzz/` workspace only.
+[build]
+jobs = 8
+
