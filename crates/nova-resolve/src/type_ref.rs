@@ -754,7 +754,14 @@ impl<'a, 'idx> Parser<'a, 'idx> {
             return;
         }
 
-        if self.annotation_follow_is_ok(ctx) {
+        // In `TypeRef.text` whitespace is stripped, so annotation names can be glued to the next
+        // token. One particularly tricky case is when a *suffix* annotation follows the type,
+        // e.g. `@A String @B []` -> `@AString@B[]` or `Outer.@A Inner @B []` -> `Outer.@AInner@B[]`.
+        //
+        // A purely greedy parse would treat `AString` / `AInner` as the annotation name, leaving
+        // `@B[]` without a base type/segment. If the next token is another `@`, run the splitting
+        // heuristic even if the greedy parse looks plausible.
+        if self.annotation_follow_is_ok(ctx) && self.peek_char() != Some('@') {
             return;
         }
 
