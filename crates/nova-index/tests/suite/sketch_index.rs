@@ -162,3 +162,32 @@ fn fields_are_indexed_including_multiple_declarators() {
         "local variables should not be indexed as fields"
     );
 }
+
+#[test]
+fn multi_line_field_declarations_are_indexed() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        "A.java".to_string(),
+        "class A {\n    int a,\n        b;\n}\n".to_string(),
+    );
+    let index = Index::new(files);
+    let text = index.file_text("A.java").expect("file text");
+
+    let fields: Vec<_> = index
+        .symbols()
+        .iter()
+        .filter(|sym| sym.kind == SymbolKind::Field && sym.container.as_deref() == Some("A"))
+        .collect();
+    assert_eq!(fields.len(), 2, "expected two fields in class A");
+
+    let a = fields.iter().find(|f| f.name == "a").expect("field a");
+    let b = fields.iter().find(|f| f.name == "b").expect("field b");
+
+    assert_eq!(&text[a.name_range.start..a.name_range.end], "a");
+    assert_eq!(&text[b.name_range.start..b.name_range.end], "b");
+    assert_eq!(a.decl_range, b.decl_range);
+    assert_eq!(
+        &text[a.decl_range.start..a.decl_range.end],
+        "    int a,\n        b;"
+    );
+}

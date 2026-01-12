@@ -796,14 +796,24 @@ fn parse_members_in_class(
     let mut i = 0;
     let mut depth = 0usize;
     // Tracks the start of the current class-body "member" (field, method, initializer block,
-    // nested type, etc). This lets us apply a heuristic to avoid misclassifying call expressions in
-    // field initializers as method declarations.
+    // nested type, etc).
+    //
+    // We use this as a best-effort boundary for:
+    // - avoiding misclassifying call expressions in field initializers as method declarations, and
+    // - extracting multi-line field declaration statements.
     let mut member_start = 0usize;
+    // Tracks whether the current brace nesting started a top-level block member (initializer block /
+    // nested type). We intentionally *don't* treat braces inside field initializers (e.g.
+    // `int[] xs = { ... };`) as member boundaries.
+    let mut in_block_member = false;
     let mut pending_override = false;
     let mut pending_override_decl_start: Option<usize> = None;
     while i < bytes.len() {
         match bytes[i] {
             b'{' => {
+                if depth == 0 && !member_contains_assignment(body_text, member_start, i) {
+                    in_block_member = true;
+                }
                 depth += 1;
                 i += 1;
                 continue;
@@ -811,11 +821,12 @@ fn parse_members_in_class(
             b'}' => {
                 depth = depth.saturating_sub(1);
                 i += 1;
-                if depth == 0 {
+                if depth == 0 && in_block_member {
                     // A top-level block member ended.
                     member_start = i;
                     pending_override = false;
                     pending_override_decl_start = None;
+                    in_block_member = false;
                 }
                 continue;
             }
@@ -939,7 +950,10 @@ fn parse_members_in_class(
             // Field declarations terminate with `;` at depth 0.
             if bytes[i] == b';' {
                 let stmt_end = i;
-                let stmt_start = body_text[..stmt_end]
+                let stmt_slice = &body_text[member_start..stmt_end];
+                let rel_first_token = stmt_slice.find(|c: char| !c.is_whitespace()).unwrap_or(0);
+                let token_start = member_start + rel_first_token;
+                let stmt_start = body_text[..token_start]
                     .rfind('\n')
                     .map(|p| p + 1)
                     .unwrap_or(0);
