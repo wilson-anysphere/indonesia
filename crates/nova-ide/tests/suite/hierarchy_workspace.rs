@@ -166,6 +166,27 @@ class B { void $0foo(){ A a = new A(); a.bar(); } }
     );
 }
 
+#[test]
+fn prepare_call_hierarchy_on_call_site_resolves_callee_across_files() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /A.java
+class A { void $1bar() {} }
+//- /B.java
+class B { void foo(){ A a = new A(); a.$0bar(); } }
+"#,
+    );
+
+    let file_b = fixture.marker_file(0);
+    let pos_bar = fixture.marker_position(0);
+
+    let items = prepare_call_hierarchy(&fixture.db, file_b, pos_bar)
+        .expect("expected call hierarchy preparation");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].name, "bar");
+    assert_eq!(items[0].uri, fixture.marker_uri(1));
+}
+
 fn uri_for_path(path: &Path) -> Uri {
     let abs = AbsPathBuf::new(path.to_path_buf()).expect("fixture paths should be absolute");
     let uri = path_to_file_uri(&abs).expect("path should convert to a file URI");
