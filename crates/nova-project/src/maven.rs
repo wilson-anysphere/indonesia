@@ -423,11 +423,7 @@ pub(crate) fn load_maven_workspace_model(
                     true
                 }
                 Entry::Occupied(mut o) => {
-                    let intersection = o
-                        .get()
-                        .intersection(&exclusions)
-                        .cloned()
-                        .collect::<BTreeSet<_>>();
+                    let intersection = exclusion_intersection(o.get(), &exclusions);
                     if intersection == *o.get() {
                         false
                     } else {
@@ -460,12 +456,13 @@ pub(crate) fn load_maven_workspace_model(
                 }
 
                 let child_ga = child.ga();
-                if exclusions.contains(&child_ga) {
+                if exclusion_matches(&exclusions, &child_ga.0, &child_ga.1) {
                     continue;
                 }
 
                 let mut child_dep = child.clone();
                 child_dep.exclusions.extend(exclusions.iter().cloned());
+                normalize_exclusions(&mut child_dep.exclusions);
 
                 expanded_pom_dependencies.push(child_dep.clone());
                 queue.push_back((child_dep.clone(), child_dep.exclusions.clone()));
@@ -767,6 +764,7 @@ struct PomDependency {
     classifier: Option<String>,
     type_: Option<String>,
     optional: bool,
+    optional_specified: bool,
     exclusions: BTreeSet<(String, String)>,
 }
 
@@ -785,6 +783,85 @@ impl PomDependency {
             type_: self.type_.clone(),
         }
     }
+}
+
+fn normalize_exclusions(exclusions: &mut BTreeSet<(String, String)>) {
+    if exclusions.contains(&("*".to_string(), "*".to_string())) {
+        exclusions.clear();
+        exclusions.insert(("*".to_string(), "*".to_string()));
+        return;
+    }
+
+    let group_wildcards: BTreeSet<String> = exclusions
+        .iter()
+        .filter(|(_, artifact_id)| artifact_id.as_str() == "*")
+        .map(|(group_id, _)| group_id.clone())
+        .collect();
+
+    let artifact_wildcards: BTreeSet<String> = exclusions
+        .iter()
+        .filter(|(group_id, _)| group_id.as_str() == "*")
+        .map(|(_, artifact_id)| artifact_id.clone())
+        .collect();
+
+    exclusions.retain(|(group_id, artifact_id)| {
+        if group_id.as_str() == "*" || artifact_id.as_str() == "*" {
+            return true;
+        }
+        !group_wildcards.contains(group_id) && !artifact_wildcards.contains(artifact_id)
+    });
+}
+
+fn exclusion_matches(exclusions: &BTreeSet<(String, String)>, group_id: &str, artifact_id: &str) -> bool {
+    exclusions
+        .iter()
+        .any(|(g, a)| (g == "*" || g == group_id) && (a == "*" || a == artifact_id))
+}
+
+fn exclusion_intersection(
+    a: &BTreeSet<(String, String)>,
+    b: &BTreeSet<(String, String)>,
+) -> BTreeSet<(String, String)> {
+    fn intersect_pattern(
+        left: (&str, &str),
+        right: (&str, &str),
+    ) -> Option<(String, String)> {
+        let (g1, a1) = left;
+        let (g2, a2) = right;
+
+        let group = if g1 == "*" {
+            g2
+        } else if g2 == "*" {
+            g1
+        } else if g1 == g2 {
+            g1
+        } else {
+            return None;
+        };
+
+        let artifact = if a1 == "*" {
+            a2
+        } else if a2 == "*" {
+            a1
+        } else if a1 == a2 {
+            a1
+        } else {
+            return None;
+        };
+
+        Some((group.to_string(), artifact.to_string()))
+    }
+
+    let mut out = BTreeSet::new();
+    for (ag, aa) in a {
+        for (bg, ba) in b {
+            if let Some(intersection) = intersect_pattern((ag.as_str(), aa.as_str()), (bg.as_str(), ba.as_str())) {
+                out.insert(intersection);
+            }
+        }
+    }
+    normalize_exclusions(&mut out);
+    out
 }
 
 #[derive(Debug, Clone)]
@@ -973,6 +1050,7 @@ impl EffectivePom {
                 })
                 .filter(|(group_id, artifact_id)| !group_id.is_empty() && !artifact_id.is_empty())
                 .collect();
+            normalize_exclusions(&mut dep.exclusions);
             dep.scope = dep
                 .scope
                 .as_deref()
@@ -1017,7 +1095,10 @@ impl EffectivePom {
             }
 
             if let Some(managed) = managed {
-                dep.optional |= managed.optional;
+                if !dep.optional_specified {
+                    dep.optional = managed.optional;
+                    dep.optional_specified = managed.optional_specified;
+                }
                 dep.exclusions.extend(managed.exclusions.iter().filter_map(
                     |(group_id, artifact_id)| {
                         let group_id = resolve_placeholders(group_id, &properties);
@@ -1029,6 +1110,7 @@ impl EffectivePom {
                         }
                     },
                 ));
+                normalize_exclusions(&mut dep.exclusions);
             }
             dependencies.push(dep);
         }
@@ -1277,11 +1359,7 @@ impl MavenResolver {
                     version: None,
                 });
 
-                let new_intersection: BTreeSet<_> = state
-                    .exclusions
-                    .intersection(&item.exclusions)
-                    .cloned()
-                    .collect();
+                let new_intersection = exclusion_intersection(&state.exclusions, &item.exclusions);
                 if new_intersection != state.exclusions {
                     state.exclusions = new_intersection;
                 }
@@ -1337,12 +1415,13 @@ impl MavenResolver {
                 }
 
                 // Exclusions apply transitively to this subtree.
-                if exclusions.contains(&child.ga()) {
+                if exclusion_matches(&exclusions, &child.group_id, &child.artifact_id) {
                     continue;
                 }
 
                 let mut child_exclusions = exclusions.clone();
                 child_exclusions.extend(child.exclusions.iter().cloned());
+                normalize_exclusions(&mut child_exclusions);
                 queue.push_back(QueueItem {
                     dep: child.clone(),
                     exclusions: child_exclusions,
@@ -1555,9 +1634,9 @@ fn parse_dependencies(deps_node: &roxmltree::Node<'_, '_>) -> Vec<PomDependency>
             let scope = child_text(&dep_node, "scope");
             let classifier = child_text(&dep_node, "classifier");
             let type_ = child_text(&dep_node, "type");
-            let optional = child_text(&dep_node, "optional")
-                .map(|v| v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false);
+            let optional_text = child_text(&dep_node, "optional");
+            let optional_specified = optional_text.is_some();
+            let optional = optional_text.is_some_and(|v| v.eq_ignore_ascii_case("true"));
 
             let mut exclusions = BTreeSet::new();
             if let Some(exclusions_node) = child_element(&dep_node, "exclusions") {
@@ -1574,6 +1653,7 @@ fn parse_dependencies(deps_node: &roxmltree::Node<'_, '_>) -> Vec<PomDependency>
                     exclusions.insert((group_id, artifact_id));
                 }
             }
+            normalize_exclusions(&mut exclusions);
 
             Some(PomDependency {
                 group_id,
@@ -1583,6 +1663,7 @@ fn parse_dependencies(deps_node: &roxmltree::Node<'_, '_>) -> Vec<PomDependency>
                 classifier,
                 type_,
                 optional,
+                optional_specified,
                 exclusions,
             })
         })

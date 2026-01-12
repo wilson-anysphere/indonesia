@@ -530,3 +530,221 @@ fn resolves_dependency_management_exclusions() {
     assert!(deps.contains(&("com.example".to_string(), "dep-a".to_string())));
     assert!(!deps.contains(&("com.example".to_string(), "dep-b".to_string())));
 }
+
+#[test]
+fn resolves_dependency_management_optional_override() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let workspace_root = temp.path().join("workspace");
+    let repo = temp.path().join("repo");
+    fs::create_dir_all(&workspace_root).expect("create workspace dir");
+    fs::create_dir_all(&repo).expect("create repo dir");
+
+    // dep-a manages dep-b as optional, but explicitly declares dep-b as non-optional.
+    write_file(
+        &workspace_root.join("pom.xml"),
+        r#"
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>workspace</artifactId>
+  <version>1.0</version>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>dep-a</artifactId>
+      <version>1.0</version>
+    </dependency>
+  </dependencies>
+</project>
+"#,
+    );
+
+    write_file(
+        &repo_pom_path(&repo, "com.example", "dep-a", "1.0"),
+        r#"
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>dep-a</artifactId>
+  <version>1.0</version>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>com.example</groupId>
+        <artifactId>dep-b</artifactId>
+        <version>1.0</version>
+        <optional>true</optional>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>dep-b</artifactId>
+      <version>1.0</version>
+      <optional>false</optional>
+    </dependency>
+  </dependencies>
+</project>
+"#,
+    );
+
+    write_file(
+        &repo_pom_path(&repo, "com.example", "dep-b", "1.0"),
+        r#"
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>dep-b</artifactId>
+  <version>1.0</version>
+</project>
+"#,
+    );
+
+    let options = LoadOptions {
+        maven_repo: Some(repo.clone()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&workspace_root, &options).expect("load project");
+
+    let deps: BTreeSet<_> = config
+        .dependencies
+        .iter()
+        .map(|d| (d.group_id.clone(), d.artifact_id.clone()))
+        .collect();
+    assert!(deps.contains(&("com.example".to_string(), "dep-a".to_string())));
+    assert!(deps.contains(&("com.example".to_string(), "dep-b".to_string())));
+}
+
+#[test]
+fn resolves_wildcard_exclusions_across_paths() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let workspace_root = temp.path().join("workspace");
+    let repo = temp.path().join("repo");
+    fs::create_dir_all(&workspace_root).expect("create workspace dir");
+    fs::create_dir_all(&repo).expect("create repo dir");
+
+    // Two different paths to dep-b exclude dep-d, but using different exclusion patterns.
+    write_file(
+        &workspace_root.join("pom.xml"),
+        r#"
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>workspace</artifactId>
+  <version>1.0</version>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>dep-a</artifactId>
+      <version>1.0</version>
+    </dependency>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>dep-c</artifactId>
+      <version>1.0</version>
+    </dependency>
+  </dependencies>
+</project>
+"#,
+    );
+
+    // dep-a brings dep-b but excludes all of dep-b's transitive deps.
+    write_file(
+        &repo_pom_path(&repo, "com.example", "dep-a", "1.0"),
+        r#"
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>dep-a</artifactId>
+  <version>1.0</version>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>dep-b</artifactId>
+      <version>1.0</version>
+      <exclusions>
+        <exclusion>
+          <groupId>*</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+  </dependencies>
+</project>
+"#,
+    );
+
+    // dep-c brings dep-b but explicitly excludes dep-d.
+    write_file(
+        &repo_pom_path(&repo, "com.example", "dep-c", "1.0"),
+        r#"
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>dep-c</artifactId>
+  <version>1.0</version>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>dep-b</artifactId>
+      <version>1.0</version>
+      <exclusions>
+        <exclusion>
+          <groupId>com.example</groupId>
+          <artifactId>dep-d</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+  </dependencies>
+</project>
+"#,
+    );
+
+    write_file(
+        &repo_pom_path(&repo, "com.example", "dep-b", "1.0"),
+        r#"
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>dep-b</artifactId>
+  <version>1.0</version>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>dep-d</artifactId>
+      <version>1.0</version>
+    </dependency>
+  </dependencies>
+</project>
+"#,
+    );
+
+    write_file(
+        &repo_pom_path(&repo, "com.example", "dep-d", "1.0"),
+        r#"
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>dep-d</artifactId>
+  <version>1.0</version>
+</project>
+"#,
+    );
+
+    let options = LoadOptions {
+        maven_repo: Some(repo.clone()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&workspace_root, &options).expect("load project");
+
+    let deps: BTreeSet<_> = config
+        .dependencies
+        .iter()
+        .map(|d| (d.group_id.clone(), d.artifact_id.clone()))
+        .collect();
+    assert!(deps.contains(&("com.example".to_string(), "dep-a".to_string())));
+    assert!(deps.contains(&("com.example".to_string(), "dep-c".to_string())));
+    assert!(deps.contains(&("com.example".to_string(), "dep-b".to_string())));
+    assert!(!deps.contains(&("com.example".to_string(), "dep-d".to_string())));
+}
