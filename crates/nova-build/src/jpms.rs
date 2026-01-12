@@ -42,15 +42,27 @@ fn dedupe_paths(paths: &mut Vec<PathBuf>) {
 fn directory_contains_module_info(dir: &Path) -> bool {
     dir.join("module-info.class").is_file()
         || dir.join("META-INF/versions/9/module-info.class").is_file()
+        || dir.join("classes/module-info.class").is_file()
+        || dir
+            .join("classes/META-INF/versions/9/module-info.class")
+            .is_file()
 }
 
 fn directory_has_automatic_module_name(dir: &Path) -> bool {
-    let manifest_path = dir.join("META-INF/MANIFEST.MF");
-    let Ok(bytes) = std::fs::read(&manifest_path) else {
-        return false;
-    };
-    let manifest = String::from_utf8_lossy(&bytes);
-    manifest_main_attribute(&manifest, "Automatic-Module-Name").is_some_and(|name| !name.is_empty())
+    for manifest_path in ["META-INF/MANIFEST.MF", "classes/META-INF/MANIFEST.MF"] {
+        let manifest_path = dir.join(manifest_path);
+        let Ok(bytes) = std::fs::read(&manifest_path) else {
+            continue;
+        };
+        let manifest = String::from_utf8_lossy(&bytes);
+        if manifest_main_attribute(&manifest, "Automatic-Module-Name")
+            .is_some_and(|name| !name.is_empty())
+        {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn archive_is_stable_module(path: &Path) -> bool {
@@ -61,14 +73,15 @@ fn archive_is_stable_module(path: &Path) -> bool {
         return false;
     };
 
-    if archive.by_name("module-info.class").is_ok() {
-        return true;
-    }
-    if archive
-        .by_name("META-INF/versions/9/module-info.class")
-        .is_ok()
-    {
-        return true;
+    for candidate in [
+        "module-info.class",
+        "META-INF/versions/9/module-info.class",
+        "classes/module-info.class",
+        "classes/META-INF/versions/9/module-info.class",
+    ] {
+        if archive.by_name(candidate).is_ok() {
+            return true;
+        }
     }
 
     zip_manifest_main_attribute(&mut archive, "Automatic-Module-Name")
@@ -79,18 +92,24 @@ fn zip_manifest_main_attribute<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     key: &str,
 ) -> Option<String> {
-    let mut file = match archive.by_name("META-INF/MANIFEST.MF") {
-        Ok(file) => file,
-        Err(zip::result::ZipError::FileNotFound) => return None,
-        Err(_) => return None,
-    };
+    for manifest_path in ["META-INF/MANIFEST.MF", "classes/META-INF/MANIFEST.MF"] {
+        let mut file = match archive.by_name(manifest_path) {
+            Ok(file) => file,
+            Err(zip::result::ZipError::FileNotFound) => continue,
+            Err(_) => continue,
+        };
 
-    let mut bytes = Vec::with_capacity(file.size() as usize);
-    if file.read_to_end(&mut bytes).is_err() {
-        return None;
+        let mut bytes = Vec::with_capacity(file.size() as usize);
+        if file.read_to_end(&mut bytes).is_err() {
+            continue;
+        }
+        let manifest = String::from_utf8_lossy(&bytes);
+        if let Some(value) = manifest_main_attribute(&manifest, key) {
+            return Some(value);
+        }
     }
-    let manifest = String::from_utf8_lossy(&bytes);
-    manifest_main_attribute(&manifest, key)
+
+    None
 }
 
 fn manifest_main_attribute(manifest: &str, key: &str) -> Option<String> {
@@ -154,6 +173,17 @@ mod tests {
         let inferred =
             infer_module_path_entries(&[named.clone(), dep, automatic.clone(), named.clone()]);
         assert_eq!(inferred, vec![named, automatic]);
+    }
+
+    #[test]
+    fn stable_module_path_entry_detects_jmods() {
+        let testdata_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata");
+        let named = testdata_dir.join("named-module.jmod");
+        let dep = testdata_dir.join("dep.jar");
+
+        assert!(stable_module_path_entry(&named));
+        let inferred = infer_module_path_entries(&[dep, named.clone()]);
+        assert_eq!(inferred, vec![named]);
     }
 
     #[test]
