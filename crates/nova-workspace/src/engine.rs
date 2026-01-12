@@ -23,7 +23,7 @@ use nova_memory::{
 use nova_project::{
     BuildSystem, JavaConfig, LoadOptions, ProjectConfig, ProjectError, SourceRootOrigin,
 };
-use nova_scheduler::{Cancelled, Debouncer, KeyedDebouncer, PoolKind, Scheduler};
+use nova_scheduler::{Cancelled, Debouncer, KeyedDebouncer, PoolKind, Scheduler, SchedulerConfig};
 use nova_syntax::SyntaxTreeStore;
 use nova_types::{CompletionItem, Diagnostic as NovaDiagnostic};
 use nova_vfs::{
@@ -328,7 +328,26 @@ impl Default for ProjectState {
 
 fn workspace_scheduler() -> Scheduler {
     static SCHEDULER: OnceLock<Scheduler> = OnceLock::new();
-    SCHEDULER.get_or_init(Scheduler::default).clone()
+    SCHEDULER
+        .get_or_init(|| {
+            // Unit tests create many workspaces/engines in parallel. Keep the scheduler minimal so
+            // we don't exhaust OS thread limits in constrained CI environments.
+            #[cfg(test)]
+            {
+                return Scheduler::new(SchedulerConfig {
+                    compute_threads: 1,
+                    background_threads: 1,
+                    io_threads: 1,
+                    progress_channel_capacity: 1024,
+                });
+            }
+
+            #[cfg(not(test))]
+            {
+                Scheduler::default()
+            }
+        })
+        .clone()
 }
 
 #[cfg(test)]
