@@ -47,17 +47,27 @@ fn loads_maven_multi_module_workspace() {
     assert!(roots.contains(&(SourceRootKind::Main, PathBuf::from("lib/src/main/java"))));
     assert!(roots.contains(&(SourceRootKind::Main, PathBuf::from("app/src/main/java"))));
 
-    // Maven dependency jar paths are only included when the artifacts exist in the configured
-    // local repo. This test uses an empty repo, so no jar entries should be present.
-    let jar_entries = config
+    // Maven dependency jar paths are synthesized deterministically from the configured local repo
+    // and dependency coordinates, even if the jar files are not present on disk yet.
+    let jar_entries: BTreeSet<_> = config
         .classpath
         .iter()
         .filter(|cp| cp.kind == ClasspathEntryKind::Jar)
         .map(|cp| cp.path.clone())
-        .collect::<Vec<_>>();
-    assert!(
-        jar_entries.is_empty(),
-        "expected no jar entries with empty repo, found: {jar_entries:?}"
+        .collect();
+    let expected: BTreeSet<_> = [
+        repo_dir
+            .path()
+            .join("com/google/guava/guava/33.0.0-jre/guava-33.0.0-jre.jar"),
+        repo_dir
+            .path()
+            .join("org/junit/jupiter/junit-jupiter-api/5.10.0/junit-jupiter-api-5.10.0.jar"),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(
+        jar_entries, expected,
+        "expected deterministic jar entries even with empty repo"
     );
 
     // Dependencies should be stable and contain expected coordinates.
@@ -265,8 +275,8 @@ fn resolves_maven_managed_dependency_coordinates_placeholders() {
         .collect();
     let jar_path_str = jar_path.to_string_lossy().replace('\\', "/");
     assert!(
-        !jar_entries.iter().any(|p| p == &jar_path_str),
-        "expected managed-dep jar to be omitted when it is missing on disk, got: {jar_entries:?}"
+        jar_entries.iter().any(|p| p == &jar_path_str),
+        "expected managed-dep jar path to be synthesized even when it is missing on disk, got: {jar_entries:?}"
     );
     assert!(jar_path_str.contains("/1.2.3/"), "jar path: {jar_path_str}");
     assert!(!jar_path_str.contains("${"), "jar path: {jar_path_str}");
@@ -830,20 +840,30 @@ fn loads_maven_multi_module_workspace_model() {
     assert_eq!(match_lib.source_root.kind, SourceRootKind::Main);
 
     // Non-JPMS Maven workspace model: `module_path` should stay empty. Dependency jar paths are
-    // only included when the artifacts exist in the local repo; this test uses an empty repo.
+    // synthesized deterministically from the configured local repo and dependency coordinates.
     assert!(
         app.module_path.is_empty(),
         "expected module_path to remain empty for non-JPMS workspaces"
     );
-    let jar_entries = app
+    let jar_entries: BTreeSet<_> = app
         .classpath
         .iter()
         .filter(|cp| cp.kind == ClasspathEntryKind::Jar)
         .map(|cp| cp.path.clone())
-        .collect::<Vec<_>>();
-    assert!(
-        jar_entries.is_empty(),
-        "expected no jar entries with empty repo, found: {jar_entries:?}"
+        .collect();
+    let expected: BTreeSet<_> = [
+        repo_dir
+            .path()
+            .join("com/google/guava/guava/33.0.0-jre/guava-33.0.0-jre.jar"),
+        repo_dir
+            .path()
+            .join("org/junit/jupiter/junit-jupiter-api/5.10.0/junit-jupiter-api-5.10.0.jar"),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(
+        jar_entries, expected,
+        "expected deterministic jar entries even with empty repo"
     );
 
     // Ensure model is deterministic.
