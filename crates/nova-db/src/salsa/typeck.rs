@@ -538,6 +538,9 @@ fn type_of_expr_demand_result(
     }
     let file = def_file(owner);
     let java_level = db.java_language_level(file);
+    let file_text = db.file_content(file);
+    let file_text = file_text.as_str();
+    let file_tokens = lex(file_text);
     let project = db.file_project(file);
     let jdk = db.jdk_index(project);
     let classpath = db.classpath_index(project);
@@ -683,6 +686,8 @@ fn type_of_expr_demand_result(
     let mut checker = BodyChecker::new(
         db,
         owner,
+        file_text,
+        &file_tokens,
         &resolver,
         &scopes.scopes,
         body_scope,
@@ -698,8 +703,8 @@ fn type_of_expr_demand_result(
         java_level,
         true,
     );
-    checker.diagnostics.extend(signature_diags);
-    checker.diagnostics.extend(param_diags);
+    extend_type_ref_diagnostics(&mut checker.diagnostics, &file_tokens, file_text, signature_diags);
+    extend_type_ref_diagnostics(&mut checker.diagnostics, &file_tokens, file_text, param_diags);
 
     // Best-effort expected-type seeding.
     //
@@ -1357,6 +1362,9 @@ fn resolve_method_call_demand(
     }
     let file = def_file(owner);
     let java_level = db.java_language_level(file);
+    let file_text = db.file_content(file);
+    let file_text = file_text.as_str();
+    let file_tokens = lex(file_text);
     let project = db.file_project(file);
     let jdk = db.jdk_index(project);
     let classpath = db.classpath_index(project);
@@ -1508,6 +1516,8 @@ fn resolve_method_call_demand(
     let mut checker = BodyChecker::new(
         db,
         owner,
+        file_text,
+        &file_tokens,
         &resolver,
         &scopes.scopes,
         body_scope,
@@ -3353,6 +3363,9 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
 
     let file = def_file(owner);
     let java_level = db.java_language_level(file);
+    let file_text = db.file_content(file);
+    let file_text = file_text.as_str();
+    let file_tokens = lex(file_text);
     let project = db.file_project(file);
     let jdk = db.jdk_index(project);
     let classpath = db.classpath_index(project);
@@ -3515,6 +3528,8 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
     let mut checker = BodyChecker::new(
         db,
         owner,
+        file_text,
+        &file_tokens,
         &resolver,
         &scopes.scopes,
         body_scope,
@@ -3530,10 +3545,15 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
         java_level,
         false,
     );
-    checker.diagnostics.extend(signature_diags);
-    checker.diagnostics.extend(param_diags);
-    checker.diagnostics.extend(type_param_bound_diags);
-    checker.diagnostics.extend(throws_diags);
+    extend_type_ref_diagnostics(&mut checker.diagnostics, &file_tokens, file_text, signature_diags);
+    extend_type_ref_diagnostics(&mut checker.diagnostics, &file_tokens, file_text, param_diags);
+    extend_type_ref_diagnostics(
+        &mut checker.diagnostics,
+        &file_tokens,
+        file_text,
+        type_param_bound_diags,
+    );
+    extend_type_ref_diagnostics(&mut checker.diagnostics, &file_tokens, file_text, throws_diags);
 
     checker.check_body(&mut loader);
 
@@ -3608,6 +3628,8 @@ fn is_placeholder_class_def(def: &ClassDef) -> bool {
 struct BodyChecker<'a, 'idx> {
     db: &'a dyn NovaTypeck,
     owner: DefWithBodyId,
+    file_text: &'a str,
+    file_tokens: &'a [Token],
     resolver: &'a nova_resolve::Resolver<'idx>,
     scopes: &'a nova_resolve::ScopeGraph,
     scope_id: nova_resolve::ScopeId,
@@ -3676,6 +3698,8 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
     fn new(
         db: &'a dyn NovaTypeck,
         owner: DefWithBodyId,
+        file_text: &'a str,
+        file_tokens: &'a [Token],
         resolver: &'a nova_resolve::Resolver<'idx>,
         scopes: &'a nova_resolve::ScopeGraph,
         scope_id: nova_resolve::ScopeId,
@@ -3741,6 +3765,8 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         Self {
             db,
             owner,
+            file_text,
+            file_tokens,
             resolver,
             scopes,
             scope_id,
@@ -8986,9 +9012,12 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             text,
             base_span,
         );
-        for diag in resolved.diagnostics {
-            self.diagnostics.push(diag);
-        }
+        extend_type_ref_diagnostics(
+            &mut self.diagnostics,
+            self.file_tokens,
+            self.file_text,
+            resolved.diagnostics,
+        );
         resolved.ty
     }
 
