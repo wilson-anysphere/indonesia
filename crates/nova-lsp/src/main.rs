@@ -8721,6 +8721,9 @@ fn apply_code_action_outcome<O: RpcOut>(
 
             // LSP clients generally ignore the `workspace/executeCommand` result for
             // edit-producing commands; tests and existing integrations expect `null`.
+            //
+            // Returning `null` also avoids leaking large edit payloads into clients that display
+            // executeCommand results verbatim (e.g. Nova's VS Code extension "show" commands).
             Ok(serde_json::Value::Null)
         }
         CodeActionOutcome::Explanation(text) => Ok(serde_json::Value::String(text)),

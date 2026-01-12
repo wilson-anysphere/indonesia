@@ -237,9 +237,6 @@ pub fn extract_variable_code_actions(
         expr_range: WorkspaceTextRange,
         use_var: bool,
     ) -> Option<String> {
-        const NAME_CONFLICT_REASON: &str =
-            "extracted variable name conflicts with an existing binding";
-
         for attempt in 0usize..100 {
             let name = if attempt == 0 {
                 "extracted".to_string()
@@ -259,11 +256,11 @@ pub fn extract_variable_code_actions(
             ) {
                 Ok(_) => return Some(name),
                 Err(SemanticRefactorError::InvalidIdentifier { .. }) => continue,
-                Err(SemanticRefactorError::ExtractNotSupported { reason })
-                    if reason == NAME_CONFLICT_REASON =>
-                {
-                    continue
-                }
+                // Treat name conflicts as a recoverable probe failure by trying another placeholder
+                // name. The semantic refactor engine reports these as conflicts (not
+                // ExtractNotSupported), so matching on the structured error keeps this resilient to
+                // changes in error wording.
+                Err(SemanticRefactorError::Conflicts(_)) => continue,
                 Err(_) => return None,
             }
         }
