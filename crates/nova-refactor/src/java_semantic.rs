@@ -432,6 +432,7 @@ impl RefactorJavaDatabase {
                 let body = snap.hir_body(method);
                 record_body_references(
                     file,
+                    files.get(file).map(|t| t.as_ref()).unwrap_or(""),
                     BodyOwner::Method(method),
                     &body,
                     scope_result,
@@ -451,6 +452,7 @@ impl RefactorJavaDatabase {
                 let body = snap.hir_constructor_body(ctor);
                 record_body_references(
                     file,
+                    files.get(file).map(|t| t.as_ref()).unwrap_or(""),
                     BodyOwner::Constructor(ctor),
                     &body,
                     scope_result,
@@ -470,6 +472,7 @@ impl RefactorJavaDatabase {
                 let body = snap.hir_initializer_body(init);
                 record_body_references(
                     file,
+                    files.get(file).map(|t| t.as_ref()).unwrap_or(""),
                     BodyOwner::Initializer(init),
                     &body,
                     scope_result,
@@ -901,6 +904,7 @@ impl RefactorDatabase for RefactorJavaDatabase {
 
 fn record_body_references(
     file: &FileId,
+    file_text: &str,
     owner: BodyOwner,
     body: &hir::Body,
     scope_result: &ScopeBuildResult,
@@ -1024,8 +1028,8 @@ fn record_body_references(
         match &body.exprs[expr] {
             hir::Expr::This { .. } | hir::Expr::Super { .. } => {
                 let item = enclosing_class(&scope_result.scopes, scope)?;
-                Some(TypeResolution::Source(item))
-            }
+        Some(TypeResolution::Source(item))
+    }
             hir::Expr::Name { name, .. } => {
                 let resolved =
                     resolver.resolve_name(&scope_result.scopes, scope, &Name::from(name.as_str()))?;
@@ -1267,22 +1271,19 @@ fn record_body_references(
                 let range = TextRange::new(name_range.start, name_range.end);
                 record(file, symbol, range, references, spans);
             }
-            hir::Expr::New {
-                class, class_range, ..
-            } => {
-                let scope = type_resolution_scope(&scope_result.scopes, scope);
-                let Some(resolved) = resolve_type_text(&scope_result.scopes, scope, resolver, class)
-                else {
-                    return;
-                };
-                let TypeResolution::Source(item) = resolved else {
-                    return;
-                };
-                let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Type(item)) else {
-                    return;
-                };
-                let range = TextRange::new(class_range.start, class_range.end);
-                record(file, symbol, range, references, spans);
+            hir::Expr::New { class_range, .. } => {
+                let type_scope = type_resolution_scope(&scope_result.scopes, scope);
+                record_type_references_in_range(
+                    file,
+                    file_text,
+                    TextRange::new(class_range.start, class_range.end),
+                    type_scope,
+                    &scope_result.scopes,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
             }
             _ => {}
         }
@@ -1364,20 +1365,115 @@ fn record_body_references(
         let type_scope = type_resolution_scope(&scope_result.scopes, type_scope);
 
         let local = &body.locals[local_id];
-        let Some(resolved) =
-            resolve_type_text(&scope_result.scopes, type_scope, resolver, &local.ty_text)
-        else {
-            return;
-        };
-        let TypeResolution::Source(item) = resolved else {
-            return;
-        };
-        let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Type(item)) else {
-            return;
-        };
-        let range = TextRange::new(local.ty_range.start, local.ty_range.end);
-        record(file, symbol, range, references, spans);
+        record_type_references_in_range(
+            file,
+            file_text,
+            TextRange::new(local.ty_range.start, local.ty_range.end),
+            type_scope,
+            &scope_result.scopes,
+            resolver,
+            resolution_to_symbol,
+            references,
+            spans,
+        );
     });
+}
+
+fn record_type_references_in_range(
+    file: &FileId,
+    file_text: &str,
+    range: TextRange,
+    scope: nova_resolve::ScopeId,
+    scopes: &nova_resolve::ScopeGraph,
+    resolver: &Resolver<'_>,
+    resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+    references: &mut [Vec<Reference>],
+    spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+) {
+    if range.start >= range.end || range.end > file_text.len() {
+        return;
+    }
+    let slice = &file_text[range.start..range.end];
+    let mut i = 0usize;
+
+    while i < slice.len() {
+        let ch = slice[i..].chars().next().unwrap();
+        if !is_ident_start_char(ch) {
+            i += ch.len_utf8();
+            continue;
+        }
+
+        let token_start = i;
+        i += ch.len_utf8();
+
+        // Parse a dotted identifier path (`foo.bar.Baz`).
+        while i < slice.len() {
+            let ch = slice[i..].chars().next().unwrap();
+            if is_ident_continue_char(ch) {
+                i += ch.len_utf8();
+                continue;
+            }
+
+            if ch == '.' || ch == '$' {
+                let sep_len = ch.len_utf8();
+                let after = i + sep_len;
+                if after < slice.len() {
+                    let next = slice[after..].chars().next().unwrap();
+                    if is_ident_start_char(next) {
+                        // Include the separator and keep scanning.
+                        i = after + next.len_utf8();
+                        continue;
+                    }
+                }
+            }
+
+            break;
+        }
+
+        let token_end = i;
+        if token_end <= token_start {
+            continue;
+        }
+        let token = &slice[token_start..token_end];
+        if token == "var" {
+            continue;
+        }
+
+        // Replace `$` with `.` so we can resolve binary nested names as source-like nesting.
+        let token_for_path = token.replace('$', ".");
+        let path = QualifiedName::from_dotted(&token_for_path);
+        let Some(TypeResolution::Source(item)) =
+            resolver.resolve_qualified_type_resolution_in_scope(scopes, scope, &path)
+        else {
+            continue;
+        };
+
+        let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Type(item)) else {
+            continue;
+        };
+
+        let simple_start = token
+            .rfind(|c| c == '.' || c == '$')
+            .map(|idx| token_start + idx + 1)
+            .unwrap_or(token_start);
+        let simple_end = token_end;
+
+        let abs_range = TextRange::new(range.start + simple_start, range.start + simple_end);
+        // Record the reference span for rename operations.
+        references[symbol.as_usize()].push(Reference {
+            file: file.clone(),
+            range: abs_range,
+        });
+        spans.push((file.clone(), abs_range, symbol));
+    }
+}
+
+fn is_ident_start_char(ch: char) -> bool {
+    ch.is_alphabetic() || ch == '_' || ch == '$'
+}
+
+fn is_ident_continue_char(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '_' || ch == '$'
 }
 
 fn walk_hir_body(body: &hir::Body, mut f: impl FnMut(hir::ExprId)) {

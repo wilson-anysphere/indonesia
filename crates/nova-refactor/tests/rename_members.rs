@@ -145,3 +145,77 @@ fn rename_type_updates_declaration_constructor_and_cross_file_new() {
     assert!(!after_a.contains("Foo"), "{after_a}");
     assert!(!after_b.contains("Foo"), "{after_b}");
 }
+
+#[test]
+fn rename_type_preserves_generics_in_local_and_new_expression() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Foo<T> { Foo(){} }
+
+class Use {
+    void m() {
+        Foo<String> x = new Foo<>();
+    }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("class Foo").unwrap() + "class ".len() + 1;
+    let symbol = db.symbol_at(&file, offset).expect("symbol at type Foo");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "Bar".into(),
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    assert!(after.contains("class Bar"), "{after}");
+    assert!(after.contains("Bar()"), "{after}");
+    assert!(after.contains("Bar<String> x"), "{after}");
+    assert!(after.contains("new Bar<>()"), "{after}");
+    assert!(!after.contains("Foo"), "{after}");
+}
+
+#[test]
+fn rename_type_updates_fully_qualified_new_expression_simple_name_only() {
+    let a = FileId::new("A.java");
+    let b = FileId::new("B.java");
+
+    let src_a = r#"package pkg;
+class Foo { Foo(){} }"#;
+    let src_b = r#"class Use { void m(){ new pkg.Foo(); } }"#;
+
+    let db = RefactorJavaDatabase::new([
+        (a.clone(), src_a.to_string()),
+        (b.clone(), src_b.to_string()),
+    ]);
+
+    let offset = src_a.find("class Foo").unwrap() + "class ".len() + 1;
+    let symbol = db.symbol_at(&a, offset).expect("symbol at type Foo");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "Bar".into(),
+        },
+    )
+    .unwrap();
+
+    let mut files = BTreeMap::new();
+    files.insert(a.clone(), src_a.to_string());
+    files.insert(b.clone(), src_b.to_string());
+
+    let out = apply_workspace_edit(&files, &edit).unwrap();
+    let after_a = out.get(&a).unwrap();
+    let after_b = out.get(&b).unwrap();
+
+    assert!(after_a.contains("class Bar"), "{after_a}");
+    assert!(after_a.contains("Bar()"), "{after_a}");
+    assert!(after_b.contains("new pkg.Bar()"), "{after_b}");
+    assert!(!after_a.contains("Foo"), "{after_a}");
+    assert!(!after_b.contains("pkg.Foo"), "{after_b}");
+}
