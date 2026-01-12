@@ -171,8 +171,10 @@ Included inputs (current `nova-build` implementation):
 
 Implementation references:
 
-- writer: `crates/nova-build/src/gradle.rs` (`collect_gradle_build_files`)
-- reader: `crates/nova-project/src/gradle.rs` (`collect_gradle_build_files` / `gradle_build_fingerprint`)
+- canonical (shared by writer + reader): `crates/nova-build-model/src/build_files.rs`
+  (`collect_gradle_build_files`, `BuildFileFingerprint::from_files`)
+- writer entry point: `crates/nova-build/src/gradle.rs` (`gradle_build_fingerprint`)
+- reader entry point: `crates/nova-project/src/gradle.rs` (`gradle_build_fingerprint`)
 
 These must remain aligned: if the file set diverges, `nova-project` will treat snapshots as stale.
 
