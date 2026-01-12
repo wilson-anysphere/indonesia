@@ -13,7 +13,10 @@ describe('Frameworks dashboard UX', () => {
   it('Frameworks tree view exposes the three framework categories', async () => {
     const contents = await readSrcFile('frameworksView.ts');
 
-    expect(contents).toContain("type FrameworkCategory = 'web-endpoints' | 'micronaut-endpoints' | 'micronaut-beans';");
+    // Category node construction should reference each category explicitly (single-root and per-workspace).
+    expect(contents).toContain("category: 'web-endpoints'");
+    expect(contents).toContain("category: 'micronaut-endpoints'");
+    expect(contents).toContain("category: 'micronaut-beans'");
     expect(contents).toContain("return 'Web Endpoints';");
     expect(contents).toContain("return 'Micronaut Endpoints';");
     expect(contents).toContain("return 'Micronaut Beans';");
