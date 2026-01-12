@@ -1886,3 +1886,126 @@ class C {
         .expect("expected a type at offset");
     assert_eq!(ty, "Maker");
 }
+
+#[test]
+fn this_expression_types_as_enclosing_class() {
+    let src = r#"
+class C { C m(){ return this; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src.find("this").expect("snippet should contain this");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "C");
+}
+
+#[test]
+fn super_expression_types_as_superclass() {
+    let src = r#"
+class A { int f(){ return 1; } }
+class B extends A { int m(){ return super.f(); } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src.find("super").expect("snippet should contain super");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "A");
+}
+
+#[test]
+fn array_index_must_be_integral() {
+    let src = r#"
+class C { void m(){ int[] a = {1}; int x = a[true]; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-array-index"),
+        "expected invalid-array-index diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn array_access_on_non_array_is_error() {
+    let src = r#"
+class C { void m(){ int x = 0; int y = x[0]; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-array-access"),
+        "expected invalid-array-access diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn array_creation_dimension_must_be_integral() {
+    let src = r#"
+class C { void m(){ int[] a = new int[true]; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "array-dimension-type"),
+        "expected array-dimension-type diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn bit_not_promotes_byte_to_int() {
+    let src = r#"
+class C { int m(byte b){ return ~b; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src.find('~').expect("snippet should contain ~");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "int");
+}
+
+#[test]
+fn pre_increment_preserves_byte_type() {
+    let src = r#"
+class C { void m(){ byte b = 0; byte c = ++b; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src.find("++").expect("snippet should contain ++");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "byte");
+}
