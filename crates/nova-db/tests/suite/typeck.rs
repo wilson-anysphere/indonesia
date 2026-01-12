@@ -535,6 +535,60 @@ class C {
 }
 
 #[test]
+fn type_at_offset_shows_boolean_for_relational_comparison() {
+    let src = r#"
+class C {
+    boolean m() {
+        return 1 < 2;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src.find('<').expect("snippet should contain <");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "boolean");
+}
+
+#[test]
+fn type_at_offset_shows_boolean_for_equality_comparison() {
+    let src = r#"
+class C {
+    boolean m() {
+        return 1 == 2;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src.find("==").expect("snippet should contain ==");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "boolean");
+}
+
+#[test]
+fn type_at_offset_shows_boolean_for_logical_and() {
+    let src = r#"
+class C {
+    boolean m() {
+        return true && false;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src.find("&&").expect("snippet should contain &&");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "boolean");
+}
+
+#[test]
 fn method_reference_is_typed_from_target() {
     let src = r#"
  import java.util.function.Function;
