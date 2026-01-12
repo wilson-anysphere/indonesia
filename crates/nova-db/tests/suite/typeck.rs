@@ -736,6 +736,29 @@ class C {
 }
 
 #[test]
+fn post_inc_promotes_byte_to_int() {
+    let src = r#"
+class C {
+    void m() {
+        byte b = 0;
+        byte c = b++;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "type-mismatch"),
+        "expected type-mismatch for `byte c = b++` (b++ is int), got {diags:?}"
+    );
+    assert!(
+        !diags.iter().any(|d| d.code.as_ref() == "invalid-inc-dec"),
+        "expected b++ to be accepted for byte locals, got {diags:?}"
+    );
+}
+
+#[test]
 fn reports_condition_not_boolean_for_if() {
     let src = r#"
 class C {
@@ -752,6 +775,54 @@ class C {
             .iter()
             .any(|d| d.code.as_ref() == "condition-not-boolean"),
         "expected condition-not-boolean diagnostic, got {diags:?}"
+    );
+}
+
+#[test]
+fn boxed_boolean_conditions_are_allowed() {
+    let src = r#"
+class C {
+    void m(java.lang.Boolean b) {
+        if (b) {}
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == "condition-not-boolean"),
+        "expected boxed Boolean to be allowed in condition context, got {diags:?}"
+    );
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Boolean")),
+        "expected java.lang.Boolean to resolve, got {diags:?}"
+    );
+}
+
+#[test]
+fn not_allows_boxed_boolean_operand() {
+    let src = r#"
+class C {
+    boolean m(java.lang.Boolean b) { return !b; }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        !diags.iter().any(|d| d.code.as_ref() == "invalid-unary-op"),
+        "expected `!Boolean` to type-check via unboxing, got {diags:?}"
+    );
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Boolean")),
+        "expected java.lang.Boolean to resolve, got {diags:?}"
     );
 }
 

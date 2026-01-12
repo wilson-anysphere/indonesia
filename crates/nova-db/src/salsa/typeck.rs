@@ -3367,12 +3367,15 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 ..
             } => {
                 let condition_ty = self.infer_expr(loader, *condition).ty;
-                if !condition_ty.is_errorish() && !condition_ty.is_primitive_boolean() {
+                if !condition_ty.is_errorish() {
+                    let env_ro: &dyn TypeEnv = &*loader.store;
+                    if assignment_conversion(env_ro, &condition_ty, &Type::boolean()).is_none() {
                     self.diagnostics.push(Diagnostic::error(
                         "condition-not-boolean",
                         "condition must be boolean",
                         Some(self.body.exprs[*condition].range()),
                     ));
+                    }
                 }
                 self.check_stmt(loader, *then_branch, expected_return);
                 if let Some(else_branch) = else_branch {
@@ -3383,12 +3386,15 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 condition, body, ..
             } => {
                 let condition_ty = self.infer_expr(loader, *condition).ty;
-                if !condition_ty.is_errorish() && !condition_ty.is_primitive_boolean() {
+                if !condition_ty.is_errorish() {
+                    let env_ro: &dyn TypeEnv = &*loader.store;
+                    if assignment_conversion(env_ro, &condition_ty, &Type::boolean()).is_none() {
                     self.diagnostics.push(Diagnostic::error(
                         "condition-not-boolean",
                         "condition must be boolean",
                         Some(self.body.exprs[*condition].range()),
                     ));
+                    }
                 }
                 self.check_stmt(loader, *body, expected_return);
             }
@@ -3404,12 +3410,15 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 }
                 if let Some(condition) = condition {
                     let condition_ty = self.infer_expr(loader, *condition).ty;
-                    if !condition_ty.is_errorish() && !condition_ty.is_primitive_boolean() {
+                    if !condition_ty.is_errorish() {
+                        let env_ro: &dyn TypeEnv = &*loader.store;
+                        if assignment_conversion(env_ro, &condition_ty, &Type::boolean()).is_none() {
                         self.diagnostics.push(Diagnostic::error(
                             "condition-not-boolean",
                             "condition must be boolean",
                             Some(self.body.exprs[*condition].range()),
                         ));
+                        }
                     }
                 }
                 for expr in update {
@@ -3864,30 +3873,37 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             } => {
                 let inner = self.infer_expr(loader, *operand).ty;
                 let span = self.body.exprs[expr].range();
+                let env_ro: &dyn TypeEnv = &*loader.store;
+                let inner_prim = primitive_like(env_ro, &inner);
 
                 let ty = match op {
                     UnaryOp::Not => {
-                        if !inner.is_errorish() && !inner.is_primitive_boolean() {
+                        if !inner.is_errorish()
+                            && assignment_conversion(env_ro, &inner, &Type::boolean()).is_none()
+                        {
                             self.diagnostics.push(Diagnostic::error(
                                 "invalid-unary-op",
                                 "operator ! requires boolean operand",
                                 Some(span),
                             ));
                         }
-                        Type::Primitive(PrimitiveType::Boolean)
+                        Type::boolean()
                     }
-                    UnaryOp::Plus | UnaryOp::Minus => match inner {
-                        Type::Primitive(primitive) if primitive.is_numeric() => {
-                            // Unary numeric promotion.
-                            match primitive {
-                                PrimitiveType::Byte
-                                | PrimitiveType::Short
-                                | PrimitiveType::Char => Type::Primitive(PrimitiveType::Int),
-                                _ => Type::Primitive(primitive),
+                    UnaryOp::Plus | UnaryOp::Minus => {
+                        if inner.is_errorish() {
+                            inner
+                        } else if let Some(primitive) = inner_prim {
+                            if primitive.is_numeric() {
+                                Type::Primitive(unary_numeric_promotion(primitive))
+                            } else {
+                                self.diagnostics.push(Diagnostic::error(
+                                    "invalid-unary-op",
+                                    "operator +/- requires numeric operand",
+                                    Some(span),
+                                ));
+                                Type::Error
                             }
-                        }
-                        _ if inner.is_errorish() => inner,
-                        _ => {
+                        } else {
                             self.diagnostics.push(Diagnostic::error(
                                 "invalid-unary-op",
                                 "operator +/- requires numeric operand",
@@ -3895,23 +3911,22 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             ));
                             Type::Error
                         }
-                    },
-                    UnaryOp::BitNot => match inner {
-                        Type::Primitive(
-                            primitive @ (PrimitiveType::Byte
-                            | PrimitiveType::Short
-                            | PrimitiveType::Char
-                            | PrimitiveType::Int
-                            | PrimitiveType::Long),
-                        ) => {
-                            // Unary numeric promotion, but `~` is restricted to integral types.
-                            match primitive {
-                                PrimitiveType::Long => Type::Primitive(PrimitiveType::Long),
-                                _ => Type::Primitive(PrimitiveType::Int),
+                    }
+                    UnaryOp::BitNot => {
+                        if inner.is_errorish() {
+                            inner
+                        } else if let Some(primitive) = inner_prim {
+                            if is_integral_primitive(primitive) {
+                                Type::Primitive(unary_numeric_promotion(primitive))
+                            } else {
+                                self.diagnostics.push(Diagnostic::error(
+                                    "invalid-unary-op",
+                                    "operator ~ requires integral operand",
+                                    Some(span),
+                                ));
+                                Type::Error
                             }
-                        }
-                        _ if inner.is_errorish() => inner,
-                        _ => {
+                        } else {
                             self.diagnostics.push(Diagnostic::error(
                                 "invalid-unary-op",
                                 "operator ~ requires integral operand",
@@ -3919,21 +3934,28 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             ));
                             Type::Error
                         }
-                    },
+                    }
                     UnaryOp::PreInc | UnaryOp::PreDec | UnaryOp::PostInc | UnaryOp::PostDec => {
-                        match inner {
-                            Type::Primitive(primitive) if primitive.is_numeric() => {
-                                Type::Primitive(primitive)
-                            }
-                            Type::Unknown | Type::Error => inner,
-                            _ => {
+                        if inner.is_errorish() {
+                            inner
+                        } else if let Some(primitive) = inner_prim {
+                            if primitive.is_numeric() {
+                                Type::Primitive(unary_numeric_promotion(primitive))
+                            } else {
                                 self.diagnostics.push(Diagnostic::error(
                                     "invalid-inc-dec",
-                                    "increment/decrement requires a numeric primitive operand",
+                                    "increment/decrement requires a numeric operand",
                                     Some(self.body.exprs[*operand].range()),
                                 ));
                                 Type::Error
                             }
+                        } else {
+                            self.diagnostics.push(Diagnostic::error(
+                                "invalid-inc-dec",
+                                "increment/decrement requires a numeric operand",
+                                Some(self.body.exprs[*operand].range()),
+                            ));
+                            Type::Error
                         }
                     }
                 };
@@ -4177,12 +4199,15 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 ..
             } => {
                 let condition_ty = self.infer_expr(loader, *condition).ty;
-                if !condition_ty.is_errorish() && !condition_ty.is_primitive_boolean() {
+                if !condition_ty.is_errorish() {
+                    let env_ro: &dyn TypeEnv = &*loader.store;
+                    if assignment_conversion(env_ro, &condition_ty, &Type::boolean()).is_none() {
                     self.diagnostics.push(Diagnostic::error(
                         "condition-not-boolean",
                         "condition must be boolean",
                         Some(self.body.exprs[*condition].range()),
                     ));
+                    }
                 }
                 let then_ty = self
                     .infer_expr_with_expected(loader, *then_expr, expected)

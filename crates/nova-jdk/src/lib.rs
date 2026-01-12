@@ -144,6 +144,7 @@ impl JdkIndex {
         this.add_type("java.lang", "Iterable");
         this.add_type("java.lang", "Runnable");
         this.add_type("java.lang", "String");
+        this.add_type("java.lang", "Boolean");
         this.add_type("java.lang", "Integer");
         this.add_type("java.lang", "Number");
         this.add_type("java.lang", "Boolean");
