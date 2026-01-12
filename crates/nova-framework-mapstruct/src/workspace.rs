@@ -72,6 +72,10 @@ fn project_fingerprint(db: &dyn Database, project: ProjectId) -> u64 {
     files.sort_by(|(a, ..), (b, ..)| a.cmp(b));
 
     let mut hasher = DefaultHasher::new();
+    // The workspace analysis toggles some diagnostics based on whether MapStruct is on the
+    // dependency graph / classpath. Include this bit in the fingerprint so diagnostics update
+    // when build metadata changes.
+    crate::has_mapstruct_build_dependency(db, project).hash(&mut hasher);
     for (path, _file, len, ptr) in &files {
         path.hash(&mut hasher);
         len.hash(&mut hasher);
@@ -89,8 +93,7 @@ pub(crate) struct MapStructWorkspace {
 
 impl MapStructWorkspace {
     fn build(db: &dyn Database, project: ProjectId) -> Self {
-        let has_mapstruct_dependency = db.has_dependency(project, "org.mapstruct", "mapstruct")
-            || db.has_dependency(project, "org.mapstruct", "mapstruct-processor");
+        let has_mapstruct_dependency = crate::has_mapstruct_build_dependency(db, project);
 
         let sources = java_sources(db, project);
         let mut builder = WorkspaceBuilder::new(has_mapstruct_dependency);

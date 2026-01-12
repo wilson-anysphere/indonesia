@@ -22,7 +22,10 @@ use nova_framework_parse::{
 };
 use nova_types::{ClassId, CompletionItem, Diagnostic, Span};
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tree_sitter::Node;
 
 mod workspace;
@@ -128,12 +131,14 @@ pub struct AnalysisResult {
 /// exposed via the free functions in this crate.
 pub struct MapStructAnalyzer {
     workspace: workspace::WorkspaceCache,
+    fs_cache: FsWorkspaceCache,
 }
 
 impl MapStructAnalyzer {
     pub fn new() -> Self {
         Self {
             workspace: workspace::WorkspaceCache::new(),
+            fs_cache: FsWorkspaceCache::new(),
         }
     }
 }
@@ -146,17 +151,29 @@ impl Default for MapStructAnalyzer {
 
 impl FrameworkAnalyzer for MapStructAnalyzer {
     fn applies_to(&self, db: &dyn Database, project: ProjectId) -> bool {
-        // Dependency-based detection.
-        if db.has_dependency(project, "org.mapstruct", "mapstruct")
-            || db.has_dependency(project, "org.mapstruct", "mapstruct-processor")
-        {
+        // Dependency/classpath-based detection.
+        if has_mapstruct_dependency(db, project) {
             return true;
         }
 
-        // Fallback: detect commonly-used MapStruct types on the classpath.
-        db.has_class_on_classpath(project, "org.mapstruct.Mapper")
-            || db.has_class_on_classpath_prefix(project, "org.mapstruct.")
-            || db.has_class_on_classpath_prefix(project, "org/mapstruct/")
+        // Structural fallback: if the host database exposes HIR classes, look for `@Mapper`.
+        let classes = db.all_classes(project);
+        if !classes.is_empty() {
+            return classes.into_iter().any(|id| {
+                let class = db.class(id);
+                class.has_annotation("Mapper") || class.has_annotation("org.mapstruct.Mapper")
+            });
+        }
+
+        // Text fallback: if we can enumerate files and read contents, look for MapStruct usage.
+        let files = db.all_files(project);
+        if files.is_empty() {
+            return false;
+        }
+        files.into_iter().any(|file| {
+            db.file_text(file)
+                .is_some_and(|text| looks_like_mapstruct_source(text))
+        })
     }
 
     fn virtual_members(&self, _db: &dyn Database, _class: ClassId) -> Vec<VirtualMember> {
@@ -164,184 +181,63 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
     }
 
     fn diagnostics(&self, db: &dyn Database, file: nova_vfs::FileId) -> Vec<Diagnostic> {
-        let Some(path) = db.file_path(file) else {
+        let Some(file_path) = db.file_path(file) else {
             return Vec::new();
         };
-        if path.extension().and_then(|e| e.to_str()) != Some("java") {
+        if file_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_none_or(|ext| !ext.eq_ignore_ascii_case("java"))
+        {
             return Vec::new();
         }
-        let Some(text) = db.file_text(file) else {
-            return Vec::new();
-        };
-        if !looks_like_mapstruct_source(text) {
-            return Vec::new();
-        }
+
+        // Determine the workspace/project root for this file. Prefer Nova's shared build marker
+        // discovery and fall back to the file's parent directory when nothing is found.
+        let root = nova_project::workspace_root(file_path)
+            .or_else(|| file_path.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_else(|| file_path.to_path_buf());
 
         let project = db.project_of_file(file);
-        let has_mapstruct_dependency = db.has_dependency(project, "org.mapstruct", "mapstruct")
-            || db.has_dependency(project, "org.mapstruct", "mapstruct-processor");
-        let workspace = self.workspace.workspace(db, project);
-        let mut diagnostics: Vec<Diagnostic> = workspace
-            .analysis
-            .diagnostics
-            .iter()
-            .filter(|d| d.file.as_path() == path)
-            .map(|d| d.diagnostic.clone())
-            .collect();
-        let has_workspace_mapper = workspace
-            .analysis
-            .mappers
-            .iter()
-            .any(|m| m.file.as_path() == path);
+        // Missing-dependency diagnostics are keyed off build metadata (Maven/Gradle), not
+        // classpath heuristics.
+        let has_mapstruct_build_dependency = has_mapstruct_build_dependency(db, project);
 
-        // If the DB cannot enumerate project files (or doesn't include this file in
-        // `all_files`), the cached workspace model won't contain any mapper
-        // information for this file. In that case, still compute the cheap
-        // per-file diagnostics (missing dependency + ambiguous mapping methods)
-        // directly from the in-memory file text.
-        let mut file_mappers: Option<Vec<MapperModel>> = None;
-        if !has_workspace_mapper {
-            if let Ok(mappers) = discover_mappers_in_source(path, text) {
-                if !mappers.is_empty() {
-                    file_mappers = Some(mappers);
-                }
+        let mut out = Vec::new();
+
+        // Best-effort: include diagnostics derived from the in-memory database (open buffers).
+        if let Some(text) = db.file_text(file) {
+            if looks_like_mapstruct_source(text) {
+                let workspace = self.workspace.workspace(db, project);
+                out.extend(
+                    workspace
+                        .analysis
+                        .diagnostics
+                        .iter()
+                        .filter(|d| d.file.as_path() == file_path)
+                        .map(|d| d.diagnostic.clone()),
+                );
             }
         }
-        if let Some(mappers) = file_mappers.as_ref() {
-            let has_mapstruct_dependency = db.has_dependency(project, "org.mapstruct", "mapstruct")
-                || db.has_dependency(project, "org.mapstruct", "mapstruct-processor");
 
-            if !has_mapstruct_dependency {
-                for mapper in mappers {
-                    diagnostics.push(Diagnostic::error(
-                        "MAPSTRUCT_MISSING_DEPENDENCY",
-                        "MapStruct annotations are present but no org.mapstruct dependency was detected",
-                        Some(mapper.name_span),
-                    ));
-                }
-            }
-
-            for mapper in mappers {
-                let mut seen: HashMap<(String, String), Span> = HashMap::new();
-                for method in &mapper.methods {
-                    let key = (
-                        method.source_type.qualified_name(),
-                        method.target_type.qualified_name(),
-                    );
-                    if let Some(prev) = seen.get(&key) {
-                        diagnostics.push(Diagnostic::error(
-                            "MAPSTRUCT_AMBIGUOUS_MAPPING_METHOD",
-                            format!(
-                                "Ambiguous mapping method for {} -> {} (another candidate at {}..{})",
-                                key.0, key.1, prev.start, prev.end
-                            ),
-                            Some(method.name_span),
-                        ));
-                    } else {
-                        seen.insert(key, method.name_span);
-                    }
+        // Add filesystem-based diagnostics derived from scanning the workspace on disk.
+        if let Some(analysis) = self
+            .fs_cache
+            .analysis_for_root(&root, has_mapstruct_build_dependency)
+        {
+            for diag in analysis
+                .diagnostics
+                .iter()
+                .filter(|d| d.file.as_path() == file_path)
+                .map(|d| d.diagnostic.clone())
+            {
+                if !out.contains(&diag) {
+                    out.push(diag);
                 }
             }
         }
 
-        // Some `Database` implementations can't enumerate project files via `all_files` (and
-        // `FrameworkAnalyzer` implementors are expected to degrade gracefully when that happens).
-        //
-        // In that case we still want per-file diagnostics (at least missing dependency + ambiguous
-        // methods) for the current buffer.
-        let has_workspace_mapper = workspace
-            .analysis
-            .mappers
-            .iter()
-            .any(|m| m.file.as_path() == path);
-        if !has_workspace_mapper {
-            // Prefer the filesystem-based per-file analysis, which can resolve DTO property sets
-            // even when the DB hasn't loaded those source files.
-            if let Some(root) = nova_project::workspace_root(path) {
-                if let Ok(extra) =
-                    crate::diagnostics_for_file(&root, path, text, has_mapstruct_dependency)
-                {
-                    return extra;
-                }
-            }
-
-            // Fallback: in-memory only diagnostics from the current file.
-            let Ok(mappers) = discover_mappers_in_source(path, text) else {
-                return diagnostics;
-            };
-
-            if !has_mapstruct_dependency {
-                for mapper in &mappers {
-                    diagnostics.push(Diagnostic::error(
-                        "MAPSTRUCT_MISSING_DEPENDENCY",
-                        "MapStruct annotations are present but no org.mapstruct dependency was detected",
-                        Some(mapper.name_span),
-                    ));
-                }
-            }
-
-            // Ambiguous mapping methods (same source->target).
-            for mapper in &mappers {
-                let mut seen: HashMap<(String, String), Span> = HashMap::new();
-                for method in &mapper.methods {
-                    let key = (
-                        method.source_type.qualified_name(),
-                        method.target_type.qualified_name(),
-                    );
-                    if let Some(prev) = seen.get(&key) {
-                        diagnostics.push(Diagnostic::error(
-                            "MAPSTRUCT_AMBIGUOUS_MAPPING_METHOD",
-                            format!(
-                                "Ambiguous mapping method for {} -> {} (another candidate at {}..{})",
-                                key.0, key.1, prev.start, prev.end
-                            ),
-                            Some(method.name_span),
-                        ));
-                    } else {
-                        seen.insert(key, method.name_span);
-                    }
-                }
-            }
-
-            return diagnostics;
-        }
-
-        // Best-effort: if the in-memory workspace model can't compute unmapped target
-        // properties (e.g. DTO sources aren't loaded in the DB), fall back to the
-        // filesystem-based analyzer for this file.
-        //
-        // This keeps the framework hook useful in real IDE scenarios where the DB
-        // may only have text for open buffers.
-        let has_unmapped = diagnostics
-            .iter()
-            .any(|d| d.code.as_ref() == "MAPSTRUCT_UNMAPPED_TARGET_PROPERTIES");
-        if !has_unmapped {
-            let has_mapping_methods = if has_workspace_mapper {
-                workspace
-                    .analysis
-                    .mappers
-                    .iter()
-                    .any(|m| m.file.as_path() == path && !m.methods.is_empty())
-            } else {
-                file_mappers
-                    .as_ref()
-                    .is_some_and(|mappers| mappers.iter().any(|m| !m.methods.is_empty()))
-            };
-
-            if has_mapping_methods {
-                if let Some(root) = nova_project::workspace_root(path) {
-                    if let Ok(extra) =
-                        crate::diagnostics_for_file(&root, path, text, has_mapstruct_dependency)
-                    {
-                        diagnostics.extend(extra.into_iter().filter(|d| {
-                            d.code.as_ref() == "MAPSTRUCT_UNMAPPED_TARGET_PROPERTIES"
-                        }));
-                    }
-                }
-            }
-        }
-
-        diagnostics
+        out
     }
 
     fn navigation(
@@ -461,6 +357,169 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
 
         items
     }
+}
+
+#[derive(Debug, Default)]
+struct FsWorkspaceCache {
+    inner: Mutex<HashMap<PathBuf, CachedFsWorkspace>>,
+}
+
+#[derive(Clone, Debug)]
+struct CachedFsWorkspace {
+    fingerprint: u64,
+    analysis: Arc<AnalysisResult>,
+}
+
+impl FsWorkspaceCache {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn analysis_for_root(
+        &self,
+        root: &Path,
+        has_mapstruct_dependency: bool,
+    ) -> Option<Arc<AnalysisResult>> {
+        let key = root.to_path_buf();
+        let fingerprint = fs_cache_fingerprint(root, has_mapstruct_dependency);
+
+        {
+            let cache = lock_unpoison(&self.inner);
+            if let Some(entry) = cache.get(&key) {
+                if entry.fingerprint == fingerprint {
+                    return Some(entry.analysis.clone());
+                }
+            }
+        }
+
+        let analysis = analyze_workspace(root, has_mapstruct_dependency).ok()?;
+        let analysis = Arc::new(analysis);
+        let entry = CachedFsWorkspace {
+            fingerprint,
+            analysis: analysis.clone(),
+        };
+
+        lock_unpoison(&self.inner).insert(key, entry);
+        Some(analysis)
+    }
+}
+
+fn has_mapstruct_dependency(db: &dyn Database, project: ProjectId) -> bool {
+    db.has_dependency(project, "org.mapstruct", "mapstruct")
+        || db.has_dependency(project, "org.mapstruct", "mapstruct-processor")
+        || db.has_class_on_classpath(project, "org.mapstruct.Mapper")
+        || db.has_class_on_classpath_prefix(project, "org.mapstruct.")
+        || db.has_class_on_classpath_prefix(project, "org/mapstruct/")
+}
+
+fn has_mapstruct_build_dependency(db: &dyn Database, project: ProjectId) -> bool {
+    db.has_dependency(project, "org.mapstruct", "mapstruct")
+        || db.has_dependency(project, "org.mapstruct", "mapstruct-processor")
+}
+
+fn fs_cache_fingerprint(root: &Path, has_mapstruct_dependency: bool) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+
+    let mut hasher = DefaultHasher::new();
+    build_marker_fingerprint(root).hash(&mut hasher);
+    has_mapstruct_dependency.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn lock_unpoison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|err| err.into_inner())
+}
+
+fn build_marker_fingerprint(root: &Path) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+
+    // Mirror the marker set used by `nova-ide`'s framework cache. The goal here is not perfect
+    // invalidation (that would require hashing every source file), but a cheap signal that build
+    // context likely changed (dependencies, source roots, etc.).
+    const MARKERS: &[&str] = &[
+        // Maven.
+        "pom.xml",
+        // Gradle.
+        "build.gradle",
+        "build.gradle.kts",
+        "settings.gradle",
+        "settings.gradle.kts",
+        // Bazel.
+        "WORKSPACE",
+        "WORKSPACE.bazel",
+        "MODULE.bazel",
+        "MODULE.bazel.lock",
+        ".bazelrc",
+        ".bazelversion",
+        "bazelisk.rc",
+        ".bazelignore",
+        // Simple projects.
+        "src",
+    ];
+
+    let mut hasher = DefaultHasher::new();
+    for marker in MARKERS {
+        marker.hash(&mut hasher);
+        let path = root.join(marker);
+        match std::fs::metadata(&path) {
+            Ok(meta) => {
+                true.hash(&mut hasher);
+                meta.len().hash(&mut hasher);
+                hash_mtime(&mut hasher, meta.modified().ok());
+            }
+            Err(_) => {
+                false.hash(&mut hasher);
+            }
+        }
+    }
+
+    // Include any `.bazelrc.*` fragments at the workspace root.
+    let mut bazelrc_fragments = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(file_name) = path.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if file_name.starts_with(".bazelrc.") {
+                bazelrc_fragments.push(path);
+                if bazelrc_fragments.len() >= 128 {
+                    break;
+                }
+            }
+        }
+    }
+    bazelrc_fragments.sort();
+    for path in bazelrc_fragments {
+        if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+            name.hash(&mut hasher);
+        }
+        match std::fs::metadata(&path) {
+            Ok(meta) => {
+                true.hash(&mut hasher);
+                meta.len().hash(&mut hasher);
+                hash_mtime(&mut hasher, meta.modified().ok());
+            }
+            Err(_) => {
+                false.hash(&mut hasher);
+            }
+        }
+    }
+
+    hasher.finish()
+}
+
+fn hash_mtime(hasher: &mut impl Hasher, time: Option<SystemTime>) {
+    let Some(time) = time else {
+        0u64.hash(hasher);
+        return;
+    };
+
+    let duration = time
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| std::time::Duration::from_secs(0));
+    duration.as_secs().hash(hasher);
+    duration.subsec_nanos().hash(hasher);
 }
 
 /// Analyze a workspace directory (best-effort).

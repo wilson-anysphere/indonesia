@@ -14,33 +14,46 @@ fn missing_dependency_diagnostic_when_mapper_present() {
     let temp = TempDir::new().unwrap();
     let root = temp.path();
 
-    let mut db = MemoryDatabase::new();
-    let project = db.add_project();
+    // Ensure `nova_project::workspace_root` can find the project root.
+    std::fs::write(root.join("pom.xml"), "<project></project>").expect("write pom.xml");
 
-    // Make the analyzer applicable via classpath-based detection, but don't add
-    // any org.mapstruct dependency coordinates.
-    db.add_classpath_class(project, "org.mapstruct.Mapper");
+    let java_dir = root.join("src/main/java/com/example");
+    std::fs::create_dir_all(&java_dir).expect("mkdir java dir");
 
     let mapper = r#"
 package com.example;
 
-import org.mapstruct.Mapper;
+ import org.mapstruct.Mapper;
+ 
+ @Mapper
+  public interface FooMapper {}
+ "#;
 
-@Mapper
- public interface FooMapper {}
-"#;
-
-    let mapper_path = root.join("src/main/java/com/example/FooMapper.java");
+    let mapper_path = java_dir.join("FooMapper.java");
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
     write_file(&mapper_path, mapper);
+    let mapper_file = db.add_file_with_path_and_text(project, mapper_path.clone(), mapper);
 
-    let mapper_file = db.add_file_with_path_and_text(project, mapper_path, mapper);
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(MapStructAnalyzer::new()));
 
-    let analyzer = MapStructAnalyzer::new();
-    assert!(analyzer.applies_to(&db, project));
+    let diags = registry.framework_diagnostics(&db, mapper_file);
+    assert!(
+        diags.iter()
+            .any(|d| d.code.as_ref() == "MAPSTRUCT_MISSING_DEPENDENCY"),
+        "expected MAPSTRUCT_MISSING_DEPENDENCY diagnostic, got: {diags:#?}"
+    );
 
-    let diags = analyzer.diagnostics(&db, mapper_file);
-    assert_eq!(diags.len(), 1);
-    assert_eq!(diags[0].code.as_ref(), "MAPSTRUCT_MISSING_DEPENDENCY");
+    // Adding an explicit MapStruct dependency should suppress the missing-dependency diagnostic.
+    db.add_dependency(project, "org.mapstruct", "mapstruct");
+    let diags = registry.framework_diagnostics(&db, mapper_file);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == "MAPSTRUCT_MISSING_DEPENDENCY"),
+        "expected missing dependency diagnostic to disappear, got: {diags:#?}"
+    );
 }
 
 #[test]
@@ -705,14 +718,12 @@ public class Car {
 fn nested_mapping_does_not_trigger_unmapped_target_properties_diagnostic() {
     let temp = TempDir::new().unwrap();
     let root = temp.path();
+    std::fs::write(root.join("pom.xml"), "<project></project>").expect("write pom.xml");
 
-    let mut db = MemoryDatabase::new();
-    let project = db.add_project();
+    let src_dir = root.join("src/main/java/com/example");
+    std::fs::create_dir_all(&src_dir).expect("mkdir src dir");
 
-    // Ensure the analyzer is applicable and treats the project as having MapStruct.
-    db.add_dependency(project, "org.mapstruct", "mapstruct");
-
-    let mapper = r#"
+    let mapper_source = r#"
 package com.example;
 
 import org.mapstruct.Mapper;
@@ -724,43 +735,49 @@ public interface CarMapper {
   CarDto carToCarDto(Car car);
 }
 "#;
+    let mapper_path = src_dir.join("CarMapper.java");
+    write_file(&mapper_path, mapper_source);
 
-    let mapper_path = root.join("src/main/java/com/example/CarMapper.java");
-    write_file(&mapper_path, mapper);
-    let mapper_file = db.add_file_with_path_and_text(project, mapper_path, mapper);
-
-    write_file(
-        &root.join("src/main/java/com/example/EngineDto.java"),
-        r#"
+    let engine_source = r#"
 package com.example;
 
 public class EngineDto {
   public int horsepower;
 }
-"#,
-    );
+"#;
+    let engine_path = src_dir.join("EngineDto.java");
+    write_file(&engine_path, engine_source);
 
-    write_file(
-        &root.join("src/main/java/com/example/CarDto.java"),
-        r#"
+    let cardto_source = r#"
 package com.example;
 
 public class CarDto {
   public EngineDto engine;
 }
-"#,
-    );
+"#;
+    let cardto_path = src_dir.join("CarDto.java");
+    write_file(&cardto_path, cardto_source);
 
-    write_file(
-        &root.join("src/main/java/com/example/Car.java"),
-        r#"
+    let car_source = r#"
 package com.example;
 
 public class Car {
   public int horsepower;
 }
-"#,
-    );
+"#;
+    let car_path = src_dir.join("Car.java");
+    write_file(&car_path, car_source);
+
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+
+    // Ensure the analyzer is applicable and treats the project as having MapStruct.
+    db.add_dependency(project, "org.mapstruct", "mapstruct");
+
+    let mapper_file = db.add_file_with_path_and_text(project, mapper_path, mapper_source);
+    db.add_file_with_path_and_text(project, engine_path, engine_source);
+    db.add_file_with_path_and_text(project, cardto_path, cardto_source);
+    db.add_file_with_path_and_text(project, car_path, car_source);
 
     let mut registry = AnalyzerRegistry::new();
     registry.register(Box::new(MapStructAnalyzer::new()));
