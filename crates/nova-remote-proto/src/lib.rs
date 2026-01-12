@@ -278,7 +278,8 @@ pub use legacy_v2::{decode_message, encode_message, RpcMessage, PROTOCOL_VERSION
 
 pub mod transport {
     use anyhow::anyhow;
-    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
 
     #[cfg(feature = "tokio")]
     use anyhow::Context;
@@ -290,17 +291,50 @@ pub mod transport {
     const DEFAULT_MAX_FRAME_BYTES: usize = 32 * 1024 * 1024; // 32 MiB
     const MAX_MESSAGE_SIZE_ENV_VAR: &str = "NOVA_RPC_MAX_MESSAGE_SIZE";
 
-    static MAX_FRAME_SIZE: OnceLock<usize> = OnceLock::new();
+    // Cache the effective transport max frame size (derived from `NOVA_RPC_MAX_MESSAGE_SIZE`).
+    //
+    // This value is intended to be read once (on first use) in production.
+    //
+    // Tests sometimes need to validate different env var values within a single process. Using an
+    // atomic cache (instead of `OnceLock`) lets us provide a test-only reset hook without affecting
+    // production callers.
+    static MAX_FRAME_SIZE: AtomicUsize = AtomicUsize::new(0);
+
+    /// Test-only global lock for coordinating env var mutation and cache resets.
+    ///
+    /// This is `#[doc(hidden)]` and intentionally named to discourage production use.
+    #[doc(hidden)]
+    pub static __TRANSPORT_ENV_LOCK_FOR_TESTS: Mutex<()> = Mutex::new(());
+
+    #[doc(hidden)]
+    pub fn __reset_max_frame_size_cache_for_tests() {
+        MAX_FRAME_SIZE.store(0, Ordering::Relaxed);
+    }
+
+    fn compute_max_frame_size() -> usize {
+        std::env::var(MAX_MESSAGE_SIZE_ENV_VAR)
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_MAX_FRAME_BYTES)
+            .min(MAX_FRAME_BYTES)
+            .max(1)
+    }
 
     fn max_frame_size() -> usize {
-        *MAX_FRAME_SIZE.get_or_init(|| {
-            std::env::var(MAX_MESSAGE_SIZE_ENV_VAR)
-                .ok()
-                .and_then(|value| value.parse::<usize>().ok())
-                .filter(|value| *value > 0)
-                .unwrap_or(DEFAULT_MAX_FRAME_BYTES)
-                .min(MAX_FRAME_BYTES)
-        })
+        let cached = MAX_FRAME_SIZE.load(Ordering::Relaxed);
+        if cached != 0 {
+            return cached;
+        }
+
+        let computed = compute_max_frame_size();
+        // Races are benign here: multiple threads may compute and attempt to initialize the cache,
+        // but they will all compute the same value (absent env var mutation, which is coordinated
+        // in tests by `__TRANSPORT_ENV_LOCK_FOR_TESTS`).
+        match MAX_FRAME_SIZE.compare_exchange(0, computed, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => computed,
+            Err(existing) => existing,
+        }
     }
 
     pub fn encode_frame(payload: &[u8]) -> anyhow::Result<Vec<u8>> {

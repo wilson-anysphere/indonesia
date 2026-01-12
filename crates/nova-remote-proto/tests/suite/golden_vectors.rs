@@ -3,6 +3,7 @@ use nova_remote_proto::{RpcMessage, PROTOCOL_VERSION};
 
 #[test]
 fn rpc_v2_worker_hello_golden_vector() {
+    let _lock = transport::__TRANSPORT_ENV_LOCK_FOR_TESTS.lock().unwrap();
     assert_eq!(
         PROTOCOL_VERSION, 4,
         "golden vectors are versioned; update testdata when bumping PROTOCOL_VERSION"
