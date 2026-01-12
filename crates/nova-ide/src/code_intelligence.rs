@@ -12113,10 +12113,10 @@ pub fn prepare_call_hierarchy(
                             index.resolve_method_definition(&receiver_ty, &parsed_call.method)
                         {
                             if let Some(target_file) = index.file(target.file_id) {
-                                let target_text_index = TextIndex::new(&target_file.text);
                                 return Some(vec![call_hierarchy_item_from_parsed_method(
                                     &target.uri,
-                                    &target_text_index,
+                                    &target_file.line_index,
+                                    &target_file.text,
                                     &target.name,
                                     target.name_span,
                                     target.body_span,
@@ -12296,13 +12296,13 @@ fn call_hierarchy_outgoing_calls_impl(
         let Some(target_file) = index.file(target.file_id) else {
             continue;
         };
-        let target_text_index = TextIndex::new(&target_file.text);
         spans.sort_by_key(|s| s.start);
 
         outgoing.push(CallHierarchyOutgoingCall {
             to: call_hierarchy_item_from_parsed_method(
                 &target.uri,
-                &target_text_index,
+                &target_file.line_index,
+                &target_file.text,
                 &target.name,
                 target.name_span,
                 target.body_span,
@@ -12574,12 +12574,12 @@ fn call_hierarchy_incoming_calls_impl(
         let Some(caller_parsed) = index.file(caller.file_id) else {
             continue;
         };
-        let caller_text_index = TextIndex::new(&caller_parsed.text);
         spans.sort_by_key(|s| s.start);
         incoming.push(CallHierarchyIncomingCall {
             from: call_hierarchy_item_from_parsed_method(
                 &caller.uri,
-                &caller_text_index,
+                &caller_parsed.line_index,
+                &caller_parsed.text,
                 &caller.name,
                 caller.name_span,
                 caller.body_span,
@@ -12587,7 +12587,13 @@ fn call_hierarchy_incoming_calls_impl(
             ),
             from_ranges: spans
                 .into_iter()
-                .map(|span| caller_text_index.span_to_lsp_range(span))
+                .map(|span| {
+                    crate::text::span_to_lsp_range_with_index(
+                        &caller_parsed.line_index,
+                        &caller_parsed.text,
+                        span,
+                    )
+                })
                 .collect(),
         });
     }
@@ -12621,7 +12627,8 @@ fn call_hierarchy_item(
 
 fn call_hierarchy_item_from_parsed_method(
     uri: &lsp_types::Uri,
-    text_index: &TextIndex<'_>,
+    line_index: &nova_core::LineIndex,
+    text: &str,
     name: &str,
     name_span: Span,
     body_span: Option<Span>,
@@ -12634,8 +12641,8 @@ fn call_hierarchy_item_from_parsed_method(
         tags: None,
         detail,
         uri: uri.clone(),
-        range: text_index.span_to_lsp_range(range_span),
-        selection_range: text_index.span_to_lsp_range(name_span),
+        range: crate::text::span_to_lsp_range_with_index(line_index, text, range_span),
+        selection_range: crate::text::span_to_lsp_range_with_index(line_index, text, name_span),
         data: None,
     }
 }
@@ -12765,14 +12772,18 @@ pub fn prepare_type_hierarchy(
     position: Position,
 ) -> Option<Vec<TypeHierarchyItem>> {
     let text = db.file_content(file);
-    let text_index = TextIndex::new(text);
-    let offset = text_index.position_to_offset(position)?;
-
     let index = crate::workspace_hierarchy::WorkspaceHierarchyIndex::get_cached(db);
+    let parsed = index.file(file);
+    // Prefer offset conversion using the workspace hierarchy's cached line index.
+    let offset = parsed
+        .and_then(|parsed| {
+            crate::text::position_to_offset_with_index(&parsed.line_index, &parsed.text, position)
+        })
+        .or_else(|| crate::text::position_to_offset(text, position))?;
 
     // Prefer type declarations at the cursor.
     let mut type_name: Option<String> = None;
-    if let Some(parsed) = index.file(file) {
+    if let Some(parsed) = parsed {
         if let Some(ty) = parsed
             .types
             .iter()
@@ -12794,11 +12805,11 @@ pub fn prepare_type_hierarchy(
     let type_name = type_name?;
     let info = index.type_info(&type_name)?;
     let def_file = index.file(info.file_id)?;
-    let def_text_index = TextIndex::new(&def_file.text);
 
     Some(vec![type_hierarchy_item(
         &info.uri,
-        &def_text_index,
+        &def_file.line_index,
+        &def_file.text,
         &info.def,
     )])
 }
@@ -12819,8 +12830,12 @@ pub fn type_hierarchy_supertypes(
         let Some(def_file) = index.file(info.file_id) else {
             continue;
         };
-        let def_text_index = TextIndex::new(&def_file.text);
-        out.push(type_hierarchy_item(&info.uri, &def_text_index, &info.def));
+        out.push(type_hierarchy_item(
+            &info.uri,
+            &def_file.line_index,
+            &def_file.text,
+            &info.def,
+        ));
     }
 
     out.sort_by(|a, b| {
@@ -12847,8 +12862,12 @@ pub fn type_hierarchy_subtypes(
         let Some(def_file) = index.file(info.file_id) else {
             continue;
         };
-        let def_text_index = TextIndex::new(&def_file.text);
-        out.push(type_hierarchy_item(&info.uri, &def_text_index, &info.def));
+        out.push(type_hierarchy_item(
+            &info.uri,
+            &def_file.line_index,
+            &def_file.text,
+            &info.def,
+        ));
     }
 
     out.sort_by(|a, b| {
@@ -12861,7 +12880,8 @@ pub fn type_hierarchy_subtypes(
 
 fn type_hierarchy_item(
     uri: &lsp_types::Uri,
-    text_index: &TextIndex<'_>,
+    line_index: &nova_core::LineIndex,
+    text: &str,
     ty: &crate::parse::TypeDef,
 ) -> TypeHierarchyItem {
     let kind = match ty.kind {
@@ -12888,8 +12908,8 @@ fn type_hierarchy_item(
         tags: None,
         detail,
         uri: uri.clone(),
-        range: text_index.span_to_lsp_range(ty.body_span),
-        selection_range: text_index.span_to_lsp_range(ty.name_span),
+        range: crate::text::span_to_lsp_range_with_index(line_index, text, ty.body_span),
+        selection_range: crate::text::span_to_lsp_range_with_index(line_index, text, ty.name_span),
         data: None,
     }
 }
