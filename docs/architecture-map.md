@@ -80,19 +80,20 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
   - Bundle schema is stable but currently Nova-specific; no cross-tool standardization.
 
 ### `nova-build`
-- **Purpose:** Maven/Gradle build integration for classpaths + build diagnostics, including a background build queue/orchestrator (`BuildOrchestrator`) surfaced via `nova-lsp` (`nova/build/status`, `nova/build/diagnostics`).
-- **Key entry points:** `crates/nova-build/src/lib.rs` (`BuildManager`, `BuildResult`, `Classpath`), `crates/nova-build/src/orchestrator.rs` (`BuildOrchestrator`, `BuildTaskState`, `BuildStatusSnapshot`, `BuildDiagnosticsSnapshot`).
+- **Purpose:** Maven/Gradle build integration for classpaths + build diagnostics + background build orchestration.
+- **Key entry points:** `crates/nova-build/src/lib.rs` (`BuildManager`, `BuildResult`, `Classpath`, `BuildOrchestrator`, `BuildRequest`, `BuildStatusSnapshot`, `BuildDiagnosticsSnapshot`).
+- **LSP endpoints:** `crates/nova-lsp/src/extensions/build.rs` (`nova/buildProject`, `nova/build/status`, `nova/build/diagnostics`).
 - **Maturity:** productionizing
 - **Known gaps vs intended docs:**
-  - Background build state/diagnostics are currently surfaced via custom `nova/*` endpoints (`nova/build/status`, `nova/build/diagnostics`) rather than being wired into Nova’s main workspace/Salsa diagnostics pipeline.
+  - Background build state/diagnostics are surfaced via custom `nova/*` endpoints and are not yet wired into Nova’s main workspace/Salsa diagnostics pipeline or standard LSP progress notifications.
   - Build tool invocation is still opt-in (explicit `nova/*` requests) rather than a continuously running, editor-driven build/compile service.
 
 ### `nova-build-bazel`
-- **Purpose:** Bazel integration (workspace discovery + `query`/`aquery` extraction + caching, with optional BSP-backed build/diagnostics orchestration when enabled).
-- **Key entry points:** `crates/nova-build-bazel/src/lib.rs` (`BazelWorkspace`, `JavaCompileInfo`), `crates/nova-build-bazel/src/orchestrator.rs` (feature `bsp`: `BazelBuildOrchestrator`).
+- **Purpose:** Bazel integration (workspace discovery + `query`/`aquery` extraction + caching, optional BSP-backed build/diagnostics orchestration when enabled).
+- **Key entry points:** `crates/nova-build-bazel/src/lib.rs` (`BazelWorkspace`, `JavaCompileInfo`), `crates/nova-build-bazel/src/orchestrator.rs` (feature `bsp`: `BazelBuildOrchestrator`, `BazelBspConfig`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
-  - BSP support exists behind the `bsp` Cargo feature; `nova-lsp` can use it (when configured, e.g. via `NOVA_BSP_PROGRAM`) to run Bazel builds and collect diagnostics, but the default metadata path is still `query`/`aquery`.
+  - BSP support exists behind the `bsp` Cargo feature and is optional at runtime (configured via `NOVA_BSP_PROGRAM`); the default metadata path is still `query`/`aquery`.
 
 ### `nova-cache`
 - **Purpose:** per-project persistent cache directory management + cache packaging (`tar.zst`).
