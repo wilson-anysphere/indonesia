@@ -719,6 +719,46 @@ fn loads_gradle_multi_module_workspace_model() {
 }
 
 #[test]
+fn loads_gradle_project_dependencies_into_module_classpath() {
+    let root = testdata_path("gradle-project-deps");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let model =
+        load_workspace_model_with_options(&root, &options).expect("load gradle workspace model");
+
+    assert_eq!(model.build_system, BuildSystem::Gradle);
+
+    let app = model.module_by_id("gradle::app").expect("app module");
+    let app_classpath_dirs: BTreeSet<_> = app
+        .classpath
+        .iter()
+        .filter(|cp| cp.kind == ClasspathEntryKind::Directory)
+        .map(|cp| {
+            cp.path
+                .strip_prefix(&model.workspace_root)
+                .unwrap()
+                .to_path_buf()
+        })
+        .collect();
+    assert!(
+        app_classpath_dirs.contains(&PathBuf::from("lib/build/classes/java/main")),
+        "expected app classpath to contain lib/build/classes/java/main"
+    );
+
+    let app_file = model
+        .workspace_root
+        .join("app/src/main/java/com/example/app/App.java");
+    let match_app = model
+        .module_for_path(&app_file)
+        .expect("module for App.java");
+    assert_eq!(match_app.module.id, "gradle::app");
+    assert_eq!(match_app.source_root.kind, SourceRootKind::Main);
+}
+
+#[test]
 fn loads_gradle_multi_module_workspace_model_includes_root_project_when_it_has_sources() {
     let root = testdata_path("gradle-multi-root-sources");
     let gradle_home = tempdir().expect("tempdir");

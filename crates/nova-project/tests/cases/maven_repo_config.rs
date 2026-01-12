@@ -39,10 +39,16 @@ fn loads_maven_repo_from_mvn_maven_config_and_allows_override() {
     )
     .unwrap();
 
-    let jar_path = repo_path.join("com/google/guava/guava/33.0.0-jre/guava-33.0.0-jre.jar");
-    fs::create_dir_all(jar_path.parent().expect("jar parent"))
-        .expect("mkdir maven repo artifact dir");
-    fs::write(&jar_path, b"").expect("write jar placeholder");
+    // The Maven loader only includes jar dependencies when the jar exists in the local repo.
+    let guava_jar = repo_path
+        .join("com")
+        .join("google")
+        .join("guava")
+        .join("guava")
+        .join("33.0.0-jre")
+        .join("guava-33.0.0-jre.jar");
+    fs::create_dir_all(guava_jar.parent().unwrap()).unwrap();
+    fs::write(&guava_jar, b"").unwrap();
 
     let config = load_project_with_options(
         workspace_root,
@@ -73,11 +79,15 @@ fn loads_maven_repo_from_mvn_maven_config_and_allows_override() {
 
     let override_repo_dir = tempdir().unwrap();
     let override_repo: PathBuf = override_repo_dir.path().to_path_buf();
-    let override_jar_path =
-        override_repo.join("com/google/guava/guava/33.0.0-jre/guava-33.0.0-jre.jar");
-    fs::create_dir_all(override_jar_path.parent().expect("override jar parent"))
-        .expect("mkdir override maven repo artifact dir");
-    fs::write(&override_jar_path, b"").expect("write override jar placeholder");
+    let override_guava_jar = override_repo
+        .join("com")
+        .join("google")
+        .join("guava")
+        .join("guava")
+        .join("33.0.0-jre")
+        .join("guava-33.0.0-jre.jar");
+    fs::create_dir_all(override_guava_jar.parent().unwrap()).unwrap();
+    fs::write(&override_guava_jar, b"").unwrap();
     let config_override = load_project_with_options(
         workspace_root,
         &LoadOptions {

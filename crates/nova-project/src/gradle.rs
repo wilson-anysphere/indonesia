@@ -626,6 +626,18 @@ pub(crate) fn load_gradle_workspace_model(
         .or_else(default_gradle_user_home);
     let version_catalog = load_gradle_version_catalog(root);
 
+    let module_root_by_project_path: BTreeMap<String, PathBuf> = module_refs
+        .iter()
+        .map(|module_ref| {
+            let module_root = if module_ref.dir_rel == "." {
+                root.to_path_buf()
+            } else {
+                root.join(&module_ref.dir_rel)
+            };
+            (module_ref.project_path.clone(), module_root)
+        })
+        .collect();
+
     let mut module_configs = Vec::new();
     for module_ref in module_refs {
         let module_root = if module_ref.dir_rel == "." {
@@ -788,6 +800,17 @@ pub(crate) fn load_gradle_workspace_model(
         // Best-effort: add local jars/directories referenced via `files(...)` / `fileTree(...)`.
         // This intentionally does not attempt full Gradle dependency resolution.
         classpath.extend(parse_gradle_local_classpath_entries(&module_root));
+
+        // Best-effort: add dependent module outputs for project(":...") dependencies.
+        for dep_project_path in parse_gradle_project_dependencies(&module_root) {
+            let Some(dep_module_root) = module_root_by_project_path.get(&dep_project_path) else {
+                continue;
+            };
+            classpath.push(ClasspathEntry {
+                kind: ClasspathEntryKind::Directory,
+                path: dep_module_root.join("build/classes/java/main"),
+            });
+        }
         for entry in &options.classpath_overrides {
             classpath.push(ClasspathEntry {
                 kind: if entry.extension().is_some_and(|ext| ext == "jar") {
@@ -1591,6 +1614,53 @@ fn parse_gradle_dependencies(
         out.extend(parse_gradle_dependencies_from_text(&contents, version_catalog));
     }
     out
+}
+
+fn parse_gradle_project_dependencies(module_root: &Path) -> Vec<String> {
+    let candidates = ["build.gradle.kts", "build.gradle"]
+        .into_iter()
+        .map(|name| module_root.join(name))
+        .filter(|p| p.is_file())
+        .collect::<Vec<_>>();
+
+    let mut out = Vec::new();
+    for path in candidates {
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let contents = strip_gradle_comments(&contents);
+        out.extend(parse_gradle_project_dependencies_from_text(&contents));
+    }
+
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn parse_gradle_project_dependencies_from_text(contents: &str) -> Vec<String> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        // Keep this list conservative: only configurations that are commonly used for
+        // Java compilation or annotation processing.
+        let configs = GRADLE_DEPENDENCY_CONFIGS;
+        Regex::new(&format!(
+            r#"(?i)\b{configs}\b\s*\(?\s*project\s*\(\s*['"]([^'"]+)['"]\s*\)\s*\)?"#,
+        ))
+        .expect("valid regex")
+    });
+
+    let mut deps = Vec::new();
+    for caps in re.captures_iter(contents) {
+        let Some(project_path) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let project_path = project_path.trim();
+        if project_path.is_empty() {
+            continue;
+        }
+        deps.push(normalize_project_path(project_path));
+    }
+    deps
 }
 
 /// Best-effort extraction of local classpath entries from Gradle build scripts.
