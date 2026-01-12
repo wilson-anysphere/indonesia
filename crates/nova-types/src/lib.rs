@@ -3332,9 +3332,19 @@ fn collect_class_supertypes(
             let next = substitute(sc, &subst);
             queue.push_back(if raw { erasure(env, &next) } else { next });
         }
-        for iface in &class_def.interfaces {
-            let next = substitute(iface, &subst);
-            queue.push_back(if raw { erasure(env, &next) } else { next });
+        // Sort interface traversal so LUB-related computations are deterministic even if the
+        // interface list ordering isn't stable.
+        let mut ifaces: Vec<Type> = class_def
+            .interfaces
+            .iter()
+            .map(|iface| {
+                let next = substitute(iface, &subst);
+                if raw { erasure(env, &next) } else { next }
+            })
+            .collect();
+        ifaces.sort_by_cached_key(|ty| type_sort_key(env, ty));
+        for next in ifaces {
+            queue.push_back(next);
         }
     }
 
@@ -4090,8 +4100,28 @@ fn collect_method_candidates(
     fn push_receiver_for_lookup(env: &dyn TypeEnv, queue: &mut VecDeque<Type>, ty: &Type) {
         match ty {
             Type::Intersection(types) => {
-                for t in types {
-                    push_receiver_for_lookup(env, queue, t);
+                // Flatten + sort for deterministic traversal even if the intersection isn't
+                // normalized.
+                let mut flat = Vec::new();
+                let mut stack: Vec<&Type> = types.iter().collect();
+                while let Some(t) = stack.pop() {
+                    match t {
+                        Type::Intersection(parts) => stack.extend(parts.iter()),
+                        other => flat.push(other.clone()),
+                    }
+                }
+
+                let mut seen_parts = HashSet::new();
+                let mut uniq = Vec::new();
+                for t in flat {
+                    if seen_parts.insert(t.clone()) {
+                        uniq.push(t);
+                    }
+                }
+                uniq.sort_by_cached_key(|ty| (intersection_component_rank(env, ty), type_sort_key(env, ty)));
+
+                for t in uniq {
+                    push_receiver_for_lookup(env, queue, &t);
                 }
             }
             Type::Class(_) => queue.push_back(ty.clone()),
@@ -4265,8 +4295,16 @@ fn collect_method_candidates(
         if let Some(sc) = &class_def.super_class {
             queue.push_back(substitute(sc, &subst));
         }
-        for iface in &class_def.interfaces {
-            queue.push_back(substitute(iface, &subst));
+        // Sort interface traversal so candidate collection is deterministic even if the
+        // interface list ordering isn't stable.
+        let mut ifaces: Vec<Type> = class_def
+            .interfaces
+            .iter()
+            .map(|iface| substitute(iface, &subst))
+            .collect();
+        ifaces.sort_by_cached_key(|ty| type_sort_key(env, ty));
+        for iface in ifaces {
+            queue.push_back(iface);
         }
         // In Java, every interface implicitly has `Object` as a supertype (JLS 4.10.2).
         if class_def.kind == ClassKind::Interface {
