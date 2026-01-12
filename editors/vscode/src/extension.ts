@@ -1124,8 +1124,28 @@ export async function activate(context: vscode.ExtensionContext) {
     await restartRunningWorkspaceClients();
   }
 
-  async function showServerVersion(): Promise<void> {
-    const settings = readServerSettings();
+  async function showServerVersion(arg?: unknown): Promise<void> {
+    const workspaces = vscode.workspace.workspaceFolders ?? [];
+    const workspaceFolderFromArg = (() => {
+      if (!arg || typeof arg !== 'object') {
+        return undefined;
+      }
+      const candidate = arg as { uri?: { fsPath?: unknown }; name?: unknown; index?: unknown };
+      return candidate.uri && typeof candidate.uri.fsPath === 'string' && typeof candidate.name === 'string' && typeof candidate.index === 'number'
+        ? (arg as vscode.WorkspaceFolder)
+        : undefined;
+    })();
+
+    const workspaceFolder =
+      workspaceFolderFromArg ??
+      (vscode.window.activeTextEditor ? vscode.workspace.getWorkspaceFolder(vscode.window.activeTextEditor.document.uri) : undefined) ??
+      (workspaces.length === 1
+        ? workspaces[0]
+        : workspaces.length > 1
+          ? await promptWorkspaceFolder(workspaces, 'Select workspace folder to resolve nova-lsp')
+          : undefined);
+
+    const settings = readServerSettings(workspaceFolder);
     const resolved = settings.path
       ? await serverManager.resolveServerPath({ path: settings.path })
       : (await findOnPath('nova-lsp')) ?? (await serverManager.resolveServerPath({ path: null }));
@@ -1847,6 +1867,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
     if (!enabled) {
       safeModeStatusItem.tooltip = 'Nova is running in safe mode. Click to generate a bug report.';
+      safeModeStatusItem.command = BUG_REPORT_COMMAND;
       return;
     }
 
@@ -1854,10 +1875,15 @@ export async function activate(context: vscode.ExtensionContext) {
       const [key, state] = enabledEntries[0];
       const workspaceName = workspaceNameForKey(key);
       const reasonSuffix = state.reason ? ` (${formatSafeModeReason(state.reason)})` : '';
+      const folder = workspaceFolderForKey(key);
+      safeModeStatusItem.command = folder
+        ? { command: BUG_REPORT_COMMAND, title: 'Generate Bug Report', arguments: [folder] }
+        : BUG_REPORT_COMMAND;
       safeModeStatusItem.tooltip = `Nova is running in safe mode in ${workspaceName}${reasonSuffix}. Click to generate a bug report.`;
       return;
     }
 
+    safeModeStatusItem.command = BUG_REPORT_COMMAND;
     const lines: string[] = [];
     lines.push(`Nova is running in safe mode in ${enabledEntries.length} workspace(s).`);
     for (const [key, state] of enabledEntries) {
@@ -1953,20 +1979,14 @@ export async function activate(context: vscode.ExtensionContext) {
         : undefined;
 
     const prev = memoryByWorkspaceKey.get(workspaceKey);
-    let warnedHigh = prev?.warnedHigh ?? false;
-    let warnedCritical = prev?.warnedCritical ?? false;
-
     const prevPressure = prev?.pressure;
-    const shouldWarnCritical = pressure === 'critical' && !warnedCritical && prevPressure !== 'critical';
-    const shouldWarnHigh =
-      pressure === 'high' && !warnedHigh && prevPressure !== 'high' && prevPressure !== 'critical' && !shouldWarnCritical;
+    const shouldWarnCritical = pressure === 'critical' && prevPressure !== 'critical';
+    const shouldWarnHigh = pressure === 'high' && prevPressure !== 'high' && prevPressure !== 'critical';
 
-    if (shouldWarnCritical) {
-      warnedCritical = true;
-      warnedHigh = true;
-    } else if (shouldWarnHigh) {
-      warnedHigh = true;
-    }
+    // Track the current pressure state so re-entering high/critical can warn again (while avoiding
+    // repeated warnings for steady-state updates).
+    const warnedHigh = pressure === 'high' || pressure === 'critical';
+    const warnedCritical = pressure === 'critical';
 
     memoryByWorkspaceKey.set(workspaceKey, {
       pressure,
