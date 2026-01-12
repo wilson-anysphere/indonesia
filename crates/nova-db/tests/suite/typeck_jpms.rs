@@ -290,6 +290,89 @@ class Use {
 }
 
 #[test]
+fn jpms_typeck_unreadable_workspace_type_does_not_allow_method_resolution() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let mod_a_root = tmp.path().join("mod-a");
+    let mod_b_root = tmp.path().join("mod-b");
+
+    let info_a = lower_module_info_source_strict("module workspace.a { }").unwrap();
+    let info_b =
+        lower_module_info_source_strict("module workspace.b { exports com.example.b; }").unwrap();
+
+    let mut cfg = base_project_config(tmp.path().to_path_buf());
+    cfg.jpms_modules = vec![
+        JpmsModuleRoot {
+            name: ModuleName::new("workspace.a"),
+            root: mod_a_root.clone(),
+            module_info: mod_a_root.join("module-info.java"),
+            info: info_a,
+        },
+        JpmsModuleRoot {
+            name: ModuleName::new("workspace.b"),
+            root: mod_b_root.clone(),
+            module_info: mod_b_root.join("module-info.java"),
+            info: info_b,
+        },
+    ];
+    db.set_project_config(project, Arc::new(cfg));
+
+    let file_b = FileId::from_raw(1);
+    set_file(
+        &mut db,
+        project,
+        file_b,
+        "mod-b/src/main/java/com/example/b/B.java",
+        r#"
+package com.example.b;
+
+public class B {
+    public void id(Object x) {}
+}
+"#,
+    );
+
+    let file_a = FileId::from_raw(2);
+    set_file(
+        &mut db,
+        project,
+        file_a,
+        "mod-a/src/main/java/com/example/a/Use.java",
+        r#"
+package com.example.a;
+
+class Use {
+    void m() {
+        com.example.b.B b = null;
+        b.id(null);
+    }
+}
+"#,
+    );
+
+    db.set_project_files(project, Arc::new(vec![file_a, file_b]));
+
+    let diags = db.type_diagnostics(file_a);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("com.example.b.B")),
+        "expected unresolved-type diagnostic for com.example.b.B, got {diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-method" && d.message.contains("id")),
+        "expected unresolved-method diagnostic for id(..), got {diags:?}"
+    );
+}
+
+#[test]
 fn jpms_typeck_requires_allows_resolution_for_module_path_automatic_modules() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);

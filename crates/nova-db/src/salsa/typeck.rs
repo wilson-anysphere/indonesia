@@ -2250,6 +2250,7 @@ fn annotation_name_span(file_text: &str, ann: &nova_hir::item_tree::AnnotationUs
     }
     Some(Span::new(name_start, name_end))
 }
+
 fn alloc_type_param_ids(
     loader: &mut ExternalTypeLoader<'_>,
     default_bound: &Type,
@@ -3261,6 +3262,43 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         let project = self.db.file_project(file);
         let workspace = self.db.workspace_def_map(project);
         let item = workspace.item_by_type_name_str(binary_name)?;
+
+        // In JPMS mode, prevent unreadable/unexported workspace (source) types from being "rescued"
+        // during type checking. Name resolution already enforces JPMS access rules, so if a type
+        // reference produced `Type::Named` due to JPMS restrictions we must not define/load the
+        // workspace `ClassDef` here (otherwise member/method resolution can succeed and diagnostics
+        // become inconsistent).
+        if let Some(env) = self.db.jpms_compilation_env(project).as_deref() {
+            let cfg = self.db.project_config(project);
+            let file_rel = self.db.file_rel_path(file);
+            let from = module_for_file(&cfg, file_rel.as_str());
+            let to = workspace
+                .module_for_item(item)
+                .cloned()
+                .unwrap_or_else(ModuleName::unnamed);
+
+            if !env.env.graph.can_read(&from, &to) {
+                // The workspace store may already contain a defined `ClassDef` for this type
+                // (e.g. from project-level preloading). Remove it so member/method resolution can't
+                // observe it through `TypeEnv::lookup_class`.
+                let _ = loader.store.remove_class(binary_name);
+                return None;
+            }
+
+            // Same-module access is always allowed; otherwise require the package to be exported.
+            if from != to {
+                let package = binary_name
+                    .rsplit_once('.')
+                    .map(|(pkg, _)| pkg)
+                    .unwrap_or("");
+                if let Some(info) = env.env.graph.get(&to) {
+                    if !info.exports_package_to(package, &from) {
+                        let _ = loader.store.remove_class(binary_name);
+                        return None;
+                    }
+                }
+            }
+        }
 
         let kind = match item {
             nova_hir::ids::ItemId::Interface(_) | nova_hir::ids::ItemId::Annotation(_) => {
@@ -7469,9 +7507,10 @@ fn resolve_type_ref_text<'idx>(
     // Preload the *referenced* types (excluding type-use annotations) so that the type-ref resolver
     // can map them into `Type::Class` where possible.
     //
-    // We still pass the original text into `resolve_type_ref_text` so the parser can skip over
-    // inline type-use annotations; missing annotation *types* are filtered out below to avoid
-    // noise until Nova models type-use annotations.
+    // We still pass the original text into `resolve_type_ref_text` so the parser can correctly
+    // skip annotations even when `TypeRef.text` is whitespace-stripped (e.g. `@A String` becomes
+    // `@AString`). Type-use annotation *types* are currently ignored by Nova, so no diagnostics are
+    // reported for annotation names.
     preload_type_names(resolver, scopes, scope_id, loader, text);
     nova_resolve::type_ref::resolve_type_ref_text(
         resolver,
