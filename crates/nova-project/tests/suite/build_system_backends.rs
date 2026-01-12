@@ -50,80 +50,105 @@ fn bazel_backend_detects_workspace_markers() {
 #[test]
 fn watch_files_contains_canonical_markers() {
     let maven = MavenBuildSystem::new(LoadOptions::default());
-    assert!(maven
-        .watch_files()
-        .contains(&PathPattern::ExactFileName("pom.xml")));
-    assert!(maven
-        .watch_files()
-        .contains(&PathPattern::Glob("**/.mvn/jvm.config")));
-    assert!(maven
-        .watch_files()
-        .contains(&PathPattern::Glob("**/.mvn/wrapper/maven-wrapper.jar")));
-    assert!(maven
-        .watch_files()
-        .contains(&PathPattern::ExactFileName("module-info.java")));
+    let maven_watch_files = maven.watch_files();
+    assert!(
+        maven_watch_files.contains(&PathPattern::ExactFileName("pom.xml")),
+        "expected Maven watch_files to contain ExactFileName(\"pom.xml\"); got: {maven_watch_files:?}",
+    );
+    assert!(
+        maven_watch_files.contains(&PathPattern::Glob("**/.mvn/jvm.config")),
+        "expected Maven watch_files to contain Glob(\"**/.mvn/jvm.config\"); got: {maven_watch_files:?}",
+    );
+    assert!(
+        maven_watch_files.contains(&PathPattern::Glob("**/.mvn/wrapper/maven-wrapper.jar")),
+        "expected Maven watch_files to contain Glob(\"**/.mvn/wrapper/maven-wrapper.jar\"); got: {maven_watch_files:?}",
+    );
+    assert!(
+        maven_watch_files.contains(&PathPattern::ExactFileName("module-info.java")),
+        "expected Maven watch_files to contain ExactFileName(\"module-info.java\"); got: {maven_watch_files:?}",
+    );
 
     let gradle = GradleBuildSystem::new(LoadOptions::default());
-    assert!(gradle
-        .watch_files()
-        .contains(&PathPattern::ExactFileName("settings.gradle")));
-    assert!(gradle
-        .watch_files()
-        .contains(&PathPattern::ExactFileName("libs.versions.toml")));
-    assert!(gradle
-        .watch_files()
-        .contains(&PathPattern::Glob("**/gradle/*.versions.toml")));
+    let gradle_watch_files = gradle.watch_files();
     assert!(
-        !gradle
-            .watch_files()
-            .contains(&PathPattern::Glob("**/*.versions.toml")),
-        "Gradle backends should only watch `libs.versions.toml` and direct children of `gradle/` \
-         to match build-file fingerprinting semantics"
+        gradle_watch_files.contains(&PathPattern::ExactFileName("settings.gradle")),
+        "expected Gradle watch_files to contain ExactFileName(\"settings.gradle\"); got: {gradle_watch_files:?}",
     );
-    assert!(gradle
-        .watch_files()
-        .contains(&PathPattern::Glob("**/*.gradle")));
-    assert!(gradle
-        .watch_files()
-        .contains(&PathPattern::Glob("**/gradle/wrapper/gradle-wrapper.jar")));
-    assert!(gradle
-        .watch_files()
-        .contains(&PathPattern::ExactFileName("gradle.lockfile")));
-    assert!(gradle
-        .watch_files()
-        .contains(&PathPattern::Glob("**/dependency-locks/**/*.lockfile")));
-    assert!(gradle
-        .watch_files()
-        .contains(&PathPattern::Glob(GRADLE_SNAPSHOT_GLOB)));
+    assert!(
+        gradle_watch_files.contains(&PathPattern::ExactFileName("libs.versions.toml")),
+        "expected Gradle watch_files to contain ExactFileName(\"libs.versions.toml\"); got: {gradle_watch_files:?}",
+    );
+    assert!(
+        gradle_watch_files.contains(&PathPattern::Glob("**/gradle/*.versions.toml")),
+        "expected Gradle watch_files to contain Glob(\"**/gradle/*.versions.toml\"); got: {gradle_watch_files:?}",
+    );
+    assert!(
+        !gradle_watch_files.contains(&PathPattern::Glob("**/*.versions.toml")),
+        "Gradle backends should only watch `libs.versions.toml` and direct children of `gradle/` \
+         to match build-file fingerprinting semantics; got: {gradle_watch_files:?}"
+    );
+    assert!(
+        gradle_watch_files.contains(&PathPattern::Glob("**/*.gradle")),
+        "expected Gradle watch_files to contain Glob(\"**/*.gradle\"); got: {gradle_watch_files:?}",
+    );
+    assert!(
+        gradle_watch_files.contains(&PathPattern::Glob("**/gradle/wrapper/gradle-wrapper.jar")),
+        "expected Gradle watch_files to contain Glob(\"**/gradle/wrapper/gradle-wrapper.jar\"); got: {gradle_watch_files:?}",
+    );
+    assert!(
+        gradle_watch_files.contains(&PathPattern::ExactFileName("gradle.lockfile")),
+        "expected Gradle watch_files to contain ExactFileName(\"gradle.lockfile\"); got: {gradle_watch_files:?}",
+    );
+    assert!(
+        gradle_watch_files.contains(&PathPattern::Glob("**/dependency-locks/**/*.lockfile")),
+        "expected Gradle watch_files to contain Glob(\"**/dependency-locks/**/*.lockfile\"); got: {gradle_watch_files:?}",
+    );
+    assert!(
+        gradle_watch_files.contains(&PathPattern::Glob(GRADLE_SNAPSHOT_GLOB)),
+        "expected Gradle watch_files to contain Glob(GRADLE_SNAPSHOT_GLOB); got: {gradle_watch_files:?}",
+    );
 
     let bazel = BazelBuildSystem::new(LoadOptions::default());
-    assert!(bazel
-        .watch_files()
-        .contains(&PathPattern::ExactFileName("WORKSPACE")));
-    assert!(bazel
-        .watch_files()
-        .contains(&PathPattern::ExactFileName(".bazelignore")));
-    assert!(bazel
-        .watch_files()
-        .contains(&PathPattern::Glob("**/.bsp/*.json")));
-    assert!(bazel.watch_files().contains(&PathPattern::Glob("**/*.bzl")));
+    let bazel_watch_files = bazel.watch_files();
+    assert!(
+        bazel_watch_files.contains(&PathPattern::ExactFileName("WORKSPACE")),
+        "expected Bazel watch_files to contain ExactFileName(\"WORKSPACE\"); got: {bazel_watch_files:?}",
+    );
+    assert!(
+        bazel_watch_files.contains(&PathPattern::ExactFileName(".bazelignore")),
+        "expected Bazel watch_files to contain ExactFileName(\".bazelignore\"); got: {bazel_watch_files:?}",
+    );
+    assert!(
+        bazel_watch_files.contains(&PathPattern::Glob("**/.bsp/*.json")),
+        "expected Bazel watch_files to contain Glob(\"**/.bsp/*.json\"); got: {bazel_watch_files:?}",
+    );
+    assert!(
+        bazel_watch_files.contains(&PathPattern::Glob("**/*.bzl")),
+        "expected Bazel watch_files to contain Glob(\"**/*.bzl\"); got: {bazel_watch_files:?}",
+    );
 
     let simple = SimpleBuildSystem::new(LoadOptions::default());
-    assert!(simple
-        .watch_files()
-        .contains(&PathPattern::ExactFileName("module-info.java")));
-    assert!(simple
-        .watch_files()
-        .contains(&PathPattern::ExactFileName("pom.xml")));
-    assert!(simple
-        .watch_files()
-        .contains(&PathPattern::ExactFileName("build.gradle")));
-    assert!(simple
-        .watch_files()
-        .contains(&PathPattern::Glob("**/gradle/wrapper/gradle-wrapper.jar")));
-    assert!(simple
-        .watch_files()
-        .contains(&PathPattern::Glob("**/*.bzl")));
+    let simple_watch_files = simple.watch_files();
+    assert!(
+        simple_watch_files.contains(&PathPattern::ExactFileName("module-info.java")),
+        "expected Simple watch_files to contain ExactFileName(\"module-info.java\"); got: {simple_watch_files:?}",
+    );
+    assert!(
+        simple_watch_files.contains(&PathPattern::ExactFileName("pom.xml")),
+        "expected Simple watch_files to contain ExactFileName(\"pom.xml\"); got: {simple_watch_files:?}",
+    );
+    assert!(
+        simple_watch_files.contains(&PathPattern::ExactFileName("build.gradle")),
+        "expected Simple watch_files to contain ExactFileName(\"build.gradle\"); got: {simple_watch_files:?}",
+    );
+    assert!(
+        simple_watch_files.contains(&PathPattern::Glob("**/gradle/wrapper/gradle-wrapper.jar")),
+        "expected Simple watch_files to contain Glob(\"**/gradle/wrapper/gradle-wrapper.jar\"); got: {simple_watch_files:?}",
+    );
+    assert!(
+        simple_watch_files.contains(&PathPattern::Glob("**/*.bzl")),
+        "expected Simple watch_files to contain Glob(\"**/*.bzl\"); got: {simple_watch_files:?}",
+    );
 }
 
 #[test]
