@@ -148,9 +148,10 @@ fn registry_completes_config_property_names_when_name_is_not_first_argument() {
         import org.eclipse.microprofile.config.inject.ConfigProperty;
 
         public class MyConfig {
-          // Default value contains an `@` to ensure completion context detection
-          // ignores annotation-unrelated `@` chars inside string literals.
-          @ConfigProperty(defaultValue="@8080", name="qu")
+          // Default value contains an `@` and there's also a `@` inside a comment to ensure
+          // completion context detection ignores annotation-unrelated `@` chars while locating the
+          // preceding `@ConfigProperty`.
+          @ConfigProperty(defaultValue="@8080", /* @junk */ name="qu")
           String prop;
         }
     "#;

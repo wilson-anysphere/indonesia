@@ -376,24 +376,43 @@ fn config_property_prefix_at<'a>(source: &'a str, offset: usize) -> Option<(&'a 
         return None;
     }
 
-    // Ensure the nearest preceding annotation is `@ConfigProperty` (qualified or not).
-    let at_idx = find_previous_at_outside_literals(source, ident_start)?;
-    let after_at = &source[at_idx + 1..ident_start];
+    // Find the nearest preceding `@...ConfigProperty` annotation.
+    // We need to be resilient to `@` characters appearing inside other annotation arguments
+    // (e.g. string literals like `"@foo"` or block comments like `/* @foo */`).
+    let mut search_before = ident_start;
+    let mut is_config_property = false;
+    while let Some(at_idx) = find_previous_at_outside_literals(source, search_before) {
+        let mut cursor = at_idx + 1;
 
-    let mut ann_end = 0usize;
-    for (idx, ch) in after_at.char_indices() {
-        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.' {
-            ann_end = idx + ch.len_utf8();
-        } else {
-            break;
+        // Skip whitespace between `@` and the identifier.
+        while cursor < bytes.len() && (bytes[cursor] as char).is_ascii_whitespace() {
+            cursor += 1;
         }
+
+        let after_at = source.get(cursor..ident_start).unwrap_or("");
+        let mut ann_end = 0usize;
+        for (idx, ch) in after_at.char_indices() {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.' {
+                ann_end = idx + ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+
+        if ann_end > 0 {
+            let ann = &after_at[..ann_end];
+            let simple = ann.rsplit('.').next().unwrap_or(ann);
+            if simple == "ConfigProperty" {
+                is_config_property = true;
+                break;
+            }
+        }
+
+        // Keep scanning for an earlier `@`.
+        search_before = at_idx;
     }
-    if ann_end == 0 {
-        return None;
-    }
-    let ann = &after_at[..ann_end];
-    let simple = ann.rsplit('.').next().unwrap_or(ann);
-    if simple != "ConfigProperty" {
+
+    if !is_config_property {
         return None;
     }
 
