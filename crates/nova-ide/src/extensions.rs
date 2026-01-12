@@ -906,6 +906,14 @@ where
                 source,
                 selection.start,
             ));
+
+            actions.extend(type_mismatch_quick_fixes(
+                self.db.as_ref().as_dyn_nova_db(),
+                file,
+                source,
+                &uri,
+                span,
+            ));
         }
 
         let extension_actions = self
@@ -989,6 +997,94 @@ where
 
         hints
     }
+}
+
+fn type_mismatch_quick_fixes(
+    db: &dyn nova_db::Database,
+    file: nova_ext::FileId,
+    source: &str,
+    uri: &lsp_types::Uri,
+    selection: Span,
+) -> Vec<lsp_types::CodeActionOrCommand> {
+    fn spans_overlap(a: Span, b: Span) -> bool {
+        a.start < b.end && b.start < a.end
+    }
+
+    fn parse_type_mismatch(message: &str) -> Option<(String, String)> {
+        let message = message.strip_prefix("type mismatch: expected ")?;
+        let (expected, found) = message.split_once(", found ")?;
+        Some((expected.trim().to_string(), found.trim().to_string()))
+    }
+
+    fn single_replace_edit(
+        uri: &lsp_types::Uri,
+        range: lsp_types::Range,
+        new_text: String,
+    ) -> lsp_types::WorkspaceEdit {
+        let mut changes: HashMap<lsp_types::Uri, Vec<lsp_types::TextEdit>> = HashMap::new();
+        changes.insert(uri.clone(), vec![lsp_types::TextEdit { range, new_text }]);
+        lsp_types::WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        }
+    }
+
+    let mut actions = Vec::new();
+
+    let diagnostics = crate::code_intelligence::core_file_diagnostics(db, file);
+    let source_index = TextIndex::new(source);
+    for diag in diagnostics {
+        if diag.code != "type-mismatch" {
+            continue;
+        }
+        let Some(diag_span) = diag.span else {
+            continue;
+        };
+        if !spans_overlap(selection, diag_span) {
+            continue;
+        }
+
+        let Some((expected, _found)) = parse_type_mismatch(&diag.message) else {
+            continue;
+        };
+
+        let expr = source
+            .get(diag_span.start..diag_span.end)
+            .unwrap_or_default()
+            .trim();
+        if expr.is_empty() {
+            continue;
+        }
+
+        let range = source_index.span_to_lsp_range(diag_span);
+
+        if expected == "String" {
+            let edit = single_replace_edit(uri, range, format!("String.valueOf({expr})"));
+            actions.push(lsp_types::CodeActionOrCommand::CodeAction(
+                lsp_types::CodeAction {
+                    title: "Convert to String".to_string(),
+                    kind: Some(lsp_types::CodeActionKind::QUICKFIX),
+                    edit: Some(edit),
+                    is_preferred: Some(true),
+                    ..lsp_types::CodeAction::default()
+                },
+            ));
+        }
+
+        let edit = single_replace_edit(uri, range, format!("({expected}) {expr}"));
+        actions.push(lsp_types::CodeActionOrCommand::CodeAction(
+            lsp_types::CodeAction {
+                title: format!("Cast to {expected}"),
+                kind: Some(lsp_types::CodeActionKind::QUICKFIX),
+                edit: Some(edit),
+                is_preferred: Some(expected != "String"),
+                ..lsp_types::CodeAction::default()
+            },
+        ));
+    }
+
+    actions
 }
 
 struct FrameworkDiagnosticProvider;
