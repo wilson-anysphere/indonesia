@@ -8723,6 +8723,16 @@ fn member_completions(
             insert_text: Some("length".to_string()),
             ..Default::default()
         });
+
+        // Arrays also support a `clone()` method that returns the array type itself.
+        let receiver_src = nova_types::format_type(&types, &receiver_ty);
+        items.push(CompletionItem {
+            label: "clone".to_string(),
+            kind: Some(CompletionItemKind::METHOD),
+            detail: Some(format!("{receiver_src} clone()")),
+            insert_text: Some("clone()".to_string()),
+            ..Default::default()
+        });
     }
 
     // Lombok virtual members are useful for instance access and are intentionally
@@ -9085,6 +9095,16 @@ fn member_completions_for_receiver_type(
             kind: Some(CompletionItemKind::FIELD),
             detail: Some("int".to_string()),
             insert_text: Some("length".to_string()),
+            ..Default::default()
+        });
+
+        // Arrays also support a `clone()` method that returns the array type itself.
+        let receiver_src = nova_types::format_type(&types, &receiver_ty);
+        items.push(CompletionItem {
+            label: "clone".to_string(),
+            kind: Some(CompletionItemKind::METHOD),
+            detail: Some(format!("{receiver_src} clone()")),
+            insert_text: Some("clone()".to_string()),
             ..Default::default()
         });
     }

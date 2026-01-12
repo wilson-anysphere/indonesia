@@ -132,6 +132,29 @@ class A { void m(){ int[] xs=null; xs.<|> } }
 }
 
 #[test]
+fn completion_includes_array_clone() {
+    let (db, file, pos) = fixture(
+        r#"
+class A { void m(){ int[] xs=null; xs.<|> } }
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "clone")
+        .expect("expected completion list to contain array.clone()");
+
+    assert_eq!(item.kind, Some(CompletionItemKind::METHOD));
+    assert_eq!(item.insert_text.as_deref(), Some("clone()"));
+    assert!(
+        item.detail.as_deref().unwrap_or("").contains("int[]"),
+        "expected array.clone completion detail to mention the array type; got {:?}",
+        item.detail
+    );
+}
+
+#[test]
 fn completion_is_suppressed_in_char_literal() {
     let (db, file, pos) = fixture(
         r#"
