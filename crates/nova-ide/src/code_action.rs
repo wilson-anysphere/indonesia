@@ -2,7 +2,8 @@ use lsp_types::{
     CodeAction, CodeActionKind, Command, Diagnostic, NumberOrString, Position, Range, TextEdit, Uri,
     WorkspaceEdit,
 };
-use nova_core::{LineIndex, Position as CorePosition};
+use nova_core::{LineIndex, Name, PackageName, Position as CorePosition, TypeIndex};
+use nova_jdk::JdkIndex;
 use nova_refactor::extract_method::{
     ExtractMethod, ExtractMethodIssue, InsertionStrategy, Visibility,
 };
@@ -119,9 +120,7 @@ pub fn diagnostic_quick_fixes(
         if let Some(action) = create_class_quick_fix(source, &uri, &selection, diag) {
             actions.push(action);
         }
-        actions.extend(unresolved_type_import_and_qualify_quick_fixes(
-            source, &uri, &selection, diag,
-        ));
+        actions.extend(unresolved_type_import_quick_fixes(source, &uri, &selection, diag));
 
         for action in create_symbol_quick_fixes(source, &uri, &selection, diag) {
             if !seen_create_symbol_titles.insert(action.title.clone()) {
@@ -473,7 +472,7 @@ fn create_class_quick_fix(
     })
 }
 
-fn unresolved_type_import_and_qualify_quick_fixes(
+fn unresolved_type_import_quick_fixes(
     source: &str,
     uri: &Uri,
     selection: &Range,
@@ -490,22 +489,22 @@ fn unresolved_type_import_and_qualify_quick_fixes(
         return Vec::new();
     }
 
-    let name = source_range_text(source, &diagnostic.range)
+    let name_from_source = source_range_text(source, &diagnostic.range)
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .or_else(|| unresolved_type_name(&diagnostic.message).map(str::to_string));
+        .map(str::to_string);
+    let name_from_message = unresolved_type_name(&diagnostic.message).map(str::to_string);
+
+    // Prefer the range text (it's typically the most precise), but fall back to the diagnostic
+    // message if the range is empty or doesn't yield a simple type identifier.
+    let name = name_from_source
+        .filter(|name| is_simple_type_identifier(name))
+        .or_else(|| name_from_message.filter(|name| is_simple_type_identifier(name)));
     let Some(name) = name else {
         return Vec::new();
     };
 
-    // If the unresolved "type" text contains dots, it's already qualified (e.g. `java.util.List`).
-    // Avoid offering import/FQN fixes in that case.
-    if !is_simple_type_identifier(&name) {
-        return Vec::new();
-    }
-
-    let candidates = crate::quickfix::import_candidates(&name);
+    let candidates = unresolved_type_import_candidates(&name);
     let mut actions = Vec::new();
 
     for fqn in candidates {
@@ -548,6 +547,73 @@ fn unresolved_type_import_and_qualify_quick_fixes(
     }
 
     actions
+}
+
+fn unresolved_type_import_candidates(unresolved_name: &str) -> Vec<String> {
+    let needle = unresolved_name.trim();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+
+    // Use the built-in (dependency-free) JDK index for deterministic and low-latency suggestions.
+    // This avoids triggering expensive on-disk JDK discovery/indexing in the stdio-LSP path.
+    static BUILTIN_JDK: Lazy<JdkIndex> = Lazy::new(JdkIndex::new);
+
+    // NOTE: This list is intentionally small and ordered by rough "how likely is a missing import
+    // from here?" heuristics. We still sort/dedupe the final output for deterministic results.
+    //
+    // Keep this bounded: quick-fix code actions run on latency-sensitive paths, and probing the
+    // entire JDK index (e.g. by enumerating all class names) can be extremely expensive.
+    const COMMON_PACKAGES: &[&str] = &[
+        "java.util",
+        "java.util.function",
+        "java.io",
+        "java.time",
+        "java.nio",
+        "java.nio.file",
+        "java.net",
+        "java.math",
+        "java.util.regex",
+        "java.util.concurrent",
+        "java.util.stream",
+        "java.lang",
+    ];
+
+    // Some very common nested types are referred to by their simple inner name (e.g. `Entry`)
+    // and can be imported directly (`import java.util.Map.Entry;`). Those types are stored in
+    // indices under their binary `$` names (`Map$Entry`), so we probe a small, fixed set of
+    // common outers to retain nested type coverage without enumerating the entire JDK.
+    const JAVA_UTIL_NESTED_OUTERS: &[&str] = &["Map"];
+    const JAVA_LANG_NESTED_OUTERS: &[&str] = &["Thread"];
+
+    let name = Name::from(needle);
+
+    let mut out = Vec::new();
+    for pkg_str in COMMON_PACKAGES {
+        let pkg = PackageName::from_dotted(pkg_str);
+        if let Some(ty) = BUILTIN_JDK.resolve_type_in_package(&pkg, &name) {
+            // JDK indices use binary names for nested types (`Outer$Inner`). Java imports use source
+            // names (`Outer.Inner`), so replace `$` with `.` as a best-effort.
+            out.push(ty.as_str().replace('$', "."));
+        }
+
+        let nested_outers: &[&str] = match *pkg_str {
+            "java.util" => JAVA_UTIL_NESTED_OUTERS,
+            "java.lang" => JAVA_LANG_NESTED_OUTERS,
+            _ => &[],
+        };
+        for outer in nested_outers {
+            let nested = Name::from(format!("{outer}${needle}"));
+            if let Some(ty) = BUILTIN_JDK.resolve_type_in_package(&pkg, &nested) {
+                out.push(ty.as_str().replace('$', "."));
+            }
+        }
+    }
+
+    out.sort();
+    out.dedup();
+    out.truncate(5);
+    out
 }
 
 fn remove_unreachable_code_quick_fix(

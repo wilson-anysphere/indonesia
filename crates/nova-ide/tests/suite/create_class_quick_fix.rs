@@ -127,7 +127,7 @@ fn create_class_quick_fix_is_not_suggested_for_qualified_names() {
 fn unresolved_type_quick_fixes_include_import_and_fully_qualified_name_for_cursor_at_end() {
     let source = r#"class A {
   void m(List<String> xs) {}
-}
+ }
 "#;
     let uri: Uri = "file:///test.java".parse().expect("valid uri");
 
@@ -180,6 +180,56 @@ fn unresolved_type_quick_fixes_include_import_and_fully_qualified_name_for_curso
     let qualified = apply_lsp_edits(source, fqn_edits);
     assert!(
         qualified.contains("void m(java.util.List<String> xs) {}"),
+        "expected fully qualified type reference; got:\n{qualified}"
+    );
+}
+
+#[test]
+fn unresolved_type_quick_fixes_include_import_and_fully_qualified_name_for_range_selection() {
+    let source = "class A { List<String> xs; }";
+    let uri: Uri = "file:///test.java".parse().expect("valid uri");
+
+    let list_start = source.find("List<String>").expect("List occurrence");
+    let list_end = list_start + "List".len();
+    let range = Range::new(
+        offset_to_position(source, list_start),
+        offset_to_position(source, list_end),
+    );
+
+    let diagnostic = Diagnostic {
+        range,
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String("unresolved-type".to_string())),
+        message: "unresolved type `List`".to_string(),
+        ..Diagnostic::default()
+    };
+
+    let actions = diagnostic_quick_fixes(source, Some(uri.clone()), range, &[diagnostic]);
+
+    let import_action = actions
+        .iter()
+        .find(|action| action.title == "Import java.util.List")
+        .expect("expected Import java.util.List quick fix");
+    let fqn_action = actions
+        .iter()
+        .find(|action| action.title == "Use fully qualified name 'java.util.List'")
+        .expect("expected FQN quick fix");
+
+    let import_edit = import_action.edit.as_ref().expect("expected import edit");
+    let import_changes = import_edit.changes.as_ref().expect("expected changes map");
+    let import_edits = import_changes.get(&uri).expect("expected edits for file");
+    let imported = apply_lsp_edits(source, import_edits);
+    assert!(
+        imported.starts_with("import java.util.List;"),
+        "expected import insertion at start of file; got:\n{imported}"
+    );
+
+    let fqn_edit = fqn_action.edit.as_ref().expect("expected fqn edit");
+    let fqn_changes = fqn_edit.changes.as_ref().expect("expected changes map");
+    let fqn_edits = fqn_changes.get(&uri).expect("expected edits for file");
+    let qualified = apply_lsp_edits(source, fqn_edits);
+    assert!(
+        qualified.contains("class A { java.util.List<String> xs; }"),
         "expected fully qualified type reference; got:\n{qualified}"
     );
 }
