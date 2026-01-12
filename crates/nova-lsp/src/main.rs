@@ -22,8 +22,7 @@ use lsp_types::{
 use nova_ai::context::{
     ContextDiagnostic, ContextDiagnosticKind, ContextDiagnosticSeverity, ContextRequest,
 };
-use nova_ai::ExcludedPathMatcher;
-use nova_ai::NovaAi;
+use nova_ai::{ExcludedPathMatcher, NovaAi};
 #[cfg(feature = "ai")]
 use nova_ai::{
     AiClient, CloudMultiTokenCompletionProvider, CompletionContextBuilder,
@@ -2303,6 +2302,15 @@ impl ServerState {
     }
 }
 
+fn is_ai_excluded_path(state: &ServerState, path: &Path) -> bool {
+    // If AI isn't configured, the server should not be able to send anything to an LLM anyway, so
+    // treat the path as allowed.
+    state
+        .ai
+        .as_ref()
+        .is_some_and(|ai| ai.is_excluded_path(path))
+}
+
 fn handle_request(
     request: Request,
     cancel: CancellationToken,
@@ -3978,6 +3986,7 @@ fn handle_code_action(
     cancel: CancellationToken,
 ) -> Result<serde_json::Value, String> {
     let params: CodeActionParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let doc_path = path_from_uri(&params.text_document.uri);
     let text = load_document_text(state, &params.text_document.uri);
     let text = text.as_deref();
 
@@ -4154,14 +4163,13 @@ fn handle_code_action(
     // AI code actions (gracefully degrade when AI isn't configured).
     let ai_enabled = state.ai.is_some();
     let ai_excluded = ai_enabled
-        && path_from_uri(&params.text_document.uri)
+        && doc_path
             .as_deref()
-            .is_some_and(|path| is_excluded_by_ai_privacy(state, path));
+            .is_some_and(|path| is_ai_excluded_path(state, path));
 
-    if ai_enabled {
+    if ai_enabled && !ai_excluded {
         let allow_code_edit_actions =
-            nova_ai::enforce_code_edit_policy(&state.ai_config.privacy).is_ok() && !ai_excluded;
-
+            nova_ai::enforce_code_edit_policy(&state.ai_config.privacy).is_ok();
         // Explain error (diagnostic-driven).
         if let Some(diagnostic) = params.context.diagnostics.first() {
             let code = text.map(|t| extract_snippet(t, &diagnostic.range, 2));
@@ -6050,15 +6058,20 @@ fn handle_completion(
         return Err(format!("missing document text for `{}`", uri.as_str()));
     };
 
-    let path = path_from_uri(uri.as_str()).unwrap_or_else(|| PathBuf::from(uri.as_str()));
-    let ai_excluded = is_excluded_by_ai_privacy(state, &path);
+    let doc_path = path_from_uri(uri.as_str());
+    let path = doc_path
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(uri.as_str()));
     let mut db = InMemoryFileStore::new();
     let file: DbFileId = db.file_id_for_path(&path);
     db.set_file_text(file, text.clone());
 
     #[cfg(feature = "ai")]
     let (completion_context_id, has_more) = {
-        let has_more = !ai_excluded && state.completion_service.completion_engine().supports_ai();
+        let ai_excluded = doc_path
+            .as_deref()
+            .is_some_and(|path| is_ai_excluded_path(state, path));
+        let has_more = state.completion_service.completion_engine().supports_ai() && !ai_excluded;
         let completion_context_id = if has_more {
             let document_uri = Some(uri.as_str().to_string());
             let ctx = multi_token_completion_context(&db, file, position);
@@ -6922,43 +6935,11 @@ fn is_excluded_by_ai_privacy(state: &ServerState, path: &Path) -> bool {
         Err(_) => true,
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use httpmock::prelude::*;
     use tempfile::TempDir;
-    use std::ffi::{OsStr, OsString};
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    struct EnvVarGuard {
-        key: &'static str,
-        prev: Option<OsString>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
-            let prev = std::env::var_os(key);
-            std::env::set_var(key, value);
-            Self { key, prev }
-        }
-
-        fn remove(key: &'static str) -> Self {
-            let prev = std::env::var_os(key);
-            std::env::remove_var(key);
-            Self { key, prev }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            match self.prev.take() {
-                Some(value) => std::env::set_var(self.key, value),
-                None => std::env::remove_var(self.key),
-            }
-        }
-    }
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -7197,10 +7178,10 @@ mod tests {
         // Point JDK discovery at the tiny fake JDK shipped in this repository.
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let fake_jdk_root = manifest_dir.join("../nova-jdk/testdata/fake-jdk");
-        let _java_home = EnvVarGuard::set("JAVA_HOME", &fake_jdk_root);
+        let _java_home = ScopedEnvVar::set("JAVA_HOME", &fake_jdk_root);
 
         let cache_dir = TempDir::new().expect("cache dir");
-        let _cache_dir = EnvVarGuard::set("NOVA_CACHE_DIR", cache_dir.path());
+        let _cache_dir = ScopedEnvVar::set("NOVA_CACHE_DIR", cache_dir.path());
 
         let mut state = ServerState::new(
             nova_config::NovaConfig::default(),
@@ -7361,6 +7342,123 @@ mod tests {
     }
 
     #[test]
+    fn excluded_paths_disable_ai_completions_and_code_actions() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = temp.path();
+        let src_dir = root.join("src");
+        let secrets_dir = src_dir.join("secrets");
+        std::fs::create_dir_all(&secrets_dir).expect("create src/secrets dir");
+
+        let secret_path = secrets_dir.join("Secret.java");
+        let secret_text = "class Secret { void foo() {} }";
+        std::fs::write(&secret_path, secret_text).expect("write Secret.java");
+
+        let main_path = src_dir.join("Main.java");
+        let main_text = "class Main { void foo() {} }";
+        std::fs::write(&main_path, main_text).expect("write Main.java");
+
+        let secret_uri: lsp_types::Uri = url::Url::from_file_path(&secret_path)
+            .expect("file url")
+            .to_string()
+            .parse()
+            .expect("uri");
+        let main_uri: lsp_types::Uri = url::Url::from_file_path(&main_path)
+            .expect("file url")
+            .to_string()
+            .parse()
+            .expect("uri");
+
+        let mut cfg = nova_config::NovaConfig::default();
+        cfg.ai.enabled = true;
+        cfg.ai.features.multi_token_completion = true;
+        cfg.ai.privacy.excluded_paths = vec!["src/secrets/**".to_string()];
+
+        let mut state = ServerState::new(cfg, None, MemoryBudgetOverrides::default());
+        state.project_root = Some(root.to_path_buf());
+        state
+            .analysis
+            .open_document(secret_uri.clone(), secret_text.to_string(), 1);
+        state
+            .analysis
+            .open_document(main_uri.clone(), main_text.to_string(), 1);
+
+        // Multi-token completion must not run for excluded paths (no async follow-up completions).
+        let completion_params = CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: secret_uri.clone() },
+                position: lsp_types::Position::new(0, 0),
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+            context: None,
+        };
+        let completion_list: CompletionList = serde_json::from_value(
+            handle_completion(
+                serde_json::to_value(completion_params).expect("completion params"),
+                &state,
+                CancellationToken::new(),
+            )
+            .expect("completion response"),
+        )
+        .expect("completion list");
+        assert!(
+            !completion_list.is_incomplete,
+            "expected no AI completion session for excluded file"
+        );
+
+        let excluded_actions = handle_code_action(
+            json!({
+                "textDocument": { "uri": secret_uri.to_string() },
+                "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } },
+                "context": {
+                    "diagnostics": [
+                        { "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } }, "message": "boom" }
+                    ]
+                }
+            }),
+            &mut state,
+            CancellationToken::new(),
+        )
+        .expect("code action response");
+        let excluded_actions = excluded_actions.as_array().expect("array");
+        assert!(
+            !excluded_actions.iter().any(|action| {
+                action
+                    .get("kind")
+                    .and_then(|kind| kind.as_str())
+                    .is_some_and(|kind| {
+                        kind == CODE_ACTION_KIND_EXPLAIN
+                            || kind == CODE_ACTION_KIND_AI_GENERATE
+                            || kind == CODE_ACTION_KIND_AI_TESTS
+                    })
+            }),
+            "expected no AI code actions for excluded file"
+        );
+
+        let allowed_actions = handle_code_action(
+            json!({
+                "textDocument": { "uri": main_uri.to_string() },
+                "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } },
+                "context": {
+                    "diagnostics": [
+                        { "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } }, "message": "boom" }
+                    ]
+                }
+            }),
+            &mut state,
+            CancellationToken::new(),
+        )
+        .expect("code action response");
+        let allowed_actions = allowed_actions.as_array().expect("array");
+        assert!(
+            allowed_actions.iter().any(|action| {
+                action.get("kind").and_then(|kind| kind.as_str()) == Some(CODE_ACTION_KIND_EXPLAIN)
+            }),
+            "expected AI code actions for non-excluded file when AI is configured"
+        );
+    }
+
+    #[test]
     fn build_context_request_attaches_project_and_semantic_context_when_available() {
         let temp = TempDir::new().expect("tempdir");
         let root = temp.path();
@@ -7510,10 +7608,10 @@ fn run_ai_explain_error(
 
     if let Some(uri) = args.uri.as_deref() {
         if let Some(path) = path_from_uri(uri) {
-            if is_excluded_by_ai_privacy(state, &path) {
+            if is_ai_excluded_path(state, &path) {
                 return Err((
                     -32600,
-                    "AI is disabled for files matched by ai.privacy.excluded_paths".to_string(),
+                    "AI disabled for this file due to ai.privacy.excluded_paths".to_string(),
                 ));
             }
         }
@@ -7577,10 +7675,10 @@ fn run_ai_generate_method_body(
 
     if let Some(uri) = args.uri.as_deref() {
         if let Some(path) = path_from_uri(uri) {
-            if is_excluded_by_ai_privacy(state, &path) {
+            if is_ai_excluded_path(state, &path) {
                 return Err((
                     -32600,
-                    "AI is disabled for files matched by ai.privacy.excluded_paths".to_string(),
+                    "AI disabled for this file due to ai.privacy.excluded_paths".to_string(),
                 ));
             }
         }
@@ -7637,10 +7735,10 @@ fn run_ai_generate_tests(
 
     if let Some(uri) = args.uri.as_deref() {
         if let Some(path) = path_from_uri(uri) {
-            if is_excluded_by_ai_privacy(state, &path) {
+            if is_ai_excluded_path(state, &path) {
                 return Err((
                     -32600,
-                    "AI is disabled for files matched by ai.privacy.excluded_paths".to_string(),
+                    "AI disabled for this file due to ai.privacy.excluded_paths".to_string(),
                 ));
             }
         }
@@ -7802,7 +7900,10 @@ fn maybe_add_related_code(state: &ServerState, req: ContextRequest) -> ContextRe
         .semantic_search
         .read()
         .unwrap_or_else(|err| err.into_inner());
-    req.with_related_code_from_focal(search.as_ref(), 3)
+    let mut req = req.with_related_code_from_focal(search.as_ref(), 3);
+    req.related_code
+        .retain(|item| !is_ai_excluded_path(state, &item.path));
+    req
 }
 
 fn looks_like_project_root(root: &std::path::Path) -> bool {
