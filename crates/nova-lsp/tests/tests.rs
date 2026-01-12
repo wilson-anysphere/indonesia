@@ -16,6 +16,8 @@ mod config_stdio;
 mod extensions_aware_helpers;
 #[path = "suite/extensions_stdio.rs"]
 mod extensions_stdio;
+#[path = "suite/framework_analyzer_registry_integration.rs"]
+mod framework_analyzer_registry_integration;
 #[path = "suite/extract_method.rs"]
 mod extract_method;
 #[path = "suite/file_operations.rs"]
