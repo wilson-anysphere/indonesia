@@ -3351,6 +3351,32 @@ fn incremental_edit_inside_string_template_falls_back_to_full_reparse() {
 }
 
 #[test]
+fn incremental_edit_inside_string_template_interpolation_falls_back_to_full_reparse() {
+    let old_text = "class Foo { String s = STR.\"hello \\{name}\"; }\nclass Bar {}\n";
+    let old = parse_java(old_text);
+
+    let name_offset = old_text.find("name").unwrap() as u32;
+    let edit = TextEdit::new(
+        TextRange {
+            start: name_offset,
+            end: name_offset + 1,
+        },
+        "N",
+    );
+    let mut new_text = old_text.to_string();
+    new_text.replace_range(name_offset as usize..(name_offset + 1) as usize, "N");
+
+    let new_parse = reparse_java(&old, old_text, edit, &new_text);
+
+    let old_bar = find_class_by_name(&old, "Bar").green().into_owned();
+    let new_bar = find_class_by_name(&new_parse, "Bar").green().into_owned();
+    assert!(
+        !green_ptr_eq(&old_bar, &new_bar),
+        "expected edit inside string template interpolation to force full reparse"
+    );
+}
+
+#[test]
 fn incremental_insertion_at_block_end_does_not_drop_text() {
     let old_text = "class Foo { void m() { { int a; } int b; } }\n";
     let old = parse_java(old_text);

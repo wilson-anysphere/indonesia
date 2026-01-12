@@ -222,9 +222,9 @@ fn edit_intersects_ambiguous_token(old: &JavaParseResult, edit: &TextEdit) -> bo
         let tokens = old.token_at_offset(edit.range.start);
         return match tokens {
             TokenAtOffset::None => false,
-            TokenAtOffset::Single(tok) => is_ambiguous_token_kind(tok.kind()),
+            TokenAtOffset::Single(tok) => is_ambiguous_token(&tok),
             TokenAtOffset::Between(left, right) => {
-                is_ambiguous_token_kind(left.kind()) || is_ambiguous_token_kind(right.kind())
+                is_ambiguous_token(&left) || is_ambiguous_token(&right)
             }
         };
     }
@@ -249,11 +249,30 @@ fn edit_intersects_ambiguous_token(old: &JavaParseResult, edit: &TextEdit) -> bo
             break;
         }
 
-        if ranges_intersect(edit.range, tok_range) && is_ambiguous_token_kind(tok.kind()) {
+        if ranges_intersect(edit.range, tok_range) && is_ambiguous_token(&tok) {
             return true;
         }
 
         token = tok.next_token();
+    }
+
+    false
+}
+
+fn is_ambiguous_token(tok: &crate::SyntaxToken) -> bool {
+    if is_ambiguous_token_kind(tok.kind()) {
+        return true;
+    }
+
+    // String templates are lexed using a mode stack; edits inside interpolations can shift where
+    // the lexer returns to template mode (and vice versa) without intersecting a dedicated template
+    // token kind. Conservatively force a full reparse for any edit within a string template node.
+    let mut cur = tok.parent();
+    while let Some(node) = cur {
+        if node.kind() == SyntaxKind::StringTemplate {
+            return true;
+        }
+        cur = node.parent();
     }
 
     false
