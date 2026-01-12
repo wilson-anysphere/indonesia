@@ -9,8 +9,9 @@ use nova_build_model::{AnnotationProcessing, AnnotationProcessingConfig};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-const MAVEN_JPMS_FLAG_NEEDLES: [&str; 9] = [
+const MAVEN_JPMS_FLAG_NEEDLES: [&str; 12] = [
     "--module-path",
+    "-p",
     "--add-modules",
     "--patch-module",
     "--add-reads",
@@ -18,8 +19,17 @@ const MAVEN_JPMS_FLAG_NEEDLES: [&str; 9] = [
     "--add-opens",
     "--limit-modules",
     "--upgrade-module-path",
+    "--module",
+    "-m",
     "--module-source-path",
 ];
+
+fn maven_compiler_arg_looks_like_jpms(arg: &str) -> bool {
+    let arg = arg.trim();
+    MAVEN_JPMS_FLAG_NEEDLES.iter().any(|flag| {
+        arg == *flag || arg.strip_prefix(flag).is_some_and(|rest| rest.starts_with('='))
+    })
+}
 
 #[derive(Debug, Clone)]
 pub struct MavenConfig {
@@ -344,12 +354,15 @@ impl MavenBuild {
             module_relative,
             "maven.compiler.compilerArgs",
         )?;
-        let mut enable_preview = compiler_args_raw
+        let (mut enable_preview, mut compiler_args_looks_like_jpms) = compiler_args_raw
             .as_deref()
-            .is_some_and(|output| output.contains("--enable-preview"));
-        let mut compiler_args_looks_like_jpms = compiler_args_raw
-            .as_deref()
-            .is_some_and(|output| MAVEN_JPMS_FLAG_NEEDLES.iter().any(|needle| output.contains(needle)));
+            .map(parse_maven_string_list_output)
+            .map(|args| {
+                let enable_preview = args.iter().any(|arg| arg.trim() == "--enable-preview");
+                let looks_like_jpms = args.iter().any(|arg| maven_compiler_arg_looks_like_jpms(arg));
+                (enable_preview, looks_like_jpms)
+            })
+            .unwrap_or((false, false));
 
         if !(enable_preview && compiler_args_looks_like_jpms) {
             let compiler_argument_raw = self.evaluate_raw_best_effort(
@@ -357,12 +370,11 @@ impl MavenBuild {
                 module_relative,
                 "maven.compiler.compilerArgument",
             )?;
-            enable_preview |= compiler_argument_raw
-                .as_deref()
-                .is_some_and(|output| output.contains("--enable-preview"));
-            compiler_args_looks_like_jpms |= compiler_argument_raw
-                .as_deref()
-                .is_some_and(|output| MAVEN_JPMS_FLAG_NEEDLES.iter().any(|needle| output.contains(needle)));
+            if let Some(output) = compiler_argument_raw.as_deref() {
+                let args = parse_maven_string_list_output(output);
+                enable_preview |= args.iter().any(|arg| arg.trim() == "--enable-preview");
+                compiler_args_looks_like_jpms |= args.iter().any(|arg| maven_compiler_arg_looks_like_jpms(arg));
+            }
         }
 
         // Best-effort: ensure output dirs are represented on the appropriate classpaths.
@@ -1299,6 +1311,53 @@ pub fn parse_maven_evaluate_scalar_output(output: &str) -> Option<String> {
     last
 }
 
+fn parse_maven_string_list_output(output: &str) -> Vec<String> {
+    let mut entries: Vec<String> = Vec::new();
+    let mut bracket_accumulator: Option<String> = None;
+
+    // `help:evaluate` output may be noisy even with `-q`; in practice we see
+    // `[INFO]` preambles, warning lines, and downloads printed ahead of the actual
+    // evaluated value.
+    for line in output.lines() {
+        let line = line.trim();
+        if let Some(mut acc) = bracket_accumulator.take() {
+            if !line.is_empty() && !is_maven_noise_line(line) {
+                acc.push_str(line);
+            }
+            if line.ends_with(']') {
+                entries.extend(parse_maven_bracket_string_list(&acc));
+            } else {
+                bracket_accumulator = Some(acc);
+            }
+            continue;
+        }
+
+        if line.is_empty() || is_maven_noise_line(line) || is_maven_null_value(line) {
+            continue;
+        }
+
+        if line.starts_with('[') {
+            if line.ends_with(']') && line.len() >= 2 {
+                entries.extend(parse_maven_bracket_string_list(line));
+            } else {
+                bracket_accumulator = Some(line.to_string());
+            }
+            continue;
+        }
+
+        let s = line.trim_matches('"').trim_matches('\'');
+        if s.is_empty() || is_maven_null_value(s) {
+            continue;
+        }
+        entries.push(s.to_string());
+    }
+
+    // Dedupe while preserving order.
+    let mut seen = std::collections::HashSet::new();
+    entries.retain(|s| seen.insert(s.clone()));
+    entries
+}
+
 fn is_maven_noise_line(line: &str) -> bool {
     line.starts_with("[INFO]")
         || line.starts_with("[WARNING]")
@@ -1321,6 +1380,24 @@ fn is_maven_null_value(line: &str) -> bool {
         || lower == "[]"
         || lower.contains("null object")
         || lower.contains("invalid expression")
+}
+
+fn parse_maven_bracket_string_list(line: &str) -> Vec<String> {
+    let trimmed = line.trim();
+    if !(trimmed.starts_with('[') && trimmed.ends_with(']') && trimmed.len() >= 2) {
+        return Vec::new();
+    }
+
+    let mut entries = Vec::new();
+    let inner = &trimmed[1..trimmed.len() - 1];
+    for part in inner.split(',') {
+        let s = part.trim().trim_matches('"').trim_matches('\'');
+        if s.is_empty() || is_maven_null_value(s) {
+            continue;
+        }
+        entries.push(s.to_string());
+    }
+    entries
 }
 
 fn parse_maven_bracket_list(line: &str) -> Vec<PathBuf> {
@@ -1984,9 +2061,9 @@ mod tests {
                     .iter()
                     .any(|a| a == "-Dexpression=project.compileModulepathElements")
                 || args
-                    .iter()
-                    .any(|a| a == "-Dexpression=project.testCompileModulePathElements")
-        }));
+                     .iter()
+                     .any(|a| a == "-Dexpression=project.testCompileModulePathElements")
+         }));
     }
 
     #[test]
@@ -2019,7 +2096,7 @@ mod tests {
         outputs.insert("project.testSourceRoots".to_string(), "[]\n".to_string());
 
         // JPMS signal via compiler args.
-        outputs.insert("maven.compiler.compilerArgs".to_string(), "[--module-path]".to_string());
+        outputs.insert("maven.compiler.compilerArgs".to_string(), "[-p]\n".to_string());
 
         let runner = Arc::new(StaticMavenRunner::new(outputs));
         let build = MavenBuild::with_runner(MavenConfig::default(), runner.clone());
