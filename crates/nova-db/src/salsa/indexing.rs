@@ -187,97 +187,108 @@ fn project_index_shards(db: &dyn NovaIndexing, project: ProjectId) -> Arc<Vec<Pr
         None
     };
 
-    let loaded = if can_warm_start {
+    let mut shards = vec![ProjectIndexes::default(); shard_count as usize];
+    let mut invalidated_files: Vec<String> = path_to_file.keys().cloned().collect();
+
+    // Load persisted shards using the fast snapshot when persistence is enabled.
+    let mut attempted_disk_cache = false;
+    let mut used_disk_cache = false;
+
+    if can_warm_start {
+        attempted_disk_cache = true;
         let cache_dir = cache_dir.as_ref().expect("cache_dir checked above");
         let fast_snapshot = fast_snapshot.as_ref().expect("snapshot built above");
 
-        match nova_index::load_sharded_index_archives_from_fast_snapshot(
+        let loaded = match nova_index::load_sharded_index_archives_from_fast_snapshot(
             cache_dir,
             fast_snapshot,
             shard_count,
         ) {
-            Ok(Some(loaded)) => {
-                db.record_disk_cache_hit("project_indexes");
-                Some(loaded)
-            }
-            Ok(None) => {
-                db.record_disk_cache_miss("project_indexes");
-                None
-            }
-            Err(_) => {
-                db.record_disk_cache_miss("project_indexes");
-                None
-            }
-        }
-    } else {
-        None
-    };
+            Ok(value) => value,
+            Err(_) => None,
+        };
 
-    let mut shards = vec![ProjectIndexes::default(); shard_count as usize];
-    let mut invalidated_files: Vec<String> = path_to_file.keys().cloned().collect();
+        if let Some(loaded) = loaded {
+            let mut loaded_shards = Vec::with_capacity(shard_count as usize);
+            let mut corrupt_shards = std::collections::BTreeSet::new();
 
-    if let Some(loaded) = loaded {
-        let mut loaded_shards = Vec::with_capacity(shard_count as usize);
-        let mut ok = true;
-        for shard in loaded.shards {
-            let indexes = match shard {
-                Some(archives) => {
-                    let symbols = match archives.symbols.to_owned() {
-                        Ok(value) => value,
-                        Err(_) => {
-                            ok = false;
-                            break;
+            for (shard_idx, shard) in loaded.shards.into_iter().enumerate() {
+                let shard_id = shard_idx as u32;
+                let indexes = match shard {
+                    Some(archives) => {
+                        let Ok(symbols) = archives.symbols.to_owned() else {
+                            corrupt_shards.insert(shard_id);
+                            loaded_shards.push(ProjectIndexes::default());
+                            continue;
+                        };
+                        let Ok(references) = archives.references.to_owned() else {
+                            corrupt_shards.insert(shard_id);
+                            loaded_shards.push(ProjectIndexes::default());
+                            continue;
+                        };
+                        let Ok(inheritance) = archives.inheritance.to_owned() else {
+                            corrupt_shards.insert(shard_id);
+                            loaded_shards.push(ProjectIndexes::default());
+                            continue;
+                        };
+                        let Ok(annotations) = archives.annotations.to_owned() else {
+                            corrupt_shards.insert(shard_id);
+                            loaded_shards.push(ProjectIndexes::default());
+                            continue;
+                        };
+
+                        ProjectIndexes {
+                            symbols,
+                            references,
+                            inheritance,
+                            annotations,
                         }
-                    };
-                    let references = match archives.references.to_owned() {
-                        Ok(value) => value,
-                        Err(_) => {
-                            ok = false;
-                            break;
+                    }
+                    None => ProjectIndexes::default(),
+                };
+                loaded_shards.push(indexes);
+            }
+
+            if loaded_shards.len() == shard_count as usize {
+                used_disk_cache = true;
+                shards = loaded_shards;
+
+                // If we had to fall back to a default shard (due to corruption while materializing
+                // an archive), force all files that map to that shard to be reindexed.
+                let mut invalidated: std::collections::BTreeSet<String> =
+                    loaded.invalidated_files.into_iter().collect();
+                if !corrupt_shards.is_empty() {
+                    for path in path_to_file.keys() {
+                        let shard_id = shard_id_for_path(path, shard_count);
+                        if corrupt_shards.contains(&shard_id) {
+                            invalidated.insert(path.clone());
                         }
-                    };
-                    let inheritance = match archives.inheritance.to_owned() {
-                        Ok(value) => value,
-                        Err(_) => {
-                            ok = false;
-                            break;
-                        }
-                    };
-                    let annotations = match archives.annotations.to_owned() {
-                        Ok(value) => value,
-                        Err(_) => {
-                            ok = false;
-                            break;
-                        }
-                    };
-                    ProjectIndexes {
-                        symbols,
-                        references,
-                        inheritance,
-                        annotations,
                     }
                 }
-                None => ProjectIndexes::default(),
-            };
-            loaded_shards.push(indexes);
+                invalidated_files = invalidated.into_iter().collect();
+            }
         }
+    }
 
-        if ok && loaded_shards.len() == shard_count as usize {
-            shards = loaded_shards;
-            invalidated_files = loaded.invalidated_files;
+    if attempted_disk_cache {
+        if used_disk_cache {
+            db.record_disk_cache_hit("project_indexes");
+        } else {
+            db.record_disk_cache_miss("project_indexes");
         }
     }
 
     // Reindex only invalidated files and update their target shards.
     for path in invalidated_files {
         let shard = shard_id_for_path(&path, shard_count) as usize;
-        if let Some(indexes) = shards.get_mut(shard) {
-            indexes.invalidate_file(&path);
+        let indexes = shards
+            .get_mut(shard)
+            .expect("shard_id_for_path always returns < shard_count");
+        indexes.invalidate_file(&path);
 
-            if let Some(&file) = path_to_file.get(&path) {
-                let delta = db.file_index_delta(file);
-                indexes.merge_from((*delta).clone());
-            }
+        if let Some(&file) = path_to_file.get(&path) {
+            let delta = db.file_index_delta(file);
+            indexes.merge_from((*delta).clone());
         }
     }
 
