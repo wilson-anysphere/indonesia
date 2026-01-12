@@ -249,13 +249,13 @@ run_cargo() {
   # Cap RUST_TEST_THREADS for test runs
   if [[ "${subcommand}" == "test" && -z "${RUST_TEST_THREADS:-}" ]]; then
     local rust_test_threads="${NOVA_RUST_TEST_THREADS:-}"
-     if [[ -z "${rust_test_threads}" ]]; then
-       # Keep test parallelism conservative by default. In multi-agent sandboxes we can be constrained
-       # by per-user thread limits, and `cargo test` already spawns additional threads internally.
-       rust_test_threads=$(( nproc < 8 ? nproc : 8 ))
-     fi
-     export RUST_TEST_THREADS="${rust_test_threads}"
-   fi
+    if [[ -z "${rust_test_threads}" ]]; then
+      # Keep test parallelism conservative by default. In multi-agent sandboxes we can be constrained
+      # by per-user thread limits (`EAGAIN`), and tests often spawn additional threads internally.
+      rust_test_threads=$(( nproc < 8 ? nproc : 8 ))
+    fi
+    export RUST_TEST_THREADS="${rust_test_threads}"
+  fi
 
   # `cargo fuzz run` defaults to AddressSanitizer, which reserves a huge virtual
   # address range for its shadow memory. Under the default RLIMIT_AS cap enforced

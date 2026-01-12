@@ -17,15 +17,15 @@ use nova_db::{salsa, Database, NovaIndexing, NovaInputs, ProjectId, SourceRootId
 use nova_ide::{DebugConfiguration, Project};
 use nova_index::ProjectIndexes;
 use nova_memory::{
-    BackgroundIndexingMode, EvictionRequest, EvictionResult, MemoryCategory, MemoryEvictor,
-    MemoryManager, MemoryPressure, MemoryRegistration,
+    BackgroundIndexingMode, DegradedSettings, EvictionRequest, EvictionResult, MemoryCategory,
+    MemoryEvictor, MemoryManager, MemoryPressure, MemoryRegistration, MemoryReport,
 };
 use nova_project::{
     BuildSystem, JavaConfig, LoadOptions, ProjectConfig, ProjectError, SourceRootOrigin,
 };
 use nova_scheduler::{Cancelled, Debouncer, KeyedDebouncer, PoolKind, Scheduler, SchedulerConfig};
 use nova_syntax::{JavaParseStore, SyntaxTreeStore};
-use nova_types::{CompletionItem, Diagnostic as NovaDiagnostic};
+use nova_types::{CompletionItem, Diagnostic as NovaDiagnostic, Span};
 use nova_vfs::{
     ChangeEvent, ContentChange, DocumentError, FileChange, FileId, FileSystem, FileWatcher,
     LocalFs, NotifyFileWatcher, Vfs, VfsPath, WatchEvent, WatchMode,
@@ -293,8 +293,9 @@ pub(crate) struct WorkspaceEngine {
     indexes_evictor: Arc<WorkspaceProjectIndexesEvictor>,
 
     config: RwLock<EffectiveConfig>,
-    memory: MemoryManager,
     scheduler: Scheduler,
+    memory: MemoryManager,
+    last_memory_enforce: Mutex<Option<Instant>>,
     index_debouncer: KeyedDebouncer<&'static str>,
     project_reload_debouncer: KeyedDebouncer<&'static str>,
     memory_enforce_debouncer: KeyedDebouncer<&'static str>,
@@ -492,8 +493,9 @@ impl WorkspaceEngine {
             indexes,
             indexes_evictor,
             config: RwLock::new(EffectiveConfig::default()),
-            memory,
             scheduler,
+            memory,
+            last_memory_enforce: Mutex::new(None),
             index_debouncer,
             project_reload_debouncer,
             memory_enforce_debouncer,
@@ -1213,17 +1215,21 @@ impl WorkspaceEngine {
         let Some(file_id) = self.vfs.get_id(path) else {
             return Vec::new();
         };
+        let report = self.memory_report_for_work();
+        let cap = report.degraded.completion_candidate_cap;
         let snapshot = crate::WorkspaceSnapshot::from_engine(self);
         let text = snapshot.file_content(file_id);
         let position = offset_to_lsp_position(text, offset);
-        nova_ide::completions(&snapshot, file_id, position)
+        let mut items: Vec<CompletionItem> = nova_ide::completions(&snapshot, file_id, position)
             .into_iter()
             .map(|item| CompletionItem {
                 label: item.label,
                 detail: item.detail,
                 replace_span: None,
             })
-            .collect()
+            .collect();
+        items.truncate(cap);
+        items
     }
 
     fn background_indexing_plan(
@@ -1725,11 +1731,8 @@ impl WorkspaceEngine {
             });
             return;
         };
-        let snapshot = crate::WorkspaceSnapshot::from_engine(self);
-        let diagnostics = self.query_db.with_snapshot(|snap| {
-            nova_ide::file_diagnostics_with_semantic_db(&snapshot, snap, file_id)
-        });
-
+        let report = self.memory_report_for_work();
+        let diagnostics = self.compute_diagnostics(&file, file_id, report.degraded);
         self.publish(WorkspaceEvent::DiagnosticsUpdated { file, diagnostics });
     }
 
@@ -1743,8 +1746,92 @@ impl WorkspaceEngine {
             .set_bytes(self.vfs.estimated_bytes() as u64);
     }
 
+    fn memory_report_for_work(&self) -> MemoryReport {
+        // Keep eviction and degraded settings reasonably fresh without running the
+        // (potentially expensive) eviction loop on every diagnostics/completions request.
+        const ENFORCE_INTERVAL: Duration = Duration::from_secs(1);
+
+        let now = Instant::now();
+        let should_enforce = {
+            let mut last = self
+                .last_memory_enforce
+                .lock()
+                .expect("workspace memory enforce mutex poisoned");
+            match *last {
+                Some(prev) if now.duration_since(prev) < ENFORCE_INTERVAL => false,
+                _ => {
+                    *last = Some(now);
+                    true
+                }
+            }
+        };
+
+        if should_enforce {
+            self.memory.enforce()
+        } else {
+            self.memory.report()
+        }
+    }
+
+    fn compute_diagnostics(
+        &self,
+        file: &VfsPath,
+        file_id: FileId,
+        degraded: DegradedSettings,
+    ) -> Vec<NovaDiagnostic> {
+        if degraded.skip_expensive_diagnostics {
+            return self.syntax_diagnostics_only(file);
+        }
+
+        let snapshot = crate::WorkspaceSnapshot::from_engine(self);
+        self.query_db.with_snapshot(|snap| {
+            nova_ide::file_diagnostics_with_semantic_db(&snapshot, snap, file_id)
+        })
+    }
+
+    fn syntax_diagnostics_only(&self, file: &VfsPath) -> Vec<NovaDiagnostic> {
+        if !is_java_vfs_path(file) {
+            return Vec::new();
+        }
+        let Ok(text) = self.vfs.read_to_string(file) else {
+            return Vec::new();
+        };
+
+        let mut diagnostics = Vec::new();
+
+        let parse = nova_syntax::parse(&text);
+        diagnostics.extend(parse.errors.into_iter().map(|e| {
+            NovaDiagnostic::error(
+                "SYNTAX",
+                e.message,
+                Some(Span::new(e.range.start as usize, e.range.end as usize)),
+            )
+        }));
+
+        let java_parse = nova_syntax::parse_java(&text);
+        diagnostics.extend(java_parse.errors.into_iter().map(|e| {
+            NovaDiagnostic::error(
+                "SYNTAX",
+                e.message,
+                Some(Span::new(e.range.start as usize, e.range.end as usize)),
+            )
+        }));
+
+        diagnostics
+    }
+
     pub(crate) fn vfs(&self) -> &Vfs<LocalFs> {
         &self.vfs
+    }
+}
+
+fn is_java_vfs_path(path: &VfsPath) -> bool {
+    match path {
+        VfsPath::Local(local) => local.extension().and_then(|ext| ext.to_str()) == Some("java"),
+        VfsPath::Archive(archive) => archive.entry.ends_with(".java"),
+        // Decompiled virtual docs are always Java.
+        VfsPath::Decompiled { .. } | VfsPath::LegacyDecompiled { .. } => true,
+        VfsPath::Uri(uri) => uri.ends_with(".java"),
     }
 }
 
@@ -2416,7 +2503,7 @@ mod tests {
     use nova_db::salsa::HasFilePaths;
     use nova_db::NovaInputs;
     use nova_index::{
-        AnnotationLocation, IndexedSymbol, IndexSymbolKind, InheritanceEdge, ReferenceLocation,
+        AnnotationLocation, IndexSymbolKind, IndexedSymbol, InheritanceEdge, ReferenceLocation,
         SymbolLocation,
     };
     use nova_memory::{
@@ -2802,6 +2889,18 @@ mod tests {
         )
         .expect("plan should be present in Reduced mode");
         assert_eq!(files, vec![FileId::from_raw(2)]);
+
+    }
+
+    fn new_test_engine(memory: MemoryManager) -> WorkspaceEngine {
+        WorkspaceEngine::new(WorkspaceEngineConfig {
+            workspace_root: PathBuf::new(),
+            persistence: PersistenceConfig {
+                mode: PersistenceMode::Disabled,
+                cache: CacheConfig::from_env(),
+            },
+            memory,
+        })
     }
 
     struct TestEvictor {
@@ -3143,6 +3242,108 @@ mod tests {
             assert!(!file_path.is_empty());
             assert_eq!(file_path.as_str(), expected_rel_path.as_str());
         });
+
+    }
+
+    #[test]
+    fn degraded_mode_skips_expensive_diagnostics_but_retains_syntax_errors() {
+        let memory = MemoryManager::new(MemoryBudget::from_total(10 * nova_memory::GB));
+        let engine = new_test_engine(memory.clone());
+
+        let registration =
+            engine
+                .memory
+                .register_tracker("test-pressure", MemoryCategory::Other);
+        let tracker = registration.tracker();
+
+        // Start in low pressure so we get the full diagnostic set.
+        tracker.set_bytes(0);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = VfsPath::local(dir.path().join("Main.java"));
+        let text = "class Main { void foo() { bar(); int x = ; } }".to_string();
+        let file_id = engine.open_document(path.clone(), text, 1);
+
+        let full = engine.compute_diagnostics(&path, file_id, memory.report().degraded);
+        assert!(
+            full.iter()
+                .any(|d| d.code.as_ref() == "UNRESOLVED_REFERENCE"),
+            "expected full diagnostics to include unresolved reference, got: {full:#?}"
+        );
+
+        // Drive the memory manager into high pressure; `skip_expensive_diagnostics` should turn on.
+        tracker.set_bytes(memory.budget().total * 86 / 100);
+        let degraded_report = memory.report();
+        assert!(
+            degraded_report.degraded.skip_expensive_diagnostics,
+            "expected skip_expensive_diagnostics under high pressure, got: {degraded_report:?}"
+        );
+
+        let degraded = engine.compute_diagnostics(&path, file_id, degraded_report.degraded);
+        assert!(
+            degraded.iter().any(|d| d.code.as_ref() == "SYNTAX"),
+            "expected degraded diagnostics to include syntax errors, got: {degraded:#?}"
+        );
+        assert!(
+            !degraded
+                .iter()
+                .any(|d| d.code.as_ref() == "UNRESOLVED_REFERENCE"),
+            "expected degraded diagnostics to skip expensive checks, got: {degraded:#?}"
+        );
+    }
+
+    #[test]
+    fn degraded_mode_caps_completion_candidates() {
+        let memory = MemoryManager::new(MemoryBudget::from_total(10 * nova_memory::GB));
+        let engine = new_test_engine(memory.clone());
+
+        let registration =
+            engine
+                .memory
+                .register_tracker("test-pressure", MemoryCategory::Other);
+        let tracker = registration.tracker();
+        tracker.set_bytes(0);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = VfsPath::local(dir.path().join("Main.java"));
+
+        let mut text = String::new();
+        text.push_str("class Main {\n");
+        for idx in 0..120usize {
+            text.push_str(&format!("  void m{idx}() {{}}\n"));
+        }
+        text.push_str("  void test() {\n    /*cursor*/\n  }\n}\n");
+        let offset = text.find("/*cursor*/").unwrap();
+
+        engine.open_document(path.clone(), text, 1);
+
+        let baseline = engine.completions(&path, offset);
+        assert!(
+            baseline.len() > 50,
+            "expected baseline completions to be large enough to truncate, got {}",
+            baseline.len()
+        );
+
+        tracker.set_bytes(memory.budget().total * 86 / 100);
+        let report = memory.report();
+        let cap = report.degraded.completion_candidate_cap;
+        assert!(
+            report.degraded.skip_expensive_diagnostics,
+            "expected high pressure degraded settings, got {report:?}"
+        );
+
+        let capped = engine.completions(&path, offset);
+        assert_eq!(
+            capped.len(),
+            cap,
+            "expected completions to be truncated to cap={cap}, got {}",
+            capped.len()
+        );
+
+        // Truncation should preserve ordering (prefix of the baseline list).
+        let baseline_labels: Vec<&str> = baseline.iter().map(|item| item.label.as_str()).collect();
+        let capped_labels: Vec<&str> = capped.iter().map(|item| item.label.as_str()).collect();
+        assert_eq!(capped_labels, baseline_labels.into_iter().take(cap).collect::<Vec<_>>());
     }
 
     #[test]
