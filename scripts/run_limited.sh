@@ -6,7 +6,7 @@ set -euo pipefail
 # Prefer `prlimit` when available (hard limits). Fall back to `ulimit` otherwise.
 #
 # Examples:
-#   scripts/run_limited.sh --as 4G -- cargo build --release
+#   scripts/run_limited.sh --as 4G -- cargo build --locked --release
 #   LIMIT_AS=8G scripts/run_limited.sh -- ./memory-hungry-task
 
 usage() {
