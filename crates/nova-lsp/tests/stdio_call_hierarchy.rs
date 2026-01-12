@@ -328,7 +328,7 @@ fn stdio_server_supports_call_hierarchy_across_files() {
         .and_then(|v| v.as_array())
         .unwrap_or_else(|| panic!("expected outgoingCalls result array: {outgoing_resp:#}"));
 
-    let callee_item = outgoing
+    let callee_call = outgoing
         .iter()
         .find(|value| {
             value
@@ -340,11 +340,28 @@ fn stdio_server_supports_call_hierarchy_across_files() {
                     .and_then(|v| v.as_str())
                     .is_some_and(|uri| uri == bar_uri.as_str())
         })
-        .and_then(|value| value.get("to"))
+        .unwrap_or_else(|| panic!("expected outgoing calls to include Bar.callee: {outgoing_resp:#}"));
+
+    assert!(
+        callee_call
+            .pointer("/fromRanges")
+            .and_then(|v| v.as_array())
+            .is_some_and(|ranges| !ranges.is_empty()),
+        "expected outgoing call to include fromRanges: {outgoing_resp:#}"
+    );
+
+    let callee_item = callee_call
+        .get("to")
         .cloned()
-        .unwrap_or_else(|| {
-            panic!("expected outgoing calls to include Bar.callee: {outgoing_resp:#}")
-        });
+        .expect("callee call should have `to` CallHierarchyItem");
+
+    assert!(
+        callee_item
+            .pointer("/detail")
+            .and_then(|v| v.as_str())
+            .is_some_and(|detail| detail.contains("callee(")),
+        "expected Bar.callee CallHierarchyItem to include detail: {callee_item:#}"
+    );
 
     // incomingCalls on Bar.callee should include Foo.caller.
     write_jsonrpc_message(
@@ -517,6 +534,14 @@ fn stdio_server_prepare_call_hierarchy_resolves_receiver_call_sites_across_files
         })
         .cloned()
         .unwrap_or_else(|| panic!("expected prepareCallHierarchy to resolve Bar.callee: {prepare_resp:#}"));
+
+    assert!(
+        callee_item
+            .pointer("/detail")
+            .and_then(|v| v.as_str())
+            .is_some_and(|detail| detail.contains("callee(")),
+        "expected prepareCallHierarchy item to include detail: {callee_item:#}"
+    );
  
     // incomingCalls on Bar.callee should include Foo.caller.
     write_jsonrpc_message(
@@ -533,8 +558,9 @@ fn stdio_server_prepare_call_hierarchy_resolves_receiver_call_sites_across_files
         .get("result")
         .and_then(|v| v.as_array())
         .unwrap_or_else(|| panic!("expected incomingCalls result array: {incoming_resp:#}"));
-    assert!(
-        incoming.iter().any(|value| {
+    let caller_call = incoming
+        .iter()
+        .find(|value| {
             value
                 .pointer("/from/name")
                 .and_then(|v| v.as_str())
@@ -543,8 +569,15 @@ fn stdio_server_prepare_call_hierarchy_resolves_receiver_call_sites_across_files
                     .pointer("/from/uri")
                     .and_then(|v| v.as_str())
                     .is_some_and(|uri| uri == foo_uri.as_str())
-        }),
-        "expected incoming calls to include Foo.caller: {incoming_resp:#}"
+        })
+        .unwrap_or_else(|| panic!("expected incoming calls to include Foo.caller: {incoming_resp:#}"));
+
+    assert!(
+        caller_call
+            .pointer("/from/detail")
+            .and_then(|v| v.as_str())
+            .is_some_and(|detail| detail.contains("caller(")),
+        "expected Foo.caller CallHierarchyItem to include detail: {caller_call:#}"
     );
  
     // shutdown + exit
