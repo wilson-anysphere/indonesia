@@ -628,6 +628,46 @@ class C {
 }
 
 #[test]
+fn assert_statement_typechecks_for_boolean_condition() {
+    let src = r#"
+class C {
+    void m() {
+        assert 1 < 2;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == "assert-condition-not-boolean"),
+        "expected assert statement to type-check, got {diags:?}"
+    );
+}
+
+#[test]
+fn assert_statement_requires_boolean_condition() {
+    let src = r#"
+class C {
+    void m() {
+        assert 1;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "assert-condition-not-boolean"),
+        "expected assert-condition-not-boolean diagnostic, got {diags:?}"
+    );
+}
+
+#[test]
 fn synchronized_on_primitive_is_error() {
     let src = r#"
 class C {
@@ -643,8 +683,8 @@ class C {
     assert!(
         diags
             .iter()
-            .any(|d| d.code.as_ref() == "invalid-synchronized-expression"),
-        "expected invalid-synchronized-expression diagnostic, got {diags:?}"
+            .any(|d| d.code.as_ref() == "non-reference-monitor"),
+        "expected non-reference-monitor diagnostic, got {diags:?}"
     );
 }
 
@@ -704,10 +744,8 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        !diags
-            .iter()
-            .any(|d| d.code.as_ref() == "invalid-synchronized-expression"),
-        "did not expect invalid-synchronized-expression diagnostic, got {diags:?}"
+        !diags.iter().any(|d| d.code.as_ref() == "non-reference-monitor"),
+        "did not expect non-reference-monitor diagnostic, got {diags:?}"
     );
 }
 

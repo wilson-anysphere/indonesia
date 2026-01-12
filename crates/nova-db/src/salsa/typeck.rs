@@ -5500,10 +5500,18 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             }
             HirStmt::Synchronized { expr, body, .. } => {
                 let lock_ty = self.infer_expr(loader, *expr).ty;
-                if !lock_ty.is_errorish() && !lock_ty.is_reference() {
+                if lock_ty.is_errorish() {
+                    // Skip reporting additional diagnostics; we still want to type-check the body.
+                } else if matches!(lock_ty, Type::Null | Type::Void) {
                     self.diagnostics.push(Diagnostic::error(
                         "invalid-synchronized-expression",
-                        "synchronized expression must be a reference type",
+                        "invalid synchronized monitor expression",
+                        Some(self.body.exprs[*expr].range()),
+                    ));
+                } else if !lock_ty.is_reference() {
+                    self.diagnostics.push(Diagnostic::error(
+                        "non-reference-monitor",
+                        "synchronized monitor must be a reference type",
                         Some(self.body.exprs[*expr].range()),
                     ));
                 }

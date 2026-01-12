@@ -1628,7 +1628,6 @@ impl Lowerer {
             _ => None,
         }
     }
-
     fn lower_local_var_stmts(&self, node: &SyntaxNode) -> Vec<ast::Stmt> {
         let declarator_list = node
             .children()
@@ -1691,15 +1690,11 @@ impl Lowerer {
 
     fn lower_assert_stmt(&self, node: &SyntaxNode) -> ast::AssertStmt {
         let range = self.spans.map_node(node);
-        let mut exprs = node
-            .children()
-            .filter(|child| is_expression_kind(child.kind()));
-
+        let mut exprs = node.children().filter(|child| is_expression_kind(child.kind()));
         let condition = exprs
             .next()
             .map(|expr| self.lower_expr(&expr))
             .unwrap_or_else(|| ast::Expr::Missing(range));
-
         let message = exprs.next().map(|expr| self.lower_expr(&expr));
 
         ast::AssertStmt {
@@ -3540,8 +3535,8 @@ fn is_statement_kind(kind: SyntaxKind) -> bool {
             | SyntaxKind::IfStatement
             | SyntaxKind::WhileStatement
             | SyntaxKind::DoWhileStatement
-            | SyntaxKind::ForStatement
             | SyntaxKind::SynchronizedStatement
+            | SyntaxKind::ForStatement
             | SyntaxKind::SwitchStatement
             | SyntaxKind::TryStatement
             | SyntaxKind::ThrowStatement
@@ -4110,6 +4105,8 @@ mod tests {
             panic!("expected array initializer expression");
         };
         assert_eq!(init.items.len(), 2);
+        assert!(matches!(&init.items[0], ast::Expr::IntLiteral(_)));
+        assert!(matches!(&init.items[1], ast::Expr::IntLiteral(_)));
     }
 
     #[test]

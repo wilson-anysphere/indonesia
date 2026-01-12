@@ -648,8 +648,28 @@ class C {
     assert!(
         diags
             .iter()
-            .any(|d| d.code.as_ref() == "invalid-synchronized-expression"),
-        "expected invalid-synchronized-expression diagnostic; got {diags:?}"
+            .any(|d| d.code.as_ref() == "non-reference-monitor"),
+        "expected non-reference-monitor diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn synchronized_on_string_literal_is_ok() {
+    let src = r#"
+class C {
+    void m() {
+        synchronized ("x") { }
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "non-reference-monitor"),
+        "expected synchronized on reference to type-check; got {diags:?}"
     );
 }
 
@@ -709,10 +729,8 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        !diags
-            .iter()
-            .any(|d| d.code.as_ref() == "invalid-synchronized-expression"),
-        "did not expect invalid-synchronized-expression diagnostic; got {diags:?}"
+        !diags.iter().any(|d| d.code.as_ref() == "non-reference-monitor"),
+        "did not expect non-reference-monitor diagnostic; got {diags:?}"
     );
 }
 
