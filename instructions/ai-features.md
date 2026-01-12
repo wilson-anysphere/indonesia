@@ -20,6 +20,17 @@ This workstream owns AI/ML integration - intelligent code assistance powered by 
 
 **Required reading:**
 - [13 - AI Augmentation](../docs/13-ai-augmentation.md) - Architecture and features
+- [Protocol extensions](../docs/protocol-extensions.md) - Source of truth for AI multi-token completion polling (`nova/completion/more`)
+
+## Server-side AI overrides (environment variables)
+
+Some editor integrations (notably VS Code) set environment variables when starting `nova-lsp` to
+provide **server-side hard overrides** for AI behavior. These are read at process start (restart
+required) and are useful as privacy/cost controls.
+
+For multi-token completions, see the `nova/completion/more` notes in
+[`docs/protocol-extensions.md`](../docs/protocol-extensions.md) (including
+`NOVA_AI_COMPLETIONS_MAX_ITEMS`, where `0` disables multi-token completions).
 
 ---
 
