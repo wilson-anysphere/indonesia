@@ -28,7 +28,7 @@ Examples:
   scripts/cargo_agent.sh check --quiet
   scripts/cargo_agent.sh build --release
   scripts/cargo_agent.sh test -p nova-core --lib
-  scripts/cargo_agent.sh test -p nova-format --test format_fixtures
+  scripts/cargo_agent.sh test -p nova-format --test harness suite::format_fixtures
 
 Environment:
   NOVA_CARGO_SLOTS        Max concurrent cargo commands (default: auto)

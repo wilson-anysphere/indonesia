@@ -82,11 +82,11 @@ cargo check --all-features    # Unbounded work
 - **Always scope test runs**: `-p <crate>`, `--test=<name>`, `--lib`, or `--bin <name>`
 
 ```bash
-# CORRECT:
-bash scripts/cargo_agent.sh build --release
-bash scripts/cargo_agent.sh test -p nova-core --lib
-bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
-bash scripts/cargo_agent.sh check -p nova-parser
+ # CORRECT:
+ bash scripts/cargo_agent.sh build --release
+ bash scripts/cargo_agent.sh test -p nova-core --lib
+ bash scripts/cargo_agent.sh test -p nova-format --test harness suite::format_fixtures
+ bash scripts/cargo_agent.sh check -p nova-parser
 
 # WRONG — WILL DESTROY HOST:
 cargo test

@@ -117,12 +117,12 @@ Nova’s formatter tests use `insta` snapshots. To update snapshots:
 
 ```bash
 # Local dev
-INSTA_UPDATE=always cargo test -p nova-format --test format_fixtures
-INSTA_UPDATE=always cargo test -p nova-format --test format_snapshots
+INSTA_UPDATE=always cargo test -p nova-format --test harness suite::format_fixtures
+INSTA_UPDATE=always cargo test -p nova-format --test harness suite::format_snapshots
 
 # Agent / multi-runner
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_snapshots
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test harness suite::format_fixtures
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test harness suite::format_snapshots
 ```
 
 #### `javac` differential tests (ignored)

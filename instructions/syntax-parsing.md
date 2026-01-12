@@ -174,13 +174,15 @@ bash scripts/cargo_agent.sh test -p nova-syntax --test harness
 bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
 
 # Formatter tests (`insta` snapshots)
-bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
-bash scripts/cargo_agent.sh test -p nova-format --test format_snapshots
+bash scripts/cargo_agent.sh test -p nova-format --test harness
+# or focus on a subset:
+bash scripts/cargo_agent.sh test -p nova-format --test harness suite::format_fixtures
+bash scripts/cargo_agent.sh test -p nova-format --test harness suite::format_snapshots
 
 # Update / bless expectations:
 BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_snapshots
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test harness suite::format_fixtures
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test harness suite::format_snapshots
 ```
 
 ---

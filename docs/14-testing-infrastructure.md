@@ -284,21 +284,23 @@ Nova uses [`insta`](https://crates.io/crates/insta) snapshots for formatter outp
 
 - Inputs: `crates/nova-format/tests/fixtures/*.java`
 - Snapshot files: `crates/nova-format/tests/snapshots/*.snap`
-- Tests:
-  - Harness: `crates/nova-format/tests/format_fixtures.rs`
-    - file-based `.snap` snapshots live under `crates/nova-format/tests/snapshots/`
-    - inline snapshot tests live in Rust submodules compiled by the same harness (under `crates/nova-format/tests/**`)
+- Tests: `crates/nova-format/tests/harness.rs` (single integration test crate)
+  - `crates/nova-format/tests/suite/format_fixtures.rs` (file-based `.snap` snapshots)
+  - `crates/nova-format/tests/suite/format_snapshots.rs` (inline snapshots in Rust source)
 
 **Run locally:**
 
 ```bash
-bash scripts/cargo_agent.sh test --locked -p nova-format --test format_fixtures
+bash scripts/cargo_agent.sh test --locked -p nova-format --test harness
+# or focus on a subset:
+bash scripts/cargo_agent.sh test --locked -p nova-format --test harness suite::format_fixtures
+bash scripts/cargo_agent.sh test --locked -p nova-format --test harness suite::format_snapshots
 ```
 
 There is also an ignored large-file regression/stress test:
 
 ```bash
-bash scripts/cargo_agent.sh test --locked -p nova-format formats_large_file_regression -- --ignored
+bash scripts/cargo_agent.sh test --locked -p nova-format --test harness formats_large_file_regression -- --ignored
 ```
 
 #### 2e) In-memory fixture helpers (`nova-test-utils`)
@@ -644,16 +646,18 @@ Always inspect `git diff` after blessing.
 
 ### `insta` snapshot updates (`INSTA_UPDATE=always`)
 
-Nova uses `insta` snapshots for formatter tests in `crates/nova-format/tests/`:
+Nova uses `insta` snapshots for formatter tests in `crates/nova-format/tests/` (single harness: `tests/harness.rs`):
 
-- `format_fixtures.rs` → updates both:
-  - `.snap` files under `crates/nova-format/tests/snapshots/`
-  - inline snapshots in the Rust modules compiled by the harness
+- `suite/format_fixtures.rs` → updates `.snap` files under `crates/nova-format/tests/snapshots/`
+- `suite/format_snapshots.rs` → updates inline snapshots in the Rust source file
 
 To update snapshots:
 
 ```bash
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test --locked -p nova-format --test format_fixtures
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test --locked -p nova-format --test harness suite::format_fixtures
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test --locked -p nova-format --test harness suite::format_snapshots
+# or run all formatter tests:
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test --locked -p nova-format --test harness
 ```
 
 Always inspect `git diff` after updating snapshots.
@@ -734,12 +738,12 @@ BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-refactor <your_test_na
 ### Add a new formatter fixture snapshot
 
 1. Add a new input file under `crates/nova-format/tests/fixtures/` (e.g. `my_case.java`).
-2. Add a test to `crates/nova-format/tests/format_fixtures.rs` that loads the input and calls
+2. Add a test to `crates/nova-format/tests/suite/format_fixtures.rs` that loads the input and calls
    `insta::assert_snapshot!(...)`.
 3. Generate/update the `.snap` file with:
 
 ```bash
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test --locked -p nova-format --test format_fixtures
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test --locked -p nova-format --test harness suite::format_fixtures
 ```
 
 ---
