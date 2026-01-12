@@ -116,9 +116,15 @@ async fn tcp_server_listens_and_speaks_dap() {
                 panic!("nova-dap exited before reporting listening address");
             };
 
-            if let Some(rest) = line.strip_prefix("listening on ") {
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            if let Some(rest) = line.trim().strip_prefix("listening on ") {
                 return rest.parse::<SocketAddr>().expect("parse SocketAddr");
             }
+
+            panic!("unexpected stderr output in TCP mode: {line}");
         }
     })
     .await
