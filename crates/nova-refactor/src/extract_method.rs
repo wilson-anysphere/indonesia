@@ -102,7 +102,7 @@ fn infer_type_at_offsets(
     typeck: &mut Option<SingleFileTypecheck>,
     source: &str,
     offsets: impl IntoIterator<Item = usize>,
-) -> Option<String> {
+    ) -> Option<String> {
     for offset in offsets {
         let typeck = typeck.get_or_insert_with(|| typecheck_single_file(source));
         let Some(ty) =

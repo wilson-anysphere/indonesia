@@ -1059,3 +1059,38 @@ public class C {
         items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn completion_resolves_nested_types_in_uppercase_package_segments() {
+    let (db, file, pos) = fixture_multi(
+        PathBuf::from("/workspace/src/a/Test.java"),
+        r#"
+package a;
+class Test {
+  void m() {
+    x.Y.Outer.Inner i = null;
+    i.<|>
+  }
+}
+"#,
+        vec![(
+            PathBuf::from("/workspace/src/x/Y/Outer.java"),
+            r#"
+package x.Y;
+public class Outer {
+  public static class Inner {
+    public void foo() {}
+  }
+}
+"#
+            .to_string(),
+        )],
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "foo"),
+        "expected completion list to contain Outer.Inner.foo; got {:?}",
+        items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+    );
+}

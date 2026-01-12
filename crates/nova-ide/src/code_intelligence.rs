@@ -9407,15 +9407,15 @@ impl CompletionResolveCtx {
         };
 
         // A leading lowercase segment is typically a package name, so treat the whole string as a
-        // canonical qualified name and convert nested types to binary form (`java.util.Map.Entry`
-        // -> `java.util.Map$Entry`).
+        // canonical qualified name and generate binary `$` variants for nested types (e.g.
+        // `java.util.Map.Entry` -> `java.util.Map$Entry`).
+        //
+        // We do this by progressively replacing the *rightmost* `.` separators with `$`, which:
+        // - preserves the original source spelling first, and
+        // - supports uncommon-but-legal uppercase package segments like `x.Y.Outer.Inner`
+        //   (correct binary name: `x.Y.Outer$Inner`).
         if first.chars().next().is_some_and(|c| c.is_ascii_lowercase()) {
-            let mut out = vec![raw.to_string()];
-            let binary = canonical_to_binary_name(raw);
-            if binary != raw {
-                out.push(binary);
-            }
-            return out;
+            return nested_binary_prefixes(raw);
         }
 
         // Otherwise interpret as `Outer.Inner` where `Outer` is an in-scope type.
