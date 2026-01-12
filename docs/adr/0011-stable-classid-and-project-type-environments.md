@@ -112,12 +112,12 @@ Two acceptable implementations:
     - The returned `ClassId` is globally unique and stable within the lifetime of the database, and
       adding new classes does not renumber existing ids.
     - **Important:** Nova still evicts Salsa memos by rebuilding `ra_salsa::Storage::default()`, but
-      it snapshots+restores `#[ra_salsa::interned]` tables during eviction (see ADR 0012 and
-      `crates/nova-db/src/salsa/mod.rs:InternedTablesSnapshot`) so raw interned ids can survive memo
-      eviction within the lifetime of a single `SalsaDatabase` instance. This removes one major
-      blocker for using Salsa interning as stable `ClassId` identity, but it does *not* address
-      insertion-order dependence (interning must still be done deterministically if used inside
-      queries). See `crates/nova-db/src/salsa/interned_class_key.rs`.
+      it snapshots+restores `#[ra_salsa::interned]` tables **for the subset included in**
+      `crates/nova-db/src/salsa/mod.rs:InternedTablesSnapshot` (see ADR 0012) so raw interned ids can
+      survive memo eviction within the lifetime of a single `SalsaDatabase` instance. This removes
+      one major blocker for using Salsa interning as stable `ClassId` identity, but it does *not*
+      address insertion-order dependence (interning must still be done deterministically if used
+      inside queries). See `crates/nova-db/src/salsa/interned_class_key.rs`.
 
 2. **A persistent interner outside Salsa**
    - A project-scoped interner stored as database state, updated only by the single writer thread.

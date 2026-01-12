@@ -2285,8 +2285,9 @@ impl Database {
 
     /// Best-effort drop of memoized Salsa query results.
     ///
-    /// Input queries and interned IDs are preserved; any outstanding snapshots
-    /// remain valid.
+    /// Input queries and interned IDs (for the subset captured by
+    /// [`InternedTablesSnapshot`]) are preserved; any outstanding snapshots remain
+    /// valid.
     pub fn evict_salsa_memos(&self, pressure: MemoryPressure) {
         // Under low pressure, avoid disrupting cache locality.
         if matches!(pressure, MemoryPressure::Low) {
