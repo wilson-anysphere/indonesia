@@ -3570,20 +3570,21 @@ fn qualified_type_name_completions(
     file: FileId,
     java_source: &str,
     prefix_start: usize,
-    offset: usize,
+    _offset: usize,
     segment_prefix: &str,
 ) -> Vec<CompletionItem> {
     const MAX_ITEMS: usize = 200;
 
-    let (start, raw_prefix) = qualified_name_prefix(java_source, offset);
-    if raw_prefix.is_empty() || prefix_start < start {
+    // When completing `Foo.Ba`, `prefix_start` points at `Ba`. Use the same dotted-qualifier parsing
+    // used elsewhere (which tolerates whitespace around `.`) so completions still work for inputs
+    // like `Foo . Ba` while typing.
+    let (_start, qualifier_prefix) = dotted_qualifier_prefix(java_source, prefix_start);
+    if qualifier_prefix.is_empty() {
         return Vec::new();
     }
 
-    let base_prefix = java_source
-        .get(start..prefix_start)
-        .unwrap_or_default()
-        .to_string();
+    let base_prefix = qualifier_prefix.clone();
+    let raw_prefix = format!("{qualifier_prefix}{segment_prefix}");
 
     let (head, _tail) = match raw_prefix.split_once('.') {
         Some(v) => v,
@@ -6017,7 +6018,9 @@ fn dotted_qualifier_prefix(text: &str, segment_start: usize) -> (usize, String) 
             break;
         }
         let dot_pos = before - 1;
-        let mut seg_start = dot_pos;
+        // Support whitespace on either side of the dot (`Foo . Bar` / `Foo. Bar`).
+        let seg_end = skip_whitespace_backwards(text, dot_pos);
+        let mut seg_start = seg_end;
         while seg_start > 0 {
             let ch = bytes[seg_start - 1] as char;
             if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' {
@@ -6026,7 +6029,7 @@ fn dotted_qualifier_prefix(text: &str, segment_start: usize) -> (usize, String) 
                 break;
             }
         }
-        if seg_start == dot_pos {
+        if seg_start == seg_end {
             break;
         }
         start = seg_start;
@@ -15661,20 +15664,6 @@ pub(crate) fn identifier_prefix(text: &str, offset: usize) -> (usize, String) {
         }
     }
     (start, text.get(start..offset).unwrap_or("").to_string())
-}
-
-fn qualified_name_prefix(text: &str, offset: usize) -> (usize, String) {
-    let bytes = text.as_bytes();
-    let mut start = offset;
-    while start > 0 {
-        let ch = bytes[start - 1] as char;
-        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.' {
-            start -= 1;
-        } else {
-            break;
-        }
-    }
-    (start, text[start..offset].to_string())
 }
 
 pub(crate) fn skip_whitespace_backwards(text: &str, mut offset: usize) -> usize {

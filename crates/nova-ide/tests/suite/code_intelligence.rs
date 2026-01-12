@@ -2819,6 +2819,39 @@ class A { Map.En<|> e; }
 }
 
 #[test]
+fn completion_type_position_nested_type_with_whitespace_around_dot_includes_entry() {
+    let (db, file, pos) = fixture(
+        r#"
+import java.util.Map;
+class A { Map . En<|> e; }
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"Entry"),
+        "expected type-position completion list to contain Map.Entry even with whitespace around '.'; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_type_position_nested_type_with_whitespace_in_qualified_name_includes_entry() {
+    let (db, file, pos) = fixture(
+        r#"
+class A { java . util . Map . En<|> e; }
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"Entry"),
+        "expected type-position completion list to contain java.util.Map.Entry even with whitespace in qualified name; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_type_position_workspace_nested_type_includes_inner() {
     let (db, file, pos) = fixture(
         r#"
