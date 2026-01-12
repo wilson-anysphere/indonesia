@@ -426,6 +426,55 @@ class C {
 }
 
 #[test]
+fn extract_variable_code_action_not_offered_for_switch_rule_statement_body_without_braces_multiline() {
+    let fixture = r#"
+class C {
+    void m(int x) {
+        switch (x) {
+            case 1 ->
+                System.out.println(/*start*/1 + 2/*end*/);
+            default -> {
+                System.out.println(0);
+            }
+        }
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let uri = Uri::from_str("file:///Test.java").unwrap();
+    let range = lsp_types::Range {
+        start: offset_to_position(&source, selection.start),
+        end: offset_to_position(&source, selection.end),
+    };
+
+    let actions = extract_variable_code_actions(&uri, &source, range);
+    assert!(actions.is_empty());
+}
+
+#[test]
+fn extract_variable_code_action_not_offered_for_labeled_statement_body_without_braces() {
+    let fixture = r#"
+class C {
+    void m() {
+        label:
+            System.out.println(/*start*/1 + 2/*end*/);
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let uri = Uri::from_str("file:///Test.java").unwrap();
+    let range = lsp_types::Range {
+        start: offset_to_position(&source, selection.start),
+        end: offset_to_position(&source, selection.end),
+    };
+
+    let actions = extract_variable_code_actions(&uri, &source, range);
+    assert!(actions.is_empty());
+}
+
+#[test]
 fn inline_variable_code_actions_apply_expected_edits() {
     let source = r#"
 class C {

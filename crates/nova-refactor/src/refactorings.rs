@@ -584,7 +584,11 @@ pub fn extract_variable(
     let ty = if params.use_var {
         "var".to_string()
     } else {
-        let parser_ty = infer_expr_type(&expr);
+        let mut parser_ty = infer_expr_type(&expr);
+        if parser_ty.contains("<>") {
+            parser_ty = parser_ty.replace("<>", "");
+        }
+
         let typeck_ty = best_type_at_range_display(db, &params.file, text, expr_range);
 
         // When emitting an explicit type (instead of `var`), prefer parser-inferred names when

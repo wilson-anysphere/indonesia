@@ -1800,6 +1800,47 @@ fn extract_variable_rejects_switch_arrow_single_statement_body() {
 }
 
 #[test]
+fn extract_variable_rejects_switch_arrow_multiline_single_statement_body() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  void m(int x) {
+    switch (x) {
+      case 1 ->
+        System.out.println(/*select*/1 + 2/*end*/);
+      default -> {
+        System.out.println(0);
+      }
+    }
+  }
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src)]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "sum".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason == "cannot extract into a single-statement switch rule body without braces"
+        ),
+        "expected switch arrow rule rejection, got: {err:?}"
+    );
+}
+
+#[test]
 fn extract_variable_rejects_labeled_statement_body() {
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
