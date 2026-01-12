@@ -58,6 +58,48 @@ CompilationUnit
                   ClassKw "class"
             Semicolon ";"
           Whitespace " "
+          LocalVariableDeclarationStatement
+            Modifiers
+            Type
+              NamedType
+                VarKw "var"
+                Whitespace " "
+            VariableDeclaratorList
+              VariableDeclarator
+                Identifier "a"
+                Whitespace " "
+                Eq "="
+                Whitespace " "
+                ClassLiteralExpression
+                  NameExpression
+                    Identifier "String"
+                    LBracket "["
+                    RBracket "]"
+                  Dot "."
+                  ClassKw "class"
+            Semicolon ";"
+          Whitespace " "
+          LocalVariableDeclarationStatement
+            Modifiers
+            Type
+              NamedType
+                VarKw "var"
+                Whitespace " "
+            VariableDeclaratorList
+              VariableDeclarator
+                Identifier "ia"
+                Whitespace " "
+                Eq "="
+                Whitespace " "
+                ClassLiteralExpression
+                  NameExpression
+                    IntKw "int"
+                    LBracket "["
+                    RBracket "]"
+                  Dot "."
+                  ClassKw "class"
+            Semicolon ";"
+          Whitespace " "
           RBrace "}"
       Whitespace " "
       RBrace "}"

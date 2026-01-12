@@ -41,6 +41,27 @@ CompilationUnit
                   NewKw "new"
             Semicolon ";"
           Whitespace " "
+          LocalVariableDeclarationStatement
+            Modifiers
+            Type
+              NamedType
+                VarKw "var"
+                Whitespace " "
+            VariableDeclaratorList
+              VariableDeclarator
+                Identifier "s"
+                Whitespace " "
+                Eq "="
+                Whitespace " "
+                ConstructorReferenceExpression
+                  NameExpression
+                    Identifier "String"
+                    LBracket "["
+                    RBracket "]"
+                  DoubleColon "::"
+                  NewKw "new"
+            Semicolon ";"
+          Whitespace " "
           RBrace "}"
       Whitespace " "
       RBrace "}"
