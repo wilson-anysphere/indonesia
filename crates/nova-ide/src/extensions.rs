@@ -920,11 +920,41 @@ where
         cancel: CancellationToken,
         file: nova_ext::FileId,
     ) -> Vec<Diagnostic> {
+        fn severity_rank(severity: nova_ext::Severity) -> u8 {
+            match severity {
+                nova_ext::Severity::Error => 0,
+                nova_ext::Severity::Warning => 1,
+                nova_ext::Severity::Info => 2,
+            }
+        }
+
+        fn span_key(span: Option<Span>) -> (usize, usize) {
+            match span {
+                Some(span) => (span.start, span.end),
+                None => (usize::MAX, usize::MAX),
+            }
+        }
+
         let mut diagnostics = crate::code_intelligence::core_file_diagnostics_cancelable(
             self.db.as_ref().as_dyn_nova_db(),
             file,
             &cancel,
         );
+        // Keep built-in diagnostics ordering consistent between:
+        // - `nova_lsp::diagnostics` (which goes through `nova_ide::file_diagnostics_lsp`)
+        // - `nova_lsp::diagnostics_with_extensions` (which goes through this helper).
+        //
+        // `core_file_diagnostics_cancelable` intentionally emits diagnostics in discovery order,
+        // but the public diagnostics surface sorts/dedupes them for determinism. Mirror that here
+        // so adding extensions does not reorder built-in diagnostics.
+        diagnostics.sort_by(|a, b| {
+            span_key(a.span)
+                .cmp(&span_key(b.span))
+                .then_with(|| severity_rank(a.severity).cmp(&severity_rank(b.severity)))
+                .then_with(|| a.code.as_ref().cmp(b.code.as_ref()))
+                .then_with(|| a.message.cmp(&b.message))
+        });
+        diagnostics.dedup();
         diagnostics.extend(self.diagnostics(cancel, file));
         diagnostics
     }

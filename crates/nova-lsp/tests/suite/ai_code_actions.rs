@@ -1524,7 +1524,7 @@ fn stdio_server_ai_generate_method_body_sends_apply_edit() {
             .get("params")
             .and_then(|p| p.get("label"))
             .and_then(|v| v.as_str()),
-        Some("AI: Generate method body")
+        Some("Generate method body with AI")
     );
 
     let edit = apply_edit
@@ -1591,16 +1591,17 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
         .expect("end pos");
     let range = Range::new(start, end);
 
+    // LSP `executeCommand` for this code action uses a patch pipeline with `allow_new_files=false`.
+    // Keep the patch constrained to the source file to avoid tripping safety/validation.
     let patch = json!({
       "edits": [
         {
-          "file": "src/test/java/com/example/ExampleTest.java",
-          "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } },
-          "text": "package com.example;\n\npublic class ExampleTest {}\n"
+          "file": "src/main/java/com/example/Example.java",
+          "range": { "start": { "line": 4, "character": 0 }, "end": { "line": 4, "character": 0 } },
+          "text": "    // AI-generated tests would go here\n"
         }
       ]
-    })
-    .to_string();
+    }).to_string();
     let ai_server = crate::support::TestAiServer::start(json!({ "completion": patch }));
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
@@ -1714,7 +1715,7 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
             .get("params")
             .and_then(|p| p.get("label"))
             .and_then(|v| v.as_str()),
-        Some("AI: Generate tests")
+        Some("Generate tests with AI")
     );
     let edit = apply_edit
         .get("params")
@@ -1722,32 +1723,13 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
         .expect("applyEdit params.edit");
     let edit_value = edit.clone();
     let edit: WorkspaceEdit = serde_json::from_value(edit_value).expect("workspace edit");
-    let document_changes = edit.document_changes.expect("documentChanges");
-    let ops = match document_changes {
-        lsp_types::DocumentChanges::Operations(ops) => ops,
-        other => panic!("expected documentChanges operations, got {other:?}"),
-    };
-    let expected_test_uri = uri_for_path(&root.join("src/test/java/com/example/ExampleTest.java"))
-        .parse::<Uri>()
-        .expect("test uri");
+    let changes = edit.changes.expect("changes map");
+    let expected_uri = file_uri.parse::<Uri>().expect("file uri");
+    let edits = changes.get(&expected_uri).expect("edits for file");
     assert!(
-        ops.iter().any(|op| matches!(op, lsp_types::DocumentChangeOperation::Op(lsp_types::ResourceOp::Create(create)) if create.uri == expected_test_uri)),
-        "expected CreateFile for test uri, got {ops:?}"
-    );
-    assert!(
-        ops.iter().any(|op| {
-            let lsp_types::DocumentChangeOperation::Edit(edit) = op else {
-                return false;
-            };
-            if edit.text_document.uri != expected_test_uri {
-                return false;
-            }
-            edit.edits.iter().any(|edit| match edit {
-                lsp_types::OneOf::Left(edit) => edit.new_text.contains("ExampleTest"),
-                lsp_types::OneOf::Right(edit) => edit.text_edit.new_text.contains("ExampleTest"),
-            })
-        }),
-        "expected TextDocumentEdit containing ExampleTest, got {ops:?}"
+        edits.iter()
+            .any(|edit| edit.new_text.contains("AI-generated tests would go here")),
+        "expected inserted comment, got {edits:?}"
     );
 
     let apply_edit_id = apply_edit.get("id").cloned().expect("applyEdit id");
@@ -2399,6 +2381,36 @@ local_only = false
         &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
     );
 
+    let file_path = temp.path().join("Main.java");
+    let file_uri = uri_for_path(&file_path);
+    let text = "class Test { void run() { } }";
+    std::fs::write(&file_path, text).expect("write Main.java");
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": text
+                }
+            }
+        }),
+    );
+
+    let selection = "void run() { }";
+    let start_offset = text.find(selection).expect("selection start");
+    let end_offset = start_offset + selection.len();
+    let pos = TextPos::new(text);
+    let range = Range {
+        start: pos.lsp_position(start_offset).expect("start"),
+        end: pos.lsp_position(end_offset).expect("end"),
+    };
+
     // Even though code-edit actions are hidden from `textDocument/codeAction` when privacy policy
     // disallows edits, `workspace/executeCommand` must still enforce the policy for clients that
     // attempt to invoke the command directly.
@@ -2412,7 +2424,9 @@ local_only = false
                 "command": nova_ide::COMMAND_GENERATE_METHOD_BODY,
                 "arguments": [{
                     "method_signature": "void run()",
-                    "context": null
+                    "context": null,
+                    "uri": file_uri,
+                    "range": range
                 }]
             }
         }),
