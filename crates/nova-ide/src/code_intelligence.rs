@@ -3437,7 +3437,8 @@ fn call_insert_text_with_named_params(
     }
 
     let mut snippet = String::new();
-    snippet.push_str(name);
+    let escaped_name = escape_snippet_placeholder_text(name);
+    snippet.push_str(escaped_name.as_ref());
     snippet.push('(');
     for (idx, param) in params.iter().enumerate() {
         if idx > 0 {
@@ -3458,7 +3459,8 @@ fn call_insert_text_with_arity(name: &str, arity: usize) -> (String, Option<Inse
     }
 
     let mut snippet = String::new();
-    snippet.push_str(name);
+    let escaped_name = escape_snippet_placeholder_text(name);
+    snippet.push_str(escaped_name.as_ref());
     snippet.push('(');
     for idx in 0..arity {
         if idx > 0 {

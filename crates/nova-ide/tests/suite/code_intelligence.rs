@@ -1006,6 +1006,38 @@ class A {
 }
 
 #[test]
+fn completion_local_method_snippet_escapes_dollar_in_method_name() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void foo$bar(int x) {}
+  void m(){ foo$<|> }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "foo$bar")
+        .expect("expected foo$bar completion item");
+
+    assert_eq!(
+        item.insert_text_format,
+        Some(InsertTextFormat::SNIPPET),
+        "expected foo$bar completion to use snippet format; got {item:#?}"
+    );
+    let insert = item
+        .insert_text
+        .as_deref()
+        .expect("expected foo$bar completion to have insert_text");
+    assert!(
+        insert.contains("foo\\$bar("),
+        "expected snippet to escape '$' in method name; got {insert:?}"
+    );
+}
+
+#[test]
 fn completion_member_method_uses_snippet_placeholders_for_arity() {
     let (db, file, pos) = fixture(
         r#"
