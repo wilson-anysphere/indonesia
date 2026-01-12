@@ -8,6 +8,7 @@ nova-core = { path = "../nova-core" }
 nova-framework = { path = "../nova-framework" }
 nova-framework-web = { path = "../nova-framework-web" }
 nova-hir = { path = "../nova-hir" }
+nova-properties = { path = "../nova-properties" }
 nova-types = { path = "../nova-types" }
 nova-yaml = { path = "../nova-yaml" }
 regex = "1"
