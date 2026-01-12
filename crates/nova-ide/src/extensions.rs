@@ -1178,6 +1178,7 @@ where
             // for the whole file.
             actions.extend(type_mismatch_quick_fixes_from_context(
                 source,
+                &cancel,
                 &uri,
                 &cancel,
                 span,
@@ -1402,6 +1403,10 @@ fn type_mismatch_quick_fixes_from_context(
     }
 
     let mut actions = Vec::new();
+    if cancel.is_cancelled() {
+        return actions;
+    }
+
     if cancel.is_cancelled() {
         return actions;
     }
