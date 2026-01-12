@@ -1295,6 +1295,34 @@ class A {
 }
 
 #[test]
+fn completion_in_call_argument_ignores_commas_inside_generic_type_args() {
+    let (db, file, pos) = fixture(
+        r#"
+import java.util.*;
+class A {
+  void takeMapString(HashMap<String, Integer> xs, String y) {}
+  void m() {
+    String s = "";
+    int n = 0;
+    takeMapString(new HashMap<String, Integer>(), <|>);
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"s"),
+        "expected completion list to contain String variable `s` for second parameter; got {labels:?}"
+    );
+    assert!(
+        !labels.contains(&"n"),
+        "expected completion list to exclude int variable `n` for second parameter; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_includes_jdk_type_names_in_expression_context() {
     let (db, file, pos) = fixture(
         r#"

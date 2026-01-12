@@ -8846,9 +8846,11 @@ fn scan_call_expr_ending_at(
     let mut paren_depth = 1i32;
     let mut brace_depth = 0i32;
     let mut bracket_depth = 0i32;
-    for tok in analysis
+    let mut angle_depth = 0i32;
+    for (idx, tok) in analysis
         .tokens
         .iter()
+        .enumerate()
         .skip(open_paren_tok_idx + 1)
         .take(close_paren_tok_idx.saturating_sub(open_paren_tok_idx + 1))
     {
@@ -8875,8 +8877,21 @@ fn scan_call_expr_ending_at(
                     bracket_depth -= 1;
                 }
             }
+            TokenKind::Symbol('<') => {
+                if angle_depth > 0 || is_likely_generic_type_arg_list_start(&analysis.tokens, idx) {
+                    angle_depth += 1;
+                }
+            }
+            TokenKind::Symbol('>') => {
+                if angle_depth > 0 {
+                    angle_depth -= 1;
+                }
+            }
             TokenKind::Symbol(',')
-                if paren_depth == 1 && brace_depth == 0 && bracket_depth == 0 =>
+                if paren_depth == 1
+                    && brace_depth == 0
+                    && bracket_depth == 0
+                    && angle_depth == 0 =>
             {
                 expecting_arg = true;
             }
@@ -9555,6 +9570,93 @@ fn within_angle_brackets(tokens: &[Token], idx: usize) -> bool {
         i += 1;
     }
     depth > 0
+}
+
+fn is_likely_generic_type_arg_list_start<T: std::borrow::Borrow<Token>>(
+    tokens: &[T],
+    lt_idx: usize,
+) -> bool {
+    let Some(lt) = tokens.get(lt_idx).map(|t| t.borrow()) else {
+        return false;
+    };
+    if lt.kind != TokenKind::Symbol('<') {
+        return false;
+    }
+    if lt_idx == 0 {
+        return false;
+    }
+
+    let prev = tokens.get(lt_idx - 1).map(|t| t.borrow());
+    let prev_is_dot = prev.is_some_and(|t| t.kind == TokenKind::Symbol('.'));
+    let prev_is_type_ident = prev.is_some_and(|t| {
+        if t.kind != TokenKind::Ident {
+            return false;
+        }
+        t.text
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_uppercase())
+    });
+
+    // Without a type-ish prefix, treat `<` as a comparison operator to avoid counting errors
+    // in expressions like `foo(a < b, <|>)`.
+    if !(prev_is_dot || prev_is_type_ident) {
+        return false;
+    }
+
+    let mut depth = 1i32;
+    let mut saw_comma = false;
+    let mut prev_amp = false;
+
+    let mut i = lt_idx + 1;
+    while i < tokens.len() {
+        let tok = tokens[i].borrow();
+        match tok.kind {
+            TokenKind::Ident => prev_amp = false,
+            TokenKind::Symbol('<') => {
+                depth += 1;
+                prev_amp = false;
+            }
+            TokenKind::Symbol('>') => {
+                if depth > 0 {
+                    depth -= 1;
+                }
+                prev_amp = false;
+                if depth == 0 {
+                    if !saw_comma {
+                        return false;
+                    }
+
+                    let next_kind = tokens.get(i + 1).map(|t| t.borrow().kind.clone());
+                    return match next_kind {
+                        Some(TokenKind::Symbol('(' | ')' | '.' | '[')) => true,
+                        Some(TokenKind::Ident) if prev_is_dot => true,
+                        _ => false,
+                    };
+                }
+            }
+            TokenKind::Symbol(',') => {
+                saw_comma = true;
+                prev_amp = false;
+            }
+            TokenKind::Symbol('.') | TokenKind::Symbol('?') | TokenKind::Symbol('@') => {
+                prev_amp = false;
+            }
+            TokenKind::Symbol('[') | TokenKind::Symbol(']') => prev_amp = false,
+            TokenKind::Symbol('&') => {
+                if prev_amp {
+                    // `&&` => not a generic type bound.
+                    return false;
+                }
+                prev_amp = true;
+            }
+            _ => return false,
+        }
+
+        i += 1;
+    }
+
+    false
 }
 
 fn is_decl_modifier(ident: &str) -> bool {
@@ -11674,7 +11776,7 @@ fn expected_type_for_completion(
         .iter()
         .filter(|c| c.open_paren < prefix_start && prefix_start <= c.close_paren)
         .max_by_key(|c| c.open_paren)?;
-    let arg_index = call_argument_index(text, call.open_paren, prefix_start);
+    let arg_index = active_parameter_for_call(analysis, call, prefix_start);
     expected_type_for_call_argument(types, analysis, call, arg_index)
 }
 
@@ -11932,46 +12034,6 @@ fn is_simple_assignment_op(bytes: &[u8], before: usize) -> bool {
         Some(b'=' | b'!' | b'<' | b'>') => false,
         _ => true,
     }
-}
-
-fn call_argument_index(text: &str, open_paren: usize, offset: usize) -> usize {
-    let bytes = text.as_bytes();
-    if open_paren >= bytes.len() {
-        return 0;
-    }
-
-    let mut paren_depth = 0i32;
-    let mut brace_depth = 0i32;
-    let mut bracket_depth = 0i32;
-    let mut commas = 0usize;
-    let mut i = open_paren + 1;
-    let end = offset.min(bytes.len());
-    while i < end {
-        match bytes[i] {
-            b'(' => paren_depth += 1,
-            b')' => {
-                if paren_depth > 0 {
-                    paren_depth -= 1;
-                }
-            }
-            b'{' => brace_depth += 1,
-            b'}' => {
-                if brace_depth > 0 {
-                    brace_depth -= 1;
-                }
-            }
-            b'[' => bracket_depth += 1,
-            b']' => {
-                if bracket_depth > 0 {
-                    bracket_depth -= 1;
-                }
-            }
-            b',' if paren_depth == 0 && brace_depth == 0 && bracket_depth == 0 => commas += 1,
-            _ => {}
-        }
-        i += 1;
-    }
-    commas
 }
 
 fn filter_completions_by_expected_type(
@@ -15480,9 +15542,10 @@ fn active_parameter_for_call(analysis: &Analysis, call: &CallExpr, offset: usize
     let mut paren_depth = 0i32;
     let mut brace_depth = 0i32;
     let mut bracket_depth = 0i32;
+    let mut angle_depth = 0i32;
     let mut commas = 0usize;
 
-    for tok in analysis.tokens.iter().skip(start_idx) {
+    for (idx, tok) in analysis.tokens.iter().enumerate().skip(start_idx) {
         if tok.span.start >= offset {
             break;
         }
@@ -15506,8 +15569,21 @@ fn active_parameter_for_call(analysis: &Analysis, call: &CallExpr, offset: usize
                     bracket_depth -= 1;
                 }
             }
+            TokenKind::Symbol('<') => {
+                if angle_depth > 0 || is_likely_generic_type_arg_list_start(&analysis.tokens, idx) {
+                    angle_depth += 1;
+                }
+            }
+            TokenKind::Symbol('>') => {
+                if angle_depth > 0 {
+                    angle_depth -= 1;
+                }
+            }
             TokenKind::Symbol(',')
-                if paren_depth == 1 && brace_depth == 0 && bracket_depth == 0 =>
+                if paren_depth == 1
+                    && brace_depth == 0
+                    && bracket_depth == 0
+                    && angle_depth == 0 =>
             {
                 commas += 1;
             }
@@ -16808,6 +16884,7 @@ fn analyze(text: &str) -> Analysis {
                 let mut paren_depth = 1i32;
                 let mut brace_depth = 0i32;
                 let mut bracket_depth = 0i32;
+                let mut angle_depth = 0i32;
                 let mut close_paren = next.span.end;
                 while j < body_tokens.len() {
                     let tok = body_tokens[j];
@@ -16835,8 +16912,23 @@ fn analyze(text: &str) -> Analysis {
                                 bracket_depth -= 1;
                             }
                         }
+                        TokenKind::Symbol('<') => {
+                            if angle_depth > 0
+                                || is_likely_generic_type_arg_list_start(&body_tokens, j)
+                            {
+                                angle_depth += 1;
+                            }
+                        }
+                        TokenKind::Symbol('>') => {
+                            if angle_depth > 0 {
+                                angle_depth -= 1;
+                            }
+                        }
                         TokenKind::Symbol(',')
-                            if paren_depth == 1 && brace_depth == 0 && bracket_depth == 0 =>
+                            if paren_depth == 1
+                                && brace_depth == 0
+                                && bracket_depth == 0
+                                && angle_depth == 0 =>
                         {
                             expecting_arg = true;
                         }
