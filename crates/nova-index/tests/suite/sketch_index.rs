@@ -263,6 +263,43 @@ fn fields_on_same_line_get_distinct_decl_ranges() {
 }
 
 #[test]
+fn find_field_returns_some_for_unambiguous_field() {
+    let mut files = BTreeMap::new();
+    files.insert("A.java".to_string(), "class A { int x; }\n".to_string());
+    let index = Index::new(files);
+
+    let x = index.find_field("A", "x").expect("expected A.x field");
+    assert_eq!(x.kind, SymbolKind::Field);
+    assert_eq!(x.name, "x");
+    assert_eq!(x.container.as_deref(), Some("A"));
+}
+
+#[test]
+fn find_field_ignores_local_variables_with_same_name() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        "A.java".to_string(),
+        r#"class A {
+    int x;
+    void foo() {
+        int x = 1;
+    }
+}
+"#
+        .to_string(),
+    );
+    let index = Index::new(files);
+
+    let x = index.find_field("A", "x").expect("expected A.x field");
+    let text = index.file_text("A.java").expect("file text");
+    let decl = &text[x.decl_range.start..x.decl_range.end];
+    assert!(
+        decl.contains("int x;"),
+        "expected decl_range to point at field declaration, got: {decl:?}"
+    );
+}
+
+#[test]
 fn field_initializer_call_does_not_create_method_symbol() {
     let input = r#"
 class A {

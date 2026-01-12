@@ -250,6 +250,37 @@ impl Index {
         self.files.get(file).map(String::as_str)
     }
 
+    /// Find a field declaration in `class_name` named `field_name`.
+    ///
+    /// This returns `Some` only when the `(class_name, field_name)` pair is **unambiguous**
+    /// (exactly one declaration exists). If there are zero declarations or multiple declarations,
+    /// this returns `None`.
+    pub fn find_field(&self, class_name: &str, field_name: &str) -> Option<&Symbol> {
+        let mut found: Option<&Symbol> = None;
+        for sym in &self.symbols {
+            if sym.kind != SymbolKind::Field {
+                continue;
+            }
+            if sym.container.as_deref() != Some(class_name) {
+                continue;
+            }
+            if sym.name != field_name {
+                continue;
+            }
+            if found.is_some() {
+                // Avoid ambiguity in the presence of duplicate/partial parses.
+                return None;
+            }
+            found = Some(sym);
+        }
+        found
+    }
+
+    /// Return the [`SymbolId`] for the unambiguous field `class_name.field_name`.
+    pub fn field_symbol_id(&self, class_name: &str, field_name: &str) -> Option<SymbolId> {
+        self.find_field(class_name, field_name).map(|sym| sym.id)
+    }
+
     /// Find a method declaration in `class_name` named `method_name`.
     ///
     /// Overloads are supported: this returns `Some` only when the `(class_name, method_name)` pair
