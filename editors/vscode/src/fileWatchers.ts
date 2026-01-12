@@ -32,9 +32,6 @@ const BUILD_SYSTEM_GLOB_PATTERNS = [
   '**/gradle.properties',
   '**/gradlew',
   '**/gradlew.bat',
-  // Dependency lockfiles can change resolved versions / transitive closure.
-  '**/gradle.lockfile',
-  '**/dependency-locks/**/*.lockfile',
   '**/gradle/wrapper/gradle-wrapper.properties',
   '**/gradle/wrapper/gradle-wrapper.jar',
   // Gradle version catalogs can be named `*.versions.toml` and may live anywhere.

@@ -2214,15 +2214,32 @@ export async function activate(context: vscode.ExtensionContext) {
     };
 
     if (opts.kind === 'generateMethodBody') {
-      let inferredSignature = selectionText;
-      if (inferredSignature.includes('{')) {
-        inferredSignature = inferredSignature.split('{', 1)[0].trim();
+      if (selection.isEmpty) {
+        void vscode.window.showInformationMessage(
+          'Nova AI: Select an empty method (including `{ ... }`) to generate a method body.',
+        );
+        return undefined;
       }
 
-      const methodSignature =
-        inferredSignature ||
-        (await vscode.window.showInputBox({ prompt: 'Nova AI: Enter a method signature to generate a body for' }))?.trim();
+      const trimmed = selectionText;
+      const open = trimmed.indexOf('{');
+      const close = trimmed.lastIndexOf('}');
+      if (open === -1 || close === -1 || close <= open) {
+        void vscode.window.showInformationMessage(
+          'Nova AI: Select an empty method including both `{` and `}` to generate a method body.',
+        );
+        return undefined;
+      }
+      if (trimmed.slice(open + 1, close).trim().length > 0) {
+        void vscode.window.showInformationMessage(
+          'Nova AI: Selected method body is not empty. Select an empty method body to generate one.',
+        );
+        return undefined;
+      }
+
+      const methodSignature = trimmed.slice(0, open).trim();
       if (!methodSignature) {
+        void vscode.window.showInformationMessage('Nova AI: Could not infer a method signature from the selection.');
         return undefined;
       }
 

@@ -361,7 +361,7 @@ Explain Error uses a **read-only virtual document** (so it won’t create an uns
 These actions are also available as command-palette commands:
 **Nova AI: Explain Error**, **Nova AI: Generate Method Body**, **Nova AI: Generate Tests**. When run
 from the command palette, Nova derives arguments from the active Java editor (diagnostic under the
-cursor for Explain Error; selection or prompt for Generate Method Body/Tests).
+cursor for Explain Error; selection for Generate Method Body; selection or prompt for Generate Tests).
 
 If the server provides work-done progress updates, Nova will also surface them in a VS Code progress
 notification (e.g. “Building context…”, “Calling model…”).
