@@ -7683,8 +7683,9 @@ fn resolve_type_ref_text<'idx>(
     // Preload the *referenced* types (excluding type-use annotations) so that the type-ref resolver
     // can map them into `Type::Class` where possible.
     //
-    // We still pass the original text into `resolve_type_ref_text` so unresolved type-use
-    // annotation names (e.g. `List<@Missing String>`) can be diagnosed when anchored.
+    // We still pass the original text into `resolve_type_ref_text` so the parser can skip over
+    // inline type-use annotations; missing annotation *types* are filtered out below to avoid
+    // noise until Nova models type-use annotations.
     preload_type_names(resolver, scopes, scope_id, loader, text);
     nova_resolve::type_ref::resolve_type_ref_text(
         resolver,
