@@ -1,8 +1,23 @@
 use nova_refactor::{
-    move_method, move_static_member, MoveMemberError, MoveMethodParams, MoveStaticMemberParams,
+    apply_workspace_edit, move_method, move_static_member, FileId, MoveMemberError,
+    MoveMethodParams, MoveStaticMemberParams, WorkspaceEdit,
 };
 use nova_test_utils::assert_fixture_transformed;
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+fn apply_edit(files: &mut BTreeMap<PathBuf, String>, edit: &WorkspaceEdit) {
+    let by_id: BTreeMap<FileId, String> = files
+        .iter()
+        .map(|(path, text)| (FileId::new(path.to_string_lossy().into_owned()), text.clone()))
+        .collect();
+
+    let updated = apply_workspace_edit(&by_id, edit).expect("workspace edit applies cleanly");
+    *files = updated
+        .into_iter()
+        .map(|(file, text)| (PathBuf::from(file.0), text))
+        .collect();
+}
 
 #[test]
 fn move_static_method_updates_call_sites() {
@@ -18,7 +33,7 @@ fn move_static_method_updates_call_sites() {
             },
         )
         .expect("refactoring succeeds");
-        edit.apply_to(files, true);
+        apply_edit(files, &edit);
     });
 }
 
@@ -36,7 +51,7 @@ fn move_instance_method_adds_receiver_param_and_updates_calls() {
             },
         )
         .expect("refactoring succeeds");
-        edit.apply_to(files, true);
+        apply_edit(files, &edit);
     });
 }
 

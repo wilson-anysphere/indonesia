@@ -16,11 +16,10 @@
 //! - optional file operations (rename/create/delete)
 //! - byte-offset text edits (replace/insert/delete) across one or more files
 //!
-//! Many refactorings in this crate still return legacy edit types (for example
-//! `safe_delete::TextEdit` or `move_java::RefactoringEdit`). Those APIs are kept
-//! temporarily to allow incremental migration, but conversion helpers exist so
-//! all refactorings can ultimately be piped through the same preview/conflict/LSP
-//! conversion code.
+//! Some refactorings in this crate still return legacy edit types (for example
+//! `safe_delete::TextEdit`). Those APIs are kept temporarily to allow incremental
+//! migration, but conversion helpers exist so all refactorings can ultimately be
+//! piped through the same preview/conflict/LSP conversion code.
 //!
 //! Additionally, the crate contains a small semantic refactoring engine used for
 //! early experiments. It models changes as [`SemanticChange`] values and

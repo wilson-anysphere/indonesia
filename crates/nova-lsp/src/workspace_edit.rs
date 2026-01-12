@@ -1,16 +1,12 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use lsp_types::{
-    ClientCapabilities, DocumentChangeOperation, DocumentChanges,
-    OptionalVersionedTextDocumentIdentifier, ResourceOp, ResourceOperationKind, TextDocumentEdit,
-    TextEdit, Uri, WorkspaceEdit,
-};
+use lsp_types::{ClientCapabilities, ResourceOperationKind, Uri, WorkspaceEdit};
 
 use nova_refactor::{
-    workspace_edit_to_lsp_document_changes_with_uri_mapper, FileId as RefactorFileId,
-    FileOp as RefactorFileOp, RefactoringEdit, TextDatabase, TextRange,
-    WorkspaceEdit as RefactorWorkspaceEdit, WorkspaceTextEdit,
+    apply_workspace_edit, workspace_edit_to_lsp_document_changes_with_uri_mapper,
+    workspace_edit_to_lsp_with_uri_mapper, FileId as RefactorFileId, FileOp as RefactorFileOp,
+    TextDatabase, WorkspaceEdit as RefactorWorkspaceEdit, WorkspaceTextEdit,
 };
 
 pub fn client_supports_file_operations(capabilities: &ClientCapabilities) -> bool {
@@ -62,7 +58,7 @@ fn can_delete(capabilities: &ClientCapabilities) -> bool {
 pub fn workspace_edit_from_refactor(
     root_uri: &Uri,
     original_files: &HashMap<PathBuf, String>,
-    edit: &RefactoringEdit,
+    edit: &RefactorWorkspaceEdit,
     capabilities: &ClientCapabilities,
 ) -> WorkspaceEdit {
     if can_rename(capabilities) {
@@ -71,59 +67,9 @@ pub fn workspace_edit_from_refactor(
         {
             return edit;
         }
+    }
 
-        let mut ops: Vec<DocumentChangeOperation> = Vec::new();
-
-        for mv in &edit.file_moves {
-            let old_uri = join_uri(root_uri, &mv.old_path);
-            let new_uri = join_uri(root_uri, &mv.new_path);
-
-            ops.push(DocumentChangeOperation::Op(ResourceOp::Rename(
-                lsp_types::RenameFile {
-                    old_uri,
-                    new_uri: new_uri.clone(),
-                    options: None,
-                    annotation_id: None,
-                },
-            )));
-
-            let old_contents = original_files
-                .get(&mv.old_path)
-                .map(String::as_str)
-                .unwrap_or_default();
-            ops.push(DocumentChangeOperation::Edit(TextDocumentEdit {
-                text_document: OptionalVersionedTextDocumentIdentifier {
-                    uri: new_uri,
-                    version: None,
-                },
-                edits: vec![lsp_types::OneOf::Left(TextEdit {
-                    range: full_document_range(old_contents),
-                    new_text: mv.new_contents.clone(),
-                })],
-            }));
-        }
-
-        for fe in &edit.file_edits {
-            let uri = join_uri(root_uri, &fe.path);
-            let old_contents = original_files
-                .get(&fe.path)
-                .map(String::as_str)
-                .unwrap_or_default();
-            ops.push(DocumentChangeOperation::Edit(TextDocumentEdit {
-                text_document: OptionalVersionedTextDocumentIdentifier { uri, version: None },
-                edits: vec![lsp_types::OneOf::Left(TextEdit {
-                    range: full_document_range(old_contents),
-                    new_text: fe.new_contents.clone(),
-                })],
-            }));
-        }
-
-        WorkspaceEdit {
-            changes: None,
-            document_changes: Some(DocumentChanges::Operations(ops)),
-            change_annotations: None,
-        }
-    } else if can_create(capabilities) && can_delete(capabilities) {
+    if can_create(capabilities) && can_delete(capabilities) {
         if let Some(edit) = try_workspace_edit_from_refactor_with_create_delete_support(
             root_uri,
             original_files,
@@ -131,123 +77,74 @@ pub fn workspace_edit_from_refactor(
         ) {
             return edit;
         }
-
-        let mut ops: Vec<DocumentChangeOperation> = Vec::new();
-
-        for mv in &edit.file_moves {
-            let old_uri = join_uri(root_uri, &mv.old_path);
-            let new_uri = join_uri(root_uri, &mv.new_path);
-
-            ops.push(DocumentChangeOperation::Op(ResourceOp::Create(
-                lsp_types::CreateFile {
-                    uri: new_uri.clone(),
-                    options: None,
-                    annotation_id: None,
-                },
-            )));
-
-            ops.push(DocumentChangeOperation::Edit(TextDocumentEdit {
-                text_document: OptionalVersionedTextDocumentIdentifier {
-                    uri: new_uri,
-                    version: None,
-                },
-                edits: vec![lsp_types::OneOf::Left(TextEdit {
-                    range: full_document_range(""),
-                    new_text: mv.new_contents.clone(),
-                })],
-            }));
-
-            ops.push(DocumentChangeOperation::Op(ResourceOp::Delete(
-                lsp_types::DeleteFile {
-                    uri: old_uri,
-                    options: None,
-                },
-            )));
-        }
-
-        for fe in &edit.file_edits {
-            let uri = join_uri(root_uri, &fe.path);
-            let old_contents = original_files
-                .get(&fe.path)
-                .map(String::as_str)
-                .unwrap_or_default();
-            ops.push(DocumentChangeOperation::Edit(TextDocumentEdit {
-                text_document: OptionalVersionedTextDocumentIdentifier { uri, version: None },
-                edits: vec![lsp_types::OneOf::Left(TextEdit {
-                    range: full_document_range(old_contents),
-                    new_text: fe.new_contents.clone(),
-                })],
-            }));
-        }
-
-        WorkspaceEdit {
-            changes: None,
-            document_changes: Some(DocumentChanges::Operations(ops)),
-            change_annotations: None,
-        }
     } else {
-        // Fallback: no file operations, so rewrite the original documents in place.
-        let mut changes: HashMap<Uri, Vec<TextEdit>> = HashMap::new();
-
-        for mv in &edit.file_moves {
-            let uri = join_uri(root_uri, &mv.old_path);
-            let old_contents = original_files
-                .get(&mv.old_path)
-                .map(String::as_str)
-                .unwrap_or_default();
-            changes.insert(
-                uri,
-                vec![TextEdit {
-                    range: full_document_range(old_contents),
-                    new_text: mv.new_contents.clone(),
-                }],
-            );
-        }
-
-        for fe in &edit.file_edits {
-            let uri = join_uri(root_uri, &fe.path);
-            let old_contents = original_files
-                .get(&fe.path)
-                .map(String::as_str)
-                .unwrap_or_default();
-            changes.insert(
-                uri,
-                vec![TextEdit {
-                    range: full_document_range(old_contents),
-                    new_text: fe.new_contents.clone(),
-                }],
-            );
-        }
-
-        WorkspaceEdit {
-            changes: Some(changes),
-            document_changes: None,
-            change_annotations: None,
-        }
+        // Continue to the fallback below.
     }
+
+    // Fallback: no file operations, so rewrite the original documents in place.
+    try_workspace_edit_from_refactor_without_file_ops_support(root_uri, original_files, edit)
+        .unwrap_or_else(|| WorkspaceEdit::default())
 }
 
 fn try_workspace_edit_from_refactor_with_rename_support(
     root_uri: &Uri,
     original_files: &HashMap<PathBuf, String>,
-    edit: &RefactoringEdit,
+    edit: &RefactorWorkspaceEdit,
 ) -> Option<WorkspaceEdit> {
-    // Convert the legacy move refactoring edit into Nova's canonical `WorkspaceEdit` representation
-    // and then reuse the shared `workspace_edit_to_lsp_document_changes_*` helper for UTF-16 correct
-    // ranges.
-    //
-    // If conversion fails for any reason (missing original file, invalid ranges), fall back to the
-    // legacy implementation.
-    let original_files: BTreeMap<PathBuf, String> = original_files
-        .iter()
-        .map(|(path, text)| (path.clone(), text.clone()))
-        .collect();
-
-    let canonical = edit.to_workspace_edit(&original_files).ok()?;
-    let db = TextDatabase::new(original_files.into_iter().map(|(path, text)| {
+    let db = TextDatabase::new(original_files.iter().map(|(path, text)| {
         (
             RefactorFileId::new(path.to_string_lossy().into_owned()),
-            text,
+            text.clone(),
+        )
+    }));
+
+    workspace_edit_to_lsp_document_changes_with_uri_mapper(&db, edit, |file| {
+        Ok(join_uri(root_uri, Path::new(&file.0)))
+    })
+    .ok()
+}
+
+fn try_workspace_edit_from_refactor_with_create_delete_support(
+    root_uri: &Uri,
+    original_files: &HashMap<PathBuf, String>,
+    edit: &RefactorWorkspaceEdit,
+) -> Option<WorkspaceEdit> {
+    let mut canonical = RefactorWorkspaceEdit {
+        file_ops: Vec::new(),
+        text_edits: edit.text_edits.clone(),
+    };
+
+    for op in &edit.file_ops {
+        match op {
+            RefactorFileOp::Rename { from, to } => {
+                let from_path = PathBuf::from(&from.0);
+                let from_contents = original_files.get(&from_path)?;
+                canonical.file_ops.push(RefactorFileOp::Create {
+                    file: to.clone(),
+                    contents: from_contents.clone(),
+                });
+                canonical
+                    .file_ops
+                    .push(RefactorFileOp::Delete { file: from.clone() });
+            }
+            RefactorFileOp::Create { file, contents } => canonical.file_ops.push(
+                RefactorFileOp::Create {
+                    file: file.clone(),
+                    contents: contents.clone(),
+                },
+            ),
+            RefactorFileOp::Delete { file } => canonical
+                .file_ops
+                .push(RefactorFileOp::Delete { file: file.clone() }),
+        }
+    }
+
+    canonical.normalize().ok()?;
+
+    let db = TextDatabase::new(original_files.iter().map(|(path, text)| {
+        (
+            RefactorFileId::new(path.to_string_lossy().into_owned()),
+            text.clone(),
         )
     }));
 
@@ -257,56 +154,63 @@ fn try_workspace_edit_from_refactor_with_rename_support(
     .ok()
 }
 
-fn try_workspace_edit_from_refactor_with_create_delete_support(
+fn try_workspace_edit_from_refactor_without_file_ops_support(
     root_uri: &Uri,
     original_files: &HashMap<PathBuf, String>,
-    edit: &RefactoringEdit,
+    edit: &RefactorWorkspaceEdit,
 ) -> Option<WorkspaceEdit> {
-    // Convert the legacy move refactoring edit into Nova's canonical `WorkspaceEdit` representation
-    // using Create+Delete operations (for clients without Rename support), then reuse the shared
-    // `workspace_edit_to_lsp_document_changes_*` helper for UTF-16 correct ranges.
+    let db = TextDatabase::new(original_files.iter().map(|(path, text)| {
+        (
+            RefactorFileId::new(path.to_string_lossy().into_owned()),
+            text.clone(),
+        )
+    }));
+
+    let original_by_id: BTreeMap<RefactorFileId, String> = original_files
+        .iter()
+        .map(|(path, text)| (RefactorFileId::new(path.to_string_lossy().into_owned()), text.clone()))
+        .collect();
+    let applied = apply_workspace_edit(&original_by_id, edit).ok()?;
+
+    let mut rewritten_sources: HashSet<RefactorFileId> = HashSet::new();
+    let mut rename_dests: HashSet<RefactorFileId> = HashSet::new();
+
     let mut canonical = RefactorWorkspaceEdit {
         file_ops: Vec::new(),
         text_edits: Vec::new(),
     };
 
-    for mv in &edit.file_moves {
-        // Ensure the file exists so we can compute pre-op file state (used for UTF-16 range
-        // conversion and to avoid emitting invalid DeleteFile operations).
-        let _ = original_files.get(&mv.old_path)?;
+    for op in &edit.file_ops {
+        let RefactorFileOp::Rename { from, to } = op else {
+            continue;
+        };
 
-        canonical.file_ops.push(RefactorFileOp::Create {
-            file: RefactorFileId::new(mv.new_path.to_string_lossy().into_owned()),
-            contents: mv.new_contents.clone(),
-        });
-        canonical.file_ops.push(RefactorFileOp::Delete {
-            file: RefactorFileId::new(mv.old_path.to_string_lossy().into_owned()),
-        });
+        let old_contents = original_by_id.get(from)?;
+        let new_contents = applied.get(to)?;
+
+        rewritten_sources.insert(from.clone());
+        rename_dests.insert(to.clone());
+
+        canonical.text_edits.push(WorkspaceTextEdit::replace(
+            from.clone(),
+            nova_refactor::TextRange::new(0, old_contents.len()),
+            new_contents.clone(),
+        ));
     }
 
-    for fe in &edit.file_edits {
-        let old_contents = original_files.get(&fe.path)?;
-        canonical.text_edits.push(WorkspaceTextEdit::replace(
-            RefactorFileId::new(fe.path.to_string_lossy().into_owned()),
-            TextRange::new(0, old_contents.len()),
-            fe.new_contents.clone(),
-        ));
+    for e in &edit.text_edits {
+        if rewritten_sources.contains(&e.file) || rename_dests.contains(&e.file) {
+            continue;
+        }
+        if !original_by_id.contains_key(&e.file) {
+            continue;
+        }
+        canonical.text_edits.push(e.clone());
     }
 
     canonical.normalize().ok()?;
 
-    let original_files: BTreeMap<PathBuf, String> = original_files
-        .iter()
-        .map(|(path, text)| (path.clone(), text.clone()))
-        .collect();
-    let db = TextDatabase::new(original_files.into_iter().map(|(path, text)| {
-        (
-            RefactorFileId::new(path.to_string_lossy().into_owned()),
-            text,
-        )
-    }));
-
-    workspace_edit_to_lsp_document_changes_with_uri_mapper(&db, &canonical, |file| {
+    workspace_edit_to_lsp_with_uri_mapper(&db, &canonical, |file| {
         Ok(join_uri(root_uri, Path::new(&file.0)))
     })
     .ok()
@@ -376,9 +280,38 @@ fn end_position(contents: &str) -> lsp_types::Position {
 mod tests {
     use super::*;
 
-    use lsp_types::{WorkspaceClientCapabilities, WorkspaceEditClientCapabilities};
+    use lsp_types::{
+        DocumentChangeOperation, DocumentChanges, ResourceOp, WorkspaceClientCapabilities,
+        WorkspaceEditClientCapabilities,
+    };
     use nova_refactor::MoveClassParams;
     use std::collections::BTreeMap;
+
+    fn basic_move_edit(
+        original_files: &HashMap<PathBuf, String>,
+        from_path: &str,
+        to_path: &str,
+        new_contents: &str,
+    ) -> RefactorWorkspaceEdit {
+        let from = RefactorFileId::new(from_path);
+        let to = RefactorFileId::new(to_path);
+        let old_contents = original_files
+            .get(&PathBuf::from(from_path))
+            .map(String::as_str)
+            .unwrap_or_default();
+
+        RefactorWorkspaceEdit {
+            file_ops: vec![RefactorFileOp::Rename {
+                from: from.clone(),
+                to: to.clone(),
+            }],
+            text_edits: vec![WorkspaceTextEdit::replace(
+                to,
+                nova_refactor::TextRange::new(0, old_contents.len()),
+                new_contents,
+            )],
+        }
+    }
 
     #[test]
     fn workspace_edit_includes_rename_operation_when_supported() {
@@ -388,14 +321,12 @@ mod tests {
             "package com.foo;\n\npublic class A {}\n".to_string(),
         );
 
-        let edit = RefactoringEdit {
-            file_moves: vec![nova_refactor::FileMove {
-                old_path: PathBuf::from("src/main/java/com/foo/A.java"),
-                new_path: PathBuf::from("src/main/java/com/bar/A.java"),
-                new_contents: "package com.bar;\n\npublic class A {}\n".to_string(),
-            }],
-            file_edits: Vec::new(),
-        };
+        let edit = basic_move_edit(
+            &original,
+            "src/main/java/com/foo/A.java",
+            "src/main/java/com/bar/A.java",
+            "package com.bar;\n\npublic class A {}\n",
+        );
 
         let caps = ClientCapabilities {
             workspace: Some(WorkspaceClientCapabilities {
@@ -428,14 +359,12 @@ mod tests {
             "package com.foo;\n\npublic class A {}\n".to_string(),
         );
 
-        let edit = RefactoringEdit {
-            file_moves: vec![nova_refactor::FileMove {
-                old_path: PathBuf::from("src/main/java/com/foo/A.java"),
-                new_path: PathBuf::from("src/main/java/com/bar/A.java"),
-                new_contents: "package com.bar;\n\npublic class A {}\n".to_string(),
-            }],
-            file_edits: Vec::new(),
-        };
+        let edit = basic_move_edit(
+            &original,
+            "src/main/java/com/foo/A.java",
+            "src/main/java/com/bar/A.java",
+            "package com.bar;\n\npublic class A {}\n",
+        );
 
         let caps = ClientCapabilities::default();
 
@@ -513,14 +442,12 @@ mod tests {
             "package com.foo;\n\npublic class A {}\n".to_string(),
         );
 
-        let edit = RefactoringEdit {
-            file_moves: vec![nova_refactor::FileMove {
-                old_path: PathBuf::from("src/main/java/com/foo/A.java"),
-                new_path: PathBuf::from("src/main/java/com/bar/A.java"),
-                new_contents: "package com.bar;\n\npublic class A {}\n".to_string(),
-            }],
-            file_edits: Vec::new(),
-        };
+        let edit = basic_move_edit(
+            &original,
+            "src/main/java/com/foo/A.java",
+            "src/main/java/com/bar/A.java",
+            "package com.bar;\n\npublic class A {}\n",
+        );
 
         let caps = ClientCapabilities {
             workspace: Some(WorkspaceClientCapabilities {

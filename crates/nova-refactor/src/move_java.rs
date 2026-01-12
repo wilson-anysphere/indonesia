@@ -126,6 +126,8 @@ pub enum RefactorError {
     PackageNotFound { package: String },
     #[error("parse error: {0}")]
     Parse(String),
+    #[error(transparent)]
+    Edit(#[from] crate::edit::EditError),
 }
 
 fn parse_err(err: impl std::fmt::Display) -> RefactorError {
@@ -146,7 +148,7 @@ pub struct MovePackageParams {
 pub fn move_class(
     files: &BTreeMap<PathBuf, String>,
     params: MoveClassParams,
-) -> Result<RefactoringEdit, RefactorError> {
+) -> Result<WorkspaceEdit, RefactorError> {
     nova_project::validate_package_name(&params.target_package).map_err(|e| {
         RefactorError::IllegalPackageName {
             package: params.target_package.clone(),
@@ -259,13 +261,13 @@ pub fn move_class(
         }
     }
 
-    Ok(out)
+    Ok(out.to_workspace_edit(files)?)
 }
 
 pub fn move_package(
     files: &BTreeMap<PathBuf, String>,
     params: MovePackageParams,
-) -> Result<RefactoringEdit, RefactorError> {
+) -> Result<WorkspaceEdit, RefactorError> {
     nova_project::validate_package_name(&params.old_package).map_err(|e| {
         RefactorError::IllegalPackageName {
             package: params.old_package.clone(),
@@ -400,7 +402,7 @@ pub fn move_package(
         }
     }
 
-    Ok(out)
+    Ok(out.to_workspace_edit(files)?)
 }
 
 fn package_is_prefix(prefix: &str, package: &str) -> bool {
@@ -1021,11 +1023,28 @@ mod java_text {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::edit::{apply_workspace_edit, FileId};
     use std::path::Path;
 
     fn files(map: Vec<(&str, &str)>) -> BTreeMap<PathBuf, String> {
         map.into_iter()
             .map(|(p, c)| (PathBuf::from(p), c.to_string()))
+            .collect()
+    }
+
+    fn apply_edit(
+        input: &BTreeMap<PathBuf, String>,
+        edit: &WorkspaceEdit,
+    ) -> BTreeMap<PathBuf, String> {
+        let by_id: BTreeMap<FileId, String> = input
+            .iter()
+            .map(|(path, text)| (FileId::new(path.to_string_lossy().into_owned()), text.clone()))
+            .collect();
+
+        let applied = apply_workspace_edit(&by_id, edit).expect("workspace edit applies cleanly");
+        applied
+            .into_iter()
+            .map(|(file, text)| (PathBuf::from(file.0), text))
             .collect()
     }
 
@@ -1070,8 +1089,7 @@ public class C { A a; }
         )
         .unwrap();
 
-        let mut applied = input.clone();
-        edit.apply_to(&mut applied, true);
+        let applied = apply_edit(&input, &edit);
 
         assert!(applied.contains_key(Path::new("src/main/java/com/bar/A.java")));
         assert!(!applied.contains_key(Path::new("src/main/java/com/foo/A.java")));
@@ -1120,8 +1138,7 @@ public class C { A a; }
         )
         .unwrap();
 
-        let mut applied = input.clone();
-        edit.apply_to(&mut applied, true);
+        let applied = apply_edit(&input, &edit);
 
         let c = &applied[Path::new("src/main/java/com/other/C.java")];
         assert!(c.contains("import com.foo.*;"));
@@ -1194,8 +1211,7 @@ public class B {}
         )
         .unwrap();
 
-        let mut applied = input.clone();
-        edit.apply_to(&mut applied, true);
+        let applied = apply_edit(&input, &edit);
 
         let moved = &applied[Path::new("src/main/java/com/bar/A.java")];
         assert!(moved.contains("package com.bar;"));
@@ -1225,8 +1241,7 @@ public class A {
         )
         .unwrap();
 
-        let mut applied = input.clone();
-        edit.apply_to(&mut applied, true);
+        let applied = apply_edit(&input, &edit);
 
         let moved = &applied[Path::new("src/main/java/com/bar/A.java")];
         assert!(moved.contains("package com.bar;"));
@@ -1276,8 +1291,7 @@ public class C {
         )
         .unwrap();
 
-        let mut applied = input.clone();
-        edit.apply_to(&mut applied, true);
+        let applied = apply_edit(&input, &edit);
 
         assert!(applied.contains_key(Path::new("src/main/java/com/bar/A.java")));
         assert!(applied.contains_key(Path::new("src/main/java/com/bar/sub/B.java")));

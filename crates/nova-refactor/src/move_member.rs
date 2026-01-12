@@ -1,3 +1,4 @@
+use crate::edit::WorkspaceEdit;
 use crate::java::{find_class, find_method_decl, list_fields, list_methods, ClassBlock};
 use crate::move_java::{FileEdit, RefactoringEdit};
 use nova_format::{dedent_block, indent_block};
@@ -41,6 +42,8 @@ pub enum MoveMemberError {
     UnsupportedCallSite { method: String, file: PathBuf },
     #[error("unsupported construct in moved method '{method}': {reason}")]
     UnsupportedMethod { method: String, reason: String },
+    #[error(transparent)]
+    Edit(#[from] crate::edit::EditError),
 }
 
 #[derive(Clone, Debug)]
@@ -176,7 +179,7 @@ fn collect_static_reference_edits(
 pub fn move_static_member(
     files: &BTreeMap<PathBuf, String>,
     params: MoveStaticMemberParams,
-) -> Result<RefactoringEdit, MoveMemberError> {
+) -> Result<WorkspaceEdit, MoveMemberError> {
     let (from_path, from_class) = find_file_containing_class(files, &params.from_class)
         .ok_or_else(|| MoveMemberError::ClassNotFound(params.from_class.clone()))?;
     let (to_path, to_class) = find_file_containing_class(files, &params.to_class)
@@ -281,7 +284,7 @@ pub fn move_static_member(
         }
     }
 
-    Ok(out)
+    Ok(out.to_workspace_edit(files)?)
 }
 
 fn identifier_tokens(text: &str) -> Vec<(usize, usize, String)> {
@@ -450,7 +453,7 @@ fn detect_unhandled_dot_calls(text: &str, method_name: &str) -> bool {
 pub fn move_method(
     files: &BTreeMap<PathBuf, String>,
     params: MoveMethodParams,
-) -> Result<RefactoringEdit, MoveMemberError> {
+) -> Result<WorkspaceEdit, MoveMemberError> {
     let (from_path, from_class) = find_file_containing_class(files, &params.from_class)
         .ok_or_else(|| MoveMemberError::ClassNotFound(params.from_class.clone()))?;
     let (to_path, to_class) = find_file_containing_class(files, &params.to_class)
@@ -695,5 +698,5 @@ pub fn move_method(
         }
     }
 
-    Ok(out)
+    Ok(out.to_workspace_edit(files)?)
 }
