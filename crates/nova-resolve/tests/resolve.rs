@@ -322,6 +322,68 @@ class C {
 }
 
 #[test]
+fn record_compact_constructor_param_shadows_record_component_field_in_body() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(
+        file,
+        r#"
+record Point(int x, int y) {
+  Point { int z = x; }
+}
+"#,
+    );
+
+    let tree = queries::item_tree(&db, file);
+    let record_id = match tree.items.first().copied() {
+        Some(Item::Record(id)) => id,
+        other => panic!("expected record item, got {other:?}"),
+    };
+    let ctor = tree
+        .record(record_id)
+        .members
+        .iter()
+        .find_map(|member| match *member {
+            Member::Constructor(id) => Some(id),
+            _ => None,
+        })
+        .expect("record compact constructor");
+
+    let scopes = build_scopes(&db, file);
+    let owner = BodyOwner::Constructor(ctor);
+    let body = queries::constructor_body(&db, ctor);
+    let statements = match &body.stmts[body.root] {
+        hir::Stmt::Block { statements, .. } => statements,
+        other => panic!("expected root block, got {other:?}"),
+    };
+
+    let stmt_let = statements[0];
+    let x_expr = match &body.stmts[stmt_let] {
+        hir::Stmt::Let {
+            initializer: Some(expr),
+            ..
+        } => *expr,
+        other => panic!("expected let statement, got {other:?}"),
+    };
+    let x_scope = *scopes
+        .expr_scopes
+        .get(&(owner, x_expr))
+        .expect("x expr scope");
+
+    let jdk = JdkIndex::new();
+    let resolver = Resolver::new(&jdk);
+    let res = resolver.resolve_name(&scopes.scopes, x_scope, &Name::from("x"));
+    assert!(
+        matches!(
+            res,
+            Some(Resolution::Parameter(p))
+                if matches!(p.owner, nova_resolve::ParamOwner::Constructor(id) if id == ctor)
+        ),
+        "expected parameter, got {res:?}"
+    );
+}
+
+#[test]
 fn single_import_beats_same_package() {
     let mut db = TestDb::default();
     let file = FileId::from_raw(0);
