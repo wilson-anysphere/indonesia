@@ -207,6 +207,7 @@ impl<C: JdwpClient> DapServer<C> {
             "nova/metrics" => self.metrics(request),
             "nova/pinObject" => self.pin_object(request),
             "nova/bugReport" => self.bug_report(request),
+            "terminate" => self.terminate(request),
             "disconnect" => self.disconnect(request),
             _ => Ok(Outgoing {
                 messages: vec![serde_json::to_value(Response::error(
@@ -841,6 +842,32 @@ impl<C: JdwpClient> DapServer<C> {
         )
     }
 
+    fn terminate(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
+        // `terminate` is part of the DAP core protocol. The legacy adapter doesn't
+        // own the lifetime of the debuggee process (it only connects to an
+        // existing JDWP session), so we treat it as equivalent to `disconnect`.
+        //
+        // Some clients may send `terminateDebuggee`; we parse it on a best-effort
+        // basis but cannot act on it.
+        #[derive(Debug, Deserialize, Default)]
+        #[serde(rename_all = "camelCase")]
+        struct Args {
+            #[serde(default)]
+            terminate_debuggee: Option<bool>,
+        }
+
+        let args: Option<Args> = request
+            .arguments
+            .clone()
+            .map(serde_json::from_value)
+            .transpose()
+            .ok()
+            .flatten();
+        let _terminate_debuggee = args.as_ref().and_then(|args| args.terminate_debuggee);
+
+        self.disconnect(request)
+    }
+
     fn disconnect(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
         self.should_exit = true;
         let mut outgoing = self.simple_ok(request, None)?;
@@ -1241,6 +1268,25 @@ public class Main {
         assert!(server.should_exit);
         assert_eq!(outgoing.messages.len(), 2);
         assert_eq!(outgoing.messages[0]["type"], "response");
+        assert_eq!(event_name(&outgoing.messages[1]).unwrap(), "terminated");
+    }
+
+    #[test]
+    fn terminate_emits_terminated_event() {
+        let mut server = DapServer::new(MockJdwp::default());
+
+        let terminate = Request {
+            seq: 1,
+            type_: "request".into(),
+            command: "terminate".into(),
+            arguments: Some(json!({ "terminateDebuggee": true })),
+        };
+
+        let outgoing = server.handle_request(&terminate).unwrap();
+        assert!(server.should_exit);
+        assert_eq!(outgoing.messages.len(), 2);
+        assert_eq!(outgoing.messages[0]["type"], "response");
+        assert_eq!(outgoing.messages[0]["success"].as_bool(), Some(true));
         assert_eq!(event_name(&outgoing.messages[1]).unwrap(), "terminated");
     }
 
