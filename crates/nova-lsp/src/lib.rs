@@ -146,7 +146,6 @@ pub const METRICS_METHOD: &str = "nova/metrics";
 pub const RESET_METRICS_METHOD: &str = "nova/resetMetrics";
 pub const SAFE_MODE_STATUS_METHOD: &str = "nova/safeModeStatus";
 pub const SAFE_MODE_CHANGED_NOTIFICATION: &str = "nova/safeModeChanged";
-pub const WORKSPACE_RENAME_PATH_NOTIFICATION: &str = "nova/workspace/renamePath";
 pub const EXTENSIONS_STATUS_METHOD: &str = "nova/extensions/status";
 pub const EXTENSIONS_NAVIGATION_METHOD: &str = "nova/extensions/navigation";
 
