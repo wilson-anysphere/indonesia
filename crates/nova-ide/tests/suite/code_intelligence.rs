@@ -3435,6 +3435,30 @@ class A {
 }
 
 #[test]
+fn completion_includes_math_static_member_detail() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    Math.ma<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let max = items
+        .iter()
+        .find(|i| i.label == "max")
+        .expect("expected Math.max completion item");
+    assert_eq!(
+        max.detail.as_deref(),
+        Some("int max(int, int)"),
+        "expected Math.max completion to include signature detail; got {max:#?}"
+    );
+}
+
+#[test]
 fn completion_ranks_math_static_members_for_prefix() {
     let (db, file, pos) = fixture(
         r#"
@@ -3486,6 +3510,27 @@ class A {}
     assert!(
         !labels.contains(&"*"),
         "expected `*` to not be suggested while typing a member name; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_includes_static_import_member_detail() {
+    let (db, file, pos) = fixture(
+        r#"
+import static java.lang.Math.ma<|>;
+class A {}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let max = items
+        .iter()
+        .find(|i| i.label == "max")
+        .expect("expected max completion item");
+    assert_eq!(
+        max.detail.as_deref(),
+        Some("int max(int, int)"),
+        "expected static-import completion for Math.max to include signature detail; got {max:#?}"
     );
 }
 
@@ -3562,6 +3607,27 @@ class A {}
         pi.kind,
         Some(lsp_types::CompletionItemKind::CONSTANT),
         "expected Math.PI to be classified as a constant; got {pi:#?}"
+    );
+}
+
+#[test]
+fn completion_includes_static_import_constant_detail() {
+    let (db, file, pos) = fixture(
+        r#"
+import static java.lang.Math.P<|>;
+class A {}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let pi = items
+        .iter()
+        .find(|i| i.label == "PI")
+        .expect("expected PI completion item");
+    assert_eq!(
+        pi.detail.as_deref(),
+        Some("double"),
+        "expected Math.PI completion to include type detail; got {pi:#?}"
     );
 }
 

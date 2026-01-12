@@ -31,12 +31,111 @@ use nova_core::{
 };
 use nova_modules::{ModuleGraph, ModuleInfo, ModuleName};
 use nova_types::{FieldStub, MethodStub, TypeDefStub, TypeProvider};
+use once_cell::sync::Lazy;
 
 pub use builtin_names::BUILTIN_JDK_BINARY_NAMES;
 pub use discovery::{JdkDiscoveryError, JdkInstallation};
 pub use index::IndexingStats;
 pub use index::JdkIndexError;
 pub use stub::{JdkClassStub, JdkFieldStub, JdkMethodStub};
+
+const ACC_PUBLIC: u16 = 0x0001;
+const ACC_STATIC: u16 = 0x0008;
+const ACC_FINAL: u16 = 0x0010;
+
+static BUILTIN_MATH_STUB: Lazy<Arc<JdkClassStub>> = Lazy::new(|| {
+    Arc::new(JdkClassStub {
+        internal_name: "java/lang/Math".to_string(),
+        binary_name: "java.lang.Math".to_string(),
+        access_flags: ACC_PUBLIC | ACC_FINAL,
+        super_internal_name: Some("java/lang/Object".to_string()),
+        interfaces_internal_names: Vec::new(),
+        signature: None,
+        fields: vec![
+            JdkFieldStub {
+                access_flags: ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+                name: "PI".to_string(),
+                descriptor: "D".to_string(),
+                signature: None,
+            },
+            JdkFieldStub {
+                access_flags: ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+                name: "E".to_string(),
+                descriptor: "D".to_string(),
+                signature: None,
+            },
+        ],
+        // Note: `Math.max`/`min` are overloaded in the real JDK. For the built-in index we only
+        // include a single representative overload so call sites can display a stable signature.
+        methods: vec![
+            JdkMethodStub {
+                access_flags: ACC_PUBLIC | ACC_STATIC,
+                name: "max".to_string(),
+                descriptor: "(II)I".to_string(),
+                signature: None,
+            },
+            JdkMethodStub {
+                access_flags: ACC_PUBLIC | ACC_STATIC,
+                name: "min".to_string(),
+                descriptor: "(II)I".to_string(),
+                signature: None,
+            },
+        ],
+    })
+});
+
+static BUILTIN_COLLECTIONS_STUB: Lazy<Arc<JdkClassStub>> = Lazy::new(|| {
+    Arc::new(JdkClassStub {
+        internal_name: "java/util/Collections".to_string(),
+        binary_name: "java.util.Collections".to_string(),
+        access_flags: ACC_PUBLIC,
+        super_internal_name: Some("java/lang/Object".to_string()),
+        interfaces_internal_names: Vec::new(),
+        signature: None,
+        fields: Vec::new(),
+        methods: vec![
+            JdkMethodStub {
+                access_flags: ACC_PUBLIC | ACC_STATIC,
+                name: "emptyList".to_string(),
+                descriptor: "()Ljava/util/List;".to_string(),
+                signature: None,
+            },
+            JdkMethodStub {
+                access_flags: ACC_PUBLIC | ACC_STATIC,
+                name: "singletonList".to_string(),
+                descriptor: "(Ljava/lang/Object;)Ljava/util/List;".to_string(),
+                signature: None,
+            },
+        ],
+    })
+});
+
+fn builtin_stub_for_lookup(name: &str) -> Option<Arc<JdkClassStub>> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+
+    // Accept internal names (`java/lang/String`) for parity with symbol-backed lookups.
+    let name = if name.contains('/') {
+        name.replace('/', ".")
+    } else {
+        name.to_string()
+    };
+
+    // Mirror the `java.lang.*` universe resolution behavior for unqualified names.
+    let binary = if !name.contains('.') {
+        format!("java.lang.{name}")
+    } else {
+        name
+    };
+
+    match binary.as_str() {
+        "java.lang.Math" => Some(BUILTIN_MATH_STUB.clone()),
+        "java.util.Collections" => Some(BUILTIN_COLLECTIONS_STUB.clone()),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum JdkIndexBacking {
@@ -355,7 +454,7 @@ impl JdkIndex {
     pub fn lookup_type(&self, name: &str) -> Result<Option<Arc<JdkClassStub>>, JdkIndexError> {
         match &self.symbols {
             Some(symbols) => symbols.lookup_type(name),
-            None => Ok(None),
+            None => Ok(builtin_stub_for_lookup(name)),
         }
     }
 

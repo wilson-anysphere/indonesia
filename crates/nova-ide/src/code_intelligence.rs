@@ -6815,21 +6815,6 @@ fn static_import_completions(
         .or_else(|_| fallback_jdk.all_binary_class_names())
         .unwrap_or(&[]);
 
-    let mut static_methods: HashSet<String> = HashSet::new();
-    let mut static_fields: HashSet<String> = HashSet::new();
-    if let Ok(Some(stub)) = jdk.lookup_type(&owner) {
-        for field in &stub.fields {
-            if field.access_flags & ACC_STATIC != 0 {
-                static_fields.insert(field.name.clone());
-            }
-        }
-        for method in &stub.methods {
-            if method.access_flags & ACC_STATIC != 0 {
-                static_methods.insert(method.name.clone());
-            }
-        }
-    }
-
     let mut items = Vec::with_capacity(names.len() + 1);
 
     // `import static Foo.*;`
@@ -6881,23 +6866,14 @@ fn static_import_completions(
         });
     }
 
+    let types = TypeStore::with_minimal_jdk();
     for name in names {
-        let kind = if static_methods.contains(&name) {
-            CompletionItemKind::METHOD
-        } else if static_fields.contains(&name) {
-            CompletionItemKind::CONSTANT
-        } else if name.chars().any(|c| c.is_ascii_lowercase()) {
-            // Deterministic fallback for builtin mode where we only have member names.
-            CompletionItemKind::METHOD
-        } else {
-            CompletionItemKind::CONSTANT
-        };
-
-        items.push(CompletionItem {
-            label: name,
-            kind: Some(kind),
-            ..Default::default()
-        });
+        let mut item = static_import_completion_item(&types, jdk.as_ref(), &owner, &name, None);
+        // In `import static Foo.<member>` contexts we want to insert the bare member identifier
+        // (not a call snippet like `max($0)`).
+        item.insert_text = None;
+        item.insert_text_format = None;
+        items.push(item);
     }
 
     (!items.is_empty()).then_some(items)
@@ -9364,6 +9340,7 @@ fn static_member_completions(
             })
             .min()
     };
+    let stub = jdk.lookup_type(owner_binary_name).ok().flatten();
 
     let additional_text_edits = if !receiver.contains('.') {
         let import_info = parse_java_imports(text);
@@ -9378,30 +9355,80 @@ fn static_member_completions(
     let mut items = Vec::new();
     for StaticMemberInfo { name, kind } in members {
         let label = name.as_str().to_string();
-        let (item_kind, insert_text, insert_text_format) = match kind {
-            StaticMemberKind::Method => match method_arity(&label) {
+        let mut item_kind: CompletionItemKind = match kind {
+            StaticMemberKind::Method => CompletionItemKind::METHOD,
+            StaticMemberKind::Field => CompletionItemKind::CONSTANT,
+        };
+        let mut detail: Option<String> = Some(owner_source_name.clone());
+        let mut stub_method_min_arity: Option<usize> = None;
+
+        if let Some(stub) = stub.as_ref() {
+            match kind {
+                StaticMemberKind::Field => {
+                    if let Some(field) = stub
+                        .fields
+                        .iter()
+                        .find(|f| f.name == label && f.access_flags & ACC_STATIC != 0)
+                    {
+                        item_kind = if field.access_flags & ACC_FINAL != 0 {
+                            CompletionItemKind::CONSTANT
+                        } else {
+                            CompletionItemKind::FIELD
+                        };
+                        if let Some((ty, _rest)) =
+                            parse_field_descriptor(types, field.descriptor.as_str())
+                        {
+                            detail = Some(nova_types::format_type(types, &ty));
+                        }
+                    }
+                }
+                StaticMemberKind::Method => {
+                    if let Some(method) = stub.methods.iter().find(|m| {
+                        m.name == label
+                            && m.access_flags & ACC_STATIC != 0
+                            && m.name != "<init>"
+                            && m.name != "<clinit>"
+                    }) {
+                        if let Some((params, return_type)) =
+                            parse_method_descriptor(types, method.descriptor.as_str())
+                        {
+                            stub_method_min_arity = Some(if method.access_flags & ACC_VARARGS != 0 {
+                                params.len().saturating_sub(1)
+                            } else {
+                                params.len()
+                            });
+                            let return_ty = nova_types::format_type(types, &return_type);
+                            let params = params
+                                .iter()
+                                .map(|ty| nova_types::format_type(types, ty))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            detail = Some(format!("{return_ty} {label}({params})"));
+                        }
+                    }
+                }
+            }
+        }
+
+        let (insert_text, insert_text_format) = match kind {
+            StaticMemberKind::Method => match method_arity(&label).or(stub_method_min_arity) {
                 Some(arity) => {
                     let (insert_text, insert_text_format) =
                         call_insert_text_with_arity(&label, arity);
-                    (
-                        CompletionItemKind::METHOD,
-                        Some(insert_text),
-                        insert_text_format,
-                    )
+                    (Some(insert_text), insert_text_format)
                 }
                 None => (
-                    CompletionItemKind::METHOD,
                     Some(format!("{label}($0)")),
                     Some(InsertTextFormat::SNIPPET),
                 ),
             },
-            StaticMemberKind::Field => (CompletionItemKind::CONSTANT, Some(label.clone()), None),
+            StaticMemberKind::Field => (Some(label.clone()), None),
         };
 
         items.push(CompletionItem {
             label,
             kind: Some(item_kind),
-            detail: Some(owner_source_name.clone()),
+            detail,
             insert_text,
             insert_text_format,
             additional_text_edits: additional_text_edits.clone(),
