@@ -200,11 +200,6 @@ pub fn rename(
         }
         Some(JavaSymbolKind::Field) => rename_field_with_accessors(db, params),
         Some(JavaSymbolKind::Method) => {
-            let conflicts = check_rename_conflicts(db, params.symbol, &params.new_name);
-            if !conflicts.is_empty() {
-                return Err(RefactorError::Conflicts(conflicts));
-            }
-
             let new_name = params.new_name;
             let mut symbols = db.method_override_chain(params.symbol);
             if symbols.is_empty() {
@@ -213,9 +208,21 @@ pub fn rename(
 
             // Dedup defensively in case the database returns duplicates.
             let mut seen = HashSet::new();
+            symbols.retain(|sym| seen.insert(*sym));
+
+            // Conflict detection should consider every method that will be renamed. For example,
+            // renaming an overridden method may collide with an existing method in an overriding
+            // subtype.
+            let mut conflicts = Vec::new();
+            for symbol in &symbols {
+                conflicts.extend(check_rename_conflicts(db, *symbol, &new_name));
+            }
+            if !conflicts.is_empty() {
+                return Err(RefactorError::Conflicts(conflicts));
+            }
+
             let mut changes = symbols
                 .into_iter()
-                .filter(|sym| seen.insert(*sym))
                 .map(|symbol| SemanticChange::Rename {
                     symbol,
                     new_name: new_name.clone(),

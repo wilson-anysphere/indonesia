@@ -1,4 +1,7 @@
-use nova_refactor::{apply_workspace_edit, rename, FileId, RefactorJavaDatabase, RenameParams};
+use nova_refactor::{
+    apply_workspace_edit, rename, Conflict, FileId, RefactorJavaDatabase, RenameParams,
+    SemanticRefactorError,
+};
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
 
@@ -120,5 +123,54 @@ fn rename_method_renames_overrides_from_derived() {
     assert!(
         updated_use.contains("new Derived().handle();"),
         "expected Derived call site updated:\n{updated_use}"
+    );
+}
+
+#[test]
+fn rename_method_override_chain_detects_collisions_in_overrides() {
+    let base_file = FileId::new("Base.java");
+    let derived_file = FileId::new("Derived.java");
+
+    let base_src = r#"class Base {
+  void process(){}
+}
+"#;
+
+    // Derived already defines `handle()`, so renaming `process()` -> `handle()` should conflict
+    // once the override chain is included in the rename.
+    let derived_src = r#"class Derived extends Base {
+  @Override void process(){}
+  void handle(){}
+}
+"#;
+
+    let mut files = BTreeMap::new();
+    files.insert(base_file.clone(), base_src.to_string());
+    files.insert(derived_file.clone(), derived_src.to_string());
+
+    let db = RefactorJavaDatabase::new(files.clone().into_iter());
+
+    let offset = base_src.find("process").unwrap() + 1;
+    let symbol = db.symbol_at(&base_file, offset).expect("Base.process symbol");
+
+    let err = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "handle".into(),
+        },
+    )
+    .unwrap_err();
+
+    let SemanticRefactorError::Conflicts(conflicts) = err else {
+        panic!("expected conflict error, got: {err:?}");
+    };
+    assert!(
+        conflicts.iter().any(|c| matches!(
+            c,
+            Conflict::NameCollision { file, name, .. }
+                if file == &derived_file && name == "handle"
+        )),
+        "expected NameCollision in Derived, got: {conflicts:?}"
     );
 }
