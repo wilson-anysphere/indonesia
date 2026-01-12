@@ -36,6 +36,10 @@ const FILE_OPERATION_NOTIFICATION_TYPES: Readonly<Record<string, string>> = {
   DidRenameFilesNotification: 'workspace/didRenameFiles',
 };
 
+const BANNED_FILE_OPERATION_NOTIFICATION_METHODS = new Set<string>(
+  FILE_OPERATION_LISTENERS.map((entry) => entry.notificationMethod),
+);
+
 function getCalledMethodName(expr: ts.Expression, env: Map<string, string>): string | undefined {
   if (ts.isPropertyAccessExpression(expr)) {
     return expr.name.text;
@@ -548,134 +552,15 @@ test('extension does not manually forward workspace file operations (vscode-lang
   const srcRoot = path.resolve(__dirname, '../../src');
   const tsFiles = await collectTypeScriptFiles(srcRoot);
 
-  const bannedNotificationMethods = new Set(FILE_OPERATION_LISTENERS.map((entry) => entry.notificationMethod));
   const violations = new Set<string>();
 
   for (const filePath of tsFiles) {
     const raw = await fs.readFile(filePath, 'utf8');
     const sourceFile = ts.createSourceFile(filePath, raw, ts.ScriptTarget.ESNext, true);
-    const importAliases = buildImportAliasMap(sourceFile);
-    const fileOpConstantAliases = buildFileOperationNotificationConstantAliases(sourceFile.statements, importAliases);
-    const allAliases = new Map(importAliases);
-    for (const [local, imported] of fileOpConstantAliases) {
-      if (!allAliases.has(local)) {
-        allAliases.set(local, imported);
-      }
+    const fileViolations = scanSourceFileForManualFileOperationForwarding(sourceFile, { filePath, srcRoot });
+    for (const entry of fileViolations) {
+      violations.add(entry);
     }
-    const fileEnv = new Map<string, string>(
-      buildConstStringEnvFromVariableStatements(sourceFile.statements, allAliases, new Map<string, string>()),
-    );
-    const fileAliases = new Set<string>(
-      buildSendNotificationAliasesFromVariableStatements(sourceFile.statements, fileEnv, new Set<string>()),
-    );
-
-    const scanForBannedSendNotifications = (node: ts.Node, env: Map<string, string>, aliases: Set<string>) => {
-      if (ts.isCallExpression(node)) {
-        const methodExpr = getSendNotificationMethodArg(node, env, aliases);
-        if (methodExpr) {
-          const method = resolveNotificationMethod(methodExpr, env, allAliases);
-          if (method && bannedNotificationMethods.has(method)) {
-            const loc = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-            violations.add(
-              `${path.relative(srcRoot, filePath)}:${loc.line + 1}:${loc.character + 1} sendNotification ${method}`,
-            );
-          }
-        }
-
-        // Pre-bound sendNotification helpers, e.g.
-        //   const sendRename = client.sendNotification.bind(client, 'workspace/didRenameFiles');
-        // should also be treated as manual forwarding.
-        const callee = unwrapExpression(node.expression);
-        if (
-          getCalledMethodName(callee, env) === 'bind' &&
-          (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee))
-        ) {
-          if (isSendNotificationReference(callee.expression, env, aliases)) {
-            const boundMethodExpr = node.arguments[1];
-            if (boundMethodExpr) {
-              const method = resolveNotificationMethod(boundMethodExpr, env, allAliases);
-              if (method && bannedNotificationMethods.has(method)) {
-                const loc = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-                violations.add(`${path.relative(srcRoot, filePath)}:${loc.line + 1}:${loc.character + 1} bind ${method}`);
-              }
-            }
-          }
-        }
-      }
-
-      let nextEnv = env;
-      let nextAliases = aliases;
-      if (ts.isBlock(node)) {
-        const blockEnv = buildConstStringEnvFromVariableStatements(node.statements, allAliases, env);
-        const combinedEnv = blockEnv.size > 0 ? new Map<string, string>([...env, ...blockEnv]) : env;
-        nextEnv = combinedEnv;
-
-        const blockAliases = buildSendNotificationAliasesFromVariableStatements(node.statements, combinedEnv, aliases);
-        if (blockAliases.size > 0) {
-          nextAliases = new Set<string>([...aliases, ...blockAliases]);
-        }
-      }
-
-      ts.forEachChild(node, (child) => {
-        scanForBannedSendNotifications(child, nextEnv, nextAliases);
-      });
-    };
-
-    scanForBannedSendNotifications(sourceFile, fileEnv, fileAliases);
-
-    const visit = (node: ts.Node) => {
-      if (!ts.isCallExpression(node)) {
-        ts.forEachChild(node, visit);
-        return;
-      }
-
-      const callee = node.expression;
-      if (!ts.isPropertyAccessExpression(callee)) {
-        ts.forEachChild(node, visit);
-        return;
-      }
-
-      const listenerMethod = callee.name.text;
-      const listener = FILE_OPERATION_LISTENERS.find((entry) => entry.listenerMethod === listenerMethod);
-      if (!listener) {
-        ts.forEachChild(node, visit);
-        return;
-      }
-
-      const handlerArg = node.arguments[0];
-      if (!handlerArg || (!ts.isArrowFunction(handlerArg) && !ts.isFunctionExpression(handlerArg))) {
-        ts.forEachChild(node, visit);
-        return;
-      }
-
-      const handlerStatements = ts.isBlock(handlerArg.body) ? handlerArg.body.statements : undefined;
-      const handlerEnv = handlerStatements
-        ? buildConstStringEnvFromVariableStatements(handlerStatements, allAliases, fileEnv)
-        : new Map<string, string>();
-      const env = new Map<string, string>([...fileEnv, ...handlerEnv]);
-
-      const checkHandler = (handlerNode: ts.Node) => {
-        if (ts.isCallExpression(handlerNode) && getCalledMethodName(handlerNode.expression, env) === 'sendNotification') {
-          const arg0 = handlerNode.arguments[0];
-          if (arg0) {
-            const resolved = resolveNotificationMethod(arg0, env, allAliases);
-            if (resolved === listener.notificationMethod) {
-              const loc = sourceFile.getLineAndCharacterOfPosition(handlerNode.getStart(sourceFile));
-              violations.add(
-                `${path.relative(srcRoot, filePath)}:${loc.line + 1}:${loc.character + 1} ${listenerMethod} -> ${listener.notificationMethod}`,
-              );
-            }
-          }
-        }
-        ts.forEachChild(handlerNode, checkHandler);
-      };
-
-      checkHandler(handlerArg.body);
-
-      ts.forEachChild(node, visit);
-    };
-
-    visit(sourceFile);
   }
 
   assert.deepEqual(
@@ -685,4 +570,147 @@ test('extension does not manually forward workspace file operations (vscode-lang
       `vscode-languageclient should handle LSP workspace/fileOperations automatically.\n\n` +
       Array.from(violations).sort().join('\n'),
   );
+});
+
+function scanSourceFileForManualFileOperationForwarding(
+  sourceFile: ts.SourceFile,
+  opts: { filePath: string; srcRoot: string },
+): Set<string> {
+  const { filePath, srcRoot } = opts;
+  const violations = new Set<string>();
+
+  const importAliases = buildImportAliasMap(sourceFile);
+  const fileOpConstantAliases = buildFileOperationNotificationConstantAliases(sourceFile.statements, importAliases);
+  const allAliases = new Map(importAliases);
+  for (const [local, imported] of fileOpConstantAliases) {
+    if (!allAliases.has(local)) {
+      allAliases.set(local, imported);
+    }
+  }
+  const fileEnv = new Map<string, string>(
+    buildConstStringEnvFromVariableStatements(sourceFile.statements, allAliases, new Map<string, string>()),
+  );
+  const fileAliases = new Set<string>(
+    buildSendNotificationAliasesFromVariableStatements(sourceFile.statements, fileEnv, new Set<string>()),
+  );
+
+  const scanForBannedSendNotifications = (node: ts.Node, env: Map<string, string>, aliases: Set<string>) => {
+    if (ts.isCallExpression(node)) {
+      const methodExpr = getSendNotificationMethodArg(node, env, aliases);
+      if (methodExpr) {
+        const method = resolveNotificationMethod(methodExpr, env, allAliases);
+        if (method && BANNED_FILE_OPERATION_NOTIFICATION_METHODS.has(method)) {
+          const loc = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+          violations.add(`${path.relative(srcRoot, filePath)}:${loc.line + 1}:${loc.character + 1} sendNotification ${method}`);
+        }
+      }
+
+      // Pre-bound sendNotification helpers, e.g.
+      //   const sendRename = client.sendNotification.bind(client, 'workspace/didRenameFiles');
+      // should also be treated as manual forwarding.
+      const callee = unwrapExpression(node.expression);
+      if (
+        getCalledMethodName(callee, env) === 'bind' &&
+        (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee))
+      ) {
+        if (isSendNotificationReference(callee.expression, env, aliases)) {
+          const boundMethodExpr = node.arguments[1];
+          if (boundMethodExpr) {
+            const method = resolveNotificationMethod(boundMethodExpr, env, allAliases);
+            if (method && BANNED_FILE_OPERATION_NOTIFICATION_METHODS.has(method)) {
+              const loc = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+              violations.add(`${path.relative(srcRoot, filePath)}:${loc.line + 1}:${loc.character + 1} bind ${method}`);
+            }
+          }
+        }
+      }
+    }
+
+    let nextEnv = env;
+    let nextAliases = aliases;
+    if (ts.isBlock(node)) {
+      const blockEnv = buildConstStringEnvFromVariableStatements(node.statements, allAliases, env);
+      const combinedEnv = blockEnv.size > 0 ? new Map<string, string>([...env, ...blockEnv]) : env;
+      nextEnv = combinedEnv;
+
+      const blockAliases = buildSendNotificationAliasesFromVariableStatements(node.statements, combinedEnv, aliases);
+      if (blockAliases.size > 0) {
+        nextAliases = new Set<string>([...aliases, ...blockAliases]);
+      }
+    }
+
+    ts.forEachChild(node, (child) => {
+      scanForBannedSendNotifications(child, nextEnv, nextAliases);
+    });
+  };
+
+  scanForBannedSendNotifications(sourceFile, fileEnv, fileAliases);
+  return violations;
+}
+
+test('noManualFileOperationsForwarding scan flags workspace/didRenameFiles sendNotification (fixtures)', () => {
+  const srcRoot = '/';
+  const filePath = '/fixture.ts';
+
+  const source = `
+    client.sendNotification('workspace/didRenameFiles', { files: [] });
+  `;
+
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
+  const violations = scanSourceFileForManualFileOperationForwarding(sourceFile, { filePath, srcRoot });
+  assert.ok(Array.from(violations).some((entry) => entry.includes('workspace/didRenameFiles')));
+});
+
+test('noManualFileOperationsForwarding scan does not flag unrelated notifications (fixtures)', () => {
+  const srcRoot = '/';
+  const filePath = '/fixture.ts';
+
+  const source = `
+    client.sendNotification('workspace/didChangeConfiguration', { settings: null });
+  `;
+
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
+  const violations = scanSourceFileForManualFileOperationForwarding(sourceFile, { filePath, srcRoot });
+  assert.deepEqual(Array.from(violations), []);
+});
+
+test('noManualFileOperationsForwarding scan flags file operation NotificationType constants (fixtures)', () => {
+  const srcRoot = '/';
+  const filePath = '/fixture.ts';
+
+  const source = `
+    import { DidRenameFilesNotification } from 'vscode-languageserver-protocol';
+    client.sendNotification(DidRenameFilesNotification.type, { files: [] });
+  `;
+
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
+  const violations = scanSourceFileForManualFileOperationForwarding(sourceFile, { filePath, srcRoot });
+  assert.ok(Array.from(violations).some((entry) => entry.includes('workspace/didRenameFiles')));
+});
+
+test('noManualFileOperationsForwarding scan flags sendNotification prebind helpers (fixtures)', () => {
+  const srcRoot = '/';
+  const filePath = '/fixture.ts';
+
+  const source = `
+    const sendRename = client.sendNotification.bind(client, 'workspace/didRenameFiles');
+    sendRename({ files: [] });
+  `;
+
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
+  const violations = scanSourceFileForManualFileOperationForwarding(sourceFile, { filePath, srcRoot });
+  assert.ok(Array.from(violations).some((entry) => entry.includes('workspace/didRenameFiles')));
+});
+
+test('noManualFileOperationsForwarding scan flags Reflect.apply sendNotification wrappers (fixtures)', () => {
+  const srcRoot = '/';
+  const filePath = '/fixture.ts';
+
+  const source = `
+    Reflect.apply(client.sendNotification, client, ['workspace/didRenameFiles', { files: [] }]);
+  `;
+
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
+  const violations = scanSourceFileForManualFileOperationForwarding(sourceFile, { filePath, srcRoot });
+  assert.ok(Array.from(violations).some((entry) => entry.includes('workspace/didRenameFiles')));
 });
