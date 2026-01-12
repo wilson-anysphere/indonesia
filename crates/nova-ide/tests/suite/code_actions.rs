@@ -322,3 +322,47 @@ class A {
     let (_uri, edit) = first_edit(cast_fix);
     assert_eq!(edit.new_text, "(byte) (a|b)");
 }
+
+#[test]
+fn type_mismatch_cast_wraps_conditional_expression_in_parentheses() {
+    let source = r#"
+class A {
+  void m() {
+    boolean cond = true;
+    int a = 1;
+    int b = 2;
+    byte c = cond?a:b;
+  }
+}
+"#;
+
+    let mut db = InMemoryFileStore::new();
+    let path = PathBuf::from("/test.java");
+    let file = db.file_id_for_path(path);
+    db.set_file_text(file, source.to_string());
+
+    let needle = "byte c = cond?a:b;";
+    let stmt_start = source
+        .find(needle)
+        .expect("expected assignment with conditional expression in fixture");
+    let expr_start = stmt_start + "byte c = ".len();
+    let expr_end = expr_start + "cond?a:b".len();
+    let selection = Span::new(expr_start, expr_end);
+
+    let db: Arc<InMemoryFileStore> = Arc::new(db);
+    let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
+    let actions = ide.code_actions_lsp(CancellationToken::new(), file, Some(selection));
+
+    let cast_fix = actions.iter().find_map(|action| match action {
+        lsp_types::CodeActionOrCommand::CodeAction(action)
+            if action.kind == Some(lsp_types::CodeActionKind::QUICKFIX)
+                && action.title == "Cast to byte" =>
+        {
+            Some(action)
+        }
+        _ => None,
+    });
+    let cast_fix = cast_fix.expect("expected Cast to byte quickfix");
+    let (_uri, edit) = first_edit(cast_fix);
+    assert_eq!(edit.new_text, "(byte) (cond?a:b)");
+}
