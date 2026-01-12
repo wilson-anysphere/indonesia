@@ -139,6 +139,14 @@ impl SpringAnalyzer {
             Some(path) if is_java_file(path) => {
                 if text.contains("@Value") || text.contains("@ConfigurationProperties") {
                     index.add_java_file(path.to_path_buf(), text);
+
+                    // Best-effort fallback for hosts that cannot enumerate project files (and
+                    // thus cannot build the full workspace index): scan the filesystem for
+                    // `application*.properties|yml|yaml` config files so `@Value("${...}")`
+                    // completions can still surface keys defined on disk.
+                    if let Some(root) = nova_project::workspace_root(path) {
+                        add_application_config_files_from_disk(&mut index, &root);
+                    }
                 }
             }
             None => {
@@ -820,6 +828,80 @@ fn file_name(path: &Path) -> &str {
     // also split on backslashes.
     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
     name.rsplit('\\').next().unwrap_or(name)
+}
+
+fn add_application_config_files_from_disk(index: &mut SpringWorkspaceIndex, project_root: &Path) {
+    const MAX_FILES: usize = 128;
+
+    let mut paths = Vec::new();
+    for root in config_search_roots(project_root) {
+        if paths.len() >= MAX_FILES {
+            break;
+        }
+        collect_application_config_files_inner(&root, &mut paths, MAX_FILES);
+    }
+
+    paths.sort();
+    paths.dedup();
+
+    for path in paths {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        index.add_config_file(path, &text);
+    }
+}
+
+fn config_search_roots(project_root: &Path) -> Vec<PathBuf> {
+    let candidates = ["src/main/resources", "src/test/resources", "src"];
+    let mut roots = candidates
+        .into_iter()
+        .map(|rel| project_root.join(rel))
+        .filter(|p| p.is_dir())
+        .collect::<Vec<_>>();
+    if roots.is_empty() {
+        roots.push(project_root.to_path_buf());
+    }
+    roots
+}
+
+fn collect_application_config_files_inner(root: &Path, out: &mut Vec<PathBuf>, limit: usize) {
+    if out.len() >= limit {
+        return;
+    }
+    if !root.exists() {
+        return;
+    }
+    if root.is_file() {
+        if is_application_config_file(root) {
+            out.push(root.to_path_buf());
+        }
+        return;
+    }
+
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        if out.len() >= limit {
+            break;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if matches!(
+                name,
+                "target" | "build" | "out" | ".git" | ".gradle" | ".idea"
+            ) {
+                continue;
+            }
+            collect_application_config_files_inner(&path, out, limit);
+        } else if is_application_config_file(&path) {
+            out.push(path);
+        }
+    }
 }
 
 fn profile_from_application_config_file_name(file_name: &str) -> Option<String> {

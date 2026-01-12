@@ -311,6 +311,55 @@ fn value_completions_read_application_properties_from_disk_when_file_text_is_una
 }
 
 #[test]
+fn value_completions_scan_disk_configs_when_all_files_is_unavailable() {
+    let temp = TempDir::new().unwrap();
+    let root: PathBuf = temp.path().canonicalize().unwrap();
+
+    // Ensure `nova_project::workspace_root` can locate the workspace root from the Java file path.
+    std::fs::write(root.join("pom.xml"), "<project></project>").expect("write pom.xml");
+
+    let config_path = root.join("src/main/resources/application.properties");
+    write_file(&config_path, "server.port=8080\n");
+
+    let java = r#"
+        import org.springframework.beans.factory.annotation.Value;
+        class App {
+            @Value("${server.p}")
+            String port;
+        }
+    "#;
+    let java_path = root.join("src/App.java");
+    write_file(&java_path, java);
+
+    let mut inner = MemoryDatabase::new();
+    let project = inner.add_project();
+    inner.add_classpath_class(project, "org.springframework.context.ApplicationContext");
+
+    let java_file = inner.add_file_with_path_and_text(project, java_path, java);
+
+    let offset = java.find("${server.p}").unwrap() + "${server.p".len();
+    let expected_span = completion_span_for_value_placeholder(java, offset).expect("span");
+
+    let db = NoAllFilesDb { inner };
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(SpringAnalyzer::new()));
+
+    let ctx = CompletionContext {
+        project,
+        file: java_file,
+        offset,
+    };
+    let items = registry.framework_completions(&db, &ctx);
+
+    let item = items
+        .iter()
+        .find(|i| i.label == "server.port")
+        .expect("expected server.port completion item");
+    assert_eq!(item.replace_span, Some(expected_span));
+}
+
+#[test]
 fn di_diagnostics_fallback_to_current_file_when_all_files_is_unavailable() {
     let mut inner = MemoryDatabase::new();
     let project = inner.add_project();
