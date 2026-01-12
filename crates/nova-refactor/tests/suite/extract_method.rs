@@ -1595,6 +1595,86 @@ class C {
 }
 
 #[test]
+fn extract_method_ignores_checked_exception_thrown_inside_lambda_body() {
+    let fixture = r#"
+class C {
+    void m() {
+        /*start*/java.util.concurrent.Callable<Void> c = () -> { throw new java.io.IOException(); };/*end*/
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m() {
+        extracted();
+    }
+
+    private void extracted() {
+        java.util.concurrent.Callable<Void> c = () -> { throw new java.io.IOException(); };
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+    assert!(
+        !actual.contains("throws java.io.IOException"),
+        "extracted method must not declare checked exceptions thrown only inside lambda bodies"
+    );
+}
+
+#[test]
+fn extract_method_ignores_return_inside_anonymous_class_body() {
+    let fixture = r#"
+class C {
+    void m() {
+        /*start*/new Runnable() { public void run() { return; } };/*end*/
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m() {
+        extracted();
+    }
+
+    private void extracted() {
+        new Runnable() { public void run() { return; } };
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn extract_method_rejects_yield_statement() {
     let fixture = r#"
 class C {

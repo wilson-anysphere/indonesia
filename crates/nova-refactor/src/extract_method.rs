@@ -1395,9 +1395,15 @@ fn collect_control_flow_hazards_in_syntax(
     hazards: &mut Vec<ControlFlowHazard>,
     issues: &mut Vec<ExtractMethodIssue>,
 ) {
+    // Control flow inside lambda/anonymous-class bodies doesn't affect the extracted method because
+    // those bodies are executed later.
+    if control_flow_is_deferred(node) {
+        return;
+    }
+
     // Returns/break/continue/etc inside lambdas return from / target the lambda body, not the
-    // enclosing method. Skip descending into lambda bodies so statements that *contain* a
-    // lambda (e.g. `Runnable r = () -> { return; };`) don't get rejected.
+    // enclosing method. Skip descending into lambda bodies so statements that *contain* a lambda
+    // (e.g. `Runnable r = () -> { return; };`) don't get rejected.
     if ast::LambdaExpression::can_cast(node.kind()) {
         return;
     }
@@ -1429,7 +1435,8 @@ fn collect_control_flow_hazards_in_syntax(
                     });
                 } else if let Some(target) = nearest_break_target(brk.syntax()) {
                     let target_range = syntax_range(target.syntax());
-                    if !(selection.start <= target_range.start && target_range.end <= selection.end) {
+                    if !(selection.start <= target_range.start && target_range.end <= selection.end)
+                    {
                         issues.push(ExtractMethodIssue::IllegalControlFlow {
                             hazard: ControlFlowHazard::Break,
                         });
@@ -1449,7 +1456,8 @@ fn collect_control_flow_hazards_in_syntax(
                     });
                 } else if let Some(target) = nearest_continue_target(cont.syntax()) {
                     let target_range = syntax_range(target.syntax());
-                    if !(selection.start <= target_range.start && target_range.end <= selection.end) {
+                    if !(selection.start <= target_range.start && target_range.end <= selection.end)
+                    {
                         issues.push(ExtractMethodIssue::IllegalControlFlow {
                             hazard: ControlFlowHazard::Continue,
                         });
@@ -1467,6 +1475,29 @@ fn collect_control_flow_hazards_in_syntax(
     for child in node.children() {
         collect_control_flow_hazards_in_syntax(&child, selection, hazards, issues);
     }
+}
+
+fn control_flow_is_deferred(node: &nova_syntax::SyntaxNode) -> bool {
+    node.ancestors().any(|ancestor| match ancestor.kind() {
+        // `return`/`throw`/etc inside lambda bodies doesn't affect the control-flow of the extracted
+        // method because lambdas are executed later.
+        SyntaxKind::LambdaBody => true,
+
+        // Same for anonymous class bodies: the statements are inside a method that runs only when
+        // invoked.
+        SyntaxKind::AnonymousClassBody => true,
+
+        // In this syntax tree, anonymous classes are represented as `ClassBody` (or
+        // `AnonymousClassBody`) nodes that are children of a `new` expression.
+        SyntaxKind::ClassBody => ancestor.parent().is_some_and(|parent| {
+            matches!(
+                parent.kind(),
+                SyntaxKind::NewExpression | SyntaxKind::ClassInstanceCreationExpression
+            )
+        }),
+
+        _ => false,
+    })
 }
 
 fn push_hazard(hazards: &mut Vec<ControlFlowHazard>, hazard: ControlFlowHazard) {
@@ -1905,11 +1936,10 @@ fn collect_thrown_exceptions_in_statements(
     let mut seen = HashSet::new();
 
     for stmt in selection_statements {
-        for throw_stmt in stmt
-            .syntax()
-            .descendants()
-            .filter_map(ast::ThrowStatement::cast)
-        {
+        for throw_stmt in stmt.syntax().descendants().filter_map(ast::ThrowStatement::cast) {
+            if control_flow_is_deferred(throw_stmt.syntax()) {
+                continue;
+            }
             let Some(ty) =
                 infer_thrown_exception_type(typeck, source, &throw_stmt, declared_types_by_name)
             else {
