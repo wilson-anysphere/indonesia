@@ -146,12 +146,49 @@ fn stdio_server_supports_call_hierarchy_outgoing_calls() {
         "expected outgoing calls to include callee: {outgoing_resp:#}"
     );
 
+    // incomingCalls for `callee` should include `caller`.
+    let callee_item = outgoing
+        .iter()
+        .find(|value| {
+            value
+                .pointer("/to/name")
+                .and_then(|v| v.as_str())
+                .is_some_and(|name| name == "callee")
+        })
+        .and_then(|value| value.get("to"))
+        .cloned()
+        .unwrap_or_else(|| panic!("expected outgoingCalls to include callee item: {outgoing_resp:#}"));
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "callHierarchy/incomingCalls",
+            "params": { "item": callee_item }
+        }),
+    );
+    let incoming_resp = read_response_with_id(&mut stdout, 4);
+    let incoming = incoming_resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| panic!("expected incomingCalls result array: {incoming_resp:#}"));
+    assert!(
+        incoming.iter().any(|value| {
+            value
+                .pointer("/from/name")
+                .and_then(|v| v.as_str())
+                .is_some_and(|name| name == "caller")
+        }),
+        "expected incoming calls to include caller: {incoming_resp:#}"
+    );
+
     // shutdown + exit
     write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+        &json!({ "jsonrpc": "2.0", "id": 5, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 5);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
