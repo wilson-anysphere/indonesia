@@ -1217,7 +1217,6 @@ where
                 span,
                 context_diagnostics,
             ));
-
             actions.extend(unused_import_quick_fixes_from_context(
                 &cancel,
                 source,
