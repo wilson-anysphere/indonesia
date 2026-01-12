@@ -134,6 +134,19 @@ fn canonical_document_formatting_is_idempotent_on_generics_fixture() {
 }
 
 #[test]
+fn canonical_document_formatting_is_idempotent_on_string_templates_fixture() {
+    let input = include_str!("../fixtures/string_templates.java");
+    let config = FormatConfig::default();
+    let edits = edits_for_document_formatting(input, &config);
+    let formatted = apply_text_edits(input, &edits).unwrap();
+
+    let edits_again = edits_for_document_formatting(&formatted, &config);
+    let formatted_again = apply_text_edits(&formatted, &edits_again).unwrap();
+
+    assert_eq!(formatted_again, formatted);
+}
+
+#[test]
 fn canonical_document_formatting_is_idempotent_on_broken_fixture() {
     let input = include_str!("../fixtures/broken_code.java");
     let config = FormatConfig::default();
