@@ -89,6 +89,7 @@ Nova can integrate with your build tool (Maven/Gradle/Bazel) to keep its project
   - When supported by your `nova-lsp` version, the view also includes a **Project Configuration** subtree (output dirs, dependencies, and other configuration snapshots).
   - Large classpaths are chunked/paged to avoid freezing the VS Code UI.
   - Right-click path nodes to **Copy Path**.
+  - When Nova is in safe mode, project model/configuration requests are unavailable; the view will show a safe-mode message with a shortcut to **Nova: Generate Bug Report**.
 - **Build tool selection:** configure which build tool Nova uses for manual builds/reloads via `nova.build.buildTool` ("auto" | "maven" | "gradle" | "prompt").
   - When set to `prompt`, Nova asks you to choose which build tool to use each time you run **Nova: Build Project** or **Nova: Reload Project**.
   - Auto-reload on build file changes treats `prompt` as `auto` (Nova won’t prompt in the background).

@@ -59,6 +59,14 @@ describe('extension wiring', () => {
     );
   });
 
+  it('passes safe mode status to the Nova Project Explorer view', async () => {
+    const srcRoot = path.dirname(fileURLToPath(import.meta.url));
+    const extensionPath = path.join(srcRoot, 'extension.ts');
+    const contents = await fs.readFile(extensionPath, 'utf8');
+ 
+    expect(contents).toMatch(/registerNovaProjectExplorer\([\s\S]*isSafeMode:\s*\(\)\s*=>\s*frameworksSafeMode/s);
+  });
+
   it('makes nova.discoverTests cancellable and forwards the progress token to nova/test/discover', async () => {
     const srcRoot = path.dirname(fileURLToPath(import.meta.url));
     const extensionPath = path.join(srcRoot, 'extension.ts');
