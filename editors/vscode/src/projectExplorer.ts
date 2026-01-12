@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'node:path';
 import { resolvePossiblyRelativePath } from './pathUtils';
 import { formatUnsupportedNovaMethodMessage, isNovaMethodNotFoundError, isNovaRequestSupported } from './novaCapabilities';
-import { formatError } from './safeMode';
+import { formatError, isSafeModeError } from './safeMode';
 import {
   ProjectModelCache,
   type JavaLanguageLevel,
@@ -231,6 +231,13 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
   refresh(opts?: { clearCache?: boolean; forceRefresh?: boolean; workspace?: vscode.WorkspaceFolder }): void {
     if (opts?.clearCache) {
       this.cache.clear(opts.workspace);
+    }
+
+    // Avoid spamming `nova/*` requests while in safe mode. The view stays empty so `viewsWelcome`
+    // can direct users to bug report generation.
+    if (opts?.forceRefresh && this.isSafeMode()) {
+      this.emitter.fire(undefined);
+      return;
     }
 
     const folders = opts?.workspace ? [opts.workspace] : (vscode.workspace.workspaceFolders ?? []);
@@ -1413,6 +1420,16 @@ async function showProjectModel(cache: ProjectModelCache, arg?: unknown): Promis
     const model = await cache.getProjectModel(workspace);
     await openJsonDocument(`Nova Project Model (${workspace.name}).json`, model);
   } catch (err) {
+    if (isSafeModeError(err)) {
+      const picked = await vscode.window.showWarningMessage(
+        'Nova: nova-lsp is running in safe mode. Project model requests are unavailable.',
+        'Generate Bug Report',
+      );
+      if (picked === 'Generate Bug Report') {
+        await vscode.commands.executeCommand('nova.bugReport');
+      }
+      return;
+    }
     if (cache.isProjectModelUnsupported(workspace) || isNovaMethodNotFoundError(err)) {
       void vscode.window.showInformationMessage(formatUnsupportedNovaMethodMessage('nova/projectModel'));
       return;
@@ -1437,6 +1454,16 @@ async function showProjectConfiguration(cache: ProjectModelCache, arg?: unknown)
     const config = await cache.getProjectConfiguration(workspace);
     await openJsonDocument(`Nova Project Configuration (${workspace.name}).json`, config);
   } catch (err) {
+    if (isSafeModeError(err)) {
+      const picked = await vscode.window.showWarningMessage(
+        'Nova: nova-lsp is running in safe mode. Project configuration requests are unavailable.',
+        'Generate Bug Report',
+      );
+      if (picked === 'Generate Bug Report') {
+        await vscode.commands.executeCommand('nova.bugReport');
+      }
+      return;
+    }
     if (cache.isProjectConfigurationUnsupported(workspace) || isNovaMethodNotFoundError(err)) {
       void vscode.window.showInformationMessage(formatUnsupportedNovaMethodMessage('nova/projectConfiguration'));
       return;
