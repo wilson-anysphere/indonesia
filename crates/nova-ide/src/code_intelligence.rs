@@ -419,9 +419,12 @@ pub(crate) fn core_file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diag
         }
     }
 
-    let mut diagnostics = Vec::new();
-
     let text = db.file_content(file);
+    let is_java = db
+        .file_path(file)
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"));
+
+    let mut diagnostics = Vec::new();
 
     // 1) Syntax errors.
     //
@@ -438,21 +441,38 @@ pub(crate) fn core_file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diag
         )
     }));
 
-    if db
-        .file_path(file)
-        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
-    {
-        let parse = nova_syntax::parse_java(text);
-        diagnostics.extend(parse.errors.into_iter().map(|e| {
+    let java_parse = is_java.then(|| nova_syntax::parse_java(text));
+    if let Some(parse) = java_parse.as_ref() {
+        diagnostics.extend(parse.errors.iter().map(|e| {
             Diagnostic::error(
                 "SYNTAX",
-                e.message,
+                e.message.clone(),
                 Some(Span::new(e.range.start as usize, e.range.end as usize)),
             )
         }));
     }
 
-    // 2) Unresolved references (best-effort).
+    // 2) Demand-driven type-checking diagnostics (best-effort, Salsa-backed).
+    if is_java {
+        let project = nova_db::ProjectId::from_raw(0);
+        let jdk = JDK_INDEX
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| Arc::new(JdkIndex::new()));
+        let salsa = SalsaDatabase::new();
+        salsa.set_jdk_index(project, jdk);
+        salsa.set_classpath_index(project, None);
+        salsa.set_file_text(file, text.to_string());
+        let snap = salsa.snapshot();
+        diagnostics.extend(snap.type_diagnostics(file));
+    }
+
+    // 2b) Control-flow + definite assignment diagnostics (best-effort).
+    if let Some(parse) = java_parse.as_ref() {
+        diagnostics.extend(flow_diagnostics(parse));
+    }
+
+    // 3) Unresolved references (best-effort).
     let analysis = analyze(text);
     for call in &analysis.calls {
         if call.receiver.is_some() {
