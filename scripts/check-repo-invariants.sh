@@ -58,6 +58,25 @@ if git grep -n -E -- '^[[:space:]]*nova-project[[:space:]]*=' -- crates/nova-bui
   exit 1
 fi
 
+# Guard the crate-boundary refactor that extracted project model types into `nova-build-model`.
+#
+# These crates are expected to depend directly on `nova-build-model` for `ProjectConfig`,
+# `SourceRoot`, etc., and should not pull in the heavier `nova-project` loader crate.
+model_only_crates=(
+  "crates/nova-index/Cargo.toml"
+  "crates/nova-resolve/Cargo.toml"
+  "crates/nova-framework-spring/Cargo.toml"
+)
+
+for manifest in "${model_only_crates[@]}"; do
+  if git grep -n -E -- '^[[:space:]]*nova-project[[:space:]]*=' -- "${manifest}" >/dev/null; then
+    crate_name="$(basename "$(dirname "${manifest}")")"
+    echo "repo invariant failed: ${crate_name} must not depend on nova-project (use nova-build-model instead)" >&2
+    git grep -n -E -- '^[[:space:]]*nova-project[[:space:]]*=' -- "${manifest}" >&2
+    exit 1
+  fi
+done
+
 # Enforce the AGENTS.md integration test harness pattern for `nova-dap`.
 #
 # Each `tests/*.rs` file becomes a separate Cargo integration test binary, which is expensive
