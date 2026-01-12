@@ -867,7 +867,7 @@ fn needs_space_between(last: Option<&SigToken>, next_kind: SyntaxKind, next_text
     if matches!(last.text(), "(" | "[" | "<" | "." | "@" | "::") {
         return false;
     }
-    if next_text == "=" || last.text() == "=" {
+    if is_assignment_operator(next_text) || is_assignment_operator(last.text()) {
         return true;
     }
     if next_text == "@" {
@@ -883,7 +883,6 @@ fn needs_space_between(last: Option<&SigToken>, next_kind: SyntaxKind, next_text
     if last.text() == "]" && is_word_token(next_kind, next_text) {
         return true;
     }
-
     match last {
         SigToken::GenericClose { after_dot, .. } => {
             if *after_dot {
@@ -899,6 +898,13 @@ fn needs_space_between(last: Option<&SigToken>, next_kind: SyntaxKind, next_text
             is_word_token(*kind, text) && is_word_token(next_kind, next_text)
         }
     }
+}
+
+fn is_assignment_operator(text: &str) -> bool {
+    matches!(
+        text,
+        "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=" | ">>>="
+    )
 }
 
 fn is_control_keyword(text: &str) -> bool {

@@ -987,8 +987,10 @@ async fn handle_packet(
             *state.last_classes_by_signature.lock().await = Some(signature.clone());
 
             let mut w = JdwpWriter::new();
+            let outer_prefix = state.config.class_signature.trim_end_matches(';');
+            let nested_prefix = format!("{outer_prefix}$");
             match signature.as_str() {
-                sig if sig == state.config.class_signature => {
+                sig if sig == state.config.class_signature || sig.starts_with(&nested_prefix) => {
                     w.write_u32(1);
                     w.write_u8(1); // class
                     w.write_reference_type_id(CLASS_ID, sizes);

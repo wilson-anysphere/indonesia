@@ -652,6 +652,68 @@ async fn dap_hot_swap_can_compile_changed_files_with_javac() {
 }
 
 #[tokio::test]
+async fn dap_can_hot_swap_multiple_classes_from_single_file() {
+    let mut caps = vec![false; 32];
+    caps[7] = true; // canRedefineClasses
+    let jdwp = MockJdwpServer::spawn_with_capabilities(caps).await.unwrap();
+
+    let (client, server_task) = spawn_wire_server();
+
+    client.initialize_handshake().await;
+    client.attach("127.0.0.1", jdwp.addr().port()).await;
+
+    let outer_bytecode = vec![0xCA, 0xFE];
+    let inner_bytecode = vec![0xBE, 0xEF];
+
+    let hot_swap_resp = client
+        .request(
+            "nova/hotSwap",
+            json!({
+                "classes": [
+                    {
+                        "className": "Main",
+                        "bytecodeBase64": general_purpose::STANDARD.encode(&outer_bytecode),
+                    },
+                    {
+                        "className": "Main$Inner",
+                        "bytecodeBase64": general_purpose::STANDARD.encode(&inner_bytecode),
+                    }
+                ]
+            }),
+        )
+        .await;
+
+    assert_eq!(
+        hot_swap_resp.get("success").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+
+    let results = hot_swap_resp
+        .pointer("/body/results")
+        .and_then(|v| v.as_array())
+        .expect("results array");
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get("status").and_then(|v| v.as_str()),
+        Some("success")
+    );
+    assert_eq!(
+        results[0].get("file").and_then(|v| v.as_str()),
+        Some("Main.java")
+    );
+
+    let calls = jdwp.redefine_classes_calls().await;
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].class_count, 1);
+    assert_eq!(calls[0].classes[0].1, outer_bytecode);
+    assert_eq!(calls[1].class_count, 1);
+    assert_eq!(calls[1].classes[0].1, inner_bytecode);
+
+    client.disconnect().await;
+    server_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn dap_hot_swap_reports_schema_change() {
     let mut caps = vec![false; 32];
     caps[7] = true; // canRedefineClasses

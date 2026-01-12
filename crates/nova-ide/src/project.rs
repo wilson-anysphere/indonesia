@@ -264,10 +264,16 @@ fn collect_java_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), ProjectD
     };
 
     for entry in entries {
-        let entry = entry.map_err(|source| ProjectDiscoveryError::ReadDir {
-            path: dir.to_path_buf(),
-            source,
-        })?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(source) => {
+                return Err(ProjectDiscoveryError::ReadDir {
+                    path: dir.to_path_buf(),
+                    source,
+                });
+            }
+        };
         let path = entry.path();
         if path.is_dir() {
             collect_java_files(&path, out)?;

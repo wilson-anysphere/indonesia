@@ -121,6 +121,15 @@ mod tests {
         )
         .unwrap();
 
+        // Sanity check: ensure the underlying project discovery works for simple layouts.
+        let direct_configs = nova_ide::Project::load_from_dir(root)
+            .unwrap()
+            .discover_debug_configurations();
+        assert!(
+            !direct_configs.is_empty(),
+            "direct config discovery returned no configs"
+        );
+
         let server = NovaLspServer::load_from_dir(root).unwrap();
         let configs = server.debug_configurations();
 

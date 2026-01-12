@@ -270,8 +270,8 @@ impl DapClient {
     pub async fn initialize_handshake(&self) -> Value {
         let resp = self.request("initialize", json!({})).await;
         assert_success(&resp, "initialize");
-        // The wire adapter should emit the DAP `initialized` event once it's ready to accept
-        // breakpoint configuration (typically immediately after `initialize`).
+        // The wire adapter emits the DAP `initialized` event once it's ready to accept
+        // breakpoint configuration.
         let _ = self.wait_for_event("initialized").await;
         resp
     }

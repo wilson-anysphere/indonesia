@@ -92,12 +92,19 @@ impl CompileError {
 pub enum JdwpError {
     #[error("unsupported redefinition (schema change): {0}")]
     SchemaChange(String),
+    #[error("class not loaded: {0}")]
+    NotLoaded(String),
     #[error("jdwp redefine failed: {0}")]
     Other(String),
 }
 
 /// Minimal build-system integration required for hot swapping.
 pub trait BuildSystem {
+    /// Compile each file in `files` and return at most one [`CompileOutput`] per
+    /// requested file.
+    ///
+    /// On success, [`CompileOutput::result`] may contain one or more compiled
+    /// `.class` files (including nested / anonymous classes).
     fn compile_files(&mut self, files: &[PathBuf]) -> Vec<CompileOutput>;
 }
 
@@ -145,6 +152,9 @@ fn map_tcp_jdwp_error(err: NovaJdwpError) -> JdwpError {
         NovaJdwpError::CommandFailed { error_code } if is_schema_change(error_code) => {
             JdwpError::SchemaChange(format!("HotSwap rejected by JVM (JDWP error {error_code})"))
         }
+        NovaJdwpError::Protocol(msg) if msg.contains("is not loaded in target JVM") => {
+            JdwpError::NotLoaded(msg)
+        }
         other => JdwpError::Other(other.to_string()),
     }
 }
@@ -153,6 +163,9 @@ fn map_wire_jdwp_error(err: WireJdwpError) -> JdwpError {
     match err {
         WireJdwpError::VmError(error_code) if is_schema_change(error_code) => {
             JdwpError::SchemaChange(format!("HotSwap rejected by JVM (JDWP error {error_code})"))
+        }
+        WireJdwpError::Protocol(msg) if msg.contains("is not loaded in target JVM") => {
+            JdwpError::NotLoaded(msg)
         }
         other => JdwpError::Other(other.to_string()),
     }
@@ -210,35 +223,53 @@ impl<B: BuildSystem, J: JdwpRedefiner> HotSwapEngine<B, J> {
                         status: HotSwapStatus::CompileError,
                         message: Some(err.to_string()),
                     }),
-                    Ok(compiled) => {
-                        let mut outcome = Ok(());
-                        for class in compiled {
-                            match self.jdwp.redefine_class(&class.class_name, &class.bytecode) {
+                    Ok(classes) => {
+                        if classes.is_empty() {
+                            results.push(HotSwapFileResult {
+                                file: file.clone(),
+                                status: HotSwapStatus::CompileError,
+                                message: Some("no compiled classes produced".into()),
+                            });
+                            continue;
+                        }
+
+                        let mut schema_change = false;
+                        let mut redefinition_error = false;
+                        let mut errors = Vec::new();
+
+                        for compiled in classes {
+                            match self
+                                .jdwp
+                                .redefine_class(&compiled.class_name, &compiled.bytecode)
+                            {
                                 Ok(()) => {}
-                                Err(err) => {
-                                    outcome = Err(err);
-                                    break;
+                                Err(JdwpError::NotLoaded(_)) => {
+                                    // Inner/anonymous classes may not be loaded yet.
+                                }
+                                Err(JdwpError::SchemaChange(msg)) => {
+                                    schema_change = true;
+                                    errors.push(format!("{}: {}", compiled.class_name, msg));
+                                }
+                                Err(JdwpError::Other(msg)) => {
+                                    redefinition_error = true;
+                                    errors.push(format!("{}: {}", compiled.class_name, msg));
                                 }
                             }
                         }
 
-                        match outcome {
-                            Ok(()) => results.push(HotSwapFileResult {
-                                file: file.clone(),
-                                status: HotSwapStatus::Success,
-                                message: None,
-                            }),
-                            Err(JdwpError::SchemaChange(msg)) => results.push(HotSwapFileResult {
-                                file: file.clone(),
-                                status: HotSwapStatus::SchemaChange,
-                                message: Some(msg),
-                            }),
-                            Err(err) => results.push(HotSwapFileResult {
-                                file: file.clone(),
-                                status: HotSwapStatus::RedefinitionError,
-                                message: Some(err.to_string()),
-                            }),
-                        }
+                        let status = if schema_change {
+                            HotSwapStatus::SchemaChange
+                        } else if redefinition_error {
+                            HotSwapStatus::RedefinitionError
+                        } else {
+                            HotSwapStatus::Success
+                        };
+
+                        results.push(HotSwapFileResult {
+                            file: file.clone(),
+                            status,
+                            message: (!errors.is_empty()).then(|| errors.join("\n")),
+                        });
                     }
                 },
             }
@@ -274,39 +305,54 @@ impl<B: BuildSystem, J: AsyncJdwpRedefiner> HotSwapEngine<B, J> {
                         status: HotSwapStatus::CompileError,
                         message: Some(err.to_string()),
                     }),
-                    Ok(compiled) => {
-                        let mut outcome = Ok(());
-                        for class in compiled {
+                    Ok(classes) => {
+                        if classes.is_empty() {
+                            results.push(HotSwapFileResult {
+                                file: file.clone(),
+                                status: HotSwapStatus::CompileError,
+                                message: Some("no compiled classes produced".into()),
+                            });
+                            continue;
+                        }
+
+                        let mut schema_change = false;
+                        let mut redefinition_error = false;
+                        let mut errors = Vec::new();
+
+                        for compiled in classes {
                             match self
                                 .jdwp
-                                .redefine_class(&class.class_name, &class.bytecode)
+                                .redefine_class(&compiled.class_name, &compiled.bytecode)
                                 .await
                             {
                                 Ok(()) => {}
-                                Err(err) => {
-                                    outcome = Err(err);
-                                    break;
+                                Err(JdwpError::NotLoaded(_)) => {
+                                    // Inner/anonymous classes may not be loaded yet.
+                                }
+                                Err(JdwpError::SchemaChange(msg)) => {
+                                    schema_change = true;
+                                    errors.push(format!("{}: {}", compiled.class_name, msg));
+                                }
+                                Err(JdwpError::Other(msg)) => {
+                                    redefinition_error = true;
+                                    errors.push(format!("{}: {}", compiled.class_name, msg));
                                 }
                             }
                         }
 
-                        match outcome {
-                            Ok(()) => results.push(HotSwapFileResult {
-                                file: file.clone(),
-                                status: HotSwapStatus::Success,
-                                message: None,
-                            }),
-                            Err(JdwpError::SchemaChange(msg)) => results.push(HotSwapFileResult {
-                                file: file.clone(),
-                                status: HotSwapStatus::SchemaChange,
-                                message: Some(msg),
-                            }),
-                            Err(err) => results.push(HotSwapFileResult {
-                                file: file.clone(),
-                                status: HotSwapStatus::RedefinitionError,
-                                message: Some(err.to_string()),
-                            }),
-                        }
+                        let status = if schema_change {
+                            HotSwapStatus::SchemaChange
+                        } else if redefinition_error {
+                            HotSwapStatus::RedefinitionError
+                        } else {
+                            HotSwapStatus::Success
+                        };
+
+                        results.push(HotSwapFileResult {
+                            file: file.clone(),
+                            status,
+                            message: (!errors.is_empty()).then(|| errors.join("\n")),
+                        });
                     }
                 },
             }
@@ -318,20 +364,9 @@ impl<B: BuildSystem, J: AsyncJdwpRedefiner> HotSwapEngine<B, J> {
 
 fn summarize_multi_file_results(classes: &[HotSwapClassResult]) -> (HotSwapStatus, Option<String>) {
     // Deterministic precedence order:
-    // 1) RedefinitionError: any non-schema redefine error.
-    // 2) SchemaChange: redefine rejected due to unsupported change (restart required).
+    // 1) SchemaChange: redefine rejected due to unsupported change (restart required).
+    // 2) RedefinitionError: any non-schema redefine error.
     // 3) Success: all classes successfully redefined.
-    if classes
-        .iter()
-        .any(|class| class.status == HotSwapStatus::RedefinitionError)
-    {
-        let message = classes
-            .iter()
-            .find(|class| class.status == HotSwapStatus::RedefinitionError)
-            .and_then(|class| class.message.clone());
-        return (HotSwapStatus::RedefinitionError, message);
-    }
-
     if classes
         .iter()
         .any(|class| class.status == HotSwapStatus::SchemaChange)
@@ -341,6 +376,17 @@ fn summarize_multi_file_results(classes: &[HotSwapClassResult]) -> (HotSwapStatu
             .find(|class| class.status == HotSwapStatus::SchemaChange)
             .and_then(|class| class.message.clone());
         return (HotSwapStatus::SchemaChange, message);
+    }
+
+    if classes
+        .iter()
+        .any(|class| class.status == HotSwapStatus::RedefinitionError)
+    {
+        let message = classes
+            .iter()
+            .find(|class| class.status == HotSwapStatus::RedefinitionError)
+            .and_then(|class| class.message.clone());
+        return (HotSwapStatus::RedefinitionError, message);
     }
 
     (HotSwapStatus::Success, None)
@@ -392,6 +438,11 @@ impl<B: BuildSystemMulti, J: JdwpRedefiner> HotSwapEngine<B, J> {
                                 .redefine_class(&compiled.class_name, &compiled.bytecode)
                             {
                                 Ok(()) => class_results.push(HotSwapClassResult {
+                                    class_name,
+                                    status: HotSwapStatus::Success,
+                                    message: None,
+                                }),
+                                Err(JdwpError::NotLoaded(_)) => class_results.push(HotSwapClassResult {
                                     class_name,
                                     status: HotSwapStatus::Success,
                                     message: None,
@@ -474,6 +525,11 @@ impl<B: BuildSystemMulti, J: AsyncJdwpRedefiner> HotSwapEngine<B, J> {
                                 .await
                             {
                                 Ok(()) => class_results.push(HotSwapClassResult {
+                                    class_name,
+                                    status: HotSwapStatus::Success,
+                                    message: None,
+                                }),
+                                Err(JdwpError::NotLoaded(_)) => class_results.push(HotSwapClassResult {
                                     class_name,
                                     status: HotSwapStatus::Success,
                                     message: None,
@@ -640,7 +696,9 @@ mod tests {
                 HotSwapFileResult {
                     file: c,
                     status: HotSwapStatus::SchemaChange,
-                    message: Some("Class structure changed. Restart required.".into())
+                    message: Some(
+                        "com.example.C: Class structure changed. Restart required.".into()
+                    )
                 },
             ]
         );
@@ -649,6 +707,116 @@ mod tests {
             engine.jdwp.calls,
             vec!["com.example.A".to_string(), "com.example.C".to_string()]
         );
+    }
+
+    #[test]
+    fn hot_swap_redefines_all_classes_for_file() {
+        let file = PathBuf::from("src/main/java/com/example/A.java");
+
+        let mut build = MockBuild::default();
+        build.outputs.insert(
+            file.clone(),
+            CompileOutput {
+                file: file.clone(),
+                result: Ok(vec![
+                    CompiledClass {
+                        class_name: "com.example.A".into(),
+                        bytecode: vec![0xCA, 0xFE],
+                    },
+                    CompiledClass {
+                        class_name: "com.example.A$Inner".into(),
+                        bytecode: vec![0xBE, 0xEF],
+                    },
+                ]),
+            },
+        );
+
+        let jdwp = MockJdwp::default();
+        let mut engine = HotSwapEngine::new(build, jdwp);
+        let result = engine.hot_swap(&[file.clone()]);
+
+        assert_eq!(
+            result.results,
+            vec![HotSwapFileResult {
+                file,
+                status: HotSwapStatus::Success,
+                message: None,
+            }]
+        );
+
+        assert_eq!(
+            engine.jdwp.calls,
+            vec!["com.example.A".to_string(), "com.example.A$Inner".to_string()]
+        );
+    }
+
+    #[test]
+    fn hot_swap_aggregates_schema_change_across_classes() {
+        let file = PathBuf::from("src/main/java/com/example/A.java");
+
+        let mut build = MockBuild::default();
+        build.outputs.insert(
+            file.clone(),
+            CompileOutput {
+                file: file.clone(),
+                result: Ok(vec![
+                    CompiledClass {
+                        class_name: "com.example.A".into(),
+                        bytecode: vec![0xCA, 0xFE],
+                    },
+                    CompiledClass {
+                        class_name: "com.example.A$Inner".into(),
+                        bytecode: vec![0xBE, 0xEF],
+                    },
+                ]),
+            },
+        );
+
+        let mut jdwp = MockJdwp::default();
+        jdwp.results.insert(
+            "com.example.A$Inner".into(),
+            Err(JdwpError::SchemaChange("schema changed".into())),
+        );
+
+        let mut engine = HotSwapEngine::new(build, jdwp);
+        let result = engine.hot_swap(&[file.clone()]);
+
+        assert_eq!(
+            result.results,
+            vec![HotSwapFileResult {
+                file,
+                status: HotSwapStatus::SchemaChange,
+                message: Some("com.example.A$Inner: schema changed".into()),
+            }]
+        );
+    }
+
+    #[test]
+    fn hot_swap_treats_empty_class_list_as_compile_error() {
+        let file = PathBuf::from("src/main/java/com/example/A.java");
+
+        let mut build = MockBuild::default();
+        build.outputs.insert(
+            file.clone(),
+            CompileOutput {
+                file: file.clone(),
+                result: Ok(Vec::new()),
+            },
+        );
+
+        let jdwp = MockJdwp::default();
+        let mut engine = HotSwapEngine::new(build, jdwp);
+        let result = engine.hot_swap(&[file.clone()]);
+
+        assert_eq!(
+            result.results,
+            vec![HotSwapFileResult {
+                file,
+                status: HotSwapStatus::CompileError,
+                message: Some("no compiled classes produced".into()),
+            }]
+        );
+        assert!(engine.jdwp.calls.is_empty());
     }
 
     #[test]
