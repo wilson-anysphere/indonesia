@@ -341,8 +341,7 @@ fn normalize_decompiled_binary_name(binary_name: String) -> String {
     let binary_name = binary_name
         .strip_suffix(".java")
         .unwrap_or(&binary_name)
-        .replace('\\', ".")
-        .replace('/', ".")
+        .replace(['\\', '/'], ".")
         .trim_matches('.')
         .to_string();
 

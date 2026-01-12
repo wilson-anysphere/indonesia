@@ -1,10 +1,10 @@
+mod suite;
+
 use nova_classpath::{ClasspathEntry, ClasspathIndex};
 use nova_deps_cache::{
     DependencyIndexBundle, DependencyIndexStore, DepsClassStub, DepsFieldStub, DepsMethodStub,
 };
 use tempfile::TempDir;
-
-mod suite;
 
 fn make_bundle(jar_sha256: String, method_name: &str) -> DependencyIndexBundle {
     let class = DepsClassStub {

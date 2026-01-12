@@ -40,7 +40,7 @@ impl FileChange {
             FileChange::Moved { from, to } => (from, Some(to)),
         };
 
-        std::iter::once(first).chain(second.into_iter())
+        std::iter::once(first).chain(second)
     }
 }
 
