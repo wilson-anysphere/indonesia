@@ -221,6 +221,37 @@ class C {
 }
 
 #[test]
+fn cast_expression_provides_target_type_for_var_and_lambda() {
+    let src = r#"
+class C {
+    void m() {
+        var r = (Runnable) () -> {};
+        r.run();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "var-poly-expression"),
+        "expected cast to provide a target type for lambda/var inference; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected inferred Runnable var to resolve run(); got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected no type mismatches; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "invalid-cast"),
+        "expected no invalid-cast diagnostics; got {diags:?}"
+    );
+}
+
+#[test]
 fn explicit_type_args_affect_return_type() {
     let src = r#"
 import java.util.List;
