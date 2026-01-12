@@ -217,9 +217,23 @@ impl<'a, 'idx> Parser<'a, 'idx> {
             return Type::Void;
         }
 
-        // Qualified name (dot-separated).
+        // Qualified name (dot-separated) with optional type arguments on each segment:
+        //
+        //   Ident [TypeArgs]? ('.' Ident [TypeArgs]? )*
+        //
+        // Java allows type arguments on qualifying types (e.g. `Outer<String>.Inner`),
+        // but our `Type` model can only attach args to the final resolved type.
+        // We still *parse* (consume) qualifier args so we can continue past `.`.
         let mut segments = vec![ident];
         let mut name_range = ident_range;
+
+        // Type args are only applied to the last segment; earlier args are discarded.
+        let mut last_segment_args = if self.consume_char('<') {
+            self.parse_type_args()
+        } else {
+            Vec::new()
+        };
+
         loop {
             self.skip_ws();
             // `...` is a varargs suffix, not a qualified name separator.
@@ -229,6 +243,14 @@ impl<'a, 'idx> Parser<'a, 'idx> {
             if !self.consume_char('.') {
                 break;
             }
+
+            // There is another segment, so any type args we parsed belong to a
+            // qualifying type (`Outer<String>.Inner`) and cannot be represented.
+            // Discard them (best effort).
+            if !last_segment_args.is_empty() {
+                last_segment_args.clear();
+            }
+
             self.skip_ws();
             let Some((seg, seg_range)) = self.parse_ident() else {
                 self.push_error(
@@ -240,16 +262,16 @@ impl<'a, 'idx> Parser<'a, 'idx> {
             };
             name_range.end = seg_range.end;
             segments.push(seg);
+
+            // Parse optional type args for this segment.
+            last_segment_args = if self.consume_char('<') {
+                self.parse_type_args()
+            } else {
+                Vec::new()
+            };
         }
 
-        // Type arguments apply to the last segment (`List<String>`).
-        let args = if self.consume_char('<') {
-            self.parse_type_args()
-        } else {
-            Vec::new()
-        };
-
-        self.resolve_named_type(segments, args, name_range)
+        self.resolve_named_type(segments, last_segment_args, name_range)
     }
 
     fn resolve_named_type(

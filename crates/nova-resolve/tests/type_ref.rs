@@ -6,7 +6,7 @@ use nova_hir::queries::HirDatabase;
 use nova_jdk::JdkIndex;
 use nova_resolve::type_ref::resolve_type_ref_text;
 use nova_resolve::{build_scopes, Resolver};
-use nova_types::{PrimitiveType, Type, TypeEnv, TypeStore, WildcardBound};
+use nova_types::{ClassDef, ClassKind, PrimitiveType, Type, TypeEnv, TypeStore, WildcardBound};
 
 #[derive(Default)]
 struct TestDb {
@@ -334,6 +334,50 @@ fn resolves_fully_qualified_nested_type_via_index() {
     );
     assert_eq!(ty.diagnostics, Vec::new());
     assert_eq!(ty.ty, Type::Named("java.util.Map$Entry".to_string()));
+}
+
+#[test]
+fn resolves_parameterized_qualifying_nested_type() {
+    let jdk = JdkIndex::new();
+    let mut index = TestIndex::default();
+    index.add_type("com.example", "Outer");
+    index.add_type("com.example", "Outer$Inner");
+
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let file = FileId::from_raw(0);
+    let mut db = TestDb::default();
+    db.set_file_text(file, "import com.example.Outer;\nclass C {}\n");
+    let result = build_scopes(&db, file);
+
+    let mut env = TypeStore::with_minimal_jdk();
+    let object = env.well_known().object;
+    let inner_id = env.add_class(ClassDef {
+        name: "com.example.Outer$Inner".to_string(),
+        kind: ClassKind::Class,
+        type_params: vec![],
+        super_class: Some(Type::class(object, vec![])),
+        interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
+        methods: vec![],
+    });
+
+    let type_vars = HashMap::new();
+    let ty = resolve_type_ref_text(
+        &resolver,
+        &result.scopes,
+        result.file_scope,
+        &env,
+        &type_vars,
+        "Outer<String>.Inner<Integer>",
+        None,
+    );
+
+    // Ensure we don't hit the old parser bug where `.Inner<Integer>` becomes a trailing token.
+    assert_eq!(ty.diagnostics, Vec::new());
+
+    let integer = Type::class(env.lookup_class("java.lang.Integer").unwrap(), vec![]);
+    assert_eq!(ty.ty, Type::class(inner_id, vec![integer]));
 }
 
 #[test]
