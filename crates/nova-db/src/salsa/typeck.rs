@@ -477,7 +477,78 @@ fn resolve_method_call_demand(
         checker.local_types[idx] = ty;
     }
 
-    let _ = checker.infer_expr(&mut loader, call_site.expr);
+    // Best-effort: propagate an expected type for this expression when it appears in a "simple"
+    // target-typed context (return statement / explicitly typed local initializer). This improves
+    // generic method inference without requiring full-body typeck.
+    let expected = {
+        fn returned_from_method_body(
+            body: &HirBody,
+            stmt: nova_hir::hir::StmtId,
+            expr: HirExprId,
+        ) -> bool {
+            match &body.stmts[stmt] {
+                HirStmt::Return { expr: Some(e), .. } => *e == expr,
+                HirStmt::Return { expr: None, .. } => false,
+                HirStmt::Block { statements, .. } => statements
+                    .iter()
+                    .any(|s| returned_from_method_body(body, *s, expr)),
+                HirStmt::If {
+                    then_branch,
+                    else_branch,
+                    ..
+                } => {
+                    returned_from_method_body(body, *then_branch, expr)
+                        || else_branch.is_some_and(|s| returned_from_method_body(body, s, expr))
+                }
+                HirStmt::While { body: b, .. }
+                | HirStmt::Switch { body: b, .. }
+                | HirStmt::ForEach { body: b, .. } => returned_from_method_body(body, *b, expr),
+                HirStmt::For { init, body: b, .. } => {
+                    init.iter().any(|s| returned_from_method_body(body, *s, expr))
+                        || returned_from_method_body(body, *b, expr)
+                }
+                HirStmt::Try {
+                    body: b,
+                    catches,
+                    finally,
+                    ..
+                } => {
+                    returned_from_method_body(body, *b, expr)
+                        || catches
+                            .iter()
+                            .any(|c| returned_from_method_body(body, c.body, expr))
+                        || finally.is_some_and(|s| returned_from_method_body(body, s, expr))
+                }
+                HirStmt::Let { .. }
+                | HirStmt::Expr { .. }
+                | HirStmt::Throw { .. }
+                | HirStmt::Break { .. }
+                | HirStmt::Continue { .. }
+                | HirStmt::Empty { .. } => false,
+            }
+        }
+
+        if returned_from_method_body(&body, body.root, call_site.expr) {
+            (!checker.expected_return.is_errorish()).then_some(checker.expected_return.clone())
+        } else {
+            body.stmts
+                .iter()
+                .find_map(|(_, stmt)| match stmt {
+                    HirStmt::Let {
+                        local,
+                        initializer: Some(init),
+                        ..
+                    } if *init == call_site.expr => checker
+                        .local_types
+                        .get(local.idx())
+                        .filter(|ty| !ty.is_errorish())
+                        .cloned(),
+                    _ => None,
+                })
+        }
+    };
+
+    let _ = checker.infer_expr_with_expected(&mut loader, call_site.expr, expected.as_ref());
     let resolved = checker
         .call_resolutions
         .get(call_site.expr.idx())
