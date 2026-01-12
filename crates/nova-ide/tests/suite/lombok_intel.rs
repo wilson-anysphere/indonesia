@@ -80,6 +80,62 @@ class Use {
     );
 }
 
+#[test]
+fn completion_includes_lombok_withers() {
+    let (db, file, pos) = fixture(
+        r#"
+import lombok.With;
+
+class Foo {
+  @With int x;
+}
+
+class Use {
+  void m() {
+    Foo f = new Foo();
+    f.<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+
+    assert!(
+        labels.contains(&"withX"),
+        "expected completion list to contain Lombok withX; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_includes_lombok_log_field() {
+    let (db, file, pos) = fixture(
+        r#"
+import lombok.extern.java.Log;
+
+@Log
+class Foo {
+}
+
+class Use {
+  void m() {
+    Foo f = new Foo();
+    f.<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+
+    assert!(
+        labels.contains(&"log"),
+        "expected completion list to contain Lombok log; got {labels:?}"
+    );
+}
+
 struct FileIdFixture {
     _temp_dir: TempDir,
     db: InMemoryFileStore,
@@ -178,6 +234,36 @@ class Use {
   void m() {
     Foo f = new Foo();
     f.$0getX();
+  }
+}
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = implementation(&fixture.db, file, pos);
+
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].uri, fixture.marker_uri(1));
+    assert_eq!(got[0].range.start, fixture.marker_position(1));
+}
+
+#[test]
+fn go_to_implementation_on_lombok_wither_navigates_to_annotation() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Foo.java
+import lombok.With;
+
+class Foo {
+  $1@With int x;
+}
+
+//- /Use.java
+class Use {
+  void m() {
+    Foo f = new Foo();
+    f.$0withX(1);
   }
 }
 "#,
