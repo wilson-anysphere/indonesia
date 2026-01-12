@@ -286,6 +286,68 @@ fn fingerprint_ignores_misplaced_maven_config_and_extensions_files() {
 }
 
 #[test]
+fn fingerprint_ignores_maven_build_markers_under_node_modules() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+
+    std::fs::write(
+        root.join("pom.xml"),
+        "<project><modelVersion>4.0.0</modelVersion></project>",
+    )
+    .unwrap();
+
+    let fp1 =
+        BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap()).unwrap();
+
+    let nm_dir = root.join("node_modules").join("some");
+    std::fs::create_dir_all(&nm_dir).unwrap();
+    let nm_pom = nm_dir.join("pom.xml");
+    std::fs::write(
+        &nm_pom,
+        "<project><modelVersion>4.0.0</modelVersion></project>",
+    )
+    .unwrap();
+
+    let files = collect_maven_build_files(&root).unwrap();
+    assert!(!files.contains(&nm_pom));
+
+    let fp2 = BuildFileFingerprint::from_files(&root, files).unwrap();
+    assert_eq!(fp1.digest, fp2.digest);
+}
+
+#[test]
+fn fingerprint_ignores_maven_build_markers_under_bazel_output_trees() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+
+    std::fs::write(
+        root.join("pom.xml"),
+        "<project><modelVersion>4.0.0</modelVersion></project>",
+    )
+    .unwrap();
+
+    let fp1 =
+        BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap()).unwrap();
+
+    let bazel_dir = root.join("bazel-out").join("some");
+    std::fs::create_dir_all(&bazel_dir).unwrap();
+    let bazel_pom = bazel_dir.join("pom.xml");
+    std::fs::write(
+        &bazel_pom,
+        "<project><modelVersion>4.0.0</modelVersion></project>",
+    )
+    .unwrap();
+
+    let files = collect_maven_build_files(&root).unwrap();
+    assert!(!files.contains(&bazel_pom));
+
+    let fp2 = BuildFileFingerprint::from_files(&root, files).unwrap();
+    assert_eq!(fp1.digest, fp2.digest);
+}
+
+#[test]
 fn fingerprint_changes_on_gradle_wrapper_edit() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("proj");
@@ -577,6 +639,56 @@ fn fingerprint_changes_on_custom_gradle_version_catalog_edit() {
         .unwrap();
 
     assert_ne!(fp1.digest, fp2.digest);
+}
+
+#[test]
+fn fingerprint_ignores_gradle_build_markers_under_node_modules() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+
+    std::fs::write(root.join("build.gradle"), "plugins { id 'java' }\n").unwrap();
+
+    let fp1 = BuildFileFingerprint::from_files(&root, collect_gradle_build_files(&root).unwrap())
+        .unwrap();
+
+    // These look like Gradle build markers but are under an ignored directory.
+    let nm_dir = root.join("node_modules").join("some");
+    std::fs::create_dir_all(&nm_dir).unwrap();
+    let nm_build = nm_dir.join("build.gradle");
+    std::fs::write(&nm_build, "plugins { id 'java' }\n").unwrap();
+    let nm_catalog = nm_dir.join("foo.versions.toml");
+    std::fs::write(&nm_catalog, "[versions]\nfoo = \"1.0\"\n").unwrap();
+
+    let files = collect_gradle_build_files(&root).unwrap();
+    assert!(!files.contains(&nm_build));
+    assert!(!files.contains(&nm_catalog));
+
+    let fp2 = BuildFileFingerprint::from_files(&root, files).unwrap();
+    assert_eq!(fp1.digest, fp2.digest);
+}
+
+#[test]
+fn fingerprint_ignores_gradle_build_markers_under_bazel_output_trees() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+
+    std::fs::write(root.join("build.gradle"), "plugins { id 'java' }\n").unwrap();
+
+    let fp1 = BuildFileFingerprint::from_files(&root, collect_gradle_build_files(&root).unwrap())
+        .unwrap();
+
+    let bazel_dir = root.join("bazel-bin").join("some");
+    std::fs::create_dir_all(&bazel_dir).unwrap();
+    let bazel_build = bazel_dir.join("build.gradle");
+    std::fs::write(&bazel_build, "plugins { id 'java' }\n").unwrap();
+
+    let files = collect_gradle_build_files(&root).unwrap();
+    assert!(!files.contains(&bazel_build));
+
+    let fp2 = BuildFileFingerprint::from_files(&root, files).unwrap();
+    assert_eq!(fp1.digest, fp2.digest);
 }
 
 #[test]

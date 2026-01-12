@@ -332,6 +332,15 @@ fn maven_java_compile_config_infers_module_path_via_jpms_heuristic() {
     // When Maven doesn't expose module-path expressions, we fall back to a JPMS heuristic that
     // infers the module-path from stable modules on the compile classpath.
     assert_eq!(cfg.module_path, vec![named.clone()]);
+    assert!(cfg.compile_classpath.contains(&named));
+    assert!(cfg
+        .compile_classpath
+        .iter()
+        .any(|p| p.ends_with(Path::new("target/classes"))));
+    assert!(!cfg
+        .module_path
+        .iter()
+        .any(|p| p.ends_with(Path::new("target/classes"))));
 
     let invocations = runner.invocations();
     assert!(invocations.iter().any(|inv| {
@@ -362,7 +371,7 @@ fn maven_java_compile_config_uses_evaluated_module_path_when_present() {
         "project.compileClasspathElements".to_string(),
         CommandOutput {
             status: success_status(),
-            stdout: "[]".to_string(),
+            stdout: "[mods.jar]".to_string(),
             stderr: String::new(),
             truncated: false,
         },

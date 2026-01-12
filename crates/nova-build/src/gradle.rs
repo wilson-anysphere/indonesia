@@ -2171,14 +2171,18 @@ fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf
         }
 
         // Gradle version catalogs can define dependency versions and thus affect resolved
-        // classpaths.
+        // classpaths. In addition to the default `gradle/libs.versions.toml`, Gradle supports
+        // custom catalogs referenced from `settings.gradle*` (e.g. `gradle/foo.versions.toml`).
         //
-        // Gradle supports multiple catalogs and custom filenames (for example,
-        // `gradle/deps.versions.toml`) referenced from `settings.gradle(.kts)`. Since the
-        // `.versions.toml` suffix is Gradle's convention for catalog files and false positives
-        // should be rare, we include *any* `*.versions.toml` in the fingerprint to avoid stale
-        // cached classpaths when catalogs are moved outside the conventional `gradle/` directory.
-        if name.ends_with(".versions.toml") {
+        // Only include catalogs that are direct children of a directory named `gradle` to avoid
+        // accidentally picking up unrelated `*.toml` files elsewhere in the repo (including under
+        // `node_modules/`).
+        if name.ends_with(".versions.toml")
+            && path
+                .parent()
+                .and_then(|p| p.file_name())
+                .is_some_and(|p| p == std::ffi::OsStr::new("gradle"))
+        {
             out.push(path);
             continue;
         }
