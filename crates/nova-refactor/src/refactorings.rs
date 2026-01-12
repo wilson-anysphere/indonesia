@@ -331,6 +331,8 @@ pub fn extract_variable(
     }
     let indent = current_indent(text, insert_pos);
 
+    check_extract_variable_name_conflicts(&stmt, insert_pos, &name)?;
+
     let ty = if params.use_var {
         "var".to_string()
     } else {
@@ -756,6 +758,275 @@ fn syntax_range(node: &nova_syntax::SyntaxNode) -> TextRange {
         u32::from(range.start()) as usize,
         u32::from(range.end()) as usize,
     )
+}
+
+const EXTRACT_VARIABLE_NAME_CONFLICT_REASON: &str =
+    "extracted variable name conflicts with an existing binding";
+
+fn check_extract_variable_name_conflicts(
+    stmt: &ast::Statement,
+    insert_pos: usize,
+    name: &str,
+) -> Result<(), RefactorError> {
+    let Some(insertion_scope) = stmt
+        .syntax()
+        .parent()
+        .and_then(ast::Block::cast)
+        .map(|b| syntax_range(b.syntax()))
+        .or_else(|| {
+            stmt.syntax()
+                .parent()
+                .and_then(ast::SwitchBlock::cast)
+                .map(|b| syntax_range(b.syntax()))
+        })
+    else {
+        return Err(RefactorError::ExtractNotSupported {
+            reason: "cannot determine scope for extracted variable",
+        });
+    };
+
+    let new_scope = TextRange::new(insert_pos, insertion_scope.end);
+
+    let Some(enclosing) = find_enclosing_body_owner(stmt) else {
+        return Err(RefactorError::ExtractNotSupported {
+            reason: "cannot determine enclosing method/initializer body for extraction",
+        });
+    };
+
+    // Method/constructor parameters.
+    if enclosing.has_parameter_named(name) {
+        return Err(RefactorError::ExtractNotSupported {
+            reason: EXTRACT_VARIABLE_NAME_CONFLICT_REASON,
+        });
+    }
+
+    // Local variable declarators.
+    for decl in enclosing
+        .body()
+        .syntax()
+        .descendants()
+        .filter_map(ast::VariableDeclarator::cast)
+    {
+        if is_within_nested_type(decl.syntax(), enclosing.body().syntax()) {
+            continue;
+        }
+        let Some(tok) = decl.name_token() else {
+            continue;
+        };
+        if tok.text() != name {
+            continue;
+        }
+        let Some(scope) = local_binding_scope_range(&decl) else {
+            continue;
+        };
+        if ranges_overlap(new_scope, scope) {
+            return Err(RefactorError::ExtractNotSupported {
+                reason: EXTRACT_VARIABLE_NAME_CONFLICT_REASON,
+            });
+        }
+    }
+
+    // Catch parameters.
+    for catch_clause in enclosing
+        .body()
+        .syntax()
+        .descendants()
+        .filter_map(ast::CatchClause::cast)
+    {
+        if is_within_nested_type(catch_clause.syntax(), enclosing.body().syntax()) {
+            continue;
+        }
+        let Some(body) = catch_clause.body() else {
+            continue;
+        };
+        let Some(param_name) = catch_parameter_name(&catch_clause) else {
+            continue;
+        };
+        if param_name != name {
+            continue;
+        }
+        let scope = syntax_range(body.syntax());
+        if ranges_overlap(new_scope, scope) {
+            return Err(RefactorError::ExtractNotSupported {
+                reason: EXTRACT_VARIABLE_NAME_CONFLICT_REASON,
+            });
+        }
+    }
+
+    // Lambda parameters.
+    for lambda in enclosing
+        .body()
+        .syntax()
+        .descendants()
+        .filter_map(ast::LambdaExpression::cast)
+    {
+        if is_within_nested_type(lambda.syntax(), enclosing.body().syntax()) {
+            continue;
+        }
+
+        let Some(body) = lambda.body() else {
+            continue;
+        };
+        let lambda_scope = if let Some(block) = body.block() {
+            syntax_range(block.syntax())
+        } else if let Some(expr) = body.expression() {
+            syntax_range(expr.syntax())
+        } else {
+            continue;
+        };
+        if !ranges_overlap(new_scope, lambda_scope) {
+            continue;
+        }
+
+        let Some(params) = lambda.parameters() else {
+            continue;
+        };
+
+        let mut has_conflict = false;
+        if let Some(list) = params.parameter_list() {
+            has_conflict = list
+                .parameters()
+                .filter_map(|p| p.name_token().map(|t| t.text().to_string()))
+                .any(|n| n == name);
+        } else if let Some(param) = params.parameter() {
+            has_conflict = param
+                .name_token()
+                .is_some_and(|t| t.text() == name);
+        }
+
+        if has_conflict {
+            return Err(RefactorError::ExtractNotSupported {
+                reason: EXTRACT_VARIABLE_NAME_CONFLICT_REASON,
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn ranges_overlap(a: TextRange, b: TextRange) -> bool {
+    a.start < b.end && b.start < a.end
+}
+
+#[derive(Clone, Debug)]
+enum EnclosingBodyOwner {
+    Method(ast::MethodDeclaration, ast::Block),
+    Constructor(ast::ConstructorDeclaration, ast::Block),
+    CompactConstructor(ast::CompactConstructorDeclaration, ast::Block),
+    Initializer(ast::InitializerBlock, ast::Block),
+}
+
+impl EnclosingBodyOwner {
+    fn body(&self) -> &ast::Block {
+        match self {
+            EnclosingBodyOwner::Method(_, body)
+            | EnclosingBodyOwner::Constructor(_, body)
+            | EnclosingBodyOwner::CompactConstructor(_, body)
+            | EnclosingBodyOwner::Initializer(_, body) => body,
+        }
+    }
+
+    fn has_parameter_named(&self, name: &str) -> bool {
+        match self {
+            EnclosingBodyOwner::Method(method, _) => method
+                .parameter_list()
+                .is_some_and(|list| list.parameters().any(|p| p.name_token().is_some_and(|t| t.text() == name))),
+            EnclosingBodyOwner::Constructor(ctor, _) => ctor
+                .parameter_list()
+                .is_some_and(|list| list.parameters().any(|p| p.name_token().is_some_and(|t| t.text() == name))),
+            EnclosingBodyOwner::CompactConstructor(_, _) | EnclosingBodyOwner::Initializer(_, _) => false,
+        }
+    }
+}
+
+fn find_enclosing_body_owner(stmt: &ast::Statement) -> Option<EnclosingBodyOwner> {
+    for node in stmt.syntax().ancestors() {
+        if let Some(method) = ast::MethodDeclaration::cast(node.clone()) {
+            let body = method.body()?;
+            return Some(EnclosingBodyOwner::Method(method, body));
+        }
+        if let Some(ctor) = ast::ConstructorDeclaration::cast(node.clone()) {
+            let body = ctor.body()?;
+            return Some(EnclosingBodyOwner::Constructor(ctor, body));
+        }
+        if let Some(ctor) = ast::CompactConstructorDeclaration::cast(node.clone()) {
+            let body = ctor.body()?;
+            return Some(EnclosingBodyOwner::CompactConstructor(ctor, body));
+        }
+        if let Some(init) = ast::InitializerBlock::cast(node) {
+            let body = init.body()?;
+            return Some(EnclosingBodyOwner::Initializer(init, body));
+        }
+    }
+    None
+}
+
+fn is_within_nested_type(node: &nova_syntax::SyntaxNode, stop_at: &nova_syntax::SyntaxNode) -> bool {
+    for anc in node.ancestors() {
+        if &anc == stop_at {
+            break;
+        }
+        if ast::ClassDeclaration::can_cast(anc.kind())
+            || ast::InterfaceDeclaration::can_cast(anc.kind())
+            || ast::EnumDeclaration::can_cast(anc.kind())
+            || ast::RecordDeclaration::can_cast(anc.kind())
+            || ast::AnnotationTypeDeclaration::can_cast(anc.kind())
+            // Anonymous classes have a `ClassBody` without a `ClassDeclaration` wrapper.
+            || ast::ClassBody::can_cast(anc.kind())
+            || ast::InterfaceBody::can_cast(anc.kind())
+            || ast::EnumBody::can_cast(anc.kind())
+            || ast::RecordBody::can_cast(anc.kind())
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn catch_parameter_name(catch_clause: &ast::CatchClause) -> Option<String> {
+    let mut last_ident: Option<String> = None;
+    for el in catch_clause.syntax().descendants_with_tokens() {
+        let Some(tok) = el.into_token() else {
+            continue;
+        };
+        if tok.kind() == SyntaxKind::RParen {
+            break;
+        }
+        if tok.kind().is_identifier_like() {
+            last_ident = Some(tok.text().to_string());
+        }
+    }
+    last_ident
+}
+
+fn local_binding_scope_range(decl: &ast::VariableDeclarator) -> Option<TextRange> {
+    let decl_range = syntax_range(decl.syntax());
+
+    for for_stmt in decl.syntax().ancestors().filter_map(ast::ForStatement::cast) {
+        let header = for_stmt.header()?;
+        let header_range = syntax_range(header.syntax());
+        if contains_range(header_range, decl_range) {
+            return Some(syntax_range(for_stmt.syntax()));
+        }
+    }
+
+    for try_stmt in decl.syntax().ancestors().filter_map(ast::TryStatement::cast) {
+        let resources = try_stmt.resources()?;
+        let resources_range = syntax_range(resources.syntax());
+        if contains_range(resources_range, decl_range) {
+            return Some(syntax_range(try_stmt.syntax()));
+        }
+    }
+
+    // Default: nearest enclosing block-like scope.
+    if let Some(block) = decl.syntax().ancestors().find_map(ast::Block::cast) {
+        return Some(syntax_range(block.syntax()));
+    }
+    if let Some(block) = decl.syntax().ancestors().find_map(ast::SwitchBlock::cast) {
+        return Some(syntax_range(block.syntax()));
+    }
+
+    None
 }
 
 fn find_expression(

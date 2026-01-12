@@ -766,6 +766,115 @@ fn extract_variable_allows_block_bodied_lambda() {
 }
 
 #[test]
+fn extract_variable_rejects_name_conflict_with_lambda_parameter() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C {
+  void m() {
+    java.util.function.IntConsumer c = (sum) -> {
+      System.out.println(/*start*/1 + 2/*end*/);
+    };
+  }
+}
+"#;
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
+            name: "sum".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason == "extracted variable name conflicts with an existing binding"
+        ),
+        "expected lambda parameter name conflict, got: {err:?}"
+    );
+}
+
+#[test]
+fn extract_variable_allows_lambda_parameter_when_name_does_not_conflict() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C {
+  void m() {
+    java.util.function.IntConsumer c = (sum) -> {
+      System.out.println(/*start*/1 + 2/*end*/);
+    };
+  }
+}
+"#;
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
+            name: "tmp".into(),
+            use_var: true,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class C {
+  void m() {
+    java.util.function.IntConsumer c = (sum) -> {
+      var tmp = 1 + 2;
+      System.out.println(tmp);
+    };
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn extract_variable_rejects_name_conflict_with_catch_parameter() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C {
+  void m() {
+    try {
+    } catch (Exception e) {
+      System.out.println(/*start*/1 + 2/*end*/);
+    }
+  }
+}
+"#;
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
+            name: "e".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason == "extracted variable name conflicts with an existing binding"
+        ),
+        "expected catch parameter name conflict, got: {err:?}"
+    );
+}
+
+#[test]
 fn extract_variable_rejects_switch_expression_rule_expression() {
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
