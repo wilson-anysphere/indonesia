@@ -4236,6 +4236,52 @@ class A {
 }
 
 #[test]
+fn completion_scope_includes_for_each_variable_inside_loop() {
+    let (db, file, pos) = fixture(
+        r#"
+import java.util.List;
+class A {
+  void m(List<String> xs) {
+    for (String item : xs) {
+      <|>
+    }
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"item"),
+        "expected enhanced-for variable `item` to be in scope inside loop; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_scope_excludes_for_each_variable_after_loop() {
+    let (db, file, pos) = fixture(
+        r#"
+import java.util.List;
+class A {
+  void m(List<String> xs) {
+    for (String item : xs) {
+    }
+    <|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        !labels.contains(&"item"),
+        "expected enhanced-for variable `item` to be out of scope after loop; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_scope_excludes_try_resource_after_try() {
     let (db, file, pos) = fixture(
         r#"
@@ -4278,6 +4324,29 @@ class A {
     assert!(
         !labels.contains(&"e"),
         "expected catch parameter `e` to be out of scope after catch; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_scope_includes_catch_parameter_inside_catch() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    try {
+    } catch (RuntimeException e) {
+      <|>
+    }
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"e"),
+        "expected catch parameter `e` to be in scope inside catch; got {labels:?}"
     );
 }
 

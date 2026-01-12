@@ -13236,6 +13236,161 @@ fn analyze(text: &str) -> Analysis {
             });
         }
 
+        // Enhanced for-loop variables: `for (Type name : iterable) stmt`.
+        //
+        // Our simple `<ty> <name> ('='|';')` window scan above does not capture the `:` separator,
+        // so we parse these loops separately. This is best-effort and intentionally conservative:
+        // only treat a `for (...)` header as enhanced-for if it contains a top-level `:` *and* no
+        // top-level `;` (to avoid confusing ternary expressions in classic for-loop initializers).
+        let mut idx = 0usize;
+        while idx + 1 < body_tokens.len() {
+            let tok = body_tokens[idx];
+            if tok.kind == TokenKind::Ident
+                && tok.text == "for"
+                && body_tokens[idx + 1].kind == TokenKind::Symbol('(')
+            {
+                let open_idx = idx + 1;
+                let Some(close_idx) = find_matching_paren_refs(&body_tokens, open_idx) else {
+                    idx += 1;
+                    continue;
+                };
+
+                let mut paren_depth = 0i32;
+                let mut brace_depth = 0i32;
+                let mut bracket_depth = 0i32;
+                let mut has_semicolon = false;
+                let mut colon_idx: Option<usize> = None;
+                for j in (open_idx + 1)..close_idx {
+                    let t = body_tokens[j];
+                    match t.kind {
+                        TokenKind::Symbol('(') => paren_depth += 1,
+                        TokenKind::Symbol(')') => paren_depth = paren_depth.saturating_sub(1),
+                        TokenKind::Symbol('{') => brace_depth += 1,
+                        TokenKind::Symbol('}') => brace_depth = brace_depth.saturating_sub(1),
+                        TokenKind::Symbol('[') => bracket_depth += 1,
+                        TokenKind::Symbol(']') => bracket_depth = bracket_depth.saturating_sub(1),
+                        TokenKind::Symbol(';')
+                            if paren_depth == 0 && brace_depth == 0 && bracket_depth == 0 =>
+                        {
+                            has_semicolon = true;
+                            break;
+                        }
+                        TokenKind::Symbol(':')
+                            if paren_depth == 0 && brace_depth == 0 && bracket_depth == 0 =>
+                        {
+                            if colon_idx.is_none() {
+                                colon_idx = Some(j);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                if !has_semicolon {
+                    if let Some(colon_idx) = colon_idx {
+                        let name_idx = (open_idx + 1..colon_idx)
+                            .rev()
+                            .find(|&j| body_tokens[j].kind == TokenKind::Ident);
+
+                        if let Some(name_idx) = name_idx {
+                            let name_tok = body_tokens[name_idx];
+                            let mut is_var = false;
+                            let mut ty = "Object".to_string();
+
+                            for j in (open_idx + 1)..name_idx {
+                                let t = body_tokens[j];
+                                if t.kind != TokenKind::Ident {
+                                    continue;
+                                }
+                                // Best-effort: skip common modifiers / annotation identifiers.
+                                if t.text == "final" {
+                                    continue;
+                                }
+                                if j > open_idx + 1
+                                    && body_tokens[j - 1].kind == TokenKind::Symbol('@')
+                                {
+                                    continue;
+                                }
+                                is_var = t.text == "var";
+                                if !is_var {
+                                    ty = t.text.clone();
+                                }
+                                break;
+                            }
+
+                            analysis.vars.push(VarDecl {
+                                name: name_tok.text.clone(),
+                                name_span: name_tok.span,
+                                ty,
+                                is_var,
+                            });
+                        }
+                    }
+                }
+
+                idx = close_idx + 1;
+                continue;
+            }
+
+            idx += 1;
+        }
+
+        // Catch parameters: `catch (Exception e) { ... }`.
+        //
+        // These are in-scope within the catch block body only; completion scoping is handled by
+        // `var_decl_scope_end_offset` (keyword `catch`).
+        let mut idx = 0usize;
+        while idx + 1 < body_tokens.len() {
+            let tok = body_tokens[idx];
+            if tok.kind == TokenKind::Ident
+                && tok.text == "catch"
+                && body_tokens[idx + 1].kind == TokenKind::Symbol('(')
+            {
+                let open_idx = idx + 1;
+                let Some(close_idx) = find_matching_paren_refs(&body_tokens, open_idx) else {
+                    idx += 1;
+                    continue;
+                };
+
+                let name_idx = (open_idx + 1..close_idx)
+                    .rev()
+                    .find(|&j| body_tokens[j].kind == TokenKind::Ident);
+                let Some(name_idx) = name_idx else {
+                    idx = close_idx + 1;
+                    continue;
+                };
+
+                let name_tok = body_tokens[name_idx];
+                let mut ty = "Exception".to_string();
+                for j in (open_idx + 1)..name_idx {
+                    let t = body_tokens[j];
+                    if t.kind != TokenKind::Ident {
+                        continue;
+                    }
+                    if t.text == "final" {
+                        continue;
+                    }
+                    if j > open_idx + 1 && body_tokens[j - 1].kind == TokenKind::Symbol('@') {
+                        continue;
+                    }
+                    ty = t.text.clone();
+                    break;
+                }
+
+                analysis.vars.push(VarDecl {
+                    name: name_tok.text.clone(),
+                    name_span: name_tok.span,
+                    ty,
+                    is_var: false,
+                });
+
+                idx = close_idx + 1;
+                continue;
+            }
+
+            idx += 1;
+        }
+
         // Calls: [receiver '.'] <name> '(' ... ')'
         let mut idx = 0usize;
         while idx + 1 < body_tokens.len() {
@@ -13523,6 +13678,23 @@ fn find_matching_paren(tokens: &[Token], open_idx: usize) -> Option<(usize, usiz
                 depth -= 1;
                 if depth == 0 {
                     return Some((idx, tok.span.end));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn find_matching_paren_refs(tokens: &[&Token], open_idx: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    for (idx, tok) in tokens.iter().enumerate().skip(open_idx) {
+        match tok.kind {
+            TokenKind::Symbol('(') => depth += 1,
+            TokenKind::Symbol(')') => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(idx);
                 }
             }
             _ => {}
