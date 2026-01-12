@@ -782,6 +782,20 @@ mod tests {
         )
     }
 
+    fn baseline_best_score(query: &str, symbol: &Symbol) -> Option<MatchScore> {
+        let mut matcher = FuzzyMatcher::new(query);
+        let mut best = matcher.score(&symbol.name);
+        let qual = matcher.score(&symbol.qualified_name);
+        if let (Some(a), Some(b)) = (best, qual) {
+            if b.rank_key() > a.rank_key() {
+                best = Some(b);
+            }
+        } else if best.is_none() {
+            best = qual;
+        }
+        best
+    }
+
     #[test]
     fn qualified_name_equal_to_name_preserves_results() {
         let symbol = sym("FooBar", "FooBar");
@@ -792,18 +806,10 @@ mod tests {
 
         // Baseline: always score both fields and pick the best. When the
         // strings are equal, this should match the optimized path.
-        let mut matcher = FuzzyMatcher::new("fb");
-        let mut best = matcher.score(&symbol.name);
-        let qual = matcher.score(&symbol.qualified_name);
-        if let (Some(a), Some(b)) = (best, qual) {
-            if b.rank_key() > a.rank_key() {
-                best = Some(b);
-            }
-        } else if best.is_none() {
-            best = qual;
-        }
-
-        assert_eq!(Some(results[0].score), best);
+        assert_eq!(
+            Some(results[0].score),
+            baseline_best_score("fb", &symbol)
+        );
     }
 
     #[test]
@@ -815,6 +821,37 @@ mod tests {
         let results = index.search("Hash", 10);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].symbol.name, "Map");
+    }
+
+    #[test]
+    fn qualified_name_shorter_than_name_can_win_prefix_score() {
+        let symbol = sym("Foobar", "Foo");
+        let index = SymbolSearchIndex::build(vec![symbol.clone()]);
+
+        // Both name + qualified name are prefix matches, but qualified_name is shorter
+        // and should win the prefix score tie-break.
+        let results = index.search("Foo", 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            Some(results[0].score),
+            baseline_best_score("Foo", &symbol)
+        );
+    }
+
+    #[test]
+    fn name_prefix_skips_qualified_scoring_when_qualified_is_longer() {
+        let symbol = sym("Foo", "Foo.Bar");
+        let index = SymbolSearchIndex::build(vec![symbol.clone()]);
+
+        // `name` is a prefix match and shorter than `qualified_name`, so the
+        // qualified_name score cannot beat it. The optimized early return must
+        // still preserve the baseline best-of behavior.
+        let results = index.search("Foo", 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            Some(results[0].score),
+            baseline_best_score("Foo", &symbol)
+        );
     }
 
     #[test]
