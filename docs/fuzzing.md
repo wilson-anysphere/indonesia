@@ -65,12 +65,16 @@ bash ../../scripts/cargo_agent.sh +nightly fuzz run decode_framed_message -- -ma
 >
 > ```bash
 > cargo +nightly fuzz run --target-dir fuzz/target-local fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
+> # agent/multi-runner equivalent:
+> bash scripts/cargo_agent.sh +nightly fuzz run --target-dir fuzz/target-local fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
 > ```
 >
 > If the lock is on the *package cache*, you can also use a separate `CARGO_HOME`:
 >
 > ```bash
 > CARGO_HOME=/tmp/nova-cargo-home cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
+> # agent/multi-runner equivalent:
+> CARGO_HOME=/tmp/nova-cargo-home bash scripts/cargo_agent.sh +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
 > ```
 
 ### Parse Java (syntax)
