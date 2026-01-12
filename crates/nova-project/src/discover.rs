@@ -18,6 +18,15 @@ pub struct LoadOptions {
     /// Override Maven local repository (`~/.m2/repository`) location.
     pub maven_repo: Option<PathBuf>,
 
+    /// When enabled, Nova will synthesize Maven dependency jar paths on the classpath even when
+    /// the artifacts are missing from the local repository.
+    ///
+    /// This can be useful for downstream tooling that fetches dependencies lazily and wants a
+    /// stable "expected" jar path to populate later. When disabled (the default), missing Maven
+    /// artifacts are omitted from the classpath/module-path so downstream indexing does not fail
+    /// trying to open non-existent archives.
+    pub maven_include_missing_jars: bool,
+
     /// Override Gradle user home (`~/.gradle`) location.
     ///
     /// When unset, Nova uses `GRADLE_USER_HOME` if present, otherwise falls back

@@ -175,11 +175,17 @@ pub(crate) fn load_maven_project(
                 continue;
             }
 
-            if let Some(jar_path) = maven_dependency_jar_path(&maven_repo, dep) {
+            if let Some(jar_path) =
+                maven_dependency_jar_path(&maven_repo, dep, options.maven_include_missing_jars)
+            {
                 // Multi-module Maven workspaces can have extremely large dependency closures (and
                 // corresponding classpaths). Only include jars that exist on disk to keep the
-                // classpath lean (see `tests/cases/discovery.rs`).
-                if multi_module_workspace && !jar_path.is_file() && !jar_path.is_dir() {
+                // classpath lean (see `tests/suite/discovery.rs`).
+                if multi_module_workspace
+                    && !options.maven_include_missing_jars
+                    && !jar_path.is_file()
+                    && !jar_path.is_dir()
+                {
                     continue;
                 }
 
@@ -190,7 +196,8 @@ pub(crate) fn load_maven_project(
                     //
                     // Missing artifacts are omitted so downstream JPMS/classpath indexing doesn't
                     // fail trying to open non-existent archives (see
-                    // `tests/suite/maven_missing_jars.rs`).
+                    // `tests/suite/maven_missing_jars.rs`). Callers that want stable placeholder
+                    // paths can enable `LoadOptions::maven_include_missing_jars`.
                     kind: if jar_path.is_dir() {
                         ClasspathEntryKind::Directory
                     } else {
@@ -503,16 +510,22 @@ pub(crate) fn load_maven_workspace_model(
                 continue;
             }
 
-            if let Some(jar_path) = maven_dependency_jar_path(&maven_repo, dep) {
-                if multi_module_workspace && !jar_path.is_file() && !jar_path.is_dir() {
+            if let Some(jar_path) =
+                maven_dependency_jar_path(&maven_repo, dep, options.maven_include_missing_jars)
+            {
+                if multi_module_workspace
+                    && !options.maven_include_missing_jars
+                    && !jar_path.is_file()
+                    && !jar_path.is_dir()
+                {
                     continue;
                 }
 
                 classpath.push(ClasspathEntry {
-                    // Support "exploded jar" directories on disk.
-                    //
-                    // Missing artifacts are omitted so downstream indexing doesn't fail trying to
-                    // open them.
+                    // Support "exploded jar" directories on disk. Missing artifacts are omitted
+                    // by default so downstream indexing doesn't fail trying to open them; callers
+                    // can opt into placeholder jar paths via
+                    // `LoadOptions::maven_include_missing_jars`.
                     kind: if jar_path.is_dir() {
                         ClasspathEntryKind::Directory
                     } else {
@@ -2164,7 +2177,11 @@ fn exists_as_jar(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|meta| meta.is_file() || meta.is_dir())
 }
 
-fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<PathBuf> {
+fn maven_dependency_jar_path(
+    maven_repo: &Path,
+    dep: &Dependency,
+    include_missing: bool,
+) -> Option<PathBuf> {
     let version = dep.version.as_deref()?;
     if version.contains("${") {
         return None;
@@ -2208,7 +2225,9 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
             resolve_snapshot_jar_file_name(&version_dir, base_version, &dep.artifact_id, classifier)
         {
             let resolved_path = version_dir.join(resolved);
-            if resolved_path.is_file() || resolved_path.is_dir() {
+            // Prefer the timestamped jar when it exists on disk (or when we are intentionally
+            // synthesizing missing jar placeholders).
+            if include_missing || exists_as_jar(&resolved_path) {
                 return Some(resolved_path);
             }
         }
@@ -2217,11 +2236,19 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
         // conventional `<artifactId>-<version>(-classifier).jar` path, as some local repos (and
         // build tools) store snapshots without timestamped filenames.
         let fallback = version_dir.join(default_file_name(version));
-        return exists_as_jar(&fallback).then_some(fallback);
+        return if include_missing || exists_as_jar(&fallback) {
+            Some(fallback)
+        } else {
+            None
+        };
     }
 
     let path = version_dir.join(default_file_name(version));
-    exists_as_jar(&path).then_some(path)
+    if include_missing || exists_as_jar(&path) {
+        Some(path)
+    } else {
+        None
+    }
 }
 
 fn resolve_snapshot_jar_file_name(
@@ -2714,9 +2741,15 @@ mod tests {
             type_: None,
         };
 
+        let expected_jar = repo.path().join("com/example/dep/1.0/dep-1.0.jar");
         assert!(
-            maven_dependency_jar_path(repo.path(), &dep).is_none(),
+            maven_dependency_jar_path(repo.path(), &dep, /*include_missing=*/ false).is_none(),
             "missing jars should be omitted from the classpath"
+        );
+        assert_eq!(
+            maven_dependency_jar_path(repo.path(), &dep, /*include_missing=*/ true),
+            Some(expected_jar),
+            "callers can opt into placeholder jar paths for missing artifacts"
         );
     }
 
@@ -2740,7 +2773,7 @@ mod tests {
         };
 
         assert_eq!(
-            maven_dependency_jar_path(repo.path(), &dep),
+            maven_dependency_jar_path(repo.path(), &dep, /*include_missing=*/ false),
             Some(jar_path),
             "expected jar dependency types to be matched case-insensitively"
         );
@@ -2768,7 +2801,7 @@ mod tests {
         };
 
         assert_eq!(
-            maven_dependency_jar_path(repo.path(), &dep),
+            maven_dependency_jar_path(repo.path(), &dep, /*include_missing=*/ false),
             Some(jar_path),
             "expected snapshot fallback jar to be accepted when present on disk"
         );
@@ -2793,7 +2826,7 @@ mod tests {
         };
 
         assert_eq!(
-            maven_dependency_jar_path(repo.path(), &dep),
+            maven_dependency_jar_path(repo.path(), &dep, /*include_missing=*/ false),
             Some(jar_dir_path),
             "expected exploded jar directories to be accepted when present on disk"
         );
@@ -2829,7 +2862,7 @@ mod tests {
         let jar_path = version_dir.join("dep-1.0-20260112.123456-1.jar");
         std::fs::write(&jar_path, "").expect("write jar");
 
-        let resolved = maven_dependency_jar_path(repo.path(), &dep).expect("expected jar path");
+        let resolved = maven_dependency_jar_path(repo.path(), &dep, /*include_missing=*/ false).expect("expected jar path");
         assert_eq!(resolved, jar_path);
     }
 
@@ -2865,7 +2898,7 @@ mod tests {
         let jar_path = version_dir.join("dep-1.0-20260112.123456-1.jar");
         std::fs::write(&jar_path, "").expect("write jar");
 
-        let resolved = maven_dependency_jar_path(repo.path(), &dep).expect("expected jar path");
+        let resolved = maven_dependency_jar_path(repo.path(), &dep, /*include_missing=*/ false).expect("expected jar path");
         assert_eq!(resolved, jar_path);
     }
 
@@ -2902,7 +2935,7 @@ mod tests {
         let newer_jar_path = version_dir.join("dep-1.0-20260112.223456-2.jar");
         std::fs::write(&newer_jar_path, "").expect("write newer jar");
 
-        let resolved = maven_dependency_jar_path(repo.path(), &dep).expect("expected jar path");
+        let resolved = maven_dependency_jar_path(repo.path(), &dep, /*include_missing=*/ false).expect("expected jar path");
         assert_eq!(resolved, newer_jar_path);
     }
 
@@ -2936,7 +2969,7 @@ mod tests {
         let jar_path = version_dir.join("dep-1.0-20260112.123456-1-sources.jar");
         std::fs::write(&jar_path, "").expect("write jar");
 
-        let resolved = maven_dependency_jar_path(repo.path(), &dep).expect("expected jar path");
+        let resolved = maven_dependency_jar_path(repo.path(), &dep, /*include_missing=*/ false).expect("expected jar path");
         assert_eq!(resolved, jar_path);
     }
 
@@ -2972,7 +3005,7 @@ mod tests {
         std::fs::write(&jar_2, "").expect("write jar 2");
         std::fs::write(&jar_10, "").expect("write jar 10");
 
-        let resolved = maven_dependency_jar_path(repo.path(), &dep).expect("expected jar path");
+        let resolved = maven_dependency_jar_path(repo.path(), &dep, /*include_missing=*/ false).expect("expected jar path");
         assert_eq!(resolved, jar_10);
     }
 
@@ -3006,7 +3039,7 @@ mod tests {
         let jar_path = version_dir.join("dep-1.0-20260112.123456-10.jar");
         std::fs::write(&jar_path, "").expect("write jar");
 
-        let resolved = maven_dependency_jar_path(repo.path(), &dep).expect("expected jar path");
+        let resolved = maven_dependency_jar_path(repo.path(), &dep, /*include_missing=*/ false).expect("expected jar path");
         assert_eq!(resolved, jar_path);
     }
 

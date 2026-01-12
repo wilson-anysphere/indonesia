@@ -5403,6 +5403,16 @@ fn statement_block_and_index(stmt: &ast::Statement) -> Option<(ast::Block, usize
     Some((block, idx))
 }
 
+fn check_side_effectful_inline_order(
+    root: &nova_syntax::SyntaxNode,
+    decl_stmt: &ast::LocalVariableDeclarationStatement,
+    targets: &[crate::semantic::Reference],
+    decl_file: &FileId,
+) -> Result<(), RefactorError> {
+    check_order_sensitive_inline_order(root, decl_stmt, targets, decl_file)
+        .map_err(|_| RefactorError::InlineSideEffects)
+}
+
 fn check_order_sensitive_inline_order(
     root: &nova_syntax::SyntaxNode,
     decl_stmt: &ast::LocalVariableDeclarationStatement,
