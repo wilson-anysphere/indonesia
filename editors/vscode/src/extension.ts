@@ -247,6 +247,14 @@ export async function activate(context: vscode.ExtensionContext) {
   bugReportOutput = vscode.window.createOutputChannel('Nova Bug Report');
   context.subscriptions.push(bugReportOutput);
 
+  // Initialize Frameworks view context keys so `contributes.viewsWelcome` can render predictable
+  // content even before the language client starts.
+  void vscode.commands.executeCommand('setContext', 'nova.frameworks.serverRunning', false);
+  void vscode.commands.executeCommand('setContext', 'nova.frameworks.safeMode', false);
+  void vscode.commands.executeCommand('setContext', 'nova.frameworks.webEndpointsSupported', true);
+  void vscode.commands.executeCommand('setContext', 'nova.frameworks.micronautEndpointsSupported', true);
+  void vscode.commands.executeCommand('setContext', 'nova.frameworks.micronautBeansSupported', true);
+
   const serverManager = new ServerManager(context.globalStorageUri.fsPath, serverOutput);
 
   const requestWithFallback = <R>(method: string, params?: unknown): Promise<R | undefined> => {
@@ -655,6 +663,22 @@ export async function activate(context: vscode.ExtensionContext) {
   let ensurePromptRequested = false;
   let ensurePending = false;
 
+  const updateFrameworksMethodSupportContexts = () => {
+    // Use server-advertised capability lists when available; otherwise fall back to an
+    // optimistic default so the Frameworks view can attempt requests and handle method-not-found
+    // gracefully.
+    const webSupported =
+      isNovaRequestSupported(DEFAULT_NOVA_CAPABILITIES_KEY, 'nova/web/endpoints') !== false ||
+      isNovaRequestSupported(DEFAULT_NOVA_CAPABILITIES_KEY, 'nova/quarkus/endpoints') !== false;
+    const micronautEndpointsSupported =
+      isNovaRequestSupported(DEFAULT_NOVA_CAPABILITIES_KEY, 'nova/micronaut/endpoints') !== false;
+    const micronautBeansSupported = isNovaRequestSupported(DEFAULT_NOVA_CAPABILITIES_KEY, 'nova/micronaut/beans') !== false;
+
+    void vscode.commands.executeCommand('setContext', 'nova.frameworks.webEndpointsSupported', webSupported);
+    void vscode.commands.executeCommand('setContext', 'nova.frameworks.micronautEndpointsSupported', micronautEndpointsSupported);
+    void vscode.commands.executeCommand('setContext', 'nova.frameworks.micronautBeansSupported', micronautBeansSupported);
+  };
+
   async function stopLanguageClient(): Promise<void> {
     if (!client) {
       return;
@@ -671,6 +695,8 @@ export async function activate(context: vscode.ExtensionContext) {
       for (const workspace of vscode.workspace.workspaceFolders ?? []) {
         resetNovaExperimentalCapabilities(workspace.uri.toString());
       }
+      void vscode.commands.executeCommand('setContext', 'nova.frameworks.serverRunning', false);
+      updateFrameworksMethodSupportContexts();
       detachObservability();
       aiRefreshInProgress = false;
       clearAiCompletionCache();
@@ -684,6 +710,8 @@ export async function activate(context: vscode.ExtensionContext) {
     for (const workspace of vscode.workspace.workspaceFolders ?? []) {
       resetNovaExperimentalCapabilities(workspace.uri.toString());
     }
+    void vscode.commands.executeCommand('setContext', 'nova.frameworks.serverRunning', true);
+    updateFrameworksMethodSupportContexts();
     const launchConfig = readLspLaunchConfig();
     const serverOptions: ServerOptions = {
       command: serverCommand,
@@ -707,6 +735,7 @@ export async function activate(context: vscode.ExtensionContext) {
       for (const workspace of vscode.workspace.workspaceFolders ?? []) {
         setNovaExperimentalCapabilities(workspace.uri.toString(), languageClient.initializeResult);
       }
+      updateFrameworksMethodSupportContexts();
     });
 
     attachObservability(languageClient, clientStart);

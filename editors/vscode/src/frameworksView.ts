@@ -336,8 +336,11 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
     }
 
     if (!response) {
+      void vscode.commands.executeCommand('setContext', 'nova.frameworks.webEndpointsSupported', false);
       return [messageNode('Web endpoints are not supported by this server.', undefined, new vscode.ThemeIcon('warning'))];
     }
+
+    void vscode.commands.executeCommand('setContext', 'nova.frameworks.webEndpointsSupported', true);
 
     const endpoints = Array.isArray(response.endpoints) ? response.endpoints : [];
     if (endpoints.length === 0) {
@@ -370,8 +373,11 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
     const response = await this.callRequest<MicronautEndpointsResponse>('nova/micronaut/endpoints', { projectRoot });
 
     if (!response) {
-      return [messageNode('Micronaut endpoints are not supported by this server.')];
+      void vscode.commands.executeCommand('setContext', 'nova.frameworks.micronautEndpointsSupported', false);
+      return [messageNode('Micronaut endpoints are not supported by this server.', undefined, new vscode.ThemeIcon('warning'))];
     }
+
+    void vscode.commands.executeCommand('setContext', 'nova.frameworks.micronautEndpointsSupported', true);
 
     if (typeof response.schemaVersion !== 'number') {
       return [messageNode('Micronaut endpoints: invalid response schemaVersion.', undefined, new vscode.ThemeIcon('error'))];
@@ -409,8 +415,11 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
     const response = await this.callRequest<MicronautBeansResponse>('nova/micronaut/beans', { projectRoot });
 
     if (!response) {
+      void vscode.commands.executeCommand('setContext', 'nova.frameworks.micronautBeansSupported', false);
       return [messageNode('Micronaut beans are not supported by this server.', undefined, new vscode.ThemeIcon('warning'))];
     }
+
+    void vscode.commands.executeCommand('setContext', 'nova.frameworks.micronautBeansSupported', true);
 
     if (typeof response.schemaVersion !== 'number') {
       return [messageNode('Micronaut beans: invalid response schemaVersion.', undefined, new vscode.ThemeIcon('error'))];
