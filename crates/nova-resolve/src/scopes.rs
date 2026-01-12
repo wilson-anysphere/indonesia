@@ -26,6 +26,11 @@ impl ScopeGraph {
     }
 
     #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.scopes.is_empty()
+    }
+
+    #[must_use]
     pub fn scope(&self, id: ScopeId) -> &ScopeData {
         &self.scopes[id]
     }

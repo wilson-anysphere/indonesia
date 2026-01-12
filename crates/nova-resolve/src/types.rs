@@ -69,7 +69,7 @@ impl TypeDef {
         )>()
             as u64));
         bytes = bytes.saturating_add(self.fields.capacity() as u64); // HashMap ctrl bytes (best-effort)
-        for (name, _) in &self.fields {
+        for name in self.fields.keys() {
             bytes = bytes.saturating_add(name_bytes(name));
         }
 
@@ -98,7 +98,7 @@ impl TypeDef {
                 .saturating_mul(size_of::<(Name, ItemId)>() as u64),
         );
         bytes = bytes.saturating_add(self.nested_types.capacity() as u64); // HashMap ctrl bytes
-        for (name, _) in &self.nested_types {
+        for name in self.nested_types.keys() {
             bytes = bytes.saturating_add(name_bytes(name));
         }
 

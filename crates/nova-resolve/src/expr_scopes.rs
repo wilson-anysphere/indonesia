@@ -150,7 +150,7 @@ impl ExprScopes {
                 (scope.entries.capacity() * size_of::<(Name, ResolvedValue)>()) as u64,
             );
             bytes = bytes.saturating_add(scope.entries.capacity() as u64); // HashMap ctrl bytes (best-effort)
-            for (name, _) in &scope.entries {
+            for name in scope.entries.keys() {
                 bytes = bytes.saturating_add(name.as_str().len() as u64);
             }
         }

@@ -206,7 +206,7 @@ impl DefMap {
                 .saturating_mul(size_of::<(Name, ItemId)>() as u64),
         );
         bytes = bytes.saturating_add(self.top_level_types.capacity() as u64);
-        for (name, _) in &self.top_level_types {
+        for name in self.top_level_types.keys() {
             bytes = bytes.saturating_add(name_bytes(name));
         }
 
@@ -216,7 +216,7 @@ impl DefMap {
         )>()
             as u64));
         bytes = bytes.saturating_add(self.types.capacity() as u64);
-        for (_, ty) in &self.types {
+        for ty in self.types.values() {
             bytes = bytes.saturating_add(ty.estimated_bytes());
         }
 
@@ -482,7 +482,7 @@ fn item_kind(id: ItemId) -> TypeKind {
     }
 }
 
-fn item_name<'a>(tree: &'a ItemTree, id: ItemId) -> &'a str {
+fn item_name(tree: &ItemTree, id: ItemId) -> &str {
     match id {
         ItemId::Class(id) => tree.class(id).name.as_str(),
         ItemId::Interface(id) => tree.interface(id).name.as_str(),
@@ -492,7 +492,7 @@ fn item_name<'a>(tree: &'a ItemTree, id: ItemId) -> &'a str {
     }
 }
 
-fn item_members<'a>(tree: &'a ItemTree, id: ItemId) -> &'a [Member] {
+fn item_members(tree: &ItemTree, id: ItemId) -> &[Member] {
     match id {
         ItemId::Class(id) => &tree.class(id).members,
         ItemId::Interface(id) => &tree.interface(id).members,

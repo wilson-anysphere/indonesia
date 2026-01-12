@@ -195,7 +195,7 @@ impl WorkspaceDefMap {
                 .saturating_mul(size_of::<(TypeName, ItemId)>() as u64),
         );
         bytes = bytes.saturating_add(self.items_by_type_name.capacity() as u64);
-        for (name, _) in &self.items_by_type_name {
+        for name in self.items_by_type_name.keys() {
             bytes = bytes.saturating_add(name.as_str().len() as u64);
         }
 
@@ -205,7 +205,7 @@ impl WorkspaceDefMap {
                 .saturating_mul(size_of::<(ItemId, TypeName)>() as u64),
         );
         bytes = bytes.saturating_add(self.type_names.capacity() as u64);
-        for (_, name) in &self.type_names {
+        for name in self.type_names.values() {
             bytes = bytes.saturating_add(name.as_str().len() as u64);
         }
 
@@ -216,7 +216,7 @@ impl WorkspaceDefMap {
         )>()
             as u64));
         bytes = bytes.saturating_add(self.types.capacity() as u64);
-        for (_, def) in &self.types {
+        for def in self.types.values() {
             bytes = bytes.saturating_add(def.estimated_bytes());
         }
 
@@ -258,7 +258,7 @@ impl WorkspaceDefMap {
                 .saturating_mul(size_of::<(FileId, ModuleName)>() as u64),
         );
         bytes = bytes.saturating_add(self.file_modules.capacity() as u64);
-        for (_, module) in &self.file_modules {
+        for module in self.file_modules.values() {
             bytes = bytes.saturating_add(module.as_str().len() as u64);
         }
 

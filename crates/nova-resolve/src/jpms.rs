@@ -140,7 +140,7 @@ impl TypeIndex for JpmsTypeIndex<'_> {
 
                 let to = self
                     .classpath
-                    .module_of(&binary_name)
+                    .module_of(binary_name)
                     .cloned()
                     .unwrap_or_else(ModuleName::unnamed);
                 if self.package_is_accessible(&pkg, &to) {
@@ -176,7 +176,7 @@ impl TypeIndex for JpmsTypeIndex<'_> {
                     continue;
                 }
 
-                let Some(to) = self.jdk.module_of_type(&binary_name) else {
+                let Some(to) = self.jdk.module_of_type(binary_name) else {
                     // Without module metadata, we cannot enforce exports. Mirror
                     // `type_is_accessible` and treat the package as visible.
                     return true;

@@ -939,17 +939,16 @@ impl<'a> Resolver<'a> {
                         TypeLookup::NotFound => {}
                     }
                 }
-                ScopeKind::Package { package } => {
+                ScopeKind::Package { package: Some(pkg) } => {
                     // Allow resolving subpackages in a qualified name context.
-                    if let Some(pkg) = package {
-                        let next = append_package(pkg, name);
-                        if self.package_exists(&next) {
-                            return NameResolution::Resolved(Resolution::Package(PackageId::new(
-                                next.to_dotted(),
-                            )));
-                        }
+                    let next = append_package(pkg, name);
+                    if self.package_exists(&next) {
+                        return NameResolution::Resolved(Resolution::Package(PackageId::new(
+                            next.to_dotted(),
+                        )));
                     }
                 }
+                ScopeKind::Package { package: None } => {}
                 ScopeKind::Universe => {
                     // `java.lang.*` is always implicitly available.
                     if let Some(ty) = self.resolve_type_in_java_lang(name) {
@@ -1263,7 +1262,9 @@ pub(crate) fn append_package(base: &PackageName, name: &Name) -> PackageName {
     next
 }
 
+
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use std::collections::{HashMap, HashSet};
@@ -1404,11 +1405,13 @@ mod tests {
 
         let resolver = Resolver::new(&jdk).with_classpath(&index);
 
-        let mut tree = item_tree::ItemTree::default();
-        tree.package = Some(item_tree::PackageDecl {
-            name: "p".to_string(),
-            range: Span::new(0, 0),
-        });
+        let mut tree = item_tree::ItemTree {
+            package: Some(item_tree::PackageDecl {
+                name: "p".to_string(),
+                range: Span::new(0, 0),
+            }),
+            ..Default::default()
+        };
         tree.imports.push(item_tree::Import {
             is_static: false,
             is_star: true,

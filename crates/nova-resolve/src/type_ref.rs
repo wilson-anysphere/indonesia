@@ -60,6 +60,7 @@ struct Parser<'a, 'idx> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
 enum AnnotationSkipContext {
     /// Skipping annotations before a type (e.g. `@A String`).
     BeforeType,
@@ -1132,7 +1133,7 @@ impl<'a, 'idx> Parser<'a, 'idx> {
             AnnotationSkipContext::BeforeSuffix => unreachable!("suffix mode does not split"),
         };
 
-        if best_key.map_or(true, |best| key < best) {
+        if best_key.is_none_or(|best| key < best) {
             *best_key = Some(key);
             *best_end = name_end;
         }
@@ -1306,7 +1307,7 @@ fn reconcile_class_args(
 
     let missing = expected_len.saturating_sub(flattened.len());
     let mut out = Vec::with_capacity(expected_len);
-    out.extend(std::iter::repeat(Type::Unknown).take(missing));
+    out.extend(std::iter::repeat_n(Type::Unknown, missing));
     out.extend(flattened);
     out
 }
