@@ -69,6 +69,19 @@ fn maven_project_omits_missing_dependency_jars_from_classpath() {
             .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar),
         "missing jar should not be added to module-path"
     );
+
+    // Creating the jar should cause it to be added to the classpath on reload.
+    fs::create_dir_all(expected_jar.parent().expect("jar parent")).expect("mkdir jar parent");
+    fs::write(&expected_jar, b"").expect("write jar placeholder");
+
+    let config2 = load_project_with_options(root, &options).expect("reload maven project");
+    assert!(
+        config2
+            .classpath
+            .iter()
+            .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar),
+        "expected jar path to appear on classpath after creation"
+    );
 }
 
 #[test]
@@ -130,6 +143,23 @@ fn maven_workspace_model_omits_missing_dependency_jars_from_modules() {
                 .iter()
                 .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar),
             "missing jar should not be added to module module-path ({})",
+            module.id
+        );
+    }
+
+    // Creating the jar should cause it to be added to module classpaths on reload.
+    fs::create_dir_all(expected_jar.parent().expect("jar parent")).expect("mkdir jar parent");
+    fs::write(&expected_jar, b"").expect("write jar placeholder");
+
+    let model2 =
+        load_workspace_model_with_options(root, &options).expect("reload maven workspace model");
+    for module in &model2.modules {
+        assert!(
+            module
+                .classpath
+                .iter()
+                .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == expected_jar),
+            "expected jar path to appear on module classpath after creation ({})",
             module.id
         );
     }

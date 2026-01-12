@@ -32,7 +32,10 @@ fn gradle_includes_buildsrc_as_module() {
         config
             .modules
             .iter()
-            .map(|m| m.root.strip_prefix(&config.workspace_root).unwrap_or(&m.root))
+            .map(|m| m
+                .root
+                .strip_prefix(&config.workspace_root)
+                .unwrap_or(&m.root))
             .collect::<Vec<_>>()
     );
 
@@ -84,4 +87,3 @@ fn gradle_includes_buildsrc_as_module() {
     assert_eq!(owning.module.root, buildsrc_root);
     assert_eq!(owning.source_root.path, buildsrc_main_java);
 }
-
