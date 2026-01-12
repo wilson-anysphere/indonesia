@@ -52,10 +52,10 @@ and shows “location unavailable”.
 
 Right-click endpoints / beans in the **Nova Frameworks** view to:
 
-- Copy endpoint path
-- Copy endpoint method + path
-- Copy bean id / type (Micronaut)
-- Reveal the backing source file (OS explorer when possible; otherwise Nova falls back to opening the file)
+- Copy endpoint path (`nova.frameworks.copyEndpointPath`)
+- Copy endpoint method + path (`nova.frameworks.copyEndpointMethodAndPath`)
+- Copy bean id / type (Micronaut) (`nova.frameworks.copyBeanId`, `nova.frameworks.copyBeanType`)
+- Reveal the backing source file (OS explorer when possible; otherwise Nova falls back to opening the file) (`nova.frameworks.revealInExplorer`)
 
 For quick navigation (including Micronaut endpoints and beans), use the search button in the view title bar, or run **Nova: Search Framework Items…** (`nova.frameworks.search`).
 
