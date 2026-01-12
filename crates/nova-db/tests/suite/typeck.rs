@@ -3655,6 +3655,35 @@ class C {
 }
 
 #[test]
+fn target_typing_infers_generic_method_return_from_typed_initializer() {
+    let src = r#"
+import java.util.*;
+class C {
+    void m() {
+        List<String> xs = Collections.emptyList();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"
+            && d.code.as_ref() != "type-mismatch"),
+        "expected target-typed local initializer to resolve without unresolved-method/type-mismatch, got {diags:?}"
+    );
+
+    let offset = src
+        .find("emptyList(")
+        .expect("snippet should contain emptyList call")
+        + "emptyList".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "List<String>");
+}
+
+#[test]
 fn diamond_inference_uses_target_type_from_return() {
     let src = r#"
  import java.util.*;
