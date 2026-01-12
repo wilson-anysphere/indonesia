@@ -68,6 +68,8 @@ async fn run_tcp(addr: SocketAddr) -> anyhow::Result<()> {
     eprintln!("listening on {bound}");
 
     let (stream, _) = listener.accept().await?;
+    // Accept exactly one connection: stop listening once a client has connected.
+    drop(listener);
     stream.set_nodelay(true).ok();
     let (reader, writer) = stream.into_split();
 
