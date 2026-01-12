@@ -6324,6 +6324,29 @@ class C {
 }
 
 #[test]
+fn lambda_param_type_is_inferred_from_function_target_substring() {
+    let src = r#"
+import java.util.function.Function;
+class C {
+    void m() {
+        Function<String, String> f = s -> s.substring(1);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected lambda body method call to resolve after parameter inference, got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected lambda assignment to type-check, got {diags:?}"
+    );
+}
+
+#[test]
 fn lambda_param_type_is_inferred_from_assignment_target() {
     let src = r#"
 import java.util.function.Function;
@@ -6382,6 +6405,45 @@ class C {
     assert!(
         diags.iter().all(|d| d.code.as_ref() != "return-mismatch"),
         "expected lambda return checking to use the SAM return type, got {diags:?}"
+    );
+}
+
+#[test]
+fn lambda_block_return_checked_against_sam_substring() {
+    let src = r#"
+import java.util.function.Function;
+class C {
+    void m() {
+        Function<String, String> f = s -> { return s.substring(1); };
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "return-mismatch"),
+        "expected lambda return checking to use the SAM return type, got {diags:?}"
+    );
+}
+
+#[test]
+fn lambda_returns_do_not_use_enclosing_method_return_type_substring() {
+    let src = r#"
+import java.util.function.Function;
+class C {
+    int m() {
+        Function<String, String> f = s -> { return s.substring(1); };
+        return 0;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "return-mismatch"),
+        "expected lambda return checking to not use enclosing method return, got {diags:?}"
     );
 }
 
