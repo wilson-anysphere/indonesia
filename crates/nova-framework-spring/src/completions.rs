@@ -1,4 +1,6 @@
+use std::borrow::Cow;
 use std::collections::BTreeSet;
+use std::path::Path;
 
 use nova_types::CompletionItem;
 
@@ -50,7 +52,28 @@ pub fn property_keys_from_configs(files: &[(&str, &str)]) -> BTreeSet<String> {
     let mut keys = BTreeSet::new();
 
     for (path, text) in files {
-        let file_name = path.rsplit('/').next().unwrap_or(path);
+        // Use `Path::file_name` instead of string splitting to support both POSIX and Windows paths.
+        //
+        // Note: `std::path::Path` uses host OS semantics, so on non-Windows platforms a Windows
+        // path like `C:\foo\bar\application.properties` is treated as a single component. In
+        // that case, fall back to normalizing backslashes to forward slashes and try again.
+        let file_name = Path::new(path)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(path);
+        let file_name: Cow<'_, str> = if file_name == *path && path.contains('\\') && !path.contains('/') {
+            let normalized = path.replace('\\', "/");
+            Cow::Owned(
+                Path::new(&normalized)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(file_name)
+                    .to_string(),
+            )
+        } else {
+            Cow::Borrowed(file_name)
+        };
+        let file_name = file_name.as_ref();
         if !file_name.starts_with("application") {
             continue;
         }
