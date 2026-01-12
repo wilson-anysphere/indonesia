@@ -371,6 +371,45 @@ class Foo {
 }
 
 #[test]
+fn lower_record_compact_constructor() {
+    let source = r#"
+record Point(int x, int y) {
+    Point {
+        int z = x;
+    }
+}
+"#;
+
+    let db = TestDb {
+        files: vec![Arc::from(source)],
+    };
+    let file = FileId::from_raw(0);
+
+    let tree = item_tree(&db, file);
+    assert_eq!(tree.items.len(), 1);
+    let record_id = match tree.items[0] {
+        nova_hir::item_tree::Item::Record(id) => id,
+        other => panic!("expected record item, got {other:?}"),
+    };
+    assert_eq!(tree.record(record_id).name, "Point");
+
+    assert_eq!(tree.constructors.len(), 1);
+    let (&ctor_ast_id, ctor) = tree.constructors.iter().next().expect("constructor");
+    assert_eq!(ctor.name, "Point");
+    assert!(ctor.params.is_empty());
+    assert!(ctor.body.is_some());
+
+    let ctor_id = nova_hir::ids::ConstructorId::new(file, ctor_ast_id);
+    let body = constructor_body(&db, ctor_id);
+    let local_names: Vec<_> = body
+        .locals
+        .iter()
+        .map(|(_, local)| local.name.as_str())
+        .collect();
+    assert_eq!(local_names, vec!["z"]);
+}
+
+#[test]
 fn lower_local_types_and_literal_kinds() {
     let source = r#"
 class Foo {

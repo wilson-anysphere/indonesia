@@ -270,8 +270,14 @@ impl ItemTreeLower<'_> {
                 Some(Member::Method(id))
             }
             syntax::MemberDecl::Constructor(cons) => {
-                let ast_id =
-                    self.ast_id_for_name(SyntaxKind::ConstructorDeclaration, cons.name_range)?;
+                let ast_id = self
+                    .ast_id_for_name(SyntaxKind::ConstructorDeclaration, cons.name_range)
+                    .or_else(|| {
+                        self.ast_id_for_name(
+                            SyntaxKind::CompactConstructorDeclaration,
+                            cons.name_range,
+                        )
+                    })?;
                 let id = ConstructorId::new(self.file, ast_id);
                 let params = {
                     let mut params = Vec::with_capacity(cons.params.len());

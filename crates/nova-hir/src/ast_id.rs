@@ -115,6 +115,7 @@ fn is_relevant_node(kind: SyntaxKind) -> bool {
             | SyntaxKind::VariableDeclarator
             | SyntaxKind::MethodDeclaration
             | SyntaxKind::ConstructorDeclaration
+            | SyntaxKind::CompactConstructorDeclaration
             | SyntaxKind::InitializerBlock
             | SyntaxKind::Block
             | SyntaxKind::ModuleDeclaration

@@ -1039,7 +1039,7 @@ impl Lowerer {
             SyntaxKind::MethodDeclaration => {
                 vec![ast::MemberDecl::Method(self.lower_method_decl(node))]
             }
-            SyntaxKind::ConstructorDeclaration => {
+            SyntaxKind::ConstructorDeclaration | SyntaxKind::CompactConstructorDeclaration => {
                 let decl = self.lower_constructor_decl(node);
                 if decl.name == enclosing_type {
                     vec![ast::MemberDecl::Constructor(decl)]
@@ -1193,9 +1193,13 @@ impl Lowerer {
         let param_list = node
             .children()
             .find(|child| child.kind() == SyntaxKind::ParameterList);
-        let name_token = param_list
-            .as_ref()
-            .and_then(|_| self.last_ident_like_before(node, SyntaxKind::ParameterList));
+        let name_token = if param_list.is_some() {
+            self.last_ident_like_before(node, SyntaxKind::ParameterList)
+        } else {
+            // Compact record constructors do not have a parameter list (`Point { ... }`), so fall
+            // back to the identifier before the body block.
+            self.last_ident_like_before(node, SyntaxKind::Block)
+        };
 
         let name = name_token
             .as_ref()
