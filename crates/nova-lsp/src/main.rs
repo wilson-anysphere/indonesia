@@ -203,6 +203,63 @@ enum IncomingMessage {
     Response(Response),
 }
 
+const ENV_DECOMPILED_STORE_GC: &str = "NOVA_DECOMPILED_STORE_GC";
+const ENV_DECOMPILED_STORE_MAX_TOTAL_BYTES: &str = "NOVA_DECOMPILED_STORE_MAX_TOTAL_BYTES";
+const ENV_DECOMPILED_STORE_MAX_AGE_MS: &str = "NOVA_DECOMPILED_STORE_MAX_AGE_MS";
+
+fn gc_decompiled_document_store_best_effort() {
+    let enabled = !matches!(
+        std::env::var(ENV_DECOMPILED_STORE_GC).as_deref(),
+        Ok("0") | Ok("false") | Ok("FALSE")
+    );
+    if !enabled {
+        return;
+    }
+
+    const DEFAULT_MAX_TOTAL_BYTES: u64 = 512 * nova_memory::MB;
+    const DEFAULT_MAX_AGE_MS: u64 = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+    let max_total_bytes = std::env::var(ENV_DECOMPILED_STORE_MAX_TOTAL_BYTES)
+        .ok()
+        .and_then(|value| nova_memory::parse_byte_size(value.trim()).ok())
+        .unwrap_or(DEFAULT_MAX_TOTAL_BYTES);
+
+    let max_age_ms = match std::env::var(ENV_DECOMPILED_STORE_MAX_AGE_MS) {
+        Ok(value) => value.trim().parse::<u64>().ok(),
+        Err(_) => Some(DEFAULT_MAX_AGE_MS),
+    };
+
+    let policy = nova_decompile::DecompiledStoreGcPolicy {
+        max_total_bytes,
+        max_age_ms,
+    };
+
+    // Run GC asynchronously so we don't delay LSP initialization. This is best-effort: failures
+    // should never prevent the server from starting.
+    let _ = std::thread::Builder::new()
+        .name("nova-decompiled-doc-gc".to_string())
+        .spawn(move || {
+            let store = match nova_decompile::DecompiledDocumentStore::from_env() {
+                Ok(store) => store,
+                Err(err) => {
+                    tracing::debug!("failed to open decompiled document store for GC: {err}");
+                    return;
+                }
+            };
+
+            match store.gc(&policy) {
+                Ok(report) => tracing::debug!(
+                    before_bytes = report.before_bytes,
+                    after_bytes = report.after_bytes,
+                    deleted_files = report.deleted_files,
+                    deleted_bytes = report.deleted_bytes,
+                    "decompiled document store GC complete"
+                ),
+                Err(err) => tracing::debug!("decompiled document store GC failed: {err}"),
+            }
+        });
+}
+
 fn main() -> std::io::Result<()> {
     let args = env::args().skip(1).collect::<Vec<_>>();
     if args.iter().any(|arg| arg == "--version" || arg == "-V") {
@@ -275,6 +332,7 @@ fn main() -> std::io::Result<()> {
         config.ai.features.multi_token_completion = false;
     }
     nova_lsp::hardening::init(&config, Arc::new(|message| eprintln!("{message}")));
+    gc_decompiled_document_store_best_effort();
 
     // Accept `--stdio` for compatibility with editor templates. For now we only
     // support stdio transport, and ignore any other args.
