@@ -626,6 +626,7 @@ impl WorkspaceEngine {
             state.config = Arc::new(fallback_project_config(&root));
             state.source_roots = build_source_roots(&state.config);
             state.classpath_fingerprint = None;
+            state.jdk_fingerprint = None;
             state.pending_build_changes.clear();
             state.last_reload_started_at = None;
         }
