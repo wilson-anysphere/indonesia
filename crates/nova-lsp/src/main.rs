@@ -4632,6 +4632,32 @@ fn parse_java_imports(text: &str) -> (HashMap<String, String>, Vec<String>) {
     (explicit_imports, wildcard_imports)
 }
 
+fn lookup_jdk_type_best_effort(
+    jdk: &nova_jdk::JdkIndex,
+    name: &str,
+) -> Option<Arc<nova_jdk::JdkClassStub>> {
+    let mut stub = jdk.lookup_type(name).ok().flatten();
+    if stub.is_some() {
+        return stub;
+    }
+
+    // Best-effort support for nested type references written with dots in source/imports
+    // (`java.util.Map.Entry`). The JDK index expects `$` for nested types
+    // (`java.util.Map$Entry`).
+    if !name.contains('/') && name.contains('.') {
+        let mut candidate = name.to_owned();
+        while let Some(dot) = candidate.rfind('.') {
+            candidate.replace_range(dot..dot + 1, "$");
+            stub = jdk.lookup_type(&candidate).ok().flatten();
+            if stub.is_some() {
+                break;
+            }
+        }
+    }
+
+    stub
+}
+
 fn goto_definition_jdk(
     state: &mut ServerState,
     file: nova_db::FileId,
@@ -4742,18 +4768,18 @@ fn goto_definition_jdk(
         text: &str,
         name: &str,
     ) -> Option<Arc<nova_jdk::JdkClassStub>> {
-        let mut stub = jdk.lookup_type(name).ok().flatten();
+        let mut stub = lookup_jdk_type_best_effort(jdk, name);
         if stub.is_none() && !name.contains('.') && !name.contains('/') {
             let (explicit_imports, wildcard_imports) = parse_java_imports(text);
 
             if let Some(fq_name) = explicit_imports.get(name) {
-                stub = jdk.lookup_type(fq_name).ok().flatten();
+                stub = lookup_jdk_type_best_effort(jdk, fq_name);
             }
 
             if stub.is_none() {
                 for pkg in wildcard_imports {
                     let candidate = format!("{pkg}.{name}");
-                    stub = jdk.lookup_type(&candidate).ok().flatten();
+                    stub = lookup_jdk_type_best_effort(jdk, &candidate);
                     if stub.is_some() {
                         break;
                     }
@@ -4776,7 +4802,7 @@ fn goto_definition_jdk(
                     }
 
                     if let Some(binary_name) = found {
-                        stub = jdk.lookup_type(binary_name).ok().flatten();
+                        stub = lookup_jdk_type_best_effort(jdk, binary_name);
                     }
                 }
             }
@@ -5151,18 +5177,18 @@ fn type_definition_jdk(
         text: &str,
         name: &str,
     ) -> Option<Arc<nova_jdk::JdkClassStub>> {
-        let mut stub = jdk.lookup_type(name).ok().flatten();
+        let mut stub = lookup_jdk_type_best_effort(jdk, name);
         if stub.is_none() && !name.contains('.') && !name.contains('/') {
             let (explicit_imports, wildcard_imports) = parse_java_imports(text);
 
             if let Some(fq_name) = explicit_imports.get(name) {
-                stub = jdk.lookup_type(fq_name).ok().flatten();
+                stub = lookup_jdk_type_best_effort(jdk, fq_name);
             }
 
             if stub.is_none() {
                 for pkg in wildcard_imports {
                     let candidate = format!("{pkg}.{name}");
-                    stub = jdk.lookup_type(&candidate).ok().flatten();
+                    stub = lookup_jdk_type_best_effort(jdk, &candidate);
                     if stub.is_some() {
                         break;
                     }
@@ -5185,7 +5211,7 @@ fn type_definition_jdk(
                     }
 
                     if let Some(binary_name) = found {
-                        stub = jdk.lookup_type(binary_name).ok().flatten();
+                        stub = lookup_jdk_type_best_effort(jdk, binary_name);
                     }
                 }
             }
