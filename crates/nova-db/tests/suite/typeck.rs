@@ -307,6 +307,26 @@ class C {
 }
 
 #[test]
+fn foreach_var_infers_element_type_for_array() {
+    let src = r#"
+class C {
+    void m(String[] xs) {
+        for (var x : xs) {
+            x.substring(1);
+        }
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected foreach var element type to be inferred; got {diags:?}"
+    );
+}
+
+#[test]
 fn source_varargs_method_call_resolves() {
     let src = r#"
 class C {

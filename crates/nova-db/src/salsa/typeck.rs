@@ -1096,7 +1096,6 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 ..
             } => {
                 let data = &self.body.locals[*local];
-
                 let iterable_ty = self.infer_expr(loader, *iterable).ty;
                 let element_ty = match &iterable_ty {
                     Type::Array(elem) => elem.as_ref().clone(),
@@ -1115,7 +1114,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     ));
                 }
 
-                if data.ty_text.trim() != "var" {
+                // If `var` inference is not enabled at this language level, treat `var` as an
+                // explicit type name for compatibility with older Java versions.
+                if data.ty_text.trim() != "var" || !self.var_inference_enabled() {
                     let decl_ty = self.resolve_source_type(
                         loader,
                         data.ty_text.as_str(),
@@ -1138,7 +1139,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             Some(data.ty_range),
                         ));
                     }
-                } else if self.var_inference_enabled() {
+                } else {
+                    // `var` local variable type inference was added in Java 10, including support
+                    // in enhanced-for loops.
                     if element_ty.is_errorish() {
                         self.diagnostics.push(Diagnostic::error(
                             "cannot-infer-foreach-var",
