@@ -1995,12 +1995,14 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 let Some(name) = loader.store.class(*def).map(|def| def.name.clone()) else {
                     return;
                 };
-                let _ = self.ensure_workspace_class(loader, &name);
-                let _ = loader.ensure_class(&name);
+                if self.ensure_workspace_class(loader, &name).is_none() {
+                    let _ = loader.ensure_class(&name);
+                }
             }
             Type::Named(name) => {
-                let _ = self.ensure_workspace_class(loader, name);
-                let _ = loader.ensure_class(name);
+                if self.ensure_workspace_class(loader, name).is_none() {
+                    let _ = loader.ensure_class(name);
+                }
             }
             _ => {}
         }
@@ -3317,7 +3319,10 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     }
                 };
 
-                if let Some(id) = loader.ensure_class(&binary_name) {
+                let id = self
+                    .ensure_workspace_class(loader, &binary_name)
+                    .or_else(|| loader.ensure_class(&binary_name));
+                if let Some(id) = id {
                     ExprInfo {
                         ty: Type::class(id, vec![]),
                         is_type_ref: true,
@@ -3389,8 +3394,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             }
         };
 
-        let receiver = loader
-            .ensure_class(&owner)
+        let receiver = self
+            .ensure_workspace_class(loader, &owner)
+            .or_else(|| loader.ensure_class(&owner))
             .map(|id| Type::class(id, vec![]))
             .unwrap_or_else(|| Type::Named(owner.to_string()));
         self.ensure_type_loaded(loader, &receiver);
