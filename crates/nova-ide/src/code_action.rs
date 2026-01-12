@@ -1046,6 +1046,17 @@ fn looks_like_value_identifier(name: &str) -> bool {
         .is_some_and(|b| matches!(b, b'a'..=b'z'))
 }
 
+fn is_java_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first == '_' || first == '$' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+    chars.all(|c| c == '_' || c == '$' || c.is_ascii_alphanumeric())
+}
+
 fn looks_like_type_identifier(name: &str) -> bool {
     if !crate::quick_fixes::is_java_identifier(name) {
         return false;
