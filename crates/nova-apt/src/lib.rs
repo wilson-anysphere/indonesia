@@ -9,11 +9,12 @@ use nova_build_model::{
 use nova_config::NovaConfig;
 use nova_core::fs as core_fs;
 use nova_project::{
-    load_project_with_options, BuildSystem, LoadOptions, Module, ProjectConfig, SourceRoot,
-    SourceRootKind, SourceRootOrigin,
+    load_project_with_options, load_workspace_model_with_options, BuildSystem, LoadOptions, Module,
+    ProjectConfig, SourceRoot, SourceRootKind, SourceRootOrigin, WorkspaceModuleBuildId,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -1119,8 +1120,9 @@ impl AptManager {
         &mut self,
         build: &BuildManager,
     ) -> io::Result<GeneratedSourcesStatusWithBuild> {
+        let gradle_projects = self.gradle_project_paths();
         let build_metadata_error = self
-            .apply_build_annotation_processing(build)
+            .apply_build_annotation_processing(build, gradle_projects.as_ref())
             .err()
             .map(|err| err.to_string());
         let _ = self.write_generated_roots_snapshot();
@@ -1346,7 +1348,8 @@ impl AptManager {
 
         // Best-effort build metadata extraction: improves generated root discovery and
         // allows us to persist build-tool-specific generated directories for nova-project.
-        let _ = self.apply_build_annotation_processing(build);
+        let gradle_projects = self.gradle_project_paths();
+        let _ = self.apply_build_annotation_processing(build, gradle_projects.as_ref());
         let _ = self.write_generated_roots_snapshot();
 
         // Bazel: require explicit target, but keep the request stable and non-fatal.
@@ -1396,7 +1399,7 @@ impl AptManager {
         let mut run_cache = AptRunCache::load(&self.project.workspace_root).ok();
         let mut mtime_cache = AptMtimeCache::load(&self.project.workspace_root).ok();
 
-        let modules = match self.resolve_modules(&target) {
+        let modules = match self.resolve_modules(&target, gradle_projects.as_ref()) {
             Ok(modules) => modules,
             Err(err) => {
                 progress.event(AptProgressEvent::report(err.clone()));
@@ -1431,9 +1434,11 @@ impl AptManager {
                     });
                 }
 
-                if let Some(plan) =
-                    self.plan_module_annotation_processing(module, &mut freshness)?
-                {
+                if let Some(plan) = self.plan_module_annotation_processing(
+                    module,
+                    gradle_projects.as_ref(),
+                    &mut freshness,
+                )? {
                     planned.push(plan);
                 }
             }
@@ -1587,7 +1592,8 @@ impl AptManager {
         target: AptRunTarget,
         progress: &mut dyn ProgressReporter,
     ) -> nova_build::Result<BuildResult> {
-        let _ = self.apply_build_annotation_processing(build);
+        let gradle_projects = self.gradle_project_paths();
+        let _ = self.apply_build_annotation_processing(build, gradle_projects.as_ref());
         let _ = self.write_generated_roots_snapshot();
         self.run_annotation_processing_for_target(build, target, progress)
     }
@@ -1634,16 +1640,17 @@ impl AptManager {
             };
         }
 
+        let gradle_projects = self.gradle_project_paths();
         let mut mtime_provider = FsMtimeProvider;
         let mut freshness = FreshnessCalculator::new(&self.project, &mut mtime_provider);
         let modules = self
-            .resolve_modules(&target)
+            .resolve_modules(&target, gradle_projects.as_ref())
             .map_err(BuildError::Unsupported)?;
 
         let mut planned = Vec::new();
         for module in modules {
             if let Some(plan) = self
-                .plan_module_annotation_processing(module, &mut freshness)
+                .plan_module_annotation_processing(module, gradle_projects.as_ref(), &mut freshness)
                 .map_err(BuildError::Io)?
             {
                 planned.push(plan);
@@ -1720,7 +1727,42 @@ enum ModuleBuildAction {
     },
 }
 
+#[derive(Debug, Clone, Default)]
+struct GradleProjectPaths {
+    /// Map from Gradle project path (`:app`) -> module root directory.
+    by_path: HashMap<String, PathBuf>,
+    /// Map from module root directory -> Gradle project path (`:app`).
+    by_root: HashMap<PathBuf, String>,
+}
+
 impl AptManager {
+    fn gradle_project_paths(&self) -> Option<GradleProjectPaths> {
+        if self.project.build_system != BuildSystem::Gradle {
+            return None;
+        }
+
+        let mut options = LoadOptions::default();
+        options.nova_config = self.config.clone();
+
+        let model =
+            load_workspace_model_with_options(&self.project.workspace_root, &options).ok()?;
+        if model.build_system != BuildSystem::Gradle {
+            return None;
+        }
+
+        let mut out = GradleProjectPaths::default();
+        for module in &model.modules {
+            let WorkspaceModuleBuildId::Gradle { project_path } = &module.build_id else {
+                continue;
+            };
+            out.by_path
+                .insert(project_path.clone(), module.root.clone());
+            out.by_root
+                .insert(module.root.clone(), project_path.clone());
+        }
+        Some(out)
+    }
+
     fn generated_roots_for_module(&self, module: &Module) -> Vec<SourceRoot> {
         if !self.config.generated_sources.enabled {
             return Vec::new();
@@ -1806,6 +1848,7 @@ impl AptManager {
     fn apply_build_annotation_processing(
         &mut self,
         build: &BuildManager,
+        gradle_projects: Option<&GradleProjectPaths>,
     ) -> nova_build::Result<()> {
         let workspace_root = self.project.workspace_root.clone();
 
@@ -1823,13 +1866,30 @@ impl AptManager {
             }
             BuildSystem::Gradle => {
                 for module in &mut self.project.modules {
-                    let project_path = module
-                        .root
-                        .strip_prefix(&workspace_root)
-                        .ok()
-                        .and_then(rel_to_gradle_project_path);
-                    module.annotation_processing = build
-                        .annotation_processing_gradle(&workspace_root, project_path.as_deref())?;
+                    let mut project_path = gradle_projects
+                        .and_then(|projects| projects.by_root.get(module.root.as_path()))
+                        .map(|p| p.as_str())
+                        .filter(|p| *p != ":");
+
+                    let fallback;
+                    if project_path.is_none() {
+                        fallback = module
+                            .root
+                            .strip_prefix(&workspace_root)
+                            .ok()
+                            .and_then(rel_to_gradle_project_path);
+                        project_path = fallback.as_deref();
+                    }
+
+                    // If we can't map this module to a Gradle project path (e.g. a composite build
+                    // module outside the workspace root) avoid accidentally querying the root
+                    // project, which would produce misleading configuration.
+                    if project_path.is_none() && module.root != workspace_root {
+                        continue;
+                    }
+
+                    module.annotation_processing =
+                        build.annotation_processing_gradle(&workspace_root, project_path)?;
                 }
             }
             _ => {}
@@ -1838,7 +1898,11 @@ impl AptManager {
         Ok(())
     }
 
-    fn resolve_modules<'a>(&'a self, target: &AptRunTarget) -> Result<Vec<&'a Module>, String> {
+    fn resolve_modules<'a>(
+        &'a self,
+        target: &AptRunTarget,
+        gradle_projects: Option<&GradleProjectPaths>,
+    ) -> Result<Vec<&'a Module>, String> {
         match target {
             AptRunTarget::Workspace => Ok(self.project.modules.iter().collect()),
             AptRunTarget::MavenModule(module_relative) => {
@@ -1862,10 +1926,22 @@ impl AptManager {
                     return Err("gradle project target provided for non-gradle project".to_string());
                 }
 
-                let module_root = self
-                    .project
-                    .workspace_root
-                    .join(gradle_project_path_to_rel(project_path));
+                let Some(project_path) = normalize_gradle_project_path(project_path) else {
+                    // Treat empty / `:` as workspace root.
+                    return Ok(self.project.modules.iter().collect());
+                };
+
+                let module_root = match gradle_projects {
+                    Some(projects) => projects
+                        .by_path
+                        .get(project_path.as_ref())
+                        .cloned()
+                        .ok_or_else(|| format!("gradle project {project_path} not found"))?,
+                    None => self
+                        .project
+                        .workspace_root
+                        .join(gradle_project_path_to_rel(project_path.as_ref())),
+                };
                 let module = self
                     .project
                     .modules
@@ -1886,6 +1962,7 @@ impl AptManager {
     fn plan_module_annotation_processing(
         &self,
         module: &Module,
+        gradle_projects: Option<&GradleProjectPaths>,
         freshness: &mut FreshnessCalculator<'_>,
     ) -> io::Result<Option<ModuleBuildPlan>> {
         let generated_roots = self.generated_roots_for_module(module);
@@ -1940,11 +2017,17 @@ impl AptManager {
                 }
             }
             BuildSystem::Gradle => {
-                let project_path = module
-                    .root
-                    .strip_prefix(&self.project.workspace_root)
-                    .ok()
-                    .and_then(rel_to_gradle_project_path);
+                let mut project_path = gradle_projects
+                    .and_then(|projects| projects.by_root.get(module.root.as_path()))
+                    .cloned()
+                    .filter(|p| p != ":");
+                if project_path.is_none() {
+                    project_path = module
+                        .root
+                        .strip_prefix(&self.project.workspace_root)
+                        .ok()
+                        .and_then(|rel| rel_to_gradle_project_path(rel));
+                }
                 if test_stale {
                     (
                         SourceRootKind::Test,
@@ -2001,6 +2084,19 @@ fn rel_to_gradle_project_path(rel: &Path) -> Option<String> {
         None
     } else {
         Some(s)
+    }
+}
+
+fn normalize_gradle_project_path(project_path: &str) -> Option<Cow<'_, str>> {
+    let project_path = project_path.trim();
+    if project_path.is_empty() || project_path == ":" {
+        return None;
+    }
+
+    if project_path.starts_with(':') {
+        Some(Cow::Borrowed(project_path))
+    } else {
+        Some(Cow::Owned(format!(":{project_path}")))
     }
 }
 
@@ -2131,6 +2227,113 @@ public class GeneratedHello {
         copy_dir_recursive(&fixture_root().join("src"), &dir.path().join("src")).unwrap();
         write_generated_hello(dir.path());
         dir
+    }
+
+    fn write_java_source(dir: &Path, name: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join(name), "class App {}".as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn gradle_project_path_mapping_respects_project_dir_override() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("settings.gradle"),
+            "include ':app'\nproject(':app').projectDir = file('modules/application')\n",
+        )
+        .unwrap();
+
+        let app_root = dir.path().join("modules/application");
+        write_java_source(&app_root.join("src/main/java"), "App.java");
+
+        let config = NovaConfig::default();
+        let mut options = LoadOptions::default();
+        options.nova_config = config.clone();
+        let project = load_project_with_options(dir.path(), &options).unwrap();
+        assert_eq!(project.build_system, BuildSystem::Gradle);
+
+        let apt = crate::AptManager::new(project, config);
+        let gradle_projects = apt
+            .gradle_project_paths()
+            .expect("workspace model should load");
+
+        let modules = apt
+            .resolve_modules(
+                &crate::AptRunTarget::GradleProject(":app".to_string()),
+                Some(&gradle_projects),
+            )
+            .unwrap();
+        assert_eq!(modules.len(), 1);
+        assert_eq!(modules[0].root, app_root.canonicalize().unwrap());
+
+        let mut mtime_provider = super::FsMtimeProvider;
+        let mut freshness = super::FreshnessCalculator::new(apt.project(), &mut mtime_provider);
+        let plan = apt
+            .plan_module_annotation_processing(modules[0], Some(&gradle_projects), &mut freshness)
+            .unwrap()
+            .expect("expected a build plan due to missing generated roots");
+
+        match plan.action {
+            super::ModuleBuildAction::Gradle { project_path, task } => {
+                assert_eq!(project_path.as_deref(), Some(":app"));
+                assert_eq!(task, nova_build::GradleBuildTask::CompileJava);
+            }
+            other => panic!("expected Gradle build action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gradle_project_path_mapping_respects_include_flat_outside_workspace_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_root = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace_root).unwrap();
+        std::fs::write(
+            workspace_root.join("settings.gradle"),
+            "includeFlat 'app'\n",
+        )
+        .unwrap();
+
+        let app_root = dir.path().join("app");
+        write_java_source(&app_root.join("src/main/java"), "App.java");
+
+        let config = NovaConfig::default();
+        let mut options = LoadOptions::default();
+        options.nova_config = config.clone();
+        let project = load_project_with_options(&workspace_root, &options).unwrap();
+        assert_eq!(project.build_system, BuildSystem::Gradle);
+
+        let apt = crate::AptManager::new(project, config);
+        let gradle_projects = apt
+            .gradle_project_paths()
+            .expect("workspace model should load");
+
+        let modules = apt
+            .resolve_modules(
+                &crate::AptRunTarget::GradleProject(":app".to_string()),
+                Some(&gradle_projects),
+            )
+            .unwrap();
+        assert_eq!(modules.len(), 1);
+        assert_eq!(modules[0].root, app_root.canonicalize().unwrap());
+        assert!(
+            !modules[0].root.starts_with(&apt.project().workspace_root),
+            "expected includeFlat module root to live outside the workspace root"
+        );
+
+        let mut mtime_provider = super::FsMtimeProvider;
+        let mut freshness = super::FreshnessCalculator::new(apt.project(), &mut mtime_provider);
+        let plan = apt
+            .plan_module_annotation_processing(modules[0], Some(&gradle_projects), &mut freshness)
+            .unwrap()
+            .expect("expected a build plan due to missing generated roots");
+
+        match plan.action {
+            super::ModuleBuildAction::Gradle { project_path, task } => {
+                assert_eq!(project_path.as_deref(), Some(":app"));
+                assert_eq!(task, nova_build::GradleBuildTask::CompileJava);
+            }
+            other => panic!("expected Gradle build action, got {other:?}"),
+        }
     }
 
     #[test]
