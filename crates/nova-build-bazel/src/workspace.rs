@@ -291,6 +291,43 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                     queue.push_back(label);
                 }
             }
+
+            // If `same_pkg_direct_rdeps` was found to be unsupported, switch to a batched BFS using
+            // `rdeps(//pkg:*, <frontier_union>, 1)` to reduce the number of Bazel invocations.
+            if matches!(self.supports_same_pkg_direct_rdeps, Some(false)) && !queue.is_empty() {
+                let mut frontier = BTreeSet::<String>::new();
+                frontier.extend(queue.drain(..));
+                while !frontier.is_empty() {
+                    let expr = if frontier.len() == 1 {
+                        format!(
+                            "rdeps({package_universe}, {}, 1)",
+                            frontier.iter().next().expect("frontier checked non-empty")
+                        )
+                    } else {
+                        let frontier_expr = frontier.iter().cloned().collect::<Vec<_>>().join(" + ");
+                        format!("rdeps({package_universe}, ({frontier_expr}), 1)")
+                    };
+                    let direct_rdeps = self.query_label_kind(&expr)?;
+
+                    let mut next_frontier = BTreeSet::<String>::new();
+                    for (kind, label) in direct_rdeps {
+                        if frontier.contains(&label) {
+                            continue;
+                        }
+
+                        if is_java_rule_kind(&kind) {
+                            owners.insert(label);
+                            continue;
+                        }
+
+                        if is_source_aggregation_rule_kind(&kind) && seen.insert(label.clone()) {
+                            next_frontier.insert(label);
+                        }
+                    }
+                    frontier = next_frontier;
+                }
+                break;
+            }
         }
 
         let out: Vec<String> = owners.into_iter().collect();
