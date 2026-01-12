@@ -198,7 +198,34 @@ pub fn extract_variable(
     }
 
     let stmt_range = syntax_range(stmt.syntax());
+    // Reject inserting into single-statement control structure bodies without braces. In those
+    // contexts we'd have to introduce a `{ ... }` block to preserve control flow.
+    if !matches!(stmt, ast::Statement::Block(_)) {
+        if let Some(parent) = stmt.syntax().parent() {
+            if ast::IfStatement::cast(parent.clone()).is_some()
+                || ast::WhileStatement::cast(parent.clone()).is_some()
+                || ast::DoWhileStatement::cast(parent.clone()).is_some()
+                || ast::ForStatement::cast(parent).is_some()
+            {
+                return Err(RefactorError::ExtractNotSupported {
+                    reason: "cannot extract into a single-statement control structure body without braces",
+                });
+            }
+        }
+    }
+
+    // Reject statements that start mid-line (`if (cond) foo();`, `case 1: foo();`, ...). Our
+    // insertion strategy inserts at the start of the statement's line; doing so for a mid-line
+    // statement would either be syntactically invalid or change semantics.
     let insert_pos = line_start(text, stmt_range.start);
+    if text[insert_pos..stmt_range.start]
+        .chars()
+        .any(|c| !c.is_whitespace())
+    {
+        return Err(RefactorError::ExtractNotSupported {
+            reason: "cannot extract when the enclosing statement starts mid-line",
+        });
+    }
     let indent = current_indent(text, insert_pos);
 
     let ty = if params.use_var {
