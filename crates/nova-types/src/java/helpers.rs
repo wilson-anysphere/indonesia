@@ -30,9 +30,7 @@ pub fn instantiate_as_supertype(env: &dyn TypeEnv, ty: &Type, target: ClassId) -
         }
         Type::TypeVar(id) => {
             // Best-effort: consult the first upper bound that can be instantiated.
-            let Some(tp) = env.type_param(*id) else {
-                return None;
-            };
+            let tp = env.type_param(*id)?;
             for bound in &tp.upper_bounds {
                 if let Some(found) = instantiate_as_supertype(env, bound, target) {
                     return Some(found);
@@ -139,9 +137,7 @@ pub fn sam_signature(env: &dyn TypeEnv, ty: &Type) -> Option<SamSignature> {
         return None;
     };
 
-    let Some(root_def) = env.class(def) else {
-        return None;
-    };
+    let root_def = env.class(def)?;
     if root_def.kind != ClassKind::Interface {
         return None;
     }
