@@ -1226,7 +1226,8 @@ fn record_body_references(
                     let Some(method) = methods.first().copied() else {
                         return;
                     };
-                    let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Method(method))
+                    let Some(&symbol) =
+                        resolution_to_symbol.get(&ResolutionKey::Method(method.id))
                     else {
                         return;
                     };
@@ -1259,7 +1260,7 @@ fn record_body_references(
                     return;
                 };
                 let Some(&symbol) =
-                    resolution_to_symbol.get(&ResolutionKey::Method(method))
+                    resolution_to_symbol.get(&ResolutionKey::Method(method.id))
                 else {
                     return;
                 };
