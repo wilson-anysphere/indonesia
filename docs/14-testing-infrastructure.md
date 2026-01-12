@@ -116,6 +116,23 @@ cargo test -p nova-refactor move_static_method_updates_call_sites
 
 **Expectation:** unit tests should be deterministic and should not require network access.
 
+#### Optional: `cargo nextest` runs
+
+Nova also ships a Nextest config at [`.config/nextest.toml`](../.config/nextest.toml). If you have
+[`cargo-nextest`](https://nexte.st/) installed, you can run the same Rust tests with:
+
+```bash
+# fast local runner
+cargo nextest run
+
+# CI-like semantics (timeouts, fail-fast off, etc.)
+cargo nextest run --profile ci
+```
+
+The `ci` profile caps test parallelism (`test-threads = 8`) so CI and large-host runs don't spawn too
+many test processes at once (which can cause memory spikes and flakiness). Override per-run with
+`NEXTEST_TEST_THREADS=<N>` or `cargo nextest run --test-threads <N>`.
+
 #### Cross-platform testing gotchas
 
 CI runs tests on Linux, macOS, and Windows. Keep these platform differences in mind:

@@ -18,6 +18,11 @@ retries = 0
 # In CI, run the full suite even if some tests fail so we get complete results.
 fail-fast = false
 
+# Cap parallelism in CI so high-core runners don't spawn too many test processes at
+# once (which can cause memory spikes and flakiness). Override per-run with the
+# `NEXTEST_TEST_THREADS` env var or `cargo nextest run --test-threads <N>`.
+test-threads = 8
+
 [profile.ci.junit]
 # JUnit report is written to `target/nextest/ci/junit.xml`.
 path = "junit.xml"
