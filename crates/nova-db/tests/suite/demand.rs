@@ -423,6 +423,129 @@ class C {
         "expected demand-driven type inference to report var-poly-expression for `var f = (s) -> s;`, got {:?}",
         res.diagnostics
     );
+    assert!(
+        res.diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "var-functional-initializer"),
+        "expected demand-driven type inference to report var-functional-initializer for `var f = (s) -> s;`, got {:?}",
+        res.diagnostics
+    );
+}
+
+#[test]
+fn demand_reports_var_requires_initializer_for_local_var_decl() {
+    let src = r#"
+class C {
+    void m() {
+        var x;
+        x.toString();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+
+    let tree = db.hir_item_tree(file);
+    let method_ast = tree
+        .methods
+        .iter()
+        .find_map(|(ast_id, m)| (m.name == "m" && m.body.is_some()).then_some(*ast_id))
+        .expect("expected method `m` with a body");
+    let method_id = nova_hir::ids::MethodId::new(file, method_ast);
+    let owner = DefWithBodyId::Method(method_id);
+
+    let body = db.hir_body(method_id);
+    let call_expr = match &body.stmts[body.root] {
+        nova_hir::hir::Stmt::Block { statements, .. } => statements
+            .iter()
+            .find_map(|stmt| match &body.stmts[*stmt] {
+                nova_hir::hir::Stmt::Expr { expr, .. } => Some(*expr),
+                _ => None,
+            })
+            .expect("expected an expression statement"),
+        other => panic!("expected a block root statement, got {other:?}"),
+    };
+
+    let res = db.type_of_expr_demand_result(
+        file,
+        FileExprId {
+            owner,
+            expr: call_expr,
+        },
+    );
+
+    assert!(
+        res.diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "var-requires-initializer"),
+        "expected demand-driven type inference to report var-requires-initializer for `var x;`, got {:?}",
+        res.diagnostics
+    );
+    assert!(
+        res.diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-var"),
+        "expected demand-driven type inference to report invalid-var for `var x;`, got {:?}",
+        res.diagnostics
+    );
+}
+
+#[test]
+fn demand_reports_var_null_initializer_for_local_var_initializer() {
+    let src = r#"
+class C {
+    void m() {
+        var x = null;
+        x.toString();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+
+    let tree = db.hir_item_tree(file);
+    let method_ast = tree
+        .methods
+        .iter()
+        .find_map(|(ast_id, m)| (m.name == "m" && m.body.is_some()).then_some(*ast_id))
+        .expect("expected method `m` with a body");
+    let method_id = nova_hir::ids::MethodId::new(file, method_ast);
+    let owner = DefWithBodyId::Method(method_id);
+
+    let body = db.hir_body(method_id);
+    let call_expr = match &body.stmts[body.root] {
+        nova_hir::hir::Stmt::Block { statements, .. } => statements
+            .iter()
+            .find_map(|stmt| match &body.stmts[*stmt] {
+                nova_hir::hir::Stmt::Expr { expr, .. } => Some(*expr),
+                _ => None,
+            })
+            .expect("expected an expression statement"),
+        other => panic!("expected a block root statement, got {other:?}"),
+    };
+
+    let res = db.type_of_expr_demand_result(
+        file,
+        FileExprId {
+            owner,
+            expr: call_expr,
+        },
+    );
+
+    assert!(
+        res.diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "var-null-initializer"),
+        "expected demand-driven type inference to report var-null-initializer for `var x = null;`, got {:?}",
+        res.diagnostics
+    );
+    assert!(
+        res.diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-var"),
+        "expected demand-driven type inference to report invalid-var for `var x = null;`, got {:?}",
+        res.diagnostics
+    );
 }
 
 #[test]

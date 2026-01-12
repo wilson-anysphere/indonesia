@@ -9914,6 +9914,12 @@ class C {
         diags.iter().any(|d| d.code.as_ref() == "invalid-var"),
         "expected invalid-var diagnostic; got {diags:?}"
     );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "var-requires-initializer"),
+        "expected var-requires-initializer diagnostic; got {diags:?}"
+    );
 }
 
 #[test]
@@ -9932,6 +9938,12 @@ class C {
         diags.iter().any(|d| d.code.as_ref() == "invalid-var"),
         "expected invalid-var diagnostic; got {diags:?}"
     );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "var-null-initializer"),
+        "expected var-null-initializer diagnostic; got {diags:?}"
+    );
 }
 
 #[test]
@@ -9946,6 +9958,12 @@ class C {
 
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "var-functional-initializer"),
+        "expected var-functional-initializer diagnostic; got {diags:?}"
+    );
     assert!(
         diags
             .iter()
