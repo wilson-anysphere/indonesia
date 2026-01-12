@@ -100,6 +100,12 @@ mod tests {
     }
 
     #[test]
+    fn read_only_uri_matches_legacy_decompile_uri_single_slash_form() {
+        let uri = "nova-decompile:/com/example/Foo.class";
+        assert!(is_read_only_uri(uri));
+    }
+
+    #[test]
     fn read_only_uri_does_not_match_unrelated_nova_virtual_uri() {
         assert!(!is_read_only_uri("nova:///something/else"));
     }
