@@ -891,7 +891,7 @@ fn type_use_annotations_are_ignored() {
 }
 
 #[test]
-fn type_use_annotation_missing_type_is_diagnosed_when_anchored() {
+fn type_use_annotation_missing_type_is_ignored_even_when_anchored() {
     let (jdk, index, scopes, scope) = setup(&["import java.util.*;"]);
     let resolver = Resolver::new(&jdk).with_classpath(&index);
     let env = TypeStore::with_minimal_jdk();
@@ -908,19 +908,30 @@ fn type_use_annotation_missing_type_is_diagnosed_when_anchored() {
         text,
         Some(base_span),
     );
-    let diag = result
-        .diagnostics
-        .iter()
-        .find(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Missing"))
-        .expect("expected unresolved-type diagnostic for missing annotation type");
-    let span = diag
-        .span
-        .expect("expected anchored span for unresolved-type diagnostic");
-    assert_eq!(
-        &text[span.start..span.end],
-        "Missing",
-        "expected diagnostic span to cover the annotation name"
+
+    // Type-use annotations are currently ignored by the type system and should
+    // not produce unresolved-type diagnostics (even when spans are available).
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Missing")),
+        "unexpected diagnostics: {:?}",
+        result.diagnostics
     );
+
+    // The type should parse/resolve as if the annotation were not present.
+    let plain = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "List<String>",
+        None,
+    );
+    assert_eq!(plain.diagnostics, Vec::new());
+    assert_eq!(result.ty, plain.ty);
 }
 
 #[test]
