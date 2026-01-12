@@ -48,7 +48,9 @@ fn hash_trigram_units(a: char, b: char, c: char) -> Trigram {
             h = h.wrapping_mul(PRIME);
         }
     }
-    h
+    // Set the top bit so hashed Unicode trigrams never collide with the packed
+    // 3-byte ASCII representation (which always fits in 24 bits).
+    h | 0x8000_0000
 }
 
 #[cfg(feature = "unicode")]
