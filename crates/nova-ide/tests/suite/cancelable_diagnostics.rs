@@ -1,6 +1,4 @@
-mod framework_harness;
-
-use framework_harness::fixture_multi;
+use crate::framework_harness::fixture_multi;
 use nova_scheduler::CancellationToken;
 use nova_types::Severity;
 use std::path::PathBuf;

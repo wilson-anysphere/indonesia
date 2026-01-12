@@ -1,9 +1,6 @@
-mod framework_harness;
-mod text_fixture;
-
 use std::sync::Arc;
 
-use framework_harness::{ide_with_default_registry, offset_to_position, CARET};
+use crate::framework_harness::{ide_with_default_registry, offset_to_position, CARET};
 use lsp_types::CompletionTextEdit;
 use nova_db::InMemoryFileStore;
 use nova_scheduler::CancellationToken;

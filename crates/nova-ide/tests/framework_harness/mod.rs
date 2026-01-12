@@ -6,15 +6,9 @@ use nova_db::InMemoryFileStore;
 use nova_ext::ProjectId;
 use nova_ide::extensions::IdeExtensions;
 
-// `framework_harness` is used by multiple integration test crates (each file under `tests/` is its
-// own crate). Import `text_fixture` via an explicit relative path so callers don't have to
-// duplicate `mod text_fixture;` in every test file.
-#[path = "../text_fixture.rs"]
-mod text_fixture;
+pub const CARET: &str = crate::text_fixture::CARET;
 
-pub const CARET: &str = text_fixture::CARET;
-
-pub use text_fixture::offset_to_position;
+pub use crate::text_fixture::offset_to_position;
 
 pub struct Fixture {
     pub db: Arc<InMemoryFileStore>,
