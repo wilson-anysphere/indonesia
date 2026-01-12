@@ -91,6 +91,8 @@ pub enum StepDepth {
     Out,
 }
 
+const SMART_STEP_MAX_RESUMES: u32 = 64;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SmartStepPhase {
     Into,
@@ -106,6 +108,7 @@ struct SmartStepIntoState {
     target_id: i64,
     seen: i64,
     phase: SmartStepPhase,
+    remaining_resumes: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -550,6 +553,7 @@ impl Debugger {
         target_id: i64,
     ) -> Result<()> {
         self.invalidate_handles();
+        self.smart_step_into = None;
         check_cancel(cancel)?;
 
         if target_id < 0 {
@@ -591,9 +595,14 @@ impl Debugger {
             target_id,
             seen: 0,
             phase: SmartStepPhase::Into,
+            remaining_resumes: SMART_STEP_MAX_RESUMES,
         });
 
-        self.step(cancel, dap_thread_id, StepDepth::Into).await
+        let result = self.step(cancel, dap_thread_id, StepDepth::Into).await;
+        if result.is_err() {
+            self.smart_step_into = None;
+        }
+        result
     }
 
     pub async fn maybe_continue_smart_step(
@@ -607,6 +616,10 @@ impl Debugger {
 
         let mut keep_state = true;
         let mut suppress_stopped_event = false;
+
+        if state.remaining_resumes == 0 {
+            keep_state = false;
+        }
 
         match event {
             JdwpEvent::Breakpoint { thread, .. } | JdwpEvent::Exception { thread, .. }
@@ -628,9 +641,17 @@ impl Debugger {
                             } else {
                                 state.seen = state.seen.saturating_add(1);
                                 state.phase = SmartStepPhase::Out;
-                                match self.step(cancel, *thread as i64, StepDepth::Out).await {
-                                    Ok(()) => suppress_stopped_event = true,
-                                    Err(_) => keep_state = false,
+                                if state.remaining_resumes == 0 {
+                                    keep_state = false;
+                                } else {
+                                    state.remaining_resumes -= 1;
+                                    match self.step(cancel, *thread as i64, StepDepth::Out).await {
+                                        Ok(()) => suppress_stopped_event = true,
+                                        Err(_) => keep_state = false,
+                                    }
+                                }
+                                if !suppress_stopped_event {
+                                    keep_state = false;
                                 }
                             }
                         } else {
@@ -653,7 +674,10 @@ impl Debugger {
 
                             if line != state.origin_line {
                                 keep_state = false;
+                            } else if state.remaining_resumes == 0 {
+                                keep_state = false;
                             } else {
+                                state.remaining_resumes -= 1;
                                 match self.step(cancel, *thread as i64, StepDepth::Into).await {
                                     Ok(()) => suppress_stopped_event = true,
                                     Err(_) => keep_state = false,
@@ -684,8 +708,11 @@ impl Debugger {
 
                             if line != state.origin_line {
                                 keep_state = false;
+                            } else if state.remaining_resumes == 0 {
+                                keep_state = false;
                             } else {
                                 state.phase = SmartStepPhase::Into;
+                                state.remaining_resumes -= 1;
                                 match self.step(cancel, *thread as i64, StepDepth::Into).await {
                                     Ok(()) => suppress_stopped_event = true,
                                     Err(_) => keep_state = false,
