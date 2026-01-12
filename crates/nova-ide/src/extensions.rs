@@ -1163,7 +1163,6 @@ where
                 source,
                 selection.start,
             ));
-
             // Quick fixes driven by diagnostics should prefer the diagnostics passed by the LSP
             // client (`CodeActionContext.diagnostics`) so we don't need to recompute diagnostics
             // for the whole file.

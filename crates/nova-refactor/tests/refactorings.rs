@@ -501,6 +501,90 @@ fn extract_variable_rejects_instanceof_pattern_expression() {
 }
 
 #[test]
+fn extract_variable_replace_all_ignores_equivalent_occurrences_before_insertion_stmt() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int a = 0;
+    int b = a + 1;
+    System.out.println(a + 1);
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let expr_start = src.rfind("a + 1").unwrap();
+    let expr_end = expr_start + "a + 1".len();
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "sum".into(),
+            use_var: true,
+            replace_all: true,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  void m() {
+    int a = 0;
+    int b = a + 1;
+    var sum = a + 1;
+    System.out.println(sum);
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn extract_variable_replace_all_replaces_occurrences_after_insertion_stmt_in_same_block() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int a = 0;
+    System.out.println(a + 1);
+    int b = a + 1;
+    int c = a + 1;
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let expr_start = src.find("a + 1").unwrap();
+    let expr_end = expr_start + "a + 1".len();
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "sum".into(),
+            use_var: true,
+            replace_all: true,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  void m() {
+    int a = 0;
+    var sum = a + 1;
+    System.out.println(sum);
+    int b = sum;
+    int c = sum;
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn extract_variable_rejects_empty_name() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
