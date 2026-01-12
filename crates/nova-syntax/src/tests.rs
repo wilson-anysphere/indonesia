@@ -608,6 +608,45 @@ fn lexer_string_templates_track_brace_depth_in_interpolation() {
 }
 
 #[test]
+fn lexer_string_templates_allow_nested_templates_inside_interpolations() {
+    // Nested string templates can appear inside the embedded expression. This exercises the
+    // lexer's mode stack so the inner template's `}` tokens don't terminate the outer
+    // interpolation early.
+    let input = r#"STR."outer \{ STR."inner \{x}" }""#;
+    let (tokens, errors) = lex_with_errors(input);
+    assert_eq!(errors, Vec::new());
+
+    let non_trivia: Vec<_> = tokens
+        .into_iter()
+        .filter(|t| !t.kind.is_trivia())
+        .map(|t| (t.kind, t.text(input).to_string()))
+        .collect();
+
+    assert_eq!(
+        non_trivia,
+        vec![
+            (SyntaxKind::Identifier, "STR".into()),
+            (SyntaxKind::Dot, ".".into()),
+            (SyntaxKind::StringTemplateStart, "\"".into()),
+            (SyntaxKind::StringTemplateText, "outer ".into()),
+            (SyntaxKind::StringTemplateExprStart, r"\{".into()),
+            (SyntaxKind::Identifier, "STR".into()),
+            (SyntaxKind::Dot, ".".into()),
+            (SyntaxKind::StringTemplateStart, "\"".into()),
+            (SyntaxKind::StringTemplateText, "inner ".into()),
+            (SyntaxKind::StringTemplateExprStart, r"\{".into()),
+            (SyntaxKind::Identifier, "x".into()),
+            (SyntaxKind::StringTemplateExprEnd, "}".into()),
+            (SyntaxKind::StringTemplateEnd, "\"".into()),
+            // Closes the outer interpolation.
+            (SyntaxKind::StringTemplateExprEnd, "}".into()),
+            (SyntaxKind::StringTemplateEnd, "\"".into()),
+            (SyntaxKind::Eof, "".into()),
+        ]
+    );
+}
+
+#[test]
 fn lexer_text_block_templates_lex_without_error_tokens() {
     let input = "STR.\"\"\"\nhello \\{name}\n\"\"\"";
     let (tokens, errors) = lex_with_errors(input);
