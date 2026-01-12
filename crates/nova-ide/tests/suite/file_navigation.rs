@@ -255,6 +255,26 @@ class Main { void test(Foo foo){ foo.$0bar(); } }
 }
 
 #[test]
+fn go_to_implementation_on_static_receiver_call_returns_static_method_definition() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /A.java
+class A { static void $1foo() {} }
+//- /Main.java
+class Main { void test(){ A.$0foo(); } }
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = implementation(&fixture.db, file, pos);
+
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].uri, fixture.marker_uri(1));
+    assert_eq!(got[0].range.start, fixture.marker_position(1));
+}
+
+#[test]
 fn go_to_implementation_does_not_trigger_on_if_keyword() {
     let fixture = FileIdFixture::parse(
         r#"
