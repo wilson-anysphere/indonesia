@@ -868,15 +868,32 @@ impl<'a, 'idx> Parser<'a, 'idx> {
     }
 
     fn resolve_annotation_name(&mut self, name_range: Range<usize>) {
-        // Type-use annotation *names* (e.g. `List<@Missing String>`) are currently ignored by Nova.
+        // Type-use annotations are ignored in the resulting `Type` (Nova does not model them yet),
+        // but we still want best-effort diagnostics for missing annotation *types* when we can
+        // anchor spans correctly.
         //
-        // They are not represented in `nova_types::Type`, and surfacing unresolved-type diagnostics
-        // for them is noisy (it reports errors for annotation libraries the user may not have
-        // available, even though the underlying type reference is valid).
-        //
-        // NOTE: Annotation types that appear in *declaration* positions (`@Missing class C {}`)
-        // are still resolved and diagnosed by the higher-level annotation diagnostic pass.
-        let _ = name_range;
+        // `TypeRef.text` is frequently whitespace-stripped by the syntax layer. If the caller
+        // provides `base_span` from the original source, its length may not match the stripped
+        // text. In that case, diagnosing would likely produce mis-anchored spans; skip it.
+        let Some(base_span) = self.base_span else {
+            return;
+        };
+        if base_span.len() != self.text.len() {
+            return;
+        }
+
+        let name = self.text[name_range.clone()].to_string();
+        if name.is_empty() {
+            return;
+        }
+
+        let segments: Vec<String> = name.split('.').map(|s| s.to_string()).collect();
+        if segments.is_empty() {
+            return;
+        }
+
+        let per_segment_args = vec![Vec::new(); segments.len()];
+        let _ = self.resolve_named_type(segments, per_segment_args, name_range);
     }
 
     fn find_best_annotation_name_end(
