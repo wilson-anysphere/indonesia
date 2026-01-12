@@ -3396,22 +3396,73 @@ fn handle_notification(
 
             for change in params.changes {
                 let uri = change.uri;
-                let path = VfsPath::from(&uri);
-                if state.analysis.vfs.overlay().is_open(&path) {
+                let vfs_path = VfsPath::from(&uri);
+                if state.analysis.vfs.overlay().is_open(&vfs_path) {
                     continue;
                 }
+                let local_path = vfs_path.as_local_path().map(|p| p.to_path_buf());
 
                 let (file_id, _) = state.analysis.file_id_for_uri(&uri);
-                match change.typ {
+                let distributed_update = match change.typ {
                     LspFileChangeType::CREATED | LspFileChangeType::CHANGED => {
                         state.analysis.refresh_from_disk(&uri);
                         state.semantic_search_sync_file_id(file_id);
+                        match local_path {
+                            Some(path) => {
+                                let is_java = path
+                                    .extension()
+                                    .and_then(|ext| ext.to_str())
+                                    .is_some_and(|ext| ext.eq_ignore_ascii_case("java"));
+                                if !is_java {
+                                    None
+                                } else {
+                                    state
+                                        .analysis
+                                        .file_contents
+                                        .get(&file_id)
+                                        .cloned()
+                                        .map(|text| (path, text))
+                                }
+                            }
+                            None => None,
+                        }
                     }
                     LspFileChangeType::DELETED => {
                         state.analysis.mark_missing(&uri);
                         state.semantic_search_sync_file_id(file_id);
+                        match local_path {
+                            Some(path) => {
+                                let is_java = path
+                                    .extension()
+                                    .and_then(|ext| ext.to_str())
+                                    .is_some_and(|ext| ext.eq_ignore_ascii_case("java"));
+                                if is_java {
+                                    Some((path, String::new()))
+                                } else {
+                                    None
+                                }
+                            }
+                            None => None,
+                        }
                     }
-                    _ => {}
+                    _ => None,
+                };
+
+                if let Some((path, text)) = distributed_update {
+                    if let Some(dist) = state.distributed.as_ref() {
+                        if dist.contains_path(&path) {
+                            let frontend = Arc::clone(&dist.frontend);
+                            let _ = dist.runtime.spawn(async move {
+                                if let Err(err) = frontend.did_change_file(path, text).await {
+                                    tracing::warn!(
+                                        target = "nova.lsp",
+                                        error = ?err,
+                                        "distributed router update failed for didChangeWatchedFiles"
+                                    );
+                                }
+                            });
+                        }
+                    }
                 }
             }
         }
