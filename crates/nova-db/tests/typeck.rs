@@ -104,6 +104,26 @@ class C {
 }
 
 #[test]
+fn static_context_rejects_unqualified_instance_method_call() {
+    let src = r#"
+class C {
+    void bar() {}
+    static void m() {
+        bar();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "unresolved-method"
+            && d.message.contains("static context")),
+        "expected static context to reject implicit-this call, got {diags:?}"
+    );
+}
+
+#[test]
 fn differential_javac_type_mismatch() {
     use nova_test_utils::javac::{javac_available, run_javac_snippet};
 

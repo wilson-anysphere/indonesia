@@ -8,6 +8,7 @@ use nova_hir::hir::{
     LiteralKind, Stmt as HirStmt, UnaryOp,
 };
 use nova_hir::ids::{FieldId, MethodId};
+use nova_hir::item_tree::Modifiers;
 use nova_resolve::expr_scopes::{ExprScopes, ResolvedValue as ResolvedLocal};
 use nova_resolve::ids::{DefWithBodyId, ParamId};
 use nova_resolve::{NameResolution, Resolution, ScopeKind, StaticMemberResolution, TypeResolution};
@@ -986,14 +987,22 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     .collect::<Vec<_>>();
 
                 // Unqualified calls like `foo()` are usually shorthand for `this.foo()`.
-                // Resolve them against the enclosing class first, then fall back to
+                // Resolve them against the enclosing class first (using the right
+                // call kind for the current static/instance context), then fall back to
                 // static-imported methods.
-                if let Some(this_ty) = self.enclosing_class_type(loader) {
-                    ensure_type_loaded(loader, &this_ty);
+                if let Some(receiver_ty) = self.enclosing_class_type(loader) {
+                    ensure_type_loaded(loader, &receiver_ty);
+
+                    let is_static_context = self.is_static_context();
+                    let call_kind = if is_static_context {
+                        CallKind::Static
+                    } else {
+                        CallKind::Instance
+                    };
 
                     let call = MethodCall {
-                        receiver: this_ty,
-                        call_kind: CallKind::Instance,
+                        receiver: receiver_ty.clone(),
+                        call_kind,
                         name: name.as_str(),
                         args: arg_types.clone(),
                         expected_return: None,
@@ -1025,6 +1034,37 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             }
                         }
                         MethodResolution::NotFound(_) => {}
+                    }
+
+                    if is_static_context {
+                        // Best-effort: if this call *would* resolve in an instance context, emit a
+                        // more precise diagnostic instead of falling back to static imports.
+                        let call = MethodCall {
+                            receiver: receiver_ty,
+                            call_kind: CallKind::Instance,
+                            name: name.as_str(),
+                            args: arg_types.clone(),
+                            expected_return: None,
+                            explicit_type_args: Vec::new(),
+                        };
+                        let mut ctx = TyContext::new(env_ro);
+                        match nova_types::resolve_method_call(&mut ctx, &call) {
+                            MethodResolution::Found(_) | MethodResolution::Ambiguous(_) => {
+                                self.diagnostics.push(Diagnostic::error(
+                                    "unresolved-method",
+                                    format!(
+                                        "cannot call instance method `{}` from a static context",
+                                        name
+                                    ),
+                                    Some(self.body.exprs[expr].range()),
+                                ));
+                                return ExprInfo {
+                                    ty: Type::Error,
+                                    is_type_ref: false,
+                                };
+                            }
+                            MethodResolution::NotFound(_) => {}
+                        }
                     }
                 }
 
@@ -1116,6 +1156,14 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 ty: Type::Unknown,
                 is_type_ref: false,
             },
+        }
+    }
+
+    fn is_static_context(&self) -> bool {
+        match self.owner {
+            DefWithBodyId::Method(m) => self.tree.method(m).modifiers.raw & Modifiers::STATIC != 0,
+            DefWithBodyId::Constructor(_) => false,
+            DefWithBodyId::Initializer(i) => self.tree.initializer(i).is_static,
         }
     }
 
