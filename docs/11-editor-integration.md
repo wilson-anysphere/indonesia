@@ -4,9 +4,9 @@
 
 ## Overview
 
-Nova communicates with editors through the Language Server Protocol (LSP). This document covers LSP implementation, custom extensions, and multi-editor support strategy.
+Nova communicates with editors through the Language Server Protocol (LSP). This document covers the `nova-lsp` stdio server implementation, Nova-specific extensions, and multi-editor support strategy.
 
-**Implementation note:** Protocol stack decisions are captured in [ADR 0003](adr/0003-protocol-frameworks-lsp-dap.md). Some examples below use an `lsp-server`-style message loop; specific APIs in the current codebase may differ while the transport layer is still evolving.
+**Implementation note:** Protocol stack decisions are captured in [ADR 0003](adr/0003-protocol-frameworks-lsp-dap.md). The `nova-lsp` binary is currently **stdio-only** (JSON-RPC over stdin/stdout) and is implemented using [`lsp-server`](https://crates.io/crates/lsp-server). The authoritative capability advertisement lives in [`crates/nova-lsp/src/main.rs::initialize_result_json()`](../crates/nova-lsp/src/main.rs).
 
 ---
 
@@ -19,169 +19,103 @@ Nova communicates with editors through the Language Server Protocol (LSP). This 
 │                    LSP FEATURE SUPPORT                           │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│  TEXT SYNCHRONIZATION                                           │
-│  ✓ Full document sync                                           │
-│  ✓ Incremental sync                                             │
-│  ✓ Will save / did save                                         │
+│  Legend                                                         │
+│  ✓ = implemented + advertised by `initialize`                    │
+│  ○ = not yet implemented and/or not advertised                   │
 │                                                                  │
 │  LANGUAGE FEATURES                                               │
-│  ✓ Hover                                                        │
-│  ✓ Completion (+ resolve)                                       │
-│  ✓ Signature help                                               │
-│  ✓ Go to definition / declaration / type definition             │
-│  ✓ Find references                                              │
-│  ✓ Document highlight                                           │
+│  ✓ Completion (+ completionItem/resolve)                         │
+│  ✓ Go to definition / declaration / type definition / impl      │
+│  ✓ Diagnostics (pull model: textDocument/diagnostic)            │
 │  ✓ Document symbol                                              │
 │  ✓ Workspace symbol                                             │
-│  ✓ Code action                                                  │
-│  ✓ Code lens (+ resolve)                                        │
-│  ✓ Document formatting / range formatting                       │
-│  ✓ On-type formatting                                           │
-│  ✓ Rename (+ prepare)                                           │
-│  ✓ Folding range                                                │
-│  ✓ Selection range                                              │
-│  ✓ Semantic tokens (full + delta)                               │
+│  ✓ Code action (+ codeAction/resolve)                            │
+│  ✓ Code lens (+ codeLens/resolve)                                │
+│  ✓ Formatting (document / range / on-type)                       │
+│  ✓ Rename (+ prepareRename)                                      │
+│  ✓ Semantic tokens (full)                                        │
 │  ✓ Inlay hints                                                  │
-│  ✓ Call hierarchy (incoming + outgoing)                         │
-│  ✓ Type hierarchy                                               │
+│  ○ Hover                                                        │
+│  ○ Signature help                                               │
+│  ○ Find references                                              │
+│  ○ Document highlight                                           │
+│  ○ Folding range                                                │
+│  ○ Selection range                                              │
+│  ○ Semantic tokens (delta)                                      │
+│  ○ Call hierarchy                                               │
+│  ○ Type hierarchy                                               │
+│                                                                  │
+│  TEXT SYNCHRONIZATION                                            │
+│  ✓ didOpen / didChange (incremental) / didClose                  │
+│  ○ Will save / did save                                          │
 │                                                                  │
 │  WORKSPACE FEATURES                                              │
-│  ✓ Workspace folders                                            │
-│  ✓ File operations (create/rename/delete)                       │
-│  ✓ Configuration                                                │
-│  ✓ Workspace edit                                               │
+│  ✓ workspace/executeCommand                                      │
+│  ○ Workspace folders (multi-root)                                │
+│  ○ Configuration (workspace/didChangeConfiguration)              │
+│  ○ File operations registration (create/rename/delete)           │
 │                                                                  │
 │  WINDOW FEATURES                                                 │
-│  ✓ Show message / message request                               │
-│  ✓ Show document                                                │
-│  ✓ Progress                                                     │
+│  ✓ window/logMessage (used by AI features)                      │
+│  ✓ $/progress (when a `workDoneToken` is supplied)              │
+│  ○ window/showMessage / showMessageRequest / showDocument       │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+Notes:
+
+- The server currently implements `$/cancelRequest` and uses request-scoped cancellation tokens internally.
+- Diagnostics are provided via the LSP 3.17 **pull** model (`textDocument/diagnostic`). The server does not currently publish `textDocument/publishDiagnostics`.
+- The stdio server is tolerant of `workspace/didChangeWatchedFiles` and `workspace/didRenameFiles` notifications, but it does **not** currently advertise `workspace.fileOperations` or register file watchers dynamically, so editor clients may need explicit configuration if they want to send these.
+
 ### Server Architecture
 
 ```rust
-pub struct NovaServer {
-    /// Core database
-    db: Arc<RwLock<Database>>,
-    
-    /// LSP connection
-    connection: Connection,
-    
-    /// Open documents
-    documents: DashMap<Url, Document>,
-    
-    /// Configuration
-    config: RwLock<NovaConfig>,
-    
-    /// Cancellation tokens for in-flight requests
-    cancellations: DashMap<RequestId, CancellationToken>,
-    
-    /// Background task handle
-    background: BackgroundScheduler,
-}
+use lsp_server::{Connection, Message};
 
-impl NovaServer {
-    pub async fn run(self) -> Result<()> {
-        loop {
-            select! {
-                msg = self.connection.receiver.recv() => {
-                    match msg? {
-                        Message::Request(req) => {
-                            self.handle_request(req).await?;
-                        }
-                        Message::Notification(not) => {
-                            self.handle_notification(not).await?;
-                        }
-                        Message::Response(resp) => {
-                            self.handle_response(resp).await?;
-                        }
-                    }
-                }
-                
-                // Handle background task completion
-                result = self.background.next() => {
-                    self.handle_background_result(result).await?;
-                }
+fn main() -> std::io::Result<()> {
+    // `nova-lsp` is currently stdio-only.
+    let (connection, io_threads) = Connection::stdio();
+
+    // Initialize handshake.
+    let (init_id, _init_params) = connection.initialize_start()?;
+    connection.initialize_finish(init_id, initialize_result_json())?;
+
+    // Main stdio message loop.
+    for msg in &connection.receiver {
+        match msg {
+            Message::Request(req) => {
+                // Dispatch by `req.method` (e.g. "textDocument/completion")
+            }
+            Message::Notification(not) => {
+                // Handle notifications (e.g. didOpen/didChange/didClose)
+            }
+            Message::Response(_) => {
+                // Best-effort: ignored today.
             }
         }
     }
+
+    io_threads.join()?;
+    Ok(())
 }
 ```
 
 ### Request Handling
 
 ```rust
-impl NovaServer {
-    async fn handle_request(&self, req: Request) -> Result<()> {
-        // Create cancellation token
-        let cancel = CancellationToken::new();
-        self.cancellations.insert(req.id.clone(), cancel.clone());
-        
-        // Dispatch based on method
-        let result = match req.method.as_str() {
-            "textDocument/completion" => {
-                self.completion(req.params, cancel).await
-            }
-            "textDocument/hover" => {
-                self.hover(req.params, cancel).await
-            }
-            "textDocument/definition" => {
-                self.definition(req.params, cancel).await
-            }
-            "textDocument/references" => {
-                self.references(req.params, cancel).await
-            }
-            "textDocument/rename" => {
-                self.rename(req.params, cancel).await
-            }
-            "textDocument/codeAction" => {
-                self.code_action(req.params, cancel).await
-            }
-            // ... other methods
-            _ => {
-                Err(LspError::method_not_found())
-            }
-        };
-        
-        // Remove cancellation token
-        self.cancellations.remove(&req.id);
-        
-        // Send response
-        let response = match result {
-            Ok(value) => Response::ok(req.id, value),
-            Err(e) => Response::err(req.id, e),
-        };
-        
-        self.connection.sender.send(Message::Response(response))?;
-        
-        Ok(())
-    }
-    
-    async fn completion(
-        &self,
-        params: CompletionParams,
-        cancel: CancellationToken,
-    ) -> Result<CompletionResponse> {
-        let file = self.uri_to_file(&params.text_document.uri)?;
-        let position = params.position;
-        
-        // Get database snapshot (consistent view)
-        let db = self.db.read().snapshot();
-        
-        // Check for cancellation
-        if cancel.is_cancelled() {
-            return Err(LspError::request_cancelled());
-        }
-        
-        // Compute completions
-        let items = db.completions_at(file, position.into());
-        
-        Ok(CompletionResponse::List(CompletionList {
-            is_incomplete: items.len() >= MAX_COMPLETIONS,
-            items,
-        }))
+fn handle_request(method: &str, params: serde_json::Value) -> serde_json::Value {
+    match method {
+        "textDocument/completion" => handle_completion(params),
+        "completionItem/resolve" => handle_completion_resolve(params),
+        "textDocument/semanticTokens/full" => handle_semantic_tokens_full(params),
+        "textDocument/definition" => handle_definition(params),
+        "textDocument/diagnostic" => handle_diagnostics(params),
+        // ...and several more; see `crates/nova-lsp/src/main.rs::handle_request_json`
+        _ => json!({
+            "error": { "code": -32601, "message": format!("Method not found: {method}") }
+        }),
     }
 }
 ```
@@ -189,61 +123,18 @@ impl NovaServer {
 ### Document Synchronization
 
 ```rust
-impl NovaServer {
-    async fn did_open(&self, params: DidOpenTextDocumentParams) -> Result<()> {
-        let uri = params.text_document.uri;
-        let content = params.text_document.text;
-        let version = params.text_document.version;
-        
-        // Store document
-        self.documents.insert(uri.clone(), Document {
-            content: content.clone(),
-            version,
-        });
-        
-        // Update database
-        {
-            let mut db = self.db.write();
-            let file = db.file_for_uri(&uri);
-            db.set_file_content(file, content);
+fn handle_notification(method: &str, params: serde_json::Value) {
+    match method {
+        "textDocument/didOpen" => {
+            // Store the full text in a VFS overlay.
         }
-        
-        // Trigger diagnostics
-        self.schedule_diagnostics(uri).await;
-        
-        Ok(())
-    }
-    
-    async fn did_change(&self, params: DidChangeTextDocumentParams) -> Result<()> {
-        let uri = params.text_document.uri;
-        
-        // Apply changes
-        let mut doc = self.documents.get_mut(&uri)
-            .ok_or(LspError::invalid_params("Document not open"))?;
-        
-        for change in params.content_changes {
-            if let Some(range) = change.range {
-                // Incremental change
-                doc.apply_change(range, &change.text);
-            } else {
-                // Full content
-                doc.content = change.text;
-            }
+        "textDocument/didChange" => {
+            // Apply incremental edits (`TextDocumentSyncKind::INCREMENTAL`).
         }
-        
-        doc.version = params.text_document.version;
-        
-        // Update database
-        {
-            let mut db = self.db.write();
-            let file = db.file_for_uri(&uri);
-            db.set_file_content(file, doc.content.clone());
+        "textDocument/didClose" => {
+            // Drop the overlay.
         }
-        
-        // Trigger diagnostics (debounced)
-        self.schedule_diagnostics_debounced(uri, Duration::from_millis(200)).await;
-        
-        Ok(())
+        _ => {}
     }
 }
 ```
@@ -254,130 +145,129 @@ impl NovaServer {
 
 ### Custom Methods
 
-> Note: This document contains **design sketches** and may list planned/aspirational `nova/*`
-> methods. For the **current implemented** extension method set and exact JSON schemas, see:
-> [`protocol-extensions.md`](protocol-extensions.md).
-  
+Nova exposes a number of custom JSON-RPC requests under the `nova/*` namespace.
+
+The stdio server advertises the supported custom request list in the `initialize` response under:
+
+- `InitializeResult.capabilities.experimental.nova.requests`
+- `InitializeResult.capabilities.experimental.nova.notifications`
+
+For the authoritative list and exact JSON schemas, see:
+[`protocol-extensions.md`](protocol-extensions.md) and `crates/nova-lsp/src/lib.rs`.
+   
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    NOVA LSP EXTENSIONS                           │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│  PROJECT MANAGEMENT                                              │
-│  • nova/projectConfiguration - Get project structure            │
-│  • nova/projectModel - Normalized project model                 │
-│  • nova/reloadProject - Force project reload                    │
-│  • nova/buildProject - Trigger build                            │
-│  • nova/build/status - Poll build status                        │
-│  • nova/build/diagnostics - Build diagnostics                   │
-│                                                                  │
-│  JAVA-SPECIFIC                                                   │
-│  • nova/java/classpath - Get classpath info                     │
-│  • nova/java/sourcePaths - Get source paths                     │
-│  • nova/java/resolveMainClass - Find runnable classes           │
-│  • nova/java/organizeImports - Organize imports                 │
-│                                                                  │
-│  FRAMEWORK SUPPORT                                               │
-│  • nova/web/endpoints - List web endpoints                      │
-│  • nova/quarkus/endpoints - Alias of nova/web/endpoints         │
-│  • nova/micronaut/endpoints - List Micronaut endpoints          │
-│  • nova/micronaut/beans - List Micronaut beans                  │
-│                                                                  │
-│  REFACTORING                                                     │
-│  • nova/refactor/preview - Preview refactoring                  │
-│  • nova/refactor/apply - Apply with options                     │
-│                                                                  │
 │  TESTING                                                         │
-│  • nova/test/discover - Discover tests                          │
-│  • nova/test/run - Run specific tests                           │
+│  • nova/test/discover                                            │
+│  • nova/test/run                                                 │
+│  • nova/test/debugConfiguration                                  │
+│                                                                  │
+│  PROJECT / BUILD / JAVA                                           │
+│  • nova/projectConfiguration                                     │
+│  • nova/projectModel                                             │
+│  • nova/reloadProject                                            │
+│  • nova/buildProject                                             │
+│  • nova/java/classpath                                           │
+│  • nova/java/sourcePaths                                         │
+│  • nova/java/resolveMainClass                                    │
+│  • nova/java/generatedSources                                    │
+│  • nova/java/runAnnotationProcessing                             │
+│  • nova/java/organizeImports                                     │
+│                                                                  │
+│  FRAMEWORKS                                                      │
+│  • nova/web/endpoints                                            │
+│  • nova/quarkus/endpoints (alias)                                │
+│  • nova/micronaut/endpoints                                      │
+│  • nova/micronaut/beans                                          │
 │                                                                  │
 │  DEBUGGING                                                       │
-│  • nova/debug/configurations - List debug configs               │
+│  • nova/debug/configurations                                     │
+│  • nova/debug/hotSwap                                            │
+│                                                                  │
+│  BUILD STATUS / DIAGNOSTICS                                       │
+│  • nova/build/targetClasspath                                    │
+│  • nova/build/status                                             │
+│  • nova/build/diagnostics                                        │
+│                                                                  │
+│  RESILIENCE / OBSERVABILITY                                       │
+│  • nova/bugReport                                                │
+│  • nova/memoryStatus                                             │
+│  • nova/metrics                                                  │
+│  • nova/resetMetrics                                             │
+│  • nova/safeModeStatus                                           │
+│                                                                  │
+│  REFACTOR (CUSTOM REQUESTS)                                       │
+│  • nova/safeDelete                                               │
+│  • nova/changeSignature                                          │
+│  • nova/moveMethod                                               │
+│  • nova/moveStaticMember                                         │
+│                                                                  │
+│  AI (CUSTOM REQUESTS)                                             │
+│  • nova/ai/explainError                                          │
+│  • nova/ai/generateMethodBody                                    │
+│  • nova/ai/generateTests                                         │
+│  • nova/completion/more                                          │
+│                                                                  │
+│  EXTENSIONS (WASM)                                                │
+│  • nova/extensions/status                                        │
+│  • nova/extensions/navigation                                    │
+│                                                                  │
+│  CUSTOM NOTIFICATIONS (experimental.nova.notifications)           │
+│  • nova/memoryStatusChanged                                      │
+│  • nova/safeModeChanged                                          │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
- 
-### Project configuration payload (language level included)
+  
+### `nova/projectConfiguration` payload
 
-Version-aware analysis requires the client and server to agree on the effective Java language mode per module. `nova/projectConfiguration` should therefore include:
-- detected/overridden **Java language level** (`major` + `preview`)
-- where it came from (config override vs build tool)
-- enough mapping information for per-file language level attribution
+The current stdio server implementation expects:
 
-Example response shape (illustrative):
+- request params: `{ "projectRoot": "<absolute path on disk>" }` (alias `root` is accepted)
+- response fields (see [`crates/nova-lsp/src/extensions/project.rs`](../crates/nova-lsp/src/extensions/project.rs)):
+  - `schemaVersion`
+  - `workspaceRoot`
+  - `buildSystem`
+  - `java` (`source` + `target`)
+  - `modules`, `sourceRoots`
+  - `classpath`, `modulePath`
+  - `outputDirs`
+  - `dependencies`
 
 ```json
 {
-  "modules": [
-    {
-      "id": ":app",
-      "displayName": "app",
-      "sourceRoots": ["file:///ws/app/src/main/java"],
-      "classpath": ["file:///ws/.gradle/caches/.../guava.jar"],
-      "languageLevel": { "major": 17, "preview": false },
-      "languageLevelOrigin": "gradle"
-    },
-    {
-      "id": ":experiments",
-      "displayName": "experiments",
-      "sourceRoots": ["file:///ws/experiments/src/main/java"],
-      "classpath": [],
-      "languageLevel": { "major": 21, "preview": true },
-      "languageLevelOrigin": "nova-config"
-    }
-  ]
+  "schemaVersion": 1,
+  "workspaceRoot": "/ws",
+  "buildSystem": "gradle",
+  "java": { "source": 17, "target": 17 },
+  "modules": [{ "name": ":app", "root": "/ws/app" }],
+  "sourceRoots": [{ "kind": "main", "origin": "source", "path": "/ws/app/src/main/java" }],
+  "classpath": [{ "kind": "jar", "path": "/ws/.gradle/caches/.../guava.jar" }],
+  "modulePath": [],
+  "outputDirs": [{ "kind": "main", "path": "/ws/app/build/classes/java/main" }],
+  "dependencies": [{ "groupId": "com.google.guava", "artifactId": "guava", "version": "32.1.0-jre" }]
 }
 ```
 
-The server must store `module → JavaLanguageLevel` and derive `file → JavaLanguageLevel` for all parse/diagnostics queries. See: [16 - Java Language Levels and Feature Gating](16-java-language-levels.md).
-
-### Dynamic updates
-
-Language level can change while the server is running (e.g., `pom.xml` edited, Gradle toolchain updated, or `nova-config` override changed). Nova should handle this like any other incremental input change:
-- rebuild the module configuration
-- invalidate parse/semantic queries for files in affected modules
-- re-publish diagnostics (and refresh semantic tokens/completions as needed)
-
-Triggers:
-- `workspace/didChangeConfiguration` (config overrides)
-- file watching on build files (`pom.xml`, `build.gradle(.kts)`, `MODULE.bazel`/`BUILD`)
-- explicit `nova/reloadProject`
- 
 ### Extension Implementation
- 
+  
 ```rust
-impl NovaServer {
-    fn register_extensions(&self) {
-        // Project configuration
-        self.register_method("nova/projectConfiguration", |s, params| {
-            s.project_configuration(params)
-        });
-        
-        // Classpath
-        self.register_method("nova/java/classpath", |s, params| {
-            s.java_classpath(params)
-        });
-        
-        // Framework introspection (see `protocol-extensions.md`)
-        self.register_method("nova/web/endpoints", |s, params| {
-            s.web_endpoints(params)
-        });
-        // Backwards-compat alias for some clients.
-        self.register_method("nova/quarkus/endpoints", |s, params| {
-            s.web_endpoints(params)
-        });
-        self.register_method("nova/micronaut/endpoints", |s, params| {
-            s.micronaut_endpoints(params)
-        });
-        self.register_method("nova/micronaut/beans", |s, params| {
-            s.micronaut_beans(params)
-        });
-        
-        // Refactoring preview
-        self.register_method("nova/refactor/preview", |s, params| {
-            s.refactor_preview(params)
-        });
+match method {
+    // Standard LSP requests...
+    "textDocument/completion" => { /* ... */ }
+
+    // A handful of stateful Nova requests are handled directly in the binary...
+    nova_lsp::JAVA_ORGANIZE_IMPORTS_METHOD => { /* ... */ }
+
+    // ...and most `nova/*` requests are dispatched through `nova-lsp`'s extension router.
+    method if method.starts_with("nova/") => {
+        nova_lsp::handle_custom_request_cancelable(method, params, cancel)?;
     }
+
+    _ => { /* method not found */ }
 }
 ```
 
@@ -470,7 +360,6 @@ Payload notes (see `protocol-extensions.md` for full schemas):
   validate it and reject unknown versions.
 - Micronaut responses include `span.start` / `span.end` as **byte offsets** into UTF-8 source; clients may optionally
   translate that span into an editor selection.
-
 ```typescript
 // VS Code extension for Nova (example / sketch).
 //
@@ -616,13 +505,13 @@ export function activate(context: vscode.ExtensionContext) {
         serverOptions,
         clientOptions
     );
-    
+ 
     // Register custom commands
     context.subscriptions.push(
-        vscode.commands.registerCommand('nova.organizeImports', () => {
-            client.sendRequest('nova/java/organizeImports', {
-                uri: vscode.window.activeTextEditor?.document.uri.toString(),
-            });
+        vscode.commands.registerCommand('nova.organizeImports', async () => {
+            const uri = vscode.window.activeTextEditor?.document.uri.toString();
+            if (!uri) return;
+            await client.sendRequest('nova/java/organizeImports', { uri });
         }),
     );
     
@@ -681,122 +570,40 @@ export function activate(context: vscode.ExtensionContext) {
     client.start();
 }
 ```
-
+ 
 ---
-
+ 
 ## Progress and Status
-
+ 
 ### Progress Reporting
-
+ 
 ```rust
-impl NovaServer {
-    async fn report_progress<T>(
-        &self,
-        title: &str,
-        task: impl Future<Output = T>,
-    ) -> T {
-        // Create progress token
-        let token = ProgressToken::String(Uuid::new_v4().to_string());
-        
-        // Begin progress
-        self.connection.send_notification::<WorkDoneProgressCreate>(
-            WorkDoneProgressCreateParams { token: token.clone() }
-        ).await?;
-        
-        self.connection.send_notification::<Progress>(
-            ProgressParams {
-                token: token.clone(),
-                value: ProgressParamsValue::WorkDone(
-                    WorkDoneProgress::Begin(WorkDoneProgressBegin {
-                        title: title.into(),
-                        cancellable: Some(true),
-                        message: None,
-                        percentage: None,
-                    })
-                ),
-            }
-        ).await?;
-        
-        // Run task
-        let result = task.await;
-        
-        // End progress
-        self.connection.send_notification::<Progress>(
-            ProgressParams {
-                token,
-                value: ProgressParamsValue::WorkDone(
-                    WorkDoneProgress::End(WorkDoneProgressEnd {
-                        message: Some("Complete".into()),
-                    })
-                ),
-            }
-        ).await?;
-        
-        result
-    }
-    
-    async fn index_project(&self) {
-        self.report_progress("Indexing project", async {
-            let files = self.db.read().project_files();
-            let total = files.len();
-            
-            for (i, file) in files.iter().enumerate() {
-                // Update progress
-                self.update_progress(
-                    &format!("Indexing: {}", file.name()),
-                    (i * 100 / total) as u32,
-                ).await;
-                
-                // Index file
-                self.db.write().index_file(*file);
-            }
-        }).await;
-    }
-}
+// `nova-lsp` uses `window/logMessage` for user-visible logs (especially for AI
+// requests), and emits work-done progress via `$/progress` when the incoming
+// request provides a `workDoneToken`.
+
+out.send_notification(
+    "$/progress",
+    json!({
+        "token": work_done_token,
+        "value": {
+            "kind": "begin",
+            "title": "AI: Explain this error",
+            "cancellable": false,
+            "message": "",
+        }
+    }),
+)?;
 ```
+ 
+### Status Notifications (Nova-specific)
+ 
+In addition to standard LSP notifications, `nova-lsp` emits two Nova-specific
+notifications, advertised in `capabilities.experimental.nova.notifications`:
 
-### Status Bar
-
-```rust
-/// Custom status messages
-impl NovaServer {
-    async fn send_status(&self, status: NovaStatus) {
-        // Use custom notification for status
-        self.connection.send_notification::<NovaStatusNotification>(
-            NovaStatusParams {
-                state: status.state,
-                message: status.message,
-                icon: status.icon,
-            }
-        ).await;
-    }
-    
-    async fn set_indexing_status(&self, progress: f32) {
-        self.send_status(NovaStatus {
-            state: "indexing",
-            message: format!("Indexing: {:.0}%", progress * 100.0),
-            icon: "sync~spin",
-        }).await;
-    }
-    
-    async fn set_ready_status(&self) {
-        self.send_status(NovaStatus {
-            state: "ready",
-            message: "Nova: Ready",
-            icon: "check",
-        }).await;
-    }
-    
-    async fn set_error_status(&self, error: &str) {
-        self.send_status(NovaStatus {
-            state: "error",
-            message: format!("Nova: {}", error),
-            icon: "error",
-        }).await;
-    }
-}
-```
-
+- `nova/memoryStatusChanged` (see `nova/memoryStatus`)
+- `nova/safeModeChanged` (see `nova/safeModeStatus`)
+ 
 ---
 
 ## Error Handling
@@ -821,46 +628,75 @@ mode behaves), see:
 ## Testing LSP
 
 ```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use lsp_server::Message;
-    
-    #[tokio::test]
-    async fn test_completion() {
-        let (server, client) = create_test_pair();
-        
-        // Open document
-        client.send(notification("textDocument/didOpen", DidOpenTextDocumentParams {
-            text_document: TextDocumentItem {
-                uri: "file:///test/Main.java".into(),
-                language_id: "java".into(),
-                version: 1,
-                text: "class Main { String s; void foo() { s.| } }".into(),
-            },
-        })).await;
-        
-        // Request completion
-        let response = client.request("textDocument/completion", CompletionParams {
-            text_document_position: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier {
-                    uri: "file:///test/Main.java".into(),
-                },
-                position: Position { line: 0, character: 40 },
-            },
-            ..Default::default()
-        }).await;
-        
-        // Verify
-        let completions: CompletionResponse = response.result.unwrap();
-        let items = match completions {
-            CompletionResponse::List(list) => list.items,
-            _ => panic!("Expected list"),
-        };
-        
-        assert!(items.iter().any(|i| i.label == "length"));
-        assert!(items.iter().any(|i| i.label == "charAt"));
+use serde_json::json;
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Command, Stdio};
+
+#[test]
+fn stdio_initialize_shutdown() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "id": 2, "method": "shutdown" }));
+    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+fn write_jsonrpc_message(writer: &mut impl Write, message: &serde_json::Value) {
+    let bytes = serde_json::to_vec(message).expect("serialize");
+    write!(writer, "Content-Length: {}\r\n\r\n", bytes.len()).expect("write header");
+    writer.write_all(&bytes).expect("write body");
+    writer.flush().expect("flush");
+}
+
+fn read_jsonrpc_message(reader: &mut impl BufRead) -> serde_json::Value {
+    let mut content_length: Option<usize> = None;
+
+    loop {
+        let mut line = String::new();
+        let bytes_read = reader.read_line(&mut line).expect("read header line");
+        assert!(bytes_read > 0, "unexpected EOF while reading headers");
+
+        let line = line.trim_end_matches(['\r', '\n']);
+        if line.is_empty() {
+            break;
+        }
+
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("Content-Length") {
+                content_length = value.trim().parse::<usize>().ok();
+            }
+        }
     }
+
+    let len = content_length.expect("Content-Length header");
+    let mut buf = vec![0u8; len];
+    reader.read_exact(&mut buf).expect("read body");
+    serde_json::from_slice(&buf).expect("parse json")
 }
 ```
 
