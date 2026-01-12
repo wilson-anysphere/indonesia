@@ -2927,7 +2927,9 @@ fn offset_in_java_string_or_char_literal(text: &str, offset: usize) -> bool {
         }
 
         match tok.kind {
-            nova_syntax::SyntaxKind::StringLiteral | nova_syntax::SyntaxKind::CharLiteral => {
+            nova_syntax::SyntaxKind::StringLiteral
+            | nova_syntax::SyntaxKind::TextBlock
+            | nova_syntax::SyntaxKind::CharLiteral => {
                 // Token ranges include the opening + closing quote. Treat the cursor strictly
                 // inside the token (i.e. after the opening quote, before the closing quote) as
                 // "inside the literal".
@@ -3397,8 +3399,9 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         }
     }
 
-    // Suppress non-framework completions inside plain string / char literals. Framework-aware
-    // string completion providers (Spring/Micronaut/Quarkus/JPQL) run above and may return early.
+    // Suppress non-framework completions inside string-like literals (strings, text blocks, and
+    // char literals). Framework-aware string completion providers
+    // (Spring/Micronaut/Quarkus/JPQL) run above and may return early.
     if db
         .file_path(file)
         .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
@@ -8310,6 +8313,7 @@ fn infer_expr_type_at(types: &mut TypeStore, analysis: &Analysis, offset: usize)
             .class_id("java.lang.String")
             .map(|id| Type::class(id, vec![]))
             .unwrap_or_else(|| Type::Named("java.lang.String".to_string())),
+        TokenKind::CharLiteral => Type::Primitive(PrimitiveType::Char),
         TokenKind::Number => Type::Primitive(PrimitiveType::Int),
         TokenKind::Symbol(_) => Type::Unknown,
         TokenKind::Ident => match token.text.as_str() {
@@ -8952,6 +8956,7 @@ enum TokenKind {
     Ident,
     Symbol(char),
     StringLiteral,
+    CharLiteral,
     Number,
 }
 
@@ -9362,8 +9367,47 @@ fn tokenize(text: &str) -> Vec<Token> {
             continue;
         }
 
-        // String literal
+        // String literal / text block
         if b == b'"' {
+            let start = i;
+
+            // Java text block: """ ... """
+            if i + 2 < bytes.len() && bytes[i + 1] == b'"' && bytes[i + 2] == b'"' {
+                i += 3;
+                while i + 2 < bytes.len() {
+                    if bytes[i] == b'"' && bytes[i + 1] == b'"' && bytes[i + 2] == b'"' {
+                        i += 3;
+                        break;
+                    }
+                    i += 1;
+                }
+            } else {
+                // Regular Java string literal: "..."
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i = (i + 2).min(bytes.len());
+                        continue;
+                    }
+                    if bytes[i] == b'"' {
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+
+            let end = i;
+            tokens.push(Token {
+                kind: TokenKind::StringLiteral,
+                text: text[start..end].to_string(),
+                span: Span::new(start, end),
+            });
+            continue;
+        }
+
+        // Char literal
+        if b == b'\'' {
             let start = i;
             i += 1;
             while i < bytes.len() {
@@ -9371,7 +9415,7 @@ fn tokenize(text: &str) -> Vec<Token> {
                     i = (i + 2).min(bytes.len());
                     continue;
                 }
-                if bytes[i] == b'"' {
+                if bytes[i] == b'\'' {
                     i += 1;
                     break;
                 }
@@ -9379,7 +9423,7 @@ fn tokenize(text: &str) -> Vec<Token> {
             }
             let end = i;
             tokens.push(Token {
-                kind: TokenKind::StringLiteral,
+                kind: TokenKind::CharLiteral,
                 text: text[start..end].to_string(),
                 span: Span::new(start, end),
             });
@@ -9621,6 +9665,7 @@ fn infer_var_type(tokens: &[&Token], after_name: usize) -> Option<String> {
             let init = tokens.get(i + 1)?;
             return Some(match init.kind {
                 TokenKind::StringLiteral => "String".into(),
+                TokenKind::CharLiteral => "char".into(),
                 TokenKind::Number => "int".into(),
                 _ => "Object".into(),
             });

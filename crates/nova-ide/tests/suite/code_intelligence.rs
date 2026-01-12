@@ -93,6 +93,46 @@ class A {
 }
 
 #[test]
+fn completion_is_suppressed_in_char_literal() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    char c = 'a<|>';
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.is_empty(),
+        "expected no completions inside char literal; got {:?}",
+        items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn completion_is_suppressed_in_text_block() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    String s = """hel<|>lo""";
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.is_empty(),
+        "expected no completions inside text block; got {:?}",
+        items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn completion_in_incomplete_import_is_non_empty() {
     let (db, file, pos) = fixture(
         r#"
