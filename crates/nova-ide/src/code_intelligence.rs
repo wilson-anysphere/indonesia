@@ -11098,14 +11098,14 @@ fn general_completions(
                         if matcher.score(&name).is_none() {
                             continue;
                         }
-                        items.push(static_import_completion_item(&import.owner, &name));
+                        items.push(static_import_completion_item(&types, jdk.as_ref(), &import.owner, &name));
                     }
                 }
                 name => {
                     if matcher.score(name).is_none() {
                         continue;
                     }
-                    items.push(static_import_completion_item(&import.owner, name));
+                    items.push(static_import_completion_item(&types, jdk.as_ref(), &import.owner, name));
                 }
             }
         }
@@ -12336,24 +12336,74 @@ fn best_effort_binary_name_for_imported_type(jdk: &JdkIndex, source: &str) -> St
     source.to_string()
 }
 
-fn static_import_completion_item(owner: &str, name: &str) -> CompletionItem {
+fn static_import_completion_item(
+    types: &TypeStore,
+    jdk: &JdkIndex,
+    owner: &str,
+    name: &str,
+) -> CompletionItem {
+    let mut kind: Option<CompletionItemKind> = None;
+    let mut detail: Option<String> = None;
+
+    if let Ok(Some(stub)) = jdk.lookup_type(owner) {
+        if let Some(field) = stub
+            .fields
+            .iter()
+            .find(|f| f.name == name && f.access_flags & ACC_STATIC != 0)
+        {
+            kind = Some(if field.access_flags & ACC_FINAL != 0 {
+                CompletionItemKind::CONSTANT
+            } else {
+                CompletionItemKind::FIELD
+            });
+            if let Some((ty, _rest)) = parse_field_descriptor(types, field.descriptor.as_str()) {
+                detail = Some(nova_types::format_type(types, &ty));
+            }
+        } else if let Some(method) = stub.methods.iter().find(|m| {
+            m.name == name
+                && m.access_flags & ACC_STATIC != 0
+                && m.name != "<init>"
+                && m.name != "<clinit>"
+        }) {
+            kind = Some(CompletionItemKind::METHOD);
+            if let Some((params, return_type)) =
+                parse_method_descriptor(types, method.descriptor.as_str())
+            {
+                let return_ty = nova_types::format_type(types, &return_type);
+                let params = params
+                    .iter()
+                    .map(|ty| nova_types::format_type(types, ty))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                detail = Some(format!("{return_ty} {name}({params})"));
+            }
+        }
+    }
+
     let all_caps = name.chars().any(|c| c.is_ascii_uppercase())
         && !name.chars().any(|c| c.is_ascii_lowercase());
 
-    let (kind, insert_text, insert_text_format) = if all_caps {
-        (CompletionItemKind::CONSTANT, Some(name.to_string()), None)
-    } else {
-        (
-            CompletionItemKind::METHOD,
+    let kind = kind.unwrap_or_else(|| {
+        if all_caps {
+            CompletionItemKind::CONSTANT
+        } else {
+            CompletionItemKind::METHOD
+        }
+    });
+    let detail = detail.or_else(|| Some(owner.to_string()));
+
+    let (insert_text, insert_text_format) = match kind {
+        CompletionItemKind::METHOD => (
             Some(format!("{name}($0)")),
             Some(InsertTextFormat::SNIPPET),
-        )
+        ),
+        _ => (Some(name.to_string()), None),
     };
 
     CompletionItem {
         label: name.to_string(),
         kind: Some(kind),
-        detail: Some(owner.to_string()),
+        detail,
         insert_text,
         insert_text_format,
         // Mark the completion so we can apply a small ranking bonus.
