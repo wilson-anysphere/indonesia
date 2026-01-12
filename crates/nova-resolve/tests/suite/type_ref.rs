@@ -1219,3 +1219,71 @@ fn type_use_annotations_can_annotate_wildcards() {
     assert_eq!(annotated.diagnostics, Vec::new());
     assert_eq!(annotated.ty, plain.ty);
 }
+
+#[test]
+fn type_use_annotations_on_parameterized_qualifying_nested_type_are_ignored() {
+    // Ensure type-use annotations don't interfere with parsing of per-segment
+    // generic args + nested class qualifiers.
+    let jdk = JdkIndex::new();
+    let mut index = TestIndex::default();
+    index.add_type("com.example", "Outer");
+    index.add_type("com.example", "Outer$Inner");
+
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let file = FileId::from_raw(0);
+    let mut db = TestDb::default();
+    db.set_file_text(file, "import com.example.Outer;\nclass C {}\n");
+    let result = build_scopes(&db, file);
+
+    let mut env = TypeStore::with_minimal_jdk();
+    let object = env.well_known().object;
+    let inner_id = env.add_class(ClassDef {
+        name: "com.example.Outer$Inner".to_string(),
+        kind: ClassKind::Class,
+        type_params: vec![],
+        super_class: Some(Type::class(object, vec![])),
+        interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
+        methods: vec![],
+    });
+
+    let type_vars = HashMap::new();
+
+    let plain = resolve_type_ref_text(
+        &resolver,
+        &result.scopes,
+        result.file_scope,
+        &env,
+        &type_vars,
+        "Outer<String>.Inner<Integer>",
+        None,
+    );
+    assert_eq!(plain.diagnostics, Vec::new());
+
+    // Mimics whitespace-stripped `TypeRef.text` output:
+    // `Outer<@A String>.@B Inner<@C Integer>` -> `Outer<@AString>.@BInner<@CInteger>`
+    let annotated = resolve_type_ref_text(
+        &resolver,
+        &result.scopes,
+        result.file_scope,
+        &env,
+        &type_vars,
+        "Outer<@AString>.@BInner<@CInteger>",
+        None,
+    );
+    assert_eq!(annotated.diagnostics, Vec::new());
+
+    // Both should resolve to the nested binary name with flattened args.
+    assert_eq!(annotated.ty, plain.ty);
+    assert_eq!(
+        annotated.ty,
+        Type::class(
+            inner_id,
+            vec![
+                Type::class(env.lookup_class("java.lang.String").unwrap(), vec![]),
+                Type::class(env.lookup_class("java.lang.Integer").unwrap(), vec![]),
+            ]
+        )
+    );
+}
