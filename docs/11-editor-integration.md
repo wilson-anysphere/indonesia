@@ -466,6 +466,8 @@ Payload notes (see `protocol-extensions.md` for full schemas):
 - `nova/web/endpoints` returns `file` (best-effort; may be `null`/missing) + **1-based** `line` (and `methods`), where
   `file` is often relative to `projectRoot`. Clients should still show the endpoint when `file` is unavailable, but
   disable navigation / show “location unavailable”.
+- `nova/micronaut/endpoints` and `nova/micronaut/beans` include a `schemaVersion` field (currently `1`). Clients should
+  validate it and reject unknown versions.
 - Micronaut responses include `span.start` / `span.end` as **byte offsets** into UTF-8 source; clients may optionally
   translate that span into an editor selection.
 
