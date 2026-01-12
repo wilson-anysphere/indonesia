@@ -601,7 +601,7 @@ impl InProcessRouter {
             let root = root.path.clone();
             let shard_id = shard_id as ShardId;
             collect_set.spawn(async move {
-                let files = collect_java_files(&root).await.with_context(|| {
+                let files = collect_java_file_paths(&root).await.with_context(|| {
                     format!("collect files for shard {shard_id} ({})", root.display())
                 })?;
                 Ok::<_, anyhow::Error>((shard_id, files))
@@ -643,7 +643,7 @@ impl InProcessRouter {
                     // Spawn indexing for this shard immediately.
                     let task = self.scheduler.spawn_background_with_token(token.clone(), move |token| {
                         Cancelled::check(&token)?;
-                        let symbols = index_for_files(shard_id, files, &token)?;
+                        let symbols = index_for_files(shard_id, files, None, &token)?;
                         Cancelled::check(&token)?;
                         Ok(symbols)
                     });
@@ -674,6 +674,13 @@ impl InProcessRouter {
                         Err(TaskError::DeadlineExceeded(_)) => {
                             token.cancel();
                             return Err(anyhow!("indexing task exceeded deadline"));
+                        }
+                    };
+                    let symbols = match symbols {
+                        Ok(symbols) => symbols,
+                        Err(err) => {
+                            token.cancel();
+                            return Err(err);
                         }
                     };
 
@@ -744,26 +751,21 @@ impl InProcessRouter {
         let revision = self.global_revision.fetch_add(1, Ordering::SeqCst) + 1;
 
         let mut shard_files =
-            collect_java_files(&self.layout.source_roots[shard_id as usize].path).await?;
+            collect_java_file_paths(&self.layout.source_roots[shard_id as usize].path).await?;
         if cancel.is_cancelled() {
             token.cancel();
             return Err(rpc_cancelled_error());
         }
         let path_str = path.to_string_lossy().to_string();
-        if let Some(file) = shard_files.iter_mut().find(|f| f.path == path_str) {
-            file.text = text;
-        } else {
-            shard_files.push(FileText {
-                path: path_str,
-                text,
-            });
+        if !shard_files.iter().any(|file| file == &path_str) {
+            shard_files.push(path_str.clone());
         }
 
         let task = self
             .scheduler
             .spawn_background_with_token(token.clone(), move |token| {
                 Cancelled::check(&token)?;
-                let symbols = index_for_files(shard_id, shard_files, &token)?;
+                let symbols = index_for_files(shard_id, shard_files, Some((path_str, text)), &token)?;
                 Cancelled::check(&token)?;
                 Ok(symbols)
             });
@@ -785,6 +787,7 @@ impl InProcessRouter {
                 return Err(anyhow!("indexing task exceeded deadline"))
             }
         };
+        let symbols = symbols?;
 
         if token.is_cancelled() {
             return Ok(());
@@ -2538,14 +2541,15 @@ where
 
 fn index_for_files(
     shard_id: ShardId,
-    mut files: Vec<FileText>,
+    mut files: Vec<String>,
+    override_file: Option<(String, String)>,
     cancel: &CancellationToken,
-) -> std::result::Result<Vec<Symbol>, Cancelled> {
+) -> std::result::Result<anyhow::Result<Vec<Symbol>>, Cancelled> {
     use nova_db::{FileId, NovaHir, SalsaDatabase, SourceRootId};
 
     Cancelled::check(cancel)?;
 
-    files.sort_by(|a, b| a.path.cmp(&b.path));
+    files.sort();
 
     let db = SalsaDatabase::new();
     let root = SourceRootId::from_raw(shard_id);
@@ -2555,24 +2559,39 @@ fn index_for_files(
     let file_id = FileId::from_raw(0);
     db.set_source_root(file_id, root);
 
+    let override_file = override_file.map(|(path, text)| (path, Arc::new(text)));
+
     let mut symbols = Vec::new();
     for file in files {
         Cancelled::check(cancel)?;
+        let text = if let Some((_, override_text)) =
+            override_file.as_ref().filter(|(path, _)| path == &file)
+        {
+            Arc::clone(override_text)
+        } else {
+            match std::fs::read_to_string(&file)
+                .with_context(|| format!("read {file:?}"))
+                .map(Arc::new)
+            {
+                Ok(text) => text,
+                Err(err) => return Ok(Err(err)),
+            }
+        };
         db.set_file_exists(file_id, true);
-        db.set_file_content(file_id, Arc::new(file.text));
+        db.set_file_content(file_id, text);
 
         let names = db.with_snapshot(|snap| snap.hir_symbol_names(file_id));
         for name in names.iter() {
             symbols.push(Symbol {
                 name: name.clone(),
-                path: file.path.clone(),
+                path: file.clone(),
             });
         }
     }
 
     symbols.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.path.cmp(&b.path)));
     symbols.dedup();
-    Ok(symbols)
+    Ok(Ok(symbols))
 }
 
 fn build_global_symbols<'a>(
@@ -2923,6 +2942,35 @@ async fn write_global_symbols(
         return;
     }
     *guard = GlobalSymbolIndex::new(symbols, update_id);
+}
+
+async fn collect_java_file_paths(root: &Path) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        let mut read_dir = tokio::fs::read_dir(&dir)
+            .await
+            .with_context(|| format!("read_dir {dir:?}"))?;
+        while let Some(entry) = read_dir
+            .next_entry()
+            .await
+            .with_context(|| format!("next_entry {dir:?}"))?
+        {
+            let path = entry.path();
+            let meta = entry
+                .metadata()
+                .await
+                .with_context(|| format!("metadata {path:?}"))?;
+            if meta.is_dir() {
+                stack.push(path);
+            } else if meta.is_file() && path.extension().and_then(|s| s.to_str()) == Some("java") {
+                out.push(path.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    Ok(out)
 }
 
 async fn collect_java_files(root: &Path) -> Result<Vec<FileText>> {
