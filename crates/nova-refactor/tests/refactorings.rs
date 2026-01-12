@@ -3088,6 +3088,115 @@ fn extract_variable_rejects_if_body_without_braces_oneline() {
 }
 
 #[test]
+fn extract_variable_rejects_while_body_without_braces_multiline() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  void m(boolean cond) {
+    while (cond)
+      System.out.println(/*start*/1 + 2/*end*/);
+  }
+}
+"#;
+
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src)]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "sum".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason == "cannot extract into a single-statement control structure body without braces"
+        ),
+        "expected ExtractNotSupported error, got: {err:?}"
+    );
+}
+
+#[test]
+fn extract_variable_rejects_do_while_body_without_braces_multiline() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  void m(boolean cond) {
+    do
+      System.out.println(/*start*/1 + 2/*end*/);
+    while (cond);
+  }
+}
+"#;
+
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src)]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "sum".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason == "cannot extract into a single-statement control structure body without braces"
+        ),
+        "expected ExtractNotSupported error, got: {err:?}"
+    );
+}
+
+#[test]
+fn extract_variable_rejects_for_body_without_braces_multiline() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  void m() {
+    for (int i = 0; i < 10; i++)
+      System.out.println(/*start*/1 + 2/*end*/);
+  }
+}
+"#;
+
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src)]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "sum".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason == "cannot extract into a single-statement control structure body without braces"
+        ),
+        "expected ExtractNotSupported error, got: {err:?}"
+    );
+}
+
+#[test]
 fn extract_variable_rejects_oneline_switch_case_statement() {
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
