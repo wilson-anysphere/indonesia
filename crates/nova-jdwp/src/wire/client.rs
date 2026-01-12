@@ -2199,12 +2199,18 @@ mod tests {
             // Read the first command packet from the debugger (VirtualMachine.IDSizes).
             // This ensures the client has a pending request before we inject the oversized
             // packet that should terminate the read loop.
-            let mut len_buf = [0u8; 4];
-            socket.read_exact(&mut len_buf).await.unwrap();
-            let length = u32::from_be_bytes(len_buf) as usize;
-            if length >= 4 {
-                let mut rest = vec![0u8; length - 4];
-                socket.read_exact(&mut rest).await.unwrap();
+            let mut header = [0u8; crate::wire::codec::HEADER_LEN];
+            socket.read_exact(&mut header).await.unwrap();
+            let length = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
+            assert!(
+                (crate::wire::codec::HEADER_LEN..=crate::MAX_JDWP_PACKET_BYTES).contains(&length)
+            );
+            let payload_len = length - crate::wire::codec::HEADER_LEN;
+            if payload_len > 0 {
+                let mut payload = Vec::new();
+                payload.try_reserve_exact(payload_len).unwrap();
+                payload.resize(payload_len, 0);
+                socket.read_exact(&mut payload).await.unwrap();
             }
 
             // Inject an oversized JDWP packet header.

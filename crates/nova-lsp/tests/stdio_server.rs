@@ -2134,16 +2134,26 @@ fn stdio_server_handles_debug_hot_swap_request_with_fake_maven_and_mock_jdwp() {
                 break;
             }
             let length = u32::from_be_bytes(len_buf) as usize;
-            assert!(length >= 11, "invalid packet length {length}");
-            let mut rest = vec![0u8; length - 4];
-            stream.read_exact(&mut rest).expect("read packet");
+            assert!(
+                (11..=16 * 1024 * 1024).contains(&length),
+                "invalid packet length {length}"
+            );
 
-            let id = u32::from_be_bytes(rest[0..4].try_into().unwrap());
-            let flags = rest[4];
+            let mut header = [0u8; 7];
+            stream.read_exact(&mut header).expect("read header");
+
+            let id = u32::from_be_bytes(header[0..4].try_into().unwrap());
+            let flags = header[4];
             assert_eq!(flags & 0x80, 0, "client must send command packets");
-            let command_set = rest[5];
-            let command = rest[6];
-            let data = &rest[7..];
+            let command_set = header[5];
+            let command = header[6];
+
+            let data_len = length - 11;
+            let mut data = Vec::new();
+            data.try_reserve_exact(data_len)
+                .expect("allocate packet payload");
+            data.resize(data_len, 0);
+            stream.read_exact(&mut data).expect("read packet payload");
 
             match (command_set, command) {
                 (1, 7) => {
