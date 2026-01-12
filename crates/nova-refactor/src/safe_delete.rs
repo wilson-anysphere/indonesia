@@ -1028,12 +1028,46 @@ fn collect_effective_overload_candidates_by_arity(
     method_name: &str,
     arity: usize,
 ) -> Vec<IndexSymbolId> {
-    let mut receiver_class = receiver_class.to_string();
-    let mut seen_param_types: std::collections::HashSet<Vec<String>> =
-        std::collections::HashSet::new();
+    let mut seen_param_types: std::collections::HashSet<Vec<String>> = std::collections::HashSet::new();
     let mut out = Vec::new();
-    loop {
-        for id in index.method_overloads_by_arity(&receiver_class, method_name, arity) {
+
+    // Interface receiver: method lookup walks the interface `extends` chain.
+    if index.is_interface(receiver_class) {
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+        queue.push_back(receiver_class.to_string());
+        while let Some(ty) = queue.pop_front() {
+            if !visited.insert(ty.clone()) {
+                continue;
+            }
+
+            for id in index.method_overloads_by_arity(&ty, method_name, arity) {
+                if let Some(param_types) = index.method_param_types(id) {
+                    let key = param_types.to_vec();
+                    if !seen_param_types.insert(key) {
+                        continue;
+                    }
+                }
+                out.push(id);
+            }
+
+            if let Some(ifaces) = index.interface_extends(&ty) {
+                queue.extend(ifaces.iter().cloned());
+            }
+        }
+
+        return out;
+    }
+
+    // Class receiver: method lookup prefers the class/superclass chain. Only if no class method is
+    // found do we consider interface-inherited methods (e.g. default methods on interfaces, or
+    // abstract methods on abstract classes).
+    let mut class_chain: Vec<String> = Vec::new();
+    let mut cur: Option<String> = Some(receiver_class.to_string());
+    while let Some(cls) = cur {
+        class_chain.push(cls.clone());
+
+        for id in index.method_overloads_by_arity(&cls, method_name, arity) {
             if let Some(param_types) = index.method_param_types(id) {
                 let key = param_types.to_vec();
                 if !seen_param_types.insert(key) {
@@ -1042,11 +1076,41 @@ fn collect_effective_overload_candidates_by_arity(
             }
             out.push(id);
         }
-        receiver_class = match index.class_extends(&receiver_class) {
-            Some(base) => base.to_string(),
-            None => break,
-        };
+
+        cur = index.class_extends(&cls).map(|s| s.to_string());
     }
+
+    if !out.is_empty() {
+        return out;
+    }
+
+    // No class method found: fall back to interface methods inherited via `implements`.
+    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    for cls in &class_chain {
+        queue.extend(index.class_implements(cls).iter().cloned());
+    }
+
+    while let Some(iface) = queue.pop_front() {
+        if !visited.insert(iface.clone()) {
+            continue;
+        }
+
+        for id in index.method_overloads_by_arity(&iface, method_name, arity) {
+            if let Some(param_types) = index.method_param_types(id) {
+                let key = param_types.to_vec();
+                if !seen_param_types.insert(key) {
+                    continue;
+                }
+            }
+            out.push(id);
+        }
+
+        if let Some(ifaces) = index.interface_extends(&iface) {
+            queue.extend(ifaces.iter().cloned());
+        }
+    }
+
     out
 }
 

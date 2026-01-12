@@ -827,3 +827,107 @@ class C implements I {
         "expected override usage in C.java: {report:?}"
     );
 }
+
+#[test]
+fn safe_delete_interface_method_reports_call_usage_via_subinterface_type() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        "I.java".to_string(),
+        r#"
+interface I {
+    void m();
+}
+"#
+        .to_string(),
+    );
+    files.insert(
+        "J.java".to_string(),
+        r#"
+interface J extends I {
+}
+"#
+        .to_string(),
+    );
+    files.insert(
+        "Use.java".to_string(),
+        r#"
+class Use {
+    void entry() {
+        J j = null;
+        j.m();
+    }
+}
+"#
+        .to_string(),
+    );
+
+    let index = Index::new(files);
+    let target = index.find_method("I", "m").expect("method exists").id;
+
+    let outcome = safe_delete(
+        &index,
+        SafeDeleteTarget::Symbol(target),
+        SafeDeleteMode::Safe,
+    )
+    .expect("safe delete runs");
+    let report = match outcome {
+        SafeDeleteOutcome::Preview { report } => report,
+        SafeDeleteOutcome::Applied { .. } => panic!("expected preview"),
+    };
+
+    assert!(
+        report
+            .usages
+            .iter()
+            .any(|usage| usage.kind == UsageKind::Call && usage.file == "Use.java"),
+        "expected call usage in Use.java: {report:?}"
+    );
+}
+
+#[test]
+fn safe_delete_interface_default_method_reports_call_usage_on_implementing_class() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        "I.java".to_string(),
+        r#"
+interface I {
+    default void m() {
+    }
+}
+"#
+        .to_string(),
+    );
+    files.insert(
+        "C.java".to_string(),
+        r#"
+class C implements I {
+    void entry() {
+        new C().m();
+    }
+}
+"#
+        .to_string(),
+    );
+
+    let index = Index::new(files);
+    let target = index.find_method("I", "m").expect("method exists").id;
+
+    let outcome = safe_delete(
+        &index,
+        SafeDeleteTarget::Symbol(target),
+        SafeDeleteMode::Safe,
+    )
+    .expect("safe delete runs");
+    let report = match outcome {
+        SafeDeleteOutcome::Preview { report } => report,
+        SafeDeleteOutcome::Applied { .. } => panic!("expected preview"),
+    };
+
+    assert!(
+        report
+            .usages
+            .iter()
+            .any(|usage| usage.kind == UsageKind::Call && usage.file == "C.java"),
+        "expected call usage in C.java: {report:?}"
+    );
+}
