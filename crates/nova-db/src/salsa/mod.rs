@@ -284,6 +284,11 @@ impl SalsaMemoFootprint {
 
 #[derive(Debug, Default, Clone)]
 struct SalsaInputs {
+    // File IDs that have a `file_content` value.
+    //
+    // `ra_salsa` input queries panic when a value hasn't been set, so we must
+    // ensure `all_file_ids` only includes file IDs that are safe to query via
+    // `file_content`.
     file_ids: BTreeSet<FileId>,
     file_ids_dirty: bool,
     file_exists: HashMap<FileId, bool>,
@@ -758,9 +763,6 @@ impl Database {
     pub fn set_file_exists(&self, file: FileId, exists: bool) {
         let mut inputs = self.inputs.lock();
         inputs.file_exists.insert(file, exists);
-        if inputs.file_ids.insert(file) {
-            inputs.file_ids_dirty = true;
-        }
         drop(inputs);
 
         self.inner.lock().set_file_exists(file, exists);
@@ -812,25 +814,12 @@ impl Database {
     }
 
     pub fn set_file_path(&self, file: FileId, path: impl Into<String>) {
-        let mut inputs = self.inputs.lock();
-        if inputs.file_ids.insert(file) {
-            inputs.file_ids_dirty = true;
-        }
-        drop(inputs);
-
         self.inner.lock().set_file_path(file, path);
     }
 
     pub fn set_project_files(&self, project: ProjectId, files: Arc<Vec<FileId>>) {
         let mut inputs = self.inputs.lock();
         inputs.project_files.insert(project, files.clone());
-        let mut changed = false;
-        for file_id in files.iter().copied() {
-            changed |= inputs.file_ids.insert(file_id);
-        }
-        if changed {
-            inputs.file_ids_dirty = true;
-        }
         drop(inputs);
 
         self.inner.lock().set_project_files(project, files);
@@ -838,10 +827,9 @@ impl Database {
 
     pub fn set_file_rel_path(&self, file: FileId, rel_path: Arc<String>) {
         let mut inputs = self.inputs.lock();
-        inputs.file_rel_path.insert(file, Arc::clone(&rel_path));
-        if inputs.file_ids.insert(file) {
-            inputs.file_ids_dirty = true;
-        }
+        inputs
+            .file_rel_path
+            .insert(file, Arc::clone(&rel_path));
         drop(inputs);
 
         let mut db = self.inner.lock();
@@ -862,9 +850,6 @@ impl Database {
     pub fn set_file_project(&self, file: FileId, project: ProjectId) {
         let mut inputs = self.inputs.lock();
         inputs.file_project.insert(file, project);
-        if inputs.file_ids.insert(file) {
-            inputs.file_ids_dirty = true;
-        }
         drop(inputs);
 
         self.inner.lock().set_file_project(file, project);
@@ -892,9 +877,6 @@ impl Database {
     pub fn set_source_root(&self, file: FileId, root: SourceRootId) {
         let mut inputs = self.inputs.lock();
         inputs.source_root.insert(file, root);
-        if inputs.file_ids.insert(file) {
-            inputs.file_ids_dirty = true;
-        }
         drop(inputs);
 
         self.inner.lock().set_source_root(file, root);
