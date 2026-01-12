@@ -205,10 +205,9 @@ impl<'a> TypeStoreLoader<'a> {
             }
 
             for tp in &sig.type_parameters {
-                let id = type_vars
-                    .get(&tp.name)
-                    .copied()
-                    .expect("type vars just inserted");
+                let Some(id) = type_vars.get(&tp.name).copied() else {
+                    continue;
+                };
                 let bounds = self.bounds_for_type_parameter(tp, &type_vars)?;
                 if let Some(slot) = self.store.type_params.get_mut(id.0 as usize) {
                     slot.upper_bounds = bounds;
@@ -325,10 +324,9 @@ impl<'a> TypeStoreLoader<'a> {
                 type_vars.insert(tp.name.clone(), id);
             }
             for tp in &sig.type_parameters {
-                let id = type_vars
-                    .get(&tp.name)
-                    .copied()
-                    .expect("constructor type vars just inserted");
+                let Some(id) = type_vars.get(&tp.name).copied() else {
+                    continue;
+                };
                 let bounds = self.bounds_for_type_parameter(tp, &type_vars)?;
                 if let Some(slot) = self.store.type_params.get_mut(id.0 as usize) {
                     slot.upper_bounds = bounds;
@@ -385,10 +383,9 @@ impl<'a> TypeStoreLoader<'a> {
             }
 
             for tp in &sig.type_parameters {
-                let id = type_vars
-                    .get(&tp.name)
-                    .copied()
-                    .expect("method type vars just inserted");
+                let Some(id) = type_vars.get(&tp.name).copied() else {
+                    continue;
+                };
                 let bounds = self.bounds_for_type_parameter(tp, &type_vars)?;
                 if let Some(slot) = self.store.type_params.get_mut(id.0 as usize) {
                     slot.upper_bounds = bounds;

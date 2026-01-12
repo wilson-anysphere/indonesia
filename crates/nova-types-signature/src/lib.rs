@@ -57,13 +57,17 @@ impl TypeVarScope {
 
     /// Inserts a binding into the current (innermost) scope frame.
     pub fn insert(&mut self, name: impl Into<String>, id: TypeVarId) {
-        if self.frames.is_empty() {
-            self.frames.push(HashMap::new());
+        let name = name.into();
+        match self.frames.last_mut() {
+            Some(frame) => {
+                frame.insert(name, id);
+            }
+            None => {
+                let mut frame = HashMap::new();
+                frame.insert(name, id);
+                self.frames.push(frame);
+            }
         }
-        self.frames
-            .last_mut()
-            .expect("TypeVarScope::frames is non-empty")
-            .insert(name.into(), id);
     }
 
     /// Looks up a type variable by name, respecting shadowing.

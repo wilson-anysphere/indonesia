@@ -44,11 +44,13 @@ impl<'env> TyContext<'env> {
         upper_bounds: Vec<Type>,
         lower_bound: Option<Type>,
     ) -> TypeVarId {
-        let idx: u32 = self
-            .locals
-            .len()
-            .try_into()
-            .expect("too many context-local type params");
+        // Context-local ids reserve the MSB as a "local" tag. If we ever exhaust the representable
+        // range (or overflow `u32` on 64-bit platforms), degrade gracefully by reusing the last
+        // representable id instead of panicking.
+        let idx = match u32::try_from(self.locals.len()) {
+            Ok(idx) if idx < TypeVarId::CONTEXT_LOCAL_BIT => idx,
+            _ => return TypeVarId::new_context_local(TypeVarId::CONTEXT_LOCAL_BIT - 1),
+        };
         let id = TypeVarId::new_context_local(idx);
         self.locals.push(TypeParamDef {
             name: format!("CAP#{}", idx),
