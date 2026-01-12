@@ -125,6 +125,9 @@ impl BuildSystemBackend for GradleBuildSystem {
             PathPattern::ExactFileName("gradle.properties"),
             PathPattern::ExactFileName("gradlew"),
             PathPattern::ExactFileName("gradlew.bat"),
+            // Dependency lockfiles can change resolved versions / transitive closure.
+            PathPattern::ExactFileName("gradle.lockfile"),
+            PathPattern::Glob("**/dependency-locks/**/*.lockfile"),
             PathPattern::Glob("**/gradle/wrapper/gradle-wrapper.properties"),
             PathPattern::Glob("**/gradle/wrapper/gradle-wrapper.jar"),
             // `nova-build` emits a file-based Gradle snapshot handoff here; treat it like a build

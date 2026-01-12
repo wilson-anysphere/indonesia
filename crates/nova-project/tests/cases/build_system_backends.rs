@@ -73,6 +73,12 @@ fn watch_files_contains_canonical_markers() {
         .contains(&PathPattern::Glob("**/gradle/wrapper/gradle-wrapper.jar")));
     assert!(gradle
         .watch_files()
+        .contains(&PathPattern::ExactFileName("gradle.lockfile")));
+    assert!(gradle
+        .watch_files()
+        .contains(&PathPattern::Glob("**/dependency-locks/**/*.lockfile")));
+    assert!(gradle
+        .watch_files()
         .contains(&PathPattern::Glob("**/.nova/queries/gradle.json")));
 
     let bazel = BazelBuildSystem::new(LoadOptions::default());
