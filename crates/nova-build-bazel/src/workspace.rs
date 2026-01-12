@@ -5,7 +5,7 @@ use crate::{
 };
 use anyhow::{bail, Context, Result};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, VecDeque},
     fs,
     ops::ControlFlow,
     path::{Component, Path, PathBuf},
@@ -118,6 +118,7 @@ pub struct BazelWorkspace<R: CommandRunner> {
     cache_path: Option<PathBuf>,
     cache: BazelCache,
     compile_info_expr_version_hex: String,
+    supports_same_pkg_direct_rdeps: Option<bool>,
     #[cfg(feature = "bsp")]
     bsp: BspConnection,
     #[cfg(feature = "bsp")]
@@ -132,6 +133,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             cache_path: None,
             cache: BazelCache::default(),
             compile_info_expr_version_hex: compile_info_expr_version_hex(),
+            supports_same_pkg_direct_rdeps: None,
             #[cfg(feature = "bsp")]
             bsp: BspConnection::NotTried,
             #[cfg(feature = "bsp")]
@@ -159,6 +161,88 @@ impl<R: CommandRunner> BazelWorkspace<R> {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Convert a workspace-local file path into a Bazel file label.
+    ///
+    /// This resolves the Bazel package for `file` by walking up from `file.parent()` until we find
+    /// a `BUILD` or `BUILD.bazel` file.
+    ///
+    /// Returns `Ok(None)` if `file` is under the workspace root but not contained in any Bazel
+    /// package (no BUILD file found up to the workspace root).
+    pub fn workspace_file_label(&self, file: &Path) -> Result<Option<String>> {
+        Ok(self
+            .workspace_file_label_and_package(file)?
+            .map(|(label, _package)| label))
+    }
+
+    /// Find `java_*` rules that compile `file` without enumerating all Java targets in the
+    /// workspace.
+    ///
+    /// This walks reverse dependencies starting from the file label, traversing only `filegroup`
+    /// and `alias` rules until it hits `java_*` rules, which form the compiling frontier.
+    pub fn java_owning_targets_for_file(&mut self, file: impl AsRef<Path>) -> Result<Vec<String>> {
+        self.java_owning_targets_for_file_with_universe(file.as_ref(), None)
+    }
+
+    /// Like [`BazelWorkspace::java_owning_targets_for_file`], but restrict the reverse dependency
+    /// search universe to the transitive closure of `run_target` (`deps(run_target)`).
+    pub fn java_owning_targets_for_file_in_run_target_closure(
+        &mut self,
+        file: impl AsRef<Path>,
+        run_target: &str,
+    ) -> Result<Vec<String>> {
+        self.java_owning_targets_for_file_with_universe(file.as_ref(), Some(run_target))
+    }
+
+    fn java_owning_targets_for_file_with_universe(
+        &mut self,
+        file: &Path,
+        run_target: Option<&str>,
+    ) -> Result<Vec<String>> {
+        let Some((file_label, package_rel)) = self.workspace_file_label_and_package(file)? else {
+            return Ok(Vec::new());
+        };
+
+        let package_universe = if package_rel.is_empty() {
+            "//:*".to_string()
+        } else {
+            format!("//{package_rel}:*")
+        };
+
+        let mut seen = BTreeSet::<String>::new();
+        let mut queue = VecDeque::<String>::new();
+        let mut owners = BTreeSet::<String>::new();
+
+        seen.insert(file_label.clone());
+        queue.push_back(file_label);
+
+        while let Some(node) = queue.pop_front() {
+            let direct_rdeps = match run_target {
+                Some(run_target) => {
+                    let expr = format!("rdeps(deps({run_target}), {node}, 1)");
+                    self.query_label_kind(&expr)?
+                }
+                None => self.same_pkg_direct_rdeps_or_fallback(&package_universe, &node)?,
+            };
+
+            for (kind, label) in direct_rdeps {
+                if label == node {
+                    continue;
+                }
+
+                if is_java_rule_kind(&kind) {
+                    owners.insert(label);
+                    continue;
+                }
+
+                if is_source_aggregation_rule_kind(&kind) && seen.insert(label.clone()) {
+                    queue.push_back(label);
+                }
+            }
+        }
+
+        Ok(owners.into_iter().collect())
     }
 
     pub fn java_targets(&mut self) -> Result<Vec<String>> {
@@ -210,112 +294,112 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         )
     }
 
-    /// Resolve Bazel `java_*` target labels that own (compile) the given source file.
-    ///
-    /// This accepts either an absolute path or a workspace-relative path.
-    ///
-    /// The owning package is resolved by walking upwards from the file's directory until a
-    /// `BUILD`/`BUILD.bazel` file is found, stopping at the workspace root.
-    ///
-    /// The owning targets are then resolved using package-scoped `bazel query` expressions, which
-    /// handle common patterns such as:
-    /// - direct `srcs = ["Foo.java"]`
-    /// - `srcs = glob(["**/*.java"])`
-    /// - `srcs = [":srcs"]` where `:srcs` is a `filegroup` in the same package
-    pub fn java_owning_targets_for_file(&mut self, file: impl AsRef<Path>) -> Result<Vec<String>> {
-        let file = file.as_ref();
-        let input_is_absolute = file.is_absolute();
-
-        let file_abs = if input_is_absolute {
+    fn workspace_file_label_and_package(&self, file: &Path) -> Result<Option<(String, String)>> {
+        let abs_file = if file.is_absolute() {
             normalize_absolute_path_lexically(file)
         } else {
             self.root.join(file)
         };
 
-        // Prefer a purely lexical check first; fall back to canonicalization for common symlink
-        // cases (e.g. editor reports canonical paths while the workspace root comes from a symlink).
-        let (workspace_root, file_abs) = match file_abs.strip_prefix(&self.root) {
-            Ok(rel) => {
-                let rel = normalize_workspace_relative_path(rel).map_err(|err| {
-                    anyhow::anyhow!(
-                        "file {} is outside the Bazel workspace root {} ({err})",
-                        file_abs.display(),
-                        self.root.display()
-                    )
-                })?;
-                (self.root.clone(), self.root.join(rel))
-            }
-            Err(_) => {
-                let workspace_root = std::fs::canonicalize(&self.root).with_context(|| {
-                    format!(
-                        "failed to canonicalize Bazel workspace root {}",
-                        self.root.display()
-                    )
-                })?;
-                let file_abs = if input_is_absolute {
-                    std::fs::canonicalize(&file_abs)
-                } else {
-                    std::fs::canonicalize(&self.root.join(file))
-                }
-                .with_context(|| format!("failed to canonicalize file path {}", file_abs.display()))?;
-                if file_abs.strip_prefix(&workspace_root).is_err() {
-                    bail!(
-                        "file {} is outside the Bazel workspace root {}",
-                        file_abs.display(),
-                        workspace_root.display()
-                    );
-                }
-                (workspace_root, file_abs)
-            }
-        };
-
-        let package_dir = find_bazel_package_dir(&workspace_root, &file_abs).with_context(|| {
+        let rel = abs_file.strip_prefix(&self.root).with_context(|| {
             format!(
-                "failed to locate Bazel package for {}",
-                file_abs.display()
+                "path {} is outside the Bazel workspace root {}",
+                abs_file.display(),
+                self.root.display()
             )
         })?;
+        let rel = normalize_workspace_relative_path(rel)?;
+        let abs_file = self.root.join(rel);
 
-        let package_rel = package_dir
-            .strip_prefix(&workspace_root)
-            .expect("package dir should be inside workspace");
-        let package = path_to_bazel_path(package_rel)?;
-
-        let file_rel_to_pkg = file_abs
-            .strip_prefix(&package_dir)
-            .expect("file should be inside package dir");
-        let file_target = path_to_bazel_path(file_rel_to_pkg)?;
-
-        let file_label = if package.is_empty() {
-            format!("//:{file_target}")
-        } else {
-            format!("//{package}:{file_target}")
+        let Some(mut dir) = abs_file.parent() else {
+            return Ok(None);
         };
 
-        let universe = if package.is_empty() {
-            "//:all".to_string()
-        } else {
-            format!("//{package}:all")
-        };
+        loop {
+            if contains_build_file(dir) {
+                let package_rel = dir
+                    .strip_prefix(&self.root)
+                    .expect("package dir must be under workspace root");
+                let name_rel = abs_file
+                    .strip_prefix(dir)
+                    .expect("file must be under its package dir");
 
-        // Find java rules in the same package that directly depend on the file itself or on a
-        // `filegroup(...)` that contains the file.
-        //
-        // This stays package-scoped via `universe=//pkg:all` to avoid `rdeps(//..., ...)`
-        // explosions, and uses `depth=1` to return only rules that can plausibly compile the file
-        // (avoiding `java_binary`/`java_test` that merely depend on a `java_library` which owns the
-        // source).
-        let filegroups_expr = format!(r#"kind("filegroup rule", rdeps({universe}, {file_label}))"#);
-        let roots_expr = format!("({file_label} + {filegroups_expr})");
-        let java_expr =
-            format!(r#"kind("java_.* rule", rdeps({universe}, {roots_expr}, 1))"#);
-        let mut owning = self.query_labels(&java_expr).with_context(|| {
-            format!("bazel query failed while resolving owning java targets for {file_label}")
-        })?;
+                let package_rel = path_to_bazel_path(package_rel)?;
+                let name_rel = path_to_bazel_path(name_rel)?;
 
-        owning.sort();
-        owning.dedup();
-        Ok(owning)
+                let label = if package_rel.is_empty() {
+                    format!("//:{name_rel}")
+                } else {
+                    format!("//{package_rel}:{name_rel}")
+                };
+
+                return Ok(Some((label, package_rel)));
+            }
+
+            if dir == self.root {
+                return Ok(None);
+            }
+            dir = dir
+                .parent()
+                .expect("workspace root must have a parent unless it is filesystem root");
+        }
+    }
+
+    fn query_label_kind(&self, expr: &str) -> Result<Vec<(String, String)>> {
+        self.runner.run_with_stdout(
+            &self.root,
+            "bazel",
+            &["query", expr, "--output=label_kind"],
+            |stdout| {
+                let mut line = String::new();
+                let mut out = Vec::new();
+                loop {
+                    line.clear();
+                    let bytes = stdout.read_line(&mut line)?;
+                    if bytes == 0 {
+                        break;
+                    }
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+
+                    let mut parts = trimmed.split_whitespace().collect::<Vec<_>>();
+                    if parts.len() < 2 {
+                        continue;
+                    }
+                    let label = parts.pop().expect("len checked above").to_string();
+                    let kind = parts.join(" ");
+                    out.push((kind, label));
+                }
+                Ok(out)
+            },
+        )
+    }
+
+    fn same_pkg_direct_rdeps_or_fallback(
+        &mut self,
+        package_universe: &str,
+        node: &str,
+    ) -> Result<Vec<(String, String)>> {
+        if matches!(self.supports_same_pkg_direct_rdeps, Some(false)) {
+            let expr = format!("rdeps({package_universe}, {node}, 1)");
+            return self.query_label_kind(&expr);
+        }
+
+        let expr = format!("same_pkg_direct_rdeps({node})");
+        match self.query_label_kind(&expr) {
+            Ok(out) => {
+                self.supports_same_pkg_direct_rdeps = Some(true);
+                Ok(out)
+            }
+            Err(err) => {
+                self.supports_same_pkg_direct_rdeps = Some(false);
+                let fallback_expr = format!("rdeps({package_universe}, {node}, 1)");
+                self.query_label_kind(&fallback_expr)
+                    .with_context(|| format!("same_pkg_direct_rdeps query failed: {err}"))
+            }
+        }
     }
 
     /// Resolve Java compilation information for a Bazel target.
@@ -644,56 +728,6 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         digests.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(digests)
     }
-
-    fn query_labels(&self, expr: &str) -> Result<Vec<String>> {
-        self.runner.run_with_stdout(
-            &self.root,
-            "bazel",
-            &["query", expr, "--output=label"],
-            |stdout| {
-                let mut out = Vec::new();
-                let mut line = String::new();
-                loop {
-                    line.clear();
-                    let bytes = stdout.read_line(&mut line)?;
-                    if bytes == 0 {
-                        break;
-                    }
-                    let trimmed = line.trim();
-                    if !trimmed.is_empty() {
-                        out.push(trimmed.to_string());
-                    }
-                }
-                Ok(out)
-            },
-        )
-    }
-}
-
-fn find_bazel_package_dir(workspace_root: &Path, file: &Path) -> Result<PathBuf> {
-    let mut dir = if file.is_dir() {
-        file
-    } else {
-        file.parent()
-            .with_context(|| format!("file path has no parent: {}", file.display()))?
-    };
-
-    loop {
-        if dir.join("BUILD").is_file() || dir.join("BUILD.bazel").is_file() {
-            return Ok(dir.to_path_buf());
-        }
-        if dir == workspace_root {
-            break;
-        }
-        dir = dir
-            .parent()
-            .with_context(|| format!("file {} is outside the workspace root", file.display()))?;
-    }
-
-    bail!(
-        "no Bazel package found for {} (no BUILD/BUILD.bazel between file and workspace root)",
-        file.display()
-    )
 }
 
 fn normalize_absolute_path_lexically(path: &Path) -> PathBuf {
@@ -845,4 +879,19 @@ fn workspace_path_from_label(label: &str) -> Option<PathBuf> {
     } else {
         Some(PathBuf::from(rest))
     }
+}
+
+fn contains_build_file(dir: &Path) -> bool {
+    ["BUILD", "BUILD.bazel"]
+        .iter()
+        .any(|name| dir.join(name).is_file())
+}
+
+fn is_java_rule_kind(kind: &str) -> bool {
+    // `bazel query --output=label_kind` prints kind strings like `java_library rule`.
+    kind.starts_with("java_") && kind.ends_with(" rule")
+}
+
+fn is_source_aggregation_rule_kind(kind: &str) -> bool {
+    matches!(kind, "filegroup rule" | "alias rule")
 }
