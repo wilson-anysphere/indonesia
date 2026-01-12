@@ -1223,3 +1223,71 @@ class C { String m(){ return "a" + null; } }
         .expect("expected a type at offset");
     assert_eq!(ty, "String");
 }
+
+#[test]
+fn system_out_println_resolves_via_minimal_jdk() {
+    let src = r#"
+class C {
+    void m() {
+        System.out.println("x");
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "unresolved-field" && d.code.as_ref() != "unresolved-method"),
+        "expected System.out.println to resolve via minimal JDK, got {diags:?}"
+    );
+
+    let offset = src
+        .find("println(")
+        .expect("snippet should contain println call")
+        + "println".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "void");
+}
+
+#[test]
+fn math_max_and_pi_are_typed_via_minimal_jdk() {
+    let src = r#"
+class C {
+    double m() {
+        double a = Math.PI;
+        int b = Math.max(1, 2);
+        return a + b;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| {
+            d.code.as_ref() != "unresolved-field"
+                && d.code.as_ref() != "unresolved-method"
+                && d.code.as_ref() != "unresolved-static-member"
+        }),
+        "expected Math.PI and Math.max to resolve via minimal JDK, got {diags:?}"
+    );
+
+    let pi_offset = src.find("PI").expect("snippet should contain PI");
+    let pi_ty = db
+        .type_at_offset_display(file, pi_offset as u32)
+        .expect("expected a type at offset for PI");
+    assert_eq!(pi_ty, "double");
+
+    let max_offset = src
+        .find("max(")
+        .expect("snippet should contain max call")
+        + "max".len();
+    let max_ty = db
+        .type_at_offset_display(file, max_offset as u32)
+        .expect("expected a type at offset for max call");
+    assert_eq!(max_ty, "int");
+}
