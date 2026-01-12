@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { resolvePossiblyRelativePath } from './pathUtils';
 import { formatUnsupportedNovaMethodMessage, isNovaMethodNotFoundError, isNovaRequestSupported } from './novaCapabilities';
 import { formatError } from './safeMode';
-import { ProjectModelCache } from './projectModelCache';
+import { ProjectModelCache, type ProjectConfigurationResponse } from './projectModelCache';
 
 export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
 export type NovaProjectExplorerController = { refresh(): void };
@@ -53,12 +53,44 @@ interface ProjectModelResult {
 
 type ListKind = 'sourceRoots' | 'classpath' | 'modulePath';
 
+type ConfigurationListKind = 'outputDirs' | 'dependencies';
+
+type ConfigurationOutputDirEntry = NonNullable<ProjectConfigurationResponse['outputDirs']>[number];
+type ConfigurationDependencyEntry = NonNullable<ProjectConfigurationResponse['dependencies']>[number];
+
 type NovaProjectExplorerNode =
   | { type: 'message'; id: string; label: string; description?: string; icon?: vscode.ThemeIcon; command?: vscode.Command }
   | { type: 'workspace'; id: string; workspace: vscode.WorkspaceFolder }
+  | { type: 'workspaceConfiguration'; id: string; workspace: vscode.WorkspaceFolder }
   | { type: 'workspaceInfo'; id: string; label: string; description?: string }
   | { type: 'unit'; id: string; workspace: vscode.WorkspaceFolder; projectRoot: string; unit: ProjectModelUnit }
   | { type: 'unitInfo'; id: string; label: string; description?: string }
+  | {
+      type: 'configGroup';
+      id: string;
+      label: string;
+      workspace: vscode.WorkspaceFolder;
+      listKind: 'outputDirs';
+      entries: ConfigurationOutputDirEntry[];
+    }
+  | {
+      type: 'configGroup';
+      id: string;
+      label: string;
+      workspace: vscode.WorkspaceFolder;
+      listKind: 'dependencies';
+      entries: ConfigurationDependencyEntry[];
+    }
+  | {
+      type: 'configChunk';
+      id: string;
+      label: string;
+      workspace: vscode.WorkspaceFolder;
+      listKind: ConfigurationListKind;
+      entries: ConfigurationOutputDirEntry[] | ConfigurationDependencyEntry[];
+      start: number;
+      end: number;
+    }
   | {
       type: 'group';
       id: string;
@@ -102,6 +134,7 @@ const COMMAND_SHOW_CONFIG = 'nova.showProjectConfiguration';
 const COMMAND_REVEAL_PATH = 'nova.projectExplorer.revealPath';
 
 const CLASS_PATH_PAGE_SIZE = 200;
+const CONFIG_LIST_PAGE_SIZE = 200;
 
 export function registerNovaProjectExplorer(
   context: vscode.ExtensionContext,
@@ -183,12 +216,20 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
     const folders = opts?.workspace ? [opts.workspace] : (vscode.workspace.workspaceFolders ?? []);
     if (opts?.forceRefresh) {
       for (const folder of folders) {
-        const promise = this.cache.getProjectModel(folder, { forceRefresh: true });
-        void promise
-          .catch(() => {})
-          .finally(() => {
-            this.emitter.fire(undefined);
-          });
+        const promises: Array<Promise<unknown>> = [this.cache.getProjectModel(folder, { forceRefresh: true })];
+        // When refreshing a specific workspace (e.g. from an error banner), also refresh the
+        // cached project configuration snapshot. For global refreshes we keep things lightweight
+        // and allow the configuration node to refresh lazily when expanded.
+        if (opts.workspace) {
+          promises.push(this.cache.getProjectConfiguration(folder, { forceRefresh: true }));
+        }
+        for (const promise of promises) {
+          void promise
+            .catch(() => {})
+            .finally(() => {
+              this.emitter.fire(undefined);
+            });
+        }
       }
     }
 
@@ -226,6 +267,11 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
     switch (element.type) {
       case 'workspace': {
         const workspace = element.workspace;
+        const configurationNode: NovaProjectExplorerNode = {
+          type: 'workspaceConfiguration',
+          id: `${element.id}:configuration`,
+          workspace,
+        };
         if (this.cache.isProjectModelUnsupported()) {
           await this.triggerUnsupportedWelcome();
           return [];
@@ -243,6 +289,7 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
                 label: 'Loading project model…',
                 icon: new vscode.ThemeIcon('loading'),
               },
+              configurationNode,
             ];
           }
 
@@ -256,6 +303,7 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
                 icon: new vscode.ThemeIcon('error'),
                 command: { title: 'Refresh', command: COMMAND_REFRESH, arguments: [workspace] },
               },
+              configurationNode,
             ];
           }
 
@@ -273,6 +321,7 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
               label: 'Loading project model…',
               icon: new vscode.ThemeIcon('loading'),
             },
+            configurationNode,
           ];
         }
 
@@ -345,10 +394,148 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
             id: `${element.id}:no-units`,
             label: 'No project units reported.',
           });
+          nodes.push(configurationNode);
           return nodes;
         }
 
-        nodes.push(...infoNodes, ...unitNodes);
+        nodes.push(...infoNodes, ...unitNodes, configurationNode);
+        return nodes;
+      }
+
+      case 'workspaceConfiguration': {
+        const workspace = element.workspace;
+        if (this.cache.isProjectConfigurationUnsupported()) {
+          return [
+            {
+              type: 'message',
+              id: `${element.id}:unsupported`,
+              label: 'Project configuration not supported by this server.',
+              description: 'Update nova-lsp to a build that supports nova/projectConfiguration.',
+              icon: new vscode.ThemeIcon('info'),
+            },
+          ];
+        }
+
+        const snapshot = this.cache.peekProjectConfiguration(workspace);
+        const config = snapshot.value as unknown as ProjectConfigurationResponse | undefined;
+
+        if (!config) {
+          if (snapshot.inFlight) {
+            return [
+              {
+                type: 'message',
+                id: `${element.id}:loading`,
+                label: 'Loading project configuration…',
+                icon: new vscode.ThemeIcon('loading'),
+              },
+            ];
+          }
+
+          if (snapshot.lastError) {
+            return [
+              {
+                type: 'message',
+                id: `${element.id}:error`,
+                label: 'Failed to load project configuration.',
+                description: formatError(snapshot.lastError),
+                icon: new vscode.ThemeIcon('error'),
+                command: { title: 'Refresh', command: COMMAND_REFRESH, arguments: [workspace] },
+              },
+            ];
+          }
+
+          const promise = this.cache.getProjectConfiguration(workspace);
+          void promise
+            .catch(() => {})
+            .finally(() => {
+              this.emitter.fire(element);
+            });
+
+          return [
+            {
+              type: 'message',
+              id: `${element.id}:loading`,
+              label: 'Loading project configuration…',
+              icon: new vscode.ThemeIcon('loading'),
+            },
+          ];
+        }
+
+        // If the cached configuration is stale, refresh in the background but keep showing the previous snapshot.
+        let inFlight = snapshot.inFlight;
+        if (!inFlight && snapshot.stale) {
+          const promise = this.cache.getProjectConfiguration(workspace);
+          inFlight = promise;
+          void promise
+            .catch(() => {})
+            .finally(() => {
+              this.emitter.fire(element);
+            });
+        }
+
+        const nodes: NovaProjectExplorerNode[] = [];
+
+        if (inFlight) {
+          nodes.push({
+            type: 'message',
+            id: `${element.id}:loading`,
+            label: 'Loading project configuration…',
+            icon: new vscode.ThemeIcon('loading'),
+          });
+        }
+
+        if (snapshot.lastError && !inFlight) {
+          nodes.push({
+            type: 'message',
+            id: `${element.id}:last-error`,
+            label: 'Last refresh failed.',
+            description: formatError(snapshot.lastError),
+            icon: new vscode.ThemeIcon('error'),
+            command: { title: 'Refresh', command: COMMAND_REFRESH, arguments: [workspace] },
+          });
+        }
+
+        const buildSystem = typeof config.buildSystem === 'string' && config.buildSystem.trim().length > 0 ? config.buildSystem : undefined;
+        if (buildSystem) {
+          nodes.push({
+            type: 'workspaceInfo',
+            id: `${element.id}:info:buildSystem`,
+            label: 'Build System',
+            description: buildSystem,
+          });
+        }
+
+        const javaSource = config.java?.source;
+        const javaTarget = config.java?.target;
+        if (typeof javaSource === 'number' || typeof javaTarget === 'number') {
+          nodes.push({
+            type: 'workspaceInfo',
+            id: `${element.id}:info:java`,
+            label: 'Java',
+            description: `source=${typeof javaSource === 'number' ? javaSource : '—'}, target=${typeof javaTarget === 'number' ? javaTarget : '—'}`,
+          });
+        }
+
+        const outputDirs = Array.isArray(config.outputDirs) ? config.outputDirs.filter(Boolean) : [];
+        nodes.push({
+          type: 'configGroup',
+          id: `${element.id}:outputDirs`,
+          label: `Output Dirs (${outputDirs.length})`,
+          workspace,
+          listKind: 'outputDirs',
+          entries: outputDirs,
+        });
+
+        const dependencies = Array.isArray(config.dependencies) ? config.dependencies.filter(Boolean) : [];
+        nodes.push({
+          type: 'configGroup',
+          id: `${element.id}:dependencies`,
+          label: `Dependencies (${dependencies.length})`,
+          workspace,
+          listKind: 'dependencies',
+          entries: dependencies,
+        });
+
         return nodes;
       }
 
@@ -444,6 +631,60 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
         );
       }
 
+      case 'configGroup': {
+        if (element.listKind === 'outputDirs') {
+          const entries = element.entries;
+          if (entries.length <= CONFIG_LIST_PAGE_SIZE) {
+            return entries.map((entry, idx) => createConfigOutputDirNode(element, entry, idx));
+          }
+
+          const chunks: NovaProjectExplorerNode[] = [];
+          for (let start = 0; start < entries.length; start += CONFIG_LIST_PAGE_SIZE) {
+            const end = Math.min(entries.length, start + CONFIG_LIST_PAGE_SIZE);
+            chunks.push({
+              type: 'configChunk',
+              id: `${element.id}:chunk:${start}-${end}`,
+              label: `Entries ${start + 1}\u2013${end}`,
+              workspace: element.workspace,
+              listKind: element.listKind,
+              entries,
+              start,
+              end,
+            });
+          }
+          return chunks;
+        }
+
+        const entries = element.entries;
+        if (entries.length <= CONFIG_LIST_PAGE_SIZE) {
+          return entries.map((entry, idx) => createConfigDependencyNode(element, entry, idx));
+        }
+
+        const chunks: NovaProjectExplorerNode[] = [];
+        for (let start = 0; start < entries.length; start += CONFIG_LIST_PAGE_SIZE) {
+          const end = Math.min(entries.length, start + CONFIG_LIST_PAGE_SIZE);
+          chunks.push({
+            type: 'configChunk',
+            id: `${element.id}:chunk:${start}-${end}`,
+            label: `Entries ${start + 1}\u2013${end}`,
+            workspace: element.workspace,
+            listKind: element.listKind,
+            entries,
+            start,
+            end,
+          });
+        }
+        return chunks;
+      }
+
+      case 'configChunk': {
+        const slice = element.entries.slice(element.start, element.end);
+        if (element.listKind === 'outputDirs') {
+          return slice.map((entry, idx) => createConfigOutputDirNode(element, entry as ConfigurationOutputDirEntry, element.start + idx));
+        }
+        return slice.map((entry, idx) => createConfigDependencyNode(element, entry as ConfigurationDependencyEntry, element.start + idx));
+      }
+
       case 'workspaceInfo':
       case 'unitInfo':
       case 'path':
@@ -460,6 +701,13 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
         item.description = element.workspace.uri.fsPath;
         item.contextValue = CONTEXT_WORKSPACE;
         item.iconPath = vscode.ThemeIcon.Folder;
+        return item;
+      }
+
+      case 'workspaceConfiguration': {
+        const item = new vscode.TreeItem('Project Configuration', vscode.TreeItemCollapsibleState.Collapsed);
+        item.id = element.id;
+        item.iconPath = new vscode.ThemeIcon('gear');
         return item;
       }
 
@@ -486,6 +734,24 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
         item.id = element.id;
         item.description = element.description;
         item.iconPath = new vscode.ThemeIcon('symbol-property');
+        return item;
+      }
+
+      case 'configGroup': {
+        const count = element.entries.length;
+        const item = new vscode.TreeItem(
+          element.label,
+          count > 0 ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None,
+        );
+        item.id = element.id;
+        item.iconPath = element.listKind === 'outputDirs' ? vscode.ThemeIcon.Folder : new vscode.ThemeIcon('package');
+        return item;
+      }
+
+      case 'configChunk': {
+        const item = new vscode.TreeItem(element.label, vscode.TreeItemCollapsibleState.Collapsed);
+        item.id = element.id;
+        item.iconPath = new vscode.ThemeIcon('list-unordered');
         return item;
       }
 
@@ -633,6 +899,57 @@ function createClasspathEntryNode(
           arguments: [uri],
         }
       : undefined,
+  };
+}
+
+function createConfigOutputDirNode(
+  parent: { id: string; workspace: vscode.WorkspaceFolder },
+  entry: ConfigurationOutputDirEntry,
+  idx: number,
+): NovaProjectExplorerNode {
+  const rawPath = typeof entry.path === 'string' ? entry.path : '';
+  const resolved = rawPath ? resolvePossiblyRelativePath(parent.workspace.uri.fsPath, rawPath) : '';
+  const uri = resolved ? vscode.Uri.file(resolved) : undefined;
+
+  const kind = typeof entry.kind === 'string' && entry.kind.trim().length > 0 ? entry.kind.trim() : 'output';
+  const baseName = resolved ? path.basename(resolved) : '';
+  const label = baseName && baseName !== kind ? `${kind}: ${baseName}` : kind;
+
+  return {
+    type: 'path',
+    id: `${parent.id}:output:${idx}:${rawPath}`,
+    label,
+    description: resolved || rawPath || undefined,
+    uri,
+    icon: vscode.ThemeIcon.Folder,
+    command: uri
+      ? {
+          title: 'Reveal Output Dir',
+          command: COMMAND_REVEAL_PATH,
+          arguments: [uri],
+        }
+      : undefined,
+  };
+}
+
+function createConfigDependencyNode(
+  parent: { id: string },
+  entry: ConfigurationDependencyEntry,
+  idx: number,
+): NovaProjectExplorerNode {
+  const groupId = typeof entry.groupId === 'string' ? entry.groupId : '';
+  const artifactId = typeof entry.artifactId === 'string' ? entry.artifactId : '';
+  const scope = typeof entry.scope === 'string' ? entry.scope : '';
+
+  const label =
+    groupId && artifactId ? `${groupId}:${artifactId}` : artifactId || groupId || `Dependency ${idx + 1}`;
+
+  return {
+    type: 'path',
+    id: `${parent.id}:dep:${idx}:${label}`,
+    label,
+    description: scope || undefined,
+    icon: new vscode.ThemeIcon('package'),
   };
 }
 

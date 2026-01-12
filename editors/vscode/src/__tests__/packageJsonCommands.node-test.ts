@@ -355,7 +355,7 @@ test('package.json contributes Nova Project Explorer view + commands', async () 
   const raw = await fs.readFile(pkgPath, 'utf8');
   const pkg = JSON.parse(raw) as {
     activationEvents?: unknown;
-    contributes?: { commands?: unknown; views?: unknown; menus?: unknown };
+    contributes?: { commands?: unknown; views?: unknown; menus?: unknown; viewsWelcome?: unknown };
   };
 
   const activationEvents = Array.isArray(pkg.activationEvents) ? pkg.activationEvents : [];
@@ -379,6 +379,14 @@ test('package.json contributes Nova Project Explorer view + commands', async () 
   const explorerViews = (views as { explorer?: unknown }).explorer;
   assert.ok(Array.isArray(explorerViews));
   assert.ok((explorerViews as unknown[]).some((entry) => (entry as { id?: unknown })?.id === 'novaProjectExplorer'));
+
+  const viewsWelcome = Array.isArray(pkg.contributes?.viewsWelcome) ? pkg.contributes.viewsWelcome : [];
+  const projectWelcome = viewsWelcome.filter(
+    (entry): entry is { view?: unknown; contents?: unknown; when?: unknown } =>
+      entry && typeof entry === 'object' && (entry as { view?: unknown }).view === 'novaProjectExplorer',
+  );
+  assert.ok(projectWelcome.length >= 1);
+  assert.ok(projectWelcome.some((entry) => typeof entry.when === 'string' && entry.when.includes('workspaceFolderCount') && entry.when.includes('0')));
 
   const menus = pkg.contributes?.menus;
   assert.ok(menus && typeof menus === 'object');
