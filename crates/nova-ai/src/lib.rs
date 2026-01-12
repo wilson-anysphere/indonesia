@@ -22,6 +22,7 @@ mod completion_validation;
 mod error;
 mod features;
 mod llm_privacy;
+mod project_database;
 mod providers;
 mod semantic_search;
 mod types;
@@ -63,6 +64,8 @@ pub use semantic_search::{
 #[cfg(feature = "embeddings")]
 pub use semantic_search::{Embedder, EmbeddingSemanticSearch, HashEmbedder};
 pub use types::{AiStream, ChatMessage, ChatRequest, ChatRole, CodeSnippet};
+
+pub use project_database::DbProjectDatabase;
 
 pub use cancel::CancellationToken;
 pub use patch::{parse_structured_patch, Patch, PatchParseError, TextEdit};

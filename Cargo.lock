@@ -3289,6 +3289,7 @@ dependencies = [
  "llama-cpp-2",
  "nova-config",
  "nova-core",
+ "nova-db",
  "nova-fuzzy",
  "nova-syntax",
  "once_cell",

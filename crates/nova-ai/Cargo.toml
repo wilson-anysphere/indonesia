@@ -13,6 +13,7 @@ rayon = { version = "1", optional = true }
 nova-core = { path = "../nova-core" }
 nova-fuzzy = { path = "../nova-fuzzy" }
 nova-syntax = { path = "../nova-syntax" }
+nova-db = { path = "../nova-db" }
 globset = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
