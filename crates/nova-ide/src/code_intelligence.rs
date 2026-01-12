@@ -8238,15 +8238,40 @@ fn static_member_completions(text: &str, receiver: &str, prefix: &str) -> Vec<Co
 
     let jdk = JdkIndex::new();
     let resolver = ImportResolver::new(&jdk);
-    let Some(owner) = resolve_type_receiver(&resolver, &imports, package.as_ref(), receiver) else {
+    let owner = resolve_type_receiver(&resolver, &imports, package.as_ref(), receiver)
+        .or_else(|| {
+            // If a type receiver isn't resolvable via imports, still try a small
+            // set of "common" JDK packages so member completion can offer
+            // best-effort static members with auto-import edits.
+            //
+            // This mirrors `type_name_completions`, which treats `java.util` as a
+            // high-signal package even though it's not implicitly imported.
+            if receiver.contains('.') {
+                return None;
+            }
+            resolver.resolve_qualified_name(&QualifiedName::from_dotted(&format!(
+                "java.util.{receiver}"
+            )))
+        });
+    let Some(owner) = owner else {
         return Vec::new();
     };
 
-    let owner_name = owner.as_str().to_string();
+    let owner_source_name = binary_name_to_source_name(owner.as_str());
     let members = TypeIndex::static_members(&jdk, &owner);
     if members.is_empty() {
         return Vec::new();
     }
+
+    let additional_text_edits = if !receiver.contains('.') {
+        let import_info = parse_java_imports(text);
+        java_type_needs_import(&import_info, &owner_source_name).then(|| {
+            let text_index = TextIndex::new(text);
+            vec![java_import_text_edit(text, &text_index, &owner_source_name)]
+        })
+    } else {
+        None
+    };
 
     let mut items = Vec::new();
     for StaticMemberInfo { name, kind } in members {
@@ -8263,9 +8288,10 @@ fn static_member_completions(text: &str, receiver: &str, prefix: &str) -> Vec<Co
         items.push(CompletionItem {
             label,
             kind: Some(item_kind),
-            detail: Some(owner_name.clone()),
+            detail: Some(owner_source_name.clone()),
             insert_text,
             insert_text_format,
+            additional_text_edits: additional_text_edits.clone(),
             ..Default::default()
         });
     }

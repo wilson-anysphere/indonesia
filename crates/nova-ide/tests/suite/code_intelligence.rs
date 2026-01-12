@@ -2413,6 +2413,36 @@ class A {
 }
 
 #[test]
+fn completion_includes_collections_static_members_with_auto_import() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    Collections.<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let empty_list = items
+        .iter()
+        .find(|i| i.label == "emptyList")
+        .expect("expected Collections.emptyList completion item");
+
+    let edits = empty_list
+        .additional_text_edits
+        .as_ref()
+        .expect("expected auto-import edit for java.util.Collections");
+    assert!(
+        edits
+            .iter()
+            .any(|e| e.new_text == "import java.util.Collections;\n"),
+        "expected import edit for java.util.Collections; got {edits:#?}"
+    );
+}
+
+#[test]
 fn completion_ranks_math_static_members_for_prefix() {
     let (db, file, pos) = fixture(
         r#"
