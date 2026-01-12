@@ -116,6 +116,31 @@ export function isNovaAiCodeActionOrCommand(item: unknown): boolean {
   return typeof command?.id === 'string' && command.id.startsWith('nova.ai.');
 }
 
+/**
+ * Detects AI code actions/commands that require a file-backed URI to execute.
+ *
+ * Today this primarily covers patch-based AI code edits (generate method body / tests).
+ */
+export function isNovaAiFileBackedCodeActionOrCommand(item: unknown): boolean {
+  if (!item || typeof item !== 'object') {
+    return false;
+  }
+
+  const kind = kindValue((item as CodeActionOrCommandLike).kind);
+  if (kind === 'nova.ai.generate' || kind === 'nova.ai.tests') {
+    return true;
+  }
+
+  const cmd = commandFromItem(item);
+  switch (cmd?.id) {
+    case NOVA_AI_LSP_COMMAND_GENERATE_METHOD_BODY:
+    case NOVA_AI_LSP_COMMAND_GENERATE_TESTS:
+      return true;
+  }
+
+  return false;
+}
+
 export function localCommandForNovaAiAction(action: {
   lspCommandId?: string | undefined;
   kind?: string | undefined;

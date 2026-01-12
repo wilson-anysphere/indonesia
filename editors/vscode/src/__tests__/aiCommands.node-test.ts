@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   isNovaAiCodeActionKind,
   isNovaAiCodeActionOrCommand,
+  isNovaAiFileBackedCodeActionOrCommand,
   rewriteNovaAiCodeActionOrCommand,
   NOVA_AI_LSP_COMMAND_EXPLAIN_ERROR,
   NOVA_AI_LSP_COMMAND_GENERATE_METHOD_BODY,
@@ -47,6 +48,43 @@ test('isNovaAiCodeActionOrCommand detects AI code actions and AI commands', () =
     isNovaAiCodeActionOrCommand({
       command: 'editor.action.formatDocument',
       title: 'Format Document',
+    }),
+    false,
+  );
+});
+
+test('isNovaAiFileBackedCodeActionOrCommand detects patch-based AI code actions/commands', () => {
+  assert.equal(
+    isNovaAiFileBackedCodeActionOrCommand({
+      kind: { value: 'nova.ai.generate' },
+      title: 'Generate method body with AI',
+    }),
+    true,
+  );
+
+  assert.equal(
+    isNovaAiFileBackedCodeActionOrCommand({
+      command: NOVA_AI_LSP_COMMAND_GENERATE_TESTS,
+      title: 'Generate tests with AI',
+      arguments: [],
+    }),
+    true,
+  );
+
+  assert.equal(
+    isNovaAiFileBackedCodeActionOrCommand({
+      kind: { value: 'nova.explain' },
+      title: 'Explain this error',
+      command: NOVA_AI_LSP_COMMAND_EXPLAIN_ERROR,
+      arguments: [],
+    }),
+    false,
+  );
+
+  assert.equal(
+    isNovaAiFileBackedCodeActionOrCommand({
+      kind: { value: 'refactor.extract' },
+      title: 'Extract method',
     }),
     false,
   );

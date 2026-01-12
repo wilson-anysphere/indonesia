@@ -45,6 +45,7 @@ import {
   NOVA_AI_SHOW_GENERATE_TESTS_COMMAND,
   rewriteNovaAiCodeActionOrCommand,
   isNovaAiCodeActionOrCommand,
+  isNovaAiFileBackedCodeActionOrCommand,
   type NovaAiShowCommandArgs,
 } from './aiCommands';
 import {
@@ -710,16 +711,7 @@ export async function activate(context: vscode.ExtensionContext) {
           if (document.uri.scheme !== 'file') {
             // Patch-based AI code-edit commands require a file-backed URI so nova-lsp can apply
             // workspace edits. Hide those code actions for non-file documents (e.g. untitled).
-            out = out.filter((item) => {
-              const rewritten = rewriteNovaAiCodeActionOrCommand(item);
-              if (!rewritten) {
-                return true;
-              }
-              return (
-                rewritten.command !== NOVA_AI_SHOW_GENERATE_METHOD_BODY_COMMAND &&
-                rewritten.command !== NOVA_AI_SHOW_GENERATE_TESTS_COMMAND
-              );
-            });
+            out = out.filter((item) => !isNovaAiFileBackedCodeActionOrCommand(item));
           }
 
           for (const item of out) {
