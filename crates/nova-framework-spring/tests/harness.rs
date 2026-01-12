@@ -2,7 +2,7 @@ mod fixture_snapshots;
 mod suite;
 
 #[test]
-fn integration_tests_are_consolidated_into_integration_rs() {
+fn integration_tests_are_consolidated_into_harness_rs() {
     let tests_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
     let mut root_rs_files = Vec::new();
 
@@ -21,5 +21,5 @@ fn integration_tests_are_consolidated_into_integration_rs() {
     }
 
     root_rs_files.sort();
-    assert_eq!(root_rs_files, vec!["integration.rs"]);
+    assert_eq!(root_rs_files, vec!["harness.rs"]);
 }
