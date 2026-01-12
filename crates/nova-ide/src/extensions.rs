@@ -1087,12 +1087,6 @@ where
                 file,
                 &cancel,
             );
-            actions.extend(crate::quick_fix::quick_fixes_for_diagnostics(
-                &uri,
-                source,
-                span,
-                &diagnostics,
-            ));
             actions.extend(
                 crate::quick_fixes::create_symbol_quick_fixes_from_diagnostics(
                     &uri,
@@ -1101,6 +1095,12 @@ where
                     &diagnostics,
                 ),
             );
+            actions.extend(crate::quick_fix::quick_fixes_for_diagnostics(
+                &uri,
+                source,
+                span,
+                &diagnostics,
+            ));
 
             actions.extend(
                 crate::quick_fixes::unresolved_static_member_quick_fixes(
@@ -1251,16 +1251,16 @@ where
                     span: Some(Span::new(start, end)),
                 });
             }
+            actions.extend(crate::quick_fixes::create_symbol_quick_fixes(
+                self.db.as_ref().as_dyn_nova_db(),
+                file,
+                Some(span),
+            ));
             actions.extend(crate::quick_fix::quick_fixes_for_diagnostics(
                 &uri,
                 source,
                 span,
                 &diagnostics,
-            ));
-            actions.extend(crate::quick_fixes::create_symbol_quick_fixes(
-                self.db.as_ref().as_dyn_nova_db(),
-                file,
-                Some(span),
             ));
 
             actions.extend(crate::refactor::extract_member_code_actions(

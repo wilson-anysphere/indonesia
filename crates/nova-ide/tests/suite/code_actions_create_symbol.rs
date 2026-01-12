@@ -8,6 +8,22 @@ use nova_scheduler::CancellationToken;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+fn first_edit_new_text(action: &lsp_types::CodeAction) -> &str {
+    let edit = action.edit.as_ref().expect("expected workspace edit");
+    let changes = edit
+        .changes
+        .as_ref()
+        .expect("expected WorkspaceEdit.changes");
+    let edits = changes
+        .values()
+        .next()
+        .expect("expected at least one file edit");
+    edits
+        .first()
+        .map(|edit| edit.new_text.as_str())
+        .expect("expected at least one text edit")
+}
+
 #[test]
 fn code_actions_lsp_offers_create_method_quick_fix_for_unresolved_method() {
     let source = "class A { void m() { foo(1, 2); } }";
@@ -36,6 +52,40 @@ fn code_actions_lsp_offers_create_method_quick_fix_for_unresolved_method() {
         .expect("expected create method quick fix");
 
     assert_eq!(action.kind, Some(lsp_types::CodeActionKind::QUICKFIX));
+}
+
+#[test]
+fn code_actions_lsp_create_method_quick_fix_is_static_in_static_context() {
+    let source = "class A { static void m() { foo(); } }";
+
+    let mut db = InMemoryFileStore::new();
+    let file = db.file_id_for_path(PathBuf::from("/Test.java"));
+    db.set_file_text(file, source.to_string());
+
+    let start = source.find("foo").expect("foo start");
+    let selection = Span::new(start, start + "foo".len());
+
+    let db: Arc<InMemoryFileStore> = Arc::new(db);
+    let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
+    let actions = ide.code_actions_lsp(CancellationToken::new(), file, Some(selection));
+
+    let action = actions
+        .iter()
+        .find_map(|action| match action {
+            lsp_types::CodeActionOrCommand::CodeAction(action)
+                if action.title == "Create method 'foo'" =>
+            {
+                Some(action)
+            }
+            _ => None,
+        })
+        .expect("expected create method quick fix");
+
+    let new_text = first_edit_new_text(action);
+    assert!(
+        new_text.contains("private static Object foo(Object... args)"),
+        "expected static stub; got {new_text:?}"
+    );
 }
 
 #[test]
