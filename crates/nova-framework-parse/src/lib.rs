@@ -520,6 +520,26 @@ mod tests {
     }
 
     #[test]
+    fn parse_java_is_safe_across_threads() {
+        let t1 = std::thread::spawn(|| {
+            let tree = parse_java("class A {}").expect("parse thread 1");
+            (tree.root_node().has_error(), tree.root_node().named_child_count())
+        });
+        let t2 = std::thread::spawn(|| {
+            let tree = parse_java("class B {}").expect("parse thread 2");
+            (tree.root_node().has_error(), tree.root_node().named_child_count())
+        });
+
+        let (err1, count1) = t1.join().expect("thread 1 join");
+        let (err2, count2) = t2.join().expect("thread 2 join");
+
+        assert!(!err1);
+        assert!(!err2);
+        assert!(count1 > 0);
+        assert!(count2 > 0);
+    }
+
+    #[test]
     fn parses_positional_and_named_args() {
         let ann = parse_annotation_text("@X(\"foo\", name = \"bar\")", Span::new(0, 0))
             .expect("annotation");
