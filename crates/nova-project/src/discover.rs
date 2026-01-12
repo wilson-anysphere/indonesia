@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::{borrow::Cow, fs};
 
 use nova_config::NovaConfig;
 
@@ -241,10 +242,10 @@ pub fn reload_project(
             // - workspaces nested under `build/` (common in tmp dirs)
             // - Gradle composite builds where included builds live outside the main workspace root
             let rel = path_relative_to_workspace_or_modules(workspace_root, &config.modules, path);
-            is_build_file(BuildSystem::Maven, rel)
-                || is_build_file(BuildSystem::Gradle, rel)
-                || is_build_file(BuildSystem::Bazel, rel)
-                || is_apt_generated_roots_snapshot(rel)
+            is_build_file(BuildSystem::Maven, rel.as_ref())
+                || is_build_file(BuildSystem::Gradle, rel.as_ref())
+                || is_build_file(BuildSystem::Bazel, rel.as_ref())
+                || is_apt_generated_roots_snapshot(rel.as_ref())
         })
     {
         // Build files changed (or unknown change set): rescan the workspace root.
@@ -281,24 +282,61 @@ fn path_relative_to_workspace_or_modules<'a>(
     workspace_root: &Path,
     modules: &[Module],
     path: &'a Path,
-) -> &'a Path {
+) -> Cow<'a, Path> {
     // Prefer the most specific matching root so relative paths remain stable even when:
     // - the workspace root contains an ignored directory name (e.g. `/tmp/build/ws`)
     // - a Gradle composite build includes modules outside the main workspace root
-    let mut best: Option<&'a Path> = None;
-    let mut best_root_len: usize = 0;
+    fn best_relative<'p>(
+        workspace_root: &Path,
+        modules: &[Module],
+        path: &'p Path,
+    ) -> Option<&'p Path> {
+        let mut best: Option<&'p Path> = None;
+        let mut best_root_len: usize = 0;
 
-    for root in std::iter::once(workspace_root).chain(modules.iter().map(|m| m.root.as_path())) {
-        if let Ok(stripped) = path.strip_prefix(root) {
-            let len = root.components().count();
-            if len > best_root_len {
-                best_root_len = len;
-                best = Some(stripped);
+        for root in std::iter::once(workspace_root).chain(modules.iter().map(|m| m.root.as_path()))
+        {
+            if let Ok(stripped) = path.strip_prefix(root) {
+                let len = root.components().count();
+                if len > best_root_len {
+                    best_root_len = len;
+                    best = Some(stripped);
+                }
+            }
+        }
+        best
+    }
+
+    if let Some(rel) = best_relative(workspace_root, modules, path) {
+        return Cow::Borrowed(rel);
+    }
+
+    // `load_project_with_options` canonicalizes the workspace root, but file watchers may report
+    // non-canonical absolute paths (e.g. via symlinks). Best-effort: canonicalize the changed path
+    // so it can be relativized against the canonical workspace/module roots.
+    //
+    // Note: `canonicalize` fails for non-existent paths (e.g. deleted files). In that case, fall
+    // back to canonicalizing the nearest existing ancestor and appending the remainder, mirroring
+    // the approach used in Bazel path resolution.
+    if path.is_absolute() {
+        let canon = fs::canonicalize(path).ok().or_else(|| {
+            let mut ancestor = path;
+            while !ancestor.exists() {
+                ancestor = ancestor.parent()?;
+            }
+            let ancestor_canon = fs::canonicalize(ancestor).ok()?;
+            let remainder = path.strip_prefix(ancestor).ok()?;
+            Some(ancestor_canon.join(remainder))
+        });
+
+        if let Some(canon) = canon {
+            if let Some(rel) = best_relative(workspace_root, modules, &canon) {
+                return Cow::Owned(rel.to_path_buf());
             }
         }
     }
 
-    best.unwrap_or(path)
+    Cow::Borrowed(path)
 }
 
 fn load_project_from_workspace_root(
