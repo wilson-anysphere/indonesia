@@ -93,6 +93,65 @@ class A {
 }
 
 #[test]
+fn completion_in_incomplete_import_is_non_empty() {
+    let (db, file, pos) = fixture(
+        r#"
+import java.util.<|>
+class A {}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        !labels.is_empty(),
+        "expected completion list to be non-empty inside incomplete import; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_in_incomplete_call_does_not_panic() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    "x".substring(<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        !items.is_empty(),
+        "expected completion list to be non-empty inside incomplete call; got {items:#?}"
+    );
+}
+
+#[test]
+fn completion_at_eof_after_whitespace_is_deterministic() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {}
+}
+   <|>"#,
+    );
+
+    let items1 = completions(&db, file, pos);
+    let items2 = completions(&db, file, pos);
+
+    let labels1: Vec<_> = items1.iter().map(|i| i.label.clone()).collect();
+    let labels2: Vec<_> = items2.iter().map(|i| i.label.clone()).collect();
+
+    assert!(
+        !labels1.is_empty(),
+        "expected completion list to be non-empty at EOF; got {labels1:?}"
+    );
+    assert_eq!(labels1, labels2, "expected completion list to be deterministic");
+}
+
+#[test]
 fn completion_deduplicates_items_by_label_and_kind() {
     // `Stream` member completions come from two sources:
     // - hardcoded `STREAM_MEMBER_METHODS`

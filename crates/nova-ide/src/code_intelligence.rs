@@ -1445,10 +1445,13 @@ fn java_import_insertion_offset(text: &str) -> usize {
         line = line.strip_suffix('\r').unwrap_or(line);
         let trimmed = line.trim_start();
 
-        if package_line_end.is_none() && trimmed.starts_with("package ") && trimmed.contains(';') {
+        // Best-effort: tolerate mid-edit package declarations without a trailing `;`.
+        if package_line_end.is_none() && trimmed.starts_with("package ") {
             package_line_end = Some(line_end);
         }
-        if trimmed.starts_with("import ") && trimmed.contains(';') {
+        // Best-effort: tolerate mid-edit imports without a trailing `;` so any
+        // additional import edits still insert after the existing import block.
+        if trimmed.starts_with("import ") {
             last_import_line_end = Some(line_end);
         }
 
@@ -1472,15 +1475,18 @@ fn is_new_expression_type_completion_context(text: &str, prefix_start: usize) ->
     if new_end < 3 {
         return false;
     }
-    if &text[new_end - 3..new_end] != "new" {
+    if text.get(new_end - 3..new_end) != Some("new") {
         return false;
     }
 
     // Ensure `new` is a standalone keyword, not a suffix of an identifier.
     let new_start = new_end - 3;
     if new_start > 0 {
-        let prev = text.as_bytes()[new_start - 1] as char;
-        if is_ident_continue(prev) {
+        if text
+            .as_bytes()
+            .get(new_start - 1)
+            .is_some_and(|b| is_ident_continue(*b as char))
+        {
             return false;
         }
     }
@@ -1605,6 +1611,7 @@ struct ImportContext {
 
 fn skip_whitespace_forwards(text: &str, mut offset: usize) -> usize {
     let bytes = text.as_bytes();
+    offset = offset.min(bytes.len());
     while offset < bytes.len() && (bytes[offset] as char).is_ascii_whitespace() {
         offset += 1;
     }
@@ -1619,8 +1626,10 @@ fn import_context(text: &str, offset: usize) -> Option<ImportContext> {
     // Best-effort: look only at the current line and require it to begin with an `import`
     // keyword (ignoring leading whitespace). This avoids triggering on random `import` mentions
     // elsewhere (comments/strings/etc.) and keeps the heuristic cheap.
-    let line_start = text[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let line_end = text[offset..]
+    let before = text.get(..offset).unwrap_or("");
+    let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let after = text.get(offset..).unwrap_or("");
+    let line_end = after
         .find('\n')
         .map(|i| offset + i)
         .unwrap_or(text.len());
@@ -2158,9 +2167,13 @@ pub(crate) fn core_completions(
 
     let text = db.file_content(file);
     let text_index = TextIndex::new(text);
-    let Some(offset) = text_index.position_to_offset(position) else {
-        return Vec::new();
-    };
+    // Best-effort: Some clients send out-of-range positions (or the document has
+    // changed). Treat invalid positions as EOF rather than returning an empty
+    // completion list.
+    let offset = text_index
+        .position_to_offset(position)
+        .unwrap_or_else(|| text.len())
+        .min(text.len());
     if let Some(kind) = java_comment_kind_at_offset(text, offset) {
         if kind == JavaCommentKind::Doc {
             if let Some(items) = javadoc_tag_snippet_completions(text, &text_index, offset) {
@@ -2233,7 +2246,9 @@ pub(crate) fn core_completions(
             let ranking_ctx = CompletionRankingContext::default();
             rank_completions(&prefix, &mut items, &ranking_ctx);
         }
-        return decorate_completions(&text_index, prefix_start, offset, items);
+        if !items.is_empty() || (!prefix.is_empty() && !receiver.is_empty()) {
+            return decorate_completions(&text_index, prefix_start, offset, items);
+        }
     }
 
     if type_position_completion_applicable(text, prefix_start, &prefix) {
@@ -2254,9 +2269,13 @@ pub(crate) fn core_completions(
 pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<CompletionItem> {
     let text = db.file_content(file);
     let text_index = TextIndex::new(text);
-    let Some(offset) = text_index.position_to_offset(position) else {
-        return Vec::new();
-    };
+    // Best-effort: Some clients send out-of-range positions (or the document has
+    // changed). Treat invalid positions as EOF rather than returning an empty
+    // completion list.
+    let offset = text_index
+        .position_to_offset(position)
+        .unwrap_or_else(|| text.len())
+        .min(text.len());
 
     if db
         .file_path(file)
@@ -2520,7 +2539,9 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
             let ranking_ctx = CompletionRankingContext::default();
             rank_completions(&prefix, &mut items, &ranking_ctx);
         }
-        return decorate_completions(&text_index, prefix_start, offset, items);
+        if !items.is_empty() || (!prefix.is_empty() && !receiver.is_empty()) {
+            return decorate_completions(&text_index, prefix_start, offset, items);
+        }
     }
 
     if type_position_completion_applicable(text, prefix_start, &prefix) {
@@ -3056,7 +3077,7 @@ fn line_text_at_offset(text: &str, offset: usize) -> String {
     while end < bytes.len() && bytes[end] != b'\n' {
         end += 1;
     }
-    text[start..end].to_string()
+    text.get(start..end).unwrap_or("").to_string()
 }
 
 fn annotation_type_completions(db: &dyn Database, prefix: &str) -> Vec<CompletionItem> {
@@ -7738,6 +7759,7 @@ fn span_within(inner: Span, outer: Span) -> bool {
 
 pub(crate) fn identifier_prefix(text: &str, offset: usize) -> (usize, String) {
     let bytes = text.as_bytes();
+    let offset = offset.min(bytes.len());
     let mut start = offset;
     while start > 0 {
         let ch = bytes[start - 1] as char;
@@ -7747,11 +7769,15 @@ pub(crate) fn identifier_prefix(text: &str, offset: usize) -> (usize, String) {
             break;
         }
     }
-    (start, text[start..offset].to_string())
+    (
+        start,
+        text.get(start..offset).unwrap_or("").to_string(),
+    )
 }
 
 pub(crate) fn skip_whitespace_backwards(text: &str, mut offset: usize) -> usize {
     let bytes = text.as_bytes();
+    offset = offset.min(bytes.len());
     while offset > 0 && (bytes[offset - 1] as char).is_ascii_whitespace() {
         offset -= 1;
     }
@@ -7760,20 +7786,20 @@ pub(crate) fn skip_whitespace_backwards(text: &str, mut offset: usize) -> usize 
 
 pub(crate) fn receiver_before_dot(text: &str, dot_offset: usize) -> String {
     let bytes = text.as_bytes();
-    let mut end = dot_offset;
-    while end > 0 && (bytes[end - 1] as char).is_ascii_whitespace() {
+    let mut end = dot_offset.min(bytes.len());
+    while end > 0 && bytes.get(end - 1).is_some_and(|b| (*b as char).is_ascii_whitespace()) {
         end -= 1;
     }
     let mut start = end;
     while start > 0 {
-        let ch = bytes[start - 1] as char;
+        let ch = bytes.get(start - 1).copied().unwrap_or_default() as char;
         if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '"' {
             start -= 1;
         } else {
             break;
         }
     }
-    text[start..end].trim().to_string()
+    text.get(start..end).unwrap_or("").trim().to_string()
 }
 
 #[cfg(test)]
