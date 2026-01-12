@@ -119,7 +119,6 @@ fn trigrams(text: &str, out: &mut Vec<Trigram>) {
 
         let mut buf = String::new();
         trigrams_with_unicode_buf(text, out, &mut buf);
-        return;
     }
 
     #[cfg(not(feature = "unicode"))]

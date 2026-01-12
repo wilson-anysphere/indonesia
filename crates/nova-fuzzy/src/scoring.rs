@@ -254,7 +254,7 @@ mod unicode_impl {
     }
 
     #[inline]
-    fn grapheme<'a>(s: &'a str, r: GraphemeRange) -> &'a str {
+    fn grapheme(s: &str, r: GraphemeRange) -> &str {
         &s[r.0..r.1]
     }
 
@@ -361,9 +361,9 @@ mod unicode_impl {
             dp_prev[j] = score;
         }
 
-        for i in 1..query_graphemes.len() {
+        for &q_r in query_graphemes.iter().skip(1) {
             dp_cur.fill(MIN_SCORE);
-            let q = grapheme(query_folded, query_graphemes[i]);
+            let q = grapheme(query_folded, q_r);
 
             let mut running_max = MIN_SCORE;
             for j in 0..n {
