@@ -4,11 +4,19 @@ mod support;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::io::BufReader;
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use nova_lsp::text_pos::TextPos;
+use nova_core::{path_to_file_uri, AbsPathBuf};
+use tempfile::TempDir;
 
 use support::{read_jsonrpc_message, read_response_with_id, write_jsonrpc_message};
+
+fn uri_for_path(path: &Path) -> String {
+    let abs = AbsPathBuf::try_from(path.to_path_buf()).expect("abs path");
+    path_to_file_uri(&abs).expect("file uri")
+}
 
 #[test]
 fn stdio_server_handles_ai_explain_error_code_action() {
@@ -165,6 +173,164 @@ fn stdio_server_handles_ai_explain_error_code_action() {
     assert!(progress_kinds.contains(&"begin".to_string()));
     assert!(progress_kinds.contains(&"end".to_string()));
 
+    mock.assert_hits(1);
+
+    // 5) shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
+
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
+fn stdio_server_ai_prompt_includes_project_and_semantic_context_when_root_is_available() {
+    let mock_server = MockServer::start();
+    let mock = mock_server.mock(|when, then| {
+        when.method(POST)
+            .path("/complete")
+            .body_contains("## Project context")
+            .body_contains("## Symbol/type info");
+        then.status(200)
+            .json_body(json!({ "completion": "mock explanation" }));
+    });
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+    let root_uri = uri_for_path(root);
+
+    let src_dir = root.join("src");
+    std::fs::create_dir_all(&src_dir).expect("create src dir");
+
+    let file_path = src_dir.join("Main.java");
+    let file_uri = uri_for_path(&file_path);
+    let text = r#"class Main { void run() { String s = "hi"; } }"#;
+    std::fs::write(&file_path, text).expect("write Main.java");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .env("NOVA_AI_PROVIDER", "http")
+        .env(
+            "NOVA_AI_ENDPOINT",
+            format!("{}/complete", mock_server.base_url()),
+        )
+        .env("NOVA_AI_MODEL", "default")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // 1) initialize with a workspace root so project context can be loaded.
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": root_uri, "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    // 2) open an on-disk document so hover/type info has a stable path.
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": text
+                }
+            }
+        }),
+    );
+
+    // 3) request code actions with a diagnostic range over an identifier so hover returns info.
+    let offset = text.find("s =").expect("variable occurrence");
+    let pos = TextPos::new(text);
+    let start = pos.lsp_position(offset).expect("start pos");
+    let end = pos.lsp_position(offset + 1).expect("end pos");
+    let range = Range { start, end };
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": { "uri": file_uri },
+                "range": range,
+                "context": {
+                    "diagnostics": [{
+                        "range": range,
+                        "message": "cannot find symbol"
+                    }]
+                }
+            }
+        }),
+    );
+
+    let code_actions_resp = read_response_with_id(&mut stdout, 2);
+    let actions = code_actions_resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .expect("code actions array");
+
+    let explain = actions
+        .iter()
+        .find(|a| a.get("title").and_then(|t| t.as_str()) == Some("Explain this error"))
+        .expect("explain code action");
+
+    let cmd = explain
+        .get("command")
+        .expect("command")
+        .get("command")
+        .and_then(|v| v.as_str())
+        .expect("command string");
+
+    let args = explain
+        .get("command")
+        .expect("command")
+        .get("arguments")
+        .cloned()
+        .expect("arguments");
+
+    assert_eq!(cmd, nova_ide::COMMAND_EXPLAIN_ERROR);
+
+    // 4) Execute the command (this triggers the mock LLM call, which asserts on prompt contents).
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "workspace/executeCommand",
+            "params": {
+                "command": cmd,
+                "arguments": args
+            }
+        }),
+    );
+    let exec_resp = read_response_with_id(&mut stdout, 3);
+    assert_eq!(exec_resp.get("result"), Some(&json!("mock explanation")));
     mock.assert_hits(1);
 
     // 5) shutdown + exit
