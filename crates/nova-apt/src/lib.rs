@@ -2,6 +2,10 @@ use nova_build::{
     collect_gradle_build_files, collect_maven_build_files, BuildError, BuildFileFingerprint,
     BuildManager, BuildResult, CommandRunner, GradleBuildTask, MavenBuildGoal,
 };
+use nova_build_model::{
+    GeneratedRootsSnapshotFile, GeneratedRootsSnapshotModule, GeneratedRootsSnapshotRoot,
+    GENERATED_ROOTS_SNAPSHOT_SCHEMA_VERSION,
+};
 use nova_config::NovaConfig;
 use nova_core::fs as core_fs;
 use nova_project::{
@@ -855,26 +859,6 @@ impl AptRunCache {
         self.dirty = false;
         Ok(())
     }
-}
-
-const GENERATED_ROOTS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct GeneratedRootsSnapshotRoot {
-    kind: CachedSourceRootKind,
-    path: PathBuf,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct GeneratedRootsSnapshotModule {
-    module_root: PathBuf,
-    roots: Vec<GeneratedRootsSnapshotRoot>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct GeneratedRootsSnapshotFile {
-    schema_version: u32,
-    modules: Vec<GeneratedRootsSnapshotModule>,
 }
 
 fn open_unique_tmp_file(dest: &Path, parent: &Path) -> io::Result<(PathBuf, std::fs::File)> {

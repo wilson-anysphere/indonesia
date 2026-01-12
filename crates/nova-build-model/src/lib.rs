@@ -1,8 +1,10 @@
 //! Shared project/build model types used across Nova build system integrations.
 
+mod generated_roots_snapshot;
 mod model;
 pub mod package;
 
+pub use generated_roots_snapshot::*;
 pub use model::*;
 pub use package::{
     class_to_file_name, infer_source_root, is_valid_package_name, package_to_path, path_ends_with,

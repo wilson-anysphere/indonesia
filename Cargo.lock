@@ -3334,6 +3334,7 @@ dependencies = [
  "filetime",
  "hex",
  "nova-build",
+ "nova-build-model",
  "nova-config",
  "nova-core",
  "nova-hir",
@@ -3409,6 +3410,7 @@ version = "0.1.0"
 dependencies = [
  "nova-modules",
  "serde",
+ "serde_json",
  "thiserror 1.0.69",
 ]
 

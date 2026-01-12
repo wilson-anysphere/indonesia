@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use nova_build_model::{GeneratedRootsSnapshotFile, GENERATED_ROOTS_SNAPSHOT_SCHEMA_VERSION};
 use nova_config::NovaConfig;
-use serde::Deserialize;
 
 use crate::{BuildSystem, SourceRoot, SourceRootKind, SourceRootOrigin};
 
@@ -101,42 +101,6 @@ pub(crate) fn append_generated_source_roots(
             path,
         });
     }
-}
-
-const GENERATED_ROOTS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum SnapshotSourceRootKind {
-    Main,
-    Test,
-}
-
-impl From<SnapshotSourceRootKind> for SourceRootKind {
-    fn from(value: SnapshotSourceRootKind) -> Self {
-        match value {
-            SnapshotSourceRootKind::Main => SourceRootKind::Main,
-            SnapshotSourceRootKind::Test => SourceRootKind::Test,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct GeneratedRootsSnapshotRoot {
-    kind: SnapshotSourceRootKind,
-    path: PathBuf,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct GeneratedRootsSnapshotModule {
-    module_root: PathBuf,
-    roots: Vec<GeneratedRootsSnapshotRoot>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct GeneratedRootsSnapshotFile {
-    schema_version: u32,
-    modules: Vec<GeneratedRootsSnapshotModule>,
 }
 
 fn read_snapshot_roots(

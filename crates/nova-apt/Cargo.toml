@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 nova-build = { path = "../nova-build" }
+nova-build-model = { path = "../nova-build-model" }
 nova-config = { path = "../nova-config" }
 nova-core = { path = "../nova-core" }
 nova-project = { path = "../nova-project" }
