@@ -94,7 +94,6 @@ pub use workspace_edit::{
 use nova_dap::hot_swap::{BuildSystem, JdwpRedefiner};
 use nova_scheduler::CancellationToken;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -452,39 +451,6 @@ pub fn goto_definition(
     file: nova_db::FileId,
     position: lsp_types::Position,
 ) -> Option<lsp_types::Location> {
-    // Best-effort MapStruct support: allow "go to definition" from a mapper method
-    // (or `@Mapping(target="...")`) into generated sources when they exist on disk.
-    //
-    // This intentionally does not require the generated sources to be loaded into
-    // Nova's in-memory databases, mirroring IntelliJ-style navigation into
-    // annotation-processor output.
-    let text = db.file_content(file);
-    if looks_like_mapstruct_file(text) {
-        let file_path = db.file_path(file);
-        let offset = position_to_offset(text, position);
-            if let (Some(file_path), Some(offset)) = (file_path, offset) {
-                let root = find_project_root(file_path);
-            if let Ok(targets) = nova_framework_mapstruct::goto_definition_in_source(
-                &root,
-                file_path,
-                text,
-                offset,
-            ) {
-                if let Some(target) = targets.first() {
-                    if let Some(uri) = uri_from_file_path(&target.file) {
-                        let range = std::fs::read_to_string(&target.file)
-                            .ok()
-                            .map(|target_text| {
-                                span_to_lsp_range(&target_text, target.span.start, target.span.end)
-                            })
-                            .unwrap_or_else(zero_range);
-                        return Some(lsp_types::Location { uri, range });
-                    }
-                }
-            }
-        }
-    }
-
     nova_ide::goto_definition(db, file, position)
 }
 
@@ -681,15 +647,6 @@ mod tests {
         assert_eq!(type_hierarchy, Some(&serde_json::Value::Bool(true)));
     }
 }
-
-fn looks_like_mapstruct_file(text: &str) -> bool {
-    // Cheap substring checks before we do any filesystem work.
-    text.contains("@Mapper")
-        || text.contains("@org.mapstruct.Mapper")
-        || text.contains("@Mapping")
-        || text.contains("org.mapstruct")
-}
-
 fn position_to_offset(text: &str, position: lsp_types::Position) -> Option<usize> {
     text_pos::byte_offset(text, position)
 }
@@ -803,9 +760,4 @@ fn looks_like_project_root(root: &Path) -> bool {
     }
 
     false
-}
-
-fn uri_from_file_path(path: &Path) -> Option<lsp_types::Uri> {
-    let url = url::Url::from_file_path(path).ok()?;
-    lsp_types::Uri::from_str(url.as_str()).ok()
 }

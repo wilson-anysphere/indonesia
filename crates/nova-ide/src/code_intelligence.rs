@@ -6934,6 +6934,31 @@ pub fn goto_definition(db: &dyn Database, file: FileId, position: Position) -> O
     let text_index = TextIndex::new(text);
     let offset = text_index.position_to_offset(position)?;
 
+    // Best-effort MapStruct support: allow "go to definition" from a mapper method
+    // (or `@Mapping(target="...")`) into generated sources when they exist on disk.
+    //
+    // This intentionally does not require the generated sources to be loaded into
+    // Nova's in-memory databases, mirroring IntelliJ-style navigation into
+    // annotation-processor output.
+    if looks_like_mapstruct_file(text) {
+        if let Some(path) = db.file_path(file) {
+            if path.extension().and_then(|e| e.to_str()) == Some("java") {
+                let root = crate::framework_cache::project_root_for_path(path);
+                if let Ok(targets) = nova_framework_mapstruct::goto_definition_in_source(
+                    &root, path, text, offset,
+                ) {
+                    if let Some(target) = targets.first() {
+                        if let Some(loc) =
+                            location_from_path_and_span(db, &target.file, target.span)
+                        {
+                            return Some(loc);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Spring config navigation from `@Value("${foo.bar}")` -> config definition.
     if db
         .file_path(file)
@@ -7020,6 +7045,14 @@ pub fn goto_definition(db: &dyn Database, file: FileId, position: Position) -> O
         uri: resolved.def.uri,
         range: def_index.span_to_lsp_range(resolved.def.name_span),
     })
+}
+
+fn looks_like_mapstruct_file(text: &str) -> bool {
+    // Cheap substring checks before we do any filesystem work.
+    text.contains("@Mapper")
+        || text.contains("@org.mapstruct.Mapper")
+        || text.contains("@Mapping")
+        || text.contains("org.mapstruct")
 }
 
 pub fn find_references(
