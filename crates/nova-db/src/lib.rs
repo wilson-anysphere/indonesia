@@ -455,10 +455,10 @@ mod tests {
 pub mod salsa;
 
 pub use salsa::{
-    catch_cancelled, ArcEq, Database as SalsaDatabase, NovaDatabase, NovaDiagnostics, NovaFlow,
-    NovaHir, NovaIde, NovaIndexing, NovaInputs, NovaResolve, NovaSemantic, NovaSyntax, NovaTypeck,
-    QueryStat, QueryStatReport, QueryStats, QueryStatsReport, RootDatabase as SalsaRootDatabase,
-    Snapshot, SyntaxTree, WorkspaceClassIdMap,
+    catch_cancelled, ArcEq, ClassIdInterner, ClassKey, Database as SalsaDatabase, HasClassInterner,
+    NovaDatabase, NovaDiagnostics, NovaFlow, NovaHir, NovaIde, NovaIndexing, NovaInputs, NovaResolve,
+    NovaSemantic, NovaSyntax, NovaTypeck, QueryStat, QueryStatReport, QueryStats, QueryStatsReport,
+    RootDatabase as SalsaRootDatabase, Snapshot, SyntaxTree, WorkspaceClassIdMap,
 };
 
 pub use persistence::{
