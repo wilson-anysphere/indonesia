@@ -7910,10 +7910,10 @@ fn record_lightweight_expr(
                 spans,
             );
         }
-        Expr::Unary(expr) => record_lightweight_expr(
+        Expr::Unary(unary) => record_lightweight_expr(
             file,
             text,
-            &expr.expr,
+            &unary.expr,
             type_scopes,
             scope_result,
             resolver,
@@ -7921,11 +7921,11 @@ fn record_lightweight_expr(
             references,
             spans,
         ),
-        Expr::Binary(expr) => {
+        Expr::Binary(binary) => {
             record_lightweight_expr(
                 file,
                 text,
-                &expr.lhs,
+                &binary.lhs,
                 type_scopes,
                 scope_result,
                 resolver,
@@ -7936,7 +7936,7 @@ fn record_lightweight_expr(
             record_lightweight_expr(
                 file,
                 text,
-                &expr.rhs,
+                &binary.rhs,
                 type_scopes,
                 scope_result,
                 resolver,
@@ -7945,11 +7945,11 @@ fn record_lightweight_expr(
                 spans,
             );
         }
-        Expr::Instanceof(expr) => {
+        Expr::Instanceof(instanceof) => {
             record_lightweight_expr(
                 file,
                 text,
-                &expr.expr,
+                &instanceof.expr,
                 type_scopes,
                 scope_result,
                 resolver,
@@ -7960,7 +7960,7 @@ fn record_lightweight_expr(
             record_type_names_in_range(
                 file,
                 text,
-                TextRange::new(expr.ty.range.start, expr.ty.range.end),
+                TextRange::new(instanceof.ty.range.start, instanceof.ty.range.end),
                 type_scopes,
                 scope_result,
                 resolver,
@@ -7969,11 +7969,11 @@ fn record_lightweight_expr(
                 spans,
             );
         }
-        Expr::Assign(expr) => {
+        Expr::Assign(assign) => {
             record_lightweight_expr(
                 file,
                 text,
-                &expr.lhs,
+                &assign.lhs,
                 type_scopes,
                 scope_result,
                 resolver,
@@ -7984,7 +7984,7 @@ fn record_lightweight_expr(
             record_lightweight_expr(
                 file,
                 text,
-                &expr.rhs,
+                &assign.rhs,
                 type_scopes,
                 scope_result,
                 resolver,
@@ -7993,11 +7993,11 @@ fn record_lightweight_expr(
                 spans,
             );
         }
-        Expr::Conditional(expr) => {
+        Expr::Conditional(cond) => {
             record_lightweight_expr(
                 file,
                 text,
-                &expr.condition,
+                &cond.condition,
                 type_scopes,
                 scope_result,
                 resolver,
@@ -8008,7 +8008,7 @@ fn record_lightweight_expr(
             record_lightweight_expr(
                 file,
                 text,
-                &expr.then_expr,
+                &cond.then_expr,
                 type_scopes,
                 scope_result,
                 resolver,
@@ -8019,7 +8019,7 @@ fn record_lightweight_expr(
             record_lightweight_expr(
                 file,
                 text,
-                &expr.else_expr,
+                &cond.else_expr,
                 type_scopes,
                 scope_result,
                 resolver,
