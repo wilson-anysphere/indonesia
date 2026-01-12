@@ -37,6 +37,14 @@ import {
   parseSafeModeReason,
 } from './safeMode';
 import {
+  NOVA_AI_SHOW_EXPLAIN_ERROR_COMMAND,
+  NOVA_AI_SHOW_GENERATE_METHOD_BODY_COMMAND,
+  NOVA_AI_SHOW_GENERATE_TESTS_COMMAND,
+  rewriteNovaAiCodeActionOrCommand,
+  isNovaAiCodeActionOrCommand,
+  type NovaAiShowCommandArgs,
+} from './aiCommands';
+import {
   deriveReleaseUrlFromBaseUrl,
   findOnPath,
   getBinaryVersion,
@@ -127,25 +135,6 @@ function isAiEnabled(): boolean {
 
 function isAiCompletionsEnabled(): boolean {
   return vscode.workspace.getConfiguration('nova').get<boolean>('aiCompletions.enabled', true);
-}
-
-function isAiCodeActionKind(kind: vscode.CodeActionKind | undefined): boolean {
-  const value = kind?.value;
-  return typeof value === 'string' && (value === 'nova.explain' || value.startsWith('nova.ai'));
-}
-
-function isAiCodeActionOrCommand(item: vscode.CodeAction | vscode.Command): boolean {
-  if (isAiCodeActionKind((item as vscode.CodeAction).kind)) {
-    return true;
-  }
-
-  const commandField = (item as vscode.CodeAction | vscode.Command).command as unknown;
-  if (typeof commandField === 'string') {
-    return commandField.startsWith('nova.ai.');
-  }
-
-  const commandName = (commandField as vscode.Command | undefined)?.command;
-  return typeof commandName === 'string' && commandName.startsWith('nova.ai.');
 }
 
 function clearAiCompletionCache(): void {
@@ -564,7 +553,7 @@ export async function activate(context: vscode.ExtensionContext) {
         if (!isAiEnabled()) {
           // Hide AI code actions when AI is disabled in settings, even if the
           // server is configured to advertise them.
-          out = result.filter((item) => !isAiCodeActionOrCommand(item));
+          out = result.filter((item) => !isNovaAiCodeActionOrCommand(item));
         }
 
         for (const item of out) {
@@ -590,6 +579,27 @@ export async function activate(context: vscode.ExtensionContext) {
             command: SAFE_DELETE_WITH_PREVIEW_COMMAND,
             arguments: [data],
           };
+        }
+
+        for (const item of out) {
+          const rewritten = rewriteNovaAiCodeActionOrCommand(item);
+          if (!rewritten) {
+            continue;
+          }
+
+          if (item instanceof vscode.CodeAction) {
+            const priorCommand = item.command;
+            const title = priorCommand?.title ?? item.title;
+            item.command = {
+              title,
+              command: rewritten.command,
+              arguments: rewritten.args,
+            };
+          } else {
+            const command = item as vscode.Command;
+            command.command = rewritten.command;
+            command.arguments = rewritten.args;
+          }
         }
 
         return out;
@@ -1675,6 +1685,223 @@ export async function activate(context: vscode.ExtensionContext) {
     }),
   );
 
+  let aiResultCounter = 0;
+
+  const openAiDocs = async (): Promise<void> => {
+    try {
+      const readmeUri = vscode.Uri.joinPath(context.extensionUri, 'README.md');
+      const doc = await vscode.workspace.openTextDocument(readmeUri);
+      await vscode.window.showTextDocument(doc, { preview: true });
+    } catch (err) {
+      const message = formatError(err);
+      void vscode.window.showErrorMessage(`Nova: failed to open AI docs: ${message}`);
+    }
+  };
+
+  const showCopyToClipboardAction = async (label: string, text: string): Promise<void> => {
+    if (!text.trim()) {
+      return;
+    }
+    const picked = await vscode.window.showInformationMessage(`Nova AI: ${label} ready.`, 'Copy to Clipboard');
+    if (picked !== 'Copy to Clipboard') {
+      return;
+    }
+
+    try {
+      await vscode.env.clipboard.writeText(text);
+      void vscode.window.showInformationMessage('Nova AI: Copied to clipboard.');
+    } catch (err) {
+      const message = formatError(err);
+      void vscode.window.showErrorMessage(`Nova AI: failed to copy to clipboard: ${message}`);
+    }
+  };
+
+  const openUntitledAiDocument = async (opts: {
+    title: string;
+    extension: string;
+    languageId: string;
+    content: string;
+    viewColumn?: vscode.ViewColumn;
+  }): Promise<vscode.TextDocument> => {
+    aiResultCounter += 1;
+    const uri = vscode.Uri.parse(`untitled:${opts.title} (${aiResultCounter}).${opts.extension}`);
+    const doc = await vscode.workspace.openTextDocument(uri);
+    const typed = await vscode.languages.setTextDocumentLanguage(doc, opts.languageId);
+    const edit = new vscode.WorkspaceEdit();
+    edit.insert(typed.uri, new vscode.Position(0, 0), opts.content);
+    await vscode.workspace.applyEdit(edit);
+    await vscode.window.showTextDocument(typed, { preview: false, viewColumn: opts.viewColumn ?? vscode.ViewColumn.Beside });
+    return typed;
+  };
+
+  const runAiLspExecuteCommand = async (
+    args: NovaAiShowCommandArgs,
+    progressTitle: string,
+  ): Promise<string> => {
+    const c = await requireClient();
+    const lspArgs = Array.isArray(args.lspArguments) ? args.lspArguments : [];
+
+    const result = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: progressTitle, cancellable: true },
+      async (_progress, token) => {
+        // Best-effort cancellation: vscode-languageclient will send $/cancelRequest when `token` is cancelled.
+        return await c.sendRequest(
+          'workspace/executeCommand',
+          {
+            command: args.lspCommand,
+            arguments: lspArgs,
+          },
+          token,
+        );
+      },
+    );
+
+    return normalizeAiResult(result);
+  };
+
+  const handleAiNotConfigured = async (): Promise<void> => {
+    const picked = await vscode.window.showErrorMessage(
+      'Nova AI is not configured. Configure an AI provider for nova-lsp (e.g. via NOVA_AI_PROVIDER / NOVA_AI_API_KEY) and restart the language server.',
+      'Open Settings',
+      'Open AI docs',
+    );
+    if (picked === 'Open Settings') {
+      await vscode.commands.executeCommand('workbench.action.openSettings', 'nova.ai');
+    } else if (picked === 'Open AI docs') {
+      await openAiDocs();
+    }
+  };
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(NOVA_AI_SHOW_EXPLAIN_ERROR_COMMAND, async (payload: unknown) => {
+      if (!payload || typeof payload !== 'object') {
+        void vscode.window.showInformationMessage('Nova AI: Run "Explain this error" from the code action menu.');
+        return;
+      }
+
+      const args = payload as NovaAiShowCommandArgs;
+      if (typeof args.lspCommand !== 'string') {
+        void vscode.window.showInformationMessage('Nova AI: Run "Explain this error" from the code action menu.');
+        return;
+      }
+
+      try {
+        const text = await runAiLspExecuteCommand(args, 'Nova AI: Explaining error…');
+        if (!text.trim()) {
+          void vscode.window.showInformationMessage('Nova AI: No explanation returned.');
+          return;
+        }
+
+        const doc = await openUntitledAiDocument({
+          title: 'Nova AI - Explain Error',
+          extension: 'md',
+          languageId: 'markdown',
+          content: text,
+          viewColumn: vscode.ViewColumn.Beside,
+        });
+
+        try {
+          await vscode.commands.executeCommand('markdown.showPreviewToSide', doc.uri);
+        } catch {
+          // Best-effort: fall back to the markdown source view if the preview is unavailable.
+        }
+
+        void showCopyToClipboardAction('Explain Error', text);
+      } catch (err) {
+        if (isAiNotConfiguredError(err)) {
+          await handleAiNotConfigured();
+          return;
+        }
+        const message = formatError(err);
+        void vscode.window.showErrorMessage(`Nova AI: explain error failed: ${message}`);
+      }
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(NOVA_AI_SHOW_GENERATE_METHOD_BODY_COMMAND, async (payload: unknown) => {
+      if (!payload || typeof payload !== 'object') {
+        void vscode.window.showInformationMessage(
+          'Nova AI: Run "Generate method body with AI" from the code action menu.',
+        );
+        return;
+      }
+
+      const args = payload as NovaAiShowCommandArgs;
+      if (typeof args.lspCommand !== 'string') {
+        void vscode.window.showInformationMessage(
+          'Nova AI: Run "Generate method body with AI" from the code action menu.',
+        );
+        return;
+      }
+
+      try {
+        const text = await runAiLspExecuteCommand(args, 'Nova AI: Generating method body…');
+        if (!text.trim()) {
+          void vscode.window.showInformationMessage('Nova AI: No method body returned.');
+          return;
+        }
+
+        await openUntitledAiDocument({
+          title: 'Nova AI - Generate Method Body',
+          extension: 'java',
+          languageId: 'java',
+          content: text,
+          viewColumn: vscode.ViewColumn.Beside,
+        });
+
+        void showCopyToClipboardAction('Generate Method Body', text);
+      } catch (err) {
+        if (isAiNotConfiguredError(err)) {
+          await handleAiNotConfigured();
+          return;
+        }
+        const message = formatError(err);
+        void vscode.window.showErrorMessage(`Nova AI: generate method body failed: ${message}`);
+      }
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(NOVA_AI_SHOW_GENERATE_TESTS_COMMAND, async (payload: unknown) => {
+      if (!payload || typeof payload !== 'object') {
+        void vscode.window.showInformationMessage('Nova AI: Run "Generate tests with AI" from the code action menu.');
+        return;
+      }
+
+      const args = payload as NovaAiShowCommandArgs;
+      if (typeof args.lspCommand !== 'string') {
+        void vscode.window.showInformationMessage('Nova AI: Run "Generate tests with AI" from the code action menu.');
+        return;
+      }
+
+      try {
+        const text = await runAiLspExecuteCommand(args, 'Nova AI: Generating tests…');
+        if (!text.trim()) {
+          void vscode.window.showInformationMessage('Nova AI: No tests returned.');
+          return;
+        }
+
+        await openUntitledAiDocument({
+          title: 'Nova AI - Generate Tests',
+          extension: 'java',
+          languageId: 'java',
+          content: text,
+          viewColumn: vscode.ViewColumn.Beside,
+        });
+
+        void showCopyToClipboardAction('Generate Tests', text);
+      } catch (err) {
+        if (isAiNotConfiguredError(err)) {
+          await handleAiNotConfigured();
+          return;
+        }
+        const message = formatError(err);
+        void vscode.window.showErrorMessage(`Nova AI: generate tests failed: ${message}`);
+      }
+    }),
+  );
+
   context.subscriptions.push(
     vscode.commands.registerCommand(SAFE_DELETE_WITH_PREVIEW_COMMAND, async (payload: unknown) => {
       if (!isSafeDeletePreviewPayload(payload)) {
@@ -2516,4 +2743,71 @@ function formatMemoryTooltip(
   }
 
   return tooltip;
+}
+
+function isAiNotConfiguredError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') {
+    return false;
+  }
+  const code = (err as { code?: unknown }).code;
+  if (code === -32600) {
+    return true;
+  }
+
+  const message = formatError(err).toLowerCase();
+  return message.includes('ai is not configured');
+}
+
+function normalizeAiResult(result: unknown): string {
+  if (typeof result === 'string') {
+    const trimmed = result.trim();
+    if (!trimmed) {
+      return '';
+    }
+
+    // nova-lsp AI endpoints return "JSON string" results. In practice this can mean:
+    // - a normal JSON string value (already decoded by the LSP client), or
+    // - a string containing JSON (e.g. "\"foo\"" from serde_json::to_string).
+    //
+    // Best-effort: attempt to JSON.parse and unwrap common shapes so users see the
+    // underlying text.
+    const looksLikeJson =
+      trimmed.startsWith('{') || trimmed.startsWith('[') || (trimmed.startsWith('"') && trimmed.endsWith('"'));
+    if (looksLikeJson) {
+      try {
+        const parsed: unknown = JSON.parse(trimmed);
+        if (typeof parsed === 'string') {
+          return parsed;
+        }
+        if (parsed && typeof parsed === 'object') {
+          const obj = parsed as Record<string, unknown>;
+          const preferred =
+            obj.explanation ?? obj.markdown ?? obj.text ?? obj.snippet ?? obj.code ?? obj.result ?? obj.content;
+          if (typeof preferred === 'string') {
+            return preferred;
+          }
+          return JSON.stringify(parsed, null, 2);
+        }
+        return String(parsed);
+      } catch {
+        // Fall through to returning the raw server string.
+      }
+    }
+
+    return result;
+  }
+
+  if (result === undefined || result === null) {
+    return '';
+  }
+
+  if (typeof result === 'object') {
+    try {
+      return JSON.stringify(result, null, 2);
+    } catch {
+      return String(result);
+    }
+  }
+
+  return String(result);
 }

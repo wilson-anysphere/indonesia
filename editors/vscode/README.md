@@ -296,6 +296,31 @@ Changing these settings requires restarting the language server; the extension p
 - `nova.aiCompletions.requestTimeoutMs` (number): max wall-clock time (ms) to poll `nova/completion/more` for async AI completions.
 - `nova.aiCompletions.pollIntervalMs` (number): base polling interval (ms). Nova uses a short exponential backoff derived from this value.
 
+#### AI code actions (Explain error / Generate tests / Generate method body)
+
+Nova AI code actions are implemented as LSP `workspace/executeCommand` calls (e.g. `nova.ai.explainError`).
+VS Code does **not** automatically display the returned value from `workspace/executeCommand`, so the
+extension intercepts these AI code actions client-side and surfaces the returned text in an editor:
+
+- **Explain this error** opens a Markdown document (with preview) titled like **“Nova AI - Explain Error”**.
+- **Generate method body with AI** opens an untitled Java document titled like **“Nova AI - Generate Method Body”**.
+- **Generate tests with AI** opens an untitled Java document titled like **“Nova AI - Generate Tests”**.
+
+Each UI includes a **Copy to Clipboard** action for convenience.
+
+#### Configuring AI
+
+Nova AI features require configuring `nova-lsp` with an AI provider. The current (legacy) wiring uses
+environment variables read by the `nova-lsp` process, for example:
+
+- `NOVA_AI_PROVIDER`
+- `NOVA_AI_API_KEY`
+- `NOVA_AI_MODEL` (optional; defaults to `"default"`)
+
+These environment variables must be present in the VS Code environment (e.g. set them in your shell
+before launching VS Code, or configure them via your OS / remote environment) and require restarting
+the language server.
+
 ### Debugging
 
 - `nova.dap.path` (string | null): override the `nova-dap` binary path. Supports `~` and `${workspaceFolder}`; relative paths are resolved against the target workspace folder. If unset, Nova will look on `$PATH` and then fall back to managed downloads (controlled by `nova.download.mode`).
