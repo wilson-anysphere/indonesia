@@ -90,7 +90,9 @@ pub fn extract_method_code_action(source: &str, uri: Uri, lsp_range: Range) -> O
 ///
 /// Today this provides quick-fixes:
 /// - `unresolved-type` → `Create class '<Name>'` / `Import <fqn>` / `Use fully qualified name '<fqn>'`
-/// - `unresolved-name` → `Create local variable '<name>'` / `Create field '<name>'`
+/// - `unresolved-name` →
+///   - lowercase identifiers: `Create local variable '<name>'` / `Create field '<name>'`
+///   - uppercase identifiers: `Import <fqn>` / `Use fully qualified name '<fqn>'`
 /// - `unresolved-method` / `UNRESOLVED_REFERENCE` → `Create method '<name>'`
 /// - `unresolved-field` → `Create field '<name>'`
 /// - `FLOW_UNREACHABLE` → `Remove unreachable code`
@@ -268,27 +270,60 @@ fn create_unresolved_name_quick_fixes(
     let Some(name) = extract_unresolved_name(&diagnostic.message, source, &diagnostic.range) else {
         return Vec::new();
     };
-    if !looks_like_value_identifier(&name) {
-        return Vec::new();
-    }
 
-    let mut actions = Vec::new();
+    // Lowercase identifiers are assumed to be missing values (locals/fields).
+    if looks_like_value_identifier(&name) {
+        let mut actions = Vec::new();
 
-    // Create local variable: insert before the current line (line containing the unresolved name).
-    if let Some(start_offset) = crate::text::position_to_offset(source, diagnostic.range.start) {
-        if let Some((line_start, indent)) = line_start_and_indent(source, start_offset) {
-            let line_ending = if source.contains("\r\n") {
-                "\r\n"
-            } else {
-                "\n"
-            };
-            let new_text = format!("{indent}Object {name} = null;{line_ending}");
+        // Create local variable: insert before the current line (line containing the unresolved name).
+        if let Some(start_offset) = crate::text::position_to_offset(source, diagnostic.range.start) {
+            if let Some((line_start, indent)) = line_start_and_indent(source, start_offset) {
+                let line_ending = if source.contains("\r\n") {
+                    "\r\n"
+                } else {
+                    "\n"
+                };
+                let new_text = format!("{indent}Object {name} = null;{line_ending}");
 
-            let insert_pos = crate::text::offset_to_position(source, line_start);
+                let insert_pos = crate::text::offset_to_position(source, line_start);
+                let insert_range = Range {
+                    start: insert_pos,
+                    end: insert_pos,
+                };
+
+                let mut changes = HashMap::new();
+                changes.insert(
+                    uri.clone(),
+                    vec![TextEdit {
+                        range: insert_range,
+                        new_text,
+                    }],
+                );
+
+                actions.push(CodeAction {
+                    title: format!("Create local variable '{name}'"),
+                    kind: Some(CodeActionKind::QUICKFIX),
+                    edit: Some(WorkspaceEdit {
+                        changes: Some(changes),
+                        document_changes: None,
+                        change_annotations: None,
+                    }),
+                    diagnostics: Some(vec![diagnostic.clone()]),
+                    ..CodeAction::default()
+                });
+            }
+        }
+
+        // Create field: insert near end of file before final `}` with best-effort indentation.
+        if source.rfind('}').is_some() {
+            let (insert_offset, indent) = insertion_point_for_member(source);
+            let insert_pos = crate::text::offset_to_position(source, insert_offset);
             let insert_range = Range {
                 start: insert_pos,
                 end: insert_pos,
             };
+            let prefix = insertion_prefix(source, insert_offset);
+            let new_text = format!("{prefix}{indent}private Object {name};\n");
 
             let mut changes = HashMap::new();
             changes.insert(
@@ -300,7 +335,7 @@ fn create_unresolved_name_quick_fixes(
             );
 
             actions.push(CodeAction {
-                title: format!("Create local variable '{name}'"),
+                title: format!("Create field '{name}'"),
                 kind: Some(CodeActionKind::QUICKFIX),
                 edit: Some(WorkspaceEdit {
                     changes: Some(changes),
@@ -311,42 +346,67 @@ fn create_unresolved_name_quick_fixes(
                 ..CodeAction::default()
             });
         }
+
+        return actions;
     }
 
-    // Create field: insert near end of file before final `}` with best-effort indentation.
-    if source.rfind('}').is_some() {
-        let (insert_offset, indent) = insertion_point_for_member(source);
-        let insert_pos = crate::text::offset_to_position(source, insert_offset);
-        let insert_range = Range {
-            start: insert_pos,
-            end: insert_pos,
-        };
-        let prefix = insertion_prefix(source, insert_offset);
-        let new_text = format!("{prefix}{indent}private Object {name};\n");
+    // Uppercase identifiers are often missing types used as qualifiers in expression position
+    // (e.g. `List.of(...)`).
+    if looks_like_type_identifier(&name) {
+        // Avoid offering import/FQN fixes if the span already contains a qualification
+        // (e.g. `java.util.List`).
+        if source_range_text(source, &diagnostic.range)
+            .is_some_and(|snippet| snippet.contains('.'))
+        {
+            return Vec::new();
+        }
 
-        let mut changes = HashMap::new();
-        changes.insert(
-            uri.clone(),
-            vec![TextEdit {
-                range: insert_range,
-                new_text,
-            }],
-        );
+        let candidates = crate::quickfix::import_candidates(&name);
+        let mut actions = Vec::new();
 
-        actions.push(CodeAction {
-            title: format!("Create field '{name}'"),
-            kind: Some(CodeActionKind::QUICKFIX),
-            edit: Some(WorkspaceEdit {
-                changes: Some(changes),
-                document_changes: None,
-                change_annotations: None,
-            }),
-            diagnostics: Some(vec![diagnostic.clone()]),
-            ..CodeAction::default()
-        });
+        for fqn in candidates {
+            if let Some(import_edit) = crate::quickfix::java_import_text_edit(source, &fqn) {
+                let mut changes = HashMap::new();
+                changes.insert(uri.clone(), vec![import_edit]);
+                actions.push(CodeAction {
+                    title: format!("Import {fqn}"),
+                    kind: Some(CodeActionKind::QUICKFIX),
+                    edit: Some(WorkspaceEdit {
+                        changes: Some(changes),
+                        document_changes: None,
+                        change_annotations: None,
+                    }),
+                    diagnostics: Some(vec![diagnostic.clone()]),
+                    ..CodeAction::default()
+                });
+            }
+
+            let (start, end) = normalize_range(&diagnostic.range);
+            let mut changes = HashMap::new();
+            changes.insert(
+                uri.clone(),
+                vec![TextEdit {
+                    range: Range { start, end },
+                    new_text: fqn.clone(),
+                }],
+            );
+            actions.push(CodeAction {
+                title: format!("Use fully qualified name '{fqn}'"),
+                kind: Some(CodeActionKind::QUICKFIX),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(changes),
+                    document_changes: None,
+                    change_annotations: None,
+                }),
+                diagnostics: Some(vec![diagnostic.clone()]),
+                ..CodeAction::default()
+            });
+        }
+
+        return actions;
     }
 
-    actions
+    Vec::new()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1020,6 +1080,16 @@ fn looks_like_value_identifier(name: &str) -> bool {
     name.as_bytes()
         .first()
         .is_some_and(|b| matches!(b, b'a'..=b'z'))
+}
+
+fn looks_like_type_identifier(name: &str) -> bool {
+    if !is_java_identifier(name) {
+        return false;
+    }
+
+    name.as_bytes()
+        .first()
+        .is_some_and(|b| matches!(b, b'A'..=b'Z'))
 }
 
 fn parse_type_mismatch(message: &str) -> Option<(String, String)> {

@@ -63,4 +63,5 @@ mod type_mismatch_diagnostic_quick_fixes;
 mod return_mismatch_diagnostic_quick_fixes;
 mod unicode_lsp_positions;
 mod unresolved_imports;
+mod unresolved_name_type_like_diagnostic_quick_fixes;
 mod unused_imports;
