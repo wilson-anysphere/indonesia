@@ -4,6 +4,7 @@ import type { LanguageClient } from 'vscode-languageclient/node';
 import { extractMainClassFromCommandArgs, extractTestIdFromCommandArgs } from './serverCommandArgs';
 import { debugTestById } from './testDebug';
 import { formatError } from './safeMode';
+import { routeWorkspaceFolderUri } from './workspaceRouting';
 
 export type NovaRequest = <R>(
   method: string,
@@ -116,10 +117,30 @@ async function pickWorkspaceFolder(
 async function resolveWorkspaceFolderForActiveContext(
   workspaces: readonly vscode.WorkspaceFolder[],
   placeHolder: string,
+  opts?: { commandId?: string; args?: readonly unknown[] },
 ): Promise<vscode.WorkspaceFolder | undefined> {
-  const activeUri = vscode.window.activeTextEditor?.document.uri;
-  if (activeUri) {
-    const folder = vscode.workspace.getWorkspaceFolder(activeUri);
+  const commandId = opts?.commandId;
+  const args = opts?.args;
+  const activeDocumentUri = vscode.window.activeTextEditor?.document.uri.toString();
+  const routedWorkspaceKey = routeWorkspaceFolderUri({
+    workspaceFolders: workspaces.map((workspace) => ({
+      name: workspace.name,
+      fsPath: workspace.uri.fsPath,
+      uri: workspace.uri.toString(),
+    })),
+    activeDocumentUri,
+    method: 'workspace/executeCommand',
+    params:
+      commandId && Array.isArray(args)
+        ? {
+            command: commandId,
+            arguments: [...args],
+          }
+        : undefined,
+  });
+
+  if (routedWorkspaceKey) {
+    const folder = workspaces.find((workspace) => workspace.uri.toString() === routedWorkspaceKey);
     if (folder) {
       return folder;
     }
@@ -208,7 +229,10 @@ export function registerNovaServerCommands(
 
     // If the server provided a testId (CodeLens / code action), run it directly.
     if (testId) {
-      const workspaceFolder = await resolveWorkspaceFolderForActiveContext(workspaces, 'Select workspace folder');
+      const workspaceFolder = await resolveWorkspaceFolderForActiveContext(workspaces, 'Select workspace folder', {
+        commandId: 'nova.runTest',
+        args,
+      });
       if (!workspaceFolder) {
         return;
       }
@@ -361,7 +385,10 @@ export function registerNovaServerCommands(
 
     const testId = extractTestIdFromCommandArgs(args);
 
-    const workspaceFolder = await resolveWorkspaceFolderForActiveContext(workspaces, 'Select workspace folder');
+    const workspaceFolder = await resolveWorkspaceFolderForActiveContext(workspaces, 'Select workspace folder', {
+      commandId: 'nova.debugTest',
+      args,
+    });
     if (!workspaceFolder) {
       return;
     }
@@ -427,7 +454,7 @@ export function registerNovaServerCommands(
     const desiredMainClass = extractMainClassFromCommandArgs(args);
 
     const workspaces = vscode.workspace.workspaceFolders ?? [];
-    const workspaceFolder = await resolveWorkspaceFolderForActiveContext(workspaces, 'Select workspace folder');
+    const workspaceFolder = await resolveWorkspaceFolderForActiveContext(workspaces, 'Select workspace folder', { commandId, args });
     if (!workspaceFolder) {
       void vscode.window.showErrorMessage('Nova: Open a workspace folder to run or debug a main class.');
       return;
