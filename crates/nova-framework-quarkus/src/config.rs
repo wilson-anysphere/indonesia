@@ -12,8 +12,10 @@ pub fn collect_config_property_names(
 ) -> Vec<String> {
     let mut props = BTreeSet::<String>::new();
 
-    let config_re =
-        Regex::new(r#"@(?:[\w$]+\.)*ConfigProperty\s*\(\s*name\s*=\s*"([^"]+)""#).unwrap();
+    let config_re = Regex::new(
+        r#"@(?:[\w$]+\.)*ConfigProperty\s*\([^)]*\bname\s*=\s*"([^"]+)""#,
+    )
+    .unwrap();
     for src in java_sources {
         for cap in config_re.captures_iter(src) {
             props.insert(cap[1].to_string());

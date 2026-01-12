@@ -272,7 +272,7 @@ fn fingerprint_project_sources(db: &dyn Database, files: &[FileId]) -> u64 {
 fn config_property_prefix_at<'a>(source: &'a str, offset: usize) -> Option<(&'a str, Span)> {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
-        Regex::new(r#"@(?:[\w$]+\.)*ConfigProperty\s*\(\s*name\s*=\s*"([^"]*)""#)
+        Regex::new(r#"@(?:[\w$]+\.)*ConfigProperty\s*\([^)]*\bname\s*=\s*"([^"]*)""#)
             .expect("config property regex must compile")
     });
 
