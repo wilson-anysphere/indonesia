@@ -1453,7 +1453,16 @@ export async function activate(context: vscode.ExtensionContext) {
 
   testController.resolveHandler = async () => {
     try {
-      await refreshTests();
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Window,
+          title: 'Nova: Discovering tests…',
+          cancellable: true,
+        },
+        async (_progress, token) => {
+          await refreshTests(undefined, { token });
+        },
+      );
     } catch (err) {
       const message = formatError(err);
       void vscode.window.showErrorMessage(`Nova: test discovery failed: ${message}`);
