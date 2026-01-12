@@ -421,14 +421,6 @@ fn gradle_classpath_unions_subprojects_when_root_has_no_compile_classpath() {
     let app_dep = root.join("app.jar");
     let lib_dep = root.join("lib.jar");
 
-    let projects = serde_json::json!({
-        "projects": [
-            { "path": ":", "projectDir": root.to_string_lossy() },
-            { "path": ":app", "projectDir": root.join("app").to_string_lossy() },
-            { "path": ":lib", "projectDir": root.join("lib").to_string_lossy() }
-        ]
-    });
-
     let root_payload = serde_json::json!({ "compileClasspath": serde_json::Value::Null });
     let app_payload = serde_json::json!({
         "compileClasspath": [
@@ -443,16 +435,15 @@ fn gradle_classpath_unions_subprojects_when_root_has_no_compile_classpath() {
         ]
     });
 
+    let all_payload = serde_json::json!({
+        "projects": [
+            { "path": ":", "projectDir": root.to_string_lossy(), "config": root_payload.clone() },
+            { "path": ":app", "projectDir": root.join("app").to_string_lossy(), "config": app_payload },
+            { "path": ":lib", "projectDir": root.join("lib").to_string_lossy(), "config": lib_payload },
+        ]
+    });
+
     let mut outputs = HashMap::new();
-    outputs.insert(
-        "printNovaProjects".to_string(),
-        CommandOutput {
-            status: success_status(),
-            stdout: format!("NOVA_PROJECTS_BEGIN\n{projects}\nNOVA_PROJECTS_END\n"),
-            stderr: String::new(),
-            truncated: false,
-        },
-    );
     outputs.insert(
         "printNovaJavaCompileConfig".to_string(),
         CommandOutput {
@@ -463,19 +454,12 @@ fn gradle_classpath_unions_subprojects_when_root_has_no_compile_classpath() {
         },
     );
     outputs.insert(
-        ":app:printNovaJavaCompileConfig".to_string(),
+        "printNovaAllJavaCompileConfigs".to_string(),
         CommandOutput {
             status: success_status(),
-            stdout: format!("NOVA_JSON_BEGIN\n{app_payload}\nNOVA_JSON_END\n"),
-            stderr: String::new(),
-            truncated: false,
-        },
-    );
-    outputs.insert(
-        ":lib:printNovaJavaCompileConfig".to_string(),
-        CommandOutput {
-            status: success_status(),
-            stdout: format!("NOVA_JSON_BEGIN\n{lib_payload}\nNOVA_JSON_END\n"),
+            stdout: format!(
+                "some warning\nNOVA_ALL_JSON_BEGIN\n{all_payload}\nNOVA_ALL_JSON_END\nBUILD SUCCESSFUL\n"
+            ),
             stderr: String::new(),
             truncated: false,
         },
@@ -488,8 +472,21 @@ fn gradle_classpath_unions_subprojects_when_root_has_no_compile_classpath() {
 
     let cp1 = build.classpath(&root, None, &cache).unwrap();
     let cp2 = build.classpath(&root, None, &cache).unwrap();
+    let app_cp = build.classpath(&root, Some(":app"), &cache).unwrap();
 
     assert_eq!(cp1, cp2);
+    assert_eq!(
+        app_cp,
+        Classpath::new(vec![
+            root.join("app")
+                .join("build")
+                .join("classes")
+                .join("java")
+                .join("main"),
+            shared.clone(),
+            app_dep.clone(),
+        ])
+    );
     assert_eq!(
         cp1,
         Classpath::new(vec![
@@ -510,7 +507,7 @@ fn gradle_classpath_unions_subprojects_when_root_has_no_compile_classpath() {
     );
 
     let invocations = runner.invocations();
-    assert_eq!(invocations.len(), 4);
+    assert_eq!(invocations.len(), 2);
     let tasks: Vec<_> = invocations
         .iter()
         .filter_map(|inv| inv.args.last().cloned())
@@ -519,9 +516,85 @@ fn gradle_classpath_unions_subprojects_when_root_has_no_compile_classpath() {
         tasks,
         vec![
             "printNovaJavaCompileConfig".to_string(),
-            "printNovaProjects".to_string(),
-            ":app:printNovaJavaCompileConfig".to_string(),
-            ":lib:printNovaJavaCompileConfig".to_string(),
+            "printNovaAllJavaCompileConfigs".to_string(),
         ]
+    );
+}
+
+#[test]
+fn gradle_java_compile_configs_all_parses_and_populates_cache() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(root.join("app")).unwrap();
+    std::fs::write(root.join("settings.gradle"), "").unwrap();
+    std::fs::write(root.join("build.gradle"), "").unwrap();
+    std::fs::write(root.join("app").join("build.gradle"), "plugins { id 'java' }").unwrap();
+
+    let shared = root.join("shared.jar");
+    let app_dep = root.join("app.jar");
+
+    let all_payload = serde_json::json!({
+        "projects": [
+            {
+                "path": ":",
+                "projectDir": root.to_string_lossy(),
+                "config": { "compileClasspath": serde_json::Value::Null }
+            },
+            {
+                "path": ":app",
+                "projectDir": root.join("app").to_string_lossy(),
+                "config": { "compileClasspath": [shared.to_string_lossy(), app_dep.to_string_lossy()] }
+            }
+        ]
+    });
+
+    let mut outputs = HashMap::new();
+    outputs.insert(
+        "printNovaAllJavaCompileConfigs".to_string(),
+        CommandOutput {
+            status: success_status(),
+            stdout: format!("some noise\nNOVA_ALL_JSON_BEGIN\n{all_payload}\nNOVA_ALL_JSON_END\n"),
+            stderr: String::new(),
+            truncated: false,
+        },
+    );
+
+    let runner = Arc::new(RoutingCommandRunner::new(outputs));
+    let cache_dir = tmp.path().join("cache");
+    let cache = BuildCache::new(&cache_dir);
+    let build = GradleBuild::with_runner(GradleConfig::default(), runner.clone());
+
+    let configs = build
+        .java_compile_configs_all(&root, &cache)
+        .expect("batch java compile configs");
+
+    let app_cfg = configs
+        .iter()
+        .find(|(path, _)| path == ":app")
+        .map(|(_, cfg)| cfg)
+        .expect("app cfg");
+    assert_eq!(
+        app_cfg.compile_classpath,
+        vec![
+            root.join("app")
+                .join("build")
+                .join("classes")
+                .join("java")
+                .join("main"),
+            shared.clone(),
+            app_dep.clone(),
+        ]
+    );
+
+    // Ensure the batch method populated the per-module cache (no extra Gradle invocations).
+    let _ = build
+        .java_compile_config(&root, Some(":app"), &cache)
+        .expect("cached per-project config");
+
+    let invocations = runner.invocations();
+    assert_eq!(invocations.len(), 1);
+    assert_eq!(
+        invocations[0].args.last().cloned(),
+        Some("printNovaAllJavaCompileConfigs".to_string())
     );
 }

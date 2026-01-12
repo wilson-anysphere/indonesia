@@ -17,6 +17,10 @@ const NOVA_JSON_BEGIN: &str = "NOVA_JSON_BEGIN";
 const NOVA_JSON_END: &str = "NOVA_JSON_END";
 const NOVA_GRADLE_TASK: &str = "printNovaJavaCompileConfig";
 
+const NOVA_ALL_JSON_BEGIN: &str = "NOVA_ALL_JSON_BEGIN";
+const NOVA_ALL_JSON_END: &str = "NOVA_ALL_JSON_END";
+const NOVA_GRADLE_ALL_TASK: &str = "printNovaAllJavaCompileConfigs";
+
 const NOVA_APT_BEGIN: &str = "NOVA_APT_BEGIN";
 const NOVA_APT_END: &str = "NOVA_APT_END";
 const NOVA_GRADLE_APT_TASK: &str = "printNovaAnnotationProcessing";
@@ -125,6 +129,97 @@ impl GradleBuild {
         Ok(Classpath::new(cfg.compile_classpath))
     }
 
+    /// Fetch Java compile configs for all Gradle subprojects in a single Gradle invocation.
+    ///
+    /// On success, this also populates the build cache for each project path so subsequent
+    /// per-module `java_compile_config(project_path=Some(..))` calls become cache hits.
+    pub fn java_compile_configs_all(
+        &self,
+        project_root: &Path,
+        cache: &BuildCache,
+    ) -> Result<Vec<(String, JavaCompileConfig)>> {
+        let fingerprint = gradle_build_fingerprint(project_root)?;
+
+        let (program, args, output) = self.run_print_all_java_compile_configs(project_root)?;
+        if !output.status.success() {
+            return Err(BuildError::CommandFailed {
+                tool: "gradle",
+                command: format_command(&program, &args),
+                code: output.status.code(),
+                stdout: output.stdout,
+                stderr: output.stderr,
+                output_truncated: output.truncated,
+            });
+        }
+
+        let combined = output.combined();
+        let parsed = parse_gradle_all_java_compile_configs_output(&combined)?;
+
+        // Sort to keep results deterministic even if Gradle emits projects in a different order.
+        let mut projects = parsed.projects;
+        projects.sort_by(|a, b| a.path.cmp(&b.path));
+
+        // Batch update the cache in a single write.
+        let mut data = cache
+            .load(project_root, BuildSystemKind::Gradle, &fingerprint)?
+            .unwrap_or_default();
+
+        // Also refresh cached project directories (used by other helpers).
+        let mut cached_projects: Vec<CachedProjectInfo> = projects
+            .iter()
+            .map(|p| CachedProjectInfo {
+                path: p.path.clone(),
+                dir: PathBuf::from(p.project_dir.clone()),
+            })
+            .collect();
+        cached_projects.sort_by(|a, b| a.path.cmp(&b.path));
+        cached_projects.dedup_by(|a, b| a.path == b.path);
+        data.projects = Some(cached_projects);
+
+        let mut out = Vec::new();
+        for project in projects {
+            let project_dir = PathBuf::from(project.project_dir);
+            let main_output_fallback = project_dir
+                .join("build")
+                .join("classes")
+                .join("java")
+                .join("main");
+            let test_output_fallback = gradle_test_output_dir_from_main(&main_output_fallback);
+
+            let mut config = normalize_gradle_java_compile_config(
+                project.config,
+                main_output_fallback,
+                test_output_fallback,
+            );
+            if config.main_source_roots.is_empty() {
+                config.main_source_roots = collect_source_roots(&project_dir, "main");
+            }
+            if config.test_source_roots.is_empty() {
+                config.test_source_roots = collect_source_roots(&project_dir, "test");
+            }
+
+            // Root project path can't be used as a task prefix; callers use `None` instead.
+            let module_key = if project.path == ":" {
+                "<root>"
+            } else {
+                project.path.as_str()
+            };
+
+            let module = data.modules.entry(module_key.to_string()).or_default();
+            module.java_compile_config = Some(config.clone());
+            // Keep populating the legacy classpath field for older readers.
+            module.classpath = Some(config.compile_classpath.clone());
+
+            out.push((project.path, config));
+        }
+
+        cache.store(project_root, BuildSystemKind::Gradle, &fingerprint, &data)?;
+
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out.dedup_by(|a, b| a.0 == b.0);
+        Ok(out)
+    }
+
     pub fn java_compile_config(
         &self,
         project_root: &Path,
@@ -194,17 +289,30 @@ impl GradleBuild {
         // expose `compileClasspath`. When querying the workspace-level config
         // (project path == None), fall back to unioning all subprojects.
         if project_path.is_none() && json.compile_classpath.is_none() {
-            let projects = self.projects(project_root, cache)?;
+            // Prefer the batch helper task which fetches all subproject configs in a single
+            // Gradle invocation.
+            let union = match self.java_compile_configs_all(project_root, cache) {
+                Ok(configs) => JavaCompileConfig::union(
+                    configs
+                        .into_iter()
+                        .filter(|(path, _)| path != ":")
+                        .map(|(_, cfg)| cfg),
+                ),
+                Err(_) => {
+                    // Backwards compatibility: fall back to the older multi-invocation path.
+                    let projects = self.projects(project_root, cache)?;
 
-            let mut configs = Vec::new();
-            for project in projects.into_iter().filter(|p| p.path != ":") {
-                configs.push(self.java_compile_config(
-                    project_root,
-                    Some(project.path.as_str()),
-                    cache,
-                )?);
-            }
-            let union = JavaCompileConfig::union(configs);
+                    let mut configs = Vec::new();
+                    for project in projects.into_iter().filter(|p| p.path != ":") {
+                        configs.push(self.java_compile_config(
+                            project_root,
+                            Some(project.path.as_str()),
+                            cache,
+                        )?);
+                    }
+                    JavaCompileConfig::union(configs)
+                }
+            };
 
             cache.update_module(
                 project_root,
@@ -459,6 +567,26 @@ impl GradleBuild {
         args.push("--init-script".into());
         args.push(init_script.to_string_lossy().to_string());
         args.push("printNovaProjects".into());
+
+        let output = self.runner.run(project_root, &gradle, &args);
+        let _ = std::fs::remove_file(&init_script);
+        Ok((gradle, args, output?))
+    }
+
+    fn run_print_all_java_compile_configs(
+        &self,
+        project_root: &Path,
+    ) -> Result<(PathBuf, Vec<String>, CommandOutput)> {
+        let gradle = self.gradle_executable(project_root);
+        let init_script = write_init_script(project_root)?;
+
+        let mut args: Vec<String> = Vec::new();
+        args.push("--no-daemon".into());
+        args.push("--console=plain".into());
+        args.push("-q".into());
+        args.push("--init-script".into());
+        args.push(init_script.to_string_lossy().to_string());
+        args.push(NOVA_GRADLE_ALL_TASK.to_string());
 
         let output = self.runner.run(project_root, &gradle, &args);
         let _ = std::fs::remove_file(&init_script);
@@ -1031,6 +1159,14 @@ pub fn parse_gradle_projects_output(output: &str) -> Result<Vec<GradleProjectInf
     Ok(projects)
 }
 
+fn parse_gradle_all_java_compile_configs_output(output: &str) -> Result<GradleAllJavaCompileConfigsJson> {
+    let json = extract_sentinel_block(output, NOVA_ALL_JSON_BEGIN, NOVA_ALL_JSON_END).ok_or_else(
+        || BuildError::Parse("failed to locate Gradle all-project Java compile config JSON block".into()),
+    )?;
+
+    serde_json::from_str(json.trim()).map_err(|e| BuildError::Parse(e.to_string()))
+}
+
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GradleAnnotationProcessingJson {
@@ -1524,6 +1660,19 @@ struct GradleProjectJson {
     project_dir: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct GradleAllJavaCompileConfigsJson {
+    projects: Vec<GradleAllJavaCompileConfigProjectJson>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GradleAllJavaCompileConfigProjectJson {
+    path: String,
+    #[serde(rename = "projectDir")]
+    project_dir: String,
+    config: GradleJavaCompileConfigJson,
+}
+
 fn write_init_script(project_root: &Path) -> Result<PathBuf> {
     let mut path = std::env::temp_dir();
     let token = std::time::SystemTime::now()
@@ -1568,107 +1717,113 @@ def novaJavaCompileModel = { task ->
     return [annotationProcessorPath: apPath, compilerArgs: args, generatedSourcesDir: genDir]
 }
 
+def novaJavaCompileConfigPayload = { proj ->
+    def payload = [:]
+    payload.projectPath = proj.path
+    payload.projectDir = proj.projectDir.absolutePath
+
+    def cfg = proj.configurations.findByName("compileClasspath")
+    if (cfg == null) {
+        cfg = proj.configurations.findByName("runtimeClasspath")
+    }
+
+    def testCfg = proj.configurations.findByName("testCompileClasspath")
+    if (testCfg == null) {
+        testCfg = proj.configurations.findByName("testRuntimeClasspath")
+    }
+    if (testCfg == null) {
+        testCfg = proj.configurations.findByName("runtimeClasspath")
+    }
+
+    payload.compileClasspath = (cfg != null) ? cfg.resolve().collect { it.absolutePath } : null
+    payload.testCompileClasspath = (testCfg != null) ? testCfg.resolve().collect { it.absolutePath } : null
+
+    def sourceSets = null
+    try {
+        sourceSets = proj.extensions.findByName("sourceSets")
+    } catch (Exception ignored) {}
+
+     if (sourceSets != null) {
+         def main = sourceSets.findByName("main")
+         def test = sourceSets.findByName("test")
+         payload.mainSourceRoots = (main != null) ? main.java.srcDirs.collect { it.absolutePath } : null
+         payload.testSourceRoots = (test != null) ? test.java.srcDirs.collect { it.absolutePath } : null
+         payload.mainOutputDirs = (main != null) ? main.output.classesDirs.files.collect { it.absolutePath } : null
+         payload.testOutputDirs = (test != null) ? test.output.classesDirs.files.collect { it.absolutePath } : null
+     } else {
+         payload.mainSourceRoots = null
+         payload.testSourceRoots = null
+         payload.mainOutputDirs = null
+         payload.testOutputDirs = null
+     }
+
+     payload.compileCompilerArgs = null
+     payload.testCompilerArgs = null
+     payload.inferModulePath = null
+ 
+     try {
+         def t = proj.tasks.findByName("compileJava")
+         if (t instanceof org.gradle.api.tasks.compile.JavaCompile) {
+             try {
+                 payload.compileCompilerArgs = t.options.compilerArgs
+             } catch (Throwable ignored) {}
+             try {
+                 payload.inferModulePath = t.modularity.inferModulePath
+             } catch (Throwable ignored) {}
+         }
+     } catch (Throwable ignored) {}
+ 
+     try {
+         def t = proj.tasks.findByName("compileTestJava")
+         if (t instanceof org.gradle.api.tasks.compile.JavaCompile) {
+             try {
+                 payload.testCompilerArgs = t.options.compilerArgs
+             } catch (Throwable ignored) {}
+         }
+     } catch (Throwable ignored) {}
+ 
+     def sourceCompat = null
+     def targetCompat = null
+     def toolchainLang = null
+
+    def javaExt = null
+    try {
+        javaExt = proj.extensions.findByName("java")
+    } catch (Exception ignored) {}
+
+    if (javaExt != null) {
+        try {
+            sourceCompat = javaExt.sourceCompatibility?.toString()
+        } catch (Exception ignored) {}
+        try {
+            targetCompat = javaExt.targetCompatibility?.toString()
+        } catch (Exception ignored) {}
+        try {
+            def lv = javaExt.toolchain?.languageVersion
+            if (lv != null && lv.isPresent()) {
+                toolchainLang = lv.get().asInt().toString()
+            }
+        } catch (Exception ignored) {}
+    } else {
+        try {
+            sourceCompat = proj.sourceCompatibility?.toString()
+        } catch (Exception ignored) {}
+        try {
+            targetCompat = proj.targetCompatibility?.toString()
+        } catch (Exception ignored) {}
+    }
+
+    payload.sourceCompatibility = sourceCompat
+    payload.targetCompatibility = targetCompat
+    payload.toolchainLanguageVersion = toolchainLang
+
+    return payload
+}
+
 allprojects { proj ->
     proj.tasks.register("printNovaJavaCompileConfig") {
         doLast {
-            def payload = [:]
-            payload.projectPath = proj.path
-            payload.projectDir = proj.projectDir.absolutePath
-
-            def cfg = proj.configurations.findByName("compileClasspath")
-            if (cfg == null) {
-                cfg = proj.configurations.findByName("runtimeClasspath")
-            }
-
-            def testCfg = proj.configurations.findByName("testCompileClasspath")
-            if (testCfg == null) {
-                testCfg = proj.configurations.findByName("testRuntimeClasspath")
-            }
-            if (testCfg == null) {
-                testCfg = proj.configurations.findByName("runtimeClasspath")
-            }
-
-            payload.compileClasspath = (cfg != null) ? cfg.resolve().collect { it.absolutePath } : null
-            payload.testCompileClasspath = (testCfg != null) ? testCfg.resolve().collect { it.absolutePath } : null
-
-            def sourceSets = null
-            try {
-                sourceSets = proj.extensions.findByName("sourceSets")
-            } catch (Exception ignored) {}
-
-             if (sourceSets != null) {
-                 def main = sourceSets.findByName("main")
-                 def test = sourceSets.findByName("test")
-                 payload.mainSourceRoots = (main != null) ? main.java.srcDirs.collect { it.absolutePath } : null
-                 payload.testSourceRoots = (test != null) ? test.java.srcDirs.collect { it.absolutePath } : null
-                 payload.mainOutputDirs = (main != null) ? main.output.classesDirs.files.collect { it.absolutePath } : null
-                 payload.testOutputDirs = (test != null) ? test.output.classesDirs.files.collect { it.absolutePath } : null
-             } else {
-                 payload.mainSourceRoots = null
-                 payload.testSourceRoots = null
-                 payload.mainOutputDirs = null
-                 payload.testOutputDirs = null
-             }
-
-             payload.compileCompilerArgs = null
-             payload.testCompilerArgs = null
-             payload.inferModulePath = null
- 
-             try {
-                 def t = proj.tasks.findByName("compileJava")
-                 if (t instanceof org.gradle.api.tasks.compile.JavaCompile) {
-                     try {
-                         payload.compileCompilerArgs = t.options.compilerArgs
-                     } catch (Throwable ignored) {}
-                     try {
-                         payload.inferModulePath = t.modularity.inferModulePath
-                     } catch (Throwable ignored) {}
-                 }
-             } catch (Throwable ignored) {}
- 
-             try {
-                 def t = proj.tasks.findByName("compileTestJava")
-                 if (t instanceof org.gradle.api.tasks.compile.JavaCompile) {
-                     try {
-                         payload.testCompilerArgs = t.options.compilerArgs
-                     } catch (Throwable ignored) {}
-                 }
-             } catch (Throwable ignored) {}
- 
-             def sourceCompat = null
-             def targetCompat = null
-             def toolchainLang = null
-
-            def javaExt = null
-            try {
-                javaExt = proj.extensions.findByName("java")
-            } catch (Exception ignored) {}
-
-            if (javaExt != null) {
-                try {
-                    sourceCompat = javaExt.sourceCompatibility?.toString()
-                } catch (Exception ignored) {}
-                try {
-                    targetCompat = javaExt.targetCompatibility?.toString()
-                } catch (Exception ignored) {}
-                try {
-                    def lv = javaExt.toolchain?.languageVersion
-                    if (lv != null && lv.isPresent()) {
-                        toolchainLang = lv.get().asInt().toString()
-                    }
-                } catch (Exception ignored) {}
-            } else {
-                try {
-                    sourceCompat = proj.sourceCompatibility?.toString()
-                } catch (Exception ignored) {}
-                try {
-                    targetCompat = proj.targetCompatibility?.toString()
-                } catch (Exception ignored) {}
-            }
-
-            payload.sourceCompatibility = sourceCompat
-            payload.targetCompatibility = targetCompat
-            payload.toolchainLanguageVersion = toolchainLang
+            def payload = novaJavaCompileConfigPayload(proj)
 
             println("NOVA_JSON_BEGIN")
             println(JsonOutput.toJson(payload))
@@ -1704,6 +1859,19 @@ allprojects { proj ->
                 println("NOVA_PROJECTS_BEGIN")
                 println(json)
                 println("NOVA_PROJECTS_END")
+            }
+        }
+
+        proj.tasks.register("printNovaAllJavaCompileConfigs") {
+            doLast {
+                def projects = proj.rootProject.allprojects.collect { p ->
+                    [path: p.path, projectDir: p.projectDir.absolutePath, config: novaJavaCompileConfigPayload(p)]
+                }
+                projects.sort { a, b -> a.path <=> b.path }
+                def json = JsonOutput.toJson([projects: projects])
+                println("NOVA_ALL_JSON_BEGIN")
+                println(json)
+                println("NOVA_ALL_JSON_END")
             }
         }
     }
