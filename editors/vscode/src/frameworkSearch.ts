@@ -4,6 +4,7 @@ import { uriFromFileLike } from './frameworkDashboard';
 import { formatWebEndpointDescription, formatWebEndpointLabel, webEndpointNavigationTarget, type WebEndpoint } from './frameworks/webEndpoints';
 import { formatError, isSafeModeError } from './safeMode';
 import { utf8ByteOffsetToUtf16Offset } from './utf8';
+import { routeWorkspaceFolderUri } from './workspaceRouting';
 
 export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
 
@@ -86,8 +87,21 @@ export function registerNovaFrameworkSearch(context: vscode.ExtensionContext, re
         return;
       }
 
+      const activeDocumentUri = vscode.window.activeTextEditor?.document.uri.toString();
+      const routedWorkspaceKey = routeWorkspaceFolderUri({
+        workspaceFolders: workspaces.map((workspace) => ({
+          name: workspace.name,
+          fsPath: workspace.uri.fsPath,
+          uri: workspace.uri.toString(),
+        })),
+        activeDocumentUri,
+        method: 'nova.frameworks.search',
+        params: undefined,
+      });
+
       const workspaceFolder =
-        workspaces.length === 1 ? workspaces[0] : await pickWorkspaceFolder(workspaces, 'Select workspace folder');
+        (routedWorkspaceKey ? workspaces.find((w) => w.uri.toString() === routedWorkspaceKey) : undefined) ??
+        (workspaces.length === 1 ? workspaces[0] : await pickWorkspaceFolder(workspaces, 'Select workspace folder'));
       if (!workspaceFolder) {
         return;
       }
