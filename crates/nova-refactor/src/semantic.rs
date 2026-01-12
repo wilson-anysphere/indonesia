@@ -114,6 +114,17 @@ pub trait RefactorDatabase {
 
     fn find_references(&self, symbol: SymbolId) -> Vec<Reference>;
 
+    /// Best-effort type inference helper.
+    ///
+    /// Implementations backed by Nova's Salsa database can provide a richer type display string
+    /// (including generics) than parser-only heuristics.
+    ///
+    /// The default implementation returns `None` to preserve compatibility for lightweight
+    /// databases (e.g. `TextDatabase`, `Index`).
+    fn type_at_offset_display(&self, _file: &FileId, _offset: usize) -> Option<String> {
+        None
+    }
+
     /// Best-effort visibility check.
     ///
     /// The default implementation assumes visibility is preserved.

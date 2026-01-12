@@ -365,6 +365,44 @@ fn extract_variable_use_var_false_emits_explicit_type() {
 }
 
 #[test]
+fn extract_variable_prefers_typeck_type_when_use_var_false() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C {
+  void m() {
+    String x = /*start*/foo()/*end*/;
+  }
+
+  String foo() { return ""; }
+}
+"#;
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "y".into(),
+            use_var: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class C {
+  void m() {
+    String y = foo();
+    String x = y;
+  }
+
+  String foo() { return ""; }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn extract_variable_explicit_types_are_inferred_for_common_expressions() {
     let file = FileId::new("Test.java");
 

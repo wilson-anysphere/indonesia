@@ -319,7 +319,13 @@ pub fn extract_variable(
     let ty = if params.use_var {
         "var".to_string()
     } else {
-        infer_expr_type(&expr)
+        let parser_ty = infer_expr_type(&expr);
+        match best_type_at_range_display(db, &params.file, text, expr_range) {
+            // `Object` is our parser-only fallback for unknown expressions. Only let typeck
+            // override a non-`Object` parser inference when it found something more specific.
+            Some(typeck_ty) if typeck_ty != "Object" || parser_ty == "Object" => typeck_ty,
+            _ => parser_ty,
+        }
     };
 
     let newline = NewlineStyle::detect(text).as_str();
@@ -1026,6 +1032,99 @@ fn current_indent(text: &str, line_start: usize) -> String {
         }
     }
     indent
+}
+
+fn best_type_at_range_display(
+    db: &dyn RefactorDatabase,
+    file: &FileId,
+    text: &str,
+    range: TextRange,
+) -> Option<String> {
+    for offset in type_at_range_offset_candidates(text, range) {
+        let Some(ty) = db.type_at_offset_display(file, offset) else {
+            continue;
+        };
+        let ty = ty.trim();
+        if ty.is_empty() || ty == "<?>" || ty == "<error>" {
+            continue;
+        }
+        return Some(ty.to_string());
+    }
+    None
+}
+
+fn type_at_range_offset_candidates(text: &str, range: TextRange) -> Vec<usize> {
+    let bytes = text.as_bytes();
+    if range.start >= range.end || range.start >= bytes.len() {
+        return Vec::new();
+    }
+
+    let mut start = range.start;
+    let mut end = range.end.min(bytes.len());
+    while start < end && bytes[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    while end > start && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+
+    if start >= end {
+        return Vec::new();
+    }
+
+    let mut candidates: Vec<(usize, u8, usize)> = Vec::new();
+    let mut depth = 0usize;
+    for i in start..end {
+        let b = bytes[i];
+        if !b.is_ascii_whitespace() && !is_java_ident_byte(b) {
+            candidates.push((i, b, depth));
+        }
+
+        match b {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+
+    let mut offsets: Vec<usize> = Vec::new();
+    if let Some(best) = pick_best_punctuation_offset(&candidates) {
+        offsets.push(best);
+    }
+    offsets.push(start);
+    if start + 1 < end {
+        offsets.push(start + 1);
+    }
+    offsets.push(end.saturating_sub(1));
+
+    // De-dup while preserving order.
+    let mut seen: HashSet<usize> = HashSet::new();
+    offsets.retain(|o| seen.insert(*o));
+    offsets
+}
+
+fn pick_best_punctuation_offset(candidates: &[(usize, u8, usize)]) -> Option<usize> {
+    let min_depth = candidates.iter().map(|(_, _, depth)| *depth).min()?;
+
+    let mut last_any: Option<usize> = None;
+    let mut last_non_open: Option<usize> = None;
+
+    for &(idx, b, depth) in candidates {
+        if depth != min_depth {
+            continue;
+        }
+
+        last_any = Some(idx);
+        if !matches!(b, b'(' | b'[' | b'{') {
+            last_non_open = Some(idx);
+        }
+    }
+
+    last_non_open.or(last_any)
+}
+
+fn is_java_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
 }
 
 #[derive(Debug)]

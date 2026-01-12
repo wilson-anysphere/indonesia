@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use nova_core::{Name, QualifiedName};
-use nova_db::salsa::{Database as SalsaDatabase, NovaHir};
+use nova_db::salsa::{Database as SalsaDatabase, NovaHir, NovaTypeck};
 use nova_db::{FileId as DbFileId, ProjectId};
 use nova_hir::hir;
 use nova_hir::ids::{FieldId, ItemId, MethodId};
@@ -134,6 +134,8 @@ impl HirDatabase for HirAdapter<'_> {
 /// the semantic refactoring engine (`rename`, `inline_variable`, ...).
 pub struct RefactorJavaDatabase {
     files: BTreeMap<FileId, Arc<str>>,
+    db_files: BTreeMap<FileId, DbFileId>,
+    snap: nova_db::salsa::Snapshot,
 
     scopes: HashMap<DbFileId, ScopeBuildResult>,
     scope_interner: ScopeInterner,
@@ -493,6 +495,8 @@ impl RefactorJavaDatabase {
 
         Self {
             files,
+            db_files: file_ids,
+            snap,
             scopes,
             scope_interner,
             symbols,
@@ -775,6 +779,11 @@ impl RefactorDatabase for RefactorJavaDatabase {
 
     fn symbol_at(&self, file: &FileId, offset: usize) -> Option<SymbolId> {
         RefactorJavaDatabase::symbol_at(self, file, offset)
+    }
+
+    fn type_at_offset_display(&self, file: &FileId, offset: usize) -> Option<String> {
+        let db_file = *self.db_files.get(file)?;
+        self.snap.type_at_offset_display(db_file, offset as u32)
     }
 
     fn symbol_definition(&self, symbol: SymbolId) -> Option<SymbolDefinition> {
