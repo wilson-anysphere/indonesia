@@ -904,4 +904,41 @@ mod tests {
 
         assert_eq!(fp_real, fp_link);
     }
+
+    #[test]
+    fn parse_gradle_settings_included_builds_ignores_commented_out_calls() {
+        let contents = r#"
+            // includeBuild("../ignored-line")
+            includeBuild("../included")
+            /* includeBuild("../ignored-block") */
+        "#;
+
+        assert_eq!(
+            parse_gradle_settings_included_builds(contents),
+            vec!["../included".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_gradle_settings_included_builds_ignores_keywords_inside_strings() {
+        let contents = r#"
+            println("includeBuild('../ignored')")
+            includeBuild('../included')
+        "#;
+
+        assert_eq!(
+            parse_gradle_settings_included_builds(contents),
+            vec!["../included".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_gradle_settings_included_builds_ignores_absolute_paths() {
+        let contents = r#"
+            includeBuild("/abs/path")
+            includeBuild("C:\abs\path")
+        "#;
+
+        assert!(parse_gradle_settings_included_builds(contents).is_empty());
+    }
 }
