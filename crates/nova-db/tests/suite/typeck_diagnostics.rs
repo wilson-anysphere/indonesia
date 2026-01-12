@@ -150,7 +150,6 @@ class C { void m(){ try {} catch (Exception e) {} } }
         "expected Exception to resolve from built-in JDK index; got: {diags:?}"
     );
 }
-
 fn diagnostic_cmp(a: &Diagnostic, b: &Diagnostic) -> Ordering {
     let span_cmp = match (a.span, b.span) {
         (Some(a_span), Some(b_span)) => a_span
