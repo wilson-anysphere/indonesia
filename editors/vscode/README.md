@@ -34,6 +34,10 @@ The dashboard surfaces framework-derived navigation targets, including:
 - **Micronaut endpoints** (from `nova/micronaut/endpoints`)
 - **Micronaut beans** (from `nova/micronaut/beans`)
 
+In multi-root workspaces, items are grouped by workspace folder first. Within each workspace, endpoints/beans are grouped by category.
+
+If your `nova-lsp` build doesn’t support a particular endpoint (or Nova is in safe mode), the view will show an inline “not supported” / error message for that category.
+
 ### Navigation
 
 Click an item to open the underlying source location (best-effort).
