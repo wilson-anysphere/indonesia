@@ -18,12 +18,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Needed for scripts/check-test-binary-drift.sh, which inspects the PR base commit.
+          # Needed for scripts/check-test-binary-drift.sh, which inspects the PR/push base commit.
           fetch-depth: 0
       - name: test binary drift guard
-        if: github.event_name == 'pull_request'
         env:
-          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # For pull_request: compare against PR base.
+          # For push: compare against the previous commit on the branch.
+          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: ./scripts/check-test-binary-drift.sh
       - uses: dtolnay/rust-toolchain@stable
         with:
