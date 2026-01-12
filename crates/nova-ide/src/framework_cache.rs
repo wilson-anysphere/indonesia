@@ -851,6 +851,11 @@ fn build_marker_fingerprint(root: &Path) -> u64 {
         "WORKSPACE",
         "WORKSPACE.bazel",
         "MODULE.bazel",
+        "MODULE.bazel.lock",
+        ".bazelrc",
+        ".bazelversion",
+        "bazelisk.rc",
+        ".bazelignore",
         // Simple projects.
         "src",
     ];
@@ -859,6 +864,44 @@ fn build_marker_fingerprint(root: &Path) -> u64 {
     for marker in MARKERS {
         let path = root.join(marker);
         marker.hash(&mut hasher);
+        match std::fs::metadata(&path) {
+            Ok(meta) => {
+                true.hash(&mut hasher);
+                meta.len().hash(&mut hasher);
+                hash_mtime(&mut hasher, meta.modified().ok());
+            }
+            Err(_) => {
+                false.hash(&mut hasher);
+            }
+        }
+    }
+
+    // Include any `.bazelrc.*` fragments at the workspace root. These are commonly imported by
+    // `.bazelrc` and can affect Bazel query/aquery behavior, which in turn affects Nova's project
+    // model and framework/classpath analysis.
+    //
+    // Keep this best-effort and bounded: scan only the immediate workspace root directory.
+    let mut bazelrc_fragments = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(file_name) = path.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if file_name.starts_with(".bazelrc.") {
+                bazelrc_fragments.push(path);
+                // Avoid pathological roots with huge numbers of dotfiles.
+                if bazelrc_fragments.len() >= 128 {
+                    break;
+                }
+            }
+        }
+    }
+    bazelrc_fragments.sort();
+    for path in bazelrc_fragments {
+        if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+            name.hash(&mut hasher);
+        }
         match std::fs::metadata(&path) {
             Ok(meta) => {
                 true.hash(&mut hasher);
