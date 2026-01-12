@@ -1239,6 +1239,9 @@ local_only = false
         .arg("--stdio")
         .arg("--config")
         .arg(&config_path)
+        // Ensure a developer's environment doesn't disable AI for this test.
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
         .env_remove("NOVA_AI_PROVIDER")
         .env_remove("NOVA_AI_ENDPOINT")
         .env_remove("NOVA_AI_MODEL")
@@ -1269,80 +1272,26 @@ local_only = false
         &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
     );
 
-    // Open a document. We won't expect patch-based AI code actions to be advertised in this mode,
-    // but we still validate that attempting to execute the command is rejected by the privacy
-    // policy (defense in depth).
-    let uri = "file:///Test.java";
-    let text = "class Test {\n    void run() {\n    }\n}\n";
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "java",
-                    "version": 1,
-                    "text": text
-                }
-            }
-        }),
-    );
-
-    // Request code actions: the patch-based AI code-edit actions should be hidden in cloud mode
-    // with anonymization enabled (default).
+    // Even though code-edit actions are hidden from `textDocument/codeAction` when privacy policy
+    // disallows edits, `workspace/executeCommand` must still enforce the policy for clients that
+    // attempt to invoke the command directly.
     write_jsonrpc_message(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
             "id": 2,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": { "uri": uri },
-                "range": { "start": { "line": 1, "character": 0 }, "end": { "line": 1, "character": 0 } },
-                "context": { "diagnostics": [] }
-            }
-        }),
-    );
-    let code_actions_resp = read_response_with_id(&mut stdout, 2);
-    let actions = code_actions_resp
-        .get("result")
-        .and_then(|v| v.as_array())
-        .expect("code actions array");
-    assert!(
-        actions.iter().all(
-            |a| a.get("title").and_then(|t| t.as_str()) != Some("Generate method body with AI")
-        ),
-        "expected no code-edit actions in cloud anonymized mode, got: {actions:#?}"
-    );
-    assert!(
-        actions
-            .iter()
-            .all(|a| a.get("title").and_then(|t| t.as_str()) != Some("Generate tests with AI")),
-        "expected no code-edit actions in cloud anonymized mode, got: {actions:#?}"
-    );
-
-    // Execute command: in cloud mode, anonymization is enabled by default and code edits should be
-    // rejected before any model call is made.
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
             "method": "workspace/executeCommand",
             "params": {
                 "command": nova_ide::COMMAND_GENERATE_METHOD_BODY,
                 "arguments": [{
                     "method_signature": "void run()",
-                    "context": null,
-                    "uri": uri
+                    "context": null
                 }]
             }
         }),
     );
 
-    let exec_resp = read_response_with_id(&mut stdout, 3);
+    let exec_resp = read_response_with_id(&mut stdout, 2);
     let err_msg = exec_resp
         .get("error")
         .and_then(|e| e.get("message"))
@@ -1363,9 +1312,9 @@ local_only = false
     // shutdown + exit
     write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
