@@ -22,7 +22,6 @@ nova-db
 nova-index
 nova-remote-proto
 nova-build
-nova-format
 nova-project
 nova-config
 nova-testing
