@@ -90,6 +90,7 @@ struct SessionLifecycle {
     lifecycle: LifecycleState,
     kind: Option<SessionKind>,
     awaiting_configuration_done_resume: bool,
+    configuration_done_received: bool,
     project_root: Option<PathBuf>,
 }
 
@@ -106,6 +107,7 @@ impl Default for SessionLifecycle {
             lifecycle: LifecycleState::Uninitialized,
             kind: None,
             awaiting_configuration_done_resume: false,
+            configuration_done_received: false,
             project_root: None,
         }
     }
@@ -309,6 +311,7 @@ async fn handle_request_inner(
                 sess.lifecycle = LifecycleState::Initialized;
                 sess.kind = None;
                 sess.awaiting_configuration_done_resume = false;
+                sess.configuration_done_received = false;
                 sess.project_root = None;
             }
 
@@ -444,6 +447,7 @@ async fn handle_request_inner(
             let should_resume = {
                 let mut sess = session.lock().await;
                 sess.lifecycle = LifecycleState::Configured;
+                sess.configuration_done_received = true;
                 if sess.awaiting_configuration_done_resume {
                     sess.awaiting_configuration_done_resume = false;
                     true
@@ -849,18 +853,112 @@ async fn handle_request_inner(
                 server_shutdown.clone(),
             );
 
-            {
+            let resume_after_launch = {
                 let mut sess = session.lock().await;
                 sess.lifecycle = LifecycleState::LaunchedOrAttached;
                 sess.kind = Some(SessionKind::Launch);
-                sess.awaiting_configuration_done_resume =
+                let needs_config_done_resume =
                     matches!(mode, LaunchMode::Java) && args.stop_on_entry;
+                let resume_after_launch =
+                    needs_config_done_resume && sess.configuration_done_received;
+                sess.awaiting_configuration_done_resume =
+                    needs_config_done_resume && !sess.configuration_done_received;
                 sess.project_root = project_root;
-            }
+                resume_after_launch
+            };
 
             apply_pending_configuration(cancel, debugger, pending_config).await;
 
-            send_response(out_tx, seq, request, true, None, None);
+            if resume_after_launch {
+                let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+                    Some(guard) => guard,
+                    None => {
+                        terminate_existing_process(launched_process).await;
+                        disconnect_debugger(debugger).await;
+                        {
+                            let mut sess = session.lock().await;
+                            sess.kind = None;
+                            sess.awaiting_configuration_done_resume = false;
+                        }
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some("cancelled".to_string()),
+                        );
+                        return;
+                    }
+                };
+                let Some(dbg) = guard.as_mut() else {
+                    terminate_existing_process(launched_process).await;
+                    disconnect_debugger(debugger).await;
+                    {
+                        let mut sess = session.lock().await;
+                        sess.kind = None;
+                        sess.awaiting_configuration_done_resume = false;
+                    }
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("not attached".to_string()),
+                    );
+                    return;
+                };
+
+                match dbg.continue_(cancel, None).await {
+                    Ok(()) => {
+                        let mut sess = session.lock().await;
+                        sess.lifecycle = LifecycleState::Running;
+                    }
+                    Err(err) if is_cancelled_error(&err) => {
+                        drop(guard);
+                        terminate_existing_process(launched_process).await;
+                        disconnect_debugger(debugger).await;
+                        {
+                            let mut sess = session.lock().await;
+                            sess.kind = None;
+                            sess.awaiting_configuration_done_resume = false;
+                        }
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some("cancelled".to_string()),
+                        );
+                        return;
+                    }
+                    Err(err) => {
+                        let msg = err.to_string();
+                        drop(guard);
+                        terminate_existing_process(launched_process).await;
+                        disconnect_debugger(debugger).await;
+                        {
+                            let mut sess = session.lock().await;
+                            sess.kind = None;
+                            sess.awaiting_configuration_done_resume = false;
+                        }
+                        send_response(out_tx, seq, request, false, None, Some(msg));
+                        return;
+                    }
+                }
+
+                send_response(out_tx, seq, request, true, None, None);
+                send_event(
+                    out_tx,
+                    seq,
+                    "continued",
+                    Some(json!({ "allThreadsContinued": true })),
+                );
+            } else {
+                send_response(out_tx, seq, request, true, None, None);
+            }
         }
         "attach" => {
             {
