@@ -1759,7 +1759,15 @@ mod tests {
             false,
         );
 
-        assert_eq!(module_path, vec![named, automatic]);
+        assert_eq!(module_path, vec![named.clone(), automatic.clone()]);
+        assert!(
+            !module_path.contains(&out_dir),
+            "output directories should not be included on the inferred module-path"
+        );
+        assert!(
+            !module_path.contains(&dep),
+            "classpath-only dependencies without module metadata should stay off the module-path"
+        );
     }
 
     #[test]
