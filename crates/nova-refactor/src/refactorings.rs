@@ -16,6 +16,8 @@ pub enum RefactorError {
     Conflicts(Vec<Conflict>),
     #[error("rename is not supported for this symbol (got {kind:?})")]
     RenameNotSupported { kind: Option<JavaSymbolKind> },
+    #[error("extract variable is not supported inside assert statements")]
+    ExtractNotSupportedInAssert,
     #[error(transparent)]
     Materialize(#[from] MaterializeError),
     #[error("unknown file {0:?}")]
@@ -170,8 +172,18 @@ pub fn extract_variable(
     }
 
     let root = parsed.syntax();
-    let expr =
-        find_expression(text, root.clone(), selection).ok_or(RefactorError::InvalidSelection)?;
+    let expr = find_expression(text, root.clone(), selection).ok_or(RefactorError::InvalidSelection)?;
+
+    // Extracting expressions from `assert` statements is unsafe: Java assertions may be disabled
+    // at runtime, and hoisting the expression into a preceding local variable would force it to be
+    // evaluated unconditionally.
+    if expr
+        .syntax()
+        .ancestors()
+        .any(|node| ast::AssertStatement::cast(node).is_some())
+    {
+        return Err(RefactorError::ExtractNotSupportedInAssert);
+    }
 
     // Java pattern matching for `instanceof` introduces pattern variables whose scope is tied to
     // the conditional expression. Extracting an `instanceof <pattern>` would remove the binding

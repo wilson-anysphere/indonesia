@@ -411,3 +411,23 @@ class C {
     let actions = inline_variable_code_actions(&uri, source, position);
     assert!(actions.is_empty());
 }
+
+#[test]
+fn extract_variable_not_offered_inside_assert_statement() {
+    let fixture = r#"
+class C {
+    void m(int x) {
+        assert /*start*/x > 0/*end*/;
+    }
+}
+"#;
+    let (source, selection) = extract_range(fixture);
+    let uri = Uri::from_str("file:///Test.java").unwrap();
+    let range = lsp_types::Range {
+        start: offset_to_position(&source, selection.start),
+        end: offset_to_position(&source, selection.end),
+    };
+
+    let actions = extract_variable_code_actions(&uri, &source, range);
+    assert!(actions.is_empty());
+}

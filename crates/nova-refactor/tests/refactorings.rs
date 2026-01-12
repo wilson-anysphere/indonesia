@@ -1980,3 +1980,51 @@ class Test {
         "expected old name to be gone: {after}"
     );
 }
+
+#[test]
+fn extract_variable_rejects_assert_condition_extraction() {
+    let fixture = r#"class C { void m(int x) { assert /*start*/x > 0/*end*/; } }"#;
+    let (src, selection) = extract_range(fixture);
+    let file = FileId::new("Test.java");
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range: selection,
+            name: "cond".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        SemanticRefactorError::ExtractNotSupportedInAssert
+    ));
+}
+
+#[test]
+fn extract_variable_rejects_assert_message_extraction() {
+    let fixture = r#"class C { void m(int x) { assert x > 0 : /*start*/x/*end*/; } }"#;
+    let (src, selection) = extract_range(fixture);
+    let file = FileId::new("Test.java");
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range: selection,
+            name: "msg".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        SemanticRefactorError::ExtractNotSupportedInAssert
+    ));
+}
