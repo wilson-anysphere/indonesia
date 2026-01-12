@@ -3721,6 +3721,57 @@ fn handle_definition(
     }
 }
 
+fn parse_java_imports(text: &str) -> (HashMap<String, String>, Vec<String>) {
+    let mut explicit_imports = HashMap::<String, String>::new();
+    let mut wildcard_imports = Vec::<String>::new();
+
+    for raw_line in text.lines() {
+        let line = raw_line.trim_start();
+        let Some(rest) = line.strip_prefix("import") else {
+            continue;
+        };
+        // Ensure `import` is a standalone keyword.
+        let mut rest_chars = rest.chars();
+        if !rest_chars.next().is_some_and(|c| c.is_whitespace()) {
+            continue;
+        }
+        let rest = rest.trim_start();
+
+        // Ignore static imports for type navigation.
+        if let Some(after_static) = rest.strip_prefix("static") {
+            if after_static.is_empty() || after_static.chars().next().is_some_and(|c| c.is_whitespace())
+            {
+                continue;
+            }
+        }
+
+        let import_path = rest.split_once(';').map(|(path, _)| path).unwrap_or(rest);
+        let import_path = import_path.trim();
+        if import_path.is_empty() {
+            continue;
+        }
+
+        if let Some(pkg) = import_path.strip_suffix(".*") {
+            let pkg = pkg.trim();
+            if !pkg.is_empty() {
+                wildcard_imports.push(pkg.to_owned());
+            }
+            continue;
+        }
+
+        let Some((_pkg, simple)) = import_path.rsplit_once('.') else {
+            continue;
+        };
+        if simple.is_empty() {
+            continue;
+        }
+
+        explicit_imports.insert(simple.to_owned(), import_path.to_owned());
+    }
+
+    (explicit_imports, wildcard_imports)
+}
+
 fn goto_definition_jdk(
     state: &mut ServerState,
     file: nova_db::FileId,
@@ -3746,7 +3797,38 @@ fn goto_definition_jdk(
     let (start, end) = ident_range_at(text, offset)?;
     let ident = text.get(start..end)?;
 
-    let stub = jdk.lookup_type(ident).ok().flatten()?;
+    let mut stub = jdk.lookup_type(ident).ok().flatten();
+    if stub.is_none() && !ident.contains('.') && !ident.contains('/') {
+        let (explicit_imports, wildcard_imports) = parse_java_imports(text);
+
+        if let Some(fq_name) = explicit_imports.get(ident) {
+            stub = jdk.lookup_type(fq_name).ok().flatten();
+        }
+
+        if stub.is_none() {
+            for pkg in wildcard_imports {
+                let candidate = format!("{pkg}.{ident}");
+                stub = jdk.lookup_type(&candidate).ok().flatten();
+                if stub.is_some() {
+                    break;
+                }
+            }
+        }
+
+        if stub.is_none() {
+            let suffix = format!(".{ident}");
+            if let Ok(names) = jdk.class_names_with_prefix("") {
+                let matches: Vec<String> = names
+                    .into_iter()
+                    .filter(|name| name.ends_with(&suffix))
+                    .collect();
+                if matches.len() == 1 {
+                    stub = jdk.lookup_type(&matches[0]).ok().flatten();
+                }
+            }
+        }
+    }
+    let stub = stub?;
     let bytes = jdk.read_class_bytes(&stub.internal_name).ok().flatten()?;
 
     let uri_string = nova_decompile::decompiled_uri_for_classfile(&bytes, &stub.internal_name);
