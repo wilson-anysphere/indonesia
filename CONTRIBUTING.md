@@ -66,7 +66,9 @@ bash scripts/cargo_agent.sh run --locked -p nova-dap --bin nova-dap -- --version
 
 ```bash
 # Install nextest first if needed:
+# Local dev:
 cargo install cargo-nextest --locked
+# Agent / multi-runner:
 bash scripts/cargo_agent.sh install cargo-nextest --locked
 
 # Local dev (recommended: keep runs scoped to the crate/target you're changing)
