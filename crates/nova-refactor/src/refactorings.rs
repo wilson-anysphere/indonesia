@@ -61,7 +61,7 @@ pub fn rename(
             // Best-effort: conflict checking is currently scope-based and tuned for local/parameter
             // renames. Allow member/type renames without additional validation for now.
         }
-        None => return Err(RefactorError::RenameNotSupported { kind }),
+        Some(JavaSymbolKind::Package) | None => return Err(RefactorError::RenameNotSupported { kind }),
     }
 
     let changes = vec![SemanticChange::Rename {

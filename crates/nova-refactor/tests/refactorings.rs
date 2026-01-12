@@ -1,7 +1,7 @@
 use nova_refactor::{
     apply_text_edits, extract_variable, inline_variable, rename, Conflict, ExtractVariableParams,
-    FileId, InlineVariableParams, RefactorDatabase, RefactorJavaDatabase, RenameParams,
-    SemanticRefactorError, WorkspaceTextRange,
+    FileId, InlineVariableParams, JavaSymbolKind, RefactorDatabase, RefactorJavaDatabase,
+    RenameParams, SemanticRefactorError, WorkspaceTextRange,
 };
 use nova_test_utils::extract_range;
 use pretty_assertions::assert_eq;
@@ -63,6 +63,18 @@ fn rename_updates_all_occurrences_not_strings() {
     assert!(after.contains("println(bar);"));
     assert!(after.contains("\"foo\""));
     assert!(!after.contains("\"bar\""));
+}
+
+#[test]
+fn symbol_at_package_decl_returns_package_kind() {
+    let file = FileId::new("C.java");
+    let src = "package com.example; class C {}";
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("com.example").unwrap() + 1;
+    let symbol = db.symbol_at(&file, offset).expect("symbol at package name");
+
+    assert_eq!(db.symbol_kind(symbol), Some(JavaSymbolKind::Package));
 }
 
 #[test]

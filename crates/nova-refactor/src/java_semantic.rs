@@ -12,6 +12,7 @@ use nova_resolve::{
     BodyOwner, DefMap, LocalRef, ParamOwner, ParamRef, Resolution, Resolver, ScopeBuildResult,
     ScopeKind, StaticMemberResolution, TypeResolution, WorkspaceDefMap,
 };
+use nova_syntax::AstNode;
 
 use crate::edit::{FileId, TextRange};
 use crate::semantic::{RefactorDatabase, Reference, SymbolDefinition};
@@ -31,6 +32,7 @@ impl SymbolId {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum JavaSymbolKind {
+    Package,
     Type,
     Method,
     Field,
@@ -51,6 +53,7 @@ enum ResolutionKey {
     Field(FieldId),
     Method(MethodId),
     Type(ItemId),
+    Package(DbFileId),
 }
 
 #[derive(Debug, Clone)]
@@ -205,6 +208,26 @@ impl RefactorJavaDatabase {
                 .get(file_id)
                 .cloned()
                 .unwrap_or_else(|| snap.hir_item_tree(*file_id));
+
+            // Package declarations live at the compilation unit level, outside of Nova's scope
+            // graph (which primarily models locals/parameters). We still surface them as refactor
+            // symbols so upstream layers (e.g. LSP rename) can dispatch to the appropriate
+            // refactoring (move_package).
+            if let Some(pkg) = tree.package.as_ref() {
+                if let Some(text) = files.get(file) {
+                    if let Some(name_range) = package_decl_name_range(text.as_ref()) {
+                        let scope = scope_interner.intern(*file_id, scope_result.file_scope);
+                        candidates.push(SymbolCandidate {
+                            key: ResolutionKey::Package(*file_id),
+                            file: file.clone(),
+                            name: pkg.name.clone(),
+                            name_range,
+                            scope,
+                            kind: JavaSymbolKind::Package,
+                        });
+                    }
+                }
+            }
 
             // Type/field/method symbols live in item tree (file-level) scopes.
             for item in &tree.items {
@@ -500,6 +523,18 @@ impl RefactorJavaDatabase {
     fn decode_scope(&self, scope: u32) -> Option<(DbFileId, nova_resolve::ScopeId)> {
         self.scope_interner.lookup(scope)
     }
+}
+
+fn package_decl_name_range(source: &str) -> Option<TextRange> {
+    let parse = nova_syntax::parse_java(source);
+    let unit = nova_syntax::CompilationUnit::cast(parse.syntax())
+        .expect("root node is a compilation unit");
+    let pkg = unit.package()?;
+    let name = pkg.name()?;
+    let range = name.syntax().text_range();
+    let start = u32::from(range.start()) as usize;
+    let end = u32::from(range.end()) as usize;
+    Some(TextRange::new(start, end))
 }
 
 fn refactor_local_scope(
