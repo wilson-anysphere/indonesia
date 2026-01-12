@@ -1319,11 +1319,11 @@ mod tests {
     #[cfg(feature = "unicode")]
     #[test]
     fn unicode_casefold_prefix_match_strasse() {
-        // With `feature = "unicode"`, Unicode case folding should make "strasse"
-        // match "Straße" as a prefix (ß expands to "ss").
+        // With `feature = "unicode"`, Unicode case folding should make "straße"
+        // match "Straße" as a prefix (ß expands to "ss" under full case folding).
         let index = SymbolSearchIndex::build(vec![sym("Straße", "Straße")]);
 
-        let results = index.search("strasse", 10);
+        let results = index.search("straße", 10);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].symbol.name, "Straße");
         assert_eq!(results[0].score.kind, MatchKind::Prefix);
@@ -1362,6 +1362,30 @@ mod tests {
         assert!(
             results.iter().any(|r| r.symbol.name == "ßeta"),
             "expected folded-prefix query to match ßeta, got: {results:?}"
+        );
+    }
+
+    #[cfg(feature = "unicode")]
+    #[test]
+    fn unicode_prefix_bucket_respects_nfkc_casefold() {
+        // Regression test: prefix buckets must be keyed by the *folded* first
+        // character, not the raw UTF-8 leading byte.
+        //
+        // U+212A KELVIN SIGN is NFKC-normalized to ASCII 'K' and then case-folded
+        // to 'k'. A query starting with K should still hit identifiers starting
+        // with 'k' via the prefix bucket (and not fall back to a bounded scan).
+        let mut symbols = Vec::with_capacity(50_001);
+        for _ in 0..50_000 {
+            symbols.push(sym("aaaa", "aaaa"));
+        }
+        symbols.push(sym("kelvinThing", "kelvinThing"));
+
+        let index = SymbolSearchIndex::build(symbols);
+        let (results, stats) = index.search_with_stats("\u{212A}", 10);
+        assert_eq!(stats.strategy, CandidateStrategy::Prefix);
+        assert!(
+            results.iter().any(|r| r.symbol.name == "kelvinThing"),
+            "expected K query to match via NFKC+casefold, got: {results:?}"
         );
     }
 
