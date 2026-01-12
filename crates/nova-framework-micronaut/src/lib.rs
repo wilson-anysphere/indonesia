@@ -43,6 +43,7 @@ use nova_core::{FileId, ProjectId};
 use nova_framework::{CompletionContext, Database, FrameworkAnalyzer, VirtualMember};
 use nova_types::ClassId;
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
@@ -247,7 +248,7 @@ impl MicronautAnalyzer {
         let path = db
             .file_path(file)
             .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| "<memory>".to_string());
+            .unwrap_or_else(|| synthetic_path_for_file(file));
         let sources = vec![JavaSource::new(path, text.to_string())];
 
         let analysis = Arc::new(analyze_sources(&sources));
@@ -298,14 +299,22 @@ impl FrameworkAnalyzer for MicronautAnalyzer {
     }
 
     fn diagnostics(&self, db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
-        let Some(path) = db.file_path(file) else {
-            return Vec::new();
-        };
-        if path.extension().and_then(|e| e.to_str()) != Some("java") {
-            return Vec::new();
-        }
         let Some(text) = db.file_text(file) else {
             return Vec::new();
+        };
+        let file_key: Cow<'_, str> = match db.file_path(file) {
+            Some(path) => {
+                if path.extension().and_then(|e| e.to_str()) != Some("java") {
+                    return Vec::new();
+                }
+                path.to_string_lossy()
+            }
+            None => {
+                if !looks_like_java_source(text) {
+                    return Vec::new();
+                }
+                Cow::Owned(synthetic_path_for_file(file))
+            }
         };
         if !may_have_micronaut_file_diagnostics(text) {
             return Vec::new();
@@ -313,25 +322,25 @@ impl FrameworkAnalyzer for MicronautAnalyzer {
 
         let project = db.project_of_file(file);
         let analysis = self.cached_analysis(db, project, Some(file));
-        let path_str = path.to_string_lossy();
         analysis
             .file_diagnostics
             .iter()
-            .filter(|d| d.file == path_str.as_ref())
+            .filter(|d| d.file == file_key.as_ref())
             .map(|d| d.diagnostic.clone())
             .collect()
     }
 
     fn completions(&self, db: &dyn Database, ctx: &CompletionContext) -> Vec<CompletionItem> {
-        let Some(path) = db.file_path(ctx.file) else {
-            return Vec::new();
-        };
-        if path.extension().and_then(|e| e.to_str()) != Some("java") {
-            return Vec::new();
-        }
         let Some(text) = db.file_text(ctx.file) else {
             return Vec::new();
         };
+        let is_java = match db.file_path(ctx.file) {
+            Some(path) => path.extension().and_then(|e| e.to_str()) == Some("java"),
+            None => looks_like_java_source(text),
+        };
+        if !is_java {
+            return Vec::new();
+        }
 
         // Avoid running project-wide Micronaut analysis unless the cursor is inside
         // an `@Value("${...}")` placeholder.
@@ -391,29 +400,37 @@ fn project_inputs(db: &dyn Database, file_ids: &[FileId]) -> (Vec<JavaSource>, V
     let mut config_files = Vec::new();
 
     for &file in file_ids {
-        let Some(path) = db.file_path(file) else {
-            continue;
-        };
         let Some(text) = db.file_text(file) else {
             continue;
         };
 
-        if path.extension().and_then(|e| e.to_str()) == Some("java") {
-            sources.push(JavaSource::new(
-                path.to_string_lossy().to_string(),
-                text.to_string(),
-            ));
-            continue;
-        }
+        match db.file_path(file) {
+            Some(path) => {
+                if path.extension().and_then(|e| e.to_str()) == Some("java") {
+                    sources.push(JavaSource::new(
+                        path.to_string_lossy().to_string(),
+                        text.to_string(),
+                    ));
+                    continue;
+                }
 
-        let Some(kind) = config_file_kind(path) else {
-            continue;
-        };
-        let path = path.to_string_lossy().to_string();
-        let text = text.to_string();
-        match kind {
-            ConfigFileKind::Properties => config_files.push(ConfigFile::properties(path, text)),
-            ConfigFileKind::Yaml => config_files.push(ConfigFile::yaml(path, text)),
+                let Some(kind) = config_file_kind(path) else {
+                    continue;
+                };
+                let path = path.to_string_lossy().to_string();
+                let text = text.to_string();
+                match kind {
+                    ConfigFileKind::Properties => {
+                        config_files.push(ConfigFile::properties(path, text))
+                    }
+                    ConfigFileKind::Yaml => config_files.push(ConfigFile::yaml(path, text)),
+                }
+            }
+            None => {
+                if looks_like_java_source(text) {
+                    sources.push(JavaSource::new(synthetic_path_for_file(file), text.to_string()));
+                }
+            }
         }
     }
 
@@ -438,22 +455,34 @@ fn project_fingerprint(db: &dyn Database, file_ids: &[FileId]) -> u64 {
     let mut hasher = DefaultHasher::new();
 
     for &file in file_ids {
-        let Some(path) = db.file_path(file) else {
-            continue;
-        };
-        if path.extension().and_then(|e| e.to_str()) != Some("java")
-            && config_file_kind(path).is_none()
-        {
-            continue;
-        }
+        match db.file_path(file) {
+            Some(path) => {
+                if path.extension().and_then(|e| e.to_str()) != Some("java")
+                    && config_file_kind(path).is_none()
+                {
+                    continue;
+                }
 
-        file.to_raw().hash(&mut hasher);
-        path.to_string_lossy().hash(&mut hasher);
+                file.to_raw().hash(&mut hasher);
+                path.to_string_lossy().hash(&mut hasher);
 
-        if let Some(text) = db.file_text(file) {
-            fingerprint_text(text, &mut hasher);
-        } else {
-            0usize.hash(&mut hasher);
+                if let Some(text) = db.file_text(file) {
+                    fingerprint_text(text, &mut hasher);
+                } else {
+                    0usize.hash(&mut hasher);
+                }
+            }
+            None => {
+                let Some(text) = db.file_text(file) else {
+                    continue;
+                };
+                if !looks_like_java_source(text) {
+                    continue;
+                }
+
+                file.to_raw().hash(&mut hasher);
+                fingerprint_text(text, &mut hasher);
+            }
         }
     }
 
@@ -492,4 +521,17 @@ fn fingerprint_text(text: &str, hasher: &mut impl Hasher) {
     if bytes.len() > EDGE {
         bytes[bytes.len() - EDGE..].hash(hasher);
     }
+}
+
+fn looks_like_java_source(text: &str) -> bool {
+    // Lightweight heuristic used when the database doesn't provide file paths.
+    text.contains("package ")
+        || text.contains("import ")
+        || text.contains("class ")
+        || text.contains("interface ")
+        || text.contains("enum ")
+}
+
+fn synthetic_path_for_file(file: FileId) -> String {
+    format!("<memory:{}>", file.to_raw())
 }
