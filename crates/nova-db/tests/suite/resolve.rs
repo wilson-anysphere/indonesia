@@ -266,6 +266,46 @@ class C {}
 }
 
 #[test]
+fn unresolved_static_import_with_missing_owner_produces_diagnostic() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+
+    let file = FileId::from_raw(1);
+    let text = r#"
+package p;
+import static does.not.Exist.max;
+
+class C {}
+"#;
+    set_file(&mut db, project, file, "src/C.java", text);
+    db.set_project_files(project, Arc::new(vec![file]));
+
+    let diags = db.import_diagnostics(file);
+    let diag = diags
+        .iter()
+        .find(|d| d.code.as_ref() == "unresolved-import" && d.message.contains("static does.not.Exist.max"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected unresolved-import diagnostic for static does.not.Exist.max, got {diags:?}"
+            )
+        });
+    let span = diag.span.expect("expected diagnostic span");
+    assert!(
+        text[span.start..span.end].contains("does.not.Exist.max"),
+        "expected diagnostic span to cover import declaration; span={span:?}, slice={:?}",
+        &text[span.start..span.end]
+    );
+}
+
+#[test]
 fn unresolved_static_star_import_produces_diagnostic_with_span() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
