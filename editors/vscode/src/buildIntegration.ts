@@ -384,6 +384,7 @@ export function registerNovaBuildIntegration(
     opts?: { target?: string; silent?: boolean },
   ): Promise<NovaBuildDiagnosticsResult | undefined> {
     const state = getWorkspaceState(folder);
+    const stateKey = getWorkspaceKey(folder);
     const projectRoot = folder.uri.fsPath;
     const silent = opts?.silent ?? false;
 
@@ -399,6 +400,12 @@ export function registerNovaBuildIntegration(
         });
         if (!response) {
           return undefined;
+        }
+
+        // The workspace folder may have been removed while the request was in flight. Avoid
+        // re-adding diagnostics for a folder that is no longer part of the VS Code workspace.
+        if (workspaceStates.get(stateKey) !== state) {
+          return response;
         }
 
         state.diagnosticsSupported = true;
