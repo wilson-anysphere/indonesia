@@ -334,7 +334,8 @@ cargo test -p nova-lsp stdio_
 
 #### 3b) DAP end-to-end tests (in-memory transport)
 
-**Where:** `crates/nova-dap/tests/*.rs` (uses in-memory duplex streams + mock JDWP server).
+**Where:** `crates/nova-dap/tests/suite/*.rs` (compiled into `crates/nova-dap/tests/real_jvm.rs`;
+most tests use in-memory duplex streams + a mock JDWP server).
 
 **Run locally:**
 
@@ -345,7 +346,8 @@ bash scripts/cargo_agent.sh test -p nova-dap
 #### 3c) DAP end-to-end tests (real JVM; optional)
 
 **What:** A smoke test that attaches to a real JVM via JDWP, sets a breakpoint, and waits for a stop.
-This requires a local JDK (`java` + `javac` on `PATH`) and is opt-in so normal CI stays stable.
+This requires a local JDK (`java` + `javac` on `PATH`). If the tools are missing, the test prints a
+message and returns early so normal CI stays stable.
 
 **Where:**
 
@@ -355,7 +357,7 @@ This requires a local JDK (`java` + `javac` on `PATH`) and is opt-in so normal C
 **Run locally:**
 
 ```bash
-bash scripts/cargo_agent.sh test -p nova-dap --features real-jvm-tests --test real_jvm -- --nocapture
+bash scripts/cargo_agent.sh test -p nova-dap --test real_jvm -- --nocapture
 ```
 
 If `java`/`javac` are missing, the test prints a message and returns early.

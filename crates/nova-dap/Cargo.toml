@@ -44,8 +44,9 @@ path = "src/lib.rs"
 [features]
 # Optional smoke tests that exercise the DAP adapter against a real JVM.
 #
-# These tests are ignored by default and should be enabled explicitly:
-#   bash scripts/cargo_agent.sh test -p nova-dap --features real-jvm-tests
+# The `real_jvm` integration test will print a message and return early if
+# `java`/`javac` are missing (Rust has no built-in "skip"), so CI can run it
+# safely in environments without a JDK.
 real-jvm-tests = []
 
 [[bin]]
