@@ -9,14 +9,17 @@ and workspace symbol search).
 
 ```bash
 rm -rf "${CARGO_TARGET_DIR:-target}/criterion"
-cargo bench --locked -p nova-core --bench critical_paths
-cargo bench --locked -p nova-syntax --bench parse_java
-cargo bench --locked -p nova-format --bench format
-cargo bench --locked -p nova-refactor --bench refactor
-cargo bench --locked -p nova-classpath --bench index
-cargo bench --locked -p nova-ide --bench completion
-cargo bench --locked -p nova-fuzzy --bench fuzzy
-cargo bench --locked -p nova-index --bench symbol_search
+
+# Agent / multi-runner environments MUST use the wrapper (see AGENTS.md). This is also safe on
+# workstations; if you prefer, you can replace bash scripts/cargo_agent.sh with cargo.
+bash scripts/cargo_agent.sh bench --locked -p nova-core --bench critical_paths
+bash scripts/cargo_agent.sh bench --locked -p nova-syntax --bench parse_java
+bash scripts/cargo_agent.sh bench --locked -p nova-format --bench format
+bash scripts/cargo_agent.sh bench --locked -p nova-refactor --bench refactor
+bash scripts/cargo_agent.sh bench --locked -p nova-classpath --bench index
+bash scripts/cargo_agent.sh bench --locked -p nova-ide --bench completion
+bash scripts/cargo_agent.sh bench --locked -p nova-fuzzy --bench fuzzy
+bash scripts/cargo_agent.sh bench --locked -p nova-index --bench symbol_search
 ```
 
 Criterion writes results to `$CARGO_TARGET_DIR/criterion` (defaults to `target/criterion`).
@@ -56,7 +59,7 @@ requests and on pushes to `main`:
 ## Capturing a run
 
 ```bash
-cargo run --locked -p nova-cli --release -- perf capture \
+bash scripts/cargo_agent.sh run --locked -p nova-cli --release -- perf capture \
   --criterion-dir "${CARGO_TARGET_DIR:-target}/criterion" \
   --out perf-current.json
 ```
@@ -64,7 +67,7 @@ cargo run --locked -p nova-cli --release -- perf capture \
 ## Comparing two runs
 
 ```bash
-cargo run --locked -p nova-cli --release -- perf compare \
+bash scripts/cargo_agent.sh run --locked -p nova-cli --release -- perf compare \
   --baseline perf-base.json \
   --current perf-current.json \
   --thresholds-config perf/thresholds.toml
@@ -79,10 +82,10 @@ for known/intentional slowdowns.
 You can convert that into a compact runtime snapshot:
 
 ```bash
-cargo run --locked -p nova-cli --release -- index path/to/project --json > index-report.json
+bash scripts/cargo_agent.sh run --locked -p nova-cli --release -- index path/to/project --json > index-report.json
 cache_root=$(jq -r .cache_root index-report.json)
 
-cargo run --locked -p nova-cli --release -- perf capture-runtime \
+bash scripts/cargo_agent.sh run --locked -p nova-cli --release -- perf capture-runtime \
   --workspace-cache "$cache_root" \
   --out runtime-current.json
 ```
@@ -91,8 +94,8 @@ To include LSP startup + `nova/memoryStatus` (MemoryReport) metrics in the snaps
 `nova-lsp` binary:
 
 ```bash
-cargo build --locked -p nova-lsp --release
-cargo run --locked -p nova-cli --release -- perf capture-runtime \
+bash scripts/cargo_agent.sh build --locked -p nova-lsp --release
+bash scripts/cargo_agent.sh run --locked -p nova-cli --release -- perf capture-runtime \
   --workspace-cache "$cache_root" \
   --out runtime-current.json \
   --nova-lsp target/release/nova-lsp
@@ -101,7 +104,7 @@ cargo run --locked -p nova-cli --release -- perf capture-runtime \
 Compare two snapshots with per-metric thresholds:
 
 ```bash
-cargo run --locked -p nova-cli --release -- perf compare-runtime \
+bash scripts/cargo_agent.sh run --locked -p nova-cli --release -- perf compare-runtime \
   --baseline runtime-base.json \
   --current runtime-current.json \
   --thresholds-config perf/runtime-thresholds.toml
