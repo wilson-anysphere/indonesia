@@ -74,7 +74,11 @@ Concrete shape:
 
 - Introduce a project query like `project_base_type_store(project: ProjectId) -> Arc<TypeStore>`
   (implemented today as
-  [`crates/nova-db/src/salsa/typeck.rs:project_base_type_store`](../../crates/nova-db/src/salsa/typeck.rs))
+  [`crates/nova-db/src/salsa/typeck.rs:project_base_type_store`](../../crates/nova-db/src/salsa/typeck.rs)),
+  and for JPMS projects a module-scoped variant like:
+  `project_base_type_store_for_module(project: ProjectId, from: ModuleName) -> Arc<TypeStore>`
+  (implemented today as
+  [`crates/nova-db/src/salsa/typeck.rs:project_base_type_store_for_module`](../../crates/nova-db/src/salsa/typeck.rs)),
   that:
   - seeds well-known JDK types (today: `TypeStore::with_minimal_jdk()`),
   - **pre-interns** class ids for a deterministic set of binary names:
@@ -84,8 +88,8 @@ Concrete shape:
     - and optionally the JDK index.
   - performs interning in a deterministic order (e.g. lexicographic sort of binary names).
 
-- Each `typeck_body` clones (or overlays) this base environment rather than starting from a fresh
-  `TypeStore`.
+- Each `typeck_body` clones (or overlays) the appropriate base environment (project-level in
+  classpath mode; module-scoped in JPMS mode) rather than starting from a fresh `TypeStore`.
 
 Goal:
 
@@ -105,10 +109,13 @@ Notes:
 - **Implementation note (current repo):** `project_base_type_store` uses stable file ordering and a
   best-effort scan of workspace signatures and bodies to seed a deterministic set of referenced
   type names *and* also pre-interns all known classpath/module-path binary names via the
-  `ClasspathIndex` / JPMS environment. It intentionally does **not** pre-intern all JDK binary names
-  (beyond `TypeStore::with_minimal_jdk()` and names found by the workspace scan) to avoid base-store
-  blow-up. If we observe remaining `ClassId` instability due to transitive JDK loads, we should
-  expand the pre-intern set (e.g. enumerate JDK names) or move sooner to a true global interner.
+  `ClasspathIndex` / JPMS environment. In JPMS mode, Nova additionally uses
+  `project_base_type_store_for_module` so that *inaccessible* external types are not pre-interned
+  (preventing the type-ref parser’s best-effort `TypeEnv` fallback from bypassing JPMS checks).
+  It intentionally does **not** pre-intern all JDK binary names (beyond `TypeStore::with_minimal_jdk()`
+  and names found by the workspace scan) to avoid base-store blow-up. If we observe remaining
+  `ClassId` instability due to transitive JDK loads, we should expand the pre-intern set (e.g.
+  enumerate JDK names) or move sooner to a true global interner.
 - Cloning a large `TypeStore` is likely too expensive long-term.
   - **Implementation note (current repo):** `TypeStore::clone` is a *deep clone* of the internal
     `Vec`/`HashMap` tables. This means base-store size directly impacts per-body latency and memory.
@@ -217,11 +224,14 @@ Negative:
 These must be true once this ADR is implemented:
 
 1. **Project-wide identity**
-   - For a fixed `ProjectId`, `binary_name` maps to exactly one `ClassId`.
+   - For a fixed `ProjectId`, a canonical **class key** maps to exactly one `ClassId`.
+     - In the simplest classpath-only model this key is just `binary_name`.
+     - In JPMS mode (and in the presence of split packages / duplicate names across modules), the
+       key likely needs an origin component (e.g. defining module). See ADR 0012.
 
 2. **Cross-body stability**
-   - Within a project, the same `binary_name` yields the same `ClassId` across all bodies, regardless
-     of which body is type-checked first.
+   - Within a project, the same class key yields the same `ClassId` across all bodies, regardless of
+     which body is type-checked first.
 
 3. **No reuse**
    - A `ClassId` must never be reused for a different `binary_name` within the same project.

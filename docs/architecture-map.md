@@ -545,9 +545,10 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Known gaps vs intended docs:**
   - Still a best-effort adapter; stable identities require project-scoped `ClassId` interning. The
     current repo achieves cross-body stability via a project-level base `TypeStore`
-    (`project_base_type_store`) that is cloned per body, but the long-term target is a true global
-    interner keyed by `(ProjectId, binary_name)` (see [ADR 0011](adr/0011-stable-classid-and-project-type-environments.md)
-    and [ADR 0012](adr/0012-classid-interning.md)).
+    (`project_base_type_store`, and in JPMS mode `project_base_type_store_for_module`) that is
+    cloned per body, but the long-term target is a true global interner keyed by a canonical class
+    key (see [ADR 0011](adr/0011-stable-classid-and-project-type-environments.md) and
+    [ADR 0012](adr/0012-classid-interning.md)).
 
 ### `nova-types-signature`
 - **Purpose:** best-effort translation from JVM descriptors + generic signature ASTs (`nova-classfile`) into Nova’s type model (`nova-types::Type`).
