@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -47,6 +47,7 @@ impl WorkspaceSnapshot {
         let empty = Arc::new(String::new());
 
         engine.query_db.with_snapshot(|snap| {
+            let salsa_file_ids: HashSet<FileId> = snap.all_file_ids().iter().copied().collect();
             for file_id in &all_file_ids {
                 let vfs_path = vfs.path_for_id(*file_id);
 
@@ -68,22 +69,19 @@ impl WorkspaceSnapshot {
                         snap.file_exists(*file_id)
                     }))
                     .ok();
-                let from_salsa = match exists_in_salsa {
-                    Some(true) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        snap.file_content(*file_id)
-                    }))
-                    .ok(),
-                    _ => None,
-                };
-
-                let content = match from_salsa {
-                    Some(content) => content,
-                    None if exists_in_salsa == Some(false) => empty.clone(),
-                    None => vfs_path
+                let fallback_to_vfs = || {
+                    vfs_path
                         .as_ref()
                         .and_then(|path| vfs.read_to_string(path).ok())
                         .map(Arc::new)
-                        .unwrap_or_else(|| empty.clone()),
+                        .unwrap_or_else(|| empty.clone())
+                };
+
+                let content = match exists_in_salsa {
+                    Some(true) if salsa_file_ids.contains(file_id) => snap.file_content(*file_id),
+                    Some(true) => fallback_to_vfs(),
+                    Some(false) => empty.clone(),
+                    None => fallback_to_vfs(),
                 };
 
                 file_contents.insert(*file_id, content);
@@ -272,6 +270,25 @@ mod tests {
             Arc::ptr_eq(from_snapshot, &from_salsa),
             "expected snapshot to reuse the existing Salsa Arc<String> without re-reading from disk"
         );
+    }
+
+    #[test]
+    fn from_engine_falls_back_to_vfs_when_salsa_inputs_are_uninitialized() {
+        let workspace = crate::Workspace::new_in_memory();
+        let engine = workspace.engine_for_tests();
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Main.java");
+        fs::write(&file, "class Main { disk }".as_bytes()).unwrap();
+
+        // Allocate a `FileId` in the VFS registry without initializing Salsa inputs.
+        let vfs_path = VfsPath::local(file.clone());
+        let file_id = engine.vfs().file_id(vfs_path);
+
+        // Snapshotting should not panic and should fall back to reading through the VFS.
+        let snapshot = WorkspaceSnapshot::from_engine(engine);
+        assert_eq!(snapshot.file_id(&file), Some(file_id));
+        assert_eq!(snapshot.file_content(file_id), "class Main { disk }");
     }
 
     #[test]
