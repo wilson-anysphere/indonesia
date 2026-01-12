@@ -288,4 +288,33 @@ mod tests {
         assert_eq!(acme_enabled.ty.as_deref(), Some("java.lang.Boolean"));
         assert_eq!(acme_enabled.default_value.as_deref(), Some("true"));
     }
+
+    #[test]
+    fn ingests_metadata_from_directory_classpath_entry() {
+        let dir = tempdir().unwrap();
+        let meta_dir = dir.path().join("META-INF");
+        std::fs::create_dir_all(&meta_dir).unwrap();
+        std::fs::write(
+            meta_dir.join("spring-configuration-metadata.json"),
+            br#"{
+              "properties": [
+                {
+                  "name": "server.port",
+                  "type": "java.lang.Integer",
+                  "defaultValue": 8080
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        let mut index = MetadataIndex::new();
+        index
+            .ingest_classpath(&[ClasspathEntry::ClassDir(dir.path().to_path_buf())])
+            .unwrap();
+
+        let server_port = index.property_meta("server.port").unwrap();
+        assert_eq!(server_port.ty.as_deref(), Some("java.lang.Integer"));
+        assert_eq!(server_port.default_value.as_deref(), Some("8080"));
+    }
 }
