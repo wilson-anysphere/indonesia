@@ -1,11 +1,28 @@
-use std::time::Duration;
+use std::{
+    process::{Command, Stdio},
+    time::Duration,
+};
 
 use crate::harness::spawn_wire_server;
 use nova_jdwp::wire::mock::MockJdwpServerConfig;
 use serde_json::json;
 
+fn tool_available(name: &str) -> bool {
+    Command::new(name)
+        .arg("-version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok()
+}
+
 #[tokio::test]
 async fn stream_debug_internal_eval_does_not_stop_or_mutate_hit_counts() {
+    if !tool_available("javac") {
+        eprintln!("skipping stream debug internal evaluation regression test: javac not available");
+        return;
+    }
+
     let (client, server_task) = spawn_wire_server();
 
     client.initialize_handshake().await;
