@@ -792,9 +792,9 @@ export async function activate(context: vscode.ExtensionContext) {
             out = result.filter((item) => !isNovaAiCodeActionOrCommand(item));
           }
 
-          if (document.uri.scheme !== 'file') {
-            // Patch-based AI code-edit commands require a file-backed URI so nova-lsp can apply
-            // workspace edits. Hide those code actions for non-file documents (e.g. untitled).
+          if (!vscode.workspace.getWorkspaceFolder(document.uri) || document.isUntitled) {
+            // Patch-based AI code-edit commands require a file-backed workspace URI so nova-lsp can
+            // apply edits. Hide those code actions for non-workspace documents (e.g. untitled).
             out = out.filter((item) => !isNovaAiFileBackedCodeActionOrCommand(item));
           }
 
@@ -2339,8 +2339,11 @@ export async function activate(context: vscode.ExtensionContext) {
       };
     }
 
-    if (doc.uri.scheme !== 'file' && (opts.kind === 'generateMethodBody' || opts.kind === 'generateTests')) {
-      void vscode.window.showInformationMessage('Nova AI: Save this file to disk to run AI code-edit commands.');
+    if (
+      (doc.isUntitled || !vscode.workspace.getWorkspaceFolder(doc.uri)) &&
+      (opts.kind === 'generateMethodBody' || opts.kind === 'generateTests')
+    ) {
+      void vscode.window.showInformationMessage('Nova AI: Open a workspace file to run AI code-edit commands.');
       return undefined;
     }
 
