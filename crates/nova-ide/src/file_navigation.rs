@@ -395,8 +395,8 @@ pub fn implementation(db: &dyn Database, file: FileId, position: Position) -> Ve
 
     let method_decl = nav_core::method_decl_at(parsed, offset);
 
-    // MapStruct: prioritize "go to implementation" from mapper interface methods into generated
-    // `*MapperImpl` methods when the generated file exists on disk.
+    // MapStruct: prioritize "go to implementation" from mapper interface methods into the
+    // generated implementation method when the generated file exists on disk.
     if method_decl.is_some() {
         if let Some(path) = db.file_path(file) {
             if path.extension().and_then(|e| e.to_str()) == Some("java")

@@ -1329,30 +1329,17 @@ pub fn extract_variable(
 
         let typeck_ty = best_type_at_range_display(db, &params.file, text, expr_token_range);
 
-        // When we have no type-checker information, parser-only type inference is intentionally
-        // conservative. In many cases it falls back to `Object`, which can change overload
-        // resolution or even fail to compile (e.g. extracting a `void` method call).
+        // For explicit-typed extraction we must be confident about the type.
         //
-        // Reject the most dangerous/ambiguous case: extracting a bare method call when we can't
-        // determine its return type.
+        // When we don't have type-checker information and our parser-only inference falls back to
+        // the generic `Object` type, we may generate an extracted variable type that is too
+        // imprecise (or even invalid, e.g. `void`-typed expressions). Be conservative and refuse
+        // explicit-type extraction in that case.
         //
         // Note: if the type-checker *does* report `Object`, treat it as a real inferred type and
         // allow it.
         if typeck_ty.is_none() && parser_ty == "Object" {
-            fn is_method_call_like(expr: &ast::Expression) -> bool {
-                match expr {
-                    ast::Expression::MethodCallExpression(_) => true,
-                    ast::Expression::ParenthesizedExpression(par) => par
-                        .expression()
-                        .as_ref()
-                        .is_some_and(is_method_call_like),
-                    _ => false,
-                }
-            }
-
-            if is_method_call_like(&expr) {
-                return Err(RefactorError::TypeInferenceFailed);
-            }
+            return Err(RefactorError::TypeInferenceFailed);
         }
 
         // When emitting an explicit type (instead of `var`), prefer parser-inferred names when
