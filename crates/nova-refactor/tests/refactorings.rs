@@ -1034,6 +1034,53 @@ fn extract_variable_conflicts_with_lambda_parameter() {
 }
 
 #[test]
+fn extract_variable_allows_try_resource_shadowing_in_catch_clause() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    try (java.io.ByteArrayInputStream sum = new java.io.ByteArrayInputStream(new byte[0])) {
+      System.out.println(sum);
+    } catch (RuntimeException e) {
+      int x = 1 + 2;
+      System.out.println(x);
+    }
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let expr_start = src.find("1 + 2").unwrap();
+    let expr_end = expr_start + "1 + 2".len();
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "sum".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  void m() {
+    try (java.io.ByteArrayInputStream sum = new java.io.ByteArrayInputStream(new byte[0])) {
+      System.out.println(sum);
+    } catch (RuntimeException e) {
+      var sum = 1 + 2;
+      int x = sum;
+      System.out.println(x);
+    }
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn extract_variable_rejects_name_starting_with_digit() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {

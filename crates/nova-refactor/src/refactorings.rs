@@ -3213,6 +3213,14 @@ fn local_binding_scope_range(decl: &ast::VariableDeclarator) -> Option<TextRange
         let resources = try_stmt.resources()?;
         let resources_range = syntax_range(resources.syntax());
         if contains_range(resources_range, decl_range) {
+            // Try-with-resources locals are only in scope within the `try { ... }` body (they are
+            // *not* visible inside `catch` / `finally` clauses).
+            //
+            // Using the whole `try` statement range here would lead to false-positive name
+            // collisions when extracting/introducing a new local inside `catch` / `finally`.
+            if let Some(body) = try_stmt.body() {
+                return Some(syntax_range(body.syntax()));
+            }
             return Some(syntax_range(try_stmt.syntax()));
         }
     }
