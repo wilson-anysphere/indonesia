@@ -1,5 +1,3 @@
-#![cfg(feature = "unicode")]
-
 use unicode_casefold::UnicodeCaseFold;
 use unicode_normalization::UnicodeNormalization;
 
