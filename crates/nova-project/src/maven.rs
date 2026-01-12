@@ -1255,23 +1255,40 @@ fn discover_maven_repo(workspace_root: &Path, options: &LoadOptions) -> PathBuf 
 }
 
 fn maven_repo_from_maven_config(workspace_root: &Path) -> Option<PathBuf> {
-    let path = workspace_root.join(".mvn").join("maven.config");
-    let contents = std::fs::read_to_string(&path).ok()?;
+    let config_path = workspace_root.join(".mvn").join("maven.config");
+    let contents = std::fs::read_to_string(&config_path).ok()?;
 
-    let tokens = contents.split_whitespace().collect::<Vec<_>>();
-    let mut it = tokens.into_iter().peekable();
-    while let Some(token) = it.next() {
+    // `.mvn/maven.config` uses whitespace-delimited JVM/maven command line arguments.
+    // The `-Dmaven.repo.local` property can be expressed as:
+    // - `-Dmaven.repo.local=/path/to/repo`
+    // - `-Dmaven.repo.local /path/to/repo`
+    //
+    // We accept both, prefer the last valid value, and ignore placeholder values (e.g.
+    // `${user.home}`) that we don't currently expand.
+    let mut it = contents.split_whitespace().peekable();
+    let mut repo: Option<PathBuf> = None;
+
+    while let Some(raw_token) = it.next() {
+        let token = raw_token.trim_matches(|c| matches!(c, '"' | '\''));
         if let Some(value) = token.strip_prefix("-Dmaven.repo.local=") {
-            return resolve_maven_repo_path(value, workspace_root);
-        }
-        if token == "-Dmaven.repo.local" {
-            if let Some(value) = it.next() {
-                return resolve_maven_repo_path(value, workspace_root);
+            if let Some(path) = resolve_maven_repo_path(value, workspace_root) {
+                repo = Some(path);
             }
+            continue;
+        }
+
+        if token == "-Dmaven.repo.local" {
+            if let Some(raw_value) = it.next() {
+                let value = raw_value.trim_matches(|c| matches!(c, '"' | '\''));
+                if let Some(path) = resolve_maven_repo_path(value, workspace_root) {
+                    repo = Some(path);
+                }
+            }
+            continue;
         }
     }
 
-    None
+    repo
 }
 
 fn maven_repo_from_user_settings() -> Option<PathBuf> {
@@ -1291,22 +1308,16 @@ fn maven_repo_from_user_settings() -> Option<PathBuf> {
 }
 
 fn resolve_maven_repo_path(value: &str, base: &Path) -> Option<PathBuf> {
-    let value = value.trim();
+    let value = value
+        .trim()
+        .trim_matches(|c| matches!(c, '"' | '\''))
+        .trim();
     if value.is_empty() {
         return None;
     }
 
     // Best-effort: don't try to resolve placeholders in Maven repo configuration.
     if value.contains("${") {
-        return None;
-    }
-
-    let value = value
-        .trim_matches('"')
-        .trim_matches('\'')
-        .trim()
-        .to_string();
-    if value.is_empty() || value.contains("${") {
         return None;
     }
 
@@ -1575,4 +1586,69 @@ fn sort_dedup_dependencies(deps: &mut Vec<Dependency>) {
             .then(a.version.cmp(&b.version))
     });
     deps.dedup();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_maven_config(workspace_root: &Path, contents: &str) {
+        let mvn_dir = workspace_root.join(".mvn");
+        std::fs::create_dir_all(&mvn_dir).expect("create .mvn");
+        std::fs::write(mvn_dir.join("maven.config"), contents).expect("write maven.config");
+    }
+
+    #[test]
+    fn parses_repo_local_equals_absolute_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_maven_config(dir.path(), "-Dmaven.repo.local=/abs/path");
+
+        let repo = maven_repo_from_maven_config(dir.path()).expect("repo");
+        assert_eq!(repo, PathBuf::from("/abs/path"));
+    }
+
+    #[test]
+    fn parses_repo_local_space_separated_absolute_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_maven_config(dir.path(), "-Dmaven.repo.local /abs/path");
+
+        let repo = maven_repo_from_maven_config(dir.path()).expect("repo");
+        assert_eq!(repo, PathBuf::from("/abs/path"));
+    }
+
+    #[test]
+    fn parses_repo_local_double_quoted_value() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_maven_config(dir.path(), r#"-Dmaven.repo.local="repo""#);
+
+        let repo = maven_repo_from_maven_config(dir.path()).expect("repo");
+        assert_eq!(repo, dir.path().join("repo"));
+    }
+
+    #[test]
+    fn parses_repo_local_single_quoted_value() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_maven_config(dir.path(), "-Dmaven.repo.local='repo'");
+
+        let repo = maven_repo_from_maven_config(dir.path()).expect("repo");
+        assert_eq!(repo, dir.path().join("repo"));
+    }
+
+    #[test]
+    fn relative_repo_local_resolves_to_workspace_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_maven_config(dir.path(), "-Dmaven.repo.local=repo");
+
+        let repo = maven_repo_from_maven_config(dir.path()).expect("repo");
+        assert_eq!(repo, dir.path().join("repo"));
+    }
+
+    #[test]
+    fn placeholder_repo_local_is_ignored() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_maven_config(dir.path(), "-Dmaven.repo.local=${user.home}/.m2/repository");
+
+        let repo = maven_repo_from_maven_config(dir.path());
+        assert_eq!(repo, None);
+    }
 }
