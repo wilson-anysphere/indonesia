@@ -1475,6 +1475,28 @@ fn parse_java_version_assignment(line: &str, key: &str) -> Option<JavaVersion> {
 const GRADLE_DEPENDENCY_CONFIGS: &str =
     r"(?:implementation|api|compileOnly|runtimeOnly|testImplementation|testRuntimeOnly|testCompileOnly|annotationProcessor|testAnnotationProcessor|kapt|kaptTest)";
 
+fn gradle_scope_from_configuration(configuration: &str) -> Option<&'static str> {
+    match configuration.trim().to_ascii_lowercase().as_str() {
+        // Tests.
+        "testimplementation"
+        | "testruntimeonly"
+        | "testcompileonly"
+        | "testannotationprocessor"
+        | "kapttest" => Some("test"),
+
+        // Main compile.
+        "implementation" | "api" => Some("compile"),
+
+        // Main runtime only.
+        "runtimeonly" => Some("runtime"),
+
+        // Compile-only / annotation processor dependencies.
+        "compileonly" | "annotationprocessor" | "kapt" => Some("provided"),
+
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 struct GradleVersionCatalog {
     versions: HashMap<String, String>,
@@ -1797,17 +1819,20 @@ fn parse_gradle_dependencies_from_text(
         let configs = GRADLE_DEPENDENCY_CONFIGS;
 
         Regex::new(&format!(
-            r#"(?i)\b{configs}\b\s*\(?\s*['"]([^:'"]+):([^:'"]+)(?::([^'"]+))?['"]"#,
+            r#"(?i)\b(?P<config>{configs})\b\s*\(?\s*['"](?P<group>[^:'"]+):(?P<artifact>[^:'"]+)(?::(?P<version>[^'"]+))?['"]"#,
         ))
         .expect("valid regex")
     });
 
     for caps in re_gav.captures_iter(contents) {
         deps.push(Dependency {
-            group_id: caps[1].to_string(),
-            artifact_id: caps[2].to_string(),
-            version: caps.get(3).map(|m| m.as_str().to_string()),
-            scope: None,
+            group_id: caps["group"].to_string(),
+            artifact_id: caps["artifact"].to_string(),
+            version: caps.name("version").map(|m| m.as_str().to_string()),
+            scope: caps
+                .name("config")
+                .and_then(|m| gradle_scope_from_configuration(m.as_str()))
+                .map(str::to_string),
             classifier: None,
             type_: None,
         });
@@ -1832,17 +1857,20 @@ fn parse_gradle_dependencies_from_text(
         // - We accept both `implementation group: ...` and `implementation(group: ...)` forms.
         // - We don't try to parse non-literal versions (variables, method calls, etc).
         Regex::new(&format!(
-            r#"(?is)\b{configs}\b\s*\(?\s*group\s*[:=]\s*['"]([^'"]+)['"]\s*,\s*(?:name|module)\s*[:=]\s*['"]([^'"]+)['"](?:\s*,\s*version\s*[:=]\s*['"]([^'"]+)['"])?"#,
+            r#"(?is)\b(?P<config>{configs})\b\s*\(?\s*group\s*[:=]\s*['"](?P<group>[^'"]+)['"]\s*,\s*(?:name|module)\s*[:=]\s*['"](?P<artifact>[^'"]+)['"](?:\s*,\s*version\s*[:=]\s*['"](?P<version>[^'"]+)['"])?"#,
         ))
         .expect("valid regex")
     });
 
     for caps in re_map.captures_iter(contents) {
         deps.push(Dependency {
-            group_id: caps[1].to_string(),
-            artifact_id: caps[2].to_string(),
-            version: caps.get(3).map(|m| m.as_str().to_string()),
-            scope: None,
+            group_id: caps["group"].to_string(),
+            artifact_id: caps["artifact"].to_string(),
+            version: caps.name("version").map(|m| m.as_str().to_string()),
+            scope: caps
+                .name("config")
+                .and_then(|m| gradle_scope_from_configuration(m.as_str()))
+                .map(str::to_string),
             classifier: None,
             type_: None,
         });
@@ -1864,17 +1892,27 @@ fn resolve_version_catalog_dependencies(
     let re = RE.get_or_init(|| {
         let configs = GRADLE_DEPENDENCY_CONFIGS;
         Regex::new(&format!(
-            r#"(?i)\b{configs}\s*\(?\s*libs\.([A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)(?:\.get\(\))?\s*(?:\)|\s|$)"#,
+            r#"(?i)\b(?P<config>{configs})\s*\(?\s*libs\.(?P<ref>[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)(?:\.get\(\))?\s*(?:\)|\s|$)"#,
         ))
         .expect("valid regex")
     });
 
     let mut deps = Vec::new();
     for caps in re.captures_iter(contents) {
-        let Some(reference) = caps.get(1).map(|m| m.as_str()) else {
+        let Some(reference) = caps.name("ref").map(|m| m.as_str()) else {
             continue;
         };
-        deps.extend(resolve_version_catalog_reference(version_catalog, reference));
+        let scope = caps
+            .name("config")
+            .and_then(|m| gradle_scope_from_configuration(m.as_str()))
+            .map(str::to_string);
+        let mut resolved = resolve_version_catalog_reference(version_catalog, reference);
+        if let Some(scope) = scope {
+            for dep in &mut resolved {
+                dep.scope = Some(scope.clone());
+            }
+        }
+        deps.extend(resolved);
     }
     deps
 }
@@ -2124,13 +2162,90 @@ fn sort_dedup_dependencies(deps: &mut Vec<Dependency>) {
             .cmp(&b.group_id)
             .then(a.artifact_id.cmp(&b.artifact_id))
             .then(a.version.cmp(&b.version))
+            .then(a.classifier.cmp(&b.classifier))
+            .then(a.type_.cmp(&b.type_))
     });
-    deps.dedup();
+    deps.dedup_by(|a, b| {
+        let is_same_dep = a.group_id == b.group_id
+            && a.artifact_id == b.artifact_id
+            && a.version == b.version
+            && a.classifier == b.classifier
+            && a.type_ == b.type_;
+        if !is_same_dep {
+            return false;
+        }
+
+        // `Vec::dedup_by` keeps the *second* element passed to the predicate (`b`) and removes the
+        // first (`a`). Merge scope information into `b` so we keep the most useful value.
+        b.scope = merge_maven_like_scopes(a.scope.as_deref(), b.scope.as_deref());
+        true
+    });
+}
+
+/// Merge two Maven-like scopes (`compile`, `runtime`, `provided`, `test`) by choosing the most
+/// permissive single scope that best approximates the union.
+///
+/// This is used to keep Gradle dependency lists stable and avoid duplicates when a dependency is
+/// declared in multiple configurations (e.g. `testImplementation` + `implementation`).
+fn merge_maven_like_scopes(a: Option<&str>, b: Option<&str>) -> Option<String> {
+    // Prefer known scopes, but preserve unknown values if we have nothing better.
+    let (a_known, a_unknown) = split_known_scope(a);
+    let (b_known, b_unknown) = split_known_scope(b);
+
+    if a_known.is_none() && b_known.is_none() {
+        return a_unknown
+            .or(b_unknown)
+            .map(|s| s.to_string())
+            .or_else(|| a.map(|s| s.to_string()))
+            .or_else(|| b.map(|s| s.to_string()));
+    }
+
+    let mut compile = false;
+    let mut runtime = false;
+    let mut test = false;
+    for scope in [a_known, b_known].into_iter().flatten() {
+        match scope {
+            "compile" => {
+                compile = true;
+                runtime = true;
+            }
+            "runtime" => runtime = true,
+            "provided" => compile = true,
+            "test" => test = true,
+            _ => {}
+        }
+    }
+
+    let merged = if compile && runtime {
+        "compile"
+    } else if runtime {
+        "runtime"
+    } else if compile {
+        "provided"
+    } else if test {
+        "test"
+    } else {
+        // Should be unreachable when we have at least one known scope, but keep it safe.
+        return a_known
+            .or(b_known)
+            .map(|s| s.to_string())
+            .or_else(|| a_unknown.or(b_unknown).map(|s| s.to_string()));
+    };
+
+    Some(merged.to_string())
+}
+
+fn split_known_scope(scope: Option<&str>) -> (Option<&str>, Option<&str>) {
+    match scope {
+        Some("compile" | "runtime" | "provided" | "test") => (scope, None),
+        Some(s) => (None, Some(s)),
+        None => (None, None),
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use super::{parse_gradle_dependencies_from_text, sort_dedup_dependencies};
 
@@ -2228,10 +2343,14 @@ dependencies {
 "#;
 
         let deps = parse_gradle_dependencies_from_text(build_script, None);
-        let tuples: Vec<(String, String, Option<String>)> = deps
-            .into_iter()
-            .map(|d| (d.group_id, d.artifact_id, d.version))
-            .collect();
+
+        let mut tuples: Vec<(String, String, Option<String>)> = Vec::new();
+        let mut scopes: BTreeMap<(String, String, Option<String>), Option<String>> =
+            BTreeMap::new();
+        for dep in deps {
+            tuples.push((dep.group_id.clone(), dep.artifact_id.clone(), dep.version.clone()));
+            scopes.insert((dep.group_id, dep.artifact_id, dep.version), dep.scope);
+        }
         let got: BTreeSet<_> = tuples.iter().cloned().collect();
 
         let expected: BTreeSet<(String, String, Option<String>)> = [
@@ -2260,5 +2379,34 @@ dependencies {
             "expected dependency extraction to not emit duplicates"
         );
         assert_eq!(got, expected);
+
+        // Scope mapping is best-effort. If a dependency is declared in multiple configurations,
+        // we keep the most permissive Maven-like scope (union).
+        let expected_scopes: [((String, String, Option<String>), &str); 14] = [
+            ((String::from("g1"), String::from("a1"), Some("1".into())), "compile"),
+            ((String::from("g2"), String::from("a2"), Some("2".into())), "compile"),
+            ((String::from("g3"), String::from("a3"), Some("3".into())), "provided"),
+            ((String::from("g4"), String::from("a4"), Some("4".into())), "runtime"),
+            ((String::from("g5"), String::from("a5"), Some("5".into())), "test"),
+            ((String::from("g6"), String::from("a6"), Some("6".into())), "test"),
+            ((String::from("g7"), String::from("a7"), Some("7".into())), "test"),
+            ((String::from("g8"), String::from("a8"), Some("8".into())), "provided"),
+            ((String::from("g9"), String::from("a9"), Some("9".into())), "test"),
+            (
+                (String::from("g10"), String::from("a10"), Some("10".into())),
+                "provided",
+            ),
+            ((String::from("g11"), String::from("a11"), Some("11".into())), "test"),
+            ((String::from("g12"), String::from("a12"), Some("12".into())), "compile"),
+            ((String::from("g13"), String::from("a13"), Some("13".into())), "provided"),
+            (
+                (String::from("dup"), String::from("dep"), Some("1.0".into())),
+                "compile",
+            ),
+        ];
+
+        for (key, scope) in expected_scopes {
+            assert_eq!(scopes.get(&key), Some(&Some(scope.to_string())));
+        }
     }
 }
