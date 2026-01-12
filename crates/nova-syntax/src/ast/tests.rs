@@ -1036,8 +1036,69 @@ fn new_expression_anonymous_class_body_is_accessible() {
     assert!(
         body.members()
             .any(|m| matches!(m, ClassMember::FieldDeclaration(_))),
-        "expected a field declaration member in anonymous class"
+            "expected a field declaration member in anonymous class"
     );
+}
+
+#[test]
+fn qualified_new_expression_has_qualifier() {
+    let src = r#"
+        class Outer {
+          class Inner {}
+          void m(Outer o) { o.new Inner(); }
+        }
+    "#;
+
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let new_expr = parse
+        .syntax()
+        .descendants()
+        .filter_map(NewExpression::cast)
+        .find(|expr| expr.qualifier().is_some())
+        .expect("expected a qualified new expression");
+
+    assert_eq!(
+        new_expr
+            .qualifier()
+            .unwrap()
+            .syntax()
+            .text()
+            .to_string(),
+        "o"
+    );
+    assert_eq!(
+        new_expr.ty().unwrap().syntax().text().to_string().trim(),
+        "Inner"
+    );
+}
+
+#[test]
+fn new_expression_constructor_type_arguments_are_accessible() {
+    let src = r#"
+        class Foo {
+          <T> Foo(T t) {}
+          void m(String s) { new <String> Foo(s); }
+        }
+    "#;
+
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let new_expr = parse
+        .syntax()
+        .descendants()
+        .filter_map(NewExpression::cast)
+        .find(|expr| expr.type_arguments().is_some())
+        .expect("expected a new expression with type arguments");
+
+    assert!(new_expr.qualifier().is_none(), "expected no qualifier");
+
+    let args = new_expr.type_arguments().unwrap();
+    assert_eq!(args.arguments().count(), 1);
+    let arg = args.arguments().next().unwrap().ty().unwrap();
+    assert_eq!(arg.syntax().text().to_string(), "String");
 }
 
 #[test]

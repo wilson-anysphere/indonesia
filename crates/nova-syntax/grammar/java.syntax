@@ -465,6 +465,8 @@ ParenthesizedExpression {
 }
 
 NewExpression {
+  qualifier: Expression?
+  type_arguments: TypeArguments?
   ty: Type?
   arguments: ArgumentList?
   class_body: ClassBody?

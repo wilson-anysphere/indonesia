@@ -1,0 +1,143 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Outer"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace "\n  "
+      ClassDeclaration
+        Modifiers
+        ClassKw "class"
+        Whitespace " "
+        Identifier "Inner"
+        Whitespace " "
+        ClassBody
+          LBrace "{"
+          RBrace "}"
+      Whitespace "\n\n  "
+      ConstructorDeclaration
+        Modifiers
+        TypeParameters
+          Less "<"
+          TypeParameter
+            Identifier "T"
+          Greater ">"
+        Whitespace " "
+        Identifier "Outer"
+        ParameterList
+          LParen "("
+          Parameter
+            Modifiers
+            Type
+              NamedType
+                Identifier "T"
+                Whitespace " "
+            Identifier "t"
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          RBrace "}"
+      Whitespace "\n\n  "
+      ClassDeclaration
+        Modifiers
+        ClassKw "class"
+        Whitespace " "
+        Identifier "Nested"
+        Whitespace " "
+        ClassBody
+          LBrace "{"
+          Whitespace "\n    "
+          MethodDeclaration
+            Modifiers
+            VoidKw "void"
+            Whitespace " "
+            Identifier "m"
+            ParameterList
+              LParen "("
+              Parameter
+                Modifiers
+                Type
+                  NamedType
+                    Identifier "Outer"
+                    Whitespace " "
+                Identifier "o"
+              Comma ","
+              Whitespace " "
+              Parameter
+                Modifiers
+                Type
+                  NamedType
+                    Identifier "String"
+                    Whitespace " "
+                Identifier "s"
+              RParen ")"
+            Whitespace " "
+            Block
+              LBrace "{"
+              Whitespace "\n      "
+              ExpressionStatement
+                NewExpression
+                  NameExpression
+                    Identifier "o"
+                  Dot "."
+                  NewKw "new"
+                  Type
+                    Whitespace " "
+                    NamedType
+                      Identifier "Inner"
+                  ArgumentList
+                    LParen "("
+                    RParen ")"
+                Semicolon ";"
+              Whitespace "\n      "
+              ExpressionStatement
+                NewExpression
+                  ThisExpression
+                    NameExpression
+                      Identifier "Outer"
+                    Dot "."
+                    ThisKw "this"
+                  Dot "."
+                  NewKw "new"
+                  Type
+                    Whitespace " "
+                    NamedType
+                      Identifier "Inner"
+                  ArgumentList
+                    LParen "("
+                    RParen ")"
+                Semicolon ";"
+              Whitespace "\n      "
+              ExpressionStatement
+                NewExpression
+                  NewKw "new"
+                  TypeArguments
+                    Whitespace " "
+                    Less "<"
+                    TypeArgument
+                      Type
+                        NamedType
+                          Identifier "String"
+                    Greater ">"
+                  Type
+                    Whitespace " "
+                    NamedType
+                      Identifier "Outer"
+                  ArgumentList
+                    LParen "("
+                    NameExpression
+                      Identifier "s"
+                    RParen ")"
+                Semicolon ";"
+              Whitespace "\n    "
+              RBrace "}"
+          Whitespace "\n  "
+          RBrace "}"
+      Whitespace "\n"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

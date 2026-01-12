@@ -3079,6 +3079,12 @@ impl<'a> Parser<'a> {
                         self.builder.finish_node();
                         continue;
                     }
+                    // Qualified class instance creation: `expr.new T(...)`.
+                    if self.nth(1) == Some(SyntaxKind::NewKw) {
+                        self.bump(); // .
+                        self.parse_new_expression_or_array_creation(checkpoint, allow_lambda);
+                        continue;
+                    }
                     // Field access / method call receiver segment. Java also allows explicit type
                     // arguments on method invocations: `expr.<T>method()`.
                     let mut lookahead = skip_trivia(&self.tokens, 1);
@@ -3313,6 +3319,11 @@ impl<'a> Parser<'a> {
         // or an array creation (`new T[...]` / `new T[] {...}`), and finally wrap the whole thing
         // in the appropriate expression node.
         self.bump(); // new
+        // Java allows explicit type arguments on constructor invocations:
+        // `new <T> Foo(...)`.
+        if self.nth(0) == Some(SyntaxKind::Less) {
+            self.parse_type_arguments();
+        }
         self.parse_type_no_dims();
 
         if self.at(SyntaxKind::LParen) {
