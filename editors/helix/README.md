@@ -20,6 +20,17 @@ args = ["--stdio"]
 name = "java"
 language-id = "java"
 language-servers = ["nova-lsp"]
+roots = [
+  "pom.xml",
+  "build.gradle",
+  "build.gradle.kts",
+  "settings.gradle",
+  "settings.gradle.kts",
+  "WORKSPACE",
+  "WORKSPACE.bazel",
+  "MODULE.bazel",
+  ".git",
+]
 ```
 
 ## Nova custom requests (optional)
