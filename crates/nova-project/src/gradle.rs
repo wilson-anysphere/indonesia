@@ -1120,13 +1120,15 @@ fn strip_gradle_comments(contents: &str) -> String {
     // This is intentionally conservative and only strips:
     // - `// ...` to end-of-line
     // - `/* ... */` block comments
-    // while preserving quoted strings (`'...'` / `"..."`).
+    // while preserving quoted strings (`'...'` / `"..."` / `'''...'''` / `"""..."""`).
     let bytes = contents.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
 
     let mut i = 0;
     let mut in_single = false;
     let mut in_double = false;
+    let mut in_triple_single = false;
+    let mut in_triple_double = false;
     let mut in_line_comment = false;
     let mut in_block_comment = false;
 
@@ -1148,6 +1150,30 @@ fn strip_gradle_comments(contents: &str) -> String {
                 i += 2;
                 continue;
             }
+            i += 1;
+            continue;
+        }
+
+        if in_triple_single {
+            if bytes[i..].starts_with(b"'''") {
+                out.extend_from_slice(b"'''");
+                in_triple_single = false;
+                i += 3;
+                continue;
+            }
+            out.push(b);
+            i += 1;
+            continue;
+        }
+
+        if in_triple_double {
+            if bytes[i..].starts_with(b"\"\"\"") {
+                out.extend_from_slice(b"\"\"\"");
+                in_triple_double = false;
+                i += 3;
+                continue;
+            }
+            out.push(b);
             i += 1;
             continue;
         }
@@ -1191,6 +1217,20 @@ fn strip_gradle_comments(contents: &str) -> String {
         if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
             in_block_comment = true;
             i += 2;
+            continue;
+        }
+
+        if bytes[i..].starts_with(b"'''") {
+            in_triple_single = true;
+            out.extend_from_slice(b"'''");
+            i += 3;
+            continue;
+        }
+
+        if bytes[i..].starts_with(b"\"\"\"") {
+            in_triple_double = true;
+            out.extend_from_slice(b"\"\"\"");
+            i += 3;
             continue;
         }
 
@@ -1252,9 +1292,31 @@ fn find_keyword_outside_strings(contents: &str, keyword: &str) -> Vec<usize> {
 
     let mut in_single = false;
     let mut in_double = false;
+    let mut in_triple_single = false;
+    let mut in_triple_double = false;
     let mut i = 0usize;
     while i < bytes.len() {
         let b = bytes[i];
+
+        if in_triple_single {
+            if bytes[i..].starts_with(b"'''") {
+                in_triple_single = false;
+                i += 3;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_triple_double {
+            if bytes[i..].starts_with(b"\"\"\"") {
+                in_triple_double = false;
+                i += 3;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
 
         if in_single {
             if b == b'\\' {
@@ -1277,6 +1339,18 @@ fn find_keyword_outside_strings(contents: &str, keyword: &str) -> Vec<usize> {
                 in_double = false;
             }
             i += 1;
+            continue;
+        }
+
+        if bytes[i..].starts_with(b"'''") {
+            in_triple_single = true;
+            i += 3;
+            continue;
+        }
+
+        if bytes[i..].starts_with(b"\"\"\"") {
+            in_triple_double = true;
+            i += 3;
             continue;
         }
 
@@ -2610,6 +2684,10 @@ rootProject.name = "includeFlat-root"
 // Kotlin-style var assignment + concatenation.
 val ignoredFlat = "includeFlat" + "app"
 val ignoredInclude = "include" + ":lib"
+
+// Triple-quoted strings (Groovy/Kotlin raw) should also be ignored.
+val triple = """include(":app")"""
+def tripleGroovy = '''includeFlat("lib")'''
 "#;
 
         let modules = parse_gradle_settings_projects(settings);
