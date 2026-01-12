@@ -2465,7 +2465,7 @@ fn inline_variable_in_switch_case_label_declaration_at_eol_deletes_newline_crlf(
 fn inline_variable_in_switch_case_with_declaration_on_own_line_deletes_indent_cleanly() {
     let file = FileId::new("Test.java");
     let src = r#"class C {
-      void m(int x) {
+  void m(int x) {
     switch (x) {
       case 1:
         int a = 1 + 2;
