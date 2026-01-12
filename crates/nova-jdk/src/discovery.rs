@@ -31,6 +31,20 @@ impl JdkInstallation {
         &self.java_home
     }
 
+    /// Best-effort path to the `java` launcher for this installation.
+    ///
+    /// For legacy JDK8 installations, prefer `$JDK/bin/java` when present and
+    /// fall back to `$JAVA_HOME/bin/java` (where `$JAVA_HOME` might be `$JDK/jre`).
+    pub fn java_bin(&self) -> PathBuf {
+        let exe_name = if cfg!(windows) { "java.exe" } else { "java" };
+        let root_java = self.root.join("bin").join(exe_name);
+        if root_java.is_file() {
+            return root_java;
+        }
+
+        self.java_home.join("bin").join(exe_name)
+    }
+
     /// Returns the path to the JDK `src.zip` if it exists.
     ///
     /// This checks common JDK layouts:

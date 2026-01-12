@@ -53,6 +53,86 @@ fn find_jdk_symbol_index_cache_file(cache_root: &Path) -> PathBuf {
     matches.pop().expect("checked matches length")
 }
 
+fn minimal_class_bytes(internal_name: &str) -> Vec<u8> {
+    minimal_class_bytes_with_marker(internal_name, None)
+}
+
+fn minimal_class_bytes_with_marker(internal_name: &str, marker: Option<&str>) -> Vec<u8> {
+    fn push_u16(out: &mut Vec<u8>, value: u16) {
+        out.extend_from_slice(&value.to_be_bytes());
+    }
+    fn push_u32(out: &mut Vec<u8>, value: u32) {
+        out.extend_from_slice(&value.to_be_bytes());
+    }
+    fn push_utf8(out: &mut Vec<u8>, s: &str) {
+        out.push(1); // CONSTANT_Utf8
+        push_u16(out, s.len() as u16);
+        out.extend_from_slice(s.as_bytes());
+    }
+    fn push_class(out: &mut Vec<u8>, name_index: u16) {
+        out.push(7); // CONSTANT_Class
+        push_u16(out, name_index);
+    }
+
+    const MAJOR_JAVA_8: u16 = 52;
+    let super_internal = "java/lang/Object";
+
+    // Constant pool:
+    // 1: Utf8 this
+    // 2: Class #1
+    // 3: Utf8 super
+    // 4: Class #3
+    // 5: (optional) Utf8 marker
+    let cp_count: u16 = if marker.is_some() { 6 } else { 5 };
+
+    let mut bytes = Vec::new();
+    push_u32(&mut bytes, 0xCAFEBABE);
+    push_u16(&mut bytes, 0); // minor
+    push_u16(&mut bytes, MAJOR_JAVA_8);
+    push_u16(&mut bytes, cp_count);
+
+    push_utf8(&mut bytes, internal_name);
+    push_class(&mut bytes, 1);
+    push_utf8(&mut bytes, super_internal);
+    push_class(&mut bytes, 3);
+    if let Some(marker) = marker {
+        push_utf8(&mut bytes, marker);
+    }
+
+    // access_flags (public + super)
+    push_u16(&mut bytes, 0x0021);
+    // this_class
+    push_u16(&mut bytes, 2);
+    // super_class
+    push_u16(&mut bytes, 4);
+    // interfaces_count, fields_count, methods_count, attributes_count
+    push_u16(&mut bytes, 0);
+    push_u16(&mut bytes, 0);
+    push_u16(&mut bytes, 0);
+    push_u16(&mut bytes, 0);
+
+    bytes
+}
+
+fn write_jar(
+    jar_path: &std::path::Path,
+    entries: &[(&str, Vec<u8>)],
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+
+    let file = std::fs::File::create(jar_path)?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::FileOptions::default();
+
+    for &(name, ref bytes) in entries {
+        zip.start_file(name, options)?;
+        zip.write_all(bytes)?;
+    }
+
+    zip.finish()?;
+    Ok(())
+}
+
 struct EnvVarGuard {
     key: &'static str,
     prev: Option<OsString>,
@@ -269,6 +349,101 @@ fn reads_java_lang_string_class_bytes_from_test_rt_jar() -> Result<(), Box<dyn s
     assert!(
         bytes.starts_with(&[0xCA, 0xFE, 0xBA, 0xBE]),
         "class files should start with CAFEBABE"
+    );
+
+    Ok(())
+}
+
+#[cfg(not(windows))]
+#[test]
+fn indexes_legacy_boot_classpath_jars_and_dirs() -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempdir()?;
+    let root = temp.path();
+
+    // Fake a JDK8-like layout:
+    //   $ROOT/bin/java
+    //   $ROOT/jre/lib/rt.jar
+    //   $ROOT/jre/lib/jsse.jar
+    //   $ROOT/jre/classes/**/*.class
+    let jre_dir = root.join("jre");
+    let lib_dir = jre_dir.join("lib");
+    std::fs::create_dir_all(&lib_dir)?;
+
+    let rt_jar = lib_dir.join("rt.jar");
+    let jsse_jar = lib_dir.join("jsse.jar");
+
+    let dup_rt_bytes = minimal_class_bytes_with_marker("dup/Duplicate", Some("rt"));
+    let dup_jsse_bytes = minimal_class_bytes_with_marker("dup/Duplicate", Some("jsse"));
+
+    write_jar(
+        &rt_jar,
+        &[
+            (
+                "java/lang/String.class",
+                minimal_class_bytes("java/lang/String"),
+            ),
+            ("dup/Duplicate.class", dup_rt_bytes.clone()),
+        ],
+    )?;
+
+    write_jar(
+        &jsse_jar,
+        &[
+            (
+                "javax/net/ssl/SSLContext.class",
+                minimal_class_bytes("javax/net/ssl/SSLContext"),
+            ),
+            ("dup/Duplicate.class", dup_jsse_bytes),
+        ],
+    )?;
+
+    let classes_dir = jre_dir.join("classes");
+    let from_dir_internal = "com/example/FromDir";
+    let from_dir_path = classes_dir.join("com").join("example");
+    std::fs::create_dir_all(&from_dir_path)?;
+    std::fs::write(
+        from_dir_path.join("FromDir.class"),
+        minimal_class_bytes(from_dir_internal),
+    )?;
+
+    let bin_dir = root.join("bin");
+    std::fs::create_dir_all(&bin_dir)?;
+    let java_path = bin_dir.join("java");
+    let boot_cp = format!(
+        "{}:{}:{}",
+        rt_jar.display(),
+        jsse_jar.display(),
+        classes_dir.display()
+    );
+    let script = format!(
+        "#!/usr/bin/env sh\nif [ \"$1\" = \"-XshowSettings:properties\" ] && [ \"$2\" = \"-version\" ]; then\n  echo \"    java.home = {}\" 1>&2\n  echo \"    sun.boot.class.path = {}\" 1>&2\nfi\nexit 0\n",
+        jre_dir.display(),
+        boot_cp
+    );
+    std::fs::write(&java_path, script)?;
+    let mut perms = std::fs::metadata(&java_path)?.permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&java_path, perms)?;
+
+    let index = JdkIndex::from_jdk_root(root)?;
+
+    assert!(
+        index.lookup_type("javax.net.ssl.SSLContext")?.is_some(),
+        "should index classes from additional boot jar entries"
+    );
+    assert!(
+        index.lookup_type("com.example.FromDir")?.is_some(),
+        "should index classes from directory entries on the boot classpath"
+    );
+
+    let bytes = index
+        .read_class_bytes("dup/Duplicate")?
+        .expect("dup/Duplicate should be present");
+    assert_eq!(
+        bytes, dup_rt_bytes,
+        "when the same internal name exists in multiple containers, the first boot classpath entry should win"
     );
 
     Ok(())

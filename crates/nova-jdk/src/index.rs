@@ -1,11 +1,14 @@
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use nova_classfile::{parse_module_info_class, ClassFile};
 use nova_modules::{ModuleGraph, ModuleInfo, ModuleName, JAVA_BASE};
+use nova_process::{run_command, RunOptions};
 use once_cell::sync::OnceCell;
 use thiserror::Error;
 
@@ -61,13 +64,14 @@ fn record_cache_write(stats: Option<&IndexingStats>) {
 enum JdkContainerKind {
     JmodModule { name: ModuleName },
     Jar,
+    ClassDir,
 }
 
 impl JdkContainerKind {
     fn module_name(&self) -> Option<&ModuleName> {
         match self {
             Self::JmodModule { name } => Some(name),
-            Self::Jar => None,
+            Self::Jar | Self::ClassDir => None,
         }
     }
 }
@@ -288,34 +292,102 @@ impl JmodSymbolIndex {
         allow_write: bool,
         stats: Option<&IndexingStats>,
     ) -> Result<Self, JdkIndexError> {
-        let rt_jar = install.java_home().join("lib").join("rt.jar");
-        if !rt_jar.is_file() {
-            return Err(JdkIndexError::MissingRtJar { path: rt_jar });
+        let mut java_home = install.java_home().to_path_buf();
+        let mut container_paths: Vec<PathBuf> = Vec::new();
+
+        // Prefer the full legacy boot classpath as reported by the runtime
+        // (`sun.boot.class.path`). This captures boot jars beyond `rt.jar`
+        // (jsse.jar, jce.jar, charsets.jar, localedata.jar, etc.) and includes
+        // directory entries like `jre/classes`.
+        let java_bin = install.java_bin();
+        if java_bin.is_file() {
+            let args: Vec<String> = vec![
+                "-XshowSettings:properties".to_string(),
+                "-version".to_string(),
+            ];
+            let opts = RunOptions {
+                timeout: Some(Duration::from_secs(5)),
+                max_bytes: 1024 * 1024,
+                ..RunOptions::default()
+            };
+
+            if let Ok(output) = run_command(Path::new("."), &java_bin, &args, opts) {
+                if !output.timed_out {
+                    let combined = output.output.combined();
+                    if let Some(home) = parse_java_property(&combined, "java.home") {
+                        java_home = PathBuf::from(home);
+                    }
+
+                    if let Some(boot_cp) = parse_java_property(&combined, "sun.boot.class.path") {
+                        container_paths = std::env::split_paths(OsStr::new(boot_cp))
+                            .filter(|p| p.is_file() || p.is_dir())
+                            .collect();
+                    }
+                }
+            }
         }
 
-        let mut jar_paths = vec![rt_jar];
+        if container_paths.is_empty() {
+            // Deterministic fallback when `sun.boot.class.path` is missing/unavailable.
+            let lib = java_home.join("lib");
+            let rt_jar = lib.join("rt.jar");
+            if !rt_jar.is_file() {
+                return Err(JdkIndexError::MissingRtJar { path: rt_jar });
+            }
+            container_paths.push(rt_jar);
+
+            for jar_name in [
+                "resources.jar",
+                "charsets.jar",
+                "jce.jar",
+                "jsse.jar",
+                "localedata.jar",
+            ] {
+                let path = lib.join(jar_name);
+                if path.is_file() {
+                    container_paths.push(path);
+                }
+            }
+
+            let classes = java_home.join("classes");
+            if classes.is_dir() {
+                container_paths.push(classes);
+            }
+        }
+
+        // Legacy `tools.jar` (javac, com.sun.tools.*) is not part of the boot
+        // classpath, but is useful for IDE features when present.
         let tools_jar = install.root().join("lib").join("tools.jar");
         if tools_jar.is_file() {
-            jar_paths.push(tools_jar);
+            container_paths.push(tools_jar);
         }
 
-        let jar_paths: Vec<PathBuf> = jar_paths
+        let container_paths: Vec<PathBuf> = container_paths
             .into_iter()
             .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
             .collect();
 
         let fingerprints = if cache_dir.is_some() {
-            Some(persist::fingerprint_containers(&jar_paths)?)
+            Some(persist::fingerprint_containers(&container_paths)?)
         } else {
             None
         };
 
-        let containers = jar_paths
+        let containers = container_paths
             .into_iter()
-            .map(|path| JdkContainer {
-                kind: JdkContainerKind::Jar,
-                path,
-                indexed: OnceCell::new(),
+            .filter_map(|path| {
+                let kind = if path.is_dir() {
+                    JdkContainerKind::ClassDir
+                } else if path.is_file() {
+                    JdkContainerKind::Jar
+                } else {
+                    return None;
+                };
+                Some(JdkContainer {
+                    kind,
+                    path,
+                    indexed: OnceCell::new(),
+                })
             })
             .collect();
 
@@ -648,7 +720,10 @@ impl JmodSymbolIndex {
                 })
                 .unwrap_or(0)
         } else {
-            0
+            self.containers
+                .iter()
+                .position(|c| c.path.file_name().is_some_and(|name| name == "rt.jar"))
+                .unwrap_or(0)
         };
         self.ensure_container_indexed(java_lang_container_idx)?;
 
@@ -764,6 +839,7 @@ impl JmodSymbolIndex {
                     })
                     .collect()
             }
+            JdkContainerKind::ClassDir => scan_class_dir(&container.path)?,
         };
 
         let mut map = self.class_to_container.lock().expect("mutex poisoned");
@@ -786,6 +862,7 @@ impl JmodSymbolIndex {
                 jmod::read_class_bytes(&container.path, internal)?
             }
             JdkContainerKind::Jar => jar::read_class_bytes(&container.path, internal)?,
+            JdkContainerKind::ClassDir => read_class_bytes_from_dir(&container.path, internal)?,
         }) else {
             // Stale mapping (e.g. mutated filesystem). Remove and treat as not found.
             self.class_to_container
@@ -818,6 +895,7 @@ impl JmodSymbolIndex {
                 jmod::read_class_bytes(&container.path, internal)?
             }
             JdkContainerKind::Jar => jar::read_class_bytes(&container.path, internal)?,
+            JdkContainerKind::ClassDir => read_class_bytes_from_dir(&container.path, internal)?,
         }) else {
             // Stale mapping (e.g. mutated filesystem). Remove and treat as not found.
             self.class_to_container
@@ -979,4 +1057,61 @@ pub(crate) fn normalize_binary_prefix(prefix: &str) -> Cow<'_, str> {
     } else {
         Cow::Borrowed(prefix)
     }
+}
+
+fn parse_java_property<'a>(combined_output: &'a str, key: &str) -> Option<&'a str> {
+    combined_output.lines().find_map(|line| {
+        let line = line.trim();
+        let (k, v) = line.split_once('=')?;
+        (k.trim() == key).then_some(v.trim())
+    })
+}
+
+fn scan_class_dir(dir: &Path) -> Result<Vec<String>, JdkIndexError> {
+    fn visit(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<(), std::io::Error> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                visit(root, &path, out)?;
+                continue;
+            }
+
+            if path.extension().is_some_and(|ext| ext == "class") {
+                let rel = path.strip_prefix(root).unwrap_or(&path);
+                let rel_str = rel.to_string_lossy();
+                let Some(without_ext) = rel_str.strip_suffix(".class") else {
+                    continue;
+                };
+                let internal = without_ext.replace('\\', "/");
+                if !is_non_type_classfile(&internal) {
+                    out.push(internal);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    let mut out = Vec::new();
+    visit(dir, dir, &mut out)?;
+    Ok(out)
+}
+
+fn read_class_bytes_from_dir(dir: &Path, internal_name: &str) -> Result<Option<Vec<u8>>, JdkIndexError> {
+    let path = dir_class_path(dir, internal_name);
+    match std::fs::read(&path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn dir_class_path(dir: &Path, internal_name: &str) -> PathBuf {
+    let mut rel = PathBuf::new();
+    for segment in internal_name.split('/') {
+        rel.push(segment);
+    }
+    rel.set_extension("class");
+    dir.join(rel)
 }
