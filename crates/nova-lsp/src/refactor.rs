@@ -290,42 +290,32 @@ pub fn extract_variable_code_actions(
     }
 
     let mut actions = Vec::new();
-    // Only offer Extract Variable when the `var` extraction variant is applicable. This preserves
-    // the refactoring's "safe by default" behavior (e.g. we do not offer extraction for
-    // side-effectful expressions).
-    let Some(placeholder_name) =
+
+    // Offer the original `var` extraction variant when applicable.
+    if let Some(placeholder_name) =
         probe_extract_variable_placeholder_name(&db, &file, expr_range, true)
-    else {
-        return Vec::new();
-    };
+    {
+        actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+            title: "Extract variable…".to_string(),
+            kind: Some(CodeActionKind::REFACTOR_EXTRACT),
+            data: Some(
+                serde_json::to_value(CodeActionData::ExtractVariable {
+                    start: expr_range.start,
+                    end: expr_range.end,
+                    use_var: true,
+                    name: Some(placeholder_name),
+                })
+                .expect("serializable"),
+            ),
+            ..CodeAction::default()
+        }));
+    }
 
-    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-        title: "Extract variable…".to_string(),
-        kind: Some(CodeActionKind::REFACTOR_EXTRACT),
-        data: Some(
-            serde_json::to_value(CodeActionData::ExtractVariable {
-                start: expr_range.start,
-                end: expr_range.end,
-                use_var: true,
-                name: Some(placeholder_name.clone()),
-            })
-            .expect("serializable"),
-        ),
-        ..CodeAction::default()
-    }));
-
-    // Offer the explicit-type extraction variant when type inference is available.
-    if extract_variable(
-        &db,
-        ExtractVariableParams {
-            file: file.clone(),
-            expr_range,
-            name: placeholder_name.clone(),
-            use_var: false,
-            replace_all: false,
-        },
-    )
-    .is_ok()
+    // Offer the explicit-type extraction variant when the semantic refactor engine can infer a
+    // concrete type for the extracted expression (and/or otherwise accepts the selection even when
+    // the `var` variant does not).
+    if let Some(placeholder_name) =
+        probe_extract_variable_placeholder_name(&db, &file, expr_range, false)
     {
         actions.push(CodeActionOrCommand::CodeAction(CodeAction {
             title: "Extract variable… (explicit type)".to_string(),

@@ -197,11 +197,12 @@ class C {
 }
 
 #[test]
-fn extract_variable_code_action_not_offered_for_side_effectful_expression() {
+fn extract_variable_code_action_only_offered_as_explicit_type_for_side_effectful_expression() {
     let fixture = r#"
+class Foo {}
 class C {
     void m() {
-        int x = /*start*/foo()/*end*/;
+        Foo x = /*start*/new Foo()/*end*/;
     }
 }
 "#;
@@ -214,10 +215,17 @@ class C {
     };
 
     let actions = extract_variable_code_actions(&uri, &source, range);
-    assert!(
-        actions.is_empty(),
-        "expected extract variable to be unavailable for side-effectful expression, got: {actions:?}"
+    assert_eq!(
+        actions.len(),
+        1,
+        "expected only the explicit-type variant for side-effectful expression, got: {actions:?}"
     );
+    assert!(actions.iter().any(|action| match action {
+        lsp_types::CodeActionOrCommand::CodeAction(action) => {
+            action.title == "Extract variable… (explicit type)"
+        }
+        _ => false,
+    }));
 }
 
 #[test]
