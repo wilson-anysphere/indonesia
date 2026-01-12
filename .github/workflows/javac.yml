@@ -42,4 +42,4 @@ jobs:
         run: cargo test -p nova-syntax --test javac_corpus
 
       - name: Run javac smoke tests
-        run: cargo test -p nova-types --test integration javac_differential -- --ignored
+        run: cargo test -p nova-types --test javac_differential -- --ignored

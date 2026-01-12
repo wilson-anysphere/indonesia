@@ -1,5 +1,7 @@
 use nova_test_utils::javac::{javac_available, run_javac_snippet};
 
+mod suite;
+
 #[test]
 fn integration_tests_are_consolidated_into_this_harness() {
     let tests_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
@@ -20,7 +22,7 @@ fn integration_tests_are_consolidated_into_this_harness() {
     }
 
     root_rs_files.sort();
-    assert_eq!(root_rs_files, vec!["integration.rs"]);
+    assert_eq!(root_rs_files, vec!["javac_differential.rs"]);
 }
 
 #[test]
