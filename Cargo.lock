@@ -4309,8 +4309,10 @@ dependencies = [
 name = "nova-vfs"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-channel",
  "lru",
  "lsp-types",
+ "notify",
  "nova-archive",
  "nova-core",
  "tempfile",

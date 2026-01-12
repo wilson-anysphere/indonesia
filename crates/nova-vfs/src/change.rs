@@ -7,12 +7,39 @@ pub enum FileChangeKind {
     Created,
     Modified,
     Deleted,
+    Moved,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct FileChange {
-    pub path: VfsPath,
-    pub kind: FileChangeKind,
+pub enum FileChange {
+    Created { path: VfsPath },
+    Modified { path: VfsPath },
+    Deleted { path: VfsPath },
+    Moved { from: VfsPath, to: VfsPath },
+}
+
+impl FileChange {
+    pub fn kind(&self) -> FileChangeKind {
+        match self {
+            FileChange::Created { .. } => FileChangeKind::Created,
+            FileChange::Modified { .. } => FileChangeKind::Modified,
+            FileChange::Deleted { .. } => FileChangeKind::Deleted,
+            FileChange::Moved { .. } => FileChangeKind::Moved,
+        }
+    }
+
+    /// Returns every path touched by this change.
+    ///
+    /// - For create/modify/delete this is just the path.
+    /// - For moves this includes both `from` and `to`.
+    pub fn paths(&self) -> Vec<&VfsPath> {
+        match self {
+            FileChange::Created { path }
+            | FileChange::Modified { path }
+            | FileChange::Deleted { path } => vec![path],
+            FileChange::Moved { from, to } => vec![from, to],
+        }
+    }
 }
 
 /// High-level change kinds produced by the VFS.
@@ -39,7 +66,7 @@ pub enum ChangeEvent {
 impl ChangeEvent {
     pub fn kind(&self) -> ChangeKind {
         match self {
-            ChangeEvent::FileSystem(change) => ChangeKind::FileSystem(change.kind),
+            ChangeEvent::FileSystem(change) => ChangeKind::FileSystem(change.kind()),
             ChangeEvent::DocumentChanged { .. } => ChangeKind::Document,
         }
     }
