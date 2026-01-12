@@ -422,3 +422,104 @@ fn run_build(
         }
     }
 }
+
+#[cfg(all(test, feature = "bsp"))]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[derive(Debug, Default)]
+    struct RecordingExecutor {
+        seen: Mutex<Vec<BazelBspConfig>>,
+    }
+
+    impl RecordingExecutor {
+        fn configs(&self) -> Vec<BazelBspConfig> {
+            self.seen.lock().unwrap().clone()
+        }
+    }
+
+    impl BazelBuildExecutor for RecordingExecutor {
+        fn compile(
+            &self,
+            config: &BazelBspConfig,
+            _workspace_root: &Path,
+            _targets: &[String],
+            _cancellation: CancellationToken,
+        ) -> Result<BspCompileOutcome> {
+            self.seen.lock().unwrap().push(config.clone());
+            Ok(BspCompileOutcome {
+                status_code: 0,
+                diagnostics: Vec::new(),
+            })
+        }
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: Option<&str>) -> Self {
+            let previous = std::env::var(key).ok();
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    #[test]
+    fn run_build_discovers_bsp_config_when_missing() {
+        let _lock = crate::test_support::ENV_LOCK.lock().unwrap();
+        let _program_guard = EnvVarGuard::set("NOVA_BSP_PROGRAM", None);
+        let _args_guard = EnvVarGuard::set("NOVA_BSP_ARGS", None);
+
+        let root = tempdir().unwrap();
+        let bsp_dir = root.path().join(".bsp");
+        std::fs::create_dir_all(&bsp_dir).unwrap();
+        std::fs::write(
+            bsp_dir.join("server.json"),
+            r#"{"argv":["bsp-from-file","--arg"],"languages":["java"]}"#,
+        )
+        .unwrap();
+
+        let executor = Arc::new(RecordingExecutor::default());
+        let inner = Inner {
+            workspace_root: root.path().to_path_buf(),
+            executor: executor.clone(),
+            state: Mutex::new(State::default()),
+            wake: Condvar::new(),
+        };
+
+        let request = BazelBuildRequest {
+            targets: vec!["//:t".to_string()],
+            bsp_config: None,
+        };
+
+        let cancellation = CancellationToken::new();
+        let (state, outcome, error) = run_build(&inner, &request, cancellation);
+        assert_eq!(state, BazelBuildTaskState::Success);
+        assert!(outcome.is_some());
+        assert!(error.is_none());
+
+        assert_eq!(
+            executor.configs(),
+            vec![BazelBspConfig {
+                program: "bsp-from-file".to_string(),
+                args: vec!["--arg".to_string()],
+            }]
+        );
+    }
+}
