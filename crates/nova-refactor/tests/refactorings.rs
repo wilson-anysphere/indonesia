@@ -2526,6 +2526,73 @@ fn inline_variable_inline_one_single_use_side_effectful_initializer_deletes_decl
 }
 
 #[test]
+fn inline_variable_rejects_side_effectful_initializer_with_intervening_statement() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  int foo() { return 1; }
+  void bar() {}
+  void m() {
+    int a = foo();
+    bar();
+    System.out.println(a);
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(err, SemanticRefactorError::InlineSideEffects));
+}
+
+#[test]
+fn inline_variable_allows_side_effectful_initializer_when_usage_is_immediately_next_statement() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  int foo() { return 1; }
+  void m() {
+    int a = foo();
+    System.out.println(a);
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  int foo() { return 1; }
+  void m() {
+    System.out.println(foo());
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn inline_variable_inline_one_multi_use_side_effectful_initializer_is_rejected() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {

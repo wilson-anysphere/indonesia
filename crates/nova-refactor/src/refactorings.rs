@@ -458,6 +458,7 @@ pub fn inline_variable(
     let decl = find_local_variable_declaration(&root, def.name_range)
         .ok_or(RefactorError::InlineNotSupported)?;
 
+    let decl_stmt = decl.statement.clone();
     let init_expr = decl.initializer;
     // Array initializers (`int[] xs = {1,2};`) are not expressions in Java; they cannot be inlined
     // at arbitrary use sites.
@@ -584,8 +585,14 @@ pub fn inline_variable(
 
     let remove_decl = params.inline_all || all_refs.len() == 1;
 
-    if init_has_side_effects && !(remove_decl && targets.len() == 1) {
-        return Err(RefactorError::InlineSideEffects);
+    if init_has_side_effects {
+        if !(remove_decl && targets.len() == 1) {
+            return Err(RefactorError::InlineSideEffects);
+        }
+
+        // Prevent reordering side effects by ensuring the inlined usage statement is the
+        // immediately-following statement in the same block statement list.
+        check_side_effectful_inline_order(&root, &decl_stmt, &targets, &def.file)?;
     }
 
     let mut edits: Vec<TextEdit> = targets
@@ -1905,6 +1912,7 @@ fn is_java_ident_byte(b: u8) -> bool {
 
 #[derive(Debug)]
 struct LocalVarDeclInfo {
+    statement: ast::LocalVariableDeclarationStatement,
     statement_range: TextRange,
     initializer: ast::Expression,
 }
@@ -1939,6 +1947,7 @@ fn find_local_variable_declaration(
         let statement_range = syntax_range(stmt.syntax());
 
         return Some(LocalVarDeclInfo {
+            statement: stmt,
             statement_range,
             initializer,
         });
@@ -2183,6 +2192,75 @@ fn statement_end_including_trailing_newline(text: &str, stmt_end: usize) -> usiz
     }
 
     offset
+}
+
+fn find_innermost_statement_containing_range(
+    root: &nova_syntax::SyntaxNode,
+    range: TextRange,
+) -> Option<ast::Statement> {
+    root.descendants()
+        .filter_map(ast::Statement::cast)
+        .filter(|stmt| {
+            let stmt_range = syntax_range(stmt.syntax());
+            stmt_range.start <= range.start && range.end <= stmt_range.end
+        })
+        .min_by_key(|stmt| syntax_range(stmt.syntax()).len())
+}
+
+fn statement_block_and_index(stmt: &ast::Statement) -> Option<(ast::Block, usize)> {
+    let block = stmt.syntax().parent().and_then(ast::Block::cast)?;
+    let idx = block
+        .statements()
+        .position(|candidate| candidate.syntax() == stmt.syntax())?;
+    Some((block, idx))
+}
+
+fn check_side_effectful_inline_order(
+    root: &nova_syntax::SyntaxNode,
+    decl_stmt: &ast::LocalVariableDeclarationStatement,
+    targets: &[crate::semantic::Reference],
+    decl_file: &FileId,
+) -> Result<(), RefactorError> {
+    let decl_block = decl_stmt
+        .syntax()
+        .parent()
+        .and_then(ast::Block::cast)
+        .ok_or(RefactorError::InlineSideEffects)?;
+    let decl_index = decl_block
+        .statements()
+        .position(|stmt| stmt.syntax() == decl_stmt.syntax())
+        .ok_or(RefactorError::InlineSideEffects)?;
+
+    let mut earliest_usage_index: Option<usize> = None;
+    for target in targets {
+        // The statement-order check only supports analyzing the declaration file.
+        if &target.file != decl_file {
+            return Err(RefactorError::InlineSideEffects);
+        }
+
+        let usage_stmt = find_innermost_statement_containing_range(root, target.range)
+            .ok_or(RefactorError::InlineSideEffects)?;
+        let (usage_block, usage_index) =
+            statement_block_and_index(&usage_stmt).ok_or(RefactorError::InlineSideEffects)?;
+
+        if usage_block.syntax() != decl_block.syntax() {
+            return Err(RefactorError::InlineSideEffects);
+        }
+
+        earliest_usage_index = Some(match earliest_usage_index {
+            Some(existing) => existing.min(usage_index),
+            None => usage_index,
+        });
+    }
+
+    let Some(earliest) = earliest_usage_index else {
+        return Err(RefactorError::InlineSideEffects);
+    };
+
+    match decl_index.checked_add(1) {
+        Some(expected) if expected == earliest => Ok(()),
+        _ => Err(RefactorError::InlineSideEffects),
+    }
 }
 
 #[derive(Clone, Debug)]
