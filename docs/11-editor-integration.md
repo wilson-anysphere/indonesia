@@ -451,8 +451,8 @@ The real VS Code UX in this repo is an Explorer tree view (`novaFrameworks`, lab
 - is refreshed on-demand via a view toolbar button / command (`nova.frameworks.refresh`)
 - supports quick navigation via **Nova: Search Framework Items…** (`nova.frameworks.search`)
 - shows contextual empty-state messages when no folder is open, the server isn't running, or endpoint discovery is unavailable
-- can be extended to show framework-specific items like Micronaut endpoints/beans when the corresponding `nova/*`
-  methods are available.
+- the search command can also surface Micronaut endpoints/beans when the corresponding `nova/*` methods are available
+  (`nova/micronaut/endpoints`, `nova/micronaut/beans`).
 
 Discovery is intentionally manual because these requests run under a small watchdog time budget; repeatedly refreshing
 could time out or trigger Nova safe mode.
@@ -472,11 +472,19 @@ Payload notes (see `protocol-extensions.md` for full schemas):
 // JSON schemas. Extensions should treat "method not found" (-32601) as capability gating for
 // older server builds, and degrade gracefully.
 
-type FrameworkNode =
-  // `endpoint` / `bean` are the raw protocol payloads. Keeping them attached makes it easy to implement
-  // context-menu actions like "Copy Endpoint Path" without re-querying the server.
-  | { kind: 'endpoint'; framework: 'web' | 'micronaut'; label: string; projectRoot: string; endpoint: any }
-  | { kind: 'bean'; label: string; projectRoot: string; bean: any };
+type WebEndpoint = {
+  path: string;
+  methods: string[];
+  // Best-effort relative path. May be `null`/missing when the server can't determine a source location.
+  file?: string | null;
+  line: number; // 1-based
+};
+
+type WebEndpointsResponse = { endpoints: WebEndpoint[] };
+
+type FrameworkNode = { kind: 'web-endpoint'; projectRoot: string; endpoint: WebEndpoint };
+
+type SearchPickItem = vscode.QuickPickItem & { uri?: vscode.Uri; range?: vscode.Range };
 
 function isAbsolutePath(value: string): boolean {
   return value.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith('\\\\');
@@ -490,6 +498,41 @@ function uriFromProjectFile(projectRoot: string, file: string): vscode.Uri {
   return vscode.Uri.joinPath(vscode.Uri.file(projectRoot), ...segments);
 }
 
+async function sendOptionalRequest<R>(
+  client: LanguageClient,
+  method: string,
+  params: unknown,
+): Promise<R | undefined> {
+  try {
+    return await client.sendRequest(method, params);
+  } catch (err: any) {
+    // JSON-RPC method not found / capability gating.
+    //
+    // Note: some Nova server builds report unknown custom methods as `-32602` with an
+    // "unknown (stateless) method" message (because everything is routed through one dispatcher).
+    const message = typeof err?.message === 'string' ? err.message.toLowerCase() : '';
+    if (err?.code === -32601) return undefined;
+    if (err?.code === -32602 && message.includes('unknown (stateless) method')) return undefined;
+    if (message.includes('method not found')) return undefined;
+    throw err;
+  }
+}
+
+async function pickWorkspaceFolder(): Promise<vscode.WorkspaceFolder | undefined> {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  if (folders.length === 0) {
+    return undefined;
+  }
+  if (folders.length === 1) {
+    return folders[0];
+  }
+  const picked = await vscode.window.showQuickPick(
+    folders.map((folder) => ({ label: folder.name, description: folder.uri.fsPath, folder })),
+    { placeHolder: 'Select workspace folder' },
+  );
+  return picked?.folder;
+}
+
 class FrameworkDashboardTreeDataProvider implements vscode.TreeDataProvider<FrameworkNode> {
   private readonly onDidChangeTreeDataEmitter = new vscode.EventEmitter<FrameworkNode | undefined>();
   readonly onDidChangeTreeData = this.onDidChangeTreeDataEmitter.event;
@@ -501,30 +544,23 @@ class FrameworkDashboardTreeDataProvider implements vscode.TreeDataProvider<Fram
   }
 
   getTreeItem(element: FrameworkNode): vscode.TreeItem {
-    const item = new vscode.TreeItem(element.label, vscode.TreeItemCollapsibleState.None);
+    const { endpoint } = element;
+    const methods = Array.isArray(endpoint.methods) ? endpoint.methods.filter((m) => typeof m === 'string' && m.length > 0) : [];
+    const methodLabel = methods.length > 0 ? methods.join(', ') : 'ANY';
+    const label = `${methodLabel} ${endpoint.path}`;
 
-    // Match `editors/vscode/package.json` menu contributions:
-    // - endpoints: `viewItem == novaFrameworkEndpoint`
-    // - beans: `viewItem == novaFrameworkBean`
-    item.contextValue = element.kind === 'endpoint' ? 'novaFrameworkEndpoint' : 'novaFrameworkBean';
+    const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
+    item.contextValue = 'novaFrameworkEndpoint';
 
-    const file =
-      element.kind === 'endpoint'
-        ? element.framework === 'web'
-          ? element.endpoint?.file
-          : element.endpoint?.handler?.file ?? element.endpoint?.file
-        : element.bean?.file;
-    const line =
-      element.kind === 'endpoint' && element.framework === 'web' && typeof element.endpoint?.line === 'number'
-        ? element.endpoint.line
-        : undefined;
-    if (typeof file === 'string' && file.length > 0) {
+    const file = typeof endpoint.file === 'string' ? endpoint.file : undefined;
+    const line = typeof endpoint.line === 'number' ? endpoint.line : undefined;
+    if (file && typeof line === 'number') {
       const uri = uriFromProjectFile(element.projectRoot, file);
-      const range =
-        typeof line === 'number' && line > 0
-          ? new vscode.Range(new vscode.Position(line - 1, 0), new vscode.Position(line - 1, 0))
-          : new vscode.Range(new vscode.Position(0, 0), new vscode.Position(0, 0));
+      const range = new vscode.Range(new vscode.Position(Math.max(0, line - 1), 0), new vscode.Position(Math.max(0, line - 1), 0));
       item.command = { command: 'vscode.open', title: 'Open', arguments: [uri, { selection: range }] };
+      item.tooltip = `${file}:${line}`;
+    } else {
+      item.tooltip = 'Source location unavailable';
     }
     return item;
   }
@@ -539,50 +575,17 @@ class FrameworkDashboardTreeDataProvider implements vscode.TreeDataProvider<Fram
       const projectRoot = workspaceFolder.uri.fsPath;
 
       // Best-effort: servers that don't implement these endpoints will throw "method not found".
-      const web = (await this.sendOptional('nova/web/endpoints', { projectRoot })) ??
-        (await this.sendOptional('nova/quarkus/endpoints', { projectRoot })); // alias
-      const micronautEndpoints = await this.sendOptional('nova/micronaut/endpoints', { projectRoot });
-      const micronautBeans = await this.sendOptional('nova/micronaut/beans', { projectRoot });
+      // Some clients prefer the alias for backwards compat.
+      const web =
+        (await sendOptionalRequest<WebEndpointsResponse>(this.client, 'nova/quarkus/endpoints', { projectRoot })) ??
+        (await sendOptionalRequest<WebEndpointsResponse>(this.client, 'nova/web/endpoints', { projectRoot }));
 
       for (const endpoint of Array.isArray(web?.endpoints) ? web.endpoints : []) {
-        const methods = Array.isArray(endpoint.methods) ? endpoint.methods.join(',') : '';
-        const path = typeof endpoint.path === 'string' ? endpoint.path : '<unknown>';
-        const label = methods.length > 0 ? `${methods} ${path}` : path;
-        nodes.push({ kind: 'endpoint', framework: 'web', label, endpoint, projectRoot });
-      }
-
-      for (const endpoint of Array.isArray(micronautEndpoints?.endpoints) ? micronautEndpoints.endpoints : []) {
-        const method = typeof endpoint.method === 'string' ? endpoint.method : '';
-        const path = typeof endpoint.path === 'string' ? endpoint.path : '<unknown>';
-        const label = method.length > 0 ? `${method} ${path}` : path;
-        nodes.push({ kind: 'endpoint', framework: 'micronaut', label, endpoint, projectRoot });
-      }
-
-      for (const bean of Array.isArray(micronautBeans?.beans) ? micronautBeans.beans : []) {
-        const name = typeof bean.name === 'string' ? bean.name : typeof bean.id === 'string' ? bean.id : 'bean';
-        const ty = typeof bean.ty === 'string' ? bean.ty : typeof bean.type === 'string' ? bean.type : '';
-        const label = ty.length > 0 ? `${name}: ${ty}` : name;
-        nodes.push({ kind: 'bean', label, bean, projectRoot });
+        nodes.push({ kind: 'web-endpoint', endpoint, projectRoot });
       }
     }
 
     return nodes;
-  }
-
-  private async sendOptional(method: string, params: unknown): Promise<any | undefined> {
-    try {
-      return await this.client.sendRequest(method, params);
-    } catch (err: any) {
-      // JSON-RPC method not found / capability gating.
-      //
-      // Note: some Nova server builds report unknown custom methods as `-32602` with an
-      // "unknown (stateless) method" message (because everything is routed through one dispatcher).
-      const message = typeof err?.message === 'string' ? err.message.toLowerCase() : '';
-      if (err?.code === -32601) return undefined;
-      if (err?.code === -32602 && message.includes('unknown (stateless) method')) return undefined;
-      if (message.includes('method not found')) return undefined;
-      throw err;
-    }
   }
 }
 
@@ -618,9 +621,55 @@ export function activate(context: vscode.ExtensionContext) {
     
     // Frameworks dashboard (Explorer: "Nova Frameworks" view, id: `novaFrameworks`)
     const frameworksProvider = new FrameworkDashboardTreeDataProvider(client);
-    const frameworksView = vscode.window.createTreeView('novaFrameworks', { treeDataProvider: frameworksProvider });
+    const frameworksView = vscode.window.createTreeView('novaFrameworks', { treeDataProvider: frameworksProvider, showCollapseAll: false });
     context.subscriptions.push(frameworksView);
     context.subscriptions.push(vscode.commands.registerCommand('nova.frameworks.refresh', () => frameworksProvider.refresh()));
+    context.subscriptions.push(vscode.commands.registerCommand('nova.frameworks.search', async () => {
+        const folder = await pickWorkspaceFolder();
+        if (!folder) return;
+        const projectRoot = folder.uri.fsPath;
+
+        const web =
+          (await sendOptionalRequest<WebEndpointsResponse>(client, 'nova/quarkus/endpoints', { projectRoot })) ??
+          (await sendOptionalRequest<WebEndpointsResponse>(client, 'nova/web/endpoints', { projectRoot }));
+        const micronautEndpoints = await sendOptionalRequest<any>(client, 'nova/micronaut/endpoints', { projectRoot });
+        const micronautBeans = await sendOptionalRequest<any>(client, 'nova/micronaut/beans', { projectRoot });
+
+        const items: SearchPickItem[] = [];
+        for (const endpoint of Array.isArray(web?.endpoints) ? web.endpoints : []) {
+          const file = typeof endpoint.file === 'string' ? endpoint.file : undefined;
+          const line = typeof endpoint.line === 'number' ? endpoint.line : undefined;
+          const methods = Array.isArray(endpoint.methods) ? endpoint.methods.filter((m) => typeof m === 'string') : [];
+          const methodLabel = methods.length > 0 ? methods.join(', ') : 'ANY';
+          const label = `${methodLabel} ${endpoint.path}`.trim();
+          if (!file || typeof line !== 'number') continue;
+          const uri = uriFromProjectFile(projectRoot, file);
+          const range = new vscode.Range(new vscode.Position(Math.max(0, line - 1), 0), new vscode.Position(Math.max(0, line - 1), 0));
+          items.push({ label, description: `${file}:${line}`, uri, range });
+        }
+
+        for (const endpoint of Array.isArray(micronautEndpoints?.endpoints) ? micronautEndpoints.endpoints : []) {
+          const file = typeof endpoint?.handler?.file === 'string' ? endpoint.handler.file : undefined;
+          if (!file) continue;
+          const uri = uriFromProjectFile(projectRoot, file);
+          // Micronaut locations provide UTF-8 byte spans; translating spans to VS Code ranges is optional.
+          const label = `Micronaut ${endpoint.method ?? ''} ${endpoint.path ?? ''}`.trim();
+          items.push({ label: label || 'Micronaut endpoint', description: file, uri });
+        }
+
+        for (const bean of Array.isArray(micronautBeans?.beans) ? micronautBeans.beans : []) {
+          const file = typeof bean?.file === 'string' ? bean.file : undefined;
+          if (!file) continue;
+          const uri = uriFromProjectFile(projectRoot, file);
+          const label = `Micronaut bean ${bean.name ?? ''}`.trim();
+          items.push({ label: label || 'Micronaut bean', description: bean.ty ?? file, uri });
+        }
+
+        const picked = await vscode.window.showQuickPick(items, { placeHolder: 'Search framework items', matchOnDescription: true });
+        if (!picked?.uri) return;
+        const doc = await vscode.workspace.openTextDocument(picked.uri);
+        await vscode.window.showTextDocument(doc, { selection: picked.range, preview: false });
+    }));
     
     client.start();
 }
