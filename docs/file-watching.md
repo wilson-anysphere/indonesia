@@ -70,6 +70,9 @@ after a project reload. For example:
 
 - Maven/Gradle discovery may refine `source_roots`.
 - Generated source roots may appear/disappear depending on build configuration and APT output.
+- Build-system module roots (`ProjectConfig.modules[*].root`) may live outside the workspace root
+  (e.g. Maven `<modules>` entries like `../common`). These module roots are included as watcher
+  roots so build file changes still trigger project reloads.
 - Some build integrations write workspace-local **snapshot files** under `.nova/` (e.g.
   `.nova/queries/gradle.json` for Gradle classpath/source roots). When these snapshots change,
   treat them as **build changes** so the workspace reloads and picks up the new configuration.
