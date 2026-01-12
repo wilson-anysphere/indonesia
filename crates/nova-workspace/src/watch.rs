@@ -61,6 +61,12 @@ pub struct WatchConfig {
     pub workspace_root: PathBuf,
     pub source_roots: Vec<PathBuf>,
     pub generated_source_roots: Vec<PathBuf>,
+    /// Build-system module roots (`ProjectConfig.modules[*].root`).
+    ///
+    /// This is used by higher layers to select file-watcher roots, ensuring build file changes in
+    /// modules outside the workspace root (e.g. Maven `<modules>` entries like `../common`) still
+    /// trigger project reloads.
+    pub module_roots: Vec<PathBuf>,
     /// Path to the Nova config file used for this workspace (if any).
     ///
     /// This may point outside of `workspace_root` when `NOVA_CONFIG_PATH` is set.
@@ -87,6 +93,7 @@ impl WatchConfig {
                 .into_iter()
                 .map(|root| normalize_watch_path(root))
                 .collect(),
+            module_roots: Vec::new(),
             nova_config_path: None,
         }
     }

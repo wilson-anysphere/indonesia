@@ -51,6 +51,7 @@ fn compute_watch_roots(
         .source_roots
         .iter()
         .chain(watch_config.generated_source_roots.iter())
+        .chain(watch_config.module_roots.iter())
     {
         if root.starts_with(workspace_root) {
             continue;
@@ -2121,7 +2122,7 @@ fn build_source_roots(config: &ProjectConfig) -> Vec<SourceRootEntry> {
         .collect()
 }
 
-fn watch_roots_from_project_config(config: &ProjectConfig) -> (Vec<PathBuf>, Vec<PathBuf>) {
+fn watch_roots_from_project_config(config: &ProjectConfig) -> (Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>) {
     let mut source_roots = Vec::new();
     let mut generated_source_roots = Vec::new();
     for root_entry in &config.source_roots {
@@ -2134,7 +2135,12 @@ fn watch_roots_from_project_config(config: &ProjectConfig) -> (Vec<PathBuf>, Vec
     source_roots.dedup();
     generated_source_roots.sort();
     generated_source_roots.dedup();
-    (source_roots, generated_source_roots)
+
+    let mut module_roots: Vec<PathBuf> = config.modules.iter().map(|module| module.root.clone()).collect();
+    module_roots.sort();
+    module_roots.dedup();
+
+    (source_roots, generated_source_roots, module_roots)
 }
 
 fn java_files_under(root: &Path) -> Result<Vec<PathBuf>> {
@@ -2549,7 +2555,8 @@ fn reload_project_and_sync(
         Arc::clone(&previous_config)
     };
     let source_roots = build_source_roots(&config);
-    let (watch_source_roots, watch_generated_roots) = watch_roots_from_project_config(&config);
+    let (watch_source_roots, watch_generated_roots, watch_module_roots) =
+        watch_roots_from_project_config(&config);
     let nova_config_path = options.nova_config_path.clone();
     let next_classpath_fingerprint = classpath_fingerprint(&config);
     let classpath_changed = match &previous_classpath_fingerprint {
@@ -2576,6 +2583,7 @@ fn reload_project_and_sync(
             watch_source_roots.clone(),
             watch_generated_roots.clone(),
         );
+        cfg.module_roots = watch_module_roots.clone();
         cfg.nova_config_path = nova_config_path.clone();
     }
 
@@ -2589,6 +2597,7 @@ fn reload_project_and_sync(
         for root in watch_source_roots
             .iter()
             .chain(watch_generated_roots.iter())
+            .chain(watch_module_roots.iter())
         {
             if root.starts_with(workspace_root) {
                 continue;
@@ -3399,6 +3408,90 @@ mod tests {
             roots.iter().all(|(root, _)| root != &workspace_src),
             "expected {} to not be watched explicitly (workspace root watch should cover it)",
             workspace_src.display()
+        );
+    }
+
+    #[test]
+    fn watch_roots_include_external_module_roots() {
+        use std::collections::HashMap;
+
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_root = dir.path().join("root");
+        let external_root = dir.path().join("external");
+        fs::create_dir_all(&workspace_root).unwrap();
+        fs::create_dir_all(&external_root).unwrap();
+
+        fs::write(
+            workspace_root.join("pom.xml"),
+            br#"<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>root</artifactId>
+  <version>1.0</version>
+  <packaging>pom</packaging>
+  <modules>
+    <module>../external</module>
+  </modules>
+</project>
+"#,
+        )
+        .unwrap();
+        fs::write(
+            external_root.join("pom.xml"),
+            br#"<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>external</artifactId>
+  <version>1.0</version>
+</project>
+"#,
+        )
+        .unwrap();
+
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let workspace_root = workspace_root.canonicalize().unwrap();
+        let external_root = external_root.canonicalize().unwrap();
+
+        let workspace = crate::Workspace::open(&workspace_root).unwrap();
+        let engine = workspace.engine_for_tests();
+
+        let watch_config = engine
+            .watch_config
+            .read()
+            .expect("workspace watch config lock poisoned")
+            .clone();
+
+        assert!(
+            watch_config.module_roots.contains(&external_root),
+            "expected WatchConfig.module_roots to include {} (got {:?})",
+            external_root.display(),
+            watch_config.module_roots
+        );
+
+        let roots = compute_watch_roots(&workspace_root, &watch_config);
+        assert!(
+            roots.contains(&(external_root.clone(), WatchMode::Recursive)),
+            "expected watch roots {roots:?} to include external module root {}",
+            external_root.display()
+        );
+
+        // Prove the watch-root manager would request this root.
+        let mut manager = WatchRootManager::new(Duration::from_millis(0));
+        let mut manual = ManualFileWatcher::new();
+        let desired: HashMap<PathBuf, WatchMode> = roots.into_iter().collect();
+        let errors = manager.set_desired_roots(desired, Instant::now(), &mut manual);
+        assert!(
+            errors.is_empty(),
+            "unexpected errors while applying watch roots: {errors:?}"
+        );
+        assert!(
+            manual
+                .watch_calls()
+                .iter()
+                .any(|(path, mode)| path == &external_root && *mode == WatchMode::Recursive),
+            "expected manual watcher calls {:?} to include {}",
+            manual.watch_calls(),
+            external_root.display()
         );
     }
 
