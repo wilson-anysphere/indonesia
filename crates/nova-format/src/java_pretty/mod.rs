@@ -464,6 +464,7 @@ fn matches_protected_indent_token(kind: SyntaxKind) -> bool {
             // span multiple lines, treating them as protected is a safe fallback.
             | SyntaxKind::StringTemplateStart
             | SyntaxKind::StringTemplateExprStart
+            | SyntaxKind::StringTemplateExprEnd
             | SyntaxKind::StringTemplateEnd
             // The lexer represents unterminated text blocks as `Error` tokens that may span
             // multiple lines; preserve verbatim.
@@ -635,6 +636,7 @@ fn is_word_token(kind: SyntaxKind, text: &str) -> bool {
         SyntaxKind::StringTemplateStart
             | SyntaxKind::StringTemplateText
             | SyntaxKind::StringTemplateExprStart
+            | SyntaxKind::StringTemplateExprEnd
             | SyntaxKind::StringTemplateEnd
     ) {
         return false;

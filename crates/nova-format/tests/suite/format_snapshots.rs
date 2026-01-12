@@ -51,6 +51,18 @@ fn assert_ast_idempotent(input: &str) {
 }
 
 #[test]
+fn ast_formatter_does_not_treat_string_template_interpolation_end_as_structural_brace() {
+    let input = r#"class Foo { void m(String name) { String s = STR."Hello \{name}"; } }"#;
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
+    assert!(
+        formatted.contains(r#"\{name}""#),
+        "expected interpolation close to stay adjacent inside template, got:\n{formatted}"
+    );
+    assert_ast_idempotent(input);
+}
+
+#[test]
 fn formats_basic_class() {
     let input = r#"
  class  Foo{

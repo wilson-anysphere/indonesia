@@ -716,7 +716,7 @@ impl<'a> TokenFormatState<'a> {
             }
             SyntaxKind::LBrace => {
                 self.write_indent(out);
-                if needs_space_before(self.last_sig.as_ref(), text) {
+                if needs_space_before(self.last_sig.as_ref(), "{") {
                     self.ensure_space(out);
                 }
                 out.push('{');
@@ -924,6 +924,12 @@ impl<'a> TokenFormatState<'a> {
 }
 
 fn is_word_token(kind: SyntaxKind, text: &str) -> bool {
+    // String templates lex their delimiters/text as dedicated tokens. These tokens should never
+    // be treated as word-like for spacing heuristics: inserting spaces inside template payloads
+    // can change semantics (e.g. `STR."Hello \{name}"`).
+    if is_string_template_token(kind) {
+        return false;
+    }
     if matches!(
         kind,
         SyntaxKind::StringLiteral
@@ -973,6 +979,10 @@ fn needs_space_between(last: Option<&SigToken>, next_kind: SyntaxKind, next_text
     let Some(last) = last else {
         return false;
     };
+
+    if is_string_template_token(next_kind) || last.kind().is_some_and(is_string_template_token) {
+        return false;
+    }
 
     if needs_space_to_avoid_token_merge(last, next_kind) {
         return true;
@@ -1028,6 +1038,17 @@ fn is_control_keyword(text: &str) -> bool {
     matches!(
         text,
         "if" | "for" | "while" | "switch" | "catch" | "synchronized"
+    )
+}
+
+fn is_string_template_token(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::StringTemplateStart
+            | SyntaxKind::StringTemplateText
+            | SyntaxKind::StringTemplateExprStart
+            | SyntaxKind::StringTemplateExprEnd
+            | SyntaxKind::StringTemplateEnd
     )
 }
 
