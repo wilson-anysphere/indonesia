@@ -16,7 +16,7 @@ use crate::index::{
 };
 use crate::persist;
 use crate::stub::{binary_to_internal, internal_to_binary};
-use crate::JdkClassStub;
+use crate::{JdkClassStub, JdkFieldStub, JdkMethodStub};
 
 #[derive(Debug, Clone)]
 struct CtSymSelectedEntry {
