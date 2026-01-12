@@ -3834,14 +3834,14 @@ fn handle_code_action(
 
                             let canonical_uri = path.to_uri().unwrap_or_else(|| uri.to_string());
                             let target = index
-                                .symbols()
-                                .iter()
-                                .filter(|sym| sym.file == canonical_uri)
-                                .filter(|sym| sym.kind == SymbolKind::Method)
-                                .filter(|sym| {
-                                    offset >= sym.name_range.start && offset <= sym.name_range.end
-                                })
-                                .min_by_key(|sym| sym.decl_range.len())
+                                .symbol_at_offset(
+                                    &canonical_uri,
+                                    offset,
+                                    Some(&[SymbolKind::Method]),
+                                )
+                                // Preserve previous behavior: only offer Safe Delete when the
+                                // cursor is on the method name token.
+                                .filter(|sym| offset >= sym.name_range.start && offset <= sym.name_range.end)
                                 .map(|sym| sym.id);
 
                             if let Some(target) = target {

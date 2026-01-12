@@ -68,3 +68,28 @@ class Outer {
     assert_eq!(sym.name, "Inner");
 }
 
+#[test]
+fn symbol_at_offset_on_field_name_returns_field() {
+    let file = "file:///Test.java";
+    let source = r#"
+class A {
+    int field = 1;
+
+    void method() {
+        field++;
+    }
+}
+"#;
+
+    let mut files = BTreeMap::new();
+    files.insert(file.to_string(), source.to_string());
+
+    let index = Index::new(files);
+
+    let field_name_offset = source.find("field =").expect("field decl") + "field".len() / 2;
+    let sym = index
+        .symbol_at_offset(file, field_name_offset, Some(&[SymbolKind::Field]))
+        .expect("field at offset");
+    assert_eq!(sym.kind, SymbolKind::Field);
+    assert_eq!(sym.name, "field");
+}

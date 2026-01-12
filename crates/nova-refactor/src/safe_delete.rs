@@ -180,11 +180,10 @@ fn safe_delete_method(
                     continue;
                 }
                 if usage.kind == UsageKind::Override {
-                    if let Some(sym) = index.symbols().iter().find(|sym| {
-                        sym.kind == SymbolKind::Method
-                            && sym.file == usage.file
-                            && sym.name_range == usage.range
-                    }) {
+                    if let Some(sym) = index
+                        .symbols_in_file(&usage.file)
+                        .find(|sym| sym.kind == SymbolKind::Method && sym.name_range == usage.range)
+                    {
                         edits.push(delete_range_workspace_edit(&usage.file, sym.decl_range));
                         continue;
                     }
@@ -270,11 +269,10 @@ fn verify_method_usage(
 
     // `find_name_candidates` will also classify method declarations as `Call` candidates
     // because they're followed by `(`. Those are not usages.
-    if index.symbols().iter().any(|sym| {
-        sym.kind == SymbolKind::Method
-            && sym.file == candidate.file
-            && sym.name_range == candidate.range
-    }) {
+    if index
+        .symbols_in_file(&candidate.file)
+        .any(|sym| sym.kind == SymbolKind::Method && sym.name_range == candidate.range)
+    {
         return None;
     }
 
@@ -856,12 +854,7 @@ fn is_ident_continue(b: u8) -> bool {
 
 fn enclosing_class_at_offset(index: &Index, file: &str, offset: usize) -> Option<String> {
     index
-        .symbols()
-        .iter()
-        .filter(|sym| sym.kind == SymbolKind::Class && sym.file == file)
-        .filter(|sym| offset >= sym.decl_range.start && offset < sym.decl_range.end)
-        // Choose the most nested class (smallest range).
-        .min_by_key(|sym| sym.decl_range.len())
+        .symbol_at_offset(file, offset, Some(&[SymbolKind::Class]))
         .map(|sym| sym.name.clone())
 }
 
@@ -951,11 +944,10 @@ pub fn safe_delete_delete_anyway_edit(
             continue;
         }
         if usage.kind == UsageKind::Override {
-            if let Some(sym) = index.symbols().iter().find(|sym| {
-                sym.kind == SymbolKind::Method
-                    && sym.file == usage.file
-                    && sym.name_range == usage.range
-            }) {
+            if let Some(sym) = index
+                .symbols_in_file(&usage.file)
+                .find(|sym| sym.kind == SymbolKind::Method && sym.name_range == usage.range)
+            {
                 edits.push(delete_range_workspace_edit(&usage.file, sym.decl_range));
                 continue;
             }

@@ -989,11 +989,7 @@ fn resolve_method_in_hierarchy(
 
 fn enclosing_class_at_offset(index: &Index, file: &str, offset: usize) -> Option<String> {
     index
-        .symbols()
-        .iter()
-        .filter(|sym| sym.kind == SymbolKind::Class && sym.file == file)
-        .filter(|sym| offset >= sym.decl_range.start && offset < sym.decl_range.end)
-        .min_by_key(|sym| sym.decl_range.len())
+        .symbol_at_offset(file, offset, Some(&[SymbolKind::Class]))
         .map(|sym| sym.name.clone())
 }
 
