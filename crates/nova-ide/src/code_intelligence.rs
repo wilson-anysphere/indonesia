@@ -9009,6 +9009,41 @@ fn general_completions(
         prefix,
     );
 
+    // Best-effort: surface statically imported members as expression completions.
+    //
+    // This intentionally does not attempt full Java import/name resolution (which
+    // would require a richer semantic model). We only parse `import static ...;`
+    // statements and offer the imported members directly as candidates.
+    let jdk = JDK_INDEX
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(JdkIndex::new()));
+    let static_imports = parse_static_imports(&analysis.tokens, jdk.as_ref());
+    if !static_imports.is_empty() {
+        let mut matcher = FuzzyMatcher::new(prefix);
+        for import in static_imports {
+            match import.member.as_str() {
+                "*" => {
+                    let Ok(members) = jdk.static_member_names_with_prefix(&import.owner, "") else {
+                        continue;
+                    };
+                    for name in members {
+                        if matcher.score(&name).is_none() {
+                            continue;
+                        }
+                        items.push(static_import_completion_item(&import.owner, &name));
+                    }
+                }
+                name => {
+                    if matcher.score(name).is_none() {
+                        continue;
+                    }
+                    items.push(static_import_completion_item(&import.owner, name));
+                }
+            }
+        }
+    }
+
     for m in &analysis.methods {
         if let Some(expected) = expected_arg_ty.as_ref() {
             let ret = parse_source_type(&mut types, &m.ret_ty);
@@ -10037,6 +10072,10 @@ fn filter_completions_by_expected_type(
     }
 
     items.retain(|item| {
+        if static_import_bonus(item) > 0 {
+            return true;
+        }
+
         let Some(kind) = item.kind else {
             return true;
         };
@@ -10174,6 +10213,143 @@ fn is_java_lang_string(types: &TypeStore, ty: &Type) -> bool {
     }
 }
 
+#[derive(Clone, Debug)]
+struct StaticImportDecl {
+    owner: String,
+    /// Member name, or `"*"` for star imports.
+    member: String,
+}
+
+fn parse_static_imports(tokens: &[Token], jdk: &JdkIndex) -> Vec<StaticImportDecl> {
+    let mut out = Vec::new();
+    let mut i = 0usize;
+
+    while i + 2 < tokens.len() {
+        if tokens[i].kind != TokenKind::Ident || tokens[i].text != "import" {
+            i += 1;
+            continue;
+        }
+        if tokens[i + 1].kind != TokenKind::Ident || tokens[i + 1].text != "static" {
+            i += 1;
+            continue;
+        }
+
+        let start = i + 2;
+        let Some(semi_idx) = tokens[start..]
+            .iter()
+            .position(|t| t.kind == TokenKind::Symbol(';'))
+            .map(|rel| start + rel)
+        else {
+            break;
+        };
+
+        let path: String = tokens[start..semi_idx]
+            .iter()
+            .map(|t| t.text.as_str())
+            .collect();
+        let path = path.trim();
+
+        let (owner, member) = if let Some(owner) = path.strip_suffix(".*") {
+            (owner.trim(), "*")
+        } else if let Some((owner, member)) = path.rsplit_once('.') {
+            (owner.trim(), member.trim())
+        } else {
+            i = semi_idx + 1;
+            continue;
+        };
+
+        if owner.is_empty() || member.is_empty() {
+            i = semi_idx + 1;
+            continue;
+        }
+
+        let owner = best_effort_binary_name_for_imported_type(jdk, owner);
+        out.push(StaticImportDecl {
+            owner,
+            member: member.to_string(),
+        });
+
+        i = semi_idx + 1;
+    }
+
+    out
+}
+
+fn best_effort_binary_name_for_imported_type(jdk: &JdkIndex, source: &str) -> String {
+    let source = source.trim();
+    if source.is_empty() {
+        return String::new();
+    }
+
+    if jdk.resolve_type(&QualifiedName::from_dotted(source)).is_some() {
+        return source.to_string();
+    }
+
+    // Best-effort nested type normalization:
+    //
+    // `import static java.util.Map.Entry.*;` refers to `java.util.Map$Entry` in
+    // binary name form. We don't know where the package ends without proper
+    // name resolution, so try all splits and pick the first one that exists in
+    // the JDK index.
+    let parts: Vec<&str> = source.split('.').collect();
+    if parts.len() < 2 {
+        return source.to_string();
+    }
+
+    for pkg_len in (0..parts.len()).rev() {
+        let (pkg, ty_parts) = parts.split_at(pkg_len);
+        if ty_parts.is_empty() {
+            continue;
+        }
+
+        let mut candidate = String::new();
+        if !pkg.is_empty() {
+            candidate.push_str(&pkg.join("."));
+            candidate.push('.');
+        }
+
+        candidate.push_str(ty_parts[0]);
+        for seg in &ty_parts[1..] {
+            candidate.push('$');
+            candidate.push_str(seg);
+        }
+
+        if jdk
+            .resolve_type(&QualifiedName::from_dotted(&candidate))
+            .is_some()
+        {
+            return candidate;
+        }
+    }
+
+    source.to_string()
+}
+
+fn static_import_completion_item(owner: &str, name: &str) -> CompletionItem {
+    let all_caps = name.chars().any(|c| c.is_ascii_uppercase())
+        && !name.chars().any(|c| c.is_ascii_lowercase());
+
+    let (kind, insert_text, insert_text_format) = if all_caps {
+        (CompletionItemKind::FIELD, Some(name.to_string()), None)
+    } else {
+        (
+            CompletionItemKind::METHOD,
+            Some(format!("{name}($0)")),
+            Some(InsertTextFormat::SNIPPET),
+        )
+    };
+
+    CompletionItem {
+        label: name.to_string(),
+        kind: Some(kind),
+        detail: Some(owner.to_string()),
+        insert_text,
+        insert_text_format,
+        // Mark the completion so we can apply a small ranking bonus.
+        data: Some(json!({ "nova": { "origin": "code_intelligence", "static_import": true } })),
+        ..Default::default()
+    }
+}
 fn kind_weight(kind: Option<CompletionItemKind>) -> i32 {
     match kind {
         Some(
@@ -10348,17 +10524,25 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
                 .unwrap_or(&item.label);
             let score = matcher.score(match_target)?;
 
-            let expected_bonus: i32 = match (expected_ty.as_ref(), item.detail.as_deref()) {
-                (Some(expected), Some(detail)) => types
-                    .as_mut()
-                    .and_then(|types| {
-                        let item_ty = parse_source_type(types, detail);
-                        nova_types::assignment_conversion(types, &item_ty, expected)
-                            .is_some()
-                            .then_some(10)
-                    })
-                    .unwrap_or(0),
-                _ => 0,
+            // `detail` is usually used for type information in this completion
+            // layer (e.g. var/field type or method return type). For statically
+            // imported members we use `detail` to display the owner type, so
+            // don't treat it as a type for expected-type ranking.
+            let expected_bonus: i32 = if static_import_bonus(&item) > 0 {
+                0
+            } else {
+                match (expected_ty.as_ref(), item.detail.as_deref()) {
+                    (Some(expected), Some(detail)) => types
+                        .as_mut()
+                        .and_then(|types| {
+                            let item_ty = parse_source_type(types, detail);
+                            nova_types::assignment_conversion(types, &item_ty, expected)
+                                .is_some()
+                                .then_some(10)
+                        })
+                        .unwrap_or(0),
+                    _ => 0,
+                }
             };
             let lambda_bonus: i32 = item
                 .data
@@ -10374,7 +10558,7 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
             let scope = scope_bonus(item.kind);
             let recency = ctx.last_used_offsets.get(&item.label).copied();
             let workspace = workspace_completion_bonus(&item);
-            let weight = kind_weight(item.kind);
+            let weight = kind_weight(item.kind) + static_import_bonus(&item);
 
             // Prefer members declared on the receiver type itself over inherited members when all
             // other ranking signals tie. This is tagged by `semantic_member_completions` via
@@ -11243,6 +11427,20 @@ fn catch_statement_end_offset(tokens: &[Token], catch_idx: usize) -> Option<usiz
     }
     let (_, body_span) = find_matching_brace(tokens, body_idx)?;
     Some(body_span.end)
+}
+
+fn static_import_bonus(item: &CompletionItem) -> i32 {
+    let Some(data) = item.data.as_ref() else {
+        return 0;
+    };
+    let Some(nova) = data.get("nova") else {
+        return 0;
+    };
+    let Some(is_static) = nova.get("static_import").and_then(|v| v.as_bool()) else {
+        return 0;
+    };
+
+    if is_static { 5 } else { 0 }
 }
 
 // -----------------------------------------------------------------------------

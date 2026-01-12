@@ -2254,6 +2254,50 @@ class A {}
 }
 
 #[test]
+fn completion_includes_static_single_imported_member_in_expression() {
+    let (db, file, pos) = fixture(
+        r#"
+import static java.lang.Math.max;
+
+class A {
+  void m() {
+    ma<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"max"),
+        "expected completion list to contain statically imported `max`; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_includes_static_star_imported_constant_in_expression() {
+    let (db, file, pos) = fixture(
+        r#"
+import static java.lang.Math.*;
+
+class A {
+  void m() {
+    PI<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"PI"),
+        "expected completion list to contain statically imported `PI`; got {labels:?}"
+    );
+}
+
+#[test]
 fn static_import_completion_replaces_only_member_segment() {
     let text_with_caret = r#"
  import static java.lang.Math.ma<|>;
