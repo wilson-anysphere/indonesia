@@ -11,5 +11,7 @@ action {
   arguments: "external/modules"
   arguments: "-d"
   arguments: "bazel-out/k8-fastbuild/bin/java/com/example/lib_classes"
+  arguments: "-s"
+  arguments: "bazel-out/k8-fastbuild/bin/java/com/example/lib_generated_sources"
   arguments: "java/com/example/Hello.java"
 }

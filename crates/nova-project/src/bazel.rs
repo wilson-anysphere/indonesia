@@ -482,6 +482,33 @@ fn module_config_from_compile_info(
         });
     }
 
+    if let Some(annotation_processing) = &info.annotation_processing {
+        if let Some(generated_sources_dir) = &annotation_processing.generated_sources_dir {
+            // Heuristic: when a Bazel target has any test source roots, treat the annotation
+            // processor output as test sources too. Otherwise mark it as main.
+            let kind = if source_roots
+                .iter()
+                .any(|root| root.kind == SourceRootKind::Test)
+            {
+                SourceRootKind::Test
+            } else {
+                SourceRootKind::Main
+            };
+
+            let path = if generated_sources_dir.is_absolute() {
+                generated_sources_dir.clone()
+            } else {
+                root.join(generated_sources_dir)
+            };
+
+            source_roots.push(SourceRoot {
+                kind,
+                origin: SourceRootOrigin::Generated,
+                path,
+            });
+        }
+    }
+
     let mut classpath = info
         .classpath
         .iter()

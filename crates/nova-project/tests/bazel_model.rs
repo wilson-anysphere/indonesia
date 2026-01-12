@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use nova_build_bazel::{CommandOutput, CommandRunner};
 use nova_project::{
     BazelLoadOptions, JavaConfig, JavaLanguageLevel, JavaVersion, LanguageLevelProvenance,
-    LoadOptions, SourceRootKind, WorkspaceModuleBuildId,
+    LoadOptions, SourceRootKind, SourceRootOrigin, WorkspaceModuleBuildId,
 };
 
 fn testdata_path(rel: &str) -> PathBuf {
@@ -165,12 +165,26 @@ fn loads_bazel_targets_as_module_configs() {
         .iter()
         .find(|m| m.id == "//java/com/example:lib")
         .unwrap();
-    assert_eq!(lib.source_roots.len(), 1);
-    assert_eq!(lib.source_roots[0].kind, SourceRootKind::Main);
-    assert_eq!(
-        lib.source_roots[0].path.strip_prefix(tmp.path()).unwrap(),
-        Path::new("java/com/example")
-    );
+    assert_eq!(lib.source_roots.len(), 2);
+    let lib_source_root = lib
+        .source_roots
+        .iter()
+        .find(|root| {
+            root.origin == SourceRootOrigin::Source
+                && root.path.strip_prefix(tmp.path()).unwrap() == Path::new("java/com/example")
+        })
+        .expect("lib source root");
+    assert_eq!(lib_source_root.kind, SourceRootKind::Main);
+    let lib_generated_root = lib
+        .source_roots
+        .iter()
+        .find(|root| {
+            root.origin == SourceRootOrigin::Generated
+                && root.path.strip_prefix(tmp.path()).unwrap()
+                    == Path::new("bazel-out/k8-fastbuild/bin/java/com/example/lib_generated_sources")
+        })
+        .expect("lib generated source root");
+    assert_eq!(lib_generated_root.kind, SourceRootKind::Main);
     assert_eq!(lib.classpath.len(), 2);
     assert!(lib.classpath.iter().all(|cp| cp.path.is_absolute()));
     assert_eq!(
@@ -680,6 +694,15 @@ fn loads_bazel_targets_as_workspace_modules() {
             preview: true,
         }
     );
+    assert!(
+        lib.source_roots.iter().any(|root| {
+            root.origin == SourceRootOrigin::Generated
+                && root.path.strip_prefix(tmp.path()).unwrap()
+                    == Path::new("bazel-out/k8-fastbuild/bin/java/com/example/lib_generated_sources")
+        }),
+        "expected lib generated sources root to be present; got: {:?}",
+        lib.source_roots
+    );
 
     let test = model.module_by_id("//java/com/example:lib_test").unwrap();
     assert!(matches!(
@@ -704,6 +727,13 @@ fn loads_bazel_targets_as_workspace_modules() {
         model.module_for_path(&lib_file).unwrap().module.id,
         "//java/com/example:lib"
     );
+
+    let generated_file = tmp.path().join(
+        "bazel-out/k8-fastbuild/bin/java/com/example/lib_generated_sources/com/example/Gen.java",
+    );
+    let generated_owner = model.module_for_path(&generated_file).expect("generated owner");
+    assert_eq!(generated_owner.module.id, "//java/com/example:lib");
+    assert_eq!(generated_owner.source_root.origin, SourceRootOrigin::Generated);
 
     let test_file = tmp.path().join("javatests/com/example/FooTest.java");
     assert_eq!(
