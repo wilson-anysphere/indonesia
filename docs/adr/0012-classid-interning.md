@@ -15,8 +15,9 @@ See: `crates/nova-types/src/lib.rs` (`TypeStore::{add_class, intern_class_id, up
 In the Salsa layer, we also have a *database-level* memory eviction mechanism:
 
 - `SalsaDatabase::evict_salsa_memos` rebuilds `ra_salsa::Storage` with `Storage::default()` and
-  reapplies inputs. Because `Storage::default()` would normally also drop Salsa intern tables,
-  Nova snapshots+restores the interned tables it relies on (see
+  reapplies inputs. Because `Storage::default()` would normally also drop Salsa intern tables, Nova
+  snapshots+restores the `#[ra_salsa::interned]` tables it relies on so interned IDs can remain
+  stable across memo eviction within the lifetime of a single `SalsaDatabase` (see
   `crates/nova-db/src/salsa/mod.rs:InternedTablesSnapshot`).
 
 See: `crates/nova-db/src/salsa/mod.rs` (`evict_salsa_memos`).
@@ -120,8 +121,9 @@ Pros:
   intern tables) remain intact*.
 
 Cons:
-- Interned integer assignment is order-dependent across *fresh* intern tables; raw ids can differ
-  across fresh database instances / process restarts if values are interned in a different order.
+- Interned integer assignment is order-dependent. Raw ids can differ across fresh database
+  instances/process restarts, and can become evaluation-order dependent if values are interned “on
+  demand” inside queries (parallel scheduling, differing query orders, etc).
 - Memo eviction rebuilds Salsa storage; Nova snapshots+restores the interned tables it relies on to
   keep interned ids stable, and this list must be maintained if new `#[ra_salsa::interned]` queries
   become part of long-lived identities.
@@ -136,8 +138,9 @@ Findings with `ra_ap_salsa` `0.0.269` and Nova’s current `evict_salsa_memos` i
 
 - Same key ⇒ same interned handle within a single storage.
 - Snapshots can lookup/intern consistently for already-interned keys.
-- After memo eviction, interned ids remain valid **because Nova restores interned tables** before
-  recomputation (see `InternedTablesSnapshot`).
+- After memo eviction, interned ids remain valid because Nova restores interned tables (see
+  `InternedTablesSnapshot`): re-interning yields the same `InternId`, and looking up a pre-eviction
+  id continues to work.
 - Intern ids are **insertion-order dependent** across fresh storages (interning `A` then `B`
   produces different raw ids than interning `B` then `A`).
 

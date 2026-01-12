@@ -111,10 +111,13 @@ Two acceptable implementations:
       - `binary_name: String` (canonical Java binary name, dotted, with `$` for nested types)
     - The returned `ClassId` is globally unique and stable within the lifetime of the database, and
       adding new classes does not renumber existing ids.
-    - **Important:** Nova’s `SalsaDatabase::evict_salsa_memos` rebuilds `ra_salsa::Storage`, but
-      Nova snapshots+restores selected interned tables so interned ids remain stable across memo
-      eviction within a single database instance (see ADR 0012 and
-      `crates/nova-db/src/salsa/mod.rs:InternedTablesSnapshot`).
+    - **Important:** Nova still evicts Salsa memos by rebuilding `ra_salsa::Storage::default()`, but
+      it snapshots+restores `#[ra_salsa::interned]` tables during eviction (see ADR 0012 and
+      `crates/nova-db/src/salsa/mod.rs:InternedTablesSnapshot`) so raw interned ids can survive memo
+      eviction within the lifetime of a single `SalsaDatabase` instance. This removes one major
+      blocker for using Salsa interning as stable `ClassId` identity, but it does *not* address
+      insertion-order dependence (interning must still be done deterministically if used inside
+      queries). See `crates/nova-db/src/salsa/interned_class_key.rs`.
 
 2. **A persistent interner outside Salsa**
    - A project-scoped interner stored as database state, updated only by the single writer thread.

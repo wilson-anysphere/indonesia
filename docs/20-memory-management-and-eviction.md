@@ -217,6 +217,7 @@ This list is meant to be kept accurate as new components integrate.
     - `TrackedSalsaMemo::FileIndexDelta` (recorded by `NovaIndexing::file_index_delta` in `crates/nova-db/src/salsa/indexing.rs`)
 - `evict(request)`:
   - Best-effort rebuild: clones `SalsaInputs` and rebuilds `RootDatabase` behind a mutex, dropping memoized results.
+  - Interned tables (`#[ra_salsa::interned]`) are snapshot+restored so interned ids remain stable across memo eviction.
   - Clears the memo footprint tracker; memos will be re-recorded as queries re-run.
   - Outstanding Salsa snapshots remain valid (they own storage snapshots).
 - `flush_to_disk()` (called by manager under High/Critical):
