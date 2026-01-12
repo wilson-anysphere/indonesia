@@ -14,7 +14,7 @@ use nova_modules::ModuleName;
 use nova_resolve::expr_scopes::{ExprScopes, ResolvedValue as ResolvedLocal};
 use nova_resolve::ids::{DefWithBodyId, ParamId};
 use nova_resolve::{NameResolution, Resolution, ScopeKind, StaticMemberResolution, TypeResolution};
-use nova_syntax::{JavaLanguageLevel, SyntaxKind};
+use nova_syntax::{lex, JavaLanguageLevel, SyntaxKind, Token};
 use nova_types::{
     assignment_conversion, assignment_conversion_with_const, binary_numeric_promotion,
     cast_conversion, format_resolved_method, format_type, infer_diamond_type_args, is_subtype,
@@ -1936,6 +1936,7 @@ fn signature_type_diagnostics(
 
     let file_text = db.file_content(file);
     let file_text = file_text.as_str();
+    let file_tokens = lex(file_text);
 
     let project = db.file_project(file);
     let jdk = db.jdk_index(project);
@@ -2132,6 +2133,7 @@ fn signature_type_diagnostics(
             *item,
             &mut loader,
             &object_ty,
+            &file_tokens,
             file_text,
             &mut out,
         );
@@ -2148,6 +2150,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
     item: nova_hir::item_tree::Item,
     loader: &mut ExternalTypeLoader<'_>,
     default_bound: &Type,
+    file_tokens: &[Token],
     file_text: &str,
     out: &mut Vec<Diagnostic>,
 ) {
@@ -2214,7 +2217,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                 bound,
                 base_span,
             );
-            extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
+            extend_type_ref_diagnostics(out, file_tokens, file_text, resolved.diagnostics);
         }
     }
 
@@ -2233,7 +2236,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                     ext,
                     base_span,
                 );
-                extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
+                extend_type_ref_diagnostics(out, file_tokens, file_text, resolved.diagnostics);
             }
             for (idx, imp) in class.implements.iter().enumerate() {
                 let base_span = class.implements_ranges.get(idx).copied();
@@ -2246,7 +2249,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                     imp,
                     base_span,
                 );
-                extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
+                extend_type_ref_diagnostics(out, file_tokens, file_text, resolved.diagnostics);
             }
             for (idx, perm) in class.permits.iter().enumerate() {
                 let base_span = class.permits_ranges.get(idx).copied();
@@ -2259,7 +2262,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                     perm,
                     base_span,
                 );
-                extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
+                extend_type_ref_diagnostics(out, file_tokens, file_text, resolved.diagnostics);
             }
         }
         HirItemId::Interface(id) => {
@@ -2275,7 +2278,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                     ext,
                     base_span,
                 );
-                extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
+                extend_type_ref_diagnostics(out, file_tokens, file_text, resolved.diagnostics);
             }
             for (idx, perm) in iface.permits.iter().enumerate() {
                 let base_span = iface.permits_ranges.get(idx).copied();
@@ -2288,7 +2291,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                     perm,
                     base_span,
                 );
-                extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
+                extend_type_ref_diagnostics(out, file_tokens, file_text, resolved.diagnostics);
             }
         }
         HirItemId::Enum(id) => {
@@ -2304,7 +2307,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                     imp,
                     base_span,
                 );
-                extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
+                extend_type_ref_diagnostics(out, file_tokens, file_text, resolved.diagnostics);
             }
             for (idx, perm) in enm.permits.iter().enumerate() {
                 let base_span = enm.permits_ranges.get(idx).copied();
@@ -2317,7 +2320,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                     perm,
                     base_span,
                 );
-                extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
+                extend_type_ref_diagnostics(out, file_tokens, file_text, resolved.diagnostics);
             }
         }
         HirItemId::Record(id) => {
@@ -2333,7 +2336,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                     imp,
                     base_span,
                 );
-                extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
+                extend_type_ref_diagnostics(out, file_tokens, file_text, resolved.diagnostics);
             }
             for (idx, perm) in record.permits.iter().enumerate() {
                 let base_span = record.permits_ranges.get(idx).copied();
@@ -2346,7 +2349,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                     perm,
                     base_span,
                 );
-                extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
+                extend_type_ref_diagnostics(out, file_tokens, file_text, resolved.diagnostics);
             }
         }
         HirItemId::Annotation(_) => {}
@@ -2379,7 +2382,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                     &field.ty,
                     Some(field.ty_range),
                 );
-                extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
+                extend_type_ref_diagnostics(out, file_tokens, file_text, resolved.diagnostics);
             }
             Member::Method(mid) => {
                 let method = tree.method(mid);
@@ -2430,7 +2433,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                             bound,
                             base_span,
                         );
-                        extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
+                        extend_type_ref_diagnostics(out, file_tokens, file_text, resolved.diagnostics);
                     }
                 }
 
@@ -2443,7 +2446,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                     &method.return_ty,
                     Some(method.return_ty_range),
                 );
-                extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
+                extend_type_ref_diagnostics(out, file_tokens, file_text, resolved.diagnostics);
 
                 for param in &method.params {
                     let resolved = resolve_type_ref_text(
@@ -2455,7 +2458,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                         &param.ty,
                         Some(param.ty_range),
                     );
-                    extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
+                    extend_type_ref_diagnostics(out, file_tokens, file_text, resolved.diagnostics);
                     if resolved.ty == Type::Void {
                         out.push(Diagnostic::error(
                             "void-parameter-type",
@@ -2476,7 +2479,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                         thrown,
                         base_span,
                     );
-                    extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
+                    extend_type_ref_diagnostics(out, file_tokens, file_text, resolved.diagnostics);
                 }
             }
             Member::Constructor(cid) => {
@@ -2513,6 +2516,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                 child,
                 loader,
                 default_bound,
+                file_tokens,
                 file_text,
                 out,
             ),
@@ -2520,14 +2524,23 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
     }
 }
 
-fn extend_type_ref_diagnostics(out: &mut Vec<Diagnostic>, file_text: &str, diags: Vec<Diagnostic>) {
-    // Type-use annotations are currently ignored by Nova's type checker. The type-ref parser is
-    // resilient to annotations (and can optionally diagnose them when anchored), but we
+fn extend_type_ref_diagnostics(
+    out: &mut Vec<Diagnostic>,
+    file_tokens: &[Token],
+    file_text: &str,
+    diags: Vec<Diagnostic>,
+) {
+    // NOTE: Type-use annotations are currently ignored by Nova's type checker. The type-ref
+    // parser is resilient to annotations (and can optionally diagnose them when anchored), but we
     // intentionally suppress diagnostics for annotation *type names* in type-use positions when
     // reporting type-check diagnostics.
     //
     // Example: `List<@Missing String>` should not surface an `unresolved-type` diagnostic for the
     // annotation name `Missing` in `db.type_diagnostics`.
+    if diags.is_empty() {
+        return;
+    }
+
     out.extend(diags.into_iter().filter(|d| {
         let Some(span) = d.span else {
             return true;
@@ -2537,17 +2550,31 @@ fn extend_type_ref_diagnostics(out: &mut Vec<Diagnostic>, file_text: &str, diags
             return true;
         }
 
-        // Type-use annotations can be written as `@A` or `@ A`, so scan backwards over whitespace
-        // to find the nearest preceding non-whitespace byte.
-        let bytes = file_text.as_bytes();
-        let mut i = span.start;
-        while i > 0 && bytes[i - 1].is_ascii_whitespace() {
-            i -= 1;
-        }
-        if i == 0 {
+        let start: u32 = match span.start.try_into() {
+            Ok(v) => v,
+            Err(_) => return true,
+        };
+
+        // Find the token that contains the diagnostic span start.
+        let mut idx = file_tokens.partition_point(|tok| tok.range.end <= start);
+        if idx >= file_tokens.len() {
             return true;
         }
-        bytes.get(i - 1) != Some(&b'@')
+        if file_tokens[idx].range.start > start && idx > 0 {
+            idx -= 1;
+        }
+
+        // Walk backwards over trivia to find the previous token and confirm it is `@`.
+        while idx > 0 {
+            idx -= 1;
+            let prev = &file_tokens[idx];
+            if prev.kind.is_trivia() {
+                continue;
+            }
+            return prev.kind != SyntaxKind::At;
+        }
+
+        true
     }));
 }
 

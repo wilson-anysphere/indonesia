@@ -7197,6 +7197,48 @@ class C {
 }
 
 #[test]
+fn type_use_annotation_types_are_ignored_with_block_comment_after_at() {
+    let src = r#"
+import java.util.List;
+
+class C {
+    List<@/*comment*/Missing String> xs;
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Missing")),
+        "expected type-use annotation types to be ignored even with a comment after `@`; got {diags:?}"
+    );
+}
+
+#[test]
+fn type_use_annotation_types_are_ignored_with_line_comment_after_at() {
+    let src = r#"
+import java.util.List;
+
+class C {
+    List<@
+        // comment
+        Missing String> xs;
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Missing")),
+        "expected type-use annotation types to be ignored even with a line comment after `@`; got {diags:?}"
+    );
+}
+
+#[test]
 fn unresolved_class_type_param_bounds_are_anchored() {
     let src = r#"
 class C<T extends Missing> {
