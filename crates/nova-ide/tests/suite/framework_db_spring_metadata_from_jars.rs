@@ -132,7 +132,7 @@ fn spring_analyzer_sees_dependency_metadata_via_framework_db_synthetic_files() {
 
     let fw_db =
         nova_ide::framework_db::framework_db_for_file(db, file, &cancel).expect("framework db");
-    let project = fw_db.project_of_file(file);
+    let _project = fw_db.project_of_file(file);
 
     let diags = analyzer.diagnostics(fw_db.as_ref(), file);
     assert!(
