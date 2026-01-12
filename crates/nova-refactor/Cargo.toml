@@ -30,3 +30,7 @@ nova-test-utils = { path = "../nova-test-utils" }
 [[bench]]
 name = "refactor"
 harness = false
+
+[[test]]
+name = "javac_refactors"
+path = "tests/harness/javac_refactors.rs"

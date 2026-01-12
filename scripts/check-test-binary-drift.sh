@@ -30,21 +30,55 @@ pinned_harnesses=(
   "nova-project:harness"
 )
 
+has_test_target() {
+  local rev="$1"
+  local crate="$2"
+  local test_name="$3"
+
+  # Most crates rely on Cargo's auto-discovery (`tests/<name>.rs`).
+  local auto_path="crates/${crate}/tests/${test_name}.rs"
+  if git cat-file -e "${rev}:${auto_path}" 2>/dev/null; then
+    return 0
+  fi
+
+  # Some crates pin test targets via explicit `[[test]]` entries.
+  local manifest="crates/${crate}/Cargo.toml"
+  if ! git cat-file -e "${rev}:${manifest}" 2>/dev/null; then
+    return 1
+  fi
+
+  git show "${rev}:${manifest}" | awk -v wanted="${test_name}" '
+    BEGIN { in_test = 0 }
+    /^[[:space:]]*\[\[test\]\][[:space:]]*$/ { in_test = 1; next }
+    # Any other TOML section header ends the current [[test]] block.
+    /^[[:space:]]*\[/ && $0 !~ /^[[:space:]]*\[\[test\]\]/ { in_test = 0 }
+    in_test && $0 ~ /^[[:space:]]*name[[:space:]]*=/ {
+      line = $0
+      sub(/^[[:space:]]*name[[:space:]]*=[[:space:]]*/, "", line)
+      gsub(/[[:space:]]/, "", line)
+      gsub(/["'\''\r]/, "", line)
+      if (line == wanted) {
+        exit 0
+      }
+    }
+    END { exit 1 }
+  '
+}
+
 for entry in "${pinned_harnesses[@]}"; do
   crate="${entry%%:*}"
   test_name="${entry##*:}"
-  test_path="crates/${crate}/tests/${test_name}.rs"
 
-  if git cat-file -e "${base_sha}:${test_path}" 2>/dev/null; then
-    if ! git cat-file -e "${head_sha}:${test_path}" 2>/dev/null; then
+  if has_test_target "${base_sha}" "${crate}" "${test_name}"; then
+    if ! has_test_target "${head_sha}" "${crate}" "${test_name}"; then
       cat >&2 <<EOF
 ERROR: Pinned integration test harness missing.
 
-${test_path} existed in the PR base commit but is missing in HEAD.
+The integration test target '${test_name}' for crate '${crate}' existed in the PR base commit but is missing in HEAD.
 
 This file is a stable CI/docs entrypoint (cargo test --locked -p ${crate} --test=${test_name}).
-Do not rename/move it; instead, keep the harness and add new tests under a subdirectory (e.g.
-crates/${crate}/tests/suite/) and include them via a module.
+Do not rename/remove it; instead, keep the harness and add new tests under a subdirectory (e.g.
+crates/${crate}/tests/suite/) and include them via a module, or define a `[[test]]` target in Cargo.toml.
 EOF
       exit 1
     fi
