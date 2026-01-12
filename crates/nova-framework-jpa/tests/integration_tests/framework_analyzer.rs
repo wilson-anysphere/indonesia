@@ -1,5 +1,16 @@
-use nova_framework::{AnalyzerRegistry, CompletionContext, MemoryDatabase};
+use nova_framework::{AnalyzerRegistry, CompletionContext, FrameworkAnalyzer, MemoryDatabase};
 use nova_framework_jpa::{JpaAnalyzer, JPA_MISSING_ID};
+
+#[test]
+fn analyzer_applies_to_turns_on_with_jpa_marker() {
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+
+    db.add_classpath_class(project, "jakarta.persistence.Entity");
+
+    let analyzer = JpaAnalyzer::new();
+    assert!(analyzer.applies_to(&db, project));
+}
 
 #[test]
 fn analyzer_missing_id_diagnostic_is_scoped_to_file() {
@@ -151,4 +162,3 @@ fn analyzer_jpql_completions_include_entity_fields() {
         "expected `name` completion; got {labels:?}"
     );
 }
-
