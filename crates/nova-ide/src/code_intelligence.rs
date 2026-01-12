@@ -16191,7 +16191,10 @@ pub fn hover(db: &dyn Database, file: FileId, position: Position) -> Option<Hove
             }
 
             // Variable hover: show semantic type (best-effort).
-            if let Some(var) = analysis.vars.iter().find(|v| v.name == token.text) {
+            //
+            // Use scope-aware lookup so out-of-scope locals (e.g. shadowing in a finished block)
+            // don't affect hover results.
+            if let Some(var) = in_scope_local_var(&analysis, token.text.as_str(), offset) {
                 let ty = parse_source_type(&mut types, &var.ty);
                 let ty = nova_types::format_type(&types, &ty);
                 return Some(Hover {

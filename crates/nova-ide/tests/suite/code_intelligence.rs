@@ -6316,6 +6316,31 @@ class A {
 }
 
 #[test]
+fn hover_prefers_in_scope_local_var_over_out_of_scope_shadow() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    if (true) { String x = "shadow"; }
+    int x = 1;
+    x<|>;
+  }
+}
+"#,
+    );
+
+    let hover = hover(&db, file, pos).expect("expected hover");
+    let value = match hover.contents {
+        lsp_types::HoverContents::Markup(markup) => markup.value,
+        other => format!("{other:?}"),
+    };
+    assert!(
+        value.contains("x: int"),
+        "expected hover to resolve to the in-scope `int x`, not the shadowed `String x`; got {value:?}"
+    );
+}
+
+#[test]
 fn inlay_hints_include_parameter_names_for_jdk_call() {
     let (db, file) = fixture_file(
         r#"
