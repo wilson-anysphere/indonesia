@@ -769,11 +769,6 @@ fn expr_scope_for_offset(
                     visit_expr(body, *expr, offset, best_expr, best_stmt);
                 }
             }
-            Stmt::Yield { expr, .. } => {
-                if let Some(expr) = expr {
-                    visit_expr(body, *expr, offset, best_expr, best_stmt);
-                }
-            }
             Stmt::If {
                 condition,
                 then_branch,
