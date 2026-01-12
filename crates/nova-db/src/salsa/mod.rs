@@ -1277,6 +1277,14 @@ impl Database {
         db.set_file_exists(file, exists);
     }
 
+    pub fn set_file_is_dirty(&self, file: FileId, dirty: bool) {
+        let mut inputs = self.inputs.lock();
+        inputs.file_is_dirty.insert(file, dirty);
+        drop(inputs);
+
+        self.inner.lock().set_file_is_dirty(file, dirty);
+    }
+
     pub fn set_file_content(&self, file: FileId, content: Arc<String>) {
         use std::collections::hash_map::Entry;
 
@@ -1433,14 +1441,6 @@ impl Database {
         if set_default_classpath_index {
             self.classpath_index_tracker.set_project_ptr(project, None, 0);
         }
-    }
-
-    pub fn set_file_is_dirty(&self, file: FileId, dirty: bool) {
-        let mut inputs = self.inputs.lock();
-        inputs.file_is_dirty.insert(file, dirty);
-        drop(inputs);
-
-        self.inner.lock().set_file_is_dirty(file, dirty);
     }
 
     /// Apply a single byte-offset-based text edit to `file`.
@@ -1810,15 +1810,17 @@ impl Database {
         };
 
         // Persisted indexes are validated primarily via on-disk metadata (mtime + size). If any
-        // file is currently "dirty" (contains in-memory edits not reflected on disk), the
-        // in-memory indexes would not correspond to a stable on-disk snapshot and could be reused
-        // incorrectly on the next warm-start. Treat persistence as a no-op in that case.
-        if snap
-            .project_files(project)
-            .iter()
-            .any(|&file| snap.file_is_dirty(file))
-        {
-            return Ok(());
+        // existing project file is currently "dirty" (contains in-memory edits not reflected on
+        // disk), the in-memory indexes would not correspond to a stable on-disk snapshot and
+        // could be reused incorrectly on the next warm-start. Treat persistence as a no-op in
+        // that case.
+        for &file in snap.project_files(project).iter() {
+            if !snap.file_exists(file) {
+                continue;
+            }
+            if snap.file_is_dirty(file) {
+                return Ok(());
+            }
         }
 
         use std::collections::{BTreeMap, BTreeSet};

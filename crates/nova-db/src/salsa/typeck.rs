@@ -262,11 +262,11 @@ fn project_base_type_store(db: &dyn NovaTypeck, project: ProjectId) -> ArcEq<Typ
     // Pre-intern external classpath types in deterministic order so `ClassId`s are stable
     // across body-local clones even when external types are loaded in different orders.
     //
-    // Note: In JPMS mode we intentionally *do not* pre-intern types from the legacy
+    // NOTE: In JPMS mode we intentionally *do not* pre-intern types from the legacy
     // `classpath_index` input. Workspace loading historically merged module-path jars into this
     // index, and pre-interning would then allow `TypeEnv` lookups (used as a best-effort fallback
     // during type-ref parsing) to "resolve" types that should be rejected by JPMS readability /
-    // exports enforcement.
+    // exports enforcement (see `tests/suite/typeck_jpms.rs`).
     if db.jpms_compilation_env(project).is_none() {
         if let Some(cp) = db.classpath_index(project).as_deref() {
             for (idx, name) in cp.iter_binary_names().enumerate() {

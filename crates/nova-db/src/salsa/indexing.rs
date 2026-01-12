@@ -169,9 +169,13 @@ fn project_index_shards(db: &dyn NovaIndexing, project: ProjectId) -> Arc<Vec<Pr
             let path = rel.as_ref().clone();
             path_to_file.insert(path.clone(), file);
 
-            let full_path = cache_dir.project_root().join(&path);
-            let fp = Fingerprint::from_file_metadata(full_path)
-                .unwrap_or_else(|_| db.file_fingerprint(file).as_ref().clone());
+            let fp = if db.file_is_dirty(file) {
+                db.file_fingerprint(file).as_ref().clone()
+            } else {
+                let full_path = cache_dir.project_root().join(&path);
+                Fingerprint::from_file_metadata(full_path)
+                    .unwrap_or_else(|_| db.file_fingerprint(file).as_ref().clone())
+            };
             fingerprints.insert(path, fp);
         }
 

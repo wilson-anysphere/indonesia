@@ -24,6 +24,9 @@ pub trait NovaInputs: ra_salsa::Database {
     ///
     /// Hosts should set this to `true` when a file is modified in an editor buffer and back to
     /// `false` once the buffer state matches the on-disk content again.
+    ///
+    /// The thread-safe `Database` wrapper ensures a default value of `false` is initialized for
+    /// files referenced by `project_files`.
     #[ra_salsa::input]
     fn file_is_dirty(&self, file: FileId) -> bool;
 
