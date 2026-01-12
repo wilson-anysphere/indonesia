@@ -84,31 +84,41 @@ impl BuildFileFingerprint {
 
 pub fn collect_gradle_build_files(root: &Path) -> io::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
-    collect_gradle_build_files_rec(root, root, &mut out)?;
-
-    // Some Gradle settings constructs (e.g. `includeFlat`, `projectDir = file("../...")`) can
-    // introduce module roots outside the workspace root or point at directory symlinks.
-    //
-    // These directories are not covered by the initial recursive scan:
-    // - outside the root: we don't walk upward into `..`
-    // - directory symlinks: the recursive walker skips them to avoid cycles
-    //
-    // Best-effort include build scripts from those declared project directories so Gradle
-    // fingerprints change when external/symlinked module build files change.
-    for project_root in project_roots_from_settings(root)? {
-        collect_gradle_build_files_rec(root, &project_root, &mut out)?;
-    }
-
     // Composite builds: best-effort include build scripts from `includeBuild(...)` roots.
+    //
+    // Composite builds can be nested (an included build can itself include other builds). Walk the
+    // include graph recursively and include build scripts from each discovered build root.
     //
     // These can affect dependency resolution/classpaths, so they should contribute to Gradle
     // snapshot fingerprints (used by both `nova-build` and `nova-project`).
-    for included_root in included_build_roots_from_settings(root)? {
-        collect_gradle_build_files_rec(&included_root, &included_root, &mut out)?;
+    let mut visited_build_roots: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut pending_build_roots = std::collections::VecDeque::new();
+    pending_build_roots.push_back(root.to_path_buf());
+    visited_build_roots.insert(root.canonicalize().unwrap_or_else(|_| root.to_path_buf()));
 
-        // Nested projects inside included builds can also be external/symlinked via settings.
-        for project_root in project_roots_from_settings(&included_root)? {
-            collect_gradle_build_files_rec(&included_root, &project_root, &mut out)?;
+    while let Some(build_root) = pending_build_roots.pop_front() {
+        collect_gradle_build_files_rec(&build_root, &build_root, &mut out)?;
+
+        // Some Gradle settings constructs (e.g. `includeFlat`, `projectDir = file("../...")`) can
+        // introduce module roots outside the workspace root or point at directory symlinks.
+        //
+        // These directories are not covered by the recursive scan:
+        // - outside the root: we don't walk upward into `..`
+        // - directory symlinks: the walker skips them to avoid cycles
+        //
+        // Best-effort include build scripts from those declared project directories so Gradle
+        // fingerprints change when external/symlinked module build files change.
+        for project_root in project_roots_from_settings(&build_root)? {
+            collect_gradle_build_files_rec(&build_root, &project_root, &mut out)?;
+        }
+
+        for included_root in included_build_roots_from_settings(&build_root)? {
+            let key = included_root
+                .canonicalize()
+                .unwrap_or_else(|_| included_root.clone());
+            if visited_build_roots.insert(key) {
+                pending_build_roots.push_back(included_root);
+            }
         }
     }
 
@@ -1365,6 +1375,34 @@ mod tests {
         assert!(
             files.contains(&expected_included_build_gradle),
             "expected included build.gradle to be included in build file collection; got: {files:?}"
+        );
+    }
+
+    #[test]
+    fn collect_gradle_build_files_includes_build_files_from_nested_include_builds() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let included1 = dir.path().join("included1");
+        let included2 = dir.path().join("included2");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&included1).unwrap();
+        std::fs::create_dir_all(&included2).unwrap();
+
+        write_file(
+            &root.join("settings.gradle"),
+            b"includeBuild(\"../included1\")\n",
+        );
+        write_file(
+            &included1.join("settings.gradle"),
+            b"includeBuild(\"../included2\")\n",
+        );
+        write_file(&included2.join("build.gradle"), b"plugins { id 'java' }\n");
+
+        let files = collect_gradle_build_files(&root).unwrap();
+        let expected = root.join("../included1/../included2/build.gradle");
+        assert!(
+            files.contains(&expected),
+            "expected nested included build.gradle to be included in build file collection; got: {files:?}"
         );
     }
 
