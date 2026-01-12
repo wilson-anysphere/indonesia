@@ -194,9 +194,9 @@ fn extract_variable_generates_valid_edit() {
 #[test]
 fn extract_variable_replaces_whole_expression_statement() {
     let file = FileId::new("Test.java");
-    let src = r#"class Test {
-  static class Foo {}
+    let src = r#"class Foo {}
 
+class Test {
   void m() {
     new Foo();
   }
@@ -220,9 +220,9 @@ fn extract_variable_replaces_whole_expression_statement() {
     .unwrap();
 
     let after = apply_text_edits(src, &edit.text_edits).unwrap();
-    let expected = r#"class Test {
-  static class Foo {}
+    let expected = r#"class Foo {}
 
+class Test {
   void m() {
     Foo result = new Foo();
   }
