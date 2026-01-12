@@ -808,6 +808,89 @@ fn refreshes_gradle_snapshot_from_cached_java_compile_config() {
 }
 
 #[test]
+fn refreshes_gradle_snapshot_from_cached_java_compile_config_with_project_dir_override() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    // Simulate a non-standard project directory mapping (e.g. `project(":app").projectDir =
+    // file("modules/app")`).
+    let app_dir = project_root.join("modules").join("app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+
+    let stdout = format!(
+        r#"
+NOVA_JSON_BEGIN
+{{
+  "projectPath": ":app",
+  "projectDir": "{project_dir}",
+  "compileClasspath": [],
+  "testCompileClasspath": [],
+  "mainSourceRoots": [],
+  "testSourceRoots": [],
+  "mainOutputDirs": [],
+  "testOutputDirs": [],
+  "compileCompilerArgs": [],
+  "testCompilerArgs": [],
+  "inferModulePath": false
+}}
+NOVA_JSON_END
+"#,
+        project_dir = app_dir.display(),
+    );
+
+    let runner = Arc::new(CountingRunner::new(CommandOutput {
+        status: exit_status(0),
+        stdout,
+        stderr: String::new(),
+        truncated: false,
+    }));
+    let gradle = GradleBuild::with_runner(GradleConfig::default(), runner.clone());
+    let cache = BuildCache::new(tmp.path().join("cache"));
+
+    let _cfg = gradle
+        .java_compile_config(&project_root, Some(":app"), &cache)
+        .expect("java compile config");
+    assert_eq!(runner.invocations(), 1);
+
+    let snapshot_path = project_root.join(GRADLE_SNAPSHOT_REL_PATH);
+    assert!(snapshot_path.is_file(), "snapshot file should be created");
+
+    // Delete the snapshot, then ensure it is repopulated from the cached module config.
+    std::fs::remove_file(&snapshot_path).expect("remove snapshot");
+    assert!(!snapshot_path.exists(), "snapshot should be removed");
+
+    let _cfg2 = gradle
+        .java_compile_config(&project_root, Some(":app"), &cache)
+        .expect("java compile config (cached)");
+    assert_eq!(
+        runner.invocations(),
+        1,
+        "expected java_compile_config() cache hit to avoid invoking Gradle"
+    );
+
+    assert!(
+        snapshot_path.is_file(),
+        "snapshot file should be recreated from cached module config"
+    );
+
+    // The regenerated snapshot should preserve the overridden projectDir mapping.
+    let bytes = std::fs::read(snapshot_path).unwrap();
+    let snapshot: SnapshotFile = serde_json::from_slice(&bytes).unwrap();
+    let project = snapshot
+        .projects
+        .iter()
+        .find(|p| p.path == ":app")
+        .expect("project entry for :app");
+    assert_eq!(project.project_dir, app_dir);
+    let cfg = snapshot
+        .java_compile_configs
+        .get(":app")
+        .expect("compile config for :app");
+    assert_eq!(cfg.project_dir, app_dir);
+}
+
+#[test]
 fn java_compile_configs_all_preserves_existing_buildsrc_snapshot_entries() {
     let tmp = tempfile::tempdir().unwrap();
     let project_root = tmp.path().join("project");
@@ -902,6 +985,7 @@ fn java_compile_configs_all_preserves_existing_buildsrc_snapshot_entries() {
     let _buildsrc_cfg = gradle
         .java_compile_config(&project_root, Some(":__buildSrc"), &cache)
         .expect("buildSrc java compile config");
+    assert_eq!(runner.invocations(), 1);
 
     let snapshot_path = project_root.join(GRADLE_SNAPSHOT_REL_PATH);
     assert!(snapshot_path.is_file(), "snapshot file should be created");

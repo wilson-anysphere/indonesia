@@ -543,12 +543,20 @@ impl GradleBuild {
                         _ => true,
                     };
                 if should_update_snapshot {
-                    if let Ok(project_dir) = gradle_project_dir_cached(
-                        project_root,
-                        Some(project_path_for_snapshot),
-                        cache,
-                        &fingerprint,
-                    ) {
+                    let project_dir = if project_path_for_snapshot == ":" {
+                        Some(project_root.to_path_buf())
+                    } else {
+                        infer_gradle_project_dir_from_java_compile_config(&cfg).or_else(|| {
+                            gradle_project_dir_cached(
+                                project_root,
+                                Some(project_path_for_snapshot),
+                                cache,
+                                &fingerprint,
+                            )
+                            .ok()
+                        })
+                    };
+                    if let Some(project_dir) = project_dir {
                         let _ = update_gradle_snapshot_java_compile_config(
                             project_root,
                             &fingerprint,
@@ -633,12 +641,20 @@ impl GradleBuild {
                             _ => true,
                         };
                     if should_update_snapshot {
-                        if let Ok(project_dir) = gradle_project_dir_cached(
-                            project_root,
-                            Some(project_path_for_snapshot),
-                            cache,
-                            &fingerprint,
-                        ) {
+                        let project_dir = if project_path_for_snapshot == ":" {
+                            Some(project_root.to_path_buf())
+                        } else {
+                            infer_gradle_project_dir_from_java_compile_config(&cfg).or_else(|| {
+                                gradle_project_dir_cached(
+                                    project_root,
+                                    Some(project_path_for_snapshot),
+                                    cache,
+                                    &fingerprint,
+                                )
+                                .ok()
+                            })
+                        };
+                        if let Some(project_dir) = project_dir {
                             let _ = update_gradle_snapshot_java_compile_config(
                                 project_root,
                                 &fingerprint,
@@ -1499,6 +1515,37 @@ fn gradle_project_dir_cached(
         rel.push(part);
     }
     Ok(project_root.join(rel))
+}
+
+fn infer_gradle_project_dir_from_output_dir(output_dir: &Path) -> Option<PathBuf> {
+    // Best-effort: Gradle's default Java output directories are:
+    // - `<projectDir>/build/classes/java/main`
+    // - `<projectDir>/build/classes/java/test`
+    //
+    // When we only have a cached `JavaCompileConfig` (and not a cached projectDir mapping from the
+    // Gradle projects query), this lets us reconstruct `projectDir` for snapshot regeneration.
+    for suffix in ["build/classes/java/main", "build/classes/java/test"] {
+        let suffix_path = Path::new(suffix);
+        if output_dir.ends_with(suffix_path) {
+            let mut dir = output_dir.to_path_buf();
+            for _ in suffix_path.components() {
+                dir.pop();
+            }
+            return Some(dir);
+        }
+    }
+    None
+}
+
+fn infer_gradle_project_dir_from_java_compile_config(cfg: &JavaCompileConfig) -> Option<PathBuf> {
+    cfg.main_output_dir
+        .as_deref()
+        .and_then(infer_gradle_project_dir_from_output_dir)
+        .or_else(|| {
+            cfg.test_output_dir
+                .as_deref()
+                .and_then(infer_gradle_project_dir_from_output_dir)
+        })
 }
 
 fn gradle_output_dir(project_root: &Path, project_path: Option<&str>) -> PathBuf {
