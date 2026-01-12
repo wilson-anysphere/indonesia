@@ -572,11 +572,8 @@ pub(crate) fn load_gradle_workspace_model(
         .or_else(default_gradle_user_home);
     let gradle_properties = load_gradle_properties(root);
     let version_catalog = load_gradle_version_catalog(root, &gradle_properties);
-    let root_dependencies = parse_gradle_root_dependencies(
-        root,
-        version_catalog.as_ref(),
-        &gradle_properties,
-    );
+    let root_dependencies =
+        parse_gradle_root_dependencies(root, version_catalog.as_ref(), &gradle_properties);
 
     let module_root_by_project_path: BTreeMap<String, PathBuf> = module_refs
         .iter()
@@ -992,7 +989,10 @@ fn append_included_build_module_refs(module_refs: &mut Vec<GradleModuleRef>, dir
         used_project_paths.insert(project_path.clone());
         existing_dirs.insert(dir_rel.clone());
 
-        module_refs.push(GradleModuleRef { project_path, dir_rel });
+        module_refs.push(GradleModuleRef {
+            project_path,
+            dir_rel,
+        });
     }
 }
 
@@ -1738,7 +1738,10 @@ fn parse_gradle_properties_from_text(contents: &str) -> GradleProperties {
 ///
 /// If the property isn't present in `gradle.properties`, this returns `None` and the caller should
 /// keep the original string intact.
-fn resolve_gradle_properties_placeholder(value: &str, gradle_properties: &GradleProperties) -> Option<String> {
+fn resolve_gradle_properties_placeholder(
+    value: &str,
+    gradle_properties: &GradleProperties,
+) -> Option<String> {
     let value = value.trim();
     if value.is_empty() {
         return None;
@@ -1769,7 +1772,8 @@ fn resolve_gradle_properties_placeholder(value: &str, gradle_properties: &Gradle
 /// - `annotationProcessor|testAnnotationProcessor|kapt|kaptTest` => `annotationProcessor`
 fn gradle_scope_from_configuration(configuration: &str) -> Option<&'static str> {
     let configuration = configuration.trim();
-    if configuration.eq_ignore_ascii_case("implementation") || configuration.eq_ignore_ascii_case("api")
+    if configuration.eq_ignore_ascii_case("implementation")
+        || configuration.eq_ignore_ascii_case("api")
     {
         return Some("compile");
     }
@@ -1835,10 +1839,8 @@ fn parse_gradle_version_catalog_from_toml(
     if let Some(versions) = root.get("versions").and_then(Value::as_table) {
         for (k, v) in versions {
             if let Some(v) = v.as_str() {
-                let resolved =
-                    resolve_gradle_properties_placeholder(v, gradle_properties).unwrap_or_else(|| {
-                        v.trim().to_string()
-                    });
+                let resolved = resolve_gradle_properties_placeholder(v, gradle_properties)
+                    .unwrap_or_else(|| v.trim().to_string());
                 catalog.versions.insert(k.to_string(), resolved);
             }
         }
@@ -1882,8 +1884,8 @@ fn parse_gradle_version_catalog_library(
         // Not part of the requirements, but cheap to support.
         Value::String(text) => {
             let (group_id, artifact_id, version) = parse_maybe_maven_coord(text)?;
-            let version =
-                resolve_gradle_properties_placeholder(&version, gradle_properties).unwrap_or(version);
+            let version = resolve_gradle_properties_placeholder(&version, gradle_properties)
+                .unwrap_or(version);
             Some(GradleVersionCatalogLibrary {
                 group_id,
                 artifact_id,
@@ -2225,9 +2227,8 @@ fn parse_gradle_dependencies_from_text(
         };
         let scope = gradle_scope_from_configuration(config).map(str::to_string);
         let version = caps.name("version").map(|m| m.as_str().to_string());
-        let version = version.map(|v| {
-            resolve_gradle_properties_placeholder(&v, gradle_properties).unwrap_or(v)
-        });
+        let version = version
+            .map(|v| resolve_gradle_properties_placeholder(&v, gradle_properties).unwrap_or(v));
         deps.push(Dependency {
             group_id: caps["group"].to_string(),
             artifact_id: caps["artifact"].to_string(),
@@ -2268,9 +2269,8 @@ fn parse_gradle_dependencies_from_text(
         };
         let scope = gradle_scope_from_configuration(config).map(str::to_string);
         let version = caps.name("version").map(|m| m.as_str().to_string());
-        let version = version.map(|v| {
-            resolve_gradle_properties_placeholder(&v, gradle_properties).unwrap_or(v)
-        });
+        let version = version
+            .map(|v| resolve_gradle_properties_placeholder(&v, gradle_properties).unwrap_or(v));
         deps.push(Dependency {
             group_id: caps["group"].to_string(),
             artifact_id: caps["artifact"].to_string(),
@@ -2747,8 +2747,7 @@ mod tests {
     use super::{
         parse_gradle_dependencies_from_text, parse_gradle_project_dependencies_from_text,
         parse_gradle_settings_projects, parse_gradle_version_catalog_from_toml,
-        sort_dedup_dependencies, strip_gradle_comments,
-        GradleProperties,
+        sort_dedup_dependencies, strip_gradle_comments, GradleProperties,
     };
 
     #[test]
@@ -2917,7 +2916,11 @@ dependencies {
         let mut scopes: BTreeMap<(String, String, Option<String>), Option<String>> =
             BTreeMap::new();
         for dep in deps {
-            let key = (dep.group_id.clone(), dep.artifact_id.clone(), dep.version.clone());
+            let key = (
+                dep.group_id.clone(),
+                dep.artifact_id.clone(),
+                dep.version.clone(),
+            );
             tuples.push(key.clone());
             scopes.insert(key, dep.scope);
         }
@@ -2953,13 +2956,34 @@ dependencies {
         // Scope mapping is best-effort. If a dependency is declared in multiple configurations,
         // we keep a single deterministic scope for the coordinates.
         let expected_scopes: [((String, String, Option<String>), &str); 14] = [
-            ((String::from("g1"), String::from("a1"), Some("1".into())), "compile"),
-            ((String::from("g2"), String::from("a2"), Some("2".into())), "compile"),
-            ((String::from("g3"), String::from("a3"), Some("3".into())), "provided"),
-            ((String::from("g4"), String::from("a4"), Some("4".into())), "runtime"),
-            ((String::from("g5"), String::from("a5"), Some("5".into())), "test"),
-            ((String::from("g6"), String::from("a6"), Some("6".into())), "test"),
-            ((String::from("g7"), String::from("a7"), Some("7".into())), "test"),
+            (
+                (String::from("g1"), String::from("a1"), Some("1".into())),
+                "compile",
+            ),
+            (
+                (String::from("g2"), String::from("a2"), Some("2".into())),
+                "compile",
+            ),
+            (
+                (String::from("g3"), String::from("a3"), Some("3".into())),
+                "provided",
+            ),
+            (
+                (String::from("g4"), String::from("a4"), Some("4".into())),
+                "runtime",
+            ),
+            (
+                (String::from("g5"), String::from("a5"), Some("5".into())),
+                "test",
+            ),
+            (
+                (String::from("g6"), String::from("a6"), Some("6".into())),
+                "test",
+            ),
+            (
+                (String::from("g7"), String::from("a7"), Some("7".into())),
+                "test",
+            ),
             (
                 (String::from("g8"), String::from("a8"), Some("8".into())),
                 "annotationProcessor",
@@ -2976,7 +3000,10 @@ dependencies {
                 (String::from("g11"), String::from("a11"), Some("11".into())),
                 "annotationProcessor",
             ),
-            ((String::from("g12"), String::from("a12"), Some("12".into())), "compile"),
+            (
+                (String::from("g12"), String::from("a12"), Some("12".into())),
+                "compile",
+            ),
             (
                 (String::from("g13"), String::from("a13"), Some("13".into())),
                 "annotationProcessor",

@@ -43,7 +43,11 @@ pub fn collect_gradle_build_files(root: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {
+fn collect_gradle_build_files_rec(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+) -> io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -91,9 +95,10 @@ fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf
         }
         if name.ends_with(".lockfile")
             && path.parent().is_some_and(|parent| {
-                parent
-                    .ancestors()
-                    .any(|dir| dir.file_name().is_some_and(|name| name == "dependency-locks"))
+                parent.ancestors().any(|dir| {
+                    dir.file_name()
+                        .is_some_and(|name| name == "dependency-locks")
+                })
             })
         {
             out.push(path);
@@ -186,10 +191,16 @@ mod tests {
 
         // Included files.
         write_file(&root.join("build.gradle"), b"plugins {}");
-        write_file(&root.join("settings.gradle.kts"), b"rootProject.name = \"demo\"");
+        write_file(
+            &root.join("settings.gradle.kts"),
+            b"rootProject.name = \"demo\"",
+        );
         write_file(&root.join("gradle.properties"), b"org.gradle.daemon=true");
         write_file(&root.join("gradle.lockfile"), b"# lockfile");
-        write_file(&root.join("libs.versions.toml"), b"[versions]\nroot = \"1\"");
+        write_file(
+            &root.join("libs.versions.toml"),
+            b"[versions]\nroot = \"1\"",
+        );
         write_file(&root.join("random.lockfile"), b"should-not-be-included");
 
         write_file(&root.join("gradlew"), b"#!/bin/sh\necho gradlew");
@@ -225,10 +236,16 @@ mod tests {
         );
 
         // Should *not* be included: non-gradle version catalogs outside `gradle/`.
-        write_file(&root.join("config/other.versions.toml"), b"[versions]\nnope = \"1\"");
+        write_file(
+            &root.join("config/other.versions.toml"),
+            b"[versions]\nnope = \"1\"",
+        );
 
         // Ignored directories.
-        write_file(&root.join("node_modules/build.gradle"), b"should-be-ignored");
+        write_file(
+            &root.join("node_modules/build.gradle"),
+            b"should-be-ignored",
+        );
         write_file(&root.join("build/settings.gradle"), b"should-be-ignored");
         write_file(&root.join("target/foo.gradle"), b"should-be-ignored");
         write_file(&root.join(".git/build.gradle"), b"should-be-ignored");

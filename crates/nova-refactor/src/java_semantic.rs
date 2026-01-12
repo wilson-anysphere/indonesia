@@ -2571,7 +2571,8 @@ fn resolve_receiver_method(
             inheritance,
         ),
         ReceiverKind::Super => {
-            let super_item = direct_super_item(enclosing_item, type_by_name, type_name_by_item, inheritance)?;
+            let super_item =
+                direct_super_item(enclosing_item, type_by_name, type_name_by_item, inheritance)?;
             resolve_method_in_type_or_supertypes(
                 super_item,
                 name,
@@ -2699,7 +2700,13 @@ fn collect_type_maps(
                     .push(*method_id);
             }
             item_tree::Member::Type(child) => {
-                collect_type_maps(tree, *child, type_by_name, type_name_by_item, methods_by_item);
+                collect_type_maps(
+                    tree,
+                    *child,
+                    type_by_name,
+                    type_name_by_item,
+                    methods_by_item,
+                );
             }
             _ => {}
         }
@@ -2738,12 +2745,14 @@ fn record_syntax_method_reference_references(
 
         // Only handle the unqualified `this::m` / `super::m` forms (mirrors `hir::Expr::{This,Super}`).
         let receiver_kind = match receiver {
-            ast::Expression::ThisExpression(this_expr) => {
-                this_expr.qualifier().is_none().then_some(ReceiverKind::This)
-            }
-            ast::Expression::SuperExpression(super_expr) => {
-                super_expr.qualifier().is_none().then_some(ReceiverKind::Super)
-            }
+            ast::Expression::ThisExpression(this_expr) => this_expr
+                .qualifier()
+                .is_none()
+                .then_some(ReceiverKind::This),
+            ast::Expression::SuperExpression(super_expr) => super_expr
+                .qualifier()
+                .is_none()
+                .then_some(ReceiverKind::Super),
             _ => None,
         };
         let Some(receiver_kind) = receiver_kind else {
@@ -2778,12 +2787,7 @@ fn record_syntax_method_reference_references(
 }
 
 fn enclosing_item_at_offset(tree: &ItemTree, offset: usize) -> Option<ItemId> {
-    fn walk(
-        tree: &ItemTree,
-        item: ItemId,
-        offset: usize,
-        best: &mut Option<(usize, ItemId)>,
-    ) {
+    fn walk(tree: &ItemTree, item: ItemId, offset: usize, best: &mut Option<(usize, ItemId)>) {
         let (body_range, members) = item_body_range_and_members(tree, item);
         if !(body_range.start <= offset && offset < body_range.end) {
             return;
@@ -2821,7 +2825,10 @@ fn item_id(item: item_tree::Item) -> ItemId {
     }
 }
 
-fn item_name_and_members<'a>(tree: &'a ItemTree, item: ItemId) -> (&'a str, &'a [item_tree::Member]) {
+fn item_name_and_members<'a>(
+    tree: &'a ItemTree,
+    item: ItemId,
+) -> (&'a str, &'a [item_tree::Member]) {
     match item {
         ItemId::Class(id) => {
             let data = tree.class(id);
@@ -2940,9 +2947,7 @@ fn walk_hir_body(body: &hir::Body, mut f: impl FnMut(hir::ExprId)) {
                 walk_stmt(body, *inner, f);
             }
             hir::Stmt::Synchronized {
-                expr,
-                body: inner,
-                ..
+                expr, body: inner, ..
             } => {
                 walk_expr(body, *expr, f);
                 walk_stmt(body, *inner, f);

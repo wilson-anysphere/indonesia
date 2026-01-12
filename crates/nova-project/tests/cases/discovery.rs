@@ -1166,8 +1166,9 @@ fn loads_gradle_includebuild_workspace_model() {
         .expect("expected build-logic module to be discovered via includeBuild");
     assert_eq!(build_logic.id, "gradle::__includedBuild_build-logic");
 
-    let java_file =
-        model.workspace_root.join("build-logic/src/main/java/com/example/buildlogic/BuildLogic.java");
+    let java_file = model
+        .workspace_root
+        .join("build-logic/src/main/java/com/example/buildlogic/BuildLogic.java");
     let match_java = model
         .module_for_path(&java_file)
         .expect("module for build-logic java file");

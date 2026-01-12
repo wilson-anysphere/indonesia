@@ -3433,11 +3433,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     let owner_ty = Type::class(*owner, vec![]);
                     ensure_inner(checker, loader, &owner_ty, seen_classes, seen_type_vars);
                 }
-                Type::Void
-                | Type::Primitive(_)
-                | Type::Null
-                | Type::Unknown
-                | Type::Error => {}
+                Type::Void | Type::Primitive(_) | Type::Null | Type::Unknown | Type::Error => {}
             }
         }
 
@@ -6966,8 +6962,9 @@ fn source_item_supertypes<'idx>(
 
             if let Some(ext) = class.extends.first() {
                 let base_span = class.extends_ranges.first().copied();
-                let resolved =
-                    resolve_type_ref_text(resolver, scopes, scope_id, loader, type_vars, ext, base_span);
+                let resolved = resolve_type_ref_text(
+                    resolver, scopes, scope_id, loader, type_vars, ext, base_span,
+                );
                 if !resolved.ty.is_errorish() {
                     super_class = Some(resolved.ty);
                 }
@@ -6979,8 +6976,9 @@ fn source_item_supertypes<'idx>(
 
             for (idx, imp) in class.implements.iter().enumerate() {
                 let base_span = class.implements_ranges.get(idx).copied();
-                let resolved =
-                    resolve_type_ref_text(resolver, scopes, scope_id, loader, type_vars, imp, base_span);
+                let resolved = resolve_type_ref_text(
+                    resolver, scopes, scope_id, loader, type_vars, imp, base_span,
+                );
                 if !resolved.ty.is_errorish() {
                     interfaces.push(resolved.ty);
                 }
@@ -6991,8 +6989,9 @@ fn source_item_supertypes<'idx>(
             let iface = tree.interface(id);
             for (idx, ext) in iface.extends.iter().enumerate() {
                 let base_span = iface.extends_ranges.get(idx).copied();
-                let resolved =
-                    resolve_type_ref_text(resolver, scopes, scope_id, loader, type_vars, ext, base_span);
+                let resolved = resolve_type_ref_text(
+                    resolver, scopes, scope_id, loader, type_vars, ext, base_span,
+                );
                 if !resolved.ty.is_errorish() {
                     interfaces.push(resolved.ty);
                 }
@@ -7004,7 +7003,9 @@ fn source_item_supertypes<'idx>(
             super_class = None;
 
             // Best-effort: annotation types implicitly extend `java.lang.annotation.Annotation`.
-            let ann_id = loader.store.intern_class_id("java.lang.annotation.Annotation");
+            let ann_id = loader
+                .store
+                .intern_class_id("java.lang.annotation.Annotation");
             interfaces.push(Type::class(ann_id, vec![]));
         }
         nova_hir::ids::ItemId::Enum(id) => {
@@ -7018,8 +7019,9 @@ fn source_item_supertypes<'idx>(
             let enm = tree.enum_(id);
             for (idx, imp) in enm.implements.iter().enumerate() {
                 let base_span = enm.implements_ranges.get(idx).copied();
-                let resolved =
-                    resolve_type_ref_text(resolver, scopes, scope_id, loader, type_vars, imp, base_span);
+                let resolved = resolve_type_ref_text(
+                    resolver, scopes, scope_id, loader, type_vars, imp, base_span,
+                );
                 if !resolved.ty.is_errorish() {
                     interfaces.push(resolved.ty);
                 }
@@ -7035,8 +7037,9 @@ fn source_item_supertypes<'idx>(
             let record = tree.record(id);
             for (idx, imp) in record.implements.iter().enumerate() {
                 let base_span = record.implements_ranges.get(idx).copied();
-                let resolved =
-                    resolve_type_ref_text(resolver, scopes, scope_id, loader, type_vars, imp, base_span);
+                let resolved = resolve_type_ref_text(
+                    resolver, scopes, scope_id, loader, type_vars, imp, base_span,
+                );
                 if !resolved.ty.is_errorish() {
                     interfaces.push(resolved.ty);
                 }

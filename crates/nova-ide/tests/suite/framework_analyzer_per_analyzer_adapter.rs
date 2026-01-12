@@ -264,7 +264,10 @@ fn framework_analyzer_adapter_attempts_best_effort_class_navigation() {
     );
 
     // `framework_db` assigns dense class ids starting at 0 within a root; the fixture has one class.
-    let targets = ide.navigation(CancellationToken::new(), Symbol::Class(ClassId::from_raw(0)));
+    let targets = ide.navigation(
+        CancellationToken::new(),
+        Symbol::Class(ClassId::from_raw(0)),
+    );
     assert_eq!(targets.len(), 1);
     assert_eq!(targets[0].file, file);
     assert_eq!(targets[0].label, "fwClassNavTarget");

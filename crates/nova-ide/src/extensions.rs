@@ -1074,7 +1074,13 @@ where
                 selection.start,
             ));
 
-            actions.extend(type_mismatch_quick_fixes(&cancel, source, &uri, span, &diagnostics));
+            actions.extend(type_mismatch_quick_fixes(
+                &cancel,
+                source,
+                &uri,
+                span,
+                &diagnostics,
+            ));
         }
 
         let extension_actions = self

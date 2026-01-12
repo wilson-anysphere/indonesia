@@ -423,7 +423,6 @@ impl SymbolSearchIndex {
         q_bytes: &[u8],
         matcher: &mut FuzzyMatcher,
     ) -> Option<MatchScore> {
-
         // Prefer name matches but allow qualified-name matches too.
         let mut best = matcher.score(&entry.symbol.name);
         if entry.qualified_name_differs {

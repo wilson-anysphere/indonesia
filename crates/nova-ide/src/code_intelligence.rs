@@ -3848,9 +3848,7 @@ pub(crate) fn core_completions(
                 return Vec::new();
             }
             infer_receiver_type_before_dot(db, file, ctx.dot_offset)
-                .map(|ty| {
-                    member_completions_for_receiver_type(db, file, &ty, &prefix)
-                })
+                .map(|ty| member_completions_for_receiver_type(db, file, &ty, &prefix))
                 .unwrap_or_default()
         } else {
             if cancel.is_cancelled() {
@@ -4354,9 +4352,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         }
         items.extend(if receiver.is_empty() {
             infer_receiver_type_before_dot(db, file, ctx.dot_offset)
-                .map(|ty| {
-                    member_completions_for_receiver_type(db, file, &ty, &prefix)
-                })
+                .map(|ty| member_completions_for_receiver_type(db, file, &ty, &prefix))
                 .unwrap_or_default()
         } else {
             member_completions(db, file, &receiver, &prefix, ctx.dot_offset)
@@ -5045,7 +5041,11 @@ fn line_text_at_offset(text: &str, offset: usize) -> String {
     text.get(start..end).unwrap_or("").to_string()
 }
 
-fn annotation_type_completions(db: &dyn Database, file: FileId, prefix: &str) -> Vec<CompletionItem> {
+fn annotation_type_completions(
+    db: &dyn Database,
+    file: FileId,
+    prefix: &str,
+) -> Vec<CompletionItem> {
     const WORKSPACE_LIMIT: usize = 200;
     const JDK_LIMIT: usize = 200;
     const TOTAL_LIMIT: usize = 200;
@@ -7861,8 +7861,28 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
         .collect();
 
     scored.sort_by(
-        |(a_item, a_score, a_expected, a_scope, a_recency, a_workspace, a_weight, a_origin, a_kind),
-         (b_item, b_score, b_expected, b_scope, b_recency, b_workspace, b_weight, b_origin, b_kind)| {
+        |(
+            a_item,
+            a_score,
+            a_expected,
+            a_scope,
+            a_recency,
+            a_workspace,
+            a_weight,
+            a_origin,
+            a_kind,
+        ),
+         (
+            b_item,
+            b_score,
+            b_expected,
+            b_scope,
+            b_recency,
+            b_workspace,
+            b_weight,
+            b_origin,
+            b_kind,
+        )| {
             b_score
                 .rank_key()
                 .cmp(&a_score.rank_key())
@@ -7878,7 +7898,11 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
         },
     );
 
-    items.extend(scored.into_iter().map(|(item, _, _, _, _, _, _, _, _)| item));
+    items.extend(
+        scored
+            .into_iter()
+            .map(|(item, _, _, _, _, _, _, _, _)| item),
+    );
 }
 
 fn last_used_offsets(analysis: &Analysis, offset: usize) -> HashMap<String, usize> {

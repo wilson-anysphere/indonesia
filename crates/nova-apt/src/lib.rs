@@ -1239,13 +1239,19 @@ impl AptManager {
         let build_files_fingerprint = match self.project.build_system {
             BuildSystem::Maven => collect_maven_build_files(&self.project.workspace_root)
                 .and_then(|files| {
-                    Ok(BuildFileFingerprint::from_files(&self.project.workspace_root, files)?)
+                    Ok(BuildFileFingerprint::from_files(
+                        &self.project.workspace_root,
+                        files,
+                    )?)
                 })
                 .map(|fp| fp.digest)
                 .unwrap_or_else(|_| "<maven-fingerprint-error>".to_string()),
             BuildSystem::Gradle => collect_gradle_build_files(&self.project.workspace_root)
                 .and_then(|files| {
-                    Ok(BuildFileFingerprint::from_files(&self.project.workspace_root, files)?)
+                    Ok(BuildFileFingerprint::from_files(
+                        &self.project.workspace_root,
+                        files,
+                    )?)
                 })
                 .map(|fp| fp.digest)
                 .unwrap_or_else(|_| "<gradle-fingerprint-error>".to_string()),

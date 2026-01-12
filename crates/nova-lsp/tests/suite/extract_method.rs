@@ -169,7 +169,9 @@ class C {
 
     let action = extract_method::code_action(&source, uri.clone(), range.clone());
     let action = action.expect("extract method action");
-    let command = action.command.expect("action should be represented as a command");
+    let command = action
+        .command
+        .expect("action should be represented as a command");
     assert_eq!(command.command, "nova.extractMethod");
     let args_value = command
         .arguments

@@ -507,7 +507,9 @@ fn collect_application_yaml<'a>(db: &'a dyn Database, project: ProjectId) -> Vec
             || !path
                 .extension()
                 .and_then(|e| e.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml"))
+                .is_some_and(|ext| {
+                    ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml")
+                })
         {
             continue;
         }

@@ -103,4 +103,3 @@ fn rename_type_does_not_rename_local_variable_named_same() {
         "expected local variable usage to remain unchanged: {use_after}"
     );
 }
-

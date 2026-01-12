@@ -2105,7 +2105,9 @@ impl Lowerer {
                 .unwrap_or_else(|| ast::Expr::Missing(self.spans.map_node(node))),
             SyntaxKind::CastExpression => {
                 let range = self.spans.map_node(node);
-                let ty_node = node.children().find(|child| child.kind() == SyntaxKind::Type);
+                let ty_node = node
+                    .children()
+                    .find(|child| child.kind() == SyntaxKind::Type);
                 let expr_node = node
                     .children()
                     .find(|child| is_expression_kind(child.kind()));

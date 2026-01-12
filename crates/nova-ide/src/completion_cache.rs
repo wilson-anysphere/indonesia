@@ -91,10 +91,11 @@ impl WorkspaceTypeIndex {
     ///
     /// This uses binary search over the sorted `types` list, so it is O(log N + K) where `K` is the
     /// number of matching types.
-    pub fn types_with_prefix<'a>(&'a self, prefix: &'a str) -> impl Iterator<Item = &'a IndexedType> {
-        let start = self
-            .types
-            .partition_point(|ty| ty.simple.as_str() < prefix);
+    pub fn types_with_prefix<'a>(
+        &'a self,
+        prefix: &'a str,
+    ) -> impl Iterator<Item = &'a IndexedType> {
+        let start = self.types.partition_point(|ty| ty.simple.as_str() < prefix);
 
         self.types[start..]
             .iter()

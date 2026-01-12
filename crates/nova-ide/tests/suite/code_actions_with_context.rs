@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::text_fixture::offset_to_position;
 use lsp_types::{DiagnosticSeverity, NumberOrString, Position, Range};
 use nova_config::NovaConfig;
 use nova_db::InMemoryFileStore;
 use nova_ext::{ProjectId, Span};
 use nova_ide::extensions::IdeExtensions;
 use nova_scheduler::CancellationToken;
-use crate::text_fixture::offset_to_position;
 
 #[test]
 fn code_actions_with_context_includes_type_mismatch_quickfix() {

@@ -1,6 +1,6 @@
 use crate::{BuildSystemKind, JavaCompileConfig, Result};
-pub use nova_build_model::BuildFileFingerprint;
 use nova_build_model::AnnotationProcessing;
+pub use nova_build_model::BuildFileFingerprint;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;

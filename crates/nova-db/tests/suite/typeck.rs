@@ -219,7 +219,8 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter()
+        diags
+            .iter()
             .any(|d| d.code.as_ref() == "invalid-synchronized-expression"),
         "expected invalid-synchronized-expression diagnostic; got {diags:?}"
     );

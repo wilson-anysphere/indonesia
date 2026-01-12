@@ -1,10 +1,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use nova_build_model::GRADLE_SNAPSHOT_REL_PATH;
 use nova_project::{
     is_build_file, load_project_with_options, reload_project, BuildSystem, LoadOptions,
 };
-use nova_build_model::GRADLE_SNAPSHOT_REL_PATH;
 
 fn join(root: &Path, rel: &str) -> PathBuf {
     rel.split('/')

@@ -32,10 +32,7 @@ fn load_uri_is_miss_for_invalid_uris() {
     let store = DecompiledDocumentStore::new(temp.path().to_path_buf());
 
     assert!(store.load_uri("not-a-uri").unwrap().is_none());
-    assert!(store
-        .load_uri("nova:///something/else")
-        .unwrap()
-        .is_none());
+    assert!(store.load_uri("nova:///something/else").unwrap().is_none());
 }
 
 #[test]

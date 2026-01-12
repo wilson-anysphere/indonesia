@@ -390,7 +390,8 @@ fn check_rename_conflicts(
                     }
 
                     if info.is_public {
-                        if let Some((from, to)) = type_file_rename_candidate(&def.file, &def.name, new_name)
+                        if let Some((from, to)) =
+                            type_file_rename_candidate(&def.file, &def.name, new_name)
                         {
                             if db.file_exists(&to) {
                                 conflicts.push(Conflict::FileAlreadyExists { file: to });

@@ -143,7 +143,11 @@ pub trait RefactorDatabase {
         None
     }
 
-    fn find_top_level_type_in_package(&self, _package: Option<&str>, _name: &str) -> Option<SymbolId> {
+    fn find_top_level_type_in_package(
+        &self,
+        _package: Option<&str>,
+        _name: &str,
+    ) -> Option<SymbolId> {
         None
     }
 

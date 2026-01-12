@@ -23,15 +23,15 @@ use nova_ai::context::{
     ContextDiagnostic, ContextDiagnosticKind, ContextDiagnosticSeverity, ContextRequest,
 };
 use nova_ai::workspace::VirtualWorkspace;
-use nova_ai::{ExcludedPathMatcher, NovaAi};
-use nova_ai_codegen::{
-    CodeGenerationConfig, CodegenProgressEvent, CodegenProgressReporter, CodegenProgressStage,
-    PromptCompletionProvider,
-};
 #[cfg(feature = "ai")]
 use nova_ai::{
     AiClient, CloudMultiTokenCompletionProvider, CompletionContextBuilder,
     MultiTokenCompletionProvider,
+};
+use nova_ai::{ExcludedPathMatcher, NovaAi};
+use nova_ai_codegen::{
+    CodeGenerationConfig, CodegenProgressEvent, CodegenProgressReporter, CodegenProgressStage,
+    PromptCompletionProvider,
 };
 use nova_core::WasmHostDb;
 use nova_db::{Database, FileId as DbFileId, InMemoryFileStore};
@@ -8172,7 +8172,11 @@ fn run_ai_generate_method_body_legacy(
         }
     }
 
-    send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Generate method body")?;
+    send_progress_begin(
+        rpc_out,
+        work_done_token.as_ref(),
+        "AI: Generate method body",
+    )?;
     send_progress_report(rpc_out, work_done_token.as_ref(), "Calling model…", None)?;
     send_log_message(rpc_out, "AI: generating method body…")?;
 
@@ -8185,11 +8189,7 @@ fn run_ai_generate_method_body_legacy(
         /*include_doc_comments=*/ true,
     );
     let output = runtime
-        .block_on(ai.generate_method_body(
-            &args.method_signature,
-            ctx,
-            cancel.clone(),
-        ))
+        .block_on(ai.generate_method_body(&args.method_signature, ctx, cancel.clone()))
         .map_err(|e| {
             let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
             (-32603, e.to_string())
@@ -8330,8 +8330,8 @@ fn run_ai_generate_method_body_apply<O: RpcOut + Sync>(
     let selection = args
         .range
         .ok_or_else(|| (-32602, "missing range".to_string()))?;
-    let insert_range = insert_range_for_method_body(&source, selection)
-        .map_err(|message| (-32602, message))?;
+    let insert_range =
+        insert_range_for_method_body(&source, selection).map_err(|message| (-32602, message))?;
 
     let workspace = VirtualWorkspace::new([(file_rel.clone(), source)]);
 
@@ -8340,18 +8340,20 @@ fn run_ai_generate_method_body_apply<O: RpcOut + Sync>(
     let mut config = CodeGenerationConfig::default();
     config.safety.excluded_path_globs = state.ai_config.privacy.excluded_paths.clone();
 
-    let executor = AiCodeActionExecutor::new(
-        &provider,
-        config,
-        state.ai_config.privacy.clone(),
-    );
+    let executor = AiCodeActionExecutor::new(&provider, config, state.ai_config.privacy.clone());
 
-    send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Generate method body")?;
+    send_progress_begin(
+        rpc_out,
+        work_done_token.as_ref(),
+        "AI: Generate method body",
+    )?;
     let progress = LspCodegenProgress {
         out: rpc_out,
         token: work_done_token.as_ref(),
     };
-    let progress = work_done_token.as_ref().map(|_| &progress as &dyn CodegenProgressReporter);
+    let progress = work_done_token
+        .as_ref()
+        .map(|_| &progress as &dyn CodegenProgressReporter);
 
     let outcome = runtime
         .block_on(executor.execute(
@@ -8437,18 +8439,16 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
     let mut config = CodeGenerationConfig::default();
     config.safety.excluded_path_globs = state.ai_config.privacy.excluded_paths.clone();
 
-    let executor = AiCodeActionExecutor::new(
-        &provider,
-        config,
-        state.ai_config.privacy.clone(),
-    );
+    let executor = AiCodeActionExecutor::new(&provider, config, state.ai_config.privacy.clone());
 
     send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Generate tests")?;
     let progress = LspCodegenProgress {
         out: rpc_out,
         token: work_done_token.as_ref(),
     };
-    let progress = work_done_token.as_ref().map(|_| &progress as &dyn CodegenProgressReporter);
+    let progress = work_done_token
+        .as_ref()
+        .map(|_| &progress as &dyn CodegenProgressReporter);
 
     let outcome = runtime
         .block_on(executor.execute(
@@ -8502,20 +8502,23 @@ fn apply_code_action_outcome<O: RpcOut>(
     }
 }
 
-fn insert_range_for_method_body(source: &str, selection: nova_ide::LspRange) -> Result<LspTypesRange, String> {
+fn insert_range_for_method_body(
+    source: &str,
+    selection: nova_ide::LspRange,
+) -> Result<LspTypesRange, String> {
     let selection_range = insert_range_from_ide_range(source, selection)?;
     let pos = nova_lsp::text_pos::TextPos::new(source);
-    let selection_bytes = pos
-        .byte_range(selection_range)
-        .ok_or_else(|| "invalid selection range (UTF-16 positions may be out of bounds)".to_string())?;
+    let selection_bytes = pos.byte_range(selection_range).ok_or_else(|| {
+        "invalid selection range (UTF-16 positions may be out of bounds)".to_string()
+    })?;
 
     let selection_text = source
         .get(selection_bytes.clone())
         .ok_or_else(|| "invalid selection range (not on UTF-8 boundaries)".to_string())?;
 
-    let open_rel = selection_text
-        .find('{')
-        .ok_or_else(|| "selection does not contain an opening `{` for the method body".to_string())?;
+    let open_rel = selection_text.find('{').ok_or_else(|| {
+        "selection does not contain an opening `{` for the method body".to_string()
+    })?;
     let open_abs = selection_bytes.start.saturating_add(open_rel);
 
     let tail = source
@@ -8554,7 +8557,10 @@ fn insert_range_for_method_body(source: &str, selection: nova_ide::LspRange) -> 
     Ok(LspTypesRange { start, end })
 }
 
-fn insert_range_from_ide_range(source: &str, range: nova_ide::LspRange) -> Result<LspTypesRange, String> {
+fn insert_range_from_ide_range(
+    source: &str,
+    range: nova_ide::LspRange,
+) -> Result<LspTypesRange, String> {
     let lsp_range = LspTypesRange {
         start: LspTypesPosition {
             line: range.start.line,
@@ -8601,7 +8607,10 @@ fn resolve_ai_patch_target(
     let parent = abs_path.parent().ok_or_else(|| {
         (
             -32603,
-            format!("failed to determine parent directory for `{}`", abs_path.display()),
+            format!(
+                "failed to determine parent directory for `{}`",
+                abs_path.display()
+            ),
         )
     })?;
     let file_name = abs_path
@@ -8620,7 +8629,8 @@ fn resolve_ai_patch_target(
 }
 
 fn uri_from_path(path: &Path) -> Result<LspUri, (i32, String)> {
-    let abs = nova_core::AbsPathBuf::try_from(path.to_path_buf()).map_err(|e| (-32603, e.to_string()))?;
+    let abs =
+        nova_core::AbsPathBuf::try_from(path.to_path_buf()).map_err(|e| (-32603, e.to_string()))?;
     let uri = nova_core::path_to_file_uri(&abs).map_err(|e| (-32603, e.to_string()))?;
     uri.parse::<LspUri>()
         .map_err(|e| (-32603, format!("invalid uri: {e}")))
@@ -8654,10 +8664,16 @@ fn validate_patch_rel_path(path: &str) -> Result<(), (i32, String)> {
     if path.contains('\\') || path.contains(':') {
         return Err((
             -32603,
-            format!("invalid patch path (must be workspace-relative, forward slashes only): {path}"),
+            format!(
+                "invalid patch path (must be workspace-relative, forward slashes only): {path}"
+            ),
         ));
     }
-    if path.starts_with('/') || path.split('/').any(|seg| seg.is_empty() || seg == "." || seg == "..") {
+    if path.starts_with('/')
+        || path
+            .split('/')
+            .any(|seg| seg.is_empty() || seg == "." || seg == "..")
+    {
         return Err((
             -32603,
             format!("invalid patch path (must be workspace-relative): {path}"),

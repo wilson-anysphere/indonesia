@@ -2769,7 +2769,10 @@ class Derived extends Base { java.util.function.Supplier<?> s = super::m; }
     .unwrap();
     let after = apply_text_edits(src, &edit.text_edits).unwrap();
 
-    assert!(after.contains("void n()"), "expected method to be renamed: {after}");
+    assert!(
+        after.contains("void n()"),
+        "expected method to be renamed: {after}"
+    );
     assert!(
         after.contains("super::n"),
         "expected super method reference to be renamed: {after}"
@@ -4293,7 +4296,8 @@ fn rename_lambda_parameter_multi_param_updates_all_occurrences() {
 #[test]
 fn rename_lambda_parameter_typed_param_updates_all_occurrences() {
     let file = FileId::new("Test.java");
-    let src = r#"class C { void m(){ java.util.function.IntUnaryOperator f = (int x) -> x + 1; } }"#;
+    let src =
+        r#"class C { void m(){ java.util.function.IntUnaryOperator f = (int x) -> x + 1; } }"#;
 
     let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
 

@@ -1755,7 +1755,9 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
                 }
                 edit.edits.iter().any(|edit| match edit {
                     lsp_types::OneOf::Left(edit) => edit.new_text.contains("ExampleTest"),
-                    lsp_types::OneOf::Right(edit) => edit.text_edit.new_text.contains("ExampleTest"),
+                    lsp_types::OneOf::Right(edit) => {
+                        edit.text_edit.new_text.contains("ExampleTest")
+                    }
                 })
             }),
             "expected TextDocumentEdit containing ExampleTest, got {ops:?}"
@@ -1764,7 +1766,9 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
         let changes = edit.changes.expect("changes map");
         let edits = changes.get(&expected_test_uri).expect("edits for file");
         assert!(
-            edits.iter().any(|edit| edit.new_text.contains("ExampleTest")),
+            edits
+                .iter()
+                .any(|edit| edit.new_text.contains("ExampleTest")),
             "expected edits to contain ExampleTest, got {edits:?}"
         );
     }
@@ -2495,20 +2499,20 @@ local_only = false
     write_jsonrpc_message(
         &mut stdin,
         &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "workspace/executeCommand",
-            "params": {
-                "command": nova_ide::COMMAND_GENERATE_METHOD_BODY,
-                 "arguments": [{
-                     "method_signature": "void run()",
-                     "context": null,
-                     "uri": file_uri,
-                     "range": range
-                 }]
-             }
-         }),
-     );
+           "jsonrpc": "2.0",
+           "id": 2,
+           "method": "workspace/executeCommand",
+           "params": {
+               "command": nova_ide::COMMAND_GENERATE_METHOD_BODY,
+                "arguments": [{
+                    "method_signature": "void run()",
+                    "context": null,
+                    "uri": file_uri,
+                    "range": range
+                }]
+            }
+        }),
+    );
 
     let exec_resp = read_response_with_id(&mut stdout, 2);
     let err_msg = exec_resp

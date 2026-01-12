@@ -7,8 +7,7 @@ use crate::{
 use anyhow::{bail, Context, Result};
 use std::{
     collections::{BTreeSet, HashMap, VecDeque},
-    fmt,
-    fs,
+    fmt, fs,
     ops::ControlFlow,
     path::{Component, Path, PathBuf},
     sync::{Mutex, OnceLock},
