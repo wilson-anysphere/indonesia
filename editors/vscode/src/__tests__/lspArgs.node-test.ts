@@ -59,7 +59,7 @@ test('buildNovaLspLaunchConfig sets NOVA_CONFIG_PATH when configPath is provided
   assert.equal(baseEnv.NOVA_CONFIG_PATH, undefined);
 });
 
-test('buildNovaLspLaunchConfig strips NOVA_AI_* env vars when aiEnabled is false', () => {
+test('buildNovaLspLaunchConfig strips NOVA_AI_* env vars and sets NOVA_DISABLE_AI when aiEnabled is false', () => {
   const baseEnv: NodeJS.ProcessEnv = { NOVA_AI_PROVIDER: 'http', NOVA_AI_MODEL: 'default', OTHER: 'x' };
   const config = buildNovaLspLaunchConfig({ aiEnabled: false, baseEnv });
 
@@ -75,15 +75,33 @@ test('buildNovaLspLaunchConfig sets NOVA_DISABLE_AI_COMPLETIONS when aiCompletio
   const baseEnv: NodeJS.ProcessEnv = { OTHER: 'x' };
   const config = buildNovaLspLaunchConfig({ aiEnabled: true, aiCompletionsEnabled: false, baseEnv });
 
+  assert.equal(config.env.NOVA_DISABLE_AI, undefined);
   assert.equal(config.env.NOVA_DISABLE_AI_COMPLETIONS, '1');
   assert.equal(config.env.OTHER, 'x');
   assert.equal(baseEnv.NOVA_DISABLE_AI_COMPLETIONS, undefined);
 });
 
+test('buildNovaLspLaunchConfig removes NOVA_DISABLE_AI and NOVA_DISABLE_AI_COMPLETIONS when the corresponding settings are enabled', () => {
+  const baseEnv: NodeJS.ProcessEnv = { NOVA_DISABLE_AI: '1', NOVA_DISABLE_AI_COMPLETIONS: '1', OTHER: 'x' };
+  const config = buildNovaLspLaunchConfig({ aiEnabled: true, aiCompletionsEnabled: true, baseEnv });
+
+  assert.notEqual(config.env, baseEnv);
+  assert.equal(config.env.NOVA_DISABLE_AI, undefined);
+  assert.equal(config.env.NOVA_DISABLE_AI_COMPLETIONS, undefined);
+  assert.equal(config.env.OTHER, 'x');
+  assert.equal(baseEnv.NOVA_DISABLE_AI, '1');
+  assert.equal(baseEnv.NOVA_DISABLE_AI_COMPLETIONS, '1');
+});
+
 test('buildNovaLspLaunchConfig reuses baseEnv when no env changes are required', () => {
   const baseEnv: NodeJS.ProcessEnv = { FOO: 'bar' };
-  const config = buildNovaLspLaunchConfig({ aiEnabled: true, baseEnv });
+  const config = buildNovaLspLaunchConfig({ aiEnabled: true, aiCompletionsEnabled: true, baseEnv });
 
   assert.equal(config.env, baseEnv);
   assert.deepEqual(config.args, ['--stdio']);
+
+  const configWithMutations = buildNovaLspLaunchConfig({ aiEnabled: true, aiCompletionsEnabled: false, baseEnv });
+  assert.notEqual(configWithMutations.env, baseEnv);
+  assert.equal(configWithMutations.env.NOVA_DISABLE_AI_COMPLETIONS, '1');
+  assert.equal(baseEnv.NOVA_DISABLE_AI_COMPLETIONS, undefined);
 });

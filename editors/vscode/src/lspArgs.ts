@@ -75,31 +75,55 @@ export function buildNovaLspLaunchConfig(options: NovaLspLaunchConfigOptions = {
   const aiCompletionsEnabled = options.aiCompletionsEnabled ?? true;
   const baseEnv = options.baseEnv ?? process.env;
 
-  let env: NodeJS.ProcessEnv = baseEnv;
-  // Only allocate a copy of the environment when we need to mutate it.
-  if (resolvedConfigPath || !aiEnabled || !aiCompletionsEnabled) {
-    env = { ...baseEnv };
+  const disableAi = !aiEnabled;
+  // If AI is disabled, multi-token completions are also disabled.
+  const disableAiCompletions = disableAi || !aiCompletionsEnabled;
 
+  const baseHasNovaAiVars = disableAi && Object.keys(baseEnv).some((key) => key.startsWith('NOVA_AI_'));
+
+  const needsConfigPathMutation = !!resolvedConfigPath && baseEnv.NOVA_CONFIG_PATH !== resolvedConfigPath;
+  const needsDisableAiMutation = disableAi ? baseEnv.NOVA_DISABLE_AI !== '1' : typeof baseEnv.NOVA_DISABLE_AI !== 'undefined';
+  const needsDisableAiCompletionsMutation = disableAiCompletions
+    ? baseEnv.NOVA_DISABLE_AI_COMPLETIONS !== '1'
+    : typeof baseEnv.NOVA_DISABLE_AI_COMPLETIONS !== 'undefined';
+
+  const needsEnvMutation =
+    needsConfigPathMutation || needsDisableAiMutation || needsDisableAiCompletionsMutation || baseHasNovaAiVars;
+
+  let env: NodeJS.ProcessEnv = needsEnvMutation ? { ...baseEnv } : baseEnv;
+
+  if (needsEnvMutation) {
     // `nova-config` supports `NOVA_CONFIG_PATH`; set it when a config path is
     // configured so users don't have to manually export env vars.
     if (resolvedConfigPath) {
       env.NOVA_CONFIG_PATH = resolvedConfigPath;
     }
 
+    // These env vars are treated as deterministic overrides so VS Code settings
+    // can always force-disable server-side AI features even if `nova.toml`
+    // enables them (and can re-enable AI even if the parent process has global
+    // disable flags set).
+    if (disableAi) {
+      env.NOVA_DISABLE_AI = '1';
+    } else {
+      delete env.NOVA_DISABLE_AI;
+    }
+
+    if (disableAiCompletions) {
+      env.NOVA_DISABLE_AI_COMPLETIONS = '1';
+    } else {
+      delete env.NOVA_DISABLE_AI_COMPLETIONS;
+    }
+
     // If AI is disabled in VS Code settings, ensure we don't leak any NOVA_AI_*
     // environment variables to the server process. This guarantees AI stays off
     // even if the user has set global env vars in their shell.
-    if (!aiEnabled) {
-      env.NOVA_DISABLE_AI = '1';
+    if (disableAi) {
       for (const key of Object.keys(env)) {
         if (key.startsWith('NOVA_AI_')) {
           delete env[key];
         }
       }
-    }
-
-    if (!aiCompletionsEnabled) {
-      env.NOVA_DISABLE_AI_COMPLETIONS = '1';
     }
   }
 
