@@ -810,25 +810,24 @@ fn refreshes_gradle_snapshot_from_cached_java_compile_config_with_project_dir_ov
     let app_dir = project_root.join("modules").join("app");
     std::fs::create_dir_all(&app_dir).unwrap();
 
+    // Note: this payload mirrors Gradle's init script behavior, which emits JSON-escaped strings
+    // (important for Windows paths containing backslashes).
+    let payload = serde_json::json!({
+        "projectPath": ":app",
+        "projectDir": app_dir.to_string_lossy().to_string(),
+        "compileClasspath": [],
+        "testCompileClasspath": [],
+        "mainSourceRoots": [],
+        "testSourceRoots": [],
+        "mainOutputDirs": [],
+        "testOutputDirs": [],
+        "compileCompilerArgs": [],
+        "testCompilerArgs": [],
+        "inferModulePath": false
+    });
     let stdout = format!(
-        r#"
-NOVA_JSON_BEGIN
-{{
-  "projectPath": ":app",
-  "projectDir": "{project_dir}",
-  "compileClasspath": [],
-  "testCompileClasspath": [],
-  "mainSourceRoots": [],
-  "testSourceRoots": [],
-  "mainOutputDirs": [],
-  "testOutputDirs": [],
-  "compileCompilerArgs": [],
-  "testCompilerArgs": [],
-  "inferModulePath": false
-}}
-NOVA_JSON_END
-"#,
-        project_dir = app_dir.display(),
+        "NOVA_JSON_BEGIN\n{}\nNOVA_JSON_END\n",
+        serde_json::to_string(&payload).unwrap()
     );
 
     let runner = Arc::new(CountingRunner::new(CommandOutput {
