@@ -39,7 +39,7 @@ fn harness_is_single_root_test_file() {
 
     assert_eq!(
         expected, "tests.rs",
-        "expected nova-dap integration test harness to be named tests.rs (so `cargo test -p nova-dap --test tests` works); got: {expected}"
+        "expected nova-dap integration test harness to be named tests.rs (so `cargo test --locked -p nova-dap --test tests` works); got: {expected}"
     );
 
     assert_eq!(

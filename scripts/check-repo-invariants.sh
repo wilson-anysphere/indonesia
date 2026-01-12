@@ -167,7 +167,7 @@ fi
 #
 # After folding many per-file integration test binaries into single harnesses, the old `--test=<name>`
 # entrypoints are removed (or at least deprecated). Keep docs/examples aligned with the current harness +
-# filter pattern: `cargo test -p <crate> --test=<harness> <filter>`.
+# filter pattern: `cargo test --locked -p <crate> --test=<harness> <filter>`.
 #
 # NOTE: Use `git grep` so we only check tracked files (avoids local scratch noise).
 #
