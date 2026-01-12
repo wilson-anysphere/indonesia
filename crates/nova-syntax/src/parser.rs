@@ -109,6 +109,7 @@ const TOP_LEVEL_RECOVERY: TokenSet = TokenSet::new(&[
 
 const TYPE_DECL_RECOVERY: TokenSet = TokenSet::new(&[
     SyntaxKind::RBrace,
+    SyntaxKind::StringTemplateExprEnd,
     SyntaxKind::PackageKw,
     SyntaxKind::ImportKw,
     SyntaxKind::OpenKw,
@@ -134,6 +135,7 @@ const TYPE_DECL_RECOVERY: TokenSet = TokenSet::new(&[
 const MODULE_DIRECTIVE_RECOVERY: TokenSet = TokenSet::new(&[
     SyntaxKind::Semicolon,
     SyntaxKind::RBrace,
+    SyntaxKind::StringTemplateExprEnd,
     SyntaxKind::RequiresKw,
     SyntaxKind::ExportsKw,
     SyntaxKind::OpensKw,
@@ -145,6 +147,7 @@ const MODULE_DIRECTIVE_RECOVERY: TokenSet = TokenSet::new(&[
 const MEMBER_RECOVERY: TokenSet = TokenSet::new(&[
     SyntaxKind::Semicolon,
     SyntaxKind::RBrace,
+    SyntaxKind::StringTemplateExprEnd,
     SyntaxKind::LBrace,
     SyntaxKind::ClassKw,
     SyntaxKind::InterfaceKw,
@@ -181,6 +184,7 @@ const MEMBER_RECOVERY: TokenSet = TokenSet::new(&[
 const STMT_RECOVERY: TokenSet = TokenSet::new(&[
     SyntaxKind::Semicolon,
     SyntaxKind::RBrace,
+    SyntaxKind::StringTemplateExprEnd,
     SyntaxKind::LBrace,
     SyntaxKind::IfKw,
     SyntaxKind::SwitchKw,
@@ -786,7 +790,10 @@ impl<'a> Parser<'a> {
 
         self.builder.start_node(SyntaxKind::ModuleBody.into());
         self.expect(SyntaxKind::LBrace, "expected `{` for module body");
-        while !self.at(SyntaxKind::RBrace) && !self.at(SyntaxKind::Eof) {
+        while !self.at(SyntaxKind::RBrace)
+            && !self.at(SyntaxKind::StringTemplateExprEnd)
+            && !self.at(SyntaxKind::Eof)
+        {
             let before = self.tokens.len();
             self.parse_module_directive();
             self.force_progress(before, MODULE_DIRECTIVE_RECOVERY);
@@ -1073,6 +1080,7 @@ impl<'a> Parser<'a> {
             | SyntaxKind::Semicolon
             | SyntaxKind::RParen
             | SyntaxKind::RBrace
+            | SyntaxKind::StringTemplateExprEnd
             | SyntaxKind::Eof => true,
             SyntaxKind::ExtendsKw
             | SyntaxKind::ImplementsKw
@@ -1109,6 +1117,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::Semicolon,
             SyntaxKind::RParen,
             SyntaxKind::RBrace,
+            SyntaxKind::StringTemplateExprEnd,
             SyntaxKind::Eof,
         ]));
         self.builder.finish_node(); // Error
@@ -1197,7 +1206,10 @@ impl<'a> Parser<'a> {
         self.builder.start_node(SyntaxKind::EnumBody.into());
         self.expect(SyntaxKind::LBrace, "expected `{` for enum body");
         // Enum constants (very permissive).
-        while !self.at(SyntaxKind::RBrace) && !self.at(SyntaxKind::Eof) {
+        while !self.at(SyntaxKind::RBrace)
+            && !self.at(SyntaxKind::StringTemplateExprEnd)
+            && !self.at(SyntaxKind::Eof)
+        {
             if self.at_ident_like() {
                 self.builder.start_node(SyntaxKind::EnumConstant.into());
                 self.bump();
@@ -1224,7 +1236,10 @@ impl<'a> Parser<'a> {
         if self.at(SyntaxKind::Semicolon) {
             self.bump();
             // Class body declarations after constants.
-            while !self.at(SyntaxKind::RBrace) && !self.at(SyntaxKind::Eof) {
+            while !self.at(SyntaxKind::RBrace)
+                && !self.at(SyntaxKind::StringTemplateExprEnd)
+                && !self.at(SyntaxKind::Eof)
+            {
                 self.parse_class_member(SyntaxKind::EnumBody);
             }
         }
@@ -1269,7 +1284,10 @@ impl<'a> Parser<'a> {
             self.line_indent(start)
         };
 
-        while !self.at(SyntaxKind::RBrace) && !self.at(SyntaxKind::Eof) {
+        while !self.at(SyntaxKind::RBrace)
+            && !self.at(SyntaxKind::StringTemplateExprEnd)
+            && !self.at(SyntaxKind::Eof)
+        {
             let start = self.current_range().start;
             let (indent, is_first) = self.line_indent_and_is_first_token(start);
             if is_first
@@ -1694,7 +1712,10 @@ impl<'a> Parser<'a> {
             "expected `{` in annotation array initializer",
         );
 
-        while !self.at(SyntaxKind::RBrace) && !self.at(SyntaxKind::Eof) {
+        while !self.at(SyntaxKind::RBrace)
+            && !self.at(SyntaxKind::StringTemplateExprEnd)
+            && !self.at(SyntaxKind::Eof)
+        {
             self.eat_trivia();
 
             if self.at(SyntaxKind::Comma) {
@@ -1823,7 +1844,7 @@ impl<'a> Parser<'a> {
         self.expect(SyntaxKind::DefaultKw, "expected `default`");
         if matches!(
             self.current(),
-            SyntaxKind::Semicolon | SyntaxKind::RBrace | SyntaxKind::Eof
+            SyntaxKind::Semicolon | SyntaxKind::RBrace | SyntaxKind::StringTemplateExprEnd | SyntaxKind::Eof
         ) {
             self.error_here("expected default value");
             // Preserve a stable subtree shape for downstream consumers.
@@ -1852,7 +1873,10 @@ impl<'a> Parser<'a> {
             self.line_indent(start)
         };
 
-        while !self.at(SyntaxKind::RBrace) && !self.at(SyntaxKind::Eof) {
+        while !self.at(SyntaxKind::RBrace)
+            && !self.at(SyntaxKind::StringTemplateExprEnd)
+            && !self.at(SyntaxKind::Eof)
+        {
             let start = self.current_range().start;
             let (indent, is_first) = self.line_indent_and_is_first_token(start);
             if is_first && indent <= block_indent && recovery.contains(self.current()) {
@@ -2175,6 +2199,7 @@ impl<'a> Parser<'a> {
                 SyntaxKind::CaseKw,
                 SyntaxKind::DefaultKw,
                 SyntaxKind::RBrace,
+                SyntaxKind::StringTemplateExprEnd,
                 SyntaxKind::Eof,
             ]));
 
@@ -2207,6 +2232,7 @@ impl<'a> Parser<'a> {
         if self.at(SyntaxKind::CaseKw)
             || self.at(SyntaxKind::DefaultKw)
             || self.at(SyntaxKind::RBrace)
+            || self.at(SyntaxKind::StringTemplateExprEnd)
             || self.at(SyntaxKind::Eof)
         {
             self.error_here("expected switch rule body after `->`");
@@ -2232,7 +2258,10 @@ impl<'a> Parser<'a> {
     fn parse_switch_block(&mut self, stmt_ctx: StatementContext, switch_ctx: SwitchContext) {
         self.builder.start_node(SyntaxKind::SwitchBlock.into());
         self.expect(SyntaxKind::LBrace, "expected `{` after switch");
-        while !self.at(SyntaxKind::RBrace) && !self.at(SyntaxKind::Eof) {
+        while !self.at(SyntaxKind::RBrace)
+            && !self.at(SyntaxKind::StringTemplateExprEnd)
+            && !self.at(SyntaxKind::Eof)
+        {
             let before = self.tokens.len();
             self.eat_trivia();
 
@@ -2251,6 +2280,7 @@ impl<'a> Parser<'a> {
                         }
 
                         while !self.at(SyntaxKind::RBrace)
+                            && !self.at(SyntaxKind::StringTemplateExprEnd)
                             && !self.at(SyntaxKind::Eof)
                             && !(self.at(SyntaxKind::CaseKw) || self.at(SyntaxKind::DefaultKw))
                         {
@@ -2323,6 +2353,7 @@ impl<'a> Parser<'a> {
                 | SyntaxKind::Comma
                 | SyntaxKind::RParen
                 | SyntaxKind::RBrace
+                | SyntaxKind::StringTemplateExprEnd
                 | SyntaxKind::Eof
         ) {
             self.error_here("expected guard expression");
@@ -3767,10 +3798,16 @@ impl<'a> Parser<'a> {
         );
 
         self.eat_trivia();
-        if !self.at(SyntaxKind::RBrace) && !self.at(SyntaxKind::Eof) {
+        if !self.at(SyntaxKind::RBrace)
+            && !self.at(SyntaxKind::StringTemplateExprEnd)
+            && !self.at(SyntaxKind::Eof)
+        {
             self.builder
                 .start_node(SyntaxKind::ArrayInitializerList.into());
-            while !self.at(SyntaxKind::RBrace) && !self.at(SyntaxKind::Eof) {
+            while !self.at(SyntaxKind::RBrace)
+                && !self.at(SyntaxKind::StringTemplateExprEnd)
+                && !self.at(SyntaxKind::Eof)
+            {
                 self.eat_trivia();
                 if self.at(SyntaxKind::Comma) {
                     // Common during typing: `{, 1}`. Don't get stuck; treat as a missing element.
@@ -3782,7 +3819,10 @@ impl<'a> Parser<'a> {
                 // If we hit a clear statement boundary, bail out and let the caller recover.
                 if matches!(
                     self.current(),
-                    SyntaxKind::Semicolon | SyntaxKind::RParen | SyntaxKind::RBracket
+                    SyntaxKind::Semicolon
+                        | SyntaxKind::RParen
+                        | SyntaxKind::RBracket
+                        | SyntaxKind::StringTemplateExprEnd
                 ) {
                     break;
                 }
@@ -3819,7 +3859,7 @@ impl<'a> Parser<'a> {
             // Avoid consuming expression terminators; callers recover at `,` / `}`.
             if !matches!(
                 self.current(),
-                SyntaxKind::Comma | SyntaxKind::RBrace | SyntaxKind::Eof
+                SyntaxKind::Comma | SyntaxKind::RBrace | SyntaxKind::StringTemplateExprEnd | SyntaxKind::Eof
             ) {
                 self.bump_any();
             }

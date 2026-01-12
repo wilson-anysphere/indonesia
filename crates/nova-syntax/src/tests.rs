@@ -1382,6 +1382,42 @@ fn lexer_emits_string_template_expr_end_token() {
 }
 
 #[test]
+fn parser_does_not_consume_string_template_expr_end_during_statement_recovery() {
+    // Regression test: the `}` that closes a template interpolation is lexed as
+    // `StringTemplateExprEnd` and must remain available for `parse_string_template` to consume,
+    // even when nested statement parsing goes off the rails and starts "stealing" braces.
+    //
+    // This example is intentionally malformed: the `synchronized` statement is missing its
+    // required block, so it incorrectly consumes the lambda body's `}` during recovery. The
+    // parser should then treat the `StringTemplateExprEnd` token as a recovery boundary (similar
+    // to `RBrace` / `Eof`) and *not* consume it as part of a statement error node.
+    let input = r#"STR."x \{ () -> { synchronized (this) } }""#;
+    let parsed = parse_java_expression(input);
+
+    let interp = parsed
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::StringTemplateInterpolation)
+        .expect("expected StringTemplateInterpolation node");
+
+    let last_non_trivia_token = interp
+        .children_with_tokens()
+        .filter_map(|e| e.into_token())
+        .filter(|t| !t.kind().is_trivia())
+        .last()
+        .expect("expected at least one non-trivia token in interpolation node");
+
+    assert_eq!(
+        last_non_trivia_token.kind(),
+        SyntaxKind::StringTemplateExprEnd,
+        "expected StringTemplateExprEnd to be consumed by string template parsing, got {:?} `{}`\nerrors: {:?}",
+        last_non_trivia_token.kind(),
+        last_non_trivia_token.text(),
+        parsed.errors
+    );
+}
+
+#[test]
 fn cache_parse_coalesces_nested_string_templates() {
     let input = r#"class Foo { String s = STR."outer \{ STR."inner \{name}" }"; }"#;
     let parsed = crate::parse(input);
