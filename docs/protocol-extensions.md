@@ -2080,22 +2080,7 @@ Same as `nova.ai.generateMethodBody`.
 
 ## Internal (debug/test-only)
 
-### `nova/internal/interruptibleWork`
+The internal/debug-only methods are documented above:
 
-- **Kind:** request
-- **Stability:** experimental
-
-Debug-only request used by integration tests to validate JSON-RPC `$/cancelRequest` behavior and
-Salsa cancellation propagation.
-
-### `nova/internal/interruptibleWorkStarted`
-
-- **Kind:** notification
-- **Stability:** experimental
-
-Debug-only notification sent by the server once it has entered the `interruptibleWork` request
-handler (after initial request setup). Payload:
-
-```json
-{ "id": 2 }
-```
+- `nova/internal/interruptibleWork`
+- `nova/internal/interruptibleWorkStarted`
