@@ -230,6 +230,41 @@ fn analyze_dotted_expr(
                 stream_kind = StreamValueKind::Stream;
                 break;
             }
+            // `Arrays.stream(int[])` / `Arrays.stream(long[])` / `Arrays.stream(double[])` returns
+            // the corresponding primitive stream type. Without this, we'd classify the source as
+            // `ExistingStream` and default to `Stream`, which picks the wrong sampling suffix.
+            //
+            // We only attempt primitive inference for obvious array literals (e.g.
+            // `new long[]{...}`) since we don't have type information for arbitrary identifiers.
+            "stream" if idx > 0 && matches!(arg_count, 1 | 3) => {
+                let class_expr = dotted.prefix_source(idx - 1);
+                if class_expr.ends_with("Arrays") {
+                    let kind = args.first().and_then(|arg| {
+                        let normalized: String =
+                            arg.chars().filter(|ch| !ch.is_whitespace()).collect();
+                        if normalized.starts_with("newint[]") {
+                            Some(StreamValueKind::IntStream)
+                        } else if normalized.starts_with("newlong[]") {
+                            Some(StreamValueKind::LongStream)
+                        } else if normalized.starts_with("newdouble[]") {
+                            Some(StreamValueKind::DoubleStream)
+                        } else {
+                            None
+                        }
+                    });
+
+                    if let Some(kind) = kind {
+                        source_end = Some(idx);
+                        source = Some(StreamSource::StaticFactory {
+                            class_expr,
+                            stream_expr: dotted.prefix_source(idx),
+                            method: name.to_string(),
+                        });
+                        stream_kind = kind;
+                        break;
+                    }
+                }
+            }
             "of" if idx > 0 => {
                 let class_expr = dotted.prefix_source(idx - 1);
                 let kind = stream_kind_from_class_expr(&class_expr);
@@ -1312,6 +1347,33 @@ mod tests {
                 assert_eq!(class_expr, "LongStream");
                 assert_eq!(stream_expr, "LongStream.range(0, 10)");
                 assert_eq!(method, "range");
+            }
+            _ => panic!("expected static factory source"),
+        }
+
+        assert_eq!(chain.stream_kind, StreamValueKind::LongStream);
+        assert_eq!(chain.intermediates.len(), 1);
+        assert_eq!(chain.intermediates[0].kind, StreamOperationKind::Map);
+        assert_eq!(
+            chain.terminal.as_ref().unwrap().kind,
+            StreamOperationKind::Count
+        );
+    }
+
+    #[test]
+    fn recognizes_arrays_stream_long_array_chain() {
+        let expr = "java.util.Arrays.stream(new long[]{1, 2}).map(x -> x + 1).count()";
+        let chain = analyze_stream_expression(expr).unwrap();
+
+        match &chain.source {
+            StreamSource::StaticFactory {
+                class_expr,
+                stream_expr,
+                method,
+            } => {
+                assert_eq!(class_expr, "java.util.Arrays");
+                assert_eq!(stream_expr, "java.util.Arrays.stream(new long[]{1, 2})");
+                assert_eq!(method, "stream");
             }
             _ => panic!("expected static factory source"),
         }
