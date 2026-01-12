@@ -262,30 +262,74 @@ fn is_allowlisted_non_method_nova_string(s: &str) -> bool {
 }
 
 fn extract_rust_methods_from_text(text: &str) -> Vec<String> {
+    // NOTE: Keep this resilient to rustfmt and minor formatting changes.
+    //
+    // We intentionally avoid a full Rust parser here, but we do need to support `pub const`
+    // declarations that span multiple lines (rustfmt may split long constants).
     let mut methods = Vec::new();
-    for line in text.lines() {
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
         let trimmed = line.trim_start();
         if !trimmed.starts_with("pub const ") {
             continue;
         }
-        if !trimmed.contains(": &str") {
+
+        let mut stmt = trimmed.to_string();
+        while !stmt.contains(';') {
+            let Some(next_line) = lines.next() else {
+                break;
+            };
+            stmt.push('\n');
+            stmt.push_str(next_line.trim_start());
+        }
+
+        if !pub_const_type_is_str_ref(&stmt) {
             continue;
         }
 
-        let Some(start) = trimmed.find("\"nova/") else {
-            continue;
-        };
-        let after = &trimmed[start + 1..];
-        let Some(end) = after.find('"') else {
-            continue;
-        };
-        let method = after[..end].to_string();
-        if method.len() <= "nova/".len() {
-            continue;
+        // Extract `nova/*` methods from the const initializer.
+        //
+        // This deliberately only supports direct string-literal assignments:
+        //   pub const FOO: &str = "nova/foo";
+        // (not `concat!("nova/", "foo")`, etc.)
+        for method in extract_rust_nova_string_literals_from_text(&stmt) {
+            methods.push(method);
         }
-        methods.push(method);
     }
+
     methods
+}
+
+fn pub_const_type_is_str_ref(stmt: &str) -> bool {
+    // Parse `...: &str` / `...: &'static str` in a whitespace-tolerant way.
+    //
+    // This doesn't need to fully validate Rust syntax; it just needs to reject `pub const` items
+    // whose type isn't a string reference.
+    let Some(colon) = stmt.find(':') else {
+        return false;
+    };
+    let bytes = stmt.as_bytes();
+    let mut i = colon + 1;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if i >= bytes.len() || bytes[i] != b'&' {
+        return false;
+    }
+    i += 1;
+
+    // Optional lifetime (e.g. `&'static str`).
+    if i < bytes.len() && bytes[i] == b'\'' {
+        i += 1;
+        while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+            i += 1;
+        }
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+    }
+
+    stmt[i..].starts_with("str")
 }
 
 fn extract_rust_nova_string_literals_from_text(text: &str) -> Vec<String> {
@@ -398,6 +442,20 @@ fn parse_rust_normal_string_literal(text: &str, quote_idx: usize) -> Option<(Str
         }
     }
     None
+}
+
+#[cfg(test)]
+mod protocol_extension_tests {
+    use super::*;
+
+    #[test]
+    fn extract_rust_methods_from_text_handles_multiline_const_string() {
+        let text = r#"
+pub const FOO: &str =
+    "nova/foo";
+"#;
+        assert_eq!(extract_rust_methods_from_text(text), vec!["nova/foo".to_string()]);
+    }
 }
 
 fn parse_rust_raw_string_literal(text: &str, r_idx: usize) -> Option<(String, usize)> {
