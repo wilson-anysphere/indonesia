@@ -180,6 +180,39 @@ fn resolves_maven_java_version_placeholders() {
 }
 
 #[test]
+fn loads_maven_profile_modules_active_by_default() {
+    let root = testdata_path("maven-profile-modules");
+    let config = load_project(&root).expect("load maven project");
+
+    let module_roots: BTreeSet<_> = config
+        .modules
+        .iter()
+        .map(|m| {
+            m.root
+                .strip_prefix(&config.workspace_root)
+                .unwrap()
+                .to_path_buf()
+        })
+        .collect();
+    assert!(module_roots.contains(&PathBuf::from("child")));
+
+    let source_roots: BTreeSet<_> = config
+        .source_roots
+        .iter()
+        .map(|sr| {
+            (
+                sr.kind,
+                sr.path
+                    .strip_prefix(&config.workspace_root)
+                    .unwrap()
+                    .to_path_buf(),
+            )
+        })
+        .collect();
+    assert!(source_roots.contains(&(SourceRootKind::Main, PathBuf::from("child/src/main/java"))));
+}
+
+#[test]
 fn loads_gradle_multi_module_workspace() {
     let root = testdata_path("gradle-multi");
     let config = load_project(&root).expect("load gradle project");

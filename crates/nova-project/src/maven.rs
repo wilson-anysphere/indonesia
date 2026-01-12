@@ -434,6 +434,7 @@ fn discover_modules_recursive(
 
     let mut root_modules = root_pom.modules.clone();
     root_modules.sort();
+    root_modules.dedup();
     for module in root_modules {
         queue.push_back((workspace_root.join(module), Arc::clone(&root_effective)));
     }
@@ -446,7 +447,9 @@ fn discover_modules_recursive(
 
         let module_pom_path = module_root.join("pom.xml");
         let raw_pom = if module_pom_path.is_file() {
-            parse_pom(&module_pom_path)?
+            // Module discovery should be best-effort; some workspaces have missing or invalid
+            // POM files for optional modules (e.g. profile-only modules).
+            parse_pom(&module_pom_path).unwrap_or_default()
         } else {
             RawPom::default()
         };
@@ -458,6 +461,7 @@ fn discover_modules_recursive(
 
         let mut child_modules = raw_pom.modules.clone();
         child_modules.sort();
+        child_modules.dedup();
         for child in child_modules {
             queue.push_back((module_root.join(child), Arc::clone(&effective)));
         }
@@ -636,16 +640,39 @@ fn parse_pom(path: &Path) -> Result<RawPom, ProjectError> {
 
     // modules
     if let Some(modules_node) = child_element(&project, "modules") {
-        pom.modules = modules_node
+        pom.modules.extend(parse_modules_list(&modules_node));
+    }
+
+    // profile modules (activeByDefault only)
+    if let Some(profiles_node) = child_element(&project, "profiles") {
+        for profile_node in profiles_node
             .children()
-            .filter(|n| n.is_element() && n.has_tag_name("module"))
-            .filter_map(|n| n.text())
-            .map(|t| t.trim().to_string())
-            .filter(|t| !t.is_empty())
-            .collect();
+            .filter(|n| n.is_element() && n.has_tag_name("profile"))
+        {
+            let active_by_default = child_element(&profile_node, "activation")
+                .and_then(|activation| child_text(&activation, "activeByDefault"))
+                .is_some_and(|v| v.eq_ignore_ascii_case("true"));
+            if !active_by_default {
+                continue;
+            }
+
+            if let Some(modules_node) = child_element(&profile_node, "modules") {
+                pom.modules.extend(parse_modules_list(&modules_node));
+            }
+        }
     }
 
     Ok(pom)
+}
+
+fn parse_modules_list(modules_node: &roxmltree::Node<'_, '_>) -> Vec<String> {
+    modules_node
+        .children()
+        .filter(|n| n.is_element() && n.has_tag_name("module"))
+        .filter_map(|n| n.text())
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect()
 }
 
 fn parse_dependencies(deps_node: &roxmltree::Node<'_, '_>) -> Vec<Dependency> {
