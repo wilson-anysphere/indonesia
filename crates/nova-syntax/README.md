@@ -16,11 +16,11 @@ The Java parser is tested using a fixture-driven golden corpus under
 Run just the corpus test:
 
 ```bash
-bash scripts/cargo_agent.sh test -p nova-syntax --test golden_corpus
+bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
 ```
 
 Update (or create) the expected outputs:
 
 ```bash
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
 ```

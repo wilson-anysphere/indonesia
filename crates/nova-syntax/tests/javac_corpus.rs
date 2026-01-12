@@ -6,6 +6,8 @@ use nova_test_utils::javac::{
     javac_available, javac_version, run_javac_files_with_options, JavacOptions,
 };
 
+mod suite;
+
 fn collect_java_files(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for entry in fs::read_dir(dir).expect("fixture directory readable") {
