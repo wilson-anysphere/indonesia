@@ -446,18 +446,18 @@ async function navigateToFrameworkItem(item: FrameworkPickItem, baseUri: vscode.
   }
 
   const document = await vscode.workspace.openTextDocument(uri);
-  const editor = await vscode.window.showTextDocument(document, { preview: false });
 
   if (item.novaKind === 'web-endpoints') {
     const line0 = clampLineIndex(item.line - 1, document.lineCount);
     const pos = new vscode.Position(line0, 0);
-    editor.selection = new vscode.Selection(pos, pos);
-    editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+    const range = new vscode.Range(pos, pos);
+    const editor = await vscode.window.showTextDocument(document, { preview: true, selection: range });
+    editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
     return;
   }
 
   const range = utf8SpanToRange(document, item.span);
-  editor.selection = new vscode.Selection(range.start, range.end);
+  const editor = await vscode.window.showTextDocument(document, { preview: true, selection: range });
   editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
 }
 
