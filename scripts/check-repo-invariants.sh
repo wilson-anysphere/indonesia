@@ -201,17 +201,48 @@ for check in "${framework_harness_checks[@]}"; do
     root_tests+=("$file")
   done < <(find "${test_dir}" -maxdepth 1 -name '*.rs' -print)
 
+  # `expected_file` can include multiple acceptable sets:
+  # - alternative groups are separated by `|`
+  # - within each group, multiple expected harnesses can be listed with `,`
+  #
+  # Examples:
+  #   "tests:harness.rs:..."                               => {harness.rs}
+  #   "tests:harness.rs|workspace_events.rs:..."           => {harness.rs} OR {workspace_events.rs}
+  #   "tests:harness.rs,typeck.rs:..."                     => {harness.rs, typeck.rs}
   expected_ok=false
-  IFS="|" read -r -a expected_files <<<"${expected_file}"
-  for expected in "${expected_files[@]}"; do
-    if [[ "${root_tests[0]:-}" == "${expected}" ]]; then
+  sorted_root_tests=()
+  while IFS= read -r file; do
+    sorted_root_tests+=("$file")
+  done < <(printf '%s\n' "${root_tests[@]}" | sort)
+
+  IFS="|" read -r -a expected_groups <<<"${expected_file}"
+  for group in "${expected_groups[@]}"; do
+    IFS="," read -r -a expected_files <<<"${group}"
+    sorted_expected_files=()
+    while IFS= read -r file; do
+      sorted_expected_files+=("$file")
+    done < <(printf '%s\n' "${expected_files[@]}" | sort)
+
+    if [[ ${#sorted_root_tests[@]} -ne ${#sorted_expected_files[@]} ]]; then
+      continue
+    fi
+
+    group_ok=true
+    for idx in "${!sorted_expected_files[@]}"; do
+      if [[ "${sorted_root_tests[$idx]}" != "${sorted_expected_files[$idx]}" ]]; then
+        group_ok=false
+        break
+      fi
+    done
+
+    if [[ "${group_ok}" == "true" ]]; then
       expected_ok=true
       break
     fi
   done
 
-  if [[ ${#root_tests[@]} -ne 1 || "${expected_ok}" != "true" ]]; then
-    echo "repo invariant failed: integration tests in ${test_dir} must be consolidated into ${expected_file}" >&2
+  if [[ "${expected_ok}" != "true" ]]; then
+    echo "repo invariant failed: integration tests in ${test_dir} must match expected root harness set (${expected_file})" >&2
     if [[ ${#root_tests[@]} -eq 0 ]]; then
       echo "  found: <none>" >&2
     else
@@ -232,7 +263,9 @@ done
 # root-level harness file, and CI/docs/scripts rely on stable `--test <harness>` entrypoints.
 stable_harness_checks=(
   # `nova-db` integration tests are intentionally consolidated into a single harness binary.
-  "crates/nova-db/tests:crates/nova-db/tests/harness.rs:move additional files into crates/nova-db/tests/suite/ and add them to crates/nova-db/tests/suite/mod.rs"
+  # Some branches temporarily keep a tiny dedicated `typeck` target for compatibility (`cargo test
+  # -p nova-db --test typeck`); allow either layout.
+  "crates/nova-db/tests:crates/nova-db/tests/harness.rs|crates/nova-db/tests/harness.rs,crates/nova-db/tests/typeck.rs:move additional files into crates/nova-db/tests/suite/ and add them to crates/nova-db/tests/suite/mod.rs"
   # `scripts/run-real-project-tests.sh` + docs invoke these by name.
   "crates/nova-project/tests:crates/nova-project/tests/harness.rs:move additional files into crates/nova-project/tests/suite/ and add them to crates/nova-project/tests/suite/mod.rs"
   "crates/nova-cli/tests:crates/nova-cli/tests/real_projects.rs:move additional files into crates/nova-cli/tests/suite/ and add them to crates/nova-cli/tests/suite/mod.rs"
@@ -252,17 +285,43 @@ for check in "${stable_harness_checks[@]}"; do
     root_tests+=("$file")
   done < <(find "${test_dir}" -maxdepth 1 -name '*.rs' -print)
 
+  # `expected_file` can include multiple acceptable sets:
+  # - alternative groups are separated by `|`
+  # - within each group, multiple expected harnesses can be listed with `,`
   expected_ok=false
-  IFS="|" read -r -a expected_files <<<"${expected_file}"
-  for expected in "${expected_files[@]}"; do
-    if [[ "${root_tests[0]:-}" == "${expected}" ]]; then
+  sorted_root_tests=()
+  while IFS= read -r file; do
+    sorted_root_tests+=("$file")
+  done < <(printf '%s\n' "${root_tests[@]}" | sort)
+
+  IFS="|" read -r -a expected_groups <<<"${expected_file}"
+  for group in "${expected_groups[@]}"; do
+    IFS="," read -r -a expected_files <<<"${group}"
+    sorted_expected_files=()
+    while IFS= read -r file; do
+      sorted_expected_files+=("$file")
+    done < <(printf '%s\n' "${expected_files[@]}" | sort)
+
+    if [[ ${#sorted_root_tests[@]} -ne ${#sorted_expected_files[@]} ]]; then
+      continue
+    fi
+
+    group_ok=true
+    for idx in "${!sorted_expected_files[@]}"; do
+      if [[ "${sorted_root_tests[$idx]}" != "${sorted_expected_files[$idx]}" ]]; then
+        group_ok=false
+        break
+      fi
+    done
+
+    if [[ "${group_ok}" == "true" ]]; then
       expected_ok=true
       break
     fi
   done
 
-  if [[ ${#root_tests[@]} -ne 1 || "${expected_ok}" != "true" ]]; then
-    echo "repo invariant failed: integration tests in ${test_dir} must be consolidated into ${expected_file}" >&2
+  if [[ "${expected_ok}" != "true" ]]; then
+    echo "repo invariant failed: integration tests in ${test_dir} must match expected root harness set (${expected_file})" >&2
     if [[ ${#root_tests[@]} -eq 0 ]]; then
       echo "  found: <none>" >&2
     else
