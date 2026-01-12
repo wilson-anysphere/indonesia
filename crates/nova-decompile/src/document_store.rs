@@ -130,7 +130,7 @@ impl DecompiledDocumentStore {
         match String::from_utf8(bytes) {
             Ok(text) => Ok(Some(text)),
             Err(_) => {
-                remove_corrupt_path(&path);
+                remove_corrupt_store_leaf_best_effort(&path);
                 Ok(None)
             }
         }
@@ -162,7 +162,7 @@ impl DecompiledDocumentStore {
         let stored: StoredDecompiledMappings = match serde_json::from_slice(&meta_bytes) {
             Ok(value) => value,
             Err(_) => {
-                remove_corrupt_path(&meta_path);
+                remove_corrupt_store_leaf_best_effort(&meta_path);
                 return Ok(None);
             }
         };
@@ -202,7 +202,7 @@ impl DecompiledDocumentStore {
         };
 
         if meta.file_type().is_symlink() || !meta.is_file() {
-            remove_corrupt_path(&path);
+            remove_corrupt_store_leaf_best_effort(&path);
             return false;
         }
 
@@ -210,14 +210,14 @@ impl DecompiledDocumentStore {
         {
             use std::os::unix::fs::MetadataExt as _;
             if meta.nlink() > 1 {
-                remove_corrupt_path(&path);
+                remove_corrupt_store_leaf_best_effort(&path);
                 return false;
             }
         }
 
         const MAX_DOC_BYTES: u64 = nova_cache::BINCODE_PAYLOAD_LIMIT_BYTES as u64;
         if meta.len() > MAX_DOC_BYTES {
-            remove_corrupt_path(&path);
+            remove_corrupt_store_leaf_best_effort(&path);
             return false;
         }
 
@@ -594,14 +594,14 @@ fn read_cache_file_bytes(path: &Path) -> Result<Option<Vec<u8>>, CacheError> {
         Err(_) => return Ok(None),
     };
     if meta.file_type().is_symlink() || !meta.is_file() {
-        remove_corrupt_path(path);
+        remove_corrupt_store_leaf_best_effort(path);
         return Ok(None);
     }
 
     // Cap reads to avoid pathological allocations if the cache is corrupted.
     const MAX_DOC_BYTES: u64 = nova_cache::BINCODE_PAYLOAD_LIMIT_BYTES as u64;
     if meta.len() > MAX_DOC_BYTES {
-        remove_corrupt_path(path);
+        remove_corrupt_store_leaf_best_effort(path);
         return Ok(None);
     }
 
@@ -609,7 +609,7 @@ fn read_cache_file_bytes(path: &Path) -> Result<Option<Vec<u8>>, CacheError> {
         Ok(file) => file,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(_) => {
-            remove_corrupt_path(path);
+            remove_corrupt_store_leaf_best_effort(path);
             return Ok(None);
         }
     };
@@ -618,7 +618,7 @@ fn read_cache_file_bytes(path: &Path) -> Result<Option<Vec<u8>>, CacheError> {
         Ok(meta) => meta,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(_) => {
-            remove_corrupt_path(path);
+            remove_corrupt_store_leaf_best_effort(path);
             return Ok(None);
         }
     };
@@ -626,7 +626,7 @@ fn read_cache_file_bytes(path: &Path) -> Result<Option<Vec<u8>>, CacheError> {
     // Validate the opened file (defense-in-depth against TOCTOU swaps between the
     // `symlink_metadata` checks above and the `open`).
     if !file_meta.is_file() {
-        remove_corrupt_path(path);
+        remove_corrupt_store_leaf_best_effort(path);
         return Ok(None);
     }
 
@@ -634,13 +634,13 @@ fn read_cache_file_bytes(path: &Path) -> Result<Option<Vec<u8>>, CacheError> {
     {
         use std::os::unix::fs::MetadataExt as _;
         if file_meta.nlink() > 1 {
-            remove_corrupt_path(path);
+            remove_corrupt_store_leaf_best_effort(path);
             return Ok(None);
         }
     }
 
     if file_meta.len() > MAX_DOC_BYTES {
-        remove_corrupt_path(path);
+        remove_corrupt_store_leaf_best_effort(path);
         return Ok(None);
     }
 
@@ -654,16 +654,89 @@ fn read_cache_file_bytes(path: &Path) -> Result<Option<Vec<u8>>, CacheError> {
         Ok(_) => {}
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(_) => {
-            remove_corrupt_path(path);
+            remove_corrupt_store_leaf_best_effort(path);
             return Ok(None);
         }
     }
     if bytes.len() as u64 > MAX_DOC_BYTES {
-        remove_corrupt_path(path);
+        remove_corrupt_store_leaf_best_effort(path);
         return Ok(None);
     }
 
     Ok(Some(bytes))
+}
+
+fn remove_corrupt_store_leaf_best_effort(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt as _;
+        use std::os::unix::io::{AsRawFd as _, FromRawFd as _};
+
+        let Some(parent) = path.parent() else {
+            return;
+        };
+        let Some(root) = parent.parent() else {
+            return;
+        };
+
+        let Ok(root_c) = CString::new(root.as_os_str().as_bytes()) else {
+            return;
+        };
+        let root_fd = unsafe {
+            libc::open(
+                root_c.as_ptr(),
+                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+            )
+        };
+        if root_fd < 0 {
+            return;
+        }
+        let root_dir = unsafe { std::fs::File::from_raw_fd(root_fd) };
+
+        let Some(parent_name) = parent.file_name() else {
+            return;
+        };
+        let Ok(parent_c) = CString::new(parent_name.as_bytes()) else {
+            return;
+        };
+        let parent_fd = unsafe {
+            libc::openat(
+                root_dir.as_raw_fd(),
+                parent_c.as_ptr(),
+                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+            )
+        };
+        if parent_fd < 0 {
+            return;
+        }
+        let parent_dir = unsafe { std::fs::File::from_raw_fd(parent_fd) };
+
+        let Some(file_name) = path.file_name() else {
+            return;
+        };
+        let Ok(file_c) = CString::new(file_name.as_bytes()) else {
+            return;
+        };
+
+        let rc = unsafe { libc::unlinkat(parent_dir.as_raw_fd(), file_c.as_ptr(), 0) };
+        if rc == 0 {
+            return;
+        }
+
+        // If it's a directory, try removing it as an (empty) directory.
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::EISDIR) {
+            let _ = unsafe { libc::unlinkat(parent_dir.as_raw_fd(), file_c.as_ptr(), libc::AT_REMOVEDIR) };
+        }
+
+        return;
+    }
+
+    #[cfg(not(unix))]
+    {
+        remove_corrupt_path(path);
+    }
 }
 
 fn remove_corrupt_path(path: &Path) {
