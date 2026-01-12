@@ -1125,10 +1125,17 @@ fn type_mismatch_quick_fixes(
         }
     }
 
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+
     let mut actions = Vec::new();
 
     let source_index = TextIndex::new(source);
     for diag in diagnostics {
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
         if diag.code.as_ref() != "type-mismatch" {
             continue;
         }
@@ -1184,6 +1191,7 @@ fn type_mismatch_quick_fixes(
 fn type_mismatch_quick_fixes_from_context(
     source: &str,
     uri: &lsp_types::Uri,
+    cancel: &CancellationToken,
     selection: Span,
     context_diagnostics: &[lsp_types::Diagnostic],
 ) -> Vec<lsp_types::CodeActionOrCommand> {
@@ -1211,10 +1219,17 @@ fn type_mismatch_quick_fixes_from_context(
         }
     }
 
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+
     let mut actions = Vec::new();
 
     let source_index = TextIndex::new(source);
     for diagnostic in context_diagnostics {
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
         let Some(lsp_types::NumberOrString::String(code)) = diagnostic.code.as_ref() else {
             continue;
         };
