@@ -321,13 +321,15 @@ Response body:
 - `allowSideEffects` gates execution of known side-effecting operations like `peek` and `forEach`.
 - `allowTerminalOps` gates execution of the terminal operation. When disabled, the terminal result
   is still included but marked `"executed": false`.
-- Expressions that look like an already-instantiated stream value (for example a local `Stream<?> s`
-  referenced as just `s`) may be rejected because sampling consumes streams. Prefer an expression
-  that recreates the stream (for example `collection.stream()` or `java.util.Arrays.stream(array)`).
+- Safety: expressions that look like an already-instantiated stream value (for example a local
+  `Stream<?> s` referenced as just `s`) may be rejected because sampling consumes streams. Prefer an
+  expression that recreates the stream (for example `collection.stream()` or
+  `java.util.Arrays.stream(array)`).
 - `maxTotalTimeMs` budgets the evaluation phase; helper compilation/injection is treated as setup
   and is bounded separately.
 - On failure, the adapter responds with `success=false` and a human-readable `message` (standard DAP
-  error response shape).
+  error response shape). (The legacy adapter instead returned `success=true` with
+  `{ "error": "..." }` in the response body.)
 
 #### Example
 

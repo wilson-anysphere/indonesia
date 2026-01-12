@@ -21,7 +21,6 @@ mod dap_restart;
 mod dap_session;
 mod process_event;
 mod output_truncation;
-mod process_event;
 mod debugger_ux;
 mod enable_method_return_values;
 mod exception_breakpoints;

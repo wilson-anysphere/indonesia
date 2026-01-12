@@ -116,6 +116,14 @@ async fn wire_stream_debug_refuses_existing_stream_values() {
         "unexpected message: {msg}"
     );
 
+    // Ensure the debug session remains usable after the guard triggers.
+    let threads = client.request("threads", json!({})).await;
+    assert_eq!(
+        threads.get("success").and_then(|v| v.as_bool()),
+        Some(true),
+        "unexpected threads response: {threads}"
+    );
+
     client.disconnect().await;
     server_task.await.unwrap().unwrap();
 }

@@ -2612,9 +2612,75 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
         }
 
         fn is_pure_access_expr(expr: &str) -> bool {
-            // Heuristic: if the expression contains no calls, it's likely a Stream value (e.g. `s`,
-            // `this.s`, `foo.bar`) rather than something safe to re-evaluate (e.g. `getStream()`).
-            !expr.contains('(')
+            // Heuristic: if the expression contains no call segments, it's likely a Stream *value*
+            // (e.g. `s`, `this.s`, `foo.bar`) rather than something safe to re-evaluate (e.g.
+            // `getStream()`).
+            //
+            // When we can't confidently parse, err on the side of safety (treat as a value).
+            let expr = expr.trim();
+            if expr.is_empty() {
+                return true;
+            }
+
+            let mut in_str = false;
+            let mut in_char = false;
+            let mut escape = false;
+
+            let chars: Vec<char> = expr.chars().collect();
+            for (idx, ch) in chars.iter().enumerate() {
+                if escape {
+                    escape = false;
+                    continue;
+                }
+
+                if in_str {
+                    if *ch == '\\' {
+                        escape = true;
+                    } else if *ch == '"' {
+                        in_str = false;
+                    }
+                    continue;
+                }
+
+                if in_char {
+                    if *ch == '\\' {
+                        escape = true;
+                    } else if *ch == '\'' {
+                        in_char = false;
+                    }
+                    continue;
+                }
+
+                match *ch {
+                    '"' => {
+                        in_str = true;
+                        continue;
+                    }
+                    '\'' => {
+                        in_char = true;
+                        continue;
+                    }
+                    '(' => {
+                        // Look back for the previous non-whitespace character.
+                        let mut j = idx;
+                        while j > 0 {
+                            j -= 1;
+                            let prev = chars[j];
+                            if prev.is_whitespace() {
+                                continue;
+                            }
+                            // A call segment is preceded by an identifier character, e.g. `stream(`.
+                            if prev == '_' || prev == '$' || prev.is_alphanumeric() {
+                                return false;
+                            }
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            true
         }
 
         // Resolve the source sample by inspecting the underlying collection/array object.
