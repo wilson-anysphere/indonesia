@@ -1122,17 +1122,30 @@ fn find_maven_compiler_plugin<'a, 'i>(
 }
 
 fn default_maven_repo() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    home.join(".m2/repository")
+    let home = home_dir().unwrap_or_else(|| PathBuf::from("."));
+    maven_user_home_dir(&home).join("repository")
 }
 
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
+}
+
+fn maven_user_home_dir(home: &Path) -> PathBuf {
+    // Maven uses `$MAVEN_USER_HOME` to locate user-level configuration (e.g. `settings.xml`) and
+    // the default `repository/` directory. When unset, it falls back to `${user.home}/.m2`.
+    if let Some(value) = std::env::var_os("MAVEN_USER_HOME") {
+        let value = value.to_string_lossy();
+        if let Some(path) = resolve_maven_repo_path_best_effort(value.as_ref()) {
+            if path.is_absolute() {
+                return path;
+            }
+            return home.join(path);
+        }
+    }
+
+    home.join(".m2")
 }
 
 fn resolve_maven_repo_path_best_effort(value: &str) -> Option<PathBuf> {
@@ -1871,6 +1884,32 @@ mod tests {
             resolve_maven_repo_path_best_effort("${something}/repo").is_none(),
             "unknown placeholders should be rejected so callers can fall back to defaults"
         );
+    }
+
+    #[test]
+    fn default_maven_repo_prefers_maven_user_home_env_var() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).expect("create home");
+        let maven_user_home = tmp.path().join("maven-user-home");
+        std::fs::create_dir_all(&maven_user_home).expect("create maven user home");
+
+        with_home_dir(&home, || {
+            let _guard = EnvVarGuard::set("MAVEN_USER_HOME", Some(&maven_user_home));
+            assert_eq!(default_maven_repo(), maven_user_home.join("repository"));
+        });
+    }
+
+    #[test]
+    fn default_maven_repo_interprets_relative_maven_user_home_relative_to_home() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).expect("create home");
+
+        with_home_dir(&home, || {
+            let _guard = EnvVarGuard::set("MAVEN_USER_HOME", Some(Path::new("m2")));
+            assert_eq!(default_maven_repo(), home.join("m2").join("repository"));
+        });
     }
 
     #[test]
