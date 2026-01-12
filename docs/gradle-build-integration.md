@@ -245,6 +245,14 @@ Nova represents `buildSrc` using a stable synthetic Gradle project path:
 - module id: `gradle::__buildSrc`
 - module root: `<workspace>/buildSrc`
 
+`buildSrc` can also be a **multi-project build** (it can have its own `buildSrc/settings.gradle(.kts)`
+and subprojects). In that case, Nova will also expose buildSrc subprojects as additional modules,
+using synthetic project paths rooted at `:__buildSrc`, for example:
+
+- project path: `:__buildSrc:plugins`
+- module id: `gradle::__buildSrc:plugins`
+- module root: `<workspace>/buildSrc/plugins`
+
 This synthetic path may also appear in `.nova/queries/gradle.json`:
 
 - if `javaCompileConfigs[":__buildSrc"]` exists, `nova-project` consumes it (source roots/output
