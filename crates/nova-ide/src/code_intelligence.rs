@@ -2117,7 +2117,7 @@ fn import_path_completions(
     let jdk = JDK_INDEX
         .as_ref()
         .cloned()
-        .unwrap_or_else(|| Arc::new(JdkIndex::new()));
+        .unwrap_or_else(|| EMPTY_JDK_INDEX.clone());
 
     let mut items = Vec::new();
 
@@ -2318,7 +2318,7 @@ fn new_expression_type_completions(
     let jdk = JDK_INDEX
         .as_ref()
         .cloned()
-        .unwrap_or_else(|| Arc::new(JdkIndex::new()));
+        .unwrap_or_else(|| EMPTY_JDK_INDEX.clone());
 
     let mut items = Vec::new();
     let mut seen_labels: HashSet<String> = HashSet::new();
@@ -2582,7 +2582,7 @@ fn import_completions(
     let jdk = JDK_INDEX
         .as_ref()
         .cloned()
-        .unwrap_or_else(|| Arc::new(JdkIndex::new()));
+        .unwrap_or_else(|| EMPTY_JDK_INDEX.clone());
 
     let packages = jdk
         .packages_with_prefix(&ctx.prefix)
@@ -2937,7 +2937,7 @@ fn package_decl_completions(
         let jdk = JDK_INDEX
             .as_ref()
             .cloned()
-            .unwrap_or_else(|| Arc::new(JdkIndex::new()));
+            .unwrap_or_else(|| EMPTY_JDK_INDEX.clone());
         if let Ok(pkgs) = jdk.packages_with_prefix(&ctx.dotted_prefix) {
             for pkg in pkgs.into_iter().take(MAX_JDK_PACKAGES) {
                 add_package_segment_candidates(
@@ -3774,7 +3774,7 @@ fn static_import_completions(
     let jdk = JDK_INDEX
         .as_ref()
         .cloned()
-        .unwrap_or_else(|| Arc::new(JdkIndex::new()));
+        .unwrap_or_else(|| EMPTY_JDK_INDEX.clone());
     let owner = resolve_static_import_owner(jdk.as_ref(), &owner_source)?;
 
     let names = jdk
@@ -4427,7 +4427,7 @@ fn jdk_type_completions(
     let jdk = JDK_INDEX
         .as_ref()
         .cloned()
-        .unwrap_or_else(|| Arc::new(JdkIndex::new()));
+        .unwrap_or_else(|| EMPTY_JDK_INDEX.clone());
 
     // Prefer a handful of common packages; `class_names_with_prefix` works on
     // binary names (e.g. `java.lang.Str`), not simple names (`Str`), so we seed
@@ -5531,7 +5531,7 @@ fn type_name_completions(
     let jdk = JDK_INDEX
         .as_ref()
         .cloned()
-        .unwrap_or_else(|| Arc::new(JdkIndex::new()));
+        .unwrap_or_else(|| EMPTY_JDK_INDEX.clone());
     {
         // Avoid allocating/cloning a potentially large `Vec<String>` for each package via
         // `class_names_with_prefix`. Instead, scan the stable sorted name list and stop once we've
