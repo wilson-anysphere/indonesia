@@ -1372,6 +1372,46 @@ fn extract_variable_rejects_this_constructor_invocation_argument() {
 }
 
 #[test]
+fn extract_variable_allows_extraction_after_super_constructor_invocation() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class B { B(int x) {} }
+class C extends B {
+  C() {
+    super(0);
+    int x = /*start*/1 + 2/*end*/;
+  }
+}
+"#;
+
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "sum".into(),
+            use_var: true,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class B { B(int x) {} }
+class C extends B {
+  C() {
+    super(0);
+    var sum = 1 + 2;
+    int x = sum;
+  }
+}
+"#;
+
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn extract_variable_rejects_if_body_without_braces_multiline() {
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
