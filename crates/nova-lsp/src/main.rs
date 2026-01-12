@@ -4201,8 +4201,8 @@ fn handle_code_action(
     if ai_enabled {
         // Explain error (diagnostic-driven).
         //
-        // For `excluded_paths`, we still offer the action, but omit the code snippet so the
-        // subsequent AI request can be privacy-safe.
+        // For `excluded_paths`, we still offer the action but omit the code snippet so the
+        // subsequent AI request can remain privacy-safe.
         if let Some(diagnostic) = params.context.diagnostics.first() {
             let code = if ai_excluded {
                 None
@@ -4582,7 +4582,6 @@ fn handle_rename(
                 .to_string(),
         ));
     }
-
     let edit = semantic_rename(
         &db,
         RefactorRenameParams {
@@ -4976,30 +4975,61 @@ fn goto_definition_jdk(
     let bytes = jdk.read_class_bytes(&stub.internal_name).ok().flatten()?;
 
     let uri_string = nova_decompile::decompiled_uri_for_classfile(&bytes, &stub.internal_name);
-    let decompiled = nova_decompile::decompile_classfile(&bytes).ok()?;
 
     let class_symbol = nova_decompile::SymbolKey::Class {
         internal_name: stub.internal_name.clone(),
     };
-    let range = member_symbol
-        .as_ref()
-        .and_then(|symbol| decompiled.range_for(symbol))
-        .or_else(|| decompiled.range_for(&class_symbol))?;
 
-    // Persist the virtual document so follow-up requests (and future server sessions) can read it.
+    // Store the virtual document so follow-up requests can read it via `Vfs::read_to_string`.
     let uri: lsp_types::Uri = uri_string.parse().ok()?;
     let vfs_path = VfsPath::from(&uri);
 
-    if let VfsPath::Decompiled {
-        content_hash,
-        binary_name,
-    } = &vfs_path
-    {
-        if let Err(err) =
+    // Best-effort: try to use the persisted decompiled-document store so we can compute a precise
+    // symbol range without re-running the decompiler.
+    let store = state.analysis.decompiled_store.as_ref();
+    if let Some((text, mappings)) = vfs_path.as_decompiled().and_then(|(content_hash, binary_name)| {
+        store
+            .load_document(content_hash, binary_name)
+            .ok()
+            .flatten()
+    }) {
+        let cached_range = member_symbol
+            .as_ref()
+            .and_then(|symbol| mappings.iter().find(|m| &m.symbol == symbol).map(|m| m.range))
+            .or_else(|| {
+                mappings
+                    .iter()
+                    .find(|m| &m.symbol == &class_symbol)
+                    .map(|m| m.range)
+            });
+
+        if let Some(range) = cached_range {
             state
                 .analysis
-                .decompiled_store
-                .store_text(content_hash, binary_name, &decompiled.text)
+                .vfs
+                .store_virtual_document(vfs_path, text);
+            // Virtual documents are cached outside the "open documents" set; refresh our coarse
+            // memory accounting so they still contribute to memory pressure and can trigger
+            // eviction elsewhere.
+            state.refresh_document_memory();
+
+            return Some(lsp_types::Location {
+                uri,
+                range: lsp_types::Range::new(
+                    lsp_types::Position::new(range.start.line, range.start.character),
+                    lsp_types::Position::new(range.end.line, range.end.character),
+                ),
+            });
+        }
+    }
+
+    let decompiled = nova_decompile::decompile_classfile(&bytes).ok()?;
+
+    // Persist the decompiled output (text + mappings) for future requests.
+    // Ignore errors and fall back to the in-memory virtual document store.
+    if let Some((content_hash, binary_name)) = vfs_path.as_decompiled() {
+        if let Err(err) =
+            store.store_document(content_hash, binary_name, &decompiled.text, &decompiled.mappings)
         {
             tracing::warn!(
                 target = "nova.lsp",
@@ -5010,7 +5040,11 @@ fn goto_definition_jdk(
         }
     }
 
-    // Also cache in the VFS virtual document store for fast follow-up reads.
+    let range = member_symbol
+        .as_ref()
+        .and_then(|symbol| decompiled.range_for(symbol))
+        .or_else(|| decompiled.range_for(&class_symbol))?;
+
     state
         .analysis
         .vfs
@@ -7887,6 +7921,11 @@ fn run_ai_generate_method_body_code_action(
         .as_ref()
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
 
+    // AI code generation is a code-editing operation. Enforce privacy policy early so clients
+    // always see the policy error even if they invoke the command with incomplete arguments.
+    nova_ai::enforce_code_edit_policy(&state.ai_config.privacy)
+        .map_err(|e| (-32603, e.to_string()))?;
+
     let uri = args
         .uri
         .as_deref()
@@ -7987,7 +8026,7 @@ fn run_ai_generate_method_body_code_action(
             id,
             "workspace/applyEdit",
             json!({
-                "label": "Generate method body with AI",
+                "label": "AI: Generate method body",
                 "edit": edit,
             }),
         )
@@ -8011,6 +8050,11 @@ fn run_ai_generate_tests_code_action(
         .runtime
         .as_ref()
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
+
+    // AI code generation is a code-editing operation. Enforce privacy policy early so clients
+    // always see the policy error even if they invoke the command with incomplete arguments.
+    nova_ai::enforce_code_edit_policy(&state.ai_config.privacy)
+        .map_err(|e| (-32603, e.to_string()))?;
 
     let uri = args
         .uri
@@ -8071,7 +8115,7 @@ fn run_ai_generate_tests_code_action(
             id,
             "workspace/applyEdit",
             json!({
-                "label": "Generate tests with AI",
+                "label": "AI: Generate tests",
                 "edit": edit,
             }),
         )

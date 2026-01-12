@@ -1180,6 +1180,7 @@ where
                 &cancel,
                 source,
                 &uri,
+                &cancel,
                 span,
                 context_diagnostics,
             ));

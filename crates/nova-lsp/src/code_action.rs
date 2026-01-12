@@ -137,8 +137,13 @@ impl<'a> AiCodeActionExecutor<'a> {
 
                 let mut config = self.config.clone();
                 config.validation = ValidationConfig::relaxed_for_tests();
+                // Test generation commonly creates new files. Enable that explicitly (it's disabled
+                // by default for safety).
+                config.safety.allow_new_files = true;
                 if config.safety.allowed_path_prefixes.is_empty() {
-                    config.safety.allowed_path_prefixes = vec![file.clone()];
+                    // Allow edits in the selected file (for context updates) and in typical test
+                    // roots (for creating the generated test file).
+                    config.safety.allowed_path_prefixes = vec![file.clone(), "src/test/".into()];
                 }
 
                 let result = generate_patch(

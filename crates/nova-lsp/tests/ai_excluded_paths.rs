@@ -15,7 +15,7 @@ fn uri_for_path(path: &Path) -> String {
 }
 
 #[test]
-fn stdio_server_hides_ai_code_actions_for_excluded_paths() {
+fn stdio_server_hides_ai_code_edit_actions_for_excluded_paths() {
     let _lock = support::stdio_server_lock();
 
     let temp = TempDir::new().expect("tempdir");
@@ -103,8 +103,11 @@ excluded_paths = ["secret/**"]
     );
 
     // 3) request code actions with a diagnostic + a non-empty selection. Normally, this would
-    // offer AI actions, but the file matches ai.privacy.excluded_paths so the server should hide
-    // them.
+    // offer AI actions.
+    //
+    // The file matches `ai.privacy.excluded_paths`, so the server should hide AI *code-editing*
+    // actions. Non-edit actions like explain-error remain available (but must omit any excluded
+    // code context when building prompts).
     support::write_jsonrpc_message(
         &mut stdin,
         &json!({
@@ -165,11 +168,13 @@ excluded_paths = ["secret/**"]
     ];
     for cmd in code_edit_commands {
         assert!(
-            actions.iter().all(|a| a
-                .get("command")
-                .and_then(|c| c.get("command"))
-                .and_then(|v| v.as_str())
-                != Some(cmd)),
+            actions
+                .iter()
+                .all(|a| a
+                    .get("command")
+                    .and_then(|c| c.get("command"))
+                    .and_then(|v| v.as_str())
+                    != Some(cmd)),
             "expected AI code edit action {cmd:?} to be suppressed, got: {actions:?}"
         );
     }
