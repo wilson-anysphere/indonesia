@@ -1,23 +1,24 @@
 export const SAFE_MODE_EXEMPT_REQUESTS: ReadonlySet<string> = new Set<string>([
   'nova/bugReport',
-  // These endpoints are intentionally available even while Nova is in safe mode, or may bypass
-  // the safe-mode guard. A successful response should not be treated as an indication that safe
-  // mode has exited.
+  // These endpoints are intentionally available even while Nova is in safe mode, or have
+  // historically bypassed the safe-mode guard in older server builds. A successful response
+  // should not be treated as an indication that safe mode has exited.
   'nova/memoryStatus',
   'nova/metrics',
   'nova/resetMetrics',
   // Best-effort: safe mode status endpoints may exist in newer server builds.
   'nova/safeModeStatus',
-  // `nova/java/organizeImports` is implemented outside the standard custom-request dispatcher and
-  // may still succeed while Nova is in safe mode (see docs/protocol-extensions.md).
+  // `nova/java/organizeImports` has historically been handled outside the standard custom-request
+  // dispatcher in some nova-lsp stdio server builds, so it may succeed even while safe mode is
+  // active.
   'nova/java/organizeImports',
-  // AI endpoints are handled directly by the stdio server and currently bypass the safe-mode
-  // guard as well, so they should not clear the safe-mode indicator.
+  // AI endpoints may be handled outside the standard custom-request dispatcher in some server
+  // builds, so they should not clear the safe-mode indicator.
   'nova/completion/more',
   'nova/ai/explainError',
   'nova/ai/generateMethodBody',
   'nova/ai/generateTests',
-  // Internal/experimental endpoints that bypass safe-mode guard.
+  // Internal/experimental endpoints that may bypass safe-mode guard in some builds.
   'nova/semanticSearch/indexStatus',
 ]);
 
