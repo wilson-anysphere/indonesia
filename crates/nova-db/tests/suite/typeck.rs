@@ -1095,6 +1095,29 @@ interface I {
 }
 
 #[test]
+fn annotation_constant_fields_are_static() {
+    let src = r#"
+@interface A {
+    int X = 1;
+}
+class C {
+    static int m() {
+        return A.X;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "static-context" && d.code.as_ref() != "unresolved-field"),
+        "expected annotation constant access to resolve as a static field; got {diags:?}"
+    );
+}
+
+#[test]
 fn foreach_var_infers_element_type_for_array() {
     let src = r#"
 class C {

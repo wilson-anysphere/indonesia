@@ -2128,7 +2128,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         let scopes = self.db.scope_graph(item_file);
 
         let kind = match item {
-            nova_hir::ids::ItemId::Interface(_) => ClassKind::Interface,
+            nova_hir::ids::ItemId::Interface(_) | nova_hir::ids::ItemId::Annotation(_) => {
+                ClassKind::Interface
+            }
             _ => ClassKind::Class,
         };
 
