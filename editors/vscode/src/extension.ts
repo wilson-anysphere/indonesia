@@ -285,7 +285,7 @@ export async function activate(context: vscode.ExtensionContext) {
     isSafeMode: () => frameworksSafeMode,
   });
   const projectExplorerView = registerNovaProjectExplorer(context, requestWithFallback, projectModelCache, {
-    isServerRunning: () => Boolean(client && client.state !== State.Stopped),
+    isServerRunning: () => client?.state === State.Running || client?.state === State.Starting,
   });
 
   // Keep capability entries for workspace-folder keys in sync as folders are added/removed.

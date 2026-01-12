@@ -48,6 +48,17 @@ describe('extension wiring', () => {
     );
   });
 
+  it('treats the language server as running only when the client is starting or running', async () => {
+    const srcRoot = path.dirname(fileURLToPath(import.meta.url));
+    const extensionPath = path.join(srcRoot, 'extension.ts');
+    const contents = await fs.readFile(extensionPath, 'utf8');
+
+    // Avoid treating a stale/stopped client instance as "running" for the Project Explorer view.
+    expect(contents).toMatch(
+      /registerNovaProjectExplorer\([\s\S]*isServerRunning:\s*\(\)\s*=>\s*client\?\.state\s*===\s*State\.Running[\s\S]*client\?\.state\s*===\s*State\.Starting/s,
+    );
+  });
+
   it('makes nova.discoverTests cancellable and forwards the progress token to nova/test/discover', async () => {
     const srcRoot = path.dirname(fileURLToPath(import.meta.url));
     const extensionPath = path.join(srcRoot, 'extension.ts');
