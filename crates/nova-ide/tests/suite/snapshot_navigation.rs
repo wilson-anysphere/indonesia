@@ -75,3 +75,90 @@ fn snapshot_type_definition_on_inherited_field_access_returns_field_type() {
         "expected to land on the Bar identifier in Bar.java"
     );
 }
+
+#[test]
+fn snapshot_type_definition_on_this_field_access_returns_field_type() {
+    let mut db = Database::new();
+
+    let bar_uri = Uri::from_str("file:///Bar.java").unwrap();
+    let foo_uri = Uri::from_str("file:///Foo.java").unwrap();
+
+    let bar_text = "class Bar {}";
+    let foo_text = "class Foo { Bar bar; void m(){ this.bar.toString(); } }";
+
+    db.set_file_content(bar_uri.clone(), bar_text);
+    db.set_file_content(foo_uri.clone(), foo_text);
+
+    let snap = db.snapshot();
+
+    let offset = foo_text.find("this.bar").unwrap() + "this.".len();
+    let pos = offset_to_position(foo_text, offset);
+    let got = snap
+        .type_definition(&foo_uri, pos)
+        .expect("expected type definition location");
+
+    assert_eq!(got.uri, bar_uri);
+
+    let bar_offset = bar_text.find("Bar").unwrap();
+    assert_eq!(got.range.start, offset_to_position(bar_text, bar_offset));
+}
+
+#[test]
+fn snapshot_type_definition_on_super_field_access_returns_field_type() {
+    let mut db = Database::new();
+
+    let bar_uri = Uri::from_str("file:///Bar.java").unwrap();
+    let base_uri = Uri::from_str("file:///Base.java").unwrap();
+    let derived_uri = Uri::from_str("file:///Derived.java").unwrap();
+
+    let bar_text = "class Bar {}";
+    let base_text = "class Base { Bar bar; }";
+    let derived_text = "class Derived extends Base { void m(){ super.bar.toString(); } }";
+
+    db.set_file_content(bar_uri.clone(), bar_text);
+    db.set_file_content(base_uri, base_text);
+    db.set_file_content(derived_uri.clone(), derived_text);
+
+    let snap = db.snapshot();
+
+    let offset = derived_text.find("super.bar").unwrap() + "super.".len();
+    let pos = offset_to_position(derived_text, offset);
+    let got = snap
+        .type_definition(&derived_uri, pos)
+        .expect("expected type definition location");
+
+    assert_eq!(got.uri, bar_uri);
+
+    let bar_offset = bar_text.find("Bar").unwrap();
+    assert_eq!(got.range.start, offset_to_position(bar_text, bar_offset));
+}
+
+#[test]
+fn snapshot_type_definition_on_field_access_with_whitespace_returns_field_type() {
+    let mut db = Database::new();
+
+    let bar_uri = Uri::from_str("file:///Bar.java").unwrap();
+    let foo_uri = Uri::from_str("file:///Foo.java").unwrap();
+    let main_uri = Uri::from_str("file:///Main.java").unwrap();
+
+    let bar_text = "class Bar {}";
+    let foo_text = "class Foo { Bar bar; }";
+    let main_text = "class Main { void m(){ Foo foo = new Foo(); foo .\n    bar.toString(); } }";
+
+    db.set_file_content(bar_uri.clone(), bar_text);
+    db.set_file_content(foo_uri, foo_text);
+    db.set_file_content(main_uri.clone(), main_text);
+
+    let snap = db.snapshot();
+
+    let offset = main_text.find("bar.toString").unwrap();
+    let pos = offset_to_position(main_text, offset);
+    let got = snap
+        .type_definition(&main_uri, pos)
+        .expect("expected type definition location");
+
+    assert_eq!(got.uri, bar_uri);
+
+    let bar_offset = bar_text.find("Bar").unwrap();
+    assert_eq!(got.range.start, offset_to_position(bar_text, bar_offset));
+}
