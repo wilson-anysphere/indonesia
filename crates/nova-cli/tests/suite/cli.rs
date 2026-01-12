@@ -138,6 +138,15 @@ fn lsp_help_mentions_passthrough_examples() {
 }
 
 #[test]
+fn symbols_help_documents_distributed_worker_default() {
+    nova().args(["symbols", "--help"]).assert().success().stdout(
+        predicate::str::contains("--distributed-worker-command")
+            .and(predicate::str::contains("adjacent to the running `nova` executable"))
+            .and(predicate::str::contains("$PATH")),
+    );
+}
+
+#[test]
 fn lsp_version_passthrough_matches_nova_lsp() {
     let nova_lsp = lsp_test_server();
 

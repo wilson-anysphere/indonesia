@@ -208,6 +208,9 @@ struct SymbolsArgs {
     #[arg(long)]
     distributed: bool,
     /// Path to the `nova-worker` binary when using `--distributed`.
+    ///
+    /// If unset, `nova` will first look for a `nova-worker` binary adjacent to the running `nova`
+    /// executable, then fall back to resolving `nova-worker` on $PATH.
     #[arg(long)]
     distributed_worker_command: Option<PathBuf>,
 }
