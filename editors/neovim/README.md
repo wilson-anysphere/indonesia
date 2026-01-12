@@ -102,6 +102,29 @@ lspconfig.nova_lsp.setup({
 Nova defines custom LSP methods under the `nova/*` namespace. For the stable spec, see
 [`docs/protocol-extensions.md`](../../docs/protocol-extensions.md).
 
+## AI multi-token completions (server-side overrides)
+
+Nova’s **multi-token completions** are computed asynchronously by the server and surfaced via
+`nova/completion/more` (see [`docs/protocol-extensions.md`](../../docs/protocol-extensions.md)).
+
+If you want to control or disable these completions without changing `nova.toml`, you can set
+server startup environment variables:
+
+- `NOVA_AI_COMPLETIONS_MAX_ITEMS=0` disables multi-token completions entirely.
+- `NOVA_AI_COMPLETIONS_MAX_ITEMS=<n>` caps the number of AI completion items (values are clamped by
+  the server; restart required).
+
+With `nvim-lspconfig`, you can set these via `cmd_env`:
+
+```lua
+lspconfig.nova_lsp.setup({
+  -- ...
+  cmd_env = {
+    NOVA_AI_COMPLETIONS_MAX_ITEMS = "0",
+  },
+})
+```
+
 ### Organize imports
 
 Nova's LSP server (`nova-lsp`, launched via `nova lsp`) supports the standard LSP code action kind `source.organizeImports` (recommended for
