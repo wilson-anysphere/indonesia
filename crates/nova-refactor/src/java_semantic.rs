@@ -4963,6 +4963,14 @@ fn collect_switch_contexts(
             hir::Stmt::Expr { expr, .. } => {
                 walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
             }
+            hir::Stmt::Assert {
+                condition, message, ..
+            } => {
+                walk_expr(body, *condition, owner, scope_result, resolver, item_trees, out);
+                if let Some(expr) = message {
+                    walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
+                }
+            }
             hir::Stmt::Return { expr, .. } => {
                 if let Some(expr) = expr {
                     walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
@@ -6269,32 +6277,6 @@ fn record_lightweight_stmt(
             references,
             spans,
         ),
-        Stmt::Assert(assert_stmt) => {
-            record_lightweight_expr(
-                file,
-                text,
-                &assert_stmt.condition,
-                type_scopes,
-                scope_result,
-                resolver,
-                resolution_to_symbol,
-                references,
-                spans,
-            );
-            if let Some(message) = &assert_stmt.message {
-                record_lightweight_expr(
-                    file,
-                    text,
-                    message,
-                    type_scopes,
-                    scope_result,
-                    resolver,
-                    resolution_to_symbol,
-                    references,
-                    spans,
-                );
-            }
-        }
         Stmt::Return(ret) => {
             if let Some(expr) = &ret.expr {
                 record_lightweight_expr(
