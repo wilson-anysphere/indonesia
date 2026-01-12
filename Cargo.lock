@@ -3485,6 +3485,7 @@ dependencies = [
  "nova-format",
  "nova-index",
  "nova-perf",
+ "nova-project",
  "nova-refactor",
  "nova-router",
  "nova-syntax",
@@ -3495,6 +3496,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "walkdir",
  "wat",
 ]
 

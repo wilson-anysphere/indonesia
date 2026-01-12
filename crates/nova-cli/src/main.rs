@@ -16,6 +16,7 @@ use nova_core::{
 };
 mod diagnostics_output;
 mod extensions;
+mod refactor_apply;
 use diagnostics_output::{print_github_annotations, print_sarif, write_sarif, DiagnosticsFormat};
 use nova_deps_cache::DependencyIndexStore;
 use nova_format::{edits_for_document_formatting, edits_for_range_formatting, FormatConfig};
@@ -24,10 +25,10 @@ use nova_perf::{
     RuntimeThresholdConfig, ThresholdConfig,
 };
 use nova_refactor::{
-    apply_text_edits as apply_refactor_text_edits, organize_imports as refactor_organize_imports,
-    rename as refactor_rename, Conflict, FileId as RefactorFileId, OrganizeImportsParams,
-    RefactorJavaDatabase, RenameParams, SemanticRefactorError, TextDatabase,
-    WorkspaceTextEdit as RefactorTextEdit,
+    apply_text_edits as apply_refactor_text_edits, apply_workspace_edit,
+    organize_imports as refactor_organize_imports, rename as refactor_rename, Conflict,
+    FileId as RefactorFileId, FileOp, OrganizeImportsParams, RefactorJavaDatabase, RenameParams,
+    SemanticRefactorError, TextDatabase, WorkspaceEdit, WorkspaceTextEdit as RefactorTextEdit,
 };
 use nova_router::{DistributedRouterConfig, ListenAddr, QueryRouter, SourceRoot, WorkspaceLayout};
 use nova_syntax::parse;
@@ -1132,6 +1133,14 @@ struct CliJsonFileEdits {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
+enum CliJsonFileOp {
+    Rename { from: String, to: String },
+    Create { file: String },
+    Delete { file: String },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type")]
 enum CliJsonConflict {
     NameCollision {
         file: String,
@@ -1163,6 +1172,8 @@ struct CliJsonOutput {
     ok: bool,
     files_changed: Vec<String>,
     edits: Vec<CliJsonFileEdits>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    file_ops: Vec<CliJsonFileOp>,
     conflicts: Vec<CliJsonConflict>,
     error: Option<CliJsonError>,
 }
@@ -1308,6 +1319,7 @@ fn handle_format(args: FormatArgs) -> Result<i32> {
         } else {
             Vec::new()
         },
+        file_ops: Vec::new(),
         conflicts: Vec::new(),
         error: None,
     };
@@ -1368,6 +1380,7 @@ fn handle_organize_imports(args: OrganizeImportsArgs) -> Result<i32> {
         } else {
             Vec::new()
         },
+        file_ops: Vec::new(),
         conflicts: Vec::new(),
         error: None,
     };
@@ -1602,7 +1615,7 @@ fn path_relative_to(root: &Path, path: &Path) -> Result<String> {
 }
 
 fn conflicts_to_json(
-    files: &BTreeMap<String, String>,
+    files: &BTreeMap<RefactorFileId, String>,
     conflicts: Vec<Conflict>,
 ) -> Vec<CliJsonConflict> {
     let mut out = Vec::new();
@@ -1631,7 +1644,7 @@ fn conflicts_to_json(
                 usage_range,
                 name,
             } => {
-                let text = files.get(&file.0).map(String::as_str).unwrap_or("");
+                let text = files.get(&file).map(String::as_str).unwrap_or("");
                 let index = LineIndex::new(text);
                 let start = TextSize::from(usage_range.start as u32);
                 let end = TextSize::from(usage_range.end as u32);
@@ -1686,25 +1699,35 @@ fn conflicts_to_json(
 }
 
 fn handle_rename(args: RenameArgs) -> Result<i32> {
-    // Rename is restricted to locals/parameters, so we can operate on a single file without
-    // instantiating a full workspace (which would spin up background thread pools).
-    let target_file_id_str = display_path(&args.file);
-    let target_file = RefactorFileId::new(target_file_id_str.clone());
-    let target_text = fs::read_to_string(&args.file)
-        .with_context(|| format!("failed to read {}", args.file.display()))?;
+    let snapshot = match refactor_apply::build_java_workspace_snapshot(&args.file) {
+        Ok(snapshot) => snapshot,
+        Err(err) => return Ok(rename_error(args.json, err.to_string())?),
+    };
 
-    let mut file_texts: BTreeMap<String, String> = BTreeMap::new();
-    file_texts.insert(target_file_id_str.clone(), target_text.clone());
+    let project_root = snapshot.project_root;
+    let file_texts = snapshot.files;
+    let target_file = snapshot.focus_file;
+    let Some(target_text) = file_texts.get(&target_file).map(String::as_str) else {
+        return Ok(rename_error(
+            args.json,
+            format!("focus file {} was not included in workspace snapshot", target_file.0),
+        )?);
+    };
 
-    let db = RefactorJavaDatabase::single_file(target_file_id_str.clone(), target_text.clone());
+    // Build a multi-file database so rename can evolve beyond locals/parameters.
+    let db = RefactorJavaDatabase::new(
+        file_texts
+            .iter()
+            .map(|(file, text)| (file.clone(), text.clone())),
+    );
 
     let pos = match parse_cli_position(args.line, args.col) {
         Ok(pos) => pos,
         Err(err) => return Ok(rename_error(args.json, err.to_string())?),
     };
 
-    let index = LineIndex::new(&target_text);
-    let Some(offset) = index.offset_of_position(&target_text, pos) else {
+    let index = LineIndex::new(target_text);
+    let Some(offset) = index.offset_of_position(target_text, pos) else {
         return Ok(rename_error(
             args.json,
             format!("no offset for position line={} col={}", args.line, args.col),
@@ -1721,10 +1744,7 @@ fn handle_rename(args: RenameArgs) -> Result<i32> {
     let Some(symbol) = symbol else {
         return Ok(rename_error(
             args.json,
-            format!(
-                "no symbol at {}:{}:{}",
-                target_file_id_str, args.line, args.col
-            ),
+            format!("no symbol at {}:{}:{}", target_file.0, args.line, args.col),
         )?);
     };
 
@@ -1742,6 +1762,7 @@ fn handle_rename(args: RenameArgs) -> Result<i32> {
                 ok: false,
                 files_changed: Vec::new(),
                 edits: Vec::new(),
+                file_ops: Vec::new(),
                 conflicts,
                 error: Some(CliJsonError {
                     kind: "Conflicts".to_string(),
@@ -1760,6 +1781,7 @@ fn handle_rename(args: RenameArgs) -> Result<i32> {
                 ok: false,
                 files_changed: Vec::new(),
                 edits: Vec::new(),
+                file_ops: Vec::new(),
                 conflicts: Vec::new(),
                 error: Some(CliJsonError {
                     kind: "RenameNotSupported".to_string(),
@@ -1776,56 +1798,83 @@ fn handle_rename(args: RenameArgs) -> Result<i32> {
         Err(err) => return Err(anyhow::anyhow!(err)),
     };
 
-    let by_file = edit.edits_by_file();
+    let mut normalized_edit = edit.clone();
+    normalized_edit
+        .remap_text_edits_across_renames()
+        .map_err(|err| anyhow::anyhow!(err))?;
+    normalized_edit
+        .normalize()
+        .map_err(|err| anyhow::anyhow!(err))?;
+
+    let file_ops = normalized_edit
+        .file_ops
+        .iter()
+        .map(|op| match op {
+            FileOp::Rename { from, to } => CliJsonFileOp::Rename {
+                from: from.0.clone(),
+                to: to.0.clone(),
+            },
+            FileOp::Create { file, .. } => CliJsonFileOp::Create { file: file.0.clone() },
+            FileOp::Delete { file } => CliJsonFileOp::Delete { file: file.0.clone() },
+        })
+        .collect::<Vec<_>>();
+
+    // Compute the pre/post workspace state in-memory (including file ops) before writing anything.
+    let ops_only = WorkspaceEdit {
+        file_ops: normalized_edit.file_ops.clone(),
+        text_edits: Vec::new(),
+    };
+    let workspace_after_file_ops =
+        apply_workspace_edit(&file_texts, &ops_only).map_err(|err| anyhow::anyhow!(err))?;
+    let new_workspace =
+        apply_workspace_edit(&file_texts, &normalized_edit).map_err(|err| anyhow::anyhow!(err))?;
+
+    let by_file = normalized_edit.edits_by_file();
     let mut changed_files: Vec<String> = Vec::new();
     let mut outputs: Vec<CliJsonFileEdits> = Vec::new();
-
-    // Compute the new file contents before writing anything.
-    let mut new_texts: BTreeMap<String, String> = BTreeMap::new();
+    let mut changed_texts: BTreeMap<RefactorFileId, String> = BTreeMap::new();
 
     for (file_id, edits) in by_file {
-        let file_str = file_id.0.clone();
-        let Some(original) = file_texts.get(&file_str) else {
+        let Some(original) = workspace_after_file_ops.get(file_id).map(String::as_str) else {
             return Err(anyhow::anyhow!(
-                "refactoring produced edits for unknown file {file_str:?}"
+                "refactoring produced edits for unknown file {:?}",
+                file_id.0
+            ));
+        };
+        let Some(updated) = new_workspace.get(file_id).cloned() else {
+            return Err(anyhow::anyhow!(
+                "refactoring produced edits for missing output file {:?}",
+                file_id.0
             ));
         };
 
-        let edits_owned = edits.into_iter().cloned().collect::<Vec<_>>();
-        let updated = apply_refactor_text_edits(original, &edits_owned)
-            .map_err(|err| anyhow::anyhow!(err))?;
-        if updated == *original {
+        if updated == original {
             continue;
         }
 
-        changed_files.push(file_str.clone());
+        let edits_owned = edits.into_iter().cloned().collect::<Vec<_>>();
+        changed_files.push(file_id.0.clone());
         outputs.push(refactor_edits_to_json(
-            file_str.clone(),
+            file_id.0.clone(),
             original,
             &edits_owned,
         ));
-        new_texts.insert(file_str, updated);
+        changed_texts.insert((*file_id).clone(), updated);
     }
 
     changed_files.sort();
     outputs.sort_by(|a, b| a.file.cmp(&b.file));
 
     if args.in_place {
-        for (file, text) in &new_texts {
-            let path = if *file == target_file_id_str {
-                args.file.clone()
-            } else {
-                PathBuf::from(file)
-            };
-            atomic_write(&path, text.as_bytes())
-                .with_context(|| format!("failed to write {}", path.display()))?;
-        }
+        refactor_apply::apply_workspace_edit_to_disk(&project_root, &normalized_edit, &changed_texts)
+            .with_context(|| "failed to apply rename in-place")?;
     }
 
     let output = CliJsonOutput {
         ok: true,
         files_changed: changed_files,
         edits: outputs,
+        file_ops,
         conflicts: Vec::new(),
         error: None,
     };
@@ -1833,11 +1882,24 @@ fn handle_rename(args: RenameArgs) -> Result<i32> {
     if args.json {
         print_cli_json(&output)?;
     } else if args.in_place {
+        for op in &normalized_edit.file_ops {
+            match op {
+                FileOp::Rename { from, to } => println!("renamed file {} -> {}", from.0, to.0),
+                FileOp::Create { file, .. } => println!("created file {}", file.0),
+                FileOp::Delete { file } => println!("deleted file {}", file.0),
+            }
+        }
         for file in &output.files_changed {
             println!("renamed occurrences in {}", file);
         }
     } else {
-        // Human output: brief summary.
+        for op in &normalized_edit.file_ops {
+            match op {
+                FileOp::Rename { from, to } => println!("would rename file {} -> {}", from.0, to.0),
+                FileOp::Create { file, .. } => println!("would create file {}", file.0),
+                FileOp::Delete { file } => println!("would delete file {}", file.0),
+            }
+        }
         for file in &output.files_changed {
             println!("would edit {}", file);
         }
@@ -1852,6 +1914,7 @@ fn rename_error(json: bool, message: String) -> Result<i32> {
             ok: false,
             files_changed: Vec::new(),
             edits: Vec::new(),
+            file_ops: Vec::new(),
             conflicts: Vec::new(),
             error: Some(CliJsonError {
                 kind: "SymbolResolutionFailed".to_string(),
