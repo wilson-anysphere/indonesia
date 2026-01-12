@@ -115,6 +115,32 @@ class C implements I {
 }
 
 #[test]
+fn go_to_implementation_on_interface_method_works_through_extended_interfaces() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /I0.java
+interface I0 {
+    void $0foo();
+}
+//- /I1.java
+interface I1 extends I0 {}
+//- /C.java
+class C implements I1 {
+    public void $1foo() {}
+}
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = implementation(&fixture.db, file, pos);
+
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].uri, fixture.marker_uri(1));
+    assert_eq!(got[0].range.start, fixture.marker_position(1));
+}
+
+#[test]
 fn go_to_implementation_on_receiverless_call_returns_method_definition() {
     let fixture = FileIdFixture::parse(
         r#"

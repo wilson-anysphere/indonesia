@@ -779,24 +779,72 @@ pub fn parse_file(uri: Uri, text: String) -> ParsedFile {
 
                         match tokens.get(j).and_then(|t| t.ident()) {
                             Some("extends") => {
-                                if let Some(name) = tokens.get(j + 1).and_then(|t| t.ident()) {
-                                    super_class = Some(name.to_string());
-                                    j += 2;
+                                j += 1;
+                                if kind == TypeKind::Class {
+                                    if let Some((ty, _span, next)) =
+                                        parse_type_ref(&tokens, j, tokens.len())
+                                    {
+                                        super_class = Some(ty);
+                                        j = next;
+                                        continue;
+                                    }
+                                } else {
+                                    // Interfaces can extend multiple interfaces:
+                                    // `interface I extends A, B {}`.
+                                    while j < tokens.len() {
+                                        if tokens.get(j).and_then(|t| t.symbol()) == Some('{') {
+                                            break;
+                                        }
+                                        // Sealed types: `permits` can follow an extends list.
+                                        if tokens.get(j).and_then(|t| t.ident()) == Some("permits") {
+                                            break;
+                                        }
+                                        if let Some((ty, _span, next)) =
+                                            parse_type_ref(&tokens, j, tokens.len())
+                                        {
+                                            interfaces.push(ty);
+                                            j = next;
+                                        } else {
+                                            j += 1;
+                                        }
+
+                                        while j < tokens.len()
+                                            && tokens.get(j).and_then(|t| t.symbol()) == Some(',')
+                                        {
+                                            j += 1;
+                                        }
+                                    }
                                     continue;
                                 }
                             }
                             Some("implements") => {
                                 j += 1;
-                                while j < tokens.len() {
-                                    if tokens.get(j).and_then(|t| t.symbol()) == Some('{') {
-                                        break;
+                                if kind == TypeKind::Class {
+                                    while j < tokens.len() {
+                                        if tokens.get(j).and_then(|t| t.symbol()) == Some('{') {
+                                            break;
+                                        }
+                                        // Sealed types: `permits` can follow an implements list.
+                                        if tokens.get(j).and_then(|t| t.ident()) == Some("permits") {
+                                            break;
+                                        }
+                                        if let Some((ty, _span, next)) =
+                                            parse_type_ref(&tokens, j, tokens.len())
+                                        {
+                                            interfaces.push(ty);
+                                            j = next;
+                                        } else {
+                                            j += 1;
+                                        }
+
+                                        while j < tokens.len()
+                                            && tokens.get(j).and_then(|t| t.symbol()) == Some(',')
+                                        {
+                                            j += 1;
+                                        }
                                     }
-                                    if let Some(name) = tokens.get(j).and_then(|t| t.ident()) {
-                                        interfaces.push(name.to_string());
-                                    }
-                                    j += 1;
+                                    continue;
                                 }
-                                continue;
                             }
                             _ => {}
                         }
@@ -837,7 +885,7 @@ pub fn parse_file(uri: Uri, text: String) -> ParsedFile {
                         kind,
                         modifiers: pending_mods,
                         body_span,
-                        super_class,
+                        super_class: (kind == TypeKind::Class).then_some(super_class).flatten(),
                         interfaces,
                         methods,
                         fields,
@@ -867,6 +915,53 @@ pub fn parse_file(uri: Uri, text: String) -> ParsedFile {
 mod tests {
     use super::*;
     use std::str::FromStr;
+
+    #[test]
+    fn class_implements_generic_interface_does_not_record_type_args_as_interfaces() {
+        let uri = Uri::from_str("file:///C.java").unwrap();
+        let text = r#"
+class C implements I<String> {}
+"#
+        .to_string();
+
+        let parsed = parse_file(uri, text);
+        assert_eq!(parsed.types.len(), 1);
+        assert_eq!(parsed.types[0].interfaces, vec!["I".to_string()]);
+    }
+
+    #[test]
+    fn interface_extends_multiple_interfaces_are_recorded_in_interfaces() {
+        let uri = Uri::from_str("file:///J.java").unwrap();
+        let text = r#"
+interface J extends A, B {}
+"#
+        .to_string();
+
+        let parsed = parse_file(uri, text);
+        assert_eq!(parsed.types.len(), 1);
+        assert_eq!(
+            parsed.types[0].interfaces,
+            vec!["A".to_string(), "B".to_string()]
+        );
+        assert_eq!(parsed.types[0].super_class, None);
+    }
+
+    #[test]
+    fn interface_extends_generic_and_qualified_names_are_parsed_correctly() {
+        let uri = Uri::from_str("file:///J.java").unwrap();
+        let text = r#"
+interface J extends A<String>, pkg.B {}
+"#
+        .to_string();
+
+        let parsed = parse_file(uri, text);
+        assert_eq!(parsed.types.len(), 1);
+        assert_eq!(
+            parsed.types[0].interfaces,
+            vec!["A".to_string(), "B".to_string()]
+        );
+        assert_eq!(parsed.types[0].super_class, None);
+    }
 
     #[test]
     fn receiverless_calls_are_indexed_as_this() {
