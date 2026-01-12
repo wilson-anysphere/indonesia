@@ -5,6 +5,7 @@ use serde_json::json;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 use tempfile::TempDir;
 
 use crate::support::{read_response_with_id, stdio_server_lock, write_jsonrpc_message};
@@ -64,6 +65,77 @@ fn ensure_worker_binary() -> PathBuf {
         worker_bin.display(),
         workspace_worker_bin.display()
     );
+}
+
+fn send_workspace_symbol_request(
+    stdin: &mut impl std::io::Write,
+    stdout: &mut impl std::io::BufRead,
+    id: i64,
+    query: &str,
+) -> serde_json::Value {
+    write_jsonrpc_message(
+        stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "workspace/symbol",
+            "params": { "query": query }
+        }),
+    );
+    read_response_with_id(stdout, id)
+}
+
+fn response_contains_symbol(resp: &serde_json::Value, name: &str, uri: &str) -> bool {
+    resp.get("result")
+        .and_then(|v| v.as_array())
+        .iter()
+        .flat_map(|arr| arr.iter())
+        .any(|value| {
+            value.get("name").and_then(|v| v.as_str()) == Some(name)
+                && value.pointer("/location/uri").and_then(|v| v.as_str()) == Some(uri)
+        })
+}
+
+fn wait_for_symbol(
+    stdin: &mut impl std::io::Write,
+    stdout: &mut impl std::io::BufRead,
+    next_id: &mut i64,
+    query: &str,
+    name: &str,
+    uri: &str,
+) {
+    for _ in 0..40 {
+        let resp = send_workspace_symbol_request(stdin, stdout, *next_id, query);
+        *next_id += 1;
+        if response_contains_symbol(&resp, name, uri) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    let resp = send_workspace_symbol_request(stdin, stdout, *next_id, query);
+    panic!("timed out waiting for symbol {name} in response: {resp:?}");
+}
+
+fn wait_for_symbol_absent(
+    stdin: &mut impl std::io::Write,
+    stdout: &mut impl std::io::BufRead,
+    next_id: &mut i64,
+    query: &str,
+    name: &str,
+    uri: &str,
+) {
+    for _ in 0..40 {
+        let resp = send_workspace_symbol_request(stdin, stdout, *next_id, query);
+        *next_id += 1;
+        if !response_contains_symbol(&resp, name, uri) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    let resp = send_workspace_symbol_request(stdin, stdout, *next_id, query);
+    panic!("timed out waiting for symbol {name} to disappear; still present: {resp:?}");
 }
 
 #[test]
@@ -152,6 +224,115 @@ fn stdio_server_supports_workspace_symbol_requests_via_distributed_router() {
         &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
     );
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
+fn stdio_server_distributed_router_refreshes_on_did_change_watched_files() {
+    let _lock = stdio_server_lock();
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+
+    let cache_dir = TempDir::new().expect("cache dir");
+
+    let file_path = root.join("Foo.java");
+    std::fs::write(
+        &file_path,
+        r#"
+            package com.example;
+
+            public class Foo {
+                public void bar() {}
+            }
+        "#,
+    )
+    .expect("write java file");
+
+    let root_uri = uri_for_path(root);
+    let file_uri = uri_for_path(&file_path);
+
+    let worker_bin = ensure_worker_binary();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--distributed")
+        .arg("--distributed-worker-command")
+        .arg(worker_bin)
+        .env("NOVA_CACHE_DIR", cache_dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": root_uri, "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    let mut next_id = 2i64;
+    wait_for_symbol(&mut stdin, &mut stdout, &mut next_id, "Foo", "Foo", &file_uri);
+
+    std::fs::write(
+        &file_path,
+        r#"
+            package com.example;
+
+            public class Foo {
+                public void bar() {}
+            }
+
+            class Baz {}
+        "#,
+    )
+    .expect("rewrite java file");
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "workspace/didChangeWatchedFiles",
+            "params": { "changes": [{ "uri": file_uri, "type": 2 }] }
+        }),
+    );
+    wait_for_symbol(&mut stdin, &mut stdout, &mut next_id, "Baz", "Baz", &file_uri);
+
+    std::fs::remove_file(&file_path).expect("delete java file");
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "workspace/didChangeWatchedFiles",
+            "params": { "changes": [{ "uri": file_uri, "type": 3 }] }
+        }),
+    );
+
+    wait_for_symbol_absent(&mut stdin, &mut stdout, &mut next_id, "Foo", "Foo", &file_uri);
+    wait_for_symbol_absent(&mut stdin, &mut stdout, &mut next_id, "Baz", "Baz", &file_uri);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": next_id, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, next_id);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
