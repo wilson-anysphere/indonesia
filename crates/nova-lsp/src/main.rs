@@ -7392,75 +7392,6 @@ fn is_excluded_by_ai_privacy(state: &ServerState, path: &Path) -> bool {
     }
 }
 
-fn root_uri_for_path(path: &Path) -> Result<LspUri, (i32, String)> {
-    let mut abs = path.to_path_buf();
-    if !abs.is_absolute() {
-        abs = std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("/"))
-            .join(abs);
-    }
-    let url = url::Url::from_directory_path(&abs)
-        .map_err(|_| (-32603, format!("invalid root path: {}", abs.display())))?;
-    url.to_string()
-        .parse::<LspUri>()
-        .map_err(|e| (-32603, format!("invalid root uri: {e}")))
-}
-
-fn resolve_workspace_relative_path(
-    state: &ServerState,
-    abs_path: &Path,
-) -> Result<(PathBuf, String), (i32, String)> {
-    let mut root = state
-        .project_root
-        .clone()
-        .or_else(|| abs_path.parent().map(Path::to_path_buf))
-        .ok_or_else(|| {
-            (
-                -32602,
-                format!(
-                    "unable to determine project root for {}",
-                    abs_path.display()
-                ),
-            )
-        })?;
-    if !root.is_absolute() {
-        root = std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("/"))
-            .join(root);
-    }
-
-    // Prefer a stable workspace root when possible.
-    if let Ok(rel) = abs_path.strip_prefix(&root) {
-        return Ok((root, path_to_slash(rel)));
-    }
-
-    // Fallback: treat the file's directory as the workspace root so join_uri still
-    // produces a correct URI for applyEdit.
-    let fallback_root = abs_path.parent().map(Path::to_path_buf).ok_or_else(|| {
-        (
-            -32602,
-            format!("file has no parent directory: {}", abs_path.display()),
-        )
-    })?;
-    let file_name = abs_path
-        .file_name()
-        .ok_or_else(|| (-32602, format!("file has no name: {}", abs_path.display())))?
-        .to_string_lossy()
-        .to_string();
-    Ok((fallback_root, file_name))
-}
-
-fn path_to_slash(path: &Path) -> String {
-    let mut out = String::new();
-    for (idx, component) in path.components().enumerate() {
-        if idx > 0 {
-            out.push('/');
-        }
-        out.push_str(&component.as_os_str().to_string_lossy());
-    }
-    out
-}
-
 fn ide_range_to_lsp_types_range(range: nova_ide::LspRange) -> LspTypesRange {
     LspTypesRange::new(
         LspTypesPosition::new(range.start.line, range.start.character),
@@ -9216,17 +9147,19 @@ fn run_ai_generate_method_body(
     nova_ai::enforce_code_edit_policy(&state.ai_config.privacy)
         .map_err(|e| (-32603, e.to_string()))?;
 
-    let uri = args
+    let uri_string = args
         .uri
         .as_deref()
         .ok_or_else(|| (-32602, "missing uri for generateMethodBody".to_string()))?;
+    let uri = uri_string
+        .parse::<LspUri>()
+        .map_err(|e| (-32602, format!("invalid uri for generateMethodBody: {e}")))?;
     let range = args
         .range
         .ok_or_else(|| (-32602, "missing range for generateMethodBody".to_string()))?;
-    let text = load_document_text(state, uri)
-        .ok_or_else(|| (-32602, format!("missing document text for `{}`", uri)))?;
-    let abs_path =
-        path_from_uri(uri).ok_or_else(|| (-32602, format!("unsupported uri scheme: {uri}")))?;
+    let text = load_document_text(state, uri_string)
+        .ok_or_else(|| (-32602, format!("missing document text for `{}`", uri_string)))?;
+    let (root_uri, rel_path, abs_path) = resolve_ai_patch_target(&uri, state)?;
 
     if is_ai_excluded_path(state, &abs_path) {
         return Err((
@@ -9234,9 +9167,6 @@ fn run_ai_generate_method_body(
             "AI disabled for this file due to ai.privacy.excluded_paths".to_string(),
         ));
     }
-
-    let (root_path, rel_path) = resolve_workspace_relative_path(state, &abs_path)?;
-    let root_uri = root_uri_for_path(&root_path)?;
 
     let insert_range = method_body_insertion_range(&text, range)?;
 
@@ -9325,21 +9255,24 @@ fn run_ai_generate_tests(
     nova_ai::enforce_code_edit_policy(&state.ai_config.privacy)
         .map_err(|e| (-32603, e.to_string()))?;
 
-    let uri = args
+    let uri_string = args
         .uri
         .as_deref()
         .ok_or_else(|| (-32602, "missing uri for generateTests".to_string()))?;
+    let uri = uri_string
+        .parse::<LspUri>()
+        .map_err(|e| (-32602, format!("invalid uri for generateTests: {e}")))?;
     let range = args
         .range
         .ok_or_else(|| (-32602, "missing range for generateTests".to_string()))?;
     let target = args.target.clone();
     let context = args.context.clone();
-    let source_text = load_document_text(state, uri)
-        .ok_or_else(|| (-32602, format!("missing document text for `{}`", uri)))?;
+    let source_text = load_document_text(state, uri_string)
+        .ok_or_else(|| (-32602, format!("missing document text for `{}`", uri_string)))?;
     let source_snippet = byte_range_for_ide_range(&source_text, range)
         .and_then(|r| source_text.get(r).map(|s| s.to_string()))
         .filter(|s| !s.trim().is_empty());
-    let abs_path = path_from_uri(uri).ok_or_else(|| (-32602, format!("unsupported uri: {uri}")))?;
+    let (root_uri, source_rel_path, abs_path) = resolve_ai_patch_target(&uri, state)?;
 
     if is_ai_excluded_path(state, &abs_path) {
         return Err((
@@ -9347,9 +9280,6 @@ fn run_ai_generate_tests(
             "AI disabled for this file due to ai.privacy.excluded_paths".to_string(),
         ));
     }
-
-    let (root_path, source_rel_path) = resolve_workspace_relative_path(state, &abs_path)?;
-    let root_uri = root_uri_for_path(&root_path)?;
 
     send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Generate tests")?;
     send_progress_report(rpc_out, work_done_token.as_ref(), "Generating patch…", None)?;
@@ -9369,8 +9299,10 @@ fn run_ai_generate_tests(
             // exist, the patch pipeline can create it (allow_new_files=true).
             let mut workspace =
                 VirtualWorkspace::new([(source_rel_path.clone(), source_text.clone())]);
-            if let Ok(existing) = std::fs::read_to_string(root_path.join(&test_file)) {
-                workspace.insert(test_file.clone(), existing);
+            if let Some(root_path) = state.project_root.as_deref() {
+                if let Ok(existing) = std::fs::read_to_string(root_path.join(&test_file)) {
+                    workspace.insert(test_file.clone(), existing);
+                }
             }
 
             (
