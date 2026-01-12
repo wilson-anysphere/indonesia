@@ -903,6 +903,45 @@ impl<'a, 'idx> Parser<'a, 'idx> {
             return;
         }
 
+        // If the annotation name is qualified (e.g. `@String.Inner`) and the first segment is
+        // ambiguous in the current scope, prefer surfacing that ambiguity over reporting the full
+        // qualified name as unresolved.
+        if segments.len() > 1 {
+            let first_end = text.find('.').unwrap_or(text.len());
+            if first_end > 0 {
+                let first_seg = Name::from(segments[0].as_str());
+                if let TypeNameResolution::Ambiguous(candidates) = self
+                    .resolver
+                    .resolve_type_name_detailed(self.scopes, self.scope, &first_seg)
+                {
+                    let mut candidate_names: Vec<String> = candidates
+                        .iter()
+                        .filter_map(|c| {
+                            self.resolver
+                                .type_name_for_resolution(self.scopes, c)
+                                .map(|n| n.as_str().to_string())
+                        })
+                        .collect();
+                    candidate_names.sort();
+                    candidate_names.dedup();
+
+                    let mut msg = format!("ambiguous type `{}`", segments[0]);
+                    if !candidate_names.is_empty() {
+                        msg.push_str(": ");
+                        msg.push_str(&candidate_names.join(", "));
+                    }
+
+                    let first_seg_range = name_range.start..(name_range.start + first_end);
+                    self.diagnostics.push(Diagnostic::error(
+                        "ambiguous-type",
+                        msg,
+                        self.anchor_span(first_seg_range),
+                    ));
+                    return;
+                }
+            }
+        }
+
         let per_segment_args = vec![Vec::new(); segments.len()];
         let _ = self.resolve_named_type(segments, per_segment_args, name_range);
     }
