@@ -352,10 +352,12 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
   `crates/nova-lsp/src/extensions/*` (custom `nova/*` endpoints).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
-  - ADR 0003 mentions an optional TCP transport; `nova-lsp` currently only supports stdio (`lsp_server::Connection::stdio()`).
+  - ADR 0003 mentions an optional TCP transport; `nova-lsp` currently only supports stdio (`lsp_server::Connection::stdio()`) and uses `lsp-server` for framing + the initialize handshake (`initialize_start/finish`) in `crates/nova-lsp/src/main.rs`.
+  - Request/notification dispatch is still a Nova-owned manual router (`match` over `method` strings), not `tower-lsp`; `$/cancelRequest` is handled explicitly via `message_router` + `nova_lsp::RequestCancellation`.
   - Custom `nova/*` method support is advertised via `initializeResult.capabilities.experimental.nova.{requests,notifications}` (clients should still handle older servers that omit this).
   - Request cancellation is routed (`$/cancelRequest` → request-scoped `CancellationToken`), but many handlers still only check cancellation at coarse boundaries; long-running work may not stop promptly.
   - The server loop is intentionally simple/mostly synchronous today (requests are handled serially), and does not yet have a general async scheduling model for isolating expensive work.
+  - `crates/nova-lsp/src/codec.rs` is now test-only helper code for reading/writing `Content-Length` framed JSON-RPC messages, not the production transport.
 
 ### `nova-memory`
 - **Purpose:** memory budgeting + accounting + cooperative eviction (used by `nova-lsp` telemetry endpoints).
@@ -514,9 +516,10 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Purpose:** virtual filesystem layer (file IDs, overlays, archive paths, watcher abstractions).
 - **Key entry points:** `crates/nova-vfs/src/lib.rs` (`Vfs`, `OpenDocuments`, `VfsPath`).
 - **Maturity:** prototype
- - **Known gaps vs intended docs:**
-   - `nova-lsp` uses `Vfs` overlays today for open-document tracking + reading from disk; decompiled virtual documents are stored in `nova-vfs`'s bounded virtual document store. The remaining work is making `VfsPath`/ADR 0006 canonical URIs the single end-to-end representation for *all* “virtual documents” (archives, decompiled sources, generated files), rather than a mix of schemes/strings across crates.
-   - The watcher abstractions (`FileWatcher`, `WatchEvent`) are not yet widely integrated; most file-change information still comes from editor-sent LSP notifications.
+- **Known gaps vs intended docs:**
+  - `nova-lsp`’s stdio server uses `nova_vfs::Vfs<LocalFs>` as its primary file store + open-document overlay (see `AnalysisState` in `crates/nova-lsp/src/main.rs`); decompiled virtual documents are stored in `nova-vfs`'s bounded virtual document store.
+  - The richer path model (`VfsPath::{Archive,Decompiled}` / `ArchivePath`) exists, but adoption across the wider codebase is still partial; making `VfsPath`/ADR 0006 canonical URIs the end-to-end representation for *all* “virtual documents” (archives, decompiled sources, generated files) is still in progress.
+  - The watcher abstractions (`FileWatcher`, `WatchEvent`) are not yet widely integrated; most file-change information still comes from editor-sent LSP notifications.
 
 ### `nova-worker`
 - **Purpose:** `nova-worker` binary for distributed mode (connects to `nova-router` and builds shard indexes).
