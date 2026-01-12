@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 
-import { isNovaMethodNotFoundError } from './novaCapabilities';
+import { isNovaMethodNotFoundError, isNovaRequestSupported } from './novaCapabilities';
 import {
   NOVA_FRAMEWORK_BEAN_CONTEXT,
   NOVA_FRAMEWORK_ENDPOINT_CONTEXT,
@@ -8,6 +8,7 @@ import {
   type NovaRequest,
 } from './frameworkDashboard';
 import { formatWebEndpointDescription, formatWebEndpointLabel, webEndpointNavigationTarget, type WebEndpoint } from './frameworks/webEndpoints';
+import { formatError, isSafeModeError } from './safeMode';
 
 type FrameworkCategory = 'web-endpoints' | 'micronaut-endpoints' | 'micronaut-beans';
 type WebEndpointsResponse = {
@@ -187,7 +188,10 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
       case 'micronaut-endpoint': {
         const endpoint = element.endpoint;
         const handler = endpoint.handler;
-        const item = new vscode.TreeItem(`${endpoint.method} ${endpoint.path}`.trim() || '(unknown endpoint)', vscode.TreeItemCollapsibleState.None);
+        const item = new vscode.TreeItem(
+          `${endpoint.method} ${endpoint.path}`.trim() || '(unknown endpoint)',
+          vscode.TreeItemCollapsibleState.None,
+        );
         item.contextValue = NOVA_FRAMEWORK_ENDPOINT_CONTEXT;
 
         const classParts = handler.className.split('.').filter(Boolean);
@@ -288,8 +292,15 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
         return children;
       })
       .catch((err) => {
-        const message = formatError(err);
-        const children = [messageNode(`Failed to load ${categoryLabel(element.category)}`, message, new vscode.ThemeIcon('error'))];
+        const children = isSafeModeError(err)
+          ? [messageNode('Nova is in safe mode. Run Nova: Generate Bug Report.', undefined, new vscode.ThemeIcon('warning'))]
+          : [
+              messageNode(
+                `Failed to load ${categoryLabel(element.category)}`,
+                formatError(err),
+                new vscode.ThemeIcon('error'),
+              ),
+            ];
         this.categoryCache.set(key, children);
         return children;
       })
@@ -331,7 +342,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
 
     const endpoints = Array.isArray(response.endpoints) ? response.endpoints : [];
     if (endpoints.length === 0) {
-      return [messageNode('No endpoints found')];
+      return [messageNode('No endpoints found.')];
     }
 
     const normalized = endpoints
@@ -381,7 +392,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
 
     const endpoints = Array.isArray(response.endpoints) ? response.endpoints : [];
     if (endpoints.length === 0) {
-      return [messageNode('No endpoints found')];
+      return [messageNode('No endpoints found.')];
     }
 
     const normalized = endpoints
@@ -417,7 +428,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
 
     const beans = Array.isArray(response.beans) ? response.beans : [];
     if (beans.length === 0) {
-      return [messageNode('No beans found')];
+      return [messageNode('No beans found.')];
     }
 
     const normalized = beans
@@ -434,6 +445,10 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
   }
 
   private async callRequest<R>(method: string, params: unknown): Promise<R | undefined> {
+    if (isNovaRequestSupported(method) === false) {
+      return undefined;
+    }
+
     try {
       return await this.sendRequest<R>(method, params, { allowMethodFallback: true });
     } catch (err) {
@@ -503,8 +518,8 @@ function compareWebEndpoint(a: WebEndpoint, b: WebEndpoint): number {
     return pathCmp;
   }
 
-  const aMethod = a.methods?.[0] ?? '';
-  const bMethod = b.methods?.[0] ?? '';
+  const aMethod = a.methods.length ? a.methods.join(', ') : 'ANY';
+  const bMethod = b.methods.length ? b.methods.join(', ') : 'ANY';
   const methodCmp = aMethod.localeCompare(bMethod);
   if (methodCmp !== 0) {
     return methodCmp;
@@ -553,21 +568,4 @@ function compareMicronautBean(a: MicronautBean, b: MicronautBean): number {
   }
 
   return a.file.localeCompare(b.file);
-}
-
-function formatError(err: unknown): string {
-  if (err instanceof Error) {
-    return err.message;
-  }
-  if (typeof err === 'string') {
-    return err;
-  }
-  if (err && typeof err === 'object' && 'message' in err && typeof (err as { message: unknown }).message === 'string') {
-    return (err as { message: string }).message;
-  }
-  try {
-    return JSON.stringify(err);
-  } catch {
-    return String(err);
-  }
 }
