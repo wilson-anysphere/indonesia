@@ -9,10 +9,13 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+lsp-types = "0.97"
 nova-classfile = { path = "../crates/nova-classfile" }
 nova-config-metadata = { path = "../crates/nova-config-metadata" }
 nova-core = { path = "../crates/nova-core" }
+nova-db = { path = "../crates/nova-db" }
 nova-format = { path = "../crates/nova-format" }
+nova-ide = { path = "../crates/nova-ide" }
 nova-refactor = { path = "../crates/nova-refactor", optional = true }
 nova-properties = { path = "../crates/nova-properties" }
 nova-syntax = { path = "../crates/nova-syntax" }
@@ -88,6 +91,13 @@ bench = false
 [[bin]]
 name = "fuzz_junit_report"
 path = "fuzz_targets/fuzz_junit_report.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_completion"
+path = "fuzz_targets/fuzz_completion.rs"
 test = false
 doc = false
 bench = false

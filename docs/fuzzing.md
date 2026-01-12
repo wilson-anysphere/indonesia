@@ -115,6 +115,15 @@ cargo +nightly fuzz run fuzz_on_type_format -- -max_total_time=60 -max_len=26214
 This target exercises on-type formatting (`nova_format::edits_for_on_type_formatting`) with a few common
 trigger characters (e.g. `;`, `}`, `)`).
 
+### Java completions (code intelligence)
+
+```bash
+cargo +nightly fuzz run fuzz_completion -- -max_total_time=60 -max_len=262144
+```
+
+This target decodes arbitrary bytes to UTF-8 lossily and calls
+`nova_ide::code_intelligence::completions` at a cursor position derived from the input.
+
 ### Parse JVM classfiles
 
 ```bash
