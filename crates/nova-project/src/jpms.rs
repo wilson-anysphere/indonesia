@@ -280,52 +280,51 @@ fn empty_module_info(name: ModuleName) -> ModuleInfo {
 
 fn automatic_module_name_from_manifest(bytes: &[u8]) -> Option<ModuleName> {
     let text = String::from_utf8_lossy(bytes);
-    let mut current_key: Option<String> = None;
+    let name = manifest_main_attribute(&text, "Automatic-Module-Name")?;
+    let name = name.trim();
+    (!name.is_empty()).then(|| ModuleName::new(name.to_string()))
+}
+
+fn manifest_main_attribute(manifest: &str, key: &str) -> Option<String> {
+    let mut current_key: Option<&str> = None;
     let mut current_value = String::new();
 
-    let flush = |key: Option<String>, value: &str| -> Option<ModuleName> {
-        let Some(key) = key else {
-            return None;
-        };
-        if !key.eq_ignore_ascii_case("automatic-module-name") {
-            return None;
-        }
-        let value = value.trim();
-        if value.is_empty() {
-            return None;
-        }
-        Some(ModuleName::new(value.to_string()))
-    };
+    for line in manifest.lines() {
+        let line = line.trim_end_matches('\r');
 
-    for raw_line in text.lines() {
-        let line = raw_line.trim_end_matches('\r');
+        // The first empty line terminates the main attributes section.
         if line.is_empty() {
-            if let Some(found) = flush(current_key.take(), &current_value) {
-                return Some(found);
-            }
-            current_value.clear();
-            continue;
+            break;
         }
 
         if let Some(rest) = line.strip_prefix(' ') {
-            // Manifest continuation line.
-            current_value.push_str(rest);
+            if current_key.is_some() {
+                current_value.push_str(rest);
+            }
             continue;
         }
 
-        if let Some(found) = flush(current_key.take(), &current_value) {
-            return Some(found);
+        if let Some(k) = current_key.take() {
+            if k.trim().eq_ignore_ascii_case(key) {
+                return Some(current_value.trim().to_string());
+            }
         }
         current_value.clear();
 
-        let Some((key, value)) = line.split_once(':') else {
+        let Some((k, v)) = line.split_once(':') else {
             continue;
         };
-        current_key = Some(key.to_string());
-        current_value = value.trim_start().to_string();
+        current_key = Some(k);
+        current_value.push_str(v.trim_start());
     }
 
-    flush(current_key.take(), &current_value)
+    if let Some(k) = current_key {
+        if k.trim().eq_ignore_ascii_case(key) {
+            return Some(current_value.trim().to_string());
+        }
+    }
+
+    None
 }
 
 fn derive_automatic_module_name(path: &Path) -> ModuleName {
@@ -470,6 +469,21 @@ mod tests {
         let manifest = b"Manifest-Version: 1.0\r\nAutomatic-Module-Name: com.example.foo\r\n\r\n";
         let name = automatic_module_name_from_manifest(manifest).expect("name");
         assert_eq!(name.as_str(), "com.example.foo");
+    }
+
+    #[test]
+    fn reads_automatic_module_name_from_manifest_continuation_lines() {
+        let manifest = b"Manifest-Version: 1.0\r\nAutomatic-Module-Name: com.example.\r\n foo\r\n\r\n";
+        let name = automatic_module_name_from_manifest(manifest).expect("name");
+        assert_eq!(name.as_str(), "com.example.foo");
+    }
+
+    #[test]
+    fn reads_automatic_module_name_from_manifest_stops_at_end_of_main_section() {
+        // `Automatic-Module-Name` only applies in the main section; entries in later sections
+        // should be ignored.
+        let manifest = b"Manifest-Version: 1.0\r\n\r\nAutomatic-Module-Name: com.example.foo\r\n\r\n";
+        assert!(automatic_module_name_from_manifest(manifest).is_none());
     }
 
     #[test]
