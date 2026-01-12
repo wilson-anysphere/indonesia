@@ -3974,6 +3974,7 @@ dependencies = [
  "async-trait",
  "crossbeam-channel",
  "futures",
+ "globset",
  "httpmock",
  "lsp-server",
  "lsp-types",

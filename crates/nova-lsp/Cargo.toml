@@ -61,6 +61,7 @@ thiserror = "1.0"
 tokio-util = "0.7"
 url = "2"
 walkdir = "2"
+globset = "0.4"
 
 [features]
 default = ["ai"]
