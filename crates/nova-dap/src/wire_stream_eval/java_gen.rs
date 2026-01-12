@@ -1,0 +1,429 @@
+use std::collections::HashSet;
+
+/// Sanitize a local-variable name into a valid Java identifier suitable for use as a method
+/// parameter.
+///
+/// This intentionally uses a conservative ASCII-only identifier definition:
+/// - start: `_`, `$`, or `[A-Za-z]`
+/// - rest: `_`, `$`, or `[A-Za-z0-9]`
+///
+/// Any other character is replaced with `_`. If the resulting identifier does not start with a
+/// valid start character (e.g. the original name started with a digit), we prefix `_`.
+///
+/// Note: `this` is a Java keyword and commonly appears in JDWP local-variable tables. We rewrite
+/// it to `__this` so it can be passed as a parameter.
+pub fn sanitize_java_param_name(name: &str) -> String {
+    let name = name.trim();
+    if name == "this" {
+        return "__this".to_string();
+    }
+
+    let mut out: String = name
+        .chars()
+        .map(|ch| {
+            if is_java_identifier_part_ascii(ch) {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+
+    if out.is_empty() {
+        out.push('_');
+        return out;
+    }
+
+    if !out
+        .chars()
+        .next()
+        .is_some_and(is_java_identifier_start_ascii)
+    {
+        out.insert(0, '_');
+    }
+
+    if is_java_keyword(&out) {
+        out.push('_');
+    }
+
+    out
+}
+
+/// Rewrites `this` *tokens* in `source` to `replacement`, avoiding rewrites inside:
+/// - string literals (`"..."`)
+/// - character literals (`'a'`)
+///
+/// This is a lightweight token-aware rewrite suitable for Java expressions and statement snippets.
+/// It does not attempt full Java lexing (comments, text blocks, etc.), but is careful to handle
+/// backslash escapes so quoted delimiters inside literals do not terminate the literal.
+pub fn rewrite_this_tokens(source: &str, replacement: &str) -> String {
+    // Fast-path: avoid allocation if there is no candidate.
+    if !source.contains("this") {
+        return source.to_string();
+    }
+
+    let mut out = String::with_capacity(source.len());
+    let mut chars = source.char_indices().peekable();
+
+    let mut in_str = false;
+    let mut in_char = false;
+    let mut escape = false;
+    let mut prev = None::<char>;
+
+    while let Some((idx, ch)) = chars.next() {
+        if escape {
+            out.push(ch);
+            escape = false;
+            prev = Some(ch);
+            continue;
+        }
+
+        if in_str {
+            out.push(ch);
+            match ch {
+                '\\' => escape = true,
+                '"' => in_str = false,
+                _ => {}
+            }
+            prev = Some(ch);
+            continue;
+        }
+
+        if in_char {
+            out.push(ch);
+            match ch {
+                '\\' => escape = true,
+                '\'' => in_char = false,
+                _ => {}
+            }
+            prev = Some(ch);
+            continue;
+        }
+
+        match ch {
+            '"' => {
+                out.push(ch);
+                in_str = true;
+                prev = Some(ch);
+                continue;
+            }
+            '\'' => {
+                out.push(ch);
+                in_char = true;
+                prev = Some(ch);
+                continue;
+            }
+            't' => {
+                if source[idx..].starts_with("this") {
+                    let prev_ok = prev.map_or(true, |p| !is_java_identifier_part_ascii(p));
+                    let next = source.get(idx + 4..).and_then(|s| s.chars().next());
+                    let next_ok = next.map_or(true, |n| !is_java_identifier_part_ascii(n));
+                    if prev_ok && next_ok {
+                        out.push_str(replacement);
+
+                        // Consume `h`, `i`, `s`.
+                        let mut last = 't';
+                        for _ in 0..3 {
+                            let Some((_idx, next_ch)) = chars.next() else {
+                                break;
+                            };
+                            last = next_ch;
+                        }
+                        prev = Some(last);
+                        continue;
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        out.push(ch);
+        prev = Some(ch);
+    }
+
+    out
+}
+
+/// Generate Java source for a stream-evaluation helper class.
+///
+/// The generated class is intended to be compiled and injected into the target JVM. This function
+/// is pure and does not invoke `javac` or a JVM.
+pub fn generate_stream_eval_helper_java_source(
+    package_name: &str,
+    imports: &[String],
+    locals: &[(String, String)],
+    stages: &[String],
+) -> String {
+    const CLASS_NAME: &str = "__NovaStreamEvalHelper";
+    const THIS_IDENT: &str = "__this";
+
+    let mut out = String::new();
+
+    let package_name = package_name.trim();
+    if !package_name.is_empty() {
+        out.push_str("package ");
+        out.push_str(package_name);
+        out.push_str(";\n\n");
+    }
+
+    // Emit imports, preserving first-seen order while deduping.
+    let mut seen_imports: HashSet<String> = HashSet::new();
+    for import in imports {
+        let import = import.trim();
+        if import.is_empty() {
+            continue;
+        }
+        let import = import.strip_prefix("import ").unwrap_or(import).trim();
+        let import = import.strip_suffix(';').unwrap_or(import).trim();
+        if import.is_empty() {
+            continue;
+        }
+        if seen_imports.insert(import.to_string()) {
+            out.push_str("import ");
+            out.push_str(import);
+            out.push_str(";\n");
+        }
+    }
+    if !seen_imports.is_empty() {
+        out.push('\n');
+    }
+
+    out.push_str("public final class ");
+    out.push_str(CLASS_NAME);
+    out.push_str(" {\n");
+    out.push_str("  private ");
+    out.push_str(CLASS_NAME);
+    out.push_str("() {}\n\n");
+
+    // Determine the most specific type we can for `this` based on locals.
+    let this_ty = locals
+        .iter()
+        .find_map(|(name, ty)| (name.trim() == "this").then(|| ty.trim()))
+        .filter(|ty| !ty.is_empty())
+        .unwrap_or("Object");
+
+    // Compute a deterministic, collision-free parameter list.
+    let mut used_params: HashSet<String> = HashSet::new();
+    used_params.insert(THIS_IDENT.to_string());
+    let mut params: Vec<(String, String)> = Vec::new();
+    params.push((this_ty.to_string(), THIS_IDENT.to_string()));
+
+    for (name, ty) in locals {
+        let name = name.trim();
+        if name == "this" {
+            continue;
+        }
+        let ty = ty.trim();
+        if ty.is_empty() {
+            continue;
+        }
+
+        let base = sanitize_java_param_name(name);
+        let param = if used_params.insert(base.clone()) {
+            base
+        } else {
+            // Resolve collisions deterministically.
+            let mut idx = 2usize;
+            loop {
+                let candidate = format!("{base}_{idx}");
+                if used_params.insert(candidate.clone()) {
+                    break candidate;
+                }
+                idx += 1;
+            }
+        };
+
+        params.push((ty.to_string(), param));
+    }
+
+    for (idx, stage) in stages.iter().enumerate() {
+        let stage_name = format!("stage{idx}");
+        out.push_str("  public static Object ");
+        out.push_str(&stage_name);
+        out.push('(');
+
+        for (param_idx, (ty, name)) in params.iter().enumerate() {
+            if param_idx > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(ty);
+            out.push(' ');
+            out.push_str(name);
+        }
+        out.push_str(") {\n");
+
+        let stage = stage.trim();
+        let stage = stage.strip_suffix(';').unwrap_or(stage).trim();
+        let stage = rewrite_this_tokens(stage, THIS_IDENT);
+        out.push_str("    return ");
+        out.push_str(&stage);
+        out.push_str(";\n  }\n");
+
+        if idx + 1 < stages.len() {
+            out.push('\n');
+        }
+    }
+
+    out.push_str("}\n");
+    out
+}
+
+fn is_java_identifier_start_ascii(ch: char) -> bool {
+    ch == '_' || ch == '$' || ch.is_ascii_alphabetic()
+}
+
+fn is_java_identifier_part_ascii(ch: char) -> bool {
+    ch == '_' || ch == '$' || ch.is_ascii_alphanumeric()
+}
+
+fn is_java_keyword(s: &str) -> bool {
+    matches!(
+        s,
+        // Java keywords
+        "abstract"
+            | "assert"
+            | "boolean"
+            | "break"
+            | "byte"
+            | "case"
+            | "catch"
+            | "char"
+            | "class"
+            | "const"
+            | "continue"
+            | "default"
+            | "do"
+            | "double"
+            | "else"
+            | "enum"
+            | "extends"
+            | "final"
+            | "finally"
+            | "float"
+            | "for"
+            | "goto"
+            | "if"
+            | "implements"
+            | "import"
+            | "instanceof"
+            | "int"
+            | "interface"
+            | "long"
+            | "native"
+            | "new"
+            | "package"
+            | "private"
+            | "protected"
+            | "public"
+            | "return"
+            | "short"
+            | "static"
+            | "strictfp"
+            | "super"
+            | "switch"
+            | "synchronized"
+            | "this"
+            | "throw"
+            | "throws"
+            | "transient"
+            | "try"
+            | "void"
+            | "volatile"
+            | "while"
+            // Module system / contextual keywords (keep simple; better safe than sorry).
+            | "module"
+            | "open"
+            | "requires"
+            | "exports"
+            | "opens"
+            | "to"
+            | "uses"
+            | "provides"
+            | "with"
+            | "transitive"
+            // literals / reserved identifiers
+            | "true"
+            | "false"
+            | "null"
+            // newer keywords
+            | "var"
+            | "yield"
+            | "record"
+            | "sealed"
+            | "permits"
+            | "non-sealed"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn is_valid_java_ident_ascii(s: &str) -> bool {
+        let mut chars = s.chars();
+        let Some(first) = chars.next() else {
+            return false;
+        };
+        if !is_java_identifier_start_ascii(first) {
+            return false;
+        }
+        chars.all(is_java_identifier_part_ascii)
+    }
+
+    #[test]
+    fn rewrite_this_respects_string_char_and_escaped_quotes() {
+        let expr = r#"this.foo() + "this" + 't' + "\"this\"""#;
+        let rewritten = rewrite_this_tokens(expr, "__this");
+        assert_eq!(rewritten, r#"__this.foo() + "this" + 't' + "\"this\"""#);
+    }
+
+    #[test]
+    fn sanitize_java_param_name_handles_tricky_and_invalid_identifiers() {
+        let tricky = ["$x", "_x", "x1"];
+        for name in tricky {
+            let sanitized = sanitize_java_param_name(name);
+            assert_eq!(sanitized, name);
+            assert!(is_valid_java_ident_ascii(&sanitized));
+        }
+
+        let invalid = [("1x", "_1x"), ("foo-bar", "foo_bar")];
+        for (name, expected) in invalid {
+            let sanitized = sanitize_java_param_name(name);
+            assert_eq!(sanitized, expected);
+            assert!(is_valid_java_ident_ascii(&sanitized));
+            // Stability: applying twice is idempotent.
+            assert_eq!(sanitize_java_param_name(name), sanitized);
+        }
+    }
+
+    #[test]
+    fn java_source_generation_includes_package_imports_and_stage_methods() {
+        let src = generate_stream_eval_helper_java_source(
+            "com.example",
+            &[
+                "java.util.List".to_string(),
+                "java.util.stream.Collectors".to_string(),
+            ],
+            &[
+                ("this".to_string(), "com.example.Foo".to_string()),
+                ("foo-bar".to_string(), "int".to_string()),
+            ],
+            &["this.foo()".to_string(), "this.bar()".to_string()],
+        );
+
+        assert!(src.contains("package com.example;"));
+        assert!(src.contains("import java.util.List;"));
+        assert!(src.contains("import java.util.stream.Collectors;"));
+        assert!(src.contains("public final class __NovaStreamEvalHelper"));
+
+        // Ensure locals are exposed via valid parameter names.
+        assert!(src.contains("com.example.Foo __this"));
+        assert!(src.contains("int foo_bar"));
+
+        // Ensure stages are generated and `this` is rewritten.
+        assert!(src.contains("public static Object stage0"));
+        assert!(src.contains("public static Object stage1"));
+        assert!(src.contains("return __this.foo();"));
+        assert!(src.contains("return __this.bar();"));
+    }
+}

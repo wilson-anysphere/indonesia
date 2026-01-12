@@ -45,3 +45,9 @@ pub mod wire_server;
 
 /// Crash hardening helpers (panic hook installation, safe-mode toggles).
 pub mod hardening;
+
+/// Experimental stream evaluation support for wire-level debugging.
+///
+/// This module is intentionally self-contained and provides pure helpers for generating
+/// Java source used by stream debugging/evaluation workflows.
+pub mod wire_stream_eval;
