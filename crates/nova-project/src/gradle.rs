@@ -1624,7 +1624,11 @@ fn extract_java_config_from_build_script(contents: &str) -> Option<JavaConfig> {
     // Precedence rules (deterministic):
     // 1) Prefer explicit `sourceCompatibility` / `targetCompatibility` assignments when present.
     // 2) Otherwise, fall back to Gradle toolchains (`JavaLanguageVersion.of(N)`).
-    // 3) Otherwise, return `None` (caller uses defaults).
+    // 3) Otherwise, return `None` (caller uses defaults), unless we can still infer flags like
+    //    `--enable-preview`.
+    let contents = strip_gradle_comments(contents);
+    let enable_preview = contents.contains("--enable-preview");
+
     let mut source = None;
     let mut target = None;
 
@@ -1644,18 +1648,30 @@ fn extract_java_config_from_build_script(contents: &str) -> Option<JavaConfig> {
         (Some(source), Some(target)) => Some(JavaConfig {
             source,
             target,
-            enable_preview: false,
+            enable_preview,
         }),
         (Some(v), None) | (None, Some(v)) => Some(JavaConfig {
             source: v,
             target: v,
-            enable_preview: false,
+            enable_preview,
         }),
-        (None, None) => parse_java_toolchain_language_version(contents).map(|v| JavaConfig {
-            source: v,
-            target: v,
-            enable_preview: false,
-        }),
+        (None, None) => {
+            if let Some(v) = parse_java_toolchain_language_version(&contents) {
+                Some(JavaConfig {
+                    source: v,
+                    target: v,
+                    enable_preview,
+                })
+            } else if enable_preview {
+                Some(JavaConfig {
+                    source: JavaVersion::JAVA_17,
+                    target: JavaVersion::JAVA_17,
+                    enable_preview,
+                })
+            } else {
+                None
+            }
+        }
     }
 }
 

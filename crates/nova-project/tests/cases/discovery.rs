@@ -651,6 +651,26 @@ fn gradle_java_version_is_max_across_modules_without_snapshot() {
 }
 
 #[test]
+fn gradle_enable_preview_is_or_across_modules_without_snapshot() {
+    let root = testdata_path("gradle-preview-multi");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load gradle project");
+    assert_eq!(config.build_system, BuildSystem::Gradle);
+
+    // Root build script targets Java 11; `:app` targets Java 17 and enables preview features.
+    // Without a Gradle snapshot, Nova should best-effort aggregate Java config across modules by:
+    // - taking the max source/target version
+    // - OR-ing enable_preview
+    assert_eq!(config.java.source, JavaVersion(17));
+    assert_eq!(config.java.target, JavaVersion(17));
+    assert!(config.java.enable_preview);
+}
+
+#[test]
 fn gradle_source_compatibility_overrides_toolchain_language_version() {
     let root = testdata_path("gradle-toolchain-with-compat");
     let gradle_home = tempdir().expect("tempdir");

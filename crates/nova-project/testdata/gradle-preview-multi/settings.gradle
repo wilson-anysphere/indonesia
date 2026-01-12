@@ -1,0 +1,3 @@
+rootProject.name = 'gradle-preview-multi'
+include 'app'
+
