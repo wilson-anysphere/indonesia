@@ -2,15 +2,13 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 use std::path::PathBuf;
 
-#[cfg(feature = "wasm-extensions")]
+#[cfg(feature = "extensions")]
 use anyhow::Context;
-#[cfg(feature = "wasm-extensions")]
+#[cfg(feature = "extensions")]
 use nova_config::NovaConfig;
-#[cfg(feature = "wasm-extensions")]
+#[cfg(feature = "extensions")]
 use serde::Serialize;
-#[cfg(feature = "wasm-extensions")]
-use std::collections::BTreeSet;
-#[cfg(feature = "wasm-extensions")]
+#[cfg(feature = "extensions")]
 use std::path::Path;
 
 #[derive(Args)]
@@ -51,16 +49,16 @@ pub(crate) fn run(args: ExtensionsArgs) -> Result<i32> {
     }
 }
 
-#[cfg(feature = "wasm-extensions")]
+#[cfg(feature = "extensions")]
 struct Discovery {
     workspace_root: PathBuf,
     config_path: Option<PathBuf>,
     search_paths: Vec<PathBuf>,
     loaded: Vec<nova_ext::LoadedExtension>,
-    errors: Vec<String>,
+    errors: Vec<nova_ext::LoadError>,
 }
 
-#[cfg(feature = "wasm-extensions")]
+#[cfg(feature = "extensions")]
 fn load_workspace_config(root: &Path) -> Result<(PathBuf, NovaConfig, Option<PathBuf>)> {
     let ws = nova_workspace::Workspace::open(root)
         .with_context(|| format!("failed to open workspace at {}", root.display()))?;
@@ -70,7 +68,7 @@ fn load_workspace_config(root: &Path) -> Result<(PathBuf, NovaConfig, Option<Pat
     Ok((workspace_root, config, config_path))
 }
 
-#[cfg(feature = "wasm-extensions")]
+#[cfg(feature = "extensions")]
 fn resolve_wasm_paths(workspace_root: &Path, config: &NovaConfig) -> Vec<PathBuf> {
     config
         .extensions
@@ -86,7 +84,7 @@ fn resolve_wasm_paths(workspace_root: &Path, config: &NovaConfig) -> Vec<PathBuf
         .collect()
 }
 
-#[cfg(feature = "wasm-extensions")]
+#[cfg(feature = "extensions")]
 fn discover(root: &Path) -> Result<Discovery> {
     let (workspace_root, config, config_path) = load_workspace_config(root)?;
 
@@ -106,26 +104,14 @@ fn discover(root: &Path) -> Result<Discovery> {
         });
     }
 
-    let (mut loaded, errors) = nova_ext::ExtensionManager::load_all(&search_paths);
-    let errors = errors.into_iter().map(|err| err.to_string()).collect();
-
-    let deny: BTreeSet<String> = config.extensions.deny.into_iter().collect();
-    let allow: Option<BTreeSet<String>> = config
-        .extensions
-        .allow
-        .map(|allow| allow.into_iter().collect());
-
-    loaded.retain(|ext| {
-        let id = ext.id();
-        if deny.contains(id) {
-            return false;
-        }
-        if let Some(allow) = allow.as_ref() {
-            return allow.contains(id);
-        }
-        true
-    });
-    loaded.sort_by(|a, b| a.id().cmp(b.id()));
+    let (loaded, errors) = nova_ext::ExtensionManager::load_all(&search_paths);
+    let (loaded, filter_errors) = nova_ext::ExtensionManager::filter_by_id(
+        loaded,
+        config.extensions.allow.as_deref(),
+        &config.extensions.deny,
+    );
+    let mut errors = errors;
+    errors.extend(filter_errors);
 
     Ok(Discovery {
         workspace_root,
@@ -136,7 +122,7 @@ fn discover(root: &Path) -> Result<Discovery> {
     })
 }
 
-#[cfg(feature = "wasm-extensions")]
+#[cfg(feature = "extensions")]
 #[derive(Debug, Serialize)]
 struct ExtensionsListOutput {
     workspace_root: String,
@@ -146,7 +132,7 @@ struct ExtensionsListOutput {
     errors: Vec<String>,
 }
 
-#[cfg(feature = "wasm-extensions")]
+#[cfg(feature = "extensions")]
 #[derive(Debug, Serialize)]
 struct ExtensionRow {
     id: String,
@@ -155,7 +141,7 @@ struct ExtensionRow {
     dir: String,
 }
 
-#[cfg(feature = "wasm-extensions")]
+#[cfg(feature = "extensions")]
 fn list_impl(args: ExtensionsListArgs) -> Result<i32> {
     let discovery = discover(&args.root)?;
 
@@ -188,7 +174,7 @@ fn list_impl(args: ExtensionsListArgs) -> Result<i32> {
                 .map(|path| path.display().to_string())
                 .collect(),
             extensions: rows,
-            errors: discovery.errors,
+            errors: discovery.errors.iter().map(|err| err.to_string()).collect(),
         };
         println!("{}", serde_json::to_string_pretty(&output)?);
         return Ok(0);
@@ -213,7 +199,7 @@ fn list_impl(args: ExtensionsListArgs) -> Result<i32> {
     if !discovery.errors.is_empty() {
         eprintln!();
         eprintln!("errors:");
-        for err in discovery.errors {
+        for err in &discovery.errors {
             eprintln!("  - {err}");
         }
     }
@@ -221,9 +207,9 @@ fn list_impl(args: ExtensionsListArgs) -> Result<i32> {
     Ok(0)
 }
 
-#[cfg(not(feature = "wasm-extensions"))]
+#[cfg(not(feature = "extensions"))]
 fn list_impl(_args: ExtensionsListArgs) -> Result<i32> {
-    eprintln!("nova built without wasm extension support");
+    eprintln!("nova built without extension bundle support");
     Ok(2)
 }
 
@@ -239,6 +225,14 @@ fn validate_impl(args: ExtensionsValidateArgs) -> Result<i32> {
     let mut ok = true;
 
     for err in &discovery.errors {
+        if matches!(
+            err,
+            nova_ext::LoadError::DeniedByConfig { .. }
+                | nova_ext::LoadError::NotAllowedByConfig { .. }
+        ) {
+            eprintln!("skipped: {err}");
+            continue;
+        }
         eprintln!("error: {err}");
         ok = false;
     }
@@ -302,7 +296,7 @@ fn validate_impl(_args: ExtensionsValidateArgs) -> Result<i32> {
     Ok(2)
 }
 
-#[cfg(feature = "wasm-extensions")]
+#[cfg(feature = "extensions")]
 fn print_table<const N: usize>(rows: &[[String; N]], headers: [&str; N]) {
     let mut widths = [0_usize; N];
     for (idx, header) in headers.iter().enumerate() {

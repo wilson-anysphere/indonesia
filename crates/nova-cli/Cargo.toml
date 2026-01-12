@@ -9,8 +9,10 @@ name = "nova"
 path = "src/main.rs"
 
 [features]
+default = ["extensions"]
+extensions = ["dep:nova-ext", "nova-ext/extension-bundles"]
+wasm-extensions = ["extensions", "nova-ext/wasm-extensions"]
 tls = ["nova-router/tls"]
-wasm-extensions = ["dep:nova-ext", "nova-ext/wasm-extensions"]
 
 [dependencies]
 anyhow = "1"

@@ -1,6 +1,7 @@
 use crate::manifest::{
     ExtensionCapability, ExtensionManifest, MANIFEST_FILE_NAME, SUPPORTED_ABI_VERSION,
 };
+#[cfg(feature = "wasm-extensions")]
 use crate::{ExtensionRegistry, RegisterError};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -292,6 +293,7 @@ impl ExtensionManager {
         out
     }
 
+    #[cfg(feature = "wasm-extensions")]
     pub fn register_all<DB>(
         registry: &mut ExtensionRegistry<DB>,
         loaded: &[LoadedExtension],
@@ -393,6 +395,7 @@ impl ExtensionManager {
         Ok(())
     }
 
+    #[cfg(feature = "wasm-extensions")]
     pub fn register_all_best_effort<DB>(
         registry: &mut ExtensionRegistry<DB>,
         loaded: &[LoadedExtension],
@@ -917,6 +920,7 @@ capabilities = ["diagnostics"]
         );
     }
 
+    #[cfg(feature = "wasm-extensions")]
     mod wasm_tests {
         use super::*;
         use crate::traits::{CompletionParams, DiagnosticParams};

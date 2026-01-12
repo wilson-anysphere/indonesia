@@ -114,3 +114,56 @@ install-updater = false
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+# Keep debug/test builds under the default `scripts/cargo_agent.sh` RLIMIT_AS budget
+# when enabling WASM extension validation (Wasmtime + Cranelift are extremely heavy
+# with full debug info enabled).
+[profile.dev.package.wasmtime]
+debug = 0
+[profile.dev.package.wasmtime-cranelift]
+debug = 0
+[profile.dev.package.wasmtime-cranelift-shared]
+debug = 0
+[profile.dev.package.wasmtime-environ]
+debug = 0
+[profile.dev.package.wasmtime-runtime]
+debug = 0
+[profile.dev.package.cranelift-codegen]
+debug = 0
+[profile.dev.package.cranelift-frontend]
+debug = 0
+[profile.dev.package.cranelift-wasm]
+debug = 0
+[profile.dev.package.cranelift-native]
+debug = 0
+[profile.dev.package.cranelift-entity]
+debug = 0
+[profile.dev.package.cranelift-control]
+debug = 0
+[profile.dev.package.cranelift-bforest]
+debug = 0
+
+[profile.test.package.wasmtime]
+debug = 0
+[profile.test.package.wasmtime-cranelift]
+debug = 0
+[profile.test.package.wasmtime-cranelift-shared]
+debug = 0
+[profile.test.package.wasmtime-environ]
+debug = 0
+[profile.test.package.wasmtime-runtime]
+debug = 0
+[profile.test.package.cranelift-codegen]
+debug = 0
+[profile.test.package.cranelift-frontend]
+debug = 0
+[profile.test.package.cranelift-wasm]
+debug = 0
+[profile.test.package.cranelift-native]
+debug = 0
+[profile.test.package.cranelift-entity]
+debug = 0
+[profile.test.package.cranelift-control]
+debug = 0
+[profile.test.package.cranelift-bforest]
+debug = 0

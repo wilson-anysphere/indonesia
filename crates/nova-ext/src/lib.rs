@@ -4,9 +4,9 @@ mod registry;
 mod traits;
 mod types;
 
-#[cfg(feature = "wasm-extensions")]
+#[cfg(feature = "extension-bundles")]
 mod loader;
-#[cfg(feature = "wasm-extensions")]
+#[cfg(feature = "extension-bundles")]
 mod manifest;
 
 #[cfg(feature = "wasm-extensions")]
@@ -27,9 +27,9 @@ pub use types::{CodeAction, InlayHint, NavigationTarget, Symbol};
 pub use nova_core::{FileId, ProjectId};
 pub use nova_types::{ClassId, CompletionItem, Diagnostic, Severity, Span};
 
-#[cfg(feature = "wasm-extensions")]
+#[cfg(feature = "extension-bundles")]
 pub use loader::{ExtensionManager, ExtensionMetadata, LoadError, LoadedExtension};
-#[cfg(feature = "wasm-extensions")]
+#[cfg(feature = "extension-bundles")]
 pub use manifest::{
     ExtensionCapability, ExtensionManifest, MANIFEST_FILE_NAME, SUPPORTED_ABI_VERSION,
 };

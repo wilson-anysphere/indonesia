@@ -23,6 +23,59 @@ fn validate_reports_missing_wasm_support() {
         ));
 }
 
+#[cfg(not(feature = "wasm-extensions"))]
+#[test]
+fn list_works_without_wasm_support() {
+    use assert_fs::prelude::*;
+
+    let temp = TempDir::new().unwrap();
+    temp.child("nova.toml")
+        .write_str(
+            r#"
+[extensions]
+wasm_paths = ["extensions"]
+"#,
+        )
+        .unwrap();
+
+    temp.child("extensions/example.good")
+        .create_dir_all()
+        .unwrap();
+    temp.child("extensions/example.good/nova-ext.toml")
+        .write_str(
+            r#"
+id = "example.good"
+version = "0.1.0"
+entry = "plugin.wasm"
+abi_version = 1
+capabilities = ["diagnostics"]
+"#,
+        )
+        .unwrap();
+    temp.child("extensions/example.good/plugin.wasm")
+        .write_binary(&[0_u8; 1])
+        .unwrap();
+
+    let output = nova()
+        .arg("extensions")
+        .arg("list")
+        .arg("--root")
+        .arg(temp.path())
+        .arg("--json")
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["extensions"][0]["id"].as_str().unwrap(), "example.good");
+    assert!(json["errors"].as_array().unwrap().is_empty(), "{json:#}");
+}
+
 #[cfg(feature = "wasm-extensions")]
 mod wasm {
     use super::*;

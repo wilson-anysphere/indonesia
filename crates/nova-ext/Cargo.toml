@@ -4,15 +4,18 @@ version.workspace = true
 edition = "2021"
 
 [features]
-wasm-extensions = [
+extension-bundles = [
     "dep:nova-ext-abi",
     "dep:serde",
-    "dep:serde_json",
-    "dep:wasmtime",
-    "dep:wat",
     "dep:semver",
     "dep:toml",
     "dep:thiserror",
+]
+wasm-extensions = [
+    "extension-bundles",
+    "dep:serde_json",
+    "dep:wasmtime",
+    "dep:wat",
 ]
 
 [dependencies]
