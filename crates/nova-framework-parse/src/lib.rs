@@ -542,6 +542,16 @@ mod tests {
     }
 
     #[test]
+    fn parse_java_returns_error_if_parser_is_reentered_on_same_thread() {
+        JAVA_PARSER.with(|cell| {
+            // Hold a mutable borrow of the thread-local parser to simulate a re-entrant call.
+            let _borrow = cell.borrow_mut();
+            let err = parse_java("class A {}").expect_err("expected re-entrancy error");
+            assert_eq!(err, "tree-sitter parser is already in use");
+        });
+    }
+
+    #[test]
     fn parses_positional_and_named_args() {
         let ann = parse_annotation_text("@X(\"foo\", name = \"bar\")", Span::new(0, 0))
             .expect("annotation");
