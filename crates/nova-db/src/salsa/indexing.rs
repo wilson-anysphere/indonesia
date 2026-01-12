@@ -15,7 +15,7 @@ use crate::persistence::HasPersistence;
 use super::cancellation as cancel;
 use super::hir::NovaHir;
 use super::stats::HasQueryStats;
-use super::{HasSalsaMemoStats, TrackedSalsaMemo};
+use super::{HasSalsaMemoStats, TrackedSalsaMemo, TrackedSalsaProjectMemo};
 
 #[ra_salsa::query_group(NovaIndexingStorage)]
 pub trait NovaIndexing: NovaHir + HasQueryStats + HasPersistence + HasSalsaMemoStats {
@@ -356,7 +356,13 @@ fn project_index_shards(db: &dyn NovaIndexing, project: ProjectId) -> Arc<Vec<Pr
         shard.set_generation(0);
     }
 
+    let approx_bytes = shards
+        .iter()
+        .map(ProjectIndexes::estimated_bytes)
+        .fold(0u64, u64::saturating_add);
+
     let result = Arc::new(shards);
+    db.record_salsa_project_memo_bytes(project, TrackedSalsaProjectMemo::ProjectIndexShards, approx_bytes);
     db.record_query_stat("project_index_shards", start.elapsed());
     result
 }
@@ -378,7 +384,9 @@ fn project_indexes(db: &dyn NovaIndexing, project: ProjectId) -> Arc<ProjectInde
     // generation marker.
     indexes.set_generation(0);
 
+    let approx_bytes = indexes.estimated_bytes();
     let result = Arc::new(indexes);
+    db.record_salsa_project_memo_bytes(project, TrackedSalsaProjectMemo::ProjectIndexes, approx_bytes);
     db.record_query_stat("project_indexes", start.elapsed());
     result
 }

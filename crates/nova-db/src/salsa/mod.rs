@@ -275,12 +275,32 @@ pub enum TrackedSalsaMemo {
     FileIndexDelta,
 }
 
+/// Project-keyed memoized query results tracked for memory accounting.
+///
+/// These can be large, especially on warm-start where the persisted shards are
+/// loaded from disk and only a small number of files are reindexed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TrackedSalsaProjectMemo {
+    /// Sharded project indexes produced by [`NovaIndexing::project_index_shards`].
+    ProjectIndexShards,
+    /// Merged project indexes produced by [`NovaIndexing::project_indexes`].
+    ProjectIndexes,
+}
+
 /// Database functionality needed by query implementations to record memo sizes.
 ///
 /// Implementations should treat the values as best-effort hints and must not
 /// panic if accounting fails.
 pub trait HasSalsaMemoStats {
     fn record_salsa_memo_bytes(&self, file: FileId, memo: TrackedSalsaMemo, bytes: u64);
+
+    fn record_salsa_project_memo_bytes(
+        &self,
+        _project: ProjectId,
+        _memo: TrackedSalsaProjectMemo,
+        _bytes: u64,
+    ) {
+    }
 }
 
 /// Database functionality needed by `parse_java` to access the previous parse result for
@@ -305,6 +325,7 @@ struct SalsaInputFootprint {
 #[derive(Debug, Default)]
 struct SalsaMemoFootprintInner {
     by_file: HashMap<FileId, FileMemoBytes>,
+    by_project: HashMap<ProjectId, ProjectMemoBytes>,
     total_bytes: u64,
 }
 
@@ -357,6 +378,18 @@ struct FileMemoBytes {
     file_index_delta: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct ProjectMemoBytes {
+    project_index_shards: u64,
+    project_indexes: u64,
+}
+
+impl ProjectMemoBytes {
+    fn total(self) -> u64 {
+        self.project_index_shards + self.project_indexes
+    }
+}
+
 impl FileMemoBytes {
     fn total(self) -> u64 {
         self.parse.unwrap_or(0)
@@ -398,6 +431,7 @@ impl SalsaMemoFootprint {
     fn clear(&self) {
         let mut inner = self.lock_inner();
         inner.by_file.clear();
+        inner.by_project.clear();
         inner.total_bytes = 0;
         drop(inner);
         self.refresh_tracker();
@@ -417,6 +451,25 @@ impl SalsaMemoFootprint {
             TrackedSalsaMemo::HirItemTree => entry.hir_item_tree = bytes,
             TrackedSalsaMemo::ScopeGraph => entry.scope_graph = bytes,
             TrackedSalsaMemo::FileIndexDelta => entry.file_index_delta = bytes,
+        }
+
+        let next_total = entry.total();
+        inner.total_bytes = inner
+            .total_bytes
+            .saturating_sub(prev_total)
+            .saturating_add(next_total);
+        drop(inner);
+        self.refresh_tracker();
+    }
+
+    fn record_project(&self, project: ProjectId, memo: TrackedSalsaProjectMemo, bytes: u64) {
+        let mut inner = self.lock_inner();
+        let entry = inner.by_project.entry(project).or_default();
+        let prev_total = entry.total();
+
+        match memo {
+            TrackedSalsaProjectMemo::ProjectIndexShards => entry.project_index_shards = bytes,
+            TrackedSalsaProjectMemo::ProjectIndexes => entry.project_indexes = bytes,
         }
 
         let next_total = entry.total();
@@ -1296,6 +1349,15 @@ impl HasQueryStats for RootDatabase {
 impl HasSalsaMemoStats for RootDatabase {
     fn record_salsa_memo_bytes(&self, file: FileId, memo: TrackedSalsaMemo, bytes: u64) {
         self.memo_footprint.record(file, memo, bytes);
+    }
+
+    fn record_salsa_project_memo_bytes(
+        &self,
+        project: ProjectId,
+        memo: TrackedSalsaProjectMemo,
+        bytes: u64,
+    ) {
+        self.memo_footprint.record_project(project, memo, bytes);
     }
 }
 
@@ -4606,15 +4668,29 @@ class Foo {
             "expected file_index_delta memos to increase tracked bytes"
         );
 
+        // New tracking: project-wide index shards + merged indexes.
+        let project = ProjectId::from_raw(0);
+        db.with_snapshot(|snap| {
+            let _ = snap.project_indexes(project);
+        });
+
+        let after_project_bytes = db.salsa_memo_bytes();
+        assert!(
+            after_project_bytes > after_index_bytes,
+            "expected project_indexes memos to increase tracked bytes"
+        );
+
         assert_eq!(
             manager.report().usage.query_cache,
-            after_index_bytes,
+            after_project_bytes,
             "memory manager should see tracked salsa memo usage (including HIR + indexing)"
         );
 
         let hir_exec_before = executions(&db.inner.lock(), "hir_item_tree");
         let scope_exec_before = executions(&db.inner.lock(), "scope_graph");
         let delta_exec_before = executions(&db.inner.lock(), "file_index_delta");
+        let shard_exec_before = executions(&db.inner.lock(), "project_index_shards");
+        let project_exec_before = executions(&db.inner.lock(), "project_indexes");
 
         // Validate memoization before eviction.
         db.with_snapshot(|snap| {
@@ -4623,6 +4699,7 @@ class Foo {
                 let _ = snap.scope_graph(*file);
                 let _ = snap.file_index_delta(*file);
             }
+            let _ = snap.project_indexes(project);
         });
         assert_eq!(
             executions(&db.inner.lock(), "hir_item_tree"),
@@ -4639,6 +4716,16 @@ class Foo {
             scope_exec_before,
             "expected cached scope_graph results prior to eviction"
         );
+        assert_eq!(
+            executions(&db.inner.lock(), "project_index_shards"),
+            shard_exec_before,
+            "expected cached project_index_shards results prior to eviction"
+        );
+        assert_eq!(
+            executions(&db.inner.lock(), "project_indexes"),
+            project_exec_before,
+            "expected cached project_indexes results prior to eviction"
+        );
 
         manager.enforce();
 
@@ -4652,10 +4739,13 @@ class Foo {
         let hir_exec_after_evict = executions(&db.inner.lock(), "hir_item_tree");
         let scope_exec_after_evict = executions(&db.inner.lock(), "scope_graph");
         let delta_exec_after_evict = executions(&db.inner.lock(), "file_index_delta");
+        let shard_exec_after_evict = executions(&db.inner.lock(), "project_index_shards");
+        let project_exec_after_evict = executions(&db.inner.lock(), "project_indexes");
         db.with_snapshot(|snap| {
             let _ = snap.hir_item_tree(files[0]);
             let _ = snap.scope_graph(files[0]);
             let _ = snap.file_index_delta(files[0]);
+            let _ = snap.project_indexes(project);
         });
         assert!(
             executions(&db.inner.lock(), "hir_item_tree") > hir_exec_after_evict,
@@ -4668,6 +4758,14 @@ class Foo {
         assert!(
             executions(&db.inner.lock(), "scope_graph") > scope_exec_after_evict,
             "expected scope_graph to re-execute after memo eviction"
+        );
+        assert!(
+            executions(&db.inner.lock(), "project_index_shards") > shard_exec_after_evict,
+            "expected project_index_shards to re-execute after memo eviction"
+        );
+        assert!(
+            executions(&db.inner.lock(), "project_indexes") > project_exec_after_evict,
+            "expected project_indexes to re-execute after memo eviction"
         );
     }
 
