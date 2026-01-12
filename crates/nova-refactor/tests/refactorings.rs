@@ -1,10 +1,11 @@
 use nova_refactor::{
-    apply_text_edits, extract_variable, inline_variable, rename, Conflict, ExtractVariableParams,
-    FileId, InlineVariableParams, JavaSymbolKind, RefactorDatabase, RefactorJavaDatabase,
-    RenameParams, SemanticRefactorError, WorkspaceTextRange,
+    apply_text_edits, apply_workspace_edit, extract_variable, inline_variable, materialize, rename,
+    Conflict, ExtractVariableParams, FileId, InlineVariableParams, JavaSymbolKind, RefactorDatabase,
+    RefactorJavaDatabase, RenameParams, SemanticChange, SemanticRefactorError, WorkspaceTextRange,
 };
 use nova_test_utils::extract_range;
 use pretty_assertions::assert_eq;
+use std::collections::BTreeMap;
 
 mod suite;
 
@@ -4286,6 +4287,131 @@ fn inline_variable_increment_is_rejected() {
     )
     .unwrap_err();
     assert!(matches!(err, SemanticRefactorError::InlineNotSupported));
+
+}
+
+#[test]
+fn rename_static_imported_field_updates_import_and_usage() {
+    let a_file = FileId::new("A.java");
+    let b_file = FileId::new("B.java");
+    let a_src = r#"package p;
+
+class A {
+  static int foo;
+  static void bar() {}
+}
+"#;
+    let b_src = r#"package p;
+
+import static p.A.foo;
+import static p.A.bar;
+
+class B {
+  void m() {
+    foo = 1;
+    bar();
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([
+        (a_file.clone(), a_src.to_string()),
+        (b_file.clone(), b_src.to_string()),
+    ]);
+
+    let offset = a_src.find("foo").unwrap() + 1;
+    let symbol = db.symbol_at(&a_file, offset).expect("symbol at foo");
+
+    let edit = materialize(
+        &db,
+        [SemanticChange::Rename {
+            symbol,
+            new_name: "baz".into(),
+        }],
+    )
+    .unwrap();
+
+    let files = BTreeMap::from([
+        (a_file.clone(), a_src.to_string()),
+        (b_file.clone(), b_src.to_string()),
+    ]);
+    let updated = apply_workspace_edit(&files, &edit).unwrap();
+    let b_after = updated.get(&b_file).unwrap();
+
+    assert!(
+        b_after.contains("import static p.A.baz;"),
+        "expected static import to update: {b_after}"
+    );
+    assert!(
+        b_after.contains("baz = 1;"),
+        "expected unqualified field usage to update: {b_after}"
+    );
+    assert!(
+        b_after.contains("bar();"),
+        "expected other static import to remain unchanged: {b_after}"
+    );
+}
+
+#[test]
+fn rename_static_imported_method_updates_import_and_usage() {
+    let a_file = FileId::new("A.java");
+    let b_file = FileId::new("B.java");
+    let a_src = r#"package p;
+
+class A {
+  static int foo;
+  static void bar() {}
+}
+"#;
+    let b_src = r#"package p;
+
+import static p.A.foo;
+import static p.A.bar;
+
+class B {
+  void m() {
+    foo = 1;
+    bar();
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([
+        (a_file.clone(), a_src.to_string()),
+        (b_file.clone(), b_src.to_string()),
+    ]);
+
+    let offset = a_src.find("bar").unwrap() + 1;
+    let symbol = db.symbol_at(&a_file, offset).expect("symbol at bar");
+
+    let edit = materialize(
+        &db,
+        [SemanticChange::Rename {
+            symbol,
+            new_name: "qux".into(),
+        }],
+    )
+    .unwrap();
+
+    let files = BTreeMap::from([
+        (a_file.clone(), a_src.to_string()),
+        (b_file.clone(), b_src.to_string()),
+    ]);
+    let updated = apply_workspace_edit(&files, &edit).unwrap();
+    let b_after = updated.get(&b_file).unwrap();
+
+    assert!(
+        b_after.contains("import static p.A.qux;"),
+        "expected static import to update: {b_after}"
+    );
+    assert!(
+        b_after.contains("qux();"),
+        "expected unqualified method call to update: {b_after}"
+    );
+    assert!(
+        b_after.contains("foo = 1;"),
+        "expected other static import to remain unchanged: {b_after}"
+    );
 }
 
 #[test]
