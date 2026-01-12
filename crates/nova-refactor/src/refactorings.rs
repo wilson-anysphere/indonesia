@@ -237,6 +237,21 @@ pub fn extract_variable(
         });
     }
 
+    // Java `assert` expressions are evaluated only when assertions are enabled.
+    // Extract Variable would introduce a new statement *before* the `assert`, forcing
+    // evaluation even when assertions are disabled and potentially changing behavior
+    // (including throwing exceptions).
+    if expr
+        .syntax()
+        .ancestors()
+        .find_map(ast::AssertStatement::cast)
+        .is_some()
+    {
+        return Err(RefactorError::ExtractNotSupported {
+            reason: "cannot extract from assert statement",
+        });
+    }
+
     if let Some(reason) = constant_expression_only_context_reason(&expr) {
         return Err(RefactorError::ExtractNotSupported { reason });
     }

@@ -1463,6 +1463,76 @@ fn extract_variable_rejected_in_try_with_resources_resource_initializer() {
 }
 
 #[test]
+fn extract_variable_rejects_expression_in_assert_condition() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    assert 1 + 2 > 0;
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let expr_start = src.find("1 + 2").unwrap();
+    let expr_end = expr_start + "1 + 2".len();
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "sum".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason == "cannot extract from assert statement"
+        ),
+        "expected assert ExtractNotSupported error, got: {err:?}"
+    );
+}
+
+#[test]
+fn extract_variable_rejects_expression_in_assert_message() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    assert true : 1 + 2;
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let expr_start = src.find("1 + 2").unwrap();
+    let expr_end = expr_start + "1 + 2".len();
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "sum".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason == "cannot extract from assert statement"
+        ),
+        "expected assert ExtractNotSupported error, got: {err:?}"
+    );
+}
+
+#[test]
 fn rename_local_variable_does_not_touch_shadowed_field() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
