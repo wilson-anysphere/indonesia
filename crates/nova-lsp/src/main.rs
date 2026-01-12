@@ -853,7 +853,8 @@ impl ServerState {
 
         #[cfg(feature = "ai")]
         let completion_service = {
-            let ai_provider = if ai_config.enabled {
+            let multi_token_enabled = ai_config.enabled && ai_config.features.multi_token_completion;
+            let ai_provider = if multi_token_enabled {
                 match AiClient::from_config(&ai_config) {
                     Ok(client) => {
                         let provider: Arc<dyn MultiTokenCompletionProvider> = Arc::new(
@@ -870,12 +871,18 @@ impl ServerState {
             } else {
                 None
             };
+            let mut completion_config = CompletionConfig::default();
+            completion_config.ai_enabled = multi_token_enabled;
+            completion_config.ai_timeout_ms = ai_config.timeouts.multi_token_completion_ms.max(1);
             let engine = CompletionEngine::new(
-                CompletionConfig::default(),
+                completion_config,
                 CompletionContextBuilder::new(10_000),
                 ai_provider,
             );
-            nova_lsp::NovaCompletionService::new(engine)
+            nova_lsp::NovaCompletionService::with_config(
+                engine,
+                nova_lsp::CompletionMoreConfig::from_provider_config(&ai_config.provider),
+            )
         };
 
         let semantic_search = nova_ai::semantic_search_from_config(&ai_config);

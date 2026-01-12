@@ -26,6 +26,7 @@ fn stdio_server_supports_ai_multi_token_completion_polling() {
     }
     "#;
 
+    let endpoint = format!("{}/complete", mock_server.base_url());
     let mock = mock_server.mock(|when, then| {
         when.method(POST).path("/complete");
         then.status(200)
@@ -33,6 +34,29 @@ fn stdio_server_supports_ai_multi_token_completion_polling() {
     });
 
     let temp = TempDir::new().expect("tempdir");
+    let config_path = temp.path().join("nova.toml");
+    fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.features]
+multi_token_completion = true
+
+[ai.timeouts]
+multi_token_completion_ms = 5000
+
+[ai.provider]
+kind = "http"
+url = "{endpoint}"
+model = "default"
+"#
+        ),
+    )
+    .expect("write config");
+
     let file_path = temp.path().join("Foo.java");
     let source = concat!(
         "package com.example;\n",
@@ -52,12 +76,8 @@ fn stdio_server_supports_ai_multi_token_completion_polling() {
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
-        .env("NOVA_AI_PROVIDER", "http")
-        .env(
-            "NOVA_AI_ENDPOINT",
-            format!("{}/complete", mock_server.base_url()),
-        )
-        .env("NOVA_AI_MODEL", "default")
+        .arg("--config")
+        .arg(&config_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -220,6 +240,170 @@ fn stdio_server_supports_ai_multi_token_completion_polling() {
 
     let status = child.wait().expect("wait");
     assert!(status.success());
+}
+
+#[test]
+fn stdio_server_does_not_request_ai_completions_when_multi_token_feature_is_disabled() {
+    let mock_server = MockServer::start();
+    let completion_payload = r#"
+    {
+      "completions": [
+        {
+          "label": "should not be requested",
+          "insert_text": "unused()",
+          "format": "plain",
+          "additional_edits": [],
+          "confidence": 0.9
+        }
+      ]
+    }
+    "#;
+
+    let endpoint = format!("{}/complete", mock_server.base_url());
+    let mock = mock_server.mock(|when, then| {
+        when.method(POST).path("/complete");
+        then.status(200)
+            .json_body(json!({ "completion": completion_payload }));
+    });
+
+    let temp = TempDir::new().expect("tempdir");
+    let config_path = temp.path().join("nova.toml");
+    fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "http"
+url = "{endpoint}"
+model = "default"
+"#
+        ),
+    )
+    .expect("write config");
+
+    let file_path = temp.path().join("Foo.java");
+    let source = concat!(
+        "package com.example;\n",
+        "\n",
+        "import java.util.List;\n",
+        "import java.util.stream.Stream;\n",
+        "\n",
+        "class Foo {\n",
+        "    void test() {\n",
+        "        Stream stream = List.of(1).stream();\n",
+        "        stream.\n",
+        "    }\n",
+        "}\n"
+    );
+    fs::write(&file_path, source).expect("write Foo.java");
+    let uri = Uri::from_str(&format!("file://{}", file_path.to_string_lossy())).expect("uri");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_jsonrpc_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": { "textDocument": { "uri": uri, "languageId": "java", "version": 1, "text": source } }
+        }),
+    );
+
+    let cursor = Position::new(8, 15); // end of "stream."
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": { "uri": uri },
+                "position": cursor
+            }
+        }),
+    );
+    let completion_resp = read_jsonrpc_response_with_id(&mut stdout, 2);
+    let completion_result = completion_resp
+        .get("result")
+        .cloned()
+        .expect("completion result");
+    let list: CompletionList =
+        serde_json::from_value(completion_result).expect("decode completion list");
+    assert_eq!(
+        list.is_incomplete, false,
+        "expected no AI completions when feature is disabled"
+    );
+
+    let context_id = list
+        .items
+        .iter()
+        .find_map(|item| {
+            item.data
+                .as_ref()
+                .and_then(|data| data.get("nova"))
+                .and_then(|nova| nova.get("completion_context_id"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
+        .expect("completion_context_id present on at least one item");
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "nova/completion/more",
+            "params": { "context_id": context_id }
+        }),
+    );
+    let more_resp = read_jsonrpc_response_with_id(&mut stdout, 3);
+    let more_result = more_resp.get("result").cloned().expect("result");
+    let more: MoreCompletionsResult =
+        serde_json::from_value(more_result).expect("decode more completions");
+    assert!(!more.is_incomplete);
+    assert!(more.items.is_empty());
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_jsonrpc_response_with_id(&mut stdout, 4);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+
+    mock.assert_hits(0);
 }
 
 fn apply_lsp_edits(source: &str, edits: &[TextEdit]) -> String {
