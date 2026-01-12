@@ -542,16 +542,39 @@ mod tests {
                 .iter()
                 .map(|b| b.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["list", "x"]
+            vec!["arr", "list", "s", "x"]
         );
+
+        let by_name: HashMap<&str, &StreamEvalBinding> = bindings
+            .locals
+            .iter()
+            .map(|b| (b.name.as_str(), b))
+            .collect();
 
         // Prefer the generic signature when available.
         assert_eq!(
-            bindings.locals[0].java_type,
+            by_name["list"].java_type,
             "java.util.List<java.lang.String>"
         );
-        assert_eq!(bindings.locals[1].java_type, "int");
-        assert!(matches!(bindings.locals[1].value, JdwpValue::Int(42)));
+        assert!(
+            matches!(&by_name["list"].value, JdwpValue::Object { id, .. } if *id != 0),
+            "expected non-null object value for `list`"
+        );
+
+        assert_eq!(by_name["x"].java_type, "int");
+        assert!(matches!(by_name["x"].value, JdwpValue::Int(42)));
+
+        assert_eq!(by_name["s"].java_type, "java.lang.String");
+        assert!(
+            matches!(&by_name["s"].value, JdwpValue::Object { id, .. } if *id != 0),
+            "expected non-null object value for `s`"
+        );
+
+        assert_eq!(by_name["arr"].java_type, "int[]");
+        assert!(
+            matches!(&by_name["arr"].value, JdwpValue::Object { tag: b'[', id } if *id != 0),
+            "expected array object value for `arr`"
+        );
 
         // Instance fields on `this` are bound after locals.
         assert_eq!(bindings.fields.len(), 1);
@@ -571,10 +594,12 @@ mod tests {
             1 + bindings.locals.len() + bindings.fields.len() + bindings.static_fields.len()
         );
         assert_eq!(args[0], bindings.this.value);
-        assert_eq!(args[1], bindings.locals[0].value);
-        assert_eq!(args[2], bindings.locals[1].value);
-        assert_eq!(args[3], bindings.fields[0].value);
-        assert_eq!(args[4], bindings.static_fields[0].value);
+        assert_eq!(args[1], by_name["arr"].value.clone());
+        assert_eq!(args[2], by_name["list"].value.clone());
+        assert_eq!(args[3], by_name["s"].value.clone());
+        assert_eq!(args[4], by_name["x"].value.clone());
+        assert_eq!(args[5], bindings.fields[0].value);
+        assert_eq!(args[6], bindings.static_fields[0].value);
     }
 
     #[tokio::test]
@@ -610,6 +635,8 @@ mod tests {
             .unwrap();
         assert_eq!(static_fields.len(), 1);
         assert_eq!(static_fields[0].name, "superOnly");
+        assert_eq!(static_fields[0].java_type, "int");
+        assert_eq!(static_fields[0].value, JdwpValue::Int(3));
     }
 
     #[test]

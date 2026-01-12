@@ -2068,7 +2068,10 @@ async fn handle_packet(
             let _method_id = r.read_id(sizes.method_id).unwrap_or(0);
             let mut w = JdwpWriter::new();
             w.write_u32(0); // arg count
-            w.write_u32(2); // slots
+            // Keep this reasonably close to `Method.VariableTable` so higher-level
+            // stream-debug/stream-eval code can rely on `VariableTableWithGeneric` without
+            // dropping variables like `arr`.
+            w.write_u32(4); // slots
 
             // List<String> list (slot 0)
             w.write_u64(0);
@@ -2085,6 +2088,22 @@ async fn handle_packet(
             w.write_string("");
             w.write_u32(10);
             w.write_u32(1);
+
+            // String s (slot 2)
+            w.write_u64(0);
+            w.write_string("s");
+            w.write_string("Ljava/lang/String;");
+            w.write_string("");
+            w.write_u32(10);
+            w.write_u32(2);
+
+            // int[] arr (slot 3)
+            w.write_u64(0);
+            w.write_string("arr");
+            w.write_string("[I");
+            w.write_string("");
+            w.write_u32(10);
+            w.write_u32(3);
 
             (0, w.into_vec())
         }
@@ -2118,13 +2137,13 @@ async fn handle_packet(
                         // `Method.VariableTableWithGeneric` (where slot 0 can be an object like
                         // `java.util.List`).
                         (0, b'I') => JdwpValue::Int(42),
-                        // Slot 0 is `int x` in the non-generic variable table, but is also used
-                        // for `List<String> list` in the mock's generic variable table. When the
-                        // requested tag indicates a reference type, return the sample array object
-                        // so stream-debug can treat it as a collection-like source.
+                        // Slot 0 is `int x` in `Method.VariableTable`, but is also used for a
+                        // reference-typed local (`List<String> list`) in the mock's generic variable
+                        // table. Ensure generic locals don't decode to `void` so stream-eval /
+                        // compile+inject paths can be tested without a real JVM.
                         (0, _) => JdwpValue::Object {
-                            tag: b'[',
-                            id: ARRAY_OBJECT_ID,
+                            tag: b'L',
+                            id: OBJECT_ID,
                         },
                         (1, b'I') => JdwpValue::Int(42),
                         (1, _) => JdwpValue::Object {
@@ -3624,6 +3643,66 @@ fn smart_step_location(state: &State) -> Location {
         .last()
         .map(|frame| frame.location)
         .unwrap_or_else(default_location)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn variable_table_with_generic_locals_have_coherent_values() {
+        let server = MockJdwpServer::spawn().await.unwrap();
+        let client = super::super::JdwpClient::connect(server.addr())
+            .await
+            .unwrap();
+
+        let thread = client.all_threads().await.unwrap()[0];
+        let frame = client.frames(thread, 0, 10).await.unwrap()[0].clone();
+
+        let (_argc, vars) = client
+            .method_variable_table_with_generic(frame.location.class_id, frame.location.method_id)
+            .await
+            .unwrap();
+
+        let list = vars
+            .iter()
+            .find(|v| v.name == "list")
+            .expect("mock generic variable table missing `list`");
+        let arr = vars
+            .iter()
+            .find(|v| v.name == "arr")
+            .expect("mock generic variable table missing `arr`");
+
+        let slots = vec![
+            (list.slot, list.signature.clone()),
+            (arr.slot, arr.signature.clone()),
+        ];
+        let values = client
+            .stack_frame_get_values(thread, frame.frame_id, &slots)
+            .await
+            .unwrap();
+
+        assert_eq!(values.len(), 2);
+
+        // `list` should never decode to `Void` (regression guard for slot=0, tag='L').
+        match &values[0] {
+            JdwpValue::Object { id, .. } => assert_ne!(*id, 0, "expected non-null list object id"),
+            other => panic!("expected list to be an object value, got {other:?}"),
+        }
+
+        match &values[1] {
+            JdwpValue::Object { tag, id } => {
+                assert_eq!(*tag, b'[', "expected arr to be tagged as an array");
+                assert_ne!(*id, 0, "expected non-null array object id");
+                let len = client.array_reference_length(*id).await.unwrap();
+                assert!(
+                    len > 0,
+                    "expected mock array id to be recognized by ArrayReference.Length"
+                );
+            }
+            other => panic!("expected arr to be an object value, got {other:?}"),
+        }
+    }
 }
 
 fn make_stop_event_packet(
