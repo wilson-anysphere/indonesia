@@ -2427,7 +2427,8 @@ fn annotation_attribute_completion_resolves_annotation_via_fully_qualified_name(
 }
 
 #[test]
-fn annotation_attribute_completion_does_not_fall_back_to_jdk_when_workspace_annotation_is_resolved() {
+fn annotation_attribute_completion_does_not_fall_back_to_jdk_when_workspace_annotation_is_resolved()
+{
     let anno_path = PathBuf::from("/workspace/src/main/java/q/SuppressWarnings.java");
     let java_path = PathBuf::from("/workspace/src/main/java/q/Main.java");
 

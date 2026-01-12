@@ -4923,25 +4923,29 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         &Name::from(name.as_str()),
                     ) {
                         NameResolution::Resolved(res) => match res {
-                            Resolution::Local(_) | Resolution::Parameter(_) | Resolution::Field(_) => true,
+                            Resolution::Local(_)
+                            | Resolution::Parameter(_)
+                            | Resolution::Field(_) => true,
                             Resolution::StaticMember(member) => match member {
                                 StaticMemberResolution::SourceField(_) => true,
                                 StaticMemberResolution::SourceMethod(_) => false,
-                                StaticMemberResolution::External(id) => match id.as_str().split_once("::") {
-                                    Some((owner, member)) => {
-                                        let receiver = self
-                                            .ensure_workspace_class(loader, owner)
-                                            .or_else(|| loader.ensure_class(owner))
-                                            .map(|id| Type::class(id, vec![]))
-                                            .unwrap_or_else(|| Type::Named(owner.to_string()));
-                                        self.ensure_type_loaded(loader, &receiver);
-                                        let env_ro: &dyn TypeEnv = &*loader.store;
-                                        let mut ctx = TyContext::new(env_ro);
-                                        ctx.resolve_field(&receiver, member, CallKind::Static)
-                                            .is_some()
+                                StaticMemberResolution::External(id) => {
+                                    match id.as_str().split_once("::") {
+                                        Some((owner, member)) => {
+                                            let receiver = self
+                                                .ensure_workspace_class(loader, owner)
+                                                .or_else(|| loader.ensure_class(owner))
+                                                .map(|id| Type::class(id, vec![]))
+                                                .unwrap_or_else(|| Type::Named(owner.to_string()));
+                                            self.ensure_type_loaded(loader, &receiver);
+                                            let env_ro: &dyn TypeEnv = &*loader.store;
+                                            let mut ctx = TyContext::new(env_ro);
+                                            ctx.resolve_field(&receiver, member, CallKind::Static)
+                                                .is_some()
+                                        }
+                                        None => false,
                                     }
-                                    None => false,
-                                },
+                                }
                             },
                             Resolution::Methods(_)
                             | Resolution::Constructors(_)
@@ -6471,10 +6475,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 let mut inner = operand_info.ty.clone();
                 let span = self.body.exprs[expr].range();
                 let operand_range = self.body.exprs[*operand].range();
-                let operand_is_lvalue = matches!(
-                    op,
-                    UnaryOp::PreInc | UnaryOp::PreDec | UnaryOp::PostInc | UnaryOp::PostDec
-                ) && self.is_lvalue_expr(loader, *operand, operand_info.is_type_ref);
+                let operand_is_lvalue =
+                    matches!(
+                        op,
+                        UnaryOp::PreInc | UnaryOp::PreDec | UnaryOp::PostInc | UnaryOp::PostDec
+                    ) && self.is_lvalue_expr(loader, *operand, operand_info.is_type_ref);
                 let env_ro: &dyn TypeEnv = &*loader.store;
 
                 if matches!(op, UnaryOp::Minus) && inner.is_errorish() {

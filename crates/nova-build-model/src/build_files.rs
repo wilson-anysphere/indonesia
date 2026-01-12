@@ -184,7 +184,9 @@ fn project_roots_from_settings(workspace_root: &Path) -> io::Result<Vec<PathBuf>
             continue;
         }
 
-        let has_parent_dir = Path::new(&dir_rel).components().any(|c| c == std::path::Component::ParentDir);
+        let has_parent_dir = Path::new(&dir_rel)
+            .components()
+            .any(|c| c == std::path::Component::ParentDir);
         let is_symlink_dir = !has_parent_dir
             && fs::symlink_metadata(&candidate)
                 .map(|m| m.file_type().is_symlink())
@@ -256,7 +258,11 @@ fn parse_gradle_settings_included_projects(contents: &str) -> Vec<String> {
             extract_unparenthesized_args_until_eol_or_continuation(contents, idx)
         };
 
-        projects.extend(extract_quoted_strings(&args).into_iter().map(|s| normalize_project_path(&s)));
+        projects.extend(
+            extract_quoted_strings(&args)
+                .into_iter()
+                .map(|s| normalize_project_path(&s)),
+        );
     }
 
     projects
@@ -322,7 +328,8 @@ fn parse_gradle_settings_project_dir_overrides(contents: &str) -> BTreeMap<Strin
             continue;
         }
 
-        let Some((project_args, after_project_parens)) = extract_balanced_parens(contents, idx) else {
+        let Some((project_args, after_project_parens)) = extract_balanced_parens(contents, idx)
+        else {
             continue;
         };
         let Some(project_path) = extract_quoted_strings(&project_args).into_iter().next() else {
@@ -363,7 +370,10 @@ fn parse_gradle_settings_project_dir_overrides(contents: &str) -> BTreeMap<Strin
         // - file("modules/app")
         // - new File(settingsDir, "modules/app")
         // - java.io.File(settingsDir, "modules/app")
-        let dir = if bytes.get(cursor..).is_some_and(|rest| rest.starts_with(b"file")) {
+        let dir = if bytes
+            .get(cursor..)
+            .is_some_and(|rest| rest.starts_with(b"file"))
+        {
             cursor += "file".len();
             while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
                 cursor += 1;
@@ -377,7 +387,10 @@ fn parse_gradle_settings_project_dir_overrides(contents: &str) -> BTreeMap<Strin
             extract_quoted_strings(&args).into_iter().next()
         } else {
             // Optional `new`.
-            if bytes.get(cursor..).is_some_and(|rest| rest.starts_with(b"new")) {
+            if bytes
+                .get(cursor..)
+                .is_some_and(|rest| rest.starts_with(b"new"))
+            {
                 cursor += "new".len();
                 while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
                     cursor += 1;
@@ -385,11 +398,17 @@ fn parse_gradle_settings_project_dir_overrides(contents: &str) -> BTreeMap<Strin
             }
 
             // Optional `java.io.` prefix.
-            if bytes.get(cursor..).is_some_and(|rest| rest.starts_with(b"java.io.")) {
+            if bytes
+                .get(cursor..)
+                .is_some_and(|rest| rest.starts_with(b"java.io."))
+            {
                 cursor += "java.io.".len();
             }
 
-            if !bytes.get(cursor..).is_some_and(|rest| rest.starts_with(b"File")) {
+            if !bytes
+                .get(cursor..)
+                .is_some_and(|rest| rest.starts_with(b"File"))
+            {
                 continue;
             }
             cursor += "File".len();
@@ -1518,7 +1537,10 @@ mod tests {
         std::fs::create_dir_all(&real_module).unwrap();
 
         write_file(&root.join("settings.gradle"), b"include ':module'\n");
-        write_file(&real_module.join("build.gradle"), b"plugins { id 'java' }\n");
+        write_file(
+            &real_module.join("build.gradle"),
+            b"plugins { id 'java' }\n",
+        );
 
         // Gradle multi-project builds sometimes symlink module directories; the build file
         // collector should not miss build scripts for such modules.
