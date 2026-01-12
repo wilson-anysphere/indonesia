@@ -317,8 +317,7 @@ pub mod transport {
             .and_then(|value| value.parse::<usize>().ok())
             .filter(|value| *value > 0)
             .unwrap_or(DEFAULT_MAX_FRAME_BYTES)
-            .min(MAX_FRAME_BYTES)
-            .max(1)
+            .clamp(1, MAX_FRAME_BYTES)
     }
 
     fn max_frame_size() -> usize {

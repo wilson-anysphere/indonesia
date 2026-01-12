@@ -418,7 +418,7 @@ fn reconcile_class_args(
 
     let missing = expected_len.saturating_sub(flattened.len());
     let mut out = Vec::with_capacity(expected_len);
-    out.extend(std::iter::repeat(Type::Unknown).take(missing));
+    out.extend(std::iter::repeat_n(Type::Unknown, missing));
     out.extend(flattened);
     out
 }

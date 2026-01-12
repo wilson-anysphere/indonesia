@@ -156,7 +156,7 @@ impl MetricsRegistry {
 }
 
 fn latency_summary(hist: &Histogram<u64>) -> LatencySummary {
-    if hist.len() == 0 {
+    if hist.is_empty() {
         return LatencySummary {
             p50_us: 0,
             p95_us: 0,

@@ -6,9 +6,6 @@
 # This allowlist is a temporary escape hatch for crates that still exceed the limit (so repo
 # invariants can pass while we consolidate test harnesses incrementally).
 #
-# This allowlist is a temporary escape hatch for crates that haven't been consolidated yet.
-# We prefer WARNINGS (not failures) for stale entries so the list can be cleaned up gradually.
-#
 # One crate name per line. `#` comments and blank lines are ignored.
 
 nova-lsp

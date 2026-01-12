@@ -291,7 +291,7 @@ fn process_rlimit_as_bytes() -> Option<u64> {
         return None;
     }
 
-    interpret_rlimit_as_bytes(limit.rlim_cur as u64, libc::RLIM_INFINITY as u64)
+    interpret_rlimit_as_bytes(limit.rlim_cur, libc::RLIM_INFINITY)
 }
 
 #[cfg(not(unix))]

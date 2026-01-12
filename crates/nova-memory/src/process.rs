@@ -5,7 +5,7 @@ pub(crate) fn current_rss_bytes() -> Option<u64> {
         for line in status.lines() {
             let line = line.trim_start();
             if let Some(rest) = line.strip_prefix("VmRSS:") {
-                let kb = rest.trim().split_whitespace().next()?.parse::<u64>().ok()?;
+                let kb = rest.split_whitespace().next()?.parse::<u64>().ok()?;
                 return Some(kb.saturating_mul(1024));
             }
         }

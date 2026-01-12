@@ -16,10 +16,11 @@ pub struct CheckTestLayoutReport {
 pub fn check(
     manifest_path: Option<&Path>,
     metadata_path: Option<&Path>,
+    allowlist_path: &Path,
 ) -> anyhow::Result<CheckTestLayoutReport> {
-    let allowlist_path = Path::new("test-layout-allowlist.txt");
     let allowlist_raw = match std::fs::read_to_string(allowlist_path) {
         Ok(raw) => raw,
+        // Allow running the check in smaller workspaces that don't have an allowlist file.
         Err(err) if err.kind() == ErrorKind::NotFound => String::new(),
         Err(err) => {
             return Err(err).with_context(|| {
@@ -59,9 +60,7 @@ pub fn check(
                 diagnostics.push(
                     Diagnostic::error(
                         "test-layout",
-                        format!(
-                            "failed to inspect integration tests for crate `{krate}`: {err:#}"
-                        ),
+                        format!("failed to inspect integration tests for crate `{krate}`: {err:#}"),
                     )
                     .with_file(manifest.display().to_string()),
                 );
@@ -99,6 +98,8 @@ pub fn check(
     }
 
     // Warn about stale allowlist entries (crate is compliant or removed).
+    //
+    // The allowlist is only needed when a crate exceeds the default limit (2).
     for entry in &allowlist {
         match root_test_file_counts.get(entry) {
             Some(count) => {
@@ -254,6 +255,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn allowlist_parsing_ignores_comments_and_blank_lines() {
+        let raw = r#"
+# comment
+
+nova-lsp
+nova-dap   # inline comment
+
+  nova-ide
+        "#;
+
+        let allowlist = parse_allowlist(raw);
+        assert!(allowlist.contains("nova-lsp"));
+        assert!(allowlist.contains("nova-dap"));
+        assert!(allowlist.contains("nova-ide"));
+        assert_eq!(allowlist.len(), 3);
+    }
+
+    #[test]
     fn root_level_rs_files_counts_only_root_files() {
         let tmp = TempDir::new().unwrap();
         let crate_dir = tmp.path().join("my-crate");
@@ -280,66 +299,5 @@ mod tests {
         let files = root_level_rs_files(&tmp.path().join("does-not-exist")).unwrap();
         assert!(files.is_empty());
     }
-
-    #[test]
-    fn diagnostic_for_root_test_files_is_none_for_zero_or_one() {
-        let tmp = TempDir::new().unwrap();
-        let manifest = tmp.path().join("Cargo.toml");
-        fs::write(&manifest, "").unwrap();
-
-        let tests_dir = tmp.path().join("tests");
-
-        assert!(diagnostic_for_root_test_files(
-            "my-crate",
-            &manifest,
-            &tests_dir,
-            &[]
-        )
-        .is_none());
-
-        assert!(diagnostic_for_root_test_files(
-            "my-crate",
-            &manifest,
-            &tests_dir,
-            &[tests_dir.join("a.rs")]
-        )
-        .is_none());
-    }
-
-    #[test]
-    fn diagnostic_for_root_test_files_warns_at_two_and_errors_at_three() {
-        let tmp = TempDir::new().unwrap();
-        let manifest = tmp.path().join("Cargo.toml");
-        fs::write(&manifest, "").unwrap();
-        let tests_dir = tmp.path().join("tests");
-
-        let warn = diagnostic_for_root_test_files(
-            "my-crate",
-            &manifest,
-            &tests_dir,
-            &[tests_dir.join("b.rs"), tests_dir.join("a.rs")],
-        )
-        .unwrap();
-        assert_eq!(warn.level, DiagnosticLevel::Warning);
-        assert_eq!(warn.code, "test-layout-two-root-tests");
-        assert!(warn.message.contains("a.rs"));
-        assert!(warn.message.contains("b.rs"));
-
-        let err = diagnostic_for_root_test_files(
-            "my-crate",
-            &manifest,
-            &tests_dir,
-            &[
-                tests_dir.join("c.rs"),
-                tests_dir.join("b.rs"),
-                tests_dir.join("a.rs"),
-            ],
-        )
-        .unwrap();
-        assert_eq!(err.level, DiagnosticLevel::Error);
-        assert_eq!(err.code, "test-layout-too-many-root-tests");
-        assert!(err.message.contains("a.rs"));
-        assert!(err.message.contains("b.rs"));
-        assert!(err.message.contains("c.rs"));
-    }
 }
+

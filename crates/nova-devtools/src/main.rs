@@ -152,6 +152,7 @@ fn run() -> anyhow::Result<ExitCode> {
             let report = nova_devtools::check_test_layout::check(
                 opts.manifest_path.as_deref(),
                 opts.metadata_path.as_deref(),
+                &opts.allowlist,
             )
             .context("check-test-layout failed")?;
 
@@ -214,6 +215,7 @@ fn run() -> anyhow::Result<ExitCode> {
             let test_layout = nova_devtools::check_test_layout::check(
                 opts.manifest_path.as_deref(),
                 opts.metadata_path.as_deref(),
+                std::path::Path::new("test-layout-allowlist.txt"),
             )
             .context("check-test-layout failed")?;
             let test_layout_ok = test_layout.ok;
@@ -500,6 +502,7 @@ where
 struct CheckTestLayoutArgs {
     manifest_path: Option<PathBuf>,
     metadata_path: Option<PathBuf>,
+    allowlist: PathBuf,
     json: bool,
 }
 
@@ -509,6 +512,7 @@ where
 {
     let mut manifest_path = None;
     let mut metadata_path = None;
+    let mut allowlist = PathBuf::from("test-layout-allowlist.txt");
     let mut json = false;
 
     while let Some(arg) = args.next() {
@@ -524,6 +528,12 @@ where
                     .next()
                     .ok_or_else(|| anyhow!("--metadata-path requires a value"))?;
                 metadata_path = Some(PathBuf::from(value));
+            }
+            "--allowlist" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--allowlist requires a value"))?;
+                allowlist = PathBuf::from(value);
             }
             "--json" => json = true,
             "-h" | "--help" => {
@@ -541,6 +551,7 @@ where
     Ok(CheckTestLayoutArgs {
         manifest_path,
         metadata_path,
+        allowlist,
         json,
     })
 }
