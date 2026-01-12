@@ -1,5 +1,3 @@
-mod suite;
-
 use nova_classpath::{ClasspathEntry, ClasspathIndex, IndexOptions};
 use nova_deps_cache::{
     DependencyIndexBundle, DependencyIndexStore, DepsClassStub, DepsFieldStub, DepsMethodStub,
