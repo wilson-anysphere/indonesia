@@ -536,6 +536,10 @@ fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
             // change.
             name == "gradle.properties"
                 || name == "libs.versions.toml"
+                || name == "gradlew"
+                || name == "gradlew.bat"
+                || name.starts_with("build.gradle")
+                || name.starts_with("settings.gradle")
                 || name.ends_with(".gradle")
                 || name.ends_with(".gradle.kts")
                 || path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.properties"))
