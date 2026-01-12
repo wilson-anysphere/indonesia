@@ -135,6 +135,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
   // Cache leaf children per workspace+category to avoid repeatedly invoking expensive introspection endpoints.
   private readonly categoryCache = new Map<string, FrameworkNode[]>();
   private readonly categoryInFlight = new Map<string, Promise<FrameworkNode[]>>();
+  private cacheEpoch = 0;
 
   private readonly isServerRunning: () => boolean;
 
@@ -150,6 +151,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
   }
 
   refresh(): void {
+    this.cacheEpoch++;
     this.categoryCache.clear();
     this.categoryInFlight.clear();
     this.onDidChangeTreeDataEmitter.fire();
@@ -304,9 +306,12 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
       return await existing;
     }
 
+    const epoch = this.cacheEpoch;
     const task = this.loadCategoryChildren(element)
       .then((children) => {
-        this.categoryCache.set(key, children);
+        if (!this.disposed && epoch === this.cacheEpoch) {
+          this.categoryCache.set(key, children);
+        }
         return children;
       })
       .catch((err) => {
@@ -319,11 +324,15 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
                 new vscode.ThemeIcon('error'),
               ),
             ];
-        this.categoryCache.set(key, children);
+        if (!this.disposed && epoch === this.cacheEpoch) {
+          this.categoryCache.set(key, children);
+        }
         return children;
       })
       .finally(() => {
-        this.categoryInFlight.delete(key);
+        if (this.categoryInFlight.get(key) === task) {
+          this.categoryInFlight.delete(key);
+        }
       });
 
     this.categoryInFlight.set(key, task);
