@@ -1175,6 +1175,7 @@ where
             // client (`CodeActionContext.diagnostics`) so we don't need to recompute diagnostics
             // for the whole file.
             actions.extend(type_mismatch_quick_fixes_from_context(
+                &cancel,
                 source,
                 &cancel,
                 &uri,
@@ -1359,6 +1360,7 @@ fn type_mismatch_quick_fixes(
 }
 
 fn type_mismatch_quick_fixes_from_context(
+    cancel: &CancellationToken,
     source: &str,
     uri: &lsp_types::Uri,
     selection: Span,
@@ -1393,17 +1395,6 @@ fn type_mismatch_quick_fixes_from_context(
     }
 
     let mut actions = Vec::new();
-    if cancel.is_cancelled() {
-        return actions;
-    }
-
-    if cancel.is_cancelled() {
-        return actions;
-    }
-
-    if cancel.is_cancelled() {
-        return actions;
-    }
 
     if cancel.is_cancelled() {
         return actions;
