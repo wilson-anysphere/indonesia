@@ -68,6 +68,9 @@ enum Command {
     /// Launch the Nova language server (LSP) by spawning `nova-lsp`.
     ///
     /// With no additional arguments, this defaults to `nova-lsp --stdio`.
+    ///
+    /// To see available `nova-lsp` flags (including distributed-mode flags), run
+    /// `nova lsp -- --help` or `nova-lsp --help`.
     Lsp(LspLauncherArgs),
     /// Launch the Nova debug adapter (DAP) by spawning `nova-dap`.
     Dap(DapLauncherArgs),
@@ -132,6 +135,11 @@ struct LspLauncherArgs {
     ///
     /// Use `--` to disambiguate flags intended for `nova-lsp` from `nova lsp` flags:
     /// `nova lsp -- --config nova.toml`.
+    ///
+    /// Examples:
+    /// `nova lsp -- --help`
+    /// `nova lsp -- --distributed`
+    /// `nova lsp -- --distributed-worker-command /path/to/nova-worker`
     #[arg(num_args = 0.., trailing_var_arg = true, allow_hyphen_values = true)]
     args: Vec<String>,
 }

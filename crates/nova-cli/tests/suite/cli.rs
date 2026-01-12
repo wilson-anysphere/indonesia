@@ -129,6 +129,19 @@ fn help_mentions_core_commands() {
 }
 
 #[test]
+fn lsp_help_mentions_passthrough_examples() {
+    nova()
+        .args(["lsp", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("nova lsp -- --help")
+                .and(predicate::str::contains("--distributed"))
+                .and(predicate::str::contains("--distributed-worker-command")),
+        );
+}
+
+#[test]
 fn lsp_version_passthrough_matches_nova_lsp() {
     let nova_lsp = lsp_test_server();
 
