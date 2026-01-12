@@ -264,7 +264,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 
 ### `nova-framework-jpa`
 - **Purpose:** JPA/Jakarta EE analysis + JPQL parsing/completions/diagnostics.
-- **Key entry points:** `crates/nova-framework-jpa/src/lib.rs` (`analyze_java_sources`, `jpql_*`).
+- **Key entry points:** `crates/nova-framework-jpa/src/lib.rs` (`JpaAnalyzer`, `analyze_java_sources`, `jpql_*`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
   - Best-effort and mostly text-based (JPQL strings + simple entity model). Integrated into the IDE
@@ -308,7 +308,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 
 ### `nova-framework-spring`
 - **Purpose:** Spring “baseline IntelliJ” features (beans/DI diagnostics, config completions, navigation).
-- **Key entry points:** `crates/nova-framework-spring/src/lib.rs` (`SpringWorkspaceIndex`, `diagnostics_for_config_file`).
+- **Key entry points:** `crates/nova-framework-spring/src/lib.rs` (`SpringAnalyzer`, `SpringWorkspaceIndex`, `diagnostics_for_config_file`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
   - Framework model is still heuristic and not backed by incremental semantic queries.
