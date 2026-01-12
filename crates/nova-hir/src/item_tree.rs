@@ -300,11 +300,21 @@ impl PartialEq for Import {
 
 impl Eq for Import {}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct RecordComponent {
     pub ty: String,
+    pub ty_range: Span,
     pub name: String,
+    pub name_range: Span,
 }
+
+impl PartialEq for RecordComponent {
+    fn eq(&self, other: &Self) -> bool {
+        self.ty == other.ty && self.name == other.name
+    }
+}
+
+impl Eq for RecordComponent {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Item {

@@ -767,12 +767,27 @@ fn lower_record_components() {
     };
 
     let record = tree.record(record_id);
-    let components: Vec<_> = record
-        .components
-        .iter()
-        .map(|c| (c.ty.as_str(), c.name.as_str()))
-        .collect();
-    assert_eq!(components, vec![("int", "x"), ("int", "y")]);
+    assert_eq!(record.components.len(), 2);
+    assert_eq!(record.components[0].ty, "int");
+    assert_eq!(record.components[0].name, "x");
+    assert_eq!(
+        &source[record.components[0].ty_range.start..record.components[0].ty_range.end],
+        record.components[0].ty
+    );
+    assert_eq!(
+        &source[record.components[0].name_range.start..record.components[0].name_range.end],
+        record.components[0].name
+    );
+    assert_eq!(record.components[1].ty, "int");
+    assert_eq!(record.components[1].name, "y");
+    assert_eq!(
+        &source[record.components[1].ty_range.start..record.components[1].ty_range.end],
+        record.components[1].ty
+    );
+    assert_eq!(
+        &source[record.components[1].name_range.start..record.components[1].name_range.end],
+        record.components[1].name
+    );
 }
 
 fn method_id_by_name(

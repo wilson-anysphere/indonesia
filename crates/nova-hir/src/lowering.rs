@@ -483,7 +483,9 @@ impl ItemTreeLower<'_> {
 
             components.push(RecordComponent {
                 ty: ty.clone(),
+                ty_range,
                 name: name.clone(),
+                name_range,
             });
 
             let id = FieldId::new(self.file, ast_id);
@@ -651,12 +653,29 @@ fn collect_direct_child_types_after_token(
 fn non_trivia_text(node: &SyntaxNode) -> String {
     let mut text = String::new();
     for tok in node.descendants_with_tokens().filter_map(|el| el.into_token()) {
-        if tok.kind().is_trivia() {
+        if tok.kind().is_trivia() || tok.kind() == SyntaxKind::Eof {
             continue;
         }
         text.push_str(tok.text());
     }
     text
+}
+
+fn non_trivia_span(node: &SyntaxNode) -> Option<Span> {
+    let mut tokens = node
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .filter(|tok| !tok.kind().is_trivia() && tok.kind() != SyntaxKind::Eof);
+
+    let first = tokens.next()?;
+    let mut last = first.clone();
+    for tok in tokens {
+        last = tok;
+    }
+
+    let start = token_text_range_to_span(&first).start;
+    let end = token_text_range_to_span(&last).end;
+    Some(Span::new(start, end))
 }
 
 fn node_text_range_to_span(node: &SyntaxNode) -> Span {
@@ -673,7 +692,8 @@ fn lower_parameter_signature(param: &SyntaxNode) -> Option<(String, Span, String
     let range = node_text_range_to_span(param);
 
     let ty_node = param.children().find(|child| child.kind() == SyntaxKind::Type)?;
-    let mut ty_range = node_text_range_to_span(&ty_node);
+    let mut ty_range =
+        non_trivia_span(&ty_node).unwrap_or_else(|| node_text_range_to_span(&ty_node));
     let mut ty = non_trivia_text(&ty_node);
 
     if let Some(ellipsis) = param
