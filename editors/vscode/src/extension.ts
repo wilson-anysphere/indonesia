@@ -1734,7 +1734,7 @@ export async function activate(context: vscode.ExtensionContext) {
             updateSafeModeStatus(enabled);
           }
         } catch (err) {
-          if (isMethodNotFoundError(err)) {
+          if (isRequestCancelledError(err) || isMethodNotFoundError(err)) {
             // Best-effort: safe mode endpoints might not exist yet.
           } else if (isSafeModeError(err)) {
             updateSafeModeStatus(true);
