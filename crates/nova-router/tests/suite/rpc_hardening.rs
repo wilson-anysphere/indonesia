@@ -1,6 +1,8 @@
 #![cfg(unix)]
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use crate::remote_rpc_util;
@@ -10,6 +12,44 @@ use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
+const MAX_MESSAGE_SIZE_ENV_VAR: &str = "NOVA_RPC_MAX_MESSAGE_SIZE";
+static MAX_MESSAGE_SIZE_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+/// A scoped environment variable override.
+///
+/// Environment variables are process-global, so mutations must be isolated to avoid leaking state
+/// across tests once our integration tests are consolidated into a single harness.
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<OsString>,
+    // Hold a process-wide lock for the duration of the override to avoid racy `set_var`/`remove_var`
+    // behavior under `RUST_TEST_THREADS>1`.
+    _lock: MutexGuard<'static, ()>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: impl Into<OsString>) -> Self {
+        let lock = MAX_MESSAGE_SIZE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = std::env::var_os(key);
+        std::env::set_var(key, value.into());
+        Self {
+            key,
+            previous,
+            _lock: lock,
+        }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
 async fn connect_with_retry(path: &Path) -> Result<UnixStream> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     loop {
@@ -36,11 +76,11 @@ async fn complete_handshake(path: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn start_router(tmp: &TempDir, listen_path: PathBuf) -> Result<QueryRouter> {
+async fn start_router(tmp: &TempDir, listen_path: PathBuf) -> Result<(EnvVarGuard, QueryRouter)> {
     // Ensure tests don't inherit a restrictive global frame limit from the surrounding
     // environment.
-    std::env::set_var(
-        "NOVA_RPC_MAX_MESSAGE_SIZE",
+    let env_guard = EnvVarGuard::set(
+        MAX_MESSAGE_SIZE_ENV_VAR,
         nova_remote_proto::MAX_MESSAGE_BYTES.to_string(),
     );
 
@@ -67,14 +107,15 @@ async fn start_router(tmp: &TempDir, listen_path: PathBuf) -> Result<QueryRouter
         spawn_workers: false,
     };
 
-    QueryRouter::new_distributed(config, layout).await
+    let router = QueryRouter::new_distributed(config, layout).await?;
+    Ok((env_guard, router))
 }
 
 #[tokio::test]
 async fn oversized_frame_len_is_rejected_without_killing_accept_loop() -> Result<()> {
     let tmp = TempDir::new()?;
     let listen_path = tmp.path().join("router.sock");
-    let router = start_router(&tmp, listen_path.clone()).await?;
+    let (_env_guard, router) = start_router(&tmp, listen_path.clone()).await?;
 
     // Send an oversized frame header and then stop. The router should reject it without
     // attempting to read the payload (i.e. without stalling on `read_exact`).
@@ -108,7 +149,7 @@ async fn oversized_frame_len_is_rejected_without_killing_accept_loop() -> Result
 async fn stalled_handshake_does_not_block_other_connections() -> Result<()> {
     let tmp = TempDir::new()?;
     let listen_path = tmp.path().join("router.sock");
-    let router = start_router(&tmp, listen_path.clone()).await?;
+    let (_env_guard, router) = start_router(&tmp, listen_path.clone()).await?;
 
     // First client connects and never sends the initial hello frame.
     let _stalled = connect_with_retry(&listen_path).await?;
