@@ -95,7 +95,7 @@ pub use lsp::{
     workspace_edit_to_lsp_with_uri_mapper, TextDatabase,
 };
 pub use materialize::{materialize, MaterializeError};
-pub use preview::{generate_preview, FilePreview, RefactoringPreview};
+pub use preview::{generate_preview, FileChangeKind, FilePreview, RefactoringPreview};
 pub use refactorings::{
     extract_variable, inline_variable, organize_imports, rename, ExtractVariableParams,
     InlineVariableParams, OrganizeImportsParams, RefactorError as SemanticRefactorError,
