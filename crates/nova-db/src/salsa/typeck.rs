@@ -716,6 +716,20 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             .copied()
             .unwrap_or(scopes.file_scope);
 
+        let object_ty = Type::class(loader.store.well_known().object, vec![]);
+        let mut class_vars = HashMap::new();
+        let class_type_params = allocate_type_params(
+            self.resolver,
+            &scopes.scopes,
+            class_scope,
+            loader,
+            &object_ty,
+            item_type_params(&tree, item),
+            &mut class_vars,
+        );
+        let class_type_param_ids: Vec<TypeVarId> =
+            class_type_params.iter().map(|(_, id)| *id).collect();
+
         let members = match item {
             nova_hir::ids::ItemId::Class(id) => tree
                 .classes
@@ -757,13 +771,12 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             loader,
                             &field.ty,
                         );
-                        let vars: HashMap<String, TypeVarId> = HashMap::new();
                         let ty = nova_resolve::type_ref::resolve_type_ref_text(
                             self.resolver,
                             &scopes.scopes,
                             class_scope,
                             &*loader.store,
-                            &vars,
+                            &class_vars,
                             &field.ty,
                             None,
                         )
@@ -793,7 +806,18 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             .get(&mid)
                             .copied()
                             .unwrap_or(class_scope);
-                        let vars: HashMap<String, TypeVarId> = HashMap::new();
+                        let mut vars = class_vars.clone();
+                        let type_params = allocate_type_params(
+                            self.resolver,
+                            &scopes.scopes,
+                            scope,
+                            loader,
+                            &object_ty,
+                            &method.type_params,
+                            &mut vars,
+                        );
+                        let method_type_param_ids: Vec<TypeVarId> =
+                            type_params.iter().map(|(_, id)| *id).collect();
 
                         let params = method
                             .params
@@ -840,7 +864,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         let is_static = method.modifiers.raw & Modifiers::STATIC != 0;
                         methods.push(MethodDef {
                             name: method.name.clone(),
-                            type_params: Vec::new(),
+                            type_params: method_type_param_ids,
                             params,
                             return_type,
                             is_static,
@@ -858,7 +882,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             ClassDef {
                 name: binary_name.to_string(),
                 kind,
-                type_params: Vec::new(),
+                type_params: class_type_param_ids,
                 super_class,
                 interfaces: Vec::new(),
                 fields,
