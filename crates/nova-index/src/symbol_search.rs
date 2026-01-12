@@ -224,11 +224,7 @@ impl SymbolSearchIndex {
                 let key = q_bytes[0].to_ascii_lowercase();
                 let bucket = &self.prefix1[key as usize];
                 if !bucket.is_empty() {
-                    (
-                        CandidateStrategy::Prefix,
-                        bucket.len(),
-                        CandidateSource::Ids(bucket),
-                    )
+                    (CandidateStrategy::Prefix, bucket.len(), CandidateSource::Ids(bucket))
                 } else {
                     let scan_limit = 50_000usize.min(self.symbols.len());
                     (
@@ -238,9 +234,8 @@ impl SymbolSearchIndex {
                     )
                 }
             } else {
-                let trigram_candidates = self
-                    .trigram
-                    .candidates_with_scratch(query, &mut trigram_scratch);
+                let trigram_candidates =
+                    self.trigram.candidates_with_scratch(query, &mut trigram_scratch);
                 if trigram_candidates.is_empty() {
                     // For longer queries, a missing trigram intersection likely means no
                     // substring match exists. Fall back to a (bounded) scan to still
@@ -1124,6 +1119,140 @@ mod tests {
 
         assert_eq!(streaming.len(), limit);
         assert_eq!(streaming[0].symbol.name, "Baa00000");
+    }
+
+    #[test]
+    fn search_truncation_preserves_full_sort_order_with_tiebreakers() {
+        // Regression test for the top-k selection path: when we truncate, we must return
+        // the same prefix that a full sort would produce, including all tie-breakers.
+        //
+        // We craft a set of symbols that all have the same match score for query "Foo",
+        // forcing ordering to be determined entirely by the stable disambiguators.
+        let symbols = vec![
+            // b.rs should sort after a.rs
+            Symbol {
+                name: "Foo".into(),
+                qualified_name: "com.example.Foo".into(),
+                kind: IndexSymbolKind::Class,
+                container_name: None,
+                location: SymbolLocation {
+                    file: "b.rs".into(),
+                    line: 0,
+                    column: 0,
+                },
+                ast_id: 0,
+            },
+            // line 1 should sort after line 0
+            Symbol {
+                name: "Foo".into(),
+                qualified_name: "com.example.Foo".into(),
+                kind: IndexSymbolKind::Class,
+                container_name: None,
+                location: SymbolLocation {
+                    file: "a.rs".into(),
+                    line: 1,
+                    column: 0,
+                },
+                ast_id: 0,
+            },
+            // column 1 should sort after column 0
+            Symbol {
+                name: "Foo".into(),
+                qualified_name: "com.example.Foo".into(),
+                kind: IndexSymbolKind::Class,
+                container_name: None,
+                location: SymbolLocation {
+                    file: "a.rs".into(),
+                    line: 0,
+                    column: 1,
+                },
+                ast_id: 0,
+            },
+            // higher ast_id should sort after lower ast_id at the same location
+            Symbol {
+                name: "Foo".into(),
+                qualified_name: "com.example.Foo".into(),
+                kind: IndexSymbolKind::Class,
+                container_name: None,
+                location: SymbolLocation {
+                    file: "a.rs".into(),
+                    line: 0,
+                    column: 1,
+                },
+                ast_id: 2,
+            },
+            // duplicate location + ast_id to force tie-break by id
+            Symbol {
+                name: "Foo".into(),
+                qualified_name: "com.example.Foo".into(),
+                kind: IndexSymbolKind::Class,
+                container_name: None,
+                location: SymbolLocation {
+                    file: "a.rs".into(),
+                    line: 0,
+                    column: 1,
+                },
+                ast_id: 1,
+            },
+            Symbol {
+                name: "Foo".into(),
+                qualified_name: "com.example.Foo".into(),
+                kind: IndexSymbolKind::Class,
+                container_name: None,
+                location: SymbolLocation {
+                    file: "a.rs".into(),
+                    line: 0,
+                    column: 1,
+                },
+                ast_id: 1,
+            },
+            // a.rs:0:0 should sort before a.rs:0:1
+            Symbol {
+                name: "Foo".into(),
+                qualified_name: "com.example.Foo".into(),
+                kind: IndexSymbolKind::Class,
+                container_name: None,
+                location: SymbolLocation {
+                    file: "a.rs".into(),
+                    line: 0,
+                    column: 0,
+                },
+                ast_id: 0,
+            },
+        ];
+
+        let symbol_count = symbols.len();
+        let index = SymbolSearchIndex::build(symbols);
+
+        let full = index.search("Foo", 100);
+        assert_eq!(full.len(), symbol_count);
+
+        let topk = index.search("Foo", 4);
+        let full_ids: Vec<SymbolId> = full.iter().map(|r| r.id).collect();
+        let topk_ids: Vec<SymbolId> = topk.iter().map(|r| r.id).collect();
+        assert_eq!(topk_ids.as_slice(), &full_ids[..4]);
+
+        // Spot-check the expected leading order to ensure all tie-breakers apply.
+        assert_eq!(full[0].symbol.location.file, "a.rs");
+        assert_eq!(full[0].symbol.location.line, 0);
+        assert_eq!(full[0].symbol.location.column, 0);
+        assert_eq!(full[0].symbol.ast_id, 0);
+
+        assert_eq!(full[1].symbol.location.file, "a.rs");
+        assert_eq!(full[1].symbol.location.line, 0);
+        assert_eq!(full[1].symbol.location.column, 1);
+        assert_eq!(full[1].symbol.ast_id, 0);
+
+        assert_eq!(full[2].symbol.location.file, "a.rs");
+        assert_eq!(full[2].symbol.location.line, 0);
+        assert_eq!(full[2].symbol.location.column, 1);
+        assert_eq!(full[2].symbol.ast_id, 1);
+
+        assert_eq!(full[3].symbol.location.file, "a.rs");
+        assert_eq!(full[3].symbol.location.line, 0);
+        assert_eq!(full[3].symbol.location.column, 1);
+        assert_eq!(full[3].symbol.ast_id, 1);
+        assert!(full[2].id < full[3].id);
     }
 
     #[test]
