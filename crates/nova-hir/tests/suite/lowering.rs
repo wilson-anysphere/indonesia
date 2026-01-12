@@ -945,7 +945,11 @@ class Foo {
             match kind {
                 LiteralKind::Int => int_literal = Some(value.clone()),
                 LiteralKind::String => string_literal = Some(value.clone()),
-                LiteralKind::Bool => {}
+                LiteralKind::Bool
+                | LiteralKind::Long
+                | LiteralKind::Float
+                | LiteralKind::Double
+                | LiteralKind::Char => {}
             }
         }
     }

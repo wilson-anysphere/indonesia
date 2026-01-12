@@ -4476,6 +4476,22 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     ty: Type::Primitive(PrimitiveType::Int),
                     is_type_ref: false,
                 },
+                LiteralKind::Long => ExprInfo {
+                    ty: Type::Primitive(PrimitiveType::Long),
+                    is_type_ref: false,
+                },
+                LiteralKind::Float => ExprInfo {
+                    ty: Type::Primitive(PrimitiveType::Float),
+                    is_type_ref: false,
+                },
+                LiteralKind::Double => ExprInfo {
+                    ty: Type::Primitive(PrimitiveType::Double),
+                    is_type_ref: false,
+                },
+                LiteralKind::Char => ExprInfo {
+                    ty: Type::Primitive(PrimitiveType::Char),
+                    is_type_ref: false,
+                },
                 LiteralKind::String => ExprInfo {
                     ty: Type::class(loader.store.well_known().string, vec![]),
                     is_type_ref: false,

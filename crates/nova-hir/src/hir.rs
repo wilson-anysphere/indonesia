@@ -236,6 +236,10 @@ pub struct CatchClause {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LiteralKind {
     Int,
+    Long,
+    Float,
+    Double,
+    Char,
     String,
     Bool,
 }

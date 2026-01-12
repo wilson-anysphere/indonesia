@@ -1209,7 +1209,32 @@ impl<'a> BodyLower<'a> {
                 value: lit.value.clone(),
                 range: lit.range,
             }),
+            syntax::Expr::LongLiteral(lit) => self.alloc_expr(Expr::Literal {
+                kind: LiteralKind::Long,
+                value: lit.value.clone(),
+                range: lit.range,
+            }),
+            syntax::Expr::FloatLiteral(lit) => self.alloc_expr(Expr::Literal {
+                kind: LiteralKind::Float,
+                value: lit.value.clone(),
+                range: lit.range,
+            }),
+            syntax::Expr::DoubleLiteral(lit) => self.alloc_expr(Expr::Literal {
+                kind: LiteralKind::Double,
+                value: lit.value.clone(),
+                range: lit.range,
+            }),
+            syntax::Expr::CharLiteral(lit) => self.alloc_expr(Expr::Literal {
+                kind: LiteralKind::Char,
+                value: lit.value.clone(),
+                range: lit.range,
+            }),
             syntax::Expr::StringLiteral(lit) => self.alloc_expr(Expr::Literal {
+                kind: LiteralKind::String,
+                value: lit.value.clone(),
+                range: lit.range,
+            }),
+            syntax::Expr::TextBlock(lit) => self.alloc_expr(Expr::Literal {
                 kind: LiteralKind::String,
                 value: lit.value.clone(),
                 range: lit.range,

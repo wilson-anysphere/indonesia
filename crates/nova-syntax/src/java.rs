@@ -404,7 +404,12 @@ pub mod ast {
     pub enum Expr {
         Name(NameExpr),
         IntLiteral(LiteralExpr),
+        LongLiteral(LiteralExpr),
+        FloatLiteral(LiteralExpr),
+        DoubleLiteral(LiteralExpr),
+        CharLiteral(LiteralExpr),
         StringLiteral(LiteralExpr),
+        TextBlock(LiteralExpr),
         BoolLiteral(LiteralExpr),
         NullLiteral(Span),
         This(Span),
@@ -439,7 +444,12 @@ pub mod ast {
             match self {
                 Expr::Name(expr) => expr.range,
                 Expr::IntLiteral(expr) => expr.range,
+                Expr::LongLiteral(expr) => expr.range,
+                Expr::FloatLiteral(expr) => expr.range,
+                Expr::DoubleLiteral(expr) => expr.range,
+                Expr::CharLiteral(expr) => expr.range,
                 Expr::StringLiteral(expr) => expr.range,
+                Expr::TextBlock(expr) => expr.range,
                 Expr::BoolLiteral(expr) => expr.range,
                 Expr::NullLiteral(range) => *range,
                 Expr::This(range) | Expr::Super(range) => *range,
@@ -2312,9 +2322,16 @@ impl Lowerer {
         let range = self.spans.map_token(&tok);
         match tok.kind() {
             SyntaxKind::IntLiteral => ast::Expr::IntLiteral(ast::LiteralExpr { value, range }),
+            SyntaxKind::LongLiteral => ast::Expr::LongLiteral(ast::LiteralExpr { value, range }),
+            SyntaxKind::FloatLiteral => ast::Expr::FloatLiteral(ast::LiteralExpr { value, range }),
+            SyntaxKind::DoubleLiteral => {
+                ast::Expr::DoubleLiteral(ast::LiteralExpr { value, range })
+            }
+            SyntaxKind::CharLiteral => ast::Expr::CharLiteral(ast::LiteralExpr { value, range }),
             SyntaxKind::StringLiteral => {
                 ast::Expr::StringLiteral(ast::LiteralExpr { value, range })
             }
+            SyntaxKind::TextBlock => ast::Expr::TextBlock(ast::LiteralExpr { value, range }),
             SyntaxKind::TrueKw | SyntaxKind::FalseKw => {
                 ast::Expr::BoolLiteral(ast::LiteralExpr { value, range })
             }

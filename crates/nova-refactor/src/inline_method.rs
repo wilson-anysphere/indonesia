@@ -412,7 +412,12 @@ fn is_recursive(source: &str, method_name: &str, body: &jast::Block) -> bool {
                 .any(|child| walk_expr(source, method_name, child)),
             jast::Expr::Name(_)
             | jast::Expr::IntLiteral(_)
+            | jast::Expr::LongLiteral(_)
+            | jast::Expr::FloatLiteral(_)
+            | jast::Expr::DoubleLiteral(_)
+            | jast::Expr::CharLiteral(_)
             | jast::Expr::StringLiteral(_)
+            | jast::Expr::TextBlock(_)
             | jast::Expr::BoolLiteral(_)
             | jast::Expr::NullLiteral(_)
             | jast::Expr::This(_)

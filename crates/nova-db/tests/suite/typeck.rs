@@ -1023,6 +1023,53 @@ class C {
 }
 
 #[test]
+fn type_at_offset_shows_long_for_long_literal() {
+    let src = r#"
+class C { long m(){ return 1L; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src.find("1L").expect("snippet should contain long literal");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "long");
+}
+
+#[test]
+fn type_at_offset_shows_char_for_char_literal() {
+    let src = r#"
+class C { char m(){ return 'a'; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("'a'")
+        .expect("snippet should contain char literal")
+        + 1;
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "char");
+}
+
+#[test]
+fn text_block_is_string() {
+    let src = r#"
+class C { String m(){ return """x"""; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("\"\"\"x\"\"\"")
+        .expect("snippet should contain text block literal");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+}
+
+#[test]
 fn array_access_returns_element_type() {
     let src = r#"
 class C { int m(int[] a){ return a[0]; } }
