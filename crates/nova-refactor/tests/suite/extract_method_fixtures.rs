@@ -89,3 +89,11 @@ fn extract_method_record_compact_constructor() {
         &fixture_dir("tests/fixtures/extract_method_record_compact_constructor/after"),
     );
 }
+
+#[test]
+fn extract_method_expression_record_compact_constructor() {
+    assert_extract_method_fixture(
+        &fixture_dir("tests/fixtures/extract_method_expression_record_compact_constructor/before"),
+        &fixture_dir("tests/fixtures/extract_method_expression_record_compact_constructor/after"),
+    );
+}
