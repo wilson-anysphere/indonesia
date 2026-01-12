@@ -2009,6 +2009,29 @@ fn exists_as_jar(path: &Path) -> bool {
     path.is_file()
 }
 
+fn exists_as_jar(path: &Path) -> bool {
+    // Some build systems and test fixtures can "explode" jars into directories (often still ending
+    // with `.jar`). Treat those as valid artifacts too.
+    if path.is_file() || path.is_dir() {
+        return true;
+    }
+
+    // For non-SNAPSHOT dependencies we keep missing jar paths as placeholders so downstream code
+    // can still attempt to resolve/fetch them later.
+    //
+    // SNAPSHOT artifacts, however, are typically stored as timestamped jar filenames in the local
+    // Maven repository. If the conventional `<artifactId>-<version>-SNAPSHOT.jar` does not exist,
+    // returning it as a placeholder is usually not useful (Maven would download to a timestamped
+    // filename instead), so treat it as absent.
+    let is_snapshot_version_dir = path
+        .parent()
+        .and_then(|dir| dir.file_name())
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with("-SNAPSHOT"));
+
+    !is_snapshot_version_dir
+}
+
 fn resolve_snapshot_jar_file_name(
     version_dir: &Path,
     artifact_id: &str,

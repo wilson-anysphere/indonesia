@@ -257,6 +257,10 @@ fn resolves_maven_managed_dependency_coordinates_placeholders() {
     let jar_path = repo_dir
         .path()
         .join("com/example/managed-dep/1.2.3/managed-dep-1.2.3.jar");
+    assert!(
+        !jar_path.is_file(),
+        "jar should not exist before the first load for this test"
+    );
     let jar_entries: Vec<String> = config
         .classpath
         .iter()
