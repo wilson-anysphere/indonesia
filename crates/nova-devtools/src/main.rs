@@ -152,14 +152,8 @@ fn run() -> anyhow::Result<ExitCode> {
             let report = nova_devtools::check_test_layout::check(
                 opts.manifest_path.as_deref(),
                 opts.metadata_path.as_deref(),
-                &opts.allowlist,
             )
-            .with_context(|| {
-                format!(
-                    "check-test-layout failed using allowlist {}",
-                    opts.allowlist.display()
-                )
-            })?;
+            .context("check-test-layout failed")?;
 
             emit_report(
                 "check-test-layout",
@@ -220,7 +214,6 @@ fn run() -> anyhow::Result<ExitCode> {
             let test_layout = nova_devtools::check_test_layout::check(
                 opts.manifest_path.as_deref(),
                 opts.metadata_path.as_deref(),
-                std::path::Path::new("test-layout-allowlist.txt"),
             )
             .context("check-test-layout failed")?;
             let test_layout_ok = test_layout.ok;
@@ -507,7 +500,6 @@ where
 struct CheckTestLayoutArgs {
     manifest_path: Option<PathBuf>,
     metadata_path: Option<PathBuf>,
-    allowlist: PathBuf,
     json: bool,
 }
 
@@ -517,7 +509,6 @@ where
 {
     let mut manifest_path = None;
     let mut metadata_path = None;
-    let mut allowlist = PathBuf::from("test-layout-allowlist.txt");
     let mut json = false;
 
     while let Some(arg) = args.next() {
@@ -533,12 +524,6 @@ where
                     .next()
                     .ok_or_else(|| anyhow!("--metadata-path requires a value"))?;
                 metadata_path = Some(PathBuf::from(value));
-            }
-            "--allowlist" => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| anyhow!("--allowlist requires a value"))?;
-                allowlist = PathBuf::from(value);
             }
             "--json" => json = true,
             "-h" | "--help" => {
@@ -556,7 +541,6 @@ where
     Ok(CheckTestLayoutArgs {
         manifest_path,
         metadata_path,
-        allowlist,
         json,
     })
 }
@@ -650,7 +634,7 @@ COMMANDS:
   check-layers           Validate crate-layers.toml integrity (workspace coverage, unknown crates, layer refs)
   check-architecture-map Validate docs/architecture-map.md coverage for workspace crates
   check-protocol-extensions Validate docs/protocol-extensions.md coverage for `nova/*` method constants and VS Code client usage
-  check-test-layout      Validate integration test layout (avoid multiple root `tests/*.rs` binaries per crate)
+  check-test-layout      Validate integration test layout (warn at 2 root `tests/*.rs`, error at >2)
   check-repo-invariants  Run all nova-devtools repo invariants (deps, layers, architecture-map --strict, protocol-extensions, test-layout)
   graph-deps             Emit a GraphViz/DOT dependency graph annotated by layer (see --help)
 
@@ -730,12 +714,11 @@ OPTIONS:
             println!(
                 "\
 USAGE:
-  nova-devtools check-test-layout [--manifest-path <path>] [--metadata-path <path>] [--allowlist <path>] [--json]
+  nova-devtools check-test-layout [--manifest-path <path>] [--metadata-path <path>] [--json]
 
 OPTIONS:
   --manifest-path <path>  Optional workspace Cargo.toml to run `cargo metadata` against
   --metadata-path <path>  Pre-generated `cargo metadata --format-version=1 --no-deps` JSON to read instead of spawning cargo
-  --allowlist <path>      Path to test layout allowlist (default: test-layout-allowlist.txt)
   --json                  Emit machine-readable JSON output
   -h, --help              Print help
 "

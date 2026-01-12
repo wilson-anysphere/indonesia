@@ -104,10 +104,10 @@ cargo check --all-features    # Will OOM
 
 ```
 tests/
-├── parser_tests.rs      ← harness (compiles as ONE binary)
-├── parser/              ← subdirectory
-│   ├── mod.rs
-│   └── your_new_test.rs ← ADD HERE
+├── harness.rs      ← harness (compiles as ONE binary)
+└── suite/          ← subdirectory
+    ├── mod.rs
+    └── your_new_test.rs ← ADD HERE
 ```
 
 ### Cross-Platform Compatibility
