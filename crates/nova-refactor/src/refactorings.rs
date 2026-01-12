@@ -3754,17 +3754,17 @@ fn nearest_statement_list_container_range(node: &nova_syntax::SyntaxNode) -> Opt
 enum EnclosingBodyOwner {
     Method(ast::MethodDeclaration, ast::Block),
     Constructor(ast::ConstructorDeclaration, ast::Block),
-    CompactConstructor(ast::CompactConstructorDeclaration, ast::Block),
-    Initializer(ast::InitializerBlock, ast::Block),
+    CompactConstructor(ast::Block),
+    Initializer(ast::Block),
 }
 
 impl EnclosingBodyOwner {
     fn body(&self) -> &ast::Block {
         match self {
-            EnclosingBodyOwner::Method(_, body)
-            | EnclosingBodyOwner::Constructor(_, body)
-            | EnclosingBodyOwner::CompactConstructor(_, body)
-            | EnclosingBodyOwner::Initializer(_, body) => body,
+            EnclosingBodyOwner::Method(_, body) | EnclosingBodyOwner::Constructor(_, body) => body,
+            EnclosingBodyOwner::CompactConstructor(body) | EnclosingBodyOwner::Initializer(body) => {
+                body
+            }
         }
     }
 
@@ -3778,8 +3778,7 @@ impl EnclosingBodyOwner {
                 list.parameters()
                     .any(|p| p.name_token().is_some_and(|t| t.text() == name))
             }),
-            EnclosingBodyOwner::CompactConstructor(_, _)
-            | EnclosingBodyOwner::Initializer(_, _) => false,
+            EnclosingBodyOwner::CompactConstructor(_) | EnclosingBodyOwner::Initializer(_) => false,
         }
     }
 }
@@ -3796,11 +3795,11 @@ fn find_enclosing_body_owner(stmt: &ast::Statement) -> Option<EnclosingBodyOwner
         }
         if let Some(ctor) = ast::CompactConstructorDeclaration::cast(node.clone()) {
             let body = ctor.body()?;
-            return Some(EnclosingBodyOwner::CompactConstructor(ctor, body));
+            return Some(EnclosingBodyOwner::CompactConstructor(body));
         }
         if let Some(init) = ast::InitializerBlock::cast(node) {
             let body = init.body()?;
-            return Some(EnclosingBodyOwner::Initializer(init, body));
+            return Some(EnclosingBodyOwner::Initializer(body));
         }
     }
     None
@@ -5401,16 +5400,6 @@ fn statement_block_and_index(stmt: &ast::Statement) -> Option<(ast::Block, usize
         .statements()
         .position(|candidate| candidate.syntax() == stmt.syntax())?;
     Some((block, idx))
-}
-
-fn check_side_effectful_inline_order(
-    root: &nova_syntax::SyntaxNode,
-    decl_stmt: &ast::LocalVariableDeclarationStatement,
-    targets: &[crate::semantic::Reference],
-    decl_file: &FileId,
-) -> Result<(), RefactorError> {
-    check_order_sensitive_inline_order(root, decl_stmt, targets, decl_file)
-        .map_err(|_| RefactorError::InlineSideEffects)
 }
 
 fn check_order_sensitive_inline_order(
