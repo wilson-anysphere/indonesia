@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
@@ -86,12 +86,30 @@ pub fn collect_gradle_build_files(root: &Path) -> io::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     collect_gradle_build_files_rec(root, root, &mut out)?;
 
+    // Some Gradle settings constructs (e.g. `includeFlat`, `projectDir = file("../...")`) can
+    // introduce module roots outside the workspace root or point at directory symlinks.
+    //
+    // These directories are not covered by the initial recursive scan:
+    // - outside the root: we don't walk upward into `..`
+    // - directory symlinks: the recursive walker skips them to avoid cycles
+    //
+    // Best-effort include build scripts from those declared project directories so Gradle
+    // fingerprints change when external/symlinked module build files change.
+    for project_root in project_roots_from_settings(root)? {
+        collect_gradle_build_files_rec(root, &project_root, &mut out)?;
+    }
+
     // Composite builds: best-effort include build scripts from `includeBuild(...)` roots.
     //
     // These can affect dependency resolution/classpaths, so they should contribute to Gradle
     // snapshot fingerprints (used by both `nova-build` and `nova-project`).
     for included_root in included_build_roots_from_settings(root)? {
         collect_gradle_build_files_rec(&included_root, &included_root, &mut out)?;
+
+        // Nested projects inside included builds can also be external/symlinked via settings.
+        for project_root in project_roots_from_settings(&included_root)? {
+            collect_gradle_build_files_rec(&included_root, &project_root, &mut out)?;
+        }
     }
 
     // Stable sort for hashing.
@@ -141,6 +159,267 @@ fn included_build_roots_from_settings(workspace_root: &Path) -> io::Result<Vec<P
     roots.sort();
     roots.dedup();
     Ok(roots)
+}
+
+fn project_roots_from_settings(workspace_root: &Path) -> io::Result<Vec<PathBuf>> {
+    let settings_path = ["settings.gradle.kts", "settings.gradle"]
+        .into_iter()
+        .map(|name| workspace_root.join(name))
+        .find(|p| p.is_file());
+    let Some(settings_path) = settings_path else {
+        return Ok(Vec::new());
+    };
+
+    let contents = fs::read_to_string(&settings_path)?;
+    let project_dirs = parse_gradle_settings_project_dirs(&contents);
+
+    let mut roots = Vec::new();
+    for dir_rel in project_dirs {
+        if dir_rel == "." {
+            continue;
+        }
+
+        let candidate = workspace_root.join(&dir_rel);
+        if !candidate.is_dir() || !is_gradle_marker_root(&candidate) {
+            continue;
+        }
+
+        let has_parent_dir = Path::new(&dir_rel).components().any(|c| c == std::path::Component::ParentDir);
+        let is_symlink_dir = !has_parent_dir
+            && fs::symlink_metadata(&candidate)
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false);
+
+        if has_parent_dir || is_symlink_dir {
+            roots.push(candidate);
+        }
+    }
+
+    roots.sort();
+    roots.dedup();
+    Ok(roots)
+}
+
+fn parse_gradle_settings_project_dirs(contents: &str) -> Vec<String> {
+    let contents = strip_gradle_comments(contents);
+
+    let mut projects = parse_gradle_settings_included_projects(&contents);
+    let include_flat_dirs = parse_gradle_settings_include_flat_project_dirs(&contents);
+    projects.extend(include_flat_dirs.keys().cloned());
+    if projects.is_empty() {
+        return Vec::new();
+    }
+
+    let overrides = parse_gradle_settings_project_dir_overrides(&contents);
+
+    let projects: BTreeSet<_> = projects.into_iter().collect();
+    let mut out = BTreeSet::new();
+    for project_path in projects {
+        if project_path == ":" {
+            continue;
+        }
+
+        let dir_rel = overrides
+            .get(&project_path)
+            .cloned()
+            .or_else(|| include_flat_dirs.get(&project_path).cloned())
+            .unwrap_or_else(|| heuristic_dir_rel_for_project_path(&project_path));
+        let Some(dir_rel) = normalize_dir_rel(&dir_rel) else {
+            continue;
+        };
+        if dir_rel == "." {
+            continue;
+        }
+        out.insert(dir_rel);
+    }
+
+    out.into_iter().collect()
+}
+
+fn parse_gradle_settings_included_projects(contents: &str) -> Vec<String> {
+    let mut projects = Vec::new();
+    for start in find_keyword_outside_strings(contents, "include") {
+        let mut idx = start + "include".len();
+        let bytes = contents.as_bytes();
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+        if idx >= bytes.len() {
+            continue;
+        }
+
+        let args = if bytes[idx] == b'(' {
+            extract_balanced_parens(contents, idx)
+                .map(|(args, _end)| args)
+                .unwrap_or_default()
+        } else {
+            extract_unparenthesized_args_until_eol_or_continuation(contents, idx)
+        };
+
+        projects.extend(extract_quoted_strings(&args).into_iter().map(|s| normalize_project_path(&s)));
+    }
+
+    projects
+}
+
+fn parse_gradle_settings_include_flat_project_dirs(contents: &str) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+
+    for start in find_keyword_outside_strings(contents, "includeFlat") {
+        let mut idx = start + "includeFlat".len();
+        let bytes = contents.as_bytes();
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+        if idx >= bytes.len() {
+            continue;
+        }
+
+        let args = if bytes[idx] == b'(' {
+            extract_balanced_parens(contents, idx)
+                .map(|(args, _end)| args)
+                .unwrap_or_default()
+        } else {
+            extract_unparenthesized_args_until_eol_or_continuation(contents, idx)
+        };
+
+        for raw in extract_quoted_strings(&args) {
+            let project_path = normalize_project_path(&raw);
+            let name = raw
+                .trim()
+                .trim_start_matches(':')
+                .replace(':', "/")
+                .replace('\\', "/");
+            let name = name.trim();
+            if name.is_empty() {
+                continue;
+            }
+            let dir_rel = format!("../{name}");
+            let Some(dir_rel) = normalize_dir_rel(&dir_rel) else {
+                continue;
+            };
+            out.insert(project_path, dir_rel);
+        }
+    }
+
+    out
+}
+
+fn parse_gradle_settings_project_dir_overrides(contents: &str) -> BTreeMap<String, String> {
+    // Common overrides:
+    //   project(':app').projectDir = file('modules/app')
+    //   project(':lib').projectDir = new File(settingsDir, 'modules/lib')
+    //   project(":app").projectDir = file("modules/app") (Kotlin DSL)
+    let mut overrides = BTreeMap::new();
+    let bytes = contents.as_bytes();
+
+    for start in find_keyword_outside_strings(contents, "project") {
+        let mut idx = start + "project".len();
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+        if bytes.get(idx) != Some(&b'(') {
+            continue;
+        }
+
+        let Some((project_args, after_project_parens)) = extract_balanced_parens(contents, idx) else {
+            continue;
+        };
+        let Some(project_path) = extract_quoted_strings(&project_args).into_iter().next() else {
+            continue;
+        };
+        let project_path = normalize_project_path(&project_path);
+
+        // Parse:
+        //   project(...).projectDir = ...
+        //              ^^^^^^^^^^
+        let mut cursor = after_project_parens;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if bytes.get(cursor) != Some(&b'.') {
+            continue;
+        }
+        cursor += 1;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if !bytes[cursor..].starts_with(b"projectDir") {
+            continue;
+        }
+        cursor += "projectDir".len();
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if bytes.get(cursor) != Some(&b'=') {
+            continue;
+        }
+        cursor += 1;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+
+        // Parse RHS:
+        // - file("modules/app")
+        // - new File(settingsDir, "modules/app")
+        // - java.io.File(settingsDir, "modules/app")
+        let dir = if bytes.get(cursor..).is_some_and(|rest| rest.starts_with(b"file")) {
+            cursor += "file".len();
+            while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+                cursor += 1;
+            }
+            if bytes.get(cursor) != Some(&b'(') {
+                continue;
+            }
+            let Some((args, _end)) = extract_balanced_parens(contents, cursor) else {
+                continue;
+            };
+            extract_quoted_strings(&args).into_iter().next()
+        } else {
+            // Optional `new`.
+            if bytes.get(cursor..).is_some_and(|rest| rest.starts_with(b"new")) {
+                cursor += "new".len();
+                while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+                    cursor += 1;
+                }
+            }
+
+            // Optional `java.io.` prefix.
+            if bytes.get(cursor..).is_some_and(|rest| rest.starts_with(b"java.io.")) {
+                cursor += "java.io.".len();
+            }
+
+            if !bytes.get(cursor..).is_some_and(|rest| rest.starts_with(b"File")) {
+                continue;
+            }
+            cursor += "File".len();
+            while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+                cursor += 1;
+            }
+            if bytes.get(cursor) != Some(&b'(') {
+                continue;
+            }
+            let Some((args, _end)) = extract_balanced_parens(contents, cursor) else {
+                continue;
+            };
+
+            // Best-effort: accept `File(settingsDir, "...")` and `File(rootDir, "...")`.
+            let args_trim = args.trim_start();
+            if !(args_trim.starts_with("settingsDir") || args_trim.starts_with("rootDir")) {
+                continue;
+            }
+            extract_quoted_strings(&args).into_iter().next()
+        };
+
+        let Some(dir) = dir.as_deref().map(str::trim).filter(|d| !d.is_empty()) else {
+            continue;
+        };
+        let Some(dir_rel) = normalize_dir_rel(dir) else {
+            continue;
+        };
+        overrides.insert(project_path, dir_rel);
+    }
+    overrides
 }
 
 pub fn parse_gradle_settings_included_builds(contents: &str) -> Vec<String> {
@@ -237,6 +516,240 @@ pub fn parse_gradle_settings_included_builds(contents: &str) -> Vec<String> {
     }
 
     out.into_iter().collect()
+}
+
+fn normalize_project_path(project_path: &str) -> String {
+    let project_path = project_path.trim();
+    if project_path.is_empty() || project_path == ":" {
+        return ":".to_string();
+    }
+    if project_path.starts_with(':') {
+        project_path.to_string()
+    } else {
+        format!(":{project_path}")
+    }
+}
+
+fn heuristic_dir_rel_for_project_path(project_path: &str) -> String {
+    let dir_rel = project_path.trim_start_matches(':').replace(':', "/");
+    if dir_rel.trim().is_empty() {
+        ".".to_string()
+    } else {
+        dir_rel
+    }
+}
+
+fn extract_quoted_strings(text: &str) -> Vec<String> {
+    // Best-effort string literal extraction for Gradle settings parsing.
+    //
+    // Supports:
+    // - `'...'`
+    // - `"..."` (with backslash escapes)
+    // - `'''...'''` / `"""..."""` (Groovy / Kotlin raw strings)
+    //
+    // Note: we intentionally do not unescape contents; callers normalize/trim as needed.
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"'''") {
+            let start = i + 3;
+            i = start;
+            while i < bytes.len() && !bytes[i..].starts_with(b"'''") {
+                i += 1;
+            }
+            if i < bytes.len() {
+                if start < i {
+                    out.push(text[start..i].to_string());
+                }
+                i += 3;
+            }
+            continue;
+        }
+
+        if bytes[i..].starts_with(b"\"\"\"") {
+            let start = i + 3;
+            i = start;
+            while i < bytes.len() && !bytes[i..].starts_with(b"\"\"\"") {
+                i += 1;
+            }
+            if i < bytes.len() {
+                if start < i {
+                    out.push(text[start..i].to_string());
+                }
+                i += 3;
+            }
+            continue;
+        }
+
+        if bytes[i] == b'\'' {
+            let start = i + 1;
+            i = start;
+            while i < bytes.len() {
+                let b = bytes[i];
+                if b == b'\\' {
+                    i = (i + 2).min(bytes.len());
+                    continue;
+                }
+                if b == b'\'' {
+                    if start < i {
+                        out.push(text[start..i].to_string());
+                    }
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+
+        if bytes[i] == b'"' {
+            let start = i + 1;
+            i = start;
+            while i < bytes.len() {
+                let b = bytes[i];
+                if b == b'\\' {
+                    i = (i + 2).min(bytes.len());
+                    continue;
+                }
+                if b == b'"' {
+                    if start < i {
+                        out.push(text[start..i].to_string());
+                    }
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+
+        i += 1;
+    }
+
+    out
+}
+
+fn extract_unparenthesized_args_until_eol_or_continuation(contents: &str, start: usize) -> String {
+    // Groovy allows method calls without parentheses:
+    //   include ':app', ':lib'
+    // and can span lines after commas:
+    //   include ':app',
+    //           ':lib'
+    let len = contents.len();
+    let mut cursor = start;
+
+    loop {
+        let rest = &contents[cursor..];
+        let line_break = rest.find('\n').map(|off| cursor + off).unwrap_or(len);
+        let line = &contents[cursor..line_break];
+        if line.trim_end().ends_with(',') && line_break < len {
+            cursor = line_break + 1;
+            continue;
+        }
+        return contents[start..line_break].to_string();
+    }
+}
+
+fn extract_balanced_parens(contents: &str, open_paren_index: usize) -> Option<(String, usize)> {
+    let bytes = contents.as_bytes();
+    if bytes.get(open_paren_index) != Some(&b'(') {
+        return None;
+    }
+
+    let mut depth = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut in_triple_single = false;
+    let mut in_triple_double = false;
+
+    let mut i = open_paren_index;
+    while i < bytes.len() {
+        let b = bytes[i];
+
+        if in_triple_single {
+            if bytes[i..].starts_with(b"'''") {
+                in_triple_single = false;
+                i += 3;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_triple_double {
+            if bytes[i..].starts_with(b"\"\"\"") {
+                in_triple_double = false;
+                i += 3;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_single {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == b'\'' {
+                in_single = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_double {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == b'"' {
+                in_double = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if bytes[i..].starts_with(b"'''") {
+            in_triple_single = true;
+            i += 3;
+            continue;
+        }
+
+        if bytes[i..].starts_with(b"\"\"\"") {
+            in_triple_double = true;
+            i += 3;
+            continue;
+        }
+
+        match b {
+            b'\'' => {
+                in_single = true;
+                i += 1;
+            }
+            b'"' => {
+                in_double = true;
+                i += 1;
+            }
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth = depth.saturating_sub(1);
+                i += 1;
+                if depth == 0 {
+                    let args = &contents[open_paren_index + 1..i - 1];
+                    return Some((args.to_string(), i));
+                }
+            }
+            _ => i += 1,
+        }
+    }
+
+    None
 }
 
 fn strip_gradle_comments(contents: &str) -> String {
@@ -946,6 +1459,76 @@ mod tests {
         assert!(
             files.contains(&expected),
             "expected included build.gradle to be included in build file collection; got: {files:?}"
+        );
+    }
+
+    #[test]
+    fn collect_gradle_build_files_includes_build_files_from_include_flat_projects() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let external = dir.path().join("external");
+
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&external).unwrap();
+
+        write_file(&root.join("settings.gradle"), b"includeFlat 'external'\n");
+        write_file(&external.join("build.gradle"), b"plugins { id 'java' }\n");
+
+        let files = collect_gradle_build_files(&root).unwrap();
+        let expected = root.join("../external/build.gradle");
+        assert!(
+            files.contains(&expected),
+            "expected external includeFlat build.gradle to be included in build file collection; got: {files:?}"
+        );
+    }
+
+    #[test]
+    fn collect_gradle_build_files_includes_build_files_from_project_dir_overrides_outside_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let external = dir.path().join("external");
+
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&external).unwrap();
+
+        write_file(
+            &root.join("settings.gradle"),
+            b"include ':external'\nproject(':external').projectDir = file('../external')\n",
+        );
+        write_file(&external.join("build.gradle.kts"), b"plugins { java }\n");
+
+        let files = collect_gradle_build_files(&root).unwrap();
+        let expected = root.join("../external/build.gradle.kts");
+        assert!(
+            files.contains(&expected),
+            "expected external projectDir build.gradle.kts to be included in build file collection; got: {files:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_gradle_build_files_includes_build_files_from_symlinked_project_dirs() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let real_module = dir.path().join("real-module");
+
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&real_module).unwrap();
+
+        write_file(&root.join("settings.gradle"), b"include ':module'\n");
+        write_file(&real_module.join("build.gradle"), b"plugins { id 'java' }\n");
+
+        // Gradle multi-project builds sometimes symlink module directories; the build file
+        // collector should not miss build scripts for such modules.
+        symlink(&real_module, root.join("module")).unwrap();
+
+        let files = collect_gradle_build_files(&root).unwrap();
+        let expected = root.join("module/build.gradle");
+        assert!(
+            files.contains(&expected),
+            "expected symlinked project build.gradle to be included in build file collection; got: {files:?}"
         );
     }
 
