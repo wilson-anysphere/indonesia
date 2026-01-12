@@ -1293,8 +1293,8 @@ class A {}
 #[test]
 fn static_import_completion_replaces_only_member_segment() {
     let text_with_caret = r#"
-import static java.lang.Math.ma<|>;
-class A {}
+ import static java.lang.Math.ma<|>;
+ class A {}
 "#;
     let (db, file, pos) = fixture(text_with_caret);
 
@@ -1569,6 +1569,35 @@ class A {}
         edit.range.start,
         offset_to_position(&text_without_caret, u_offset)
     );
+    assert_eq!(edit.range.end, pos);
+}
+
+#[test]
+fn completion_in_static_import_type_segment_includes_entry() {
+    let text_with_caret = r#"
+import static java.util.Map.E<|>;
+class A {}
+"#;
+    let (db, file, pos) = fixture(text_with_caret);
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "Entry")
+        .expect("expected java.util.Map.Entry nested type completion in static import");
+
+    let text = text_with_caret.replace("<|>", "");
+    let segment_start = text
+        .find("Map.E")
+        .expect("expected Map.E in fixture")
+        + "Map.".len();
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+
+    assert_eq!(edit.range.start, offset_to_position(&text, segment_start));
     assert_eq!(edit.range.end, pos);
 }
 

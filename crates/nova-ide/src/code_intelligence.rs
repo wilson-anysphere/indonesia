@@ -3347,12 +3347,10 @@ pub(crate) fn core_completions(
             return Vec::new();
         }
         let items = import_completions(db, &text_index, offset, &ctx);
-        if !items.is_empty() {
-            if cancel.is_cancelled() {
-                return Vec::new();
-            }
-            return decorate_completions(&text_index, ctx.replace_start, offset, items);
+        if cancel.is_cancelled() {
+            return Vec::new();
         }
+        return decorate_completions(&text_index, ctx.replace_start, offset, items);
     }
 
     if let Some(ctx) = package_decl_completion_context(text, offset) {
@@ -3574,9 +3572,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
 
         if let Some(ctx) = import_context(text, offset) {
             let items = import_completions(db, &text_index, offset, &ctx);
-            if !items.is_empty() {
-                return decorate_completions(&text_index, ctx.replace_start, offset, items);
-            }
+            return decorate_completions(&text_index, ctx.replace_start, offset, items);
         }
 
         if let Some(ctx) = package_decl_completion_context(text, offset) {
@@ -3990,7 +3986,7 @@ fn static_import_completions(
         });
     }
 
-    Some(items)
+    (!items.is_empty()).then_some(items)
 }
 
 fn static_import_owner_prefix(text: &str, offset: usize, prefix_start: usize) -> Option<String> {
