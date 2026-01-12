@@ -1,5 +1,6 @@
 use std::fs;
 use std::io::Write;
+use std::path::Path;
 
 use nova_project::{
     load_workspace_model_with_options, BuildSystem, ClasspathEntryKind, LoadOptions,
@@ -7,13 +8,13 @@ use nova_project::{
 use tempfile::tempdir;
 use zip::write::FileOptions;
 
-fn write_fake_jar_with_automatic_module_name(jar_path: &std::path::Path, module_name: &str) {
+fn write_fake_jar_with_automatic_module_name(jar_path: &Path, module_name: &str) {
     if let Some(parent) = jar_path.parent() {
         fs::create_dir_all(parent).expect("mkdir jar parent");
     }
 
-    let manifest = format!("Manifest-Version: 1.0\r\nAutomatic-Module-Name: {module_name}\r\n\r\n");
-
+    let manifest =
+        format!("Manifest-Version: 1.0\r\nAutomatic-Module-Name: {module_name}\r\n\r\n");
     let mut jar = zip::ZipWriter::new(std::fs::File::create(jar_path).expect("create jar"));
     let options = FileOptions::<()>::default();
     jar.start_file("META-INF/MANIFEST.MF", options)

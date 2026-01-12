@@ -229,7 +229,6 @@ fn resolves_maven_managed_dependency_coordinates_placeholders() {
         maven_repo: Some(repo_dir.path().to_path_buf()),
         ..LoadOptions::default()
     };
-
     let config = load_project_with_options(&root, &options).expect("load maven project");
 
     let dep = config
@@ -258,7 +257,6 @@ fn resolves_maven_managed_dependency_coordinates_placeholders() {
         .filter(|cp| cp.kind == ClasspathEntryKind::Jar)
         .map(|cp| cp.path.to_string_lossy().replace('\\', "/"))
         .collect();
-
     let jar_path_str = jar_path.to_string_lossy().replace('\\', "/");
     assert!(
         jar_entries.iter().any(|p| p == &jar_path_str),
@@ -973,6 +971,34 @@ fn loads_maven_compiler_plugin_language_level() {
         load_workspace_model_with_options(&root, &options).expect("load maven workspace model");
     let module = model
         .module_by_id("maven:com.example:maven-compiler-plugin-java")
+        .expect("root module");
+
+    assert!(module.language_level.level.preview);
+    assert_eq!(
+        module.language_level.provenance,
+        LanguageLevelProvenance::BuildFile(model.workspace_root.join("pom.xml"))
+    );
+}
+
+#[test]
+fn loads_maven_preview_flag_from_properties() {
+    let root = testdata_path("maven-java-preview-property");
+    let repo_dir = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        maven_repo: Some(repo_dir.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load maven project");
+
+    assert_eq!(config.build_system, BuildSystem::Maven);
+    assert_eq!(config.java.source, JavaVersion(21));
+    assert_eq!(config.java.target, JavaVersion(21));
+    assert!(config.java.enable_preview);
+
+    let model =
+        load_workspace_model_with_options(&root, &options).expect("load maven workspace model");
+    let module = model
+        .module_by_id("maven:com.example:maven-java-preview-property")
         .expect("root module");
 
     assert!(module.language_level.level.preview);

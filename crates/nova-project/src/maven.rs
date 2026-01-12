@@ -1442,7 +1442,22 @@ fn java_from_maven_config(
     props: &BTreeMap<String, String>,
     compiler_plugin: Option<&RawMavenCompilerPluginConfig>,
 ) -> Option<JavaConfig> {
-    let enable_preview = compiler_plugin.is_some_and(|cfg| cfg.enable_preview(props));
+    let enable_preview_from_props = |key: &str| {
+        props.get(key).is_some_and(|raw| {
+            let resolved = resolve_placeholders(raw, props);
+            // Best-effort: treat the property value as a whitespace-separated list of args.
+            // Maven projects also commonly set this as a single string that may contain other
+            // flags, so we accept substring matches as well.
+            resolved
+                .split_whitespace()
+                .any(|arg| arg.trim_matches(|c| matches!(c, '"' | '\'')).trim() == "--enable-preview")
+                || resolved.contains("--enable-preview")
+        })
+    };
+
+    let enable_preview = compiler_plugin.is_some_and(|cfg| cfg.enable_preview(props))
+        || enable_preview_from_props("maven.compiler.compilerArgs")
+        || enable_preview_from_props("maven.compiler.compilerArgument");
 
     let resolved_java_version = |key: &str| {
         props
