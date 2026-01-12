@@ -15,6 +15,22 @@ struct StoredTree {
     parse: Arc<ParseResult>,
 }
 
+type OnRemoveFn = dyn Fn(FileId, u64) + Send + Sync;
+
+struct OnRemoveCallback(Arc<OnRemoveFn>);
+
+impl OnRemoveCallback {
+    fn call(&self, file: FileId, bytes: u64) {
+        (self.0)(file, bytes);
+    }
+}
+
+impl std::fmt::Debug for OnRemoveCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("OnRemoveCallback").field(&"<callback>").finish()
+    }
+}
+
 /// A memory-pressure aware store of parsed syntax trees.
 ///
 /// The store keeps trees for open documents and opportunistically releases trees
@@ -35,6 +51,7 @@ pub struct SyntaxTreeStore {
     name: String,
     open_docs: Arc<OpenDocuments>,
     inner: Mutex<HashMap<FileId, StoredTree>>,
+    on_remove: OnceLock<OnRemoveCallback>,
     registration: OnceLock<nova_memory::MemoryRegistration>,
     tracker: OnceLock<nova_memory::MemoryTracker>,
 }
@@ -45,6 +62,7 @@ impl SyntaxTreeStore {
             name: "syntax_trees".to_string(),
             open_docs,
             inner: Mutex::new(HashMap::new()),
+            on_remove: OnceLock::new(),
             registration: OnceLock::new(),
             tracker: OnceLock::new(),
         });
@@ -64,6 +82,15 @@ impl SyntaxTreeStore {
             .expect("registration only set once");
 
         store
+    }
+
+    /// Register a callback invoked whenever a stored tree is removed from the store.
+    ///
+    /// This is intended for integration with `nova-db`'s Salsa memo footprint tracking:
+    /// when a pinned parse result is removed, memory accounting should attribute the
+    /// allocation back to Salsa memo tables (to avoid undercounting).
+    pub fn set_on_remove(&self, callback: Arc<dyn Fn(FileId, u64) + Send + Sync>) {
+        let _ = self.on_remove.set(OnRemoveCallback(callback));
     }
 
     pub fn is_open(&self, file: FileId) -> bool {
@@ -115,8 +142,14 @@ impl SyntaxTreeStore {
 
         // Stale entry (file still open but text changed). Drop it now so the
         // next computed tree can replace it.
-        inner.remove(&file);
+        let removed = inner.remove(&file);
         self.update_tracker_locked(&inner);
+        drop(inner);
+        if let Some(removed) = removed {
+            if let Some(callback) = self.on_remove.get() {
+                callback.call(file, removed.parse.root.text_len as u64);
+            }
+        }
         None
     }
 
@@ -136,9 +169,18 @@ impl SyntaxTreeStore {
     }
 
     pub fn remove(&self, file: FileId) {
-        let mut inner = self.inner.lock().unwrap();
-        if inner.remove(&file).is_some() {
-            self.update_tracker_locked(&inner);
+        let removed = {
+            let mut inner = self.inner.lock().unwrap();
+            let removed = inner.remove(&file);
+            if removed.is_some() {
+                self.update_tracker_locked(&inner);
+            }
+            removed
+        };
+        if let Some(removed) = removed {
+            if let Some(callback) = self.on_remove.get() {
+                callback.call(file, removed.parse.root.text_len as u64);
+            }
         }
     }
 
@@ -153,9 +195,22 @@ impl SyntaxTreeStore {
     }
 
     fn clear_all(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.clear();
-        self.update_tracker_locked(&inner);
+        let removed: Vec<(FileId, u64)> = {
+            let mut inner = self.inner.lock().unwrap();
+            let removed = inner
+                .iter()
+                .map(|(file, stored)| (*file, stored.parse.root.text_len as u64))
+                .collect();
+            inner.clear();
+            self.update_tracker_locked(&inner);
+            removed
+        };
+
+        if let Some(callback) = self.on_remove.get() {
+            for (file, bytes) in removed {
+                callback.call(file, bytes);
+            }
+        }
     }
 
     fn update_tracker_locked(&self, inner: &HashMap<FileId, StoredTree>) {

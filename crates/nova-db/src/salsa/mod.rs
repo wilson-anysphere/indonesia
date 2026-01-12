@@ -1601,6 +1601,22 @@ impl Database {
     /// This is intentionally not a Salsa-tracked input: the presence/absence of
     /// the store must not change query results (only caching/pinning behavior).
     pub fn set_syntax_tree_store(&self, store: Arc<nova_syntax::SyntaxTreeStore>) {
+        // When a pinned parse result is removed from the store (e.g. due to
+        // memory pressure eviction), restore its memo footprint to avoid
+        // undercounting the memory still held by Salsa memo tables.
+        let memo_footprint = Arc::clone(&self.memo_footprint);
+        store.set_on_remove(Arc::new(move |file: FileId, bytes: u64| {
+            let should_restore = memo_footprint
+                .lock_inner()
+                .by_file
+                .get(&file)
+                .and_then(|bytes| bytes.parse)
+                .is_some_and(|bytes| bytes == 0);
+            if !should_restore {
+                return;
+            }
+            memo_footprint.record(file, TrackedSalsaMemo::Parse, bytes);
+        }));
         self.inner.lock().syntax_tree_store = Some(store);
     }
 
@@ -1843,6 +1859,24 @@ impl Database {
     }
 
     pub fn set_java_parse_store(&self, store: Option<Arc<nova_syntax::JavaParseStore>>) {
+        if let Some(store) = store.as_ref() {
+            // When a pinned parse_java result is removed from the store (e.g. due
+            // to memory pressure eviction), restore its memo footprint to avoid
+            // undercounting the memory still held by Salsa memo tables.
+            let memo_footprint = Arc::clone(&self.memo_footprint);
+            store.set_on_remove(Arc::new(move |file: FileId, bytes: u64| {
+                let should_restore = memo_footprint
+                    .lock_inner()
+                    .by_file
+                    .get(&file)
+                    .and_then(|bytes| bytes.parse_java)
+                    .is_some_and(|bytes| bytes == 0);
+                if !should_restore {
+                    return;
+                }
+                memo_footprint.record(file, TrackedSalsaMemo::ParseJava, bytes);
+            }));
+        }
         self.inner.lock().set_java_parse_store(store);
     }
 
@@ -2420,6 +2454,22 @@ impl Database {
         }
 
         let store = ItemTreeStore::new(manager, open_docs);
+        // When a pinned item_tree result is removed from the store (e.g. due to
+        // memory pressure eviction), restore its memo footprint to avoid
+        // undercounting the memory still held by Salsa memo tables.
+        let memo_footprint = Arc::clone(&self.memo_footprint);
+        store.set_on_remove(Arc::new(move |file: FileId, bytes: u64| {
+            let should_restore = memo_footprint
+                .lock_inner()
+                .by_file
+                .get(&file)
+                .and_then(|bytes| bytes.item_tree)
+                .is_some_and(|bytes| bytes == 0);
+            if !should_restore {
+                return;
+            }
+            memo_footprint.record(file, TrackedSalsaMemo::ItemTree, bytes);
+        }));
         self.inner.lock().item_tree_store = Some(store.clone());
         store
     }
@@ -4071,6 +4121,116 @@ class Foo {
             report.usage.query_cache < text_len / 2,
             "expected query cache usage to not include the pinned parse allocation (query_cache={}, text_len={text_len})",
             report.usage.query_cache
+        );
+    }
+
+    #[test]
+    fn syntax_tree_store_eviction_restores_salsa_memo_bytes_for_open_documents() {
+        use nova_memory::{EvictionRequest, MemoryEvictor};
+        use nova_syntax::SyntaxTreeStore;
+        use nova_vfs::OpenDocuments;
+
+        let manager = MemoryManager::new(MemoryBudget::from_total(10 * 1024 * 1024));
+        let open_docs = Arc::new(OpenDocuments::default());
+        let store = SyntaxTreeStore::new(&manager, open_docs.clone());
+
+        let db = Database::new_with_memory_manager(&manager);
+        db.set_syntax_tree_store(store.clone());
+
+        let file = FileId::from_raw(420);
+        let text = "class Foo { int x; int y; int z; }\n".repeat(128);
+        let text_len = text.len() as u64;
+
+        db.set_file_text(file, text);
+        open_docs.open(file);
+        db.with_snapshot(|snap| {
+            let parse = snap.parse(file);
+            assert!(parse.errors.is_empty());
+        });
+
+        let pinned = manager.report();
+        assert!(
+            pinned.usage.query_cache < text_len / 2,
+            "expected parse memo bytes to be suppressed while pinned (query_cache={}, text_len={text_len})",
+            pinned.usage.query_cache
+        );
+        assert!(
+            pinned.usage.syntax_trees > 0,
+            "expected syntax tree store to report usage while pinned"
+        );
+
+        // Simulate critical memory eviction of the store: the pinned allocation is now only held
+        // by Salsa memo tables and should be attributed back to `QueryCache`.
+        store.evict(EvictionRequest {
+            pressure: MemoryPressure::Critical,
+            target_bytes: 0,
+        });
+
+        let after = manager.report();
+        assert!(
+            after.usage.syntax_trees < text_len / 4,
+            "expected syntax tree store to be cleared after eviction (syntax_trees={}, text_len={text_len})",
+            after.usage.syntax_trees
+        );
+        assert!(
+            after.usage.query_cache >= text_len / 2,
+            "expected parse memo bytes to be restored after store eviction (query_cache={}, text_len={text_len})",
+            after.usage.query_cache
+        );
+    }
+
+    #[test]
+    fn java_parse_store_eviction_restores_salsa_memo_bytes_for_open_documents() {
+        use nova_memory::{EvictionRequest, MemoryEvictor};
+        use nova_syntax::JavaParseStore;
+        use nova_vfs::OpenDocuments;
+
+        let manager = MemoryManager::new(MemoryBudget::from_total(10 * 1024 * 1024));
+        let open_docs = Arc::new(OpenDocuments::default());
+        let store = JavaParseStore::new(&manager, open_docs.clone());
+
+        let db = Database::new_with_memory_manager(&manager);
+        db.set_java_parse_store(Some(store.clone()));
+
+        let file = FileId::from_raw(421);
+        let text = "class Foo { int x; int y; int z; }\n".repeat(128);
+        let text_len = text.len() as u64;
+
+        db.set_file_text(file, text);
+        open_docs.open(file);
+        db.with_snapshot(|snap| {
+            let parse = snap.parse_java(file);
+            assert!(parse.errors.is_empty());
+        });
+
+        let pinned = manager.report();
+        assert!(
+            pinned.usage.query_cache < text_len / 2,
+            "expected parse_java memo bytes to be suppressed while pinned (query_cache={}, text_len={text_len})",
+            pinned.usage.query_cache
+        );
+        assert!(
+            pinned.usage.syntax_trees > 0,
+            "expected java parse store to report usage while pinned"
+        );
+
+        // Simulate critical eviction of the store: the pinned allocation is now only held by
+        // Salsa memo tables and should be attributed back to `QueryCache`.
+        store.evict(EvictionRequest {
+            pressure: MemoryPressure::Critical,
+            target_bytes: 0,
+        });
+
+        let after = manager.report();
+        assert!(
+            after.usage.syntax_trees < text_len / 4,
+            "expected java parse store to be cleared after eviction (syntax_trees={}, text_len={text_len})",
+            after.usage.syntax_trees
+        );
+        assert!(
+            after.usage.query_cache >= text_len / 2,
+            "expected parse_java memo bytes to be restored after store eviction (query_cache={}, text_len={text_len})",
+            after.usage.query_cache
         );
     }
 
