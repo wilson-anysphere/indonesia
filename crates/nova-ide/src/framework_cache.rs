@@ -190,6 +190,63 @@ pub fn framework_diagnostics(
     // Micronaut diagnostics (DI + validation).
     diagnostics.extend(micronaut_diagnostics_for_file(db, file, cancel));
 
+    // MapStruct diagnostics (best-effort, file-scoped + light filesystem reads).
+    //
+    // Gate behind a cheap text heuristic so we don't hit the filesystem / parser for the vast
+    // majority of Java files.
+    let maybe_mapstruct_file = text.contains("@Mapper")
+        || text.contains("@org.mapstruct.Mapper")
+        || text.contains("@Mapping")
+        || text.contains("org.mapstruct");
+    if maybe_mapstruct_file {
+        if cancel.is_cancelled() {
+            return diagnostics;
+        }
+
+        if let Some(file_path) = db.file_path(file) {
+            let root = project_root_for_path(file_path);
+
+            if cancel.is_cancelled() {
+                return diagnostics;
+            }
+
+            let has_mapstruct_dependency = match project_config(&root) {
+                Some(config)
+                    if matches!(
+                        config.build_system,
+                        nova_project::BuildSystem::Maven
+                            | nova_project::BuildSystem::Gradle
+                            | nova_project::BuildSystem::Bazel
+                    ) =>
+                {
+                    config.dependencies.iter().any(|dep| {
+                        dep.group_id == "org.mapstruct"
+                            && matches!(
+                                dep.artifact_id.as_str(),
+                                "mapstruct" | "mapstruct-processor"
+                            )
+                    })
+                }
+                // If the config is missing, or we're in a "Simple" project, treat MapStruct
+                // dependency presence as unknown/assumed-present to avoid noisy false positives.
+                _ => true,
+            };
+
+            if cancel.is_cancelled() {
+                return diagnostics;
+            }
+
+            if let Ok(mut diags) = nova_framework_mapstruct::diagnostics_for_file(
+                &root,
+                file_path,
+                text,
+                has_mapstruct_dependency,
+            ) {
+                diagnostics.append(&mut diags);
+            }
+        }
+    }
+
     diagnostics
 }
 
