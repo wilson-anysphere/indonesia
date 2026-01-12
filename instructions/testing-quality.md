@@ -192,6 +192,12 @@ bash scripts/cargo_agent.sh +nightly fuzz list
 
 # Run a fuzz target (from the repo root).
 bash scripts/cargo_agent.sh +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
+
+# Incremental parsing invariants (`nova_syntax::reparse_java`).
+bash scripts/cargo_agent.sh +nightly fuzz run fuzz_reparse_java -- -max_total_time=60 -max_len=262144
+
+# Direct cargo invocation (outside the agent wrapper):
+cargo +nightly fuzz run fuzz_reparse_java -- -max_total_time=60 -max_len=262144
 ```
 
 ### Fuzz Targets
@@ -218,7 +224,7 @@ fuzz/
 └── fuzz_targets/
     ├── fuzz_syntax_parse.rs
     ├── fuzz_syntax_literals.rs
-    ├── fuzz_reparse_java.rs
+    ├── fuzz_reparse_java.rs          # incremental parsing / `nova_syntax::reparse_java` invariants
     ├── fuzz_reparse_java_sequence.rs
     ├── fuzz_format.rs
     ├── fuzz_range_format.rs
@@ -229,8 +235,9 @@ fuzz/
     ├── fuzz_properties_parse.rs
     ├── fuzz_config_metadata.rs
     ├── parse_java.rs
-    ├── format_java.rs          # formatter idempotence
-    └── refactor_smoke.rs       # requires `--features refactor`
+    ├── format_java.rs                # formatter idempotence
+    ├── refactor_smoke.rs             # requires `--features refactor`
+    └── utils.rs
 ```
 
 Nova also has per-crate fuzz harnesses for the remote protocol/transport surface area:

@@ -221,9 +221,17 @@ Nova uses “golden” fixtures when the expected output is easiest to review as
     - `*.errors` contains canonicalized parse errors
 - Test code: `crates/nova-syntax/tests/suite/golden_corpus.rs` (included by `crates/nova-syntax/tests/javac_corpus.rs`)
 
+The golden corpus test is the `#[test] fn golden_corpus()` test inside the `javac_corpus`
+integration test binary. There is **no** separate `--test golden_corpus` integration test target;
+run it via `--test javac_corpus` and (optionally) a test-name filter.
+
 **Run locally:**
 
 ```bash
+# Full `nova-syntax` integration test suite (`javac_corpus`)
+bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus
+
+# Just the golden corpus test (test-name filter)
 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
 ```
 

@@ -108,6 +108,11 @@ testdata/
 │   └── declarations/
 ```
 
+These fixtures are exercised by the `golden_corpus` test inside the `javac_corpus` integration
+test binary (`crates/nova-syntax/tests/javac_corpus.rs` includes
+`crates/nova-syntax/tests/suite/golden_corpus.rs`). There is no separate `--test golden_corpus`
+target — run it via `--test javac_corpus` and (optionally) a test-name filter.
+
 **To add a test:**
 1. Create `testdata/parser/category/test_name.java`
 2. Run the golden corpus test with `BLESS=1` once to write the expected outputs
@@ -120,6 +125,9 @@ BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus gold
 
 # Run the golden corpus test
 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
+
+# Run the full `nova-syntax` integration suite (`javac_corpus`)
+bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus
 ```
 
 ### Java Language Levels
@@ -159,7 +167,10 @@ let formatted = nova_format::format_file(source, options);
 # Parser unit tests
 bash scripts/cargo_agent.sh test -p nova-syntax --lib
 
-# Parser golden corpus fixtures
+# Parser integration tests (`javac_corpus` includes the `golden_corpus` fixture test)
+bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus
+
+# Parser golden corpus fixtures (test-name filter)
 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
 
 # Formatter tests (`insta` snapshots)

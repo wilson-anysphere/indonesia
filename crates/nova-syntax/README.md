@@ -13,7 +13,20 @@ The Java parser is tested using a fixture-driven golden corpus under
   - `*.tree` contains a debug dump of the recovered syntax tree
   - `*.errors` contains canonicalized parse errors (`line:col: message`)
 
-Run just the corpus test:
+The golden corpus test is the `#[test] fn golden_corpus()` test (defined in
+`crates/nova-syntax/tests/suite/golden_corpus.rs`) and is compiled into the `javac_corpus`
+integration test binary (`crates/nova-syntax/tests/javac_corpus.rs`).
+
+There is **no** standalone integration test target named `golden_corpus`, so you must run it via
+`--test javac_corpus` (optionally filtering by test name).
+
+Run the full `nova-syntax` integration test suite (`javac_corpus`):
+
+```bash
+bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus
+```
+
+Run just the golden corpus test (test-name filter):
 
 ```bash
 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
