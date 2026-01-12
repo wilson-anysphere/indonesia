@@ -556,6 +556,58 @@ class C implements I {
 }
 
 #[test]
+fn go_to_declaration_on_override_searches_superinterfaces_transitively() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /I0.java
+interface I0 {
+    void $1foo();
+}
+//- /I1.java
+interface I1 extends I0 {}
+//- /C.java
+class C implements I1 {
+    public void $0foo() {}
+}
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = declaration(&fixture.db, file, pos).expect("expected declaration location");
+
+    assert_eq!(got.uri, fixture.marker_uri(1));
+    assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
+fn go_to_declaration_on_override_prefers_closer_interface_declaration() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /I0.java
+interface I0 {
+    void foo();
+}
+//- /I1.java
+interface I1 extends I0 {
+    void $1foo();
+}
+//- /C.java
+class C implements I1 {
+    public void $0foo() {}
+}
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = declaration(&fixture.db, file, pos).expect("expected declaration location");
+
+    assert_eq!(got.uri, fixture.marker_uri(1));
+    assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
 fn go_to_type_definition_on_parameter_returns_class() {
     let fixture = FileIdFixture::parse(
         r#"

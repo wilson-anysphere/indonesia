@@ -516,15 +516,29 @@ where
     let type_info = lookup_type_info(ty_name)?;
 
     // Prefer interface declarations.
-    for iface in &type_info.def().interfaces {
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut queue: std::collections::VecDeque<String> = type_info.def().interfaces.clone().into();
+    visited.extend(queue.iter().cloned());
+
+    while let Some(iface) = queue.pop_front() {
+        // Prefer the closest declaration (walk interfaces breadth-first).
         if let Some(loc) = declaration_in_type::<TI, FTypeInfo, FFile>(
             lookup_type_info,
             file,
-            iface,
+            &iface,
             method_name,
-        )
-        {
+        ) {
             return Some(loc);
+        }
+
+        // Recursively search extended interfaces (transitively).
+        let Some(iface_info) = lookup_type_info(&iface) else {
+            continue;
+        };
+        for super_iface in &iface_info.def().interfaces {
+            if visited.insert(super_iface.clone()) {
+                queue.push_back(super_iface.clone());
+            }
         }
     }
 
