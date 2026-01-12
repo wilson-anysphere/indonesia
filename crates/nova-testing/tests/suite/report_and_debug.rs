@@ -168,6 +168,31 @@ fn failure_wins_when_merging_skipped_and_failed_parameterizations() {
 }
 
 #[test]
+fn preserves_failure_details_when_merging_parameterized_failures() {
+    let xml = r#"
+        <testsuite name="com.example.CalculatorTest" tests="2" failures="2" errors="0" skipped="0" time="0.002">
+          <testcase classname="com.example.CalculatorTest" name="parameterizedAdds(int)[1]" time="0.001">
+            <failure message="boom" type="java.lang.AssertionError"/>
+          </testcase>
+          <testcase classname="com.example.CalculatorTest" name="parameterizedAdds(int)[2]" time="0.001">
+            <failure message="boom2" type="java.lang.AssertionError">stack
+trace</failure>
+          </testcase>
+        </testsuite>
+    "#;
+
+    let cases = parse_junit_report_str(xml).unwrap();
+    assert_eq!(cases.len(), 1);
+    assert_eq!(cases[0].id, "com.example.CalculatorTest#parameterizedAdds");
+    assert_eq!(cases[0].status, TestStatus::Failed);
+    assert_eq!(cases[0].duration_ms, Some(2));
+    assert_eq!(
+        cases[0].failure.as_ref().unwrap().stack_trace.as_deref(),
+        Some("stack\ntrace")
+    );
+}
+
+#[test]
 fn creates_debug_configuration_for_maven() {
     let root = fixture_root("maven-junit5");
     let cfg =

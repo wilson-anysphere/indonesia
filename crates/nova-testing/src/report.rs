@@ -234,8 +234,22 @@ pub(crate) fn merge_case_results(existing: &mut TestCaseResult, incoming: TestCa
         (None, None) => None,
     };
 
-    if existing.failure.is_none() {
-        existing.failure = incoming.failure;
+    match (&mut existing.failure, incoming.failure) {
+        (existing_failure @ None, failure) => {
+            *existing_failure = failure;
+        }
+        (Some(existing_failure), Some(incoming_failure)) => {
+            if existing_failure.message.is_none() {
+                existing_failure.message = incoming_failure.message;
+            }
+            if existing_failure.kind.is_none() {
+                existing_failure.kind = incoming_failure.kind;
+            }
+            if existing_failure.stack_trace.is_none() {
+                existing_failure.stack_trace = incoming_failure.stack_trace;
+            }
+        }
+        (Some(_), None) => {}
     }
 }
 
