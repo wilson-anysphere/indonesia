@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use nova_db::salsa::NovaSemantic;
 use nova_db::{FileId, SalsaDatabase};
+use nova_hir::token_item_tree::TokenItemTree;
 use nova_memory::{MemoryBudget, MemoryManager, MemoryPressure};
 use nova_vfs::OpenDocuments;
 
@@ -101,5 +102,35 @@ fn unpin_item_tree_restores_salsa_memo_bytes_for_cached_memo() {
         bytes_after,
         text_len.saturating_mul(2),
         "expected item_tree memo bytes to be restored after unpinning (parse + item_tree)"
+    );
+}
+
+#[test]
+fn store_uses_pointer_identity_for_text_and_drops_stale_entries() {
+    let memory = MemoryManager::new(MemoryBudget::from_total(1024 * 1024 * 1024));
+    let open_docs = Arc::new(OpenDocuments::default());
+    let store = nova_db::salsa::ItemTreeStore::new(&memory, open_docs.clone());
+
+    let file = FileId::from_raw(0);
+    open_docs.open(file);
+
+    let text1 = Arc::new("class Main {}".to_string());
+    let tree = Arc::new(TokenItemTree::empty());
+    store.insert(file, Arc::clone(&text1), Arc::clone(&tree));
+
+    assert!(
+        store.get_if_text_matches(file, &text1).is_some(),
+        "expected cache hit when Arc<String> pointer matches"
+    );
+
+    // Same contents, different allocation: should miss and drop the stale entry.
+    let text2 = Arc::new(text1.as_ref().clone());
+    assert!(
+        store.get_if_text_matches(file, &text2).is_none(),
+        "expected cache miss when Arc<String> pointer differs"
+    );
+    assert!(
+        !store.contains(file),
+        "expected stale entry to be removed after pointer mismatch"
     );
 }
