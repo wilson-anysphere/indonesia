@@ -54,8 +54,9 @@ impl std::error::Error for BspRpcError {}
 
 /// Configuration required to launch a Bazel BSP server.
 ///
-/// This is intentionally minimal; callers are expected to configure discovery
-/// externally (e.g. via environment variables).
+/// This is intentionally minimal. Nova can discover it from standard `.bsp/*.json` connection
+/// files (via [`BazelBspConfig::discover`]) and applies `NOVA_BSP_PROGRAM` / `NOVA_BSP_ARGS`
+/// overrides on top.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BazelBspConfig {
     pub program: String,
