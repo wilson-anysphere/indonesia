@@ -1103,10 +1103,31 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         // Owning-target results are derived from BUILD/BUILD.bazel/.bzl state. Avoid clearing the
         // cache for plain source edits (hot swap calls this frequently) but still invalidate on
         // build definition changes for correctness.
-        let mut saw_build_definition_change = changed
-            .iter()
-            .any(|path| is_bazel_build_definition_file(path));
+        let mut saw_build_definition_change = changed.iter().any(|path| {
+            if !is_bazel_build_definition_file(path) {
+                return false;
+            }
 
+            // Changes in packages under `.bazelignore` should not affect query evaluation since
+            // Bazel treats those directories as outside the package universe. Avoid clearing caches
+            // for BUILD/.bzl churn in ignored prefixes.
+            let is_package_build_file = match path.file_name().and_then(|n| n.to_str()) {
+                Some("BUILD") | Some("BUILD.bazel") => true,
+                Some(name) if name.ends_with(".bzl") => true,
+                _ => false,
+            };
+            if is_package_build_file {
+                if let Ok(rel) = path.strip_prefix(&self.root) {
+                    if let Ok(rel) = normalize_workspace_relative_path(rel) {
+                        if self.is_ignored_workspace_path(&rel) {
+                            return false;
+                        }
+                    }
+                }
+            }
+
+            true
+        });
         // `.bazelrc` can import arbitrary files; treat changes to those as build-definition changes
         // too. We keep a cached import graph so we don't need to re-parse `.bazelrc` for every
         // invalidate call (e.g. frequent source edits).
