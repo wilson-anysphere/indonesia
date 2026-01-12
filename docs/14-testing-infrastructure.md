@@ -55,10 +55,15 @@ From the repo root (these are the exact commands CI runs; on shared agent hosts 
 `bash scripts/cargo_agent.sh ...` and avoid unscoped/workspace-wide test runs):
 
 ```bash
-# Lint job (repo invariants + clippy)
-./scripts/check-repo-invariants.sh
+# Lint job (fmt + repo invariants + clippy)
+#
+# Note: `cargo fmt` does not accept `--locked`, so CI first runs a `cargo metadata --locked`
+# preflight to fail fast if Cargo.lock is out of date.
+cargo metadata --locked --format-version 1 --no-deps > /dev/null
 cargo fmt --all -- --check
+./scripts/check-repo-invariants.sh
 cargo clippy --locked --all-targets --all-features -- -D warnings
+git diff --exit-code -- Cargo.lock
 
 # PR-only: Guard against new top-level `crates/*/tests/*.rs` binaries (see AGENTS.md "Test Organization")
 # In CI this compares against the PR base SHA. Locally:
@@ -98,13 +103,15 @@ Nova’s PR gates include `ci.yml`, `perf.yml`, and `javac.yml`. To run the same
 
 ```bash
 # ci.yml (rust)
-./scripts/check-repo-invariants.sh
+cargo metadata --locked --format-version 1 --no-deps > /dev/null
 cargo fmt --all -- --check
+./scripts/check-repo-invariants.sh
 cargo clippy --locked --all-targets --all-features -- -D warnings
 # Install nextest first if needed: cargo install cargo-nextest --locked
 # CI-equivalent workspace run (workstation-only — do not run on shared agent hosts)
 cargo nextest run --locked --workspace --profile ci
 cargo test --locked --workspace --doc
+git diff --exit-code -- Cargo.lock
 
 # ci.yml (workflows)
 actionlint
