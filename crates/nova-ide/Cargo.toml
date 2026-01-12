@@ -49,4 +49,9 @@ path = "src/lib.rs"
 
 [dev-dependencies]
 ra_salsa = { package = "ra_ap_salsa", version = "0.0.269" }
+criterion = "0.5"
 tempfile = "3"
+
+[[bench]]
+name = "completion"
+harness = false
