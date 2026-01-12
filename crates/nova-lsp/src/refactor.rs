@@ -231,24 +231,55 @@ pub fn extract_variable_code_actions(
     let file = FileId::new(file_path.clone());
     let db = TextDatabase::new([(file.clone(), source.to_string())]);
 
+    fn probe_extract_variable_placeholder_name(
+        db: &TextDatabase,
+        file: &FileId,
+        expr_range: WorkspaceTextRange,
+        use_var: bool,
+    ) -> Option<String> {
+        const NAME_CONFLICT_REASON: &str =
+            "extracted variable name conflicts with an existing binding";
+
+        for attempt in 0usize..100 {
+            let name = if attempt == 0 {
+                "extracted".to_string()
+            } else {
+                format!("extracted{attempt}")
+            };
+
+            match extract_variable(
+                db,
+                ExtractVariableParams {
+                    file: file.clone(),
+                    expr_range,
+                    name: name.clone(),
+                    use_var,
+                    replace_all: false,
+                },
+            ) {
+                Ok(_) => return Some(name),
+                Err(SemanticRefactorError::InvalidIdentifier { .. }) => continue,
+                Err(SemanticRefactorError::ExtractNotSupported { reason })
+                    if reason == NAME_CONFLICT_REASON =>
+                {
+                    continue
+                }
+                Err(_) => return None,
+            }
+        }
+
+        None
+    }
+
     let mut actions = Vec::new();
     // Only offer Extract Variable when the `var` extraction variant is applicable. This preserves
     // the refactoring's "safe by default" behavior (e.g. we do not offer extraction for
     // side-effectful expressions).
-    if extract_variable(
-        &db,
-        ExtractVariableParams {
-            file: file.clone(),
-            expr_range,
-            name: "extracted".to_string(),
-            use_var: true,
-            replace_all: false,
-        },
-    )
-    .is_err()
-    {
+    let Some(placeholder_name) =
+        probe_extract_variable_placeholder_name(&db, &file, expr_range, true)
+    else {
         return Vec::new();
-    }
+    };
 
     actions.push(CodeActionOrCommand::CodeAction(CodeAction {
         title: "Extract variable…".to_string(),
@@ -258,7 +289,7 @@ pub fn extract_variable_code_actions(
                 start: expr_range.start,
                 end: expr_range.end,
                 use_var: true,
-                name: None,
+                name: Some(placeholder_name.clone()),
             })
             .expect("serializable"),
         ),
@@ -271,7 +302,7 @@ pub fn extract_variable_code_actions(
         ExtractVariableParams {
             file: file.clone(),
             expr_range,
-            name: "extracted".to_string(),
+            name: placeholder_name.clone(),
             use_var: false,
             replace_all: false,
         },
@@ -286,7 +317,7 @@ pub fn extract_variable_code_actions(
                     start: expr_range.start,
                     end: expr_range.end,
                     use_var: false,
-                    name: None,
+                    name: Some(placeholder_name),
                 })
                 .expect("serializable"),
             ),

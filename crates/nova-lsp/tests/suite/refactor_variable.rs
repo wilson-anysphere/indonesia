@@ -136,6 +136,39 @@ class C {
 }
 
 #[test]
+fn extract_variable_code_actions_still_offered_when_default_name_conflicts() {
+    let fixture = r#"
+class C {
+    void m() {
+        int extracted = 0;
+        int x = /*start*/1 + 2/*end*/;
+        System.out.println(x + extracted);
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let uri = Uri::from_str("file:///Test.java").unwrap();
+    let range = lsp_types::Range {
+        start: offset_to_position(&source, selection.start),
+        end: offset_to_position(&source, selection.end),
+    };
+
+    let actions = extract_variable_code_actions(&uri, &source, range);
+    assert_eq!(actions.len(), 2);
+    assert!(actions.iter().any(|action| match action {
+        lsp_types::CodeActionOrCommand::CodeAction(action) => action.title == "Extract variable…",
+        _ => false,
+    }));
+    assert!(actions.iter().any(|action| match action {
+        lsp_types::CodeActionOrCommand::CodeAction(action) => {
+            action.title == "Extract variable… (explicit type)"
+        }
+        _ => false,
+    }));
+}
+
+#[test]
 fn extract_variable_code_action_not_offered_for_side_effectful_expression() {
     let fixture = r#"
 class C {
