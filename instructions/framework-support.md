@@ -299,7 +299,10 @@ List<User> findByName(@Param("name") String name);
    For Nova’s shipped analyzers, add it to `nova-framework-builtins`. `nova-ide`'s
    `IdeExtensions::<DB>::with_default_registry` constructs `nova_framework_builtins::builtin_registry()`
    and registers it via `FrameworkAnalyzerRegistryProvider` (diagnostics/completions/navigation/inlay
-   hints), alongside the legacy `FrameworkDiagnosticProvider`/`FrameworkCompletionProvider` backed by
+   hints). The default provider is configured with `with_build_metadata_only()` so it only runs on
+   projects with authoritative build metadata (Maven/Gradle/Bazel), avoiding duplicate
+   diagnostics/completions when paired with the legacy
+   `FrameworkDiagnosticProvider`/`FrameworkCompletionProvider` backed by
    `crates/nova-ide/src/framework_cache.rs`.
    (If you want a fast no-op provider, `FrameworkAnalyzerRegistryProvider::empty()` is available.)
 4. **Add tests** - Framework-specific test cases

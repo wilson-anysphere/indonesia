@@ -523,7 +523,9 @@ In the IDE, `crates/nova-ide/src/extensions.rs` wires two framework paths:
 
   `IdeExtensions::with_default_registry` builds `nova_framework_builtins::builtin_registry()` and
   registers a `FrameworkAnalyzerRegistryProvider` for diagnostics, completions, navigation, and
-  inlay hints.
+  inlay hints. The default provider is configured with `with_build_metadata_only()`, meaning it
+  returns empty results for “simple” projects (no Maven/Gradle/Bazel metadata) to avoid duplicating
+  results from the legacy `framework_cache` providers.
 
   `FrameworkAnalyzerRegistryProvider::empty()` exists as a fast no-op provider if you need to
   disable registry-backed analyzers without changing call sites.
