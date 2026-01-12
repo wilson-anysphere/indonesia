@@ -496,6 +496,70 @@ fn extract_variable_allows_extraction_inside_braced_if_block() {
 }
 
 #[test]
+fn extract_variable_rejected_in_annotation_value() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  @SuppressWarnings("unchecked")
+  void m() {}
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let expr_start = src.find("\"unchecked\"").unwrap();
+    let expr_end = expr_start + "\"unchecked\"".len();
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "tmp".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, SemanticRefactorError::ExtractNotSupported { .. }),
+        "expected ExtractNotSupported, got: {err:?}"
+    );
+}
+
+#[test]
+fn extract_variable_rejected_in_switch_case_label() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m(int x) {
+    switch (x) {
+      case 1 + 2:
+        break;
+    }
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let expr_start = src.find("1 + 2").unwrap();
+    let expr_end = expr_start + "1 + 2".len();
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "tmp".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, SemanticRefactorError::ExtractNotSupported { .. }),
+        "expected ExtractNotSupported, got: {err:?}"
+    );
+}
+
+#[test]
 fn rename_local_variable_does_not_touch_shadowed_field() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {

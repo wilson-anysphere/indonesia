@@ -157,6 +157,11 @@ pub fn extract_variable(
     let root = parsed.syntax();
     let expr =
         find_expression(text, root.clone(), selection).ok_or(RefactorError::InvalidSelection)?;
+
+    if let Some(reason) = constant_expression_only_context_reason(&expr) {
+        return Err(RefactorError::ExtractNotSupported { reason });
+    }
+
     let expr_range = syntax_range(expr.syntax());
     let expr_text = text
         .get(selection.start..selection.end)
@@ -521,6 +526,20 @@ fn find_expression(
         let range = trim_range(source, syntax_range(expr.syntax()));
         if range.start == selection.start && range.end == selection.end {
             return Some(expr);
+        }
+    }
+    None
+}
+
+fn constant_expression_only_context_reason(expr: &ast::Expression) -> Option<&'static str> {
+    for node in expr.syntax().ancestors() {
+        if ast::AnnotationElementValue::cast(node.clone()).is_some() {
+            return Some("cannot extract from annotation element values (compile-time constant required)");
+        }
+
+        if ast::CaseLabelElement::cast(node.clone()).is_some() || ast::SwitchLabel::cast(node).is_some()
+        {
+            return Some("cannot extract from switch case labels (compile-time constant required)");
         }
     }
     None
