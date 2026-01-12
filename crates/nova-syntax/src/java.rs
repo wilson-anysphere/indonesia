@@ -606,13 +606,35 @@ impl Parse {
     }
 }
 
+// NOTE: `cfg(test)` items are not compiled for downstream crates' test builds.
+// We provide a feature-gated copy so integration tests in other crates can
+// validate that Salsa queries avoid redundant parses.
+#[cfg(test)]
+pub static PARSE_TEXT_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(all(not(test), feature = "test-parse-counter"))]
+pub static PARSE_TEXT_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Lower a Java compilation unit from an already-parsed Rowan syntax tree.
+///
+/// This performs the same lightweight lowering as [`parse`] but does *not*
+/// re-run the full Java parser.
+#[must_use]
+pub fn parse_with_syntax(root: &crate::SyntaxNode, text_len: usize) -> Parse {
+    let lowerer = Lowerer::new(SpanMapper::identity());
+    let compilation_unit = lowerer.lower_compilation_unit(root, text_len);
+    Parse { compilation_unit }
+}
+
 #[must_use]
 pub fn parse(text: &str) -> Parse {
     let parsed = parse_java(text);
-    let root = parsed.syntax();
-    let lowerer = Lowerer::new(SpanMapper::identity());
-    let compilation_unit = lowerer.lower_compilation_unit(&root, text.len());
-    Parse { compilation_unit }
+    #[cfg(any(test, feature = "test-parse-counter"))]
+    {
+        PARSE_TEXT_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    parse_with_syntax(&parsed.syntax(), text.len())
 }
 
 /// Parse a Java block statement (`{ ... }`).

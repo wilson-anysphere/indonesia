@@ -53,7 +53,8 @@ fn java_parse(db: &dyn NovaHir, file: FileId) -> Arc<nova_syntax::java::Parse> {
         Arc::new(String::new())
     };
 
-    let parsed = nova_syntax::java::parse(text.as_str());
+    let parse_java = db.parse_java(file);
+    let parsed = nova_syntax::java::parse_with_syntax(&parse_java.syntax(), text.len());
     let result = Arc::new(parsed);
     db.record_query_stat("java_parse", start.elapsed());
     result

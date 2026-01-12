@@ -3,6 +3,10 @@ name = "nova-syntax"
 version.workspace = true
 edition = "2021"
 
+[features]
+# Enables internal instrumentation used by downstream integration tests.
+test-parse-counter = []
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_repr = "0.1"
