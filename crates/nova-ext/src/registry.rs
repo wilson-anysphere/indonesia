@@ -95,7 +95,11 @@ impl Default for ExtensionRegistryOptions {
             // extension watchdog robust against short-lived thread-pool contention without meaningfully
             // impacting end-user responsiveness.
             completion_timeout: Duration::from_millis(100),
-            code_action_timeout: Duration::from_millis(50),
+            // Code actions are invoked less frequently than completions but can still contend for
+            // the shared watchdog pool (e.g. in unit tests or when the IDE is under load). Use a
+            // slightly larger default so lightweight providers don't get dropped due to scheduling
+            // delays.
+            code_action_timeout: Duration::from_millis(100),
             navigation_timeout: Duration::from_millis(50),
             inlay_hint_timeout: Duration::from_millis(50),
 
