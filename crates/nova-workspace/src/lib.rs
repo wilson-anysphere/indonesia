@@ -9,6 +9,7 @@ use nova_index::{
 };
 use nova_memory::{MemoryBudget, MemoryManager};
 use nova_project::ProjectError;
+use nova_scheduler::{CancellationToken, Cancelled};
 use nova_syntax::SyntaxNode;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -219,7 +220,8 @@ impl Workspace {
     }
 
     pub fn index(&self) -> Result<IndexReport> {
-        let (snapshot, cache_dir, _shards, metrics) = self.build_indexes(false)?;
+        let cancel = CancellationToken::new();
+        let (snapshot, cache_dir, _shards, metrics) = self.build_indexes(false, &cancel)?;
         Ok(IndexReport {
             root: snapshot.project_root().to_path_buf(),
             project_hash: snapshot.project_hash().as_str().to_string(),
@@ -231,7 +233,8 @@ impl Workspace {
     /// Index a project and persist the resulting artifacts into Nova's persistent cache.
     pub fn index_and_write_cache(&self) -> Result<IndexReport> {
         let shard_count = DEFAULT_SHARD_COUNT;
-        let (snapshot, cache_dir, mut shards, metrics) = self.build_indexes(false)?;
+        let cancel = CancellationToken::new();
+        let (snapshot, cache_dir, mut shards, metrics) = self.build_indexes(false, &cancel)?;
         if metrics.files_invalidated > 0 {
             save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards)
                 .context("failed to persist indexes")?;
@@ -248,10 +251,13 @@ impl Workspace {
     fn build_indexes(
         &self,
         load_shards_on_hit: bool,
+        cancel: &CancellationToken,
     ) -> Result<(ProjectSnapshot, CacheDir, Vec<ProjectIndexes>, PerfMetrics)> {
         let start = Instant::now();
 
+        Cancelled::check(cancel)?;
         let files = self.project_java_files()?;
+        Cancelled::check(cancel)?;
         let cache_dir = self.open_cache_dir()?;
 
         // ------------------------------------------------------------------
@@ -265,6 +271,7 @@ impl Workspace {
                 self.root.display()
             )
         })?;
+        Cancelled::check(cancel)?;
         let snapshot_ms = snapshot_start.elapsed().as_millis();
 
         // Load persisted sharded indexes based on the stamp snapshot. This avoids hashing
@@ -276,6 +283,7 @@ impl Workspace {
             shard_count,
         )
         .context("failed to load cached indexes")?;
+        Cancelled::check(cancel)?;
         let (loaded_shards, mut invalidated_files) = match loaded {
             Some(loaded) => (Some(loaded.shards), loaded.invalidated_files),
             None => (
@@ -311,6 +319,7 @@ impl Workspace {
             Some(loaded_shards) => {
                 let mut shards = Vec::with_capacity(shard_count as usize);
                 for shard in loaded_shards {
+                    Cancelled::check(cancel)?;
                     let indexes = match shard {
                         Some(archives) => ProjectIndexes {
                             symbols: archives.symbols.to_owned()?,
@@ -381,6 +390,7 @@ impl Workspace {
         // without re-reading the entire project.
         if !indexing_all_files {
             for path in stamp_snapshot.file_fingerprints().keys() {
+                Cancelled::check(cancel)?;
                 if !content_fingerprints.contains_key(path) {
                     invalidated_files.push(path.clone());
                 }
@@ -393,6 +403,7 @@ impl Workspace {
 
         // Remove stale results for invalidated (new/modified/deleted) files before re-indexing.
         for file in &invalidated_files {
+            Cancelled::check(cancel)?;
             let shard = shard_id_for_path(file, shard_count) as usize;
             shards[shard].invalidate_file(file);
         }
@@ -413,12 +424,20 @@ impl Workspace {
             if files_to_index.is_empty() {
                 (0usize, 0u64, std::collections::BTreeMap::new(), 0u128)
             } else {
+                Cancelled::check(cancel)?;
                 let index_start = Instant::now();
                 let (files_indexed, bytes_indexed, updated_fingerprints) =
-                    self.index_files(&stamp_snapshot, &mut shards, shard_count, &files_to_index)?;
+                    self.index_files(
+                        &stamp_snapshot,
+                        &mut shards,
+                        shard_count,
+                        &files_to_index,
+                        cancel,
+                    )?;
                 let index_ms = index_start.elapsed().as_millis();
                 (files_indexed, bytes_indexed, updated_fingerprints, index_ms)
             };
+        Cancelled::check(cancel)?;
 
         // Apply updated fingerprints and drop deleted files to produce a complete
         // content-hash snapshot for persistence without re-reading unchanged
@@ -456,6 +475,7 @@ impl Workspace {
         shards: &mut [ProjectIndexes],
         shard_count: u32,
         files_to_index: &[String],
+        cancel: &CancellationToken,
     ) -> Result<(usize, u64, std::collections::BTreeMap<String, Fingerprint>)> {
         let db = SalsaDatabase::new_with_persistence(
             snapshot.project_root(),
@@ -467,6 +487,7 @@ impl Workspace {
         let mut file_fingerprints = std::collections::BTreeMap::new();
 
         for (idx, file) in files_to_index.iter().enumerate() {
+            Cancelled::check(cancel)?;
             let shard = shard_id_for_path(file, shard_count) as usize;
             let indexes = &mut shards[shard];
             let full_path = snapshot.project_root().join(file);
@@ -718,14 +739,26 @@ impl Workspace {
     }
 
     pub fn workspace_symbols(&self, query: &str) -> Result<Vec<WorkspaceSymbol>> {
+        let cancel = CancellationToken::new();
+        self.workspace_symbols_cancelable(query, &cancel)
+    }
+
+    pub fn workspace_symbols_cancelable(
+        &self,
+        query: &str,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<WorkspaceSymbol>> {
         // Keep the symbol index up to date by running the incremental indexer
         // and persisting the updated indexes into the on-disk cache.
+        Cancelled::check(cancel)?;
         let shard_count = DEFAULT_SHARD_COUNT;
-        let (snapshot, cache_dir, mut shards, metrics) = self.build_indexes(true)?;
+        let (snapshot, cache_dir, mut shards, metrics) = self.build_indexes(true, cancel)?;
+        Cancelled::check(cancel)?;
         if metrics.files_invalidated > 0 {
             save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards)
                 .context("failed to persist indexes")?;
         }
+        Cancelled::check(cancel)?;
         self.write_cache_perf(&cache_dir, &metrics)?;
 
         const WORKSPACE_SYMBOL_LIMIT: usize = 200;

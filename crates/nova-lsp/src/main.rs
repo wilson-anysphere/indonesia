@@ -1201,7 +1201,7 @@ fn handle_request_json(
             if state.shutdown_requested {
                 return Ok(server_shutting_down_error(id));
             }
-            let result = handle_workspace_symbol(params, state);
+            let result = handle_workspace_symbol(params, state, cancel);
             Ok(match result {
                 Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
                 Err((code, message)) => {
@@ -2901,6 +2901,7 @@ fn code_action_to_lsp(action: NovaCodeAction) -> serde_json::Value {
 fn handle_workspace_symbol(
     params: serde_json::Value,
     state: &mut ServerState,
+    cancel: &CancellationToken,
 ) -> Result<serde_json::Value, (i32, String)> {
     let params: WorkspaceSymbolParams =
         serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
@@ -2920,7 +2921,7 @@ fn handle_workspace_symbol(
 
     let workspace = state.workspace.as_ref().expect("workspace initialized");
     let symbols = workspace
-        .workspace_symbols(query)
+        .workspace_symbols_cancelable(query, cancel)
         .map_err(|e| (-32603, e.to_string()))?;
 
     let mut out = Vec::new();
