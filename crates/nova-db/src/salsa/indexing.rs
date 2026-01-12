@@ -78,7 +78,8 @@ fn project_file_fingerprints(
     cancel::check_cancelled(db);
 
     let mut map = BTreeMap::new();
-    for &file in db.project_files(project).iter() {
+    for (idx, &file) in db.project_files(project).iter().enumerate() {
+        cancel::checkpoint_cancelled(db, idx as u32);
         if !db.file_exists(file) {
             continue;
         }
@@ -155,7 +156,8 @@ fn project_index_shards(db: &dyn NovaIndexing, project: ProjectId) -> Arc<Vec<Pr
         let cache_dir = cache_dir.as_ref().expect("cache_dir checked above");
         let mut fingerprints = BTreeMap::new();
 
-        for &file in db.project_files(project).iter() {
+        for (idx, &file) in db.project_files(project).iter().enumerate() {
+            cancel::checkpoint_cancelled(db, idx as u32);
             if !db.file_exists(file) {
                 continue;
             }
@@ -176,7 +178,8 @@ fn project_index_shards(db: &dyn NovaIndexing, project: ProjectId) -> Arc<Vec<Pr
             fingerprints,
         ))
     } else {
-        for &file in db.project_files(project).iter() {
+        for (idx, &file) in db.project_files(project).iter().enumerate() {
+            cancel::checkpoint_cancelled(db, idx as u32);
             if !db.file_exists(file) {
                 continue;
             }
@@ -279,7 +282,8 @@ fn project_index_shards(db: &dyn NovaIndexing, project: ProjectId) -> Arc<Vec<Pr
     }
 
     // Reindex only invalidated files and update their target shards.
-    for path in invalidated_files {
+    for (idx, path) in invalidated_files.into_iter().enumerate() {
+        cancel::checkpoint_cancelled(db, idx as u32);
         let shard = shard_id_for_path(&path, shard_count) as usize;
         let indexes = shards
             .get_mut(shard)
