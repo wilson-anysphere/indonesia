@@ -1,6 +1,6 @@
+use indexmap::IndexMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use indexmap::IndexMap;
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::io;
