@@ -91,6 +91,34 @@ class C {
 }
 
 #[test]
+fn byte_initializer_allows_int_constant() {
+    let src = r#"
+class C { void m(){ byte b = 1; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected no type-mismatch diagnostics; got {diags:?}"
+    );
+}
+
+#[test]
+fn byte_return_allows_int_constant() {
+    let src = r#"
+class C { byte m(){ return 1; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "return-mismatch"),
+        "expected no return-mismatch diagnostics; got {diags:?}"
+    );
+}
+
+#[test]
 fn reports_type_mismatch_for_bad_assignment() {
     let src = r#"
 class C {

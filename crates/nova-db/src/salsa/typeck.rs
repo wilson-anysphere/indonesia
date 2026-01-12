@@ -14,10 +14,11 @@ use nova_resolve::ids::{DefWithBodyId, ParamId};
 use nova_resolve::{NameResolution, Resolution, ScopeKind, StaticMemberResolution, TypeResolution};
 use nova_resolve::jpms_env::JpmsCompilationEnvironment;
 use nova_types::{
-    assignment_conversion, binary_numeric_promotion, format_resolved_method, format_type, CallKind,
-    ClassDef, ClassId, ClassKind, Diagnostic, FieldDef, MethodCall, MethodCandidateFailureReason,
-    MethodDef, MethodNotFound, MethodResolution, PrimitiveType, ResolvedMethod, Span, TyContext,
-    Type, TypeEnv, TypeParamDef, TypeProvider, TypeStore, TypeVarId,
+    assignment_conversion, assignment_conversion_with_const, binary_numeric_promotion,
+    format_resolved_method, format_type, CallKind, ClassDef, ClassId, ClassKind, Diagnostic,
+    FieldDef, MethodCall, MethodCandidateFailureReason, MethodDef, MethodNotFound,
+    MethodResolution, PrimitiveType, ResolvedMethod, Span, TyContext, Type, TypeEnv, TypeParamDef,
+    TypeProvider, TypeStore, TypeVarId,
 };
 use nova_types_bridge::ExternalTypeLoader;
 
@@ -82,6 +83,29 @@ pub struct BodyTypeckResult {
     pub call_resolutions: Vec<Option<ResolvedMethod>>,
     pub diagnostics: Vec<Diagnostic>,
     pub expected_return: Type,
+}
+
+fn const_value_for_expr(body: &HirBody, expr: HirExprId) -> Option<nova_types::ConstValue> {
+    match &body.exprs[expr] {
+        HirExpr::Literal {
+            kind: LiteralKind::Int,
+            value,
+            ..
+        } => value
+            .parse::<i64>()
+            .ok()
+            .map(nova_types::ConstValue::Int),
+        HirExpr::Literal {
+            kind: LiteralKind::Bool,
+            value,
+            ..
+        } => match value.as_str() {
+            "true" => Some(nova_types::ConstValue::Boolean(true)),
+            "false" => Some(nova_types::ConstValue::Boolean(false)),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 #[ra_salsa::query_group(NovaTypeckStorage)]
@@ -900,7 +924,14 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 }
 
                 let env_ro: &dyn TypeEnv = &*loader.store;
-                if assignment_conversion(env_ro, &init_ty, &decl_ty).is_none() {
+                if assignment_conversion_with_const(
+                    env_ro,
+                    &init_ty,
+                    &decl_ty,
+                    const_value_for_expr(self.body, *init),
+                )
+                .is_none()
+                {
                     let expected = format_type(env_ro, &decl_ty);
                     let found = format_type(env_ro, &init_ty);
                     self.diagnostics.push(Diagnostic::error(
@@ -946,7 +977,14 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 }
 
                 let env_ro: &dyn TypeEnv = &*loader.store;
-                if assignment_conversion(env_ro, &expr_ty, expected_return).is_none() {
+                if assignment_conversion_with_const(
+                    env_ro,
+                    &expr_ty,
+                    expected_return,
+                    const_value_for_expr(self.body, *expr),
+                )
+                .is_none()
+                {
                     let expected = format_type(env_ro, expected_return);
                     let found = format_type(env_ro, &expr_ty);
                     self.diagnostics.push(Diagnostic::error(
