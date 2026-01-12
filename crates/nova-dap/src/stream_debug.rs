@@ -14,9 +14,8 @@ pub const STREAM_DEBUG_COMMAND: &str = "nova/streamDebug";
 /// Hard cap on `StreamDebugConfig::max_sample_size` exposed via the DAP
 /// `nova/streamDebug` request.
 ///
-/// The stream debugger samples by evaluating a bounded prefix of the stream
-/// (`.limit(...).collect(...)`). Keeping this capped avoids expensive evaluations
-/// and large allocations when inspecting big streams.
+/// The stream debugger samples a bounded prefix of the stream. Keeping this capped avoids
+/// expensive evaluations and large allocations when inspecting big streams.
 pub const STREAM_DEBUG_MAX_SAMPLE_SIZE: usize = 25;
 
 #[derive(Debug, Deserialize)]
