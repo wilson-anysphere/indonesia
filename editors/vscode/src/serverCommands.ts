@@ -389,7 +389,13 @@ export function registerNovaServerCommands(
       return;
     }
 
-    if (!configs || !Array.isArray(configs) || configs.length === 0) {
+    // `sendNovaRequest` returns `undefined` when the server does not support the method, and it
+    // already surfaces a user-facing error message in that case.
+    if (!configs) {
+      return;
+    }
+
+    if (!Array.isArray(configs) || configs.length === 0) {
       void vscode.window.showErrorMessage('Nova: No debug configurations discovered for this workspace.');
       return;
     }
