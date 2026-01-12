@@ -2316,7 +2316,7 @@ fn reload_project_and_sync(
     paths.dedup();
 
     let open_docs = vfs.open_documents();
-    let mut next_entries: Vec<(String, FileId)> = Vec::new();
+    let mut next_entries: Vec<(Arc<String>, FileId)> = Vec::new();
 
     for path in paths {
         let vfs_path = VfsPath::local(path.clone());
@@ -2326,9 +2326,11 @@ fn reload_project_and_sync(
             continue;
         };
 
-        // `nova-db` keeps the non-tracked persistence `file_path` in sync with `file_rel_path`,
-        // sharing the same `Arc<String>` for minimal allocations and stable persistence keys.
-        query_db.set_file_rel_path(file_id, Arc::new(rel_path.clone()));
+        let rel_path = Arc::new(rel_path);
+        // `set_file_rel_path` keeps the non-tracked persistence `file_path` in sync with
+        // `file_rel_path`, sharing the same `Arc<String>` for stable persistence keys without
+        // duplicating the underlying string.
+        query_db.set_file_rel_path(file_id, rel_path.clone());
         query_db.set_file_project(file_id, project);
         let root_id = source_root_for_path(&source_roots, &path).unwrap_or_else(|| {
             source_roots
@@ -2372,7 +2374,12 @@ fn reload_project_and_sync(
         }
     }
 
-    next_entries.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    next_entries.sort_by(|(a_path, a_id), (b_path, b_id)| {
+        a_path
+            .as_str()
+            .cmp(b_path.as_str())
+            .then(a_id.cmp(b_id))
+    });
     let ordered: Vec<FileId> = next_entries.into_iter().map(|(_, id)| id).collect();
     query_db.set_project_files(project, Arc::new(ordered));
 
