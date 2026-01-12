@@ -1,14 +1,32 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use nova_core::ProjectDatabase;
-use nova_db::{Database, FileId, NovaInputs, SalsaDatabase};
+use nova_db::{Database, FileId, NovaInputs, SalsaDatabase, Snapshot};
 use nova_vfs::FileSystem;
+use nova_vfs::{LocalFs, Vfs};
 use nova_vfs::VfsPath;
 
 use crate::engine::WorkspaceEngine;
+
+#[cfg(test)]
+thread_local! {
+    static WORKSPACE_SNAPSHOT_FROM_ENGINE_CALLS: std::cell::Cell<usize> = const {
+        std::cell::Cell::new(0)
+    };
+}
+
+#[cfg(test)]
+pub(crate) fn test_reset_workspace_snapshot_from_engine_calls() {
+    WORKSPACE_SNAPSHOT_FROM_ENGINE_CALLS.with(|cell| cell.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn test_workspace_snapshot_from_engine_calls() -> usize {
+    WORKSPACE_SNAPSHOT_FROM_ENGINE_CALLS.with(std::cell::Cell::get)
+}
 
 /// An owned, thread-safe view of the current workspace contents.
 ///
@@ -57,6 +75,9 @@ impl WorkspaceSnapshot {
     /// Salsa inputs haven't been initialized yet, we fall back to reading from the
     /// VFS (and ultimately disk for non-open files).
     pub(crate) fn from_engine(engine: &WorkspaceEngine) -> Self {
+        #[cfg(test)]
+        WORKSPACE_SNAPSHOT_FROM_ENGINE_CALLS.with(|cell| cell.set(cell.get() + 1));
+
         let vfs = engine.vfs();
         let all_file_ids = vfs.all_file_ids();
         let query_db = engine.query_db();
@@ -170,6 +191,107 @@ impl WorkspaceSnapshot {
             path_to_id,
             salsa_db: None,
         }
+    }
+}
+
+/// A lightweight, snapshot-backed [`nova_db::Database`] view for IDE requests.
+///
+/// Unlike [`WorkspaceSnapshot`], this type avoids eagerly materializing all file contents.
+/// It holds a single Salsa snapshot and lazily caches file text (`Arc<String>`) on demand.
+///
+/// ## Safety notes
+///
+/// The legacy [`nova_db::Database`] trait returns borrowed `&str`/`&Path` references.
+/// To support lazily-populated caches, we store snapshot-owned values (`Arc<String>`,
+/// `PathBuf`) in internal maps and return references to their stable heap allocations.
+///
+/// This requires a small amount of `unsafe` code to extend the borrow outside the
+/// cache lock's lifetime. This is sound because:
+/// - Cache entries are only ever inserted (never removed or replaced).
+/// - The returned references point into `Arc<String>` / `PathBuf` heap allocations,
+///   which remain valid for the lifetime of the view.
+pub(crate) struct WorkspaceDbView {
+    snapshot: Snapshot,
+    vfs: Vfs<LocalFs>,
+    file_contents: Mutex<HashMap<FileId, Arc<String>>>,
+    file_paths: Mutex<HashMap<FileId, Option<PathBuf>>>,
+    all_file_ids: OnceLock<Vec<FileId>>,
+}
+
+impl WorkspaceDbView {
+    pub(crate) fn new(snapshot: Snapshot, vfs: Vfs<LocalFs>) -> Self {
+        Self {
+            snapshot,
+            vfs,
+            file_contents: Mutex::new(HashMap::new()),
+            file_paths: Mutex::new(HashMap::new()),
+            all_file_ids: OnceLock::new(),
+        }
+    }
+
+    pub(crate) fn semantic_db(&self) -> &Snapshot {
+        &self.snapshot
+    }
+
+    fn lock_unpoison<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+        match mutex.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn snapshot_file_content(&self, file_id: FileId) -> Arc<String> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            nova_db::SourceDatabase::file_content(&self.snapshot, file_id)
+        }))
+            .ok()
+            .unwrap_or_else(|| Arc::new(String::new()))
+    }
+
+    fn cached_file_content_ptr(&self, file_id: FileId) -> *const str {
+        let mut cache = Self::lock_unpoison(&self.file_contents);
+        let entry = cache
+            .entry(file_id)
+            .or_insert_with(|| self.snapshot_file_content(file_id));
+        entry.as_str() as *const str
+    }
+
+    fn cached_file_path_ptr(&self, file_id: FileId) -> Option<*const Path> {
+        let mut cache = Self::lock_unpoison(&self.file_paths);
+        let entry = cache.entry(file_id).or_insert_with(|| {
+            self.vfs
+                .path_for_id(file_id)
+                .as_ref()
+                .and_then(VfsPath::as_local_path)
+                .map(Path::to_path_buf)
+        });
+        entry.as_ref().map(|p| p.as_path() as *const Path)
+    }
+}
+
+impl Database for WorkspaceDbView {
+    fn file_content(&self, file_id: FileId) -> &str {
+        let ptr = self.cached_file_content_ptr(file_id);
+        // SAFETY: See type-level safety notes. The returned `&str` points into a heap allocation
+        // owned by an `Arc<String>` stored in `self.file_contents`, which is never removed.
+        unsafe { &*ptr }
+    }
+
+    fn file_path(&self, file_id: FileId) -> Option<&Path> {
+        let ptr = self.cached_file_path_ptr(file_id)?;
+        // SAFETY: See type-level safety notes. The returned `&Path` points into a heap allocation
+        // owned by a `PathBuf` stored in `self.file_paths`, which is never removed.
+        Some(unsafe { &*ptr })
+    }
+
+    fn all_file_ids(&self) -> Vec<FileId> {
+        self.all_file_ids
+            .get_or_init(|| self.vfs.all_file_ids())
+            .clone()
+    }
+
+    fn file_id(&self, path: &Path) -> Option<FileId> {
+        self.vfs.get_id(&VfsPath::local(path.to_path_buf()))
     }
 }
 

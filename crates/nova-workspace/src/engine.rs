@@ -37,6 +37,7 @@ use walkdir::WalkDir;
 
 use nova_build::{BuildManager, CommandRunner};
 
+use crate::snapshot::WorkspaceDbView;
 use crate::watch::{categorize_event, ChangeCategory, NormalizedEvent, WatchConfig};
 use crate::watch_roots::{WatchRootError, WatchRootManager};
 
@@ -1209,67 +1210,88 @@ impl WorkspaceEngine {
                 }
             }
         })
+            .map_err(|err| {
+                // If watcher creation fails, make sure the workspace doesn't think a watcher is
+                // running (the `WatcherHandle` won't be returned so `Drop` can't clear the store).
+                *self
+                    .watcher_command_store
+                    .lock()
+                    .expect("workspace watcher command store mutex poisoned") = None;
+                err
+            })
             .context("failed to spawn workspace watcher thread")?;
 
         let (driver_stop_tx, driver_stop_rx) = channel::bounded::<()>(0);
-        let driver_thread = thread::Builder::new()
+        let driver_thread = match thread::Builder::new()
             .name("workspace-watcher-driver".to_string())
             .spawn(move || loop {
-            channel::select! {
-                recv(driver_stop_rx) -> _ => break,
-                recv(batch_rx) -> msg => {
-                    let Ok(msg) = msg else { break };
-                    match msg {
-                        WatcherMessage::Batch(category, events) => match category {
-                            ChangeCategory::Source => engine.apply_filesystem_events(events),
-                            ChangeCategory::Build => {
-                                // Build/config changes normally don't need to flow through the VFS.
-                                //
-                                // However, we currently treat `module-info.java` as a build file so we
-                                // can trigger a project reload to refresh the JPMS graph. We still want
-                                // the VFS + Salsa inputs to see the updated file contents promptly for
-                                // diagnostics and open-document behavior.
-                                let mut java_events = Vec::new();
-                                let mut changed = Vec::new();
-                                for ev in events {
-                                    let is_java = ev.paths().any(|path| {
-                                        path.extension().and_then(|ext| ext.to_str()) == Some("java")
-                                    });
-                                    if is_java {
-                                        java_events.push(ev.clone());
-                                    }
+                channel::select! {
+                    recv(driver_stop_rx) -> _ => break,
+                    recv(batch_rx) -> msg => {
+                        let Ok(msg) = msg else { break };
+                        match msg {
+                            WatcherMessage::Batch(category, events) => match category {
+                                ChangeCategory::Source => engine.apply_filesystem_events(events),
+                                ChangeCategory::Build => {
+                                    // Build/config changes normally don't need to flow through the VFS.
+                                    //
+                                    // However, we currently treat `module-info.java` as a build file so we
+                                    // can trigger a project reload to refresh the JPMS graph. We still want
+                                    // the VFS + Salsa inputs to see the updated file contents promptly for
+                                    // diagnostics and open-document behavior.
+                                    let mut java_events = Vec::new();
+                                    let mut changed = Vec::new();
+                                    for ev in events {
+                                        let is_java = ev.paths().any(|path| {
+                                            path.extension().and_then(|ext| ext.to_str()) == Some("java")
+                                        });
+                                        if is_java {
+                                            java_events.push(ev.clone());
+                                        }
 
-                                    match ev {
-                                        NormalizedEvent::Created(p)
-                                        | NormalizedEvent::Modified(p)
-                                        | NormalizedEvent::Deleted(p) => changed.push(p),
-                                        NormalizedEvent::Moved { from, to } => {
-                                            changed.push(from);
-                                            changed.push(to);
+                                        match ev {
+                                            NormalizedEvent::Created(p)
+                                            | NormalizedEvent::Modified(p)
+                                            | NormalizedEvent::Deleted(p) => changed.push(p),
+                                            NormalizedEvent::Moved { from, to } => {
+                                                changed.push(from);
+                                                changed.push(to);
+                                            }
                                         }
                                     }
+
+                                    if !java_events.is_empty() {
+                                        engine.apply_filesystem_events(java_events);
+                                    }
+                                    engine.request_project_reload(changed);
                                 }
-                                if !java_events.is_empty() {
-                                    engine.apply_filesystem_events(java_events);
+                            },
+                            WatcherMessage::Rescan => {
+                                if let Err(err) = engine.reload_project_now(&[]) {
+                                    publish_to_subscribers(
+                                        &engine.subscribers,
+                                        WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
+                                            "Project rescan failed: {err}"
+                                        ))),
+                                    );
                                 }
-                                engine.request_project_reload(changed);
-                            }
-                        },
-                        WatcherMessage::Rescan => {
-                            if let Err(err) = engine.reload_project_now(&[]) {
-                                publish_to_subscribers(
-                                    &engine.subscribers,
-                                    WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
-                                        "Project rescan failed: {err}"
-                                    ))),
-                                );
                             }
                         }
                     }
                 }
+            }) {
+            Ok(thread) => thread,
+            Err(err) => {
+                // Clean up the already-running watcher thread since we won't be returning a handle.
+                let _ = watcher_stop_tx.send(());
+                let _ = watcher_thread.join();
+                *self
+                    .watcher_command_store
+                    .lock()
+                    .expect("workspace watcher command store mutex poisoned") = None;
+                return Err(err).context("failed to spawn workspace watcher driver thread");
             }
-        })
-            .context("failed to spawn workspace watcher driver thread")?;
+        };
 
         Ok(WatcherHandle {
             watcher_stop: watcher_stop_tx,
@@ -1770,12 +1792,11 @@ impl WorkspaceEngine {
             return Vec::new();
         }
         let cap = report.degraded.completion_candidate_cap;
-        self.closed_file_texts
-            .restore_if_evicted(&self.vfs, file_id);
-        let snapshot = crate::WorkspaceSnapshot::from_engine(self);
-        let text = snapshot.file_content(file_id);
+        self.closed_file_texts.restore_if_evicted(&self.vfs, file_id);
+        let view = WorkspaceDbView::new(self.query_db.snapshot(), self.vfs.clone());
+        let text = view.file_content(file_id);
         let position = offset_to_lsp_position(text, offset);
-        let mut items: Vec<CompletionItem> = nova_ide::completions(&snapshot, file_id, position)
+        let mut items: Vec<CompletionItem> = nova_ide::completions(&view, file_id, position)
             .into_iter()
             .map(|item| CompletionItem {
                 label: item.label,
@@ -2412,12 +2433,9 @@ impl WorkspaceEngine {
             return self.syntax_diagnostics_only(file, file_id);
         }
 
-        self.closed_file_texts
-            .restore_if_evicted(&self.vfs, file_id);
-        let snapshot = crate::WorkspaceSnapshot::from_engine(self);
-        self.query_db.with_snapshot(|snap| {
-            nova_ide::file_diagnostics_with_semantic_db(&snapshot, snap, file_id)
-        })
+        self.closed_file_texts.restore_if_evicted(&self.vfs, file_id);
+        let view = WorkspaceDbView::new(self.query_db.snapshot(), self.vfs.clone());
+        nova_ide::file_diagnostics_with_semantic_db(&view, view.semantic_db(), file_id)
     }
 
     fn syntax_diagnostics_only(&self, file: &VfsPath, file_id: FileId) -> Vec<NovaDiagnostic> {
@@ -6189,7 +6207,6 @@ enabled = false
 
         use nova_db::NovaSyntax;
         use nova_memory::MemoryPressure;
-
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         fs::create_dir_all(root.join("src")).unwrap();
@@ -6279,6 +6296,179 @@ enabled = false
         );
     }
 
+    #[test]
+    fn diagnostics_use_lazy_db_view_without_building_workspace_snapshot() {
+        crate::snapshot::test_reset_workspace_snapshot_from_engine_calls();
+
+        let workspace = crate::Workspace::new_in_memory();
+        let rx = workspace.subscribe();
+        let dir = tempfile::tempdir().unwrap();
+        let file = VfsPath::local(dir.path().join("Main.java"));
+
+        workspace.open_document(
+            file.clone(),
+            "class Main { void f() { missingSymbol(); } }".to_string(),
+            1,
+        );
+
+        let mut diagnostics = None;
+        for _ in 0..10 {
+            let evt = rx.recv_blocking().expect("workspace event");
+            if let WorkspaceEvent::DiagnosticsUpdated {
+                file: updated,
+                diagnostics: diags,
+            } = evt
+            {
+                if updated == file {
+                    diagnostics = Some(diags);
+                    break;
+                }
+            }
+        }
+
+        let diagnostics = diagnostics.expect("diagnostics published for open document");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code.as_ref() == "UNRESOLVED_REFERENCE"),
+            "expected unresolved reference diagnostic, got: {diagnostics:?}"
+        );
+
+        assert_eq!(
+            crate::snapshot::test_workspace_snapshot_from_engine_calls(),
+            0,
+            "diagnostics should not build WorkspaceSnapshot::from_engine"
+        );
+    }
+
+    #[test]
+    fn completions_use_salsa_for_non_open_files_without_building_workspace_snapshot() {
+        crate::snapshot::test_reset_workspace_snapshot_from_engine_calls();
+
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
+        fs::create_dir_all(root.join("src/com/example/lib")).unwrap();
+
+        let main_path = root.join("src/Main.java");
+        let foo_path = root.join("src/com/example/lib/Foo.java");
+
+        let main_source = r#"import com.example.lib.
+
+class Main {}"#;
+        let foo_source_old = r#"package com.example.lib;
+
+public class Foo {}"#;
+
+        fs::write(&main_path, main_source.as_bytes()).unwrap();
+        fs::write(&foo_path, foo_source_old.as_bytes()).unwrap();
+
+        let workspace = crate::Workspace::open(&root).unwrap();
+        let engine = workspace.engine_for_tests();
+
+        // Ensure both files are registered in the VFS and have Salsa inputs initialized.
+        engine.apply_filesystem_events(vec![
+            NormalizedEvent::Created(main_path.clone()),
+            NormalizedEvent::Created(foo_path.clone()),
+        ]);
+
+        let vfs_foo = VfsPath::local(foo_path.clone());
+        let foo_id = engine.vfs.get_id(&vfs_foo).expect("file id for Foo");
+
+        // Update Foo.java on disk without notifying the workspace. Completion requests must still
+        // see the *old* content via Salsa inputs (no disk IO).
+        let foo_source_new = r#"package com.example.lib;
+
+public class Bar {}"#;
+        fs::write(&foo_path, foo_source_new.as_bytes()).unwrap();
+
+        // Sanity check: the lazy DB view must still serve the old Salsa contents.
+        let view = crate::snapshot::WorkspaceDbView::new(engine.query_db.snapshot(), engine.vfs.clone());
+        assert!(
+            view.file_content(foo_id).contains("class Foo"),
+            "expected view to serve old Salsa contents, got: {:?}",
+            view.file_content(foo_id)
+        );
+        assert!(
+            !view.file_content(foo_id).contains("class Bar"),
+            "did not expect view to read updated disk contents, got: {:?}",
+            view.file_content(foo_id)
+        );
+
+        // Trigger import completions from Main.java; this scans workspace Java sources and should
+        // still see the old `Foo` type name.
+        let vfs_main = VfsPath::local(main_path.clone());
+        let offset = main_source
+            .find("com.example.lib.")
+            .expect("main source contains import prefix")
+            + "com.example.lib.".len();
+        let items = engine.completions(&vfs_main, offset);
+        let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+
+        // Under critical memory pressure, the engine may intentionally truncate to 0 candidates.
+        // Only assert on concrete items when completions are not capped to zero.
+        let cap = engine.memory_report_for_work().degraded.completion_candidate_cap;
+        if cap > 0 {
+            assert!(
+                labels.iter().any(|l| *l == "Foo"),
+                "expected completions to include Foo from Salsa; got {labels:?}"
+            );
+            assert!(
+                !labels.iter().any(|l| *l == "Bar"),
+                "did not expect completions to include Bar from disk; got {labels:?}"
+            );
+        }
+
+        assert_eq!(
+            crate::snapshot::test_workspace_snapshot_from_engine_calls(),
+            0,
+            "completions should not build WorkspaceSnapshot::from_engine"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[ignore = "relies on OS file watcher timings"]
+    async fn notify_watcher_propagates_disk_edits_into_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        let file = root.join("src/Main.java");
+        fs::write(&file, "class Main {}".as_bytes()).unwrap();
+
+        let workspace = crate::Workspace::open(&root).unwrap();
+        let rx = workspace.subscribe();
+        let engine = workspace.engine.clone();
+        let _watcher = engine.start_watching().unwrap();
+
+        let vfs_path = VfsPath::local(file.clone());
+        let updated = "class Main { int x; }";
+        fs::write(&file, updated.as_bytes()).unwrap();
+
+        let vfs_path_for_wait = vfs_path.clone();
+        timeout(Duration::from_secs(5), async move {
+            loop {
+                let event = rx
+                    .recv()
+                    .await
+                    .expect("workspace event channel unexpectedly closed");
+                match event {
+                    WorkspaceEvent::FileChanged { file } if file == vfs_path_for_wait => break,
+                    WorkspaceEvent::Status(WorkspaceStatus::IndexingError(err)) => {
+                        panic!("workspace watcher error: {err}");
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for file watcher to update workspace");
+
+        let file_id = engine.vfs.get_id(&vfs_path).expect("file id allocated");
+        engine.query_db.with_snapshot(|snap| {
+            assert_eq!(snap.file_content(file_id).as_str(), updated);
+        });
+    }
     #[tokio::test(flavor = "current_thread")]
     async fn manual_watcher_propagates_disk_edits_into_workspace() {
         let dir = tempfile::tempdir().unwrap();
