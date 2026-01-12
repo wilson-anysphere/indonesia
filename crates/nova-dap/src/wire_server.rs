@@ -4396,7 +4396,14 @@ async fn detach_existing_process(launched_process: &Arc<Mutex<Option<LaunchedPro
     let Some(proc) = proc else { return };
 
     proc.detach.cancel();
-    let _ = tokio::time::timeout(Duration::from_millis(250), proc.monitor).await;
+    let mut monitor = proc.monitor;
+    if tokio::time::timeout(Duration::from_millis(250), &mut monitor)
+        .await
+        .is_err()
+    {
+        monitor.abort();
+        let _ = tokio::time::timeout(Duration::from_millis(250), monitor).await;
+    }
 }
 
 async fn terminate_existing_process(launched_process: &Arc<Mutex<Option<LaunchedProcess>>>) {
@@ -4410,7 +4417,14 @@ async fn terminate_existing_process(launched_process: &Arc<Mutex<Option<Launched
     let _ = proc.kill.send(true);
 
     // Reap the process via the monitor task, but don't hang shutdown if it refuses to die.
-    let _ = tokio::time::timeout(Duration::from_secs(2), proc.monitor).await;
+    let mut monitor = proc.monitor;
+    if tokio::time::timeout(Duration::from_secs(2), &mut monitor)
+        .await
+        .is_err()
+    {
+        monitor.abort();
+        let _ = tokio::time::timeout(Duration::from_millis(250), monitor).await;
+    }
 }
 
 async fn disconnect_debugger(debugger: &Arc<Mutex<Option<Debugger>>>) {
