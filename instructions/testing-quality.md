@@ -183,13 +183,13 @@ proptest! {
 rustup toolchain install nightly --component llvm-tools-preview --component rust-src
 
 # Install cargo-fuzz
-cargo +nightly install cargo-fuzz --locked
+bash scripts/cargo_agent.sh +nightly install cargo-fuzz --locked
 
 # List available fuzz targets in the main harness (`./fuzz/`).
-cargo +nightly fuzz list
+bash scripts/cargo_agent.sh +nightly fuzz list
 
 # Run a fuzz target (from the repo root).
-cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
+bash scripts/cargo_agent.sh +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
 ```
 
 ### Fuzz Targets
@@ -225,12 +225,12 @@ Run these from the crate directory:
 
 ```bash
 cd crates/nova-remote-proto
-cargo +nightly fuzz list
-cargo +nightly fuzz run decode_framed_message -- -max_total_time=60 -max_len=262144
+bash ../../scripts/cargo_agent.sh +nightly fuzz list
+bash ../../scripts/cargo_agent.sh +nightly fuzz run decode_framed_message -- -max_total_time=60 -max_len=262144
 
 cd ../nova-remote-rpc
-cargo +nightly fuzz list
-cargo +nightly fuzz run v3_framed_transport -- -max_total_time=60 -max_len=262144
+bash ../../scripts/cargo_agent.sh +nightly fuzz list
+bash ../../scripts/cargo_agent.sh +nightly fuzz run v3_framed_transport -- -max_total_time=60 -max_len=262144
 ```
 
 ### Writing Fuzz Targets
@@ -253,8 +253,8 @@ fuzz_target!(|data: &[u8]| {
 
 When fuzzer finds a crash:
 
-1. **Reproduce**: `cargo +nightly fuzz run <target> <crash_file>`
-2. **Minimize**: `cargo +nightly fuzz tmin <target> <crash_file>`
+1. **Reproduce**: `bash scripts/cargo_agent.sh +nightly fuzz run <target> <crash_file>`
+2. **Minimize**: `bash scripts/cargo_agent.sh +nightly fuzz tmin <target> <crash_file>`
 3. **Debug**: Add minimized input as test case
 4. **Fix**: Fix the bug
 5. **Verify**: Ensure crash no longer reproduces
@@ -384,7 +384,7 @@ Generate coverage reports:
 
 ```bash
 # Install llvm-cov
-cargo install cargo-llvm-cov
+bash scripts/cargo_agent.sh install cargo-llvm-cov --locked
 
 # Generate report
 bash scripts/cargo_agent.sh llvm-cov -p nova-core --html
