@@ -1288,6 +1288,9 @@ file-operation notifications via `initializeResult.capabilities.workspace.fileOp
 Semantics:
 
 - Updates Nova’s internal VFS/caches to treat `from` as renamed to `to`.
+- Preserves Nova’s internal `FileId` for the file across the rename, so cached analysis state and
+  semantic-search indexing can be updated in-place.
+- Removes `from` from the semantic-search index and updates the semantic-search path key to `to`.
 - If `to` is not currently open in the editor, Nova refreshes the new path from disk.
 - If `to` is open, Nova treats the rename as a pure path move (the in-memory overlay remains the
   source of truth).
