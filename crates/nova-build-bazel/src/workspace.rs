@@ -305,6 +305,9 @@ impl<R: CommandRunner> BazelWorkspace<R> {
     ///
     /// When multiple owning targets exist, they are tried in lexicographic order and the first
     /// target that yields compile info is returned.
+    ///
+    /// Returns an error if one or more owning targets were found but none of them produced usable
+    /// `JavaCompileInfo` (e.g. no `Javac` actions).
     pub fn compile_info_for_file(
         &mut self,
         file: impl AsRef<Path>,
