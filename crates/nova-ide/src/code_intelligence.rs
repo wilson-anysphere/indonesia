@@ -3,7 +3,7 @@
 //! Nova's long-term architecture is query-driven and will use proper syntax trees
 //! and semantic models. For this repository we keep the implementation lightweight
 //! and text-based so that user-visible IDE features can be exercised end-to-end.
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -24,7 +24,7 @@ use nova_db::{
 use nova_fuzzy::FuzzyMatcher;
 use nova_jdk::JdkIndex;
 use nova_types::{
-    CallKind, ClassId, ClassKind, Diagnostic, MethodCall, MethodDef, MethodResolution,
+    CallKind, ClassId, ClassKind, Diagnostic, FieldDef, MethodCall, MethodDef, MethodResolution,
     PrimitiveType, ResolvedMethod, Severity, Span, TyContext, Type, TypeEnv, TypeStore,
 };
 use once_cell::sync::Lazy;
@@ -3848,7 +3848,9 @@ pub(crate) fn core_completions(
                 return Vec::new();
             }
             infer_receiver_type_before_dot(db, file, ctx.dot_offset)
-                .map(|ty| member_completions_for_receiver_type(db, file, &ty, &prefix))
+                .map(|ty| {
+                    member_completions_for_receiver_type(db, file, &ty, &prefix)
+                })
                 .unwrap_or_default()
         } else {
             if cancel.is_cancelled() {
@@ -4352,7 +4354,9 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         }
         items.extend(if receiver.is_empty() {
             infer_receiver_type_before_dot(db, file, ctx.dot_offset)
-                .map(|ty| member_completions_for_receiver_type(db, file, &ty, &prefix))
+                .map(|ty| {
+                    member_completions_for_receiver_type(db, file, &ty, &prefix)
+                })
                 .unwrap_or_default()
         } else {
             member_completions(db, file, &receiver, &prefix, ctx.dot_offset)
@@ -5486,6 +5490,7 @@ fn member_completions(
                 kind: Some(kind),
                 insert_text: Some(insert_text),
                 insert_text_format: format,
+                data: Some(member_origin_data(true)),
                 ..Default::default()
             });
         }
@@ -5644,6 +5649,7 @@ fn member_completions_for_receiver_type(
             kind: Some(kind),
             insert_text: Some(insert_text),
             insert_text_format: format,
+            data: Some(member_origin_data(true)),
             ..Default::default()
         });
     }
@@ -6610,26 +6616,38 @@ fn workspace_types_in_file(text: &str) -> (Option<String>, Vec<(String, Completi
     (package, types)
 }
 
-fn semantic_member_completions(
-    types: &mut TypeStore,
-    receiver_ty: &Type,
-    call_kind: CallKind,
-) -> Vec<CompletionItem> {
-    ensure_type_methods_loaded(types, receiver_ty);
+fn member_origin_data(is_direct: bool) -> serde_json::Value {
+    json!({
+        "nova": {
+            "origin": "code_intelligence",
+            "member_origin": if is_direct { "direct" } else { "inherited" }
+        }
+    })
+}
 
-    let class_id = match receiver_ty {
+fn class_id_of_type(types: &mut TypeStore, ty: &Type) -> Option<ClassId> {
+    match ty {
         Type::Class(nova_types::ClassType { def, .. }) => Some(*def),
         Type::Named(name) => ensure_class_id(types, name.as_str()),
         _ => None,
-    };
-    let Some(class_id) = class_id else {
-        return Vec::new();
-    };
-    let Some(class_def) = types.class(class_id) else {
-        return Vec::new();
-    };
+    }
+}
 
-    let mut items = Vec::new();
+fn collect_members_from_class(
+    types: &mut TypeStore,
+    class_id: ClassId,
+    call_kind: CallKind,
+    is_direct: bool,
+    seen_fields: &mut HashSet<String>,
+    seen_methods: &mut HashSet<(String, usize)>,
+    out: &mut Vec<CompletionItem>,
+) {
+    let class_ty = Type::class(class_id, vec![]);
+    ensure_type_members_loaded(types, &class_ty);
+
+    let Some(class_def) = types.class(class_id) else {
+        return;
+    };
 
     for field in &class_def.fields {
         let include = match call_kind {
@@ -6639,10 +6657,14 @@ fn semantic_member_completions(
         if !include {
             continue;
         }
-        items.push(CompletionItem {
+        if !seen_fields.insert(field.name.clone()) {
+            continue;
+        }
+        out.push(CompletionItem {
             label: field.name.clone(),
             kind: Some(CompletionItemKind::FIELD),
             detail: Some(nova_types::format_type(types, &field.ty)),
+            data: Some(member_origin_data(is_direct)),
             ..Default::default()
         });
     }
@@ -6655,14 +6677,113 @@ fn semantic_member_completions(
         if !include {
             continue;
         }
-        items.push(CompletionItem {
+
+        let key = (method.name.clone(), method.params.len());
+        if !seen_methods.insert(key) {
+            continue;
+        }
+
+        out.push(CompletionItem {
             label: method.name.clone(),
             kind: Some(CompletionItemKind::METHOD),
             detail: Some(nova_types::format_method_signature(types, class_id, method)),
             insert_text: Some(format!("{}($0)", method.name)),
             insert_text_format: Some(InsertTextFormat::SNIPPET),
+            data: Some(member_origin_data(is_direct)),
             ..Default::default()
         });
+    }
+}
+
+fn semantic_member_completions(
+    types: &mut TypeStore,
+    receiver_ty: &Type,
+    call_kind: CallKind,
+) -> Vec<CompletionItem> {
+    ensure_type_members_loaded(types, receiver_ty);
+
+    let Some(class_id) = class_id_of_type(types, receiver_ty) else {
+        return Vec::new();
+    };
+
+    let mut items = Vec::new();
+    let mut seen_fields = HashSet::<String>::new();
+    let mut seen_methods = HashSet::<(String, usize)>::new();
+
+    // Receiver type members first.
+    collect_members_from_class(
+        types,
+        class_id,
+        call_kind,
+        true,
+        &mut seen_fields,
+        &mut seen_methods,
+        &mut items,
+    );
+
+    // Then the superclass chain (nearest to farthest), collecting interfaces as we go so we can
+    // process them last.
+    let mut interfaces = Vec::<Type>::new();
+    let mut current = Some(class_id);
+    let mut seen_supers = HashSet::<ClassId>::new();
+
+    while let Some(class_id) = current.take() {
+        let (super_ty, ifaces) = match types.class(class_id) {
+            Some(class_def) => (class_def.super_class.clone(), class_def.interfaces.clone()),
+            None => break,
+        };
+        interfaces.extend(ifaces);
+
+        let Some(super_ty) = super_ty else {
+            break;
+        };
+        let Some(super_id) = class_id_of_type(types, &super_ty) else {
+            break;
+        };
+        if !seen_supers.insert(super_id) {
+            break;
+        }
+
+        collect_members_from_class(
+            types,
+            super_id,
+            call_kind,
+            false,
+            &mut seen_fields,
+            &mut seen_methods,
+            &mut items,
+        );
+        current = Some(super_id);
+    }
+
+    // Finally, interfaces (including inherited interfaces).
+    let mut queue: VecDeque<Type> = interfaces.into();
+    let mut seen_ifaces = HashSet::<ClassId>::new();
+    while let Some(iface_ty) = queue.pop_front() {
+        let Some(iface_id) = class_id_of_type(types, &iface_ty) else {
+            continue;
+        };
+        if !seen_ifaces.insert(iface_id) {
+            continue;
+        }
+
+        collect_members_from_class(
+            types,
+            iface_id,
+            call_kind,
+            false,
+            &mut seen_fields,
+            &mut seen_methods,
+            &mut items,
+        );
+
+        let super_ifaces = match types.class(iface_id) {
+            Some(def) => def.interfaces.clone(),
+            None => Vec::new(),
+        };
+        for super_iface in super_ifaces {
+            queue.push_back(super_iface);
+        }
     }
 
     items
@@ -7680,6 +7801,7 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
         Option<usize>,
         i32,
         i32,
+        i32,
         String,
     )> = items
         .drain(..)
@@ -7709,6 +7831,18 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
             let workspace = workspace_completion_bonus(&item);
             let weight = kind_weight(item.kind);
 
+            // Prefer members declared on the receiver type itself over inherited members when all
+            // other ranking signals tie. This is tagged by `semantic_member_completions` via
+            // `CompletionItem.data`.
+            let member_origin = item
+                .data
+                .as_ref()
+                .and_then(|data| data.get("nova"))
+                .and_then(|nova| nova.get("member_origin"))
+                .and_then(|origin| origin.as_str())
+                .map(|origin| if origin == "direct" { 1 } else { 0 })
+                .unwrap_or(0);
+
             // Used as a deterministic tie-breaker when scores/weights/labels tie.
             let kind_key = format!("{:?}", item.kind);
 
@@ -7720,14 +7854,15 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
                 recency,
                 workspace,
                 weight,
+                member_origin,
                 kind_key,
             ))
         })
         .collect();
 
     scored.sort_by(
-        |(a_item, a_score, a_expected, a_scope, a_recency, a_workspace, a_weight, a_kind),
-         (b_item, b_score, b_expected, b_scope, b_recency, b_workspace, b_weight, b_kind)| {
+        |(a_item, a_score, a_expected, a_scope, a_recency, a_workspace, a_weight, a_origin, a_kind),
+         (b_item, b_score, b_expected, b_scope, b_recency, b_workspace, b_weight, b_origin, b_kind)| {
             b_score
                 .rank_key()
                 .cmp(&a_score.rank_key())
@@ -7736,13 +7871,14 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
                 .then_with(|| b_recency.cmp(a_recency))
                 .then_with(|| b_workspace.cmp(a_workspace))
                 .then_with(|| b_weight.cmp(a_weight))
+                .then_with(|| b_origin.cmp(a_origin))
                 .then_with(|| a_item.label.len().cmp(&b_item.label.len()))
                 .then_with(|| a_item.label.cmp(&b_item.label))
                 .then_with(|| a_kind.cmp(b_kind))
         },
     );
 
-    items.extend(scored.into_iter().map(|(item, _, _, _, _, _, _, _)| item));
+    items.extend(scored.into_iter().map(|(item, _, _, _, _, _, _, _, _)| item));
 }
 
 fn last_used_offsets(analysis: &Analysis, offset: usize) -> HashMap<String, usize> {
@@ -10348,6 +10484,11 @@ fn ensure_local_class_id(types: &mut TypeStore, analysis: &Analysis, class: &Cla
     id
 }
 
+fn ensure_type_members_loaded(types: &mut TypeStore, receiver: &Type) {
+    ensure_type_methods_loaded(types, receiver);
+    ensure_type_fields_loaded(types, receiver);
+}
+
 fn ensure_type_methods_loaded(types: &mut TypeStore, receiver: &Type) {
     let class_id = match receiver {
         Type::Class(nova_types::ClassType { def, .. }) => Some(*def),
@@ -10407,6 +10548,50 @@ fn ensure_type_methods_loaded(types: &mut TypeStore, receiver: &Type) {
     }
 }
 
+fn ensure_type_fields_loaded(types: &mut TypeStore, receiver: &Type) {
+    let class_id = match receiver {
+        Type::Class(nova_types::ClassType { def, .. }) => Some(*def),
+        Type::Named(name) => ensure_class_id(types, name),
+        _ => None,
+    };
+    let Some(class_id) = class_id else {
+        return;
+    };
+
+    let binary_name = match types.class(class_id) {
+        Some(class_def) => class_def.name.clone(),
+        None => return,
+    };
+
+    let has_fields = types
+        .class(class_id)
+        .is_some_and(|class_def| !class_def.fields.is_empty());
+    if has_fields {
+        return;
+    }
+
+    if let Some(jdk) = JDK_INDEX.as_ref() {
+        if let Ok(Some(stub)) = jdk.lookup_type(&binary_name) {
+            let mut fields = Vec::new();
+            for f in &stub.fields {
+                let Some((ty, _rest)) = parse_field_descriptor(types, f.descriptor.as_str()) else {
+                    continue;
+                };
+                fields.push(FieldDef {
+                    name: f.name.clone(),
+                    ty,
+                    is_static: f.access_flags & ACC_STATIC != 0,
+                    is_final: f.access_flags & ACC_FINAL != 0,
+                });
+            }
+
+            if let Some(class_def) = types.class_mut(class_id) {
+                merge_field_defs(&mut class_def.fields, fields);
+            }
+        }
+    }
+}
+
 fn merge_method_defs(existing: &mut Vec<MethodDef>, incoming: Vec<MethodDef>) {
     for method in incoming {
         if existing.iter().any(|m| {
@@ -10418,6 +10603,20 @@ fn merge_method_defs(existing: &mut Vec<MethodDef>, incoming: Vec<MethodDef>) {
             continue;
         }
         existing.push(method);
+    }
+}
+
+fn merge_field_defs(existing: &mut Vec<FieldDef>, incoming: Vec<FieldDef>) {
+    for field in incoming {
+        if existing.iter().any(|f| {
+            f.name == field.name
+                && f.ty == field.ty
+                && f.is_static == field.is_static
+                && f.is_final == field.is_final
+        }) {
+            continue;
+        }
+        existing.push(field);
     }
 }
 
@@ -10472,6 +10671,7 @@ fn ensure_class_id(types: &mut TypeStore, name: &str) -> Option<ClassId> {
 }
 
 const ACC_STATIC: u16 = 0x0008;
+const ACC_FINAL: u16 = 0x0010;
 const ACC_VARARGS: u16 = 0x0080;
 const ACC_INTERFACE: u16 = 0x0200;
 const ACC_ABSTRACT: u16 = 0x0400;

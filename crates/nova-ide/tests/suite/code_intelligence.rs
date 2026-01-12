@@ -361,6 +361,30 @@ class A {
 }
 
 #[test]
+fn completion_includes_inherited_members() {
+    let (db, file, pos) = fixture(
+        r#"
+class A { void a(){} }
+class B extends A {
+  void b(){}
+  void m(){ new B().<|> }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"a"),
+        "expected completion list to contain inherited method `a`; got {labels:?}"
+    );
+    assert!(
+        labels.contains(&"b"),
+        "expected completion list to contain method `b`; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_includes_string_members_for_string_literal_receiver() {
     let (db, file, pos) = fixture(
         r#"
@@ -377,6 +401,39 @@ class A {
     assert!(
         labels.contains(&"length"),
         "expected completion list to contain String.length for string literal receiver; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_dedups_overridden_members() {
+    let (db, file, pos) = fixture(
+        r#"
+class A { void a(){} }
+class B extends A {
+  void a(){} // override
+  void m(){ new B().<|> }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let a_items: Vec<_> = items.iter().filter(|i| i.label == "a").collect();
+    assert_eq!(
+        a_items.len(),
+        1,
+        "expected a single completion item for overridden method `a`; got {a_items:#?}"
+    );
+
+    let origin = a_items[0]
+        .data
+        .as_ref()
+        .and_then(|data| data.get("nova"))
+        .and_then(|nova| nova.get("member_origin"))
+        .and_then(|origin| origin.as_str());
+    assert_eq!(
+        origin,
+        Some("direct"),
+        "expected overridden method completion to come from receiver type; got {a_items:#?}"
     );
 }
 
