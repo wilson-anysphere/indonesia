@@ -346,6 +346,14 @@ impl TrigramIndexBuilder {
     /// adding duplicate `(trigram, id)` pairs when the trigrams overlap between
     /// texts.
     pub fn insert2(&mut self, id: SymbolId, a: &str, b: &str) {
+        // Avoid redundant work when callers accidentally pass the same text
+        // multiple times (a common pattern in workspace symbol search where
+        // `qualified_name == name`).
+        if a == b {
+            self.insert(id, a);
+            return;
+        }
+
         self.scratch.clear();
         #[cfg(feature = "unicode")]
         {
