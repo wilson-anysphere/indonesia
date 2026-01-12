@@ -186,3 +186,51 @@ fn resolves_gradle_dependency_jars_from_local_cache_with_kotlin_named_args() {
         "resolved jar should appear on the project classpath"
     );
 }
+
+#[test]
+fn resolves_gradle_dependency_jars_from_local_cache_with_version_catalog() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+
+    // Fake Gradle user home with a minimal `modules-2` cache layout.
+    let gradle_home = tmp.path().join("gradle-home");
+    let cache_dir = gradle_home.join("caches/modules-2/files-2.1/com.example/foo/1.2.3/abcdef1234567890");
+    fs::create_dir_all(&cache_dir).expect("mkdir gradle cache dir");
+
+    let jar_path = cache_dir.join("foo-1.2.3.jar");
+    fs::write(&jar_path, b"").expect("write jar");
+
+    let workspace = tmp.path().join("workspace");
+    fs::create_dir_all(workspace.join("src/main/java")).expect("mkdir src");
+    fs::create_dir_all(workspace.join("gradle")).expect("mkdir gradle dir");
+    fs::write(
+        workspace.join("gradle/libs.versions.toml"),
+        r#"
+[versions]
+foo = "1.2.3"
+
+[libraries]
+foo = { module = "com.example:foo", version.ref = "foo" }
+"#,
+    )
+    .expect("write libs.versions.toml");
+    fs::write(
+        workspace.join("build.gradle.kts"),
+        r#"dependencies { implementation(libs.foo) }"#,
+    )
+    .expect("write build.gradle.kts");
+
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home),
+        ..LoadOptions::default()
+    };
+
+    let config = load_project_with_options(&workspace, &options).expect("load gradle project");
+
+    assert!(
+        config
+            .classpath
+            .iter()
+            .any(|entry| entry.kind == ClasspathEntryKind::Jar && entry.path == jar_path),
+        "resolved jar should appear on the project classpath"
+    );
+}
