@@ -689,3 +689,135 @@ fn lock_mutex<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    static TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn clear_discovery_cache() {
+        let cache = DISCOVERY_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        lock_mutex(cache).clear();
+    }
+
+    fn with_isolated_cache<T>(f: impl FnOnce() -> T) -> T {
+        let test_mutex = TEST_MUTEX.get_or_init(|| Mutex::new(()));
+        let _guard = lock_mutex(test_mutex);
+
+        clear_discovery_cache();
+        let out = f();
+        clear_discovery_cache();
+        out
+    }
+
+    #[test]
+    fn evict_cache_removes_least_recently_used_workspaces() {
+        with_isolated_cache(|| {
+            let extra = 3usize;
+            let total = MAX_CACHED_WORKSPACES + extra;
+
+            let mut cache: HashMap<PathBuf, CacheEntry> = HashMap::new();
+            let base = Instant::now();
+
+            for i in 0..total {
+                let path = PathBuf::from(format!("workspace-{i}"));
+                cache.insert(
+                    path,
+                    CacheEntry {
+                        last_used: base + Duration::from_secs(i as u64),
+                        index: Arc::new(Mutex::new(TestDiscoveryIndex::new(
+                            PathBuf::from(format!("workspace-root-{i}")),
+                            Vec::new(),
+                        ))),
+                    },
+                );
+            }
+
+            evict_cache(&mut cache);
+            assert_eq!(cache.len(), MAX_CACHED_WORKSPACES);
+
+            for i in 0..extra {
+                assert!(
+                    !cache.contains_key(&PathBuf::from(format!("workspace-{i}"))),
+                    "expected workspace-{i} to be evicted"
+                );
+            }
+
+            for i in extra..total {
+                assert!(
+                    cache.contains_key(&PathBuf::from(format!("workspace-{i}"))),
+                    "expected workspace-{i} to remain in cache"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn get_or_create_index_updates_cached_workspace_source_roots() -> Result<()> {
+        with_isolated_cache(|| {
+            let temp_dir = tempfile::tempdir()?;
+            let workspace_root = temp_dir.path().to_path_buf();
+
+            let root_a = workspace_root.join("root_a");
+            let root_b = workspace_root.join("root_b");
+            fs::create_dir_all(&root_a)?;
+            fs::create_dir_all(&root_b)?;
+
+            fs::write(
+                root_a.join("RootATest.java"),
+                r#"
+                package com.example;
+
+                import org.junit.jupiter.api.Test;
+
+                public class RootATest {
+                    @Test
+                    public void testA() {}
+                }
+                "#,
+            )?;
+
+            fs::write(
+                root_b.join("RootBTest.java"),
+                r#"
+                package com.example;
+
+                import org.junit.jupiter.api.Test;
+
+                public class RootBTest {
+                    @Test
+                    public void testB() {}
+                }
+                "#,
+            )?;
+
+            let index = get_or_create_index(&workspace_root, vec![root_a]);
+            {
+                let mut idx = lock_mutex(index.as_ref());
+                idx.refresh()?;
+                let tests = idx.tests();
+
+                assert_eq!(tests.len(), 1);
+                assert_eq!(tests[0].id, "com.example.RootATest");
+                assert_eq!(tests[0].children.len(), 1);
+                assert_eq!(tests[0].children[0].id, "com.example.RootATest#testA");
+            }
+
+            let index = get_or_create_index(&workspace_root, vec![root_b]);
+            {
+                let mut idx = lock_mutex(index.as_ref());
+                idx.refresh()?;
+                let tests = idx.tests();
+
+                assert_eq!(tests.len(), 1);
+                assert_eq!(tests[0].id, "com.example.RootBTest");
+                assert_eq!(tests[0].children.len(), 1);
+                assert_eq!(tests[0].children[0].id, "com.example.RootBTest#testB");
+            }
+
+            Ok(())
+        })
+    }
+}
