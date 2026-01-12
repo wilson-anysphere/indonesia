@@ -1959,6 +1959,7 @@ fn discover_maven_repo(workspace_root: &Path, options: &LoadOptions) -> PathBuf 
         .maven_repo
         .clone()
         .or_else(|| maven_repo_from_maven_config(workspace_root))
+        .or_else(|| maven_repo_from_jvm_config(workspace_root))
         .or_else(maven_repo_from_user_settings)
         .or_else(default_maven_repo)
         .unwrap_or_else(|| PathBuf::from(".m2/repository"))
@@ -1996,6 +1997,30 @@ fn maven_repo_from_maven_config(workspace_root: &Path) -> Option<PathBuf> {
                 }
             }
             continue;
+        }
+    }
+
+    repo
+}
+
+fn maven_repo_from_jvm_config(workspace_root: &Path) -> Option<PathBuf> {
+    let config_path = workspace_root.join(".mvn").join("jvm.config");
+    let contents = std::fs::read_to_string(&config_path).ok()?;
+
+    // `.mvn/jvm.config` is used to provide JVM arguments for Maven invocations.
+    //
+    // We currently only consult it for the `-Dmaven.repo.local` property so Nova can resolve
+    // Maven dependency jars from the correct repository when a workspace overrides it via
+    // JVM/system properties.
+    //
+    // Note: Unlike `.mvn/maven.config` (Maven CLI args), JVM system properties generally must be
+    // expressed as `-Dkey=value`, so we only accept that form here.
+    let mut repo: Option<PathBuf> = None;
+    for token in split_maven_config_args(&contents) {
+        if let Some(value) = token.strip_prefix("-Dmaven.repo.local=") {
+            if let Some(path) = resolve_maven_repo_path(value, workspace_root) {
+                repo = Some(path);
+            }
         }
     }
 
@@ -2662,6 +2687,33 @@ mod tests {
 
         let repo = maven_repo_from_maven_config(dir.path()).expect("repo");
         assert_eq!(repo, dir.path().join("repo"));
+    }
+
+    #[test]
+    fn parses_jvm_config_repo_local_equals_absolute_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mvn_dir = dir.path().join(".mvn");
+        std::fs::create_dir_all(&mvn_dir).expect("create .mvn");
+        std::fs::write(mvn_dir.join("jvm.config"), "-Dmaven.repo.local=/abs/path")
+            .expect("write jvm.config");
+
+        let repo = maven_repo_from_jvm_config(dir.path()).expect("repo");
+        assert_eq!(repo, PathBuf::from("/abs/path"));
+    }
+
+    #[test]
+    fn parses_jvm_config_repo_local_double_quoted_value_with_spaces() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mvn_dir = dir.path().join(".mvn");
+        std::fs::create_dir_all(&mvn_dir).expect("create .mvn");
+        std::fs::write(
+            mvn_dir.join("jvm.config"),
+            r#"-Dmaven.repo.local="repo with spaces""#,
+        )
+        .expect("write jvm.config");
+
+        let repo = maven_repo_from_jvm_config(dir.path()).expect("repo");
+        assert_eq!(repo, dir.path().join("repo with spaces"));
     }
 
     #[test]

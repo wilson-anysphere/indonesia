@@ -319,3 +319,104 @@ fn loads_maven_repo_from_mvn_maven_config_prefers_last_repo_local_value() {
     );
     assert_jar_entries_are_under_repo(&jar_entries, &repo_2_path);
 }
+
+#[test]
+fn loads_maven_repo_from_mvn_jvm_config() {
+    let workspace_dir = tempdir().unwrap();
+    let workspace_root = workspace_dir.path();
+
+    write_pom_xml(workspace_root);
+    fs::create_dir_all(workspace_root.join(".mvn")).unwrap();
+
+    let repo_dir = tempdir().unwrap();
+    let repo_path: PathBuf = repo_dir.path().to_path_buf();
+    touch_guava_jar(&repo_path);
+
+    fs::write(
+        workspace_root.join(".mvn/jvm.config"),
+        format!("-Dmaven.repo.local={}", repo_path.display()),
+    )
+    .unwrap();
+
+    let config = load_project_with_options(
+        workspace_root,
+        &LoadOptions {
+            maven_repo: None,
+            ..Default::default()
+        },
+    )
+    .expect("load maven project");
+
+    let jar_entries = config
+        .classpath
+        .iter()
+        .filter(|cp| cp.kind == ClasspathEntryKind::Jar)
+        .map(|cp| cp.path.clone())
+        .collect::<Vec<_>>();
+    assert!(
+        !jar_entries.is_empty(),
+        "expected at least one jar entry, got: {:?}",
+        config.classpath
+    );
+    assert_jar_entries_are_under_repo(&jar_entries, &repo_path);
+}
+
+#[test]
+fn maven_config_repo_local_overrides_jvm_config() {
+    let workspace_dir = tempdir().unwrap();
+    let workspace_root = workspace_dir.path();
+
+    write_pom_xml(workspace_root);
+    fs::create_dir_all(workspace_root.join(".mvn")).unwrap();
+
+    let repo_from_maven_config_dir = tempdir().unwrap();
+    let repo_from_maven_config: PathBuf = repo_from_maven_config_dir.path().to_path_buf();
+    touch_guava_jar(&repo_from_maven_config);
+
+    let repo_from_jvm_config_dir = tempdir().unwrap();
+    let repo_from_jvm_config: PathBuf = repo_from_jvm_config_dir.path().to_path_buf();
+    touch_guava_jar(&repo_from_jvm_config);
+
+    fs::write(
+        workspace_root.join(".mvn/maven.config"),
+        format!("-Dmaven.repo.local={}", repo_from_maven_config.display()),
+    )
+    .unwrap();
+    fs::write(
+        workspace_root.join(".mvn/jvm.config"),
+        format!("-Dmaven.repo.local={}", repo_from_jvm_config.display()),
+    )
+    .unwrap();
+
+    let config = load_project_with_options(
+        workspace_root,
+        &LoadOptions {
+            maven_repo: None,
+            ..Default::default()
+        },
+    )
+    .expect("load maven project");
+
+    let jar_entries = config
+        .classpath
+        .iter()
+        .filter(|cp| cp.kind == ClasspathEntryKind::Jar)
+        .map(|cp| cp.path.clone())
+        .collect::<Vec<_>>();
+    assert!(
+        !jar_entries.is_empty(),
+        "expected at least one jar entry, got: {:?}",
+        config.classpath
+    );
+    assert_jar_entries_are_under_repo(&jar_entries, &repo_from_maven_config);
+
+    let repo_from_jvm_config_canon =
+        fs::canonicalize(&repo_from_jvm_config).unwrap_or(repo_from_jvm_config.clone());
+    assert!(
+        jar_entries.iter().all(|jar| {
+            let jar_canon = fs::canonicalize(jar).unwrap_or_else(|_| jar.clone());
+            !jar_canon.starts_with(&repo_from_jvm_config_canon)
+        }),
+        "expected maven.config override (no jars under jvm.config repo). jvm repo={repo_from_jvm_config:?} (canonicalized to {repo_from_jvm_config_canon:?}). Got: {jar_entries:?}"
+    );
+}
