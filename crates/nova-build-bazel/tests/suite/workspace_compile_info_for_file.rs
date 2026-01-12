@@ -205,6 +205,22 @@ fn compile_info_for_file_returns_none_when_file_is_not_in_any_bazel_package() {
 }
 
 #[test]
+fn compile_info_for_file_returns_none_when_file_is_bazelignored() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
+    std::fs::write(dir.path().join(".bazelignore"), "ignored\n").unwrap();
+
+    // Even though the file is in a package, `.bazelignore` should make it invisible.
+    write_file(&dir.path().join("ignored/BUILD"), "# ignored package\n");
+    let file = dir.path().join("ignored/Hello.java");
+    create_file(&file);
+
+    let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), NoopRunner).unwrap();
+    let info = workspace.compile_info_for_file(&file).unwrap();
+    assert_eq!(info, None);
+}
+
+#[test]
 fn compile_info_for_file_resolves_owner_returns_compile_info_and_caches_aquery() {
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
