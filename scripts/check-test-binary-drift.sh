@@ -42,7 +42,7 @@ ERROR: Pinned integration test harness missing.
 
 ${test_path} existed in the PR base commit but is missing in HEAD.
 
-This file is a stable CI/docs entrypoint (cargo test -p ${crate} --test=${test_name}).
+This file is a stable CI/docs entrypoint (cargo test --locked -p ${crate} --test=${test_name}).
 Do not rename/move it; instead, keep the harness and add new tests under a subdirectory (e.g.
 crates/${crate}/tests/suite/) and include them via a module.
 EOF

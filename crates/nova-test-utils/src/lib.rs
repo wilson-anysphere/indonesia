@@ -12,7 +12,7 @@
 //!
 //! ```bash
 //! # Run ignored tests (requires `javac` on PATH)
-//! bash scripts/cargo_agent.sh test -p nova-types --test javac_differential -- --ignored
+//! bash scripts/cargo_agent.sh test --locked -p nova-types --test javac_differential -- --ignored
 //! ```
 
 pub mod env;

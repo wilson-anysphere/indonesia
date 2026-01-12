@@ -23,7 +23,7 @@ fn ensure_worker_binary() -> PathBuf {
         return worker_bin;
     }
 
-    // `cargo test -p nova-lsp --tests` does not build the `nova-worker` binary by default.
+    // `cargo test --locked -p nova-lsp --tests` does not build the `nova-worker` binary by default.
     // Build it on demand so distributed mode can spawn local workers.
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir.join("../..");

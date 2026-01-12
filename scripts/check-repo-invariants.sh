@@ -141,7 +141,7 @@ fi
 # Enforce the `nova-types` integration test harness naming.
 #
 # CI and docs rely on the stable entrypoint:
-#   cargo test -p nova-types --test javac_differential
+#   cargo test --locked -p nova-types --test javac_differential
 #
 # So the harness file must remain: `crates/nova-types/tests/javac_differential.rs`.
 nova_types_root_tests=()
