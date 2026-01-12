@@ -574,7 +574,6 @@ from `main`, otherwise benching the base commit in a git worktree). For full ope
   - `crates/nova-syntax/benches/parse_java.rs`
   - `crates/nova-format/benches/format.rs`
   - `crates/nova-refactor/benches/refactor.rs`
-  - `crates/nova-ide/benches/completion.rs`
   - `crates/nova-classpath/benches/index.rs`
   - `crates/nova-ide/benches/completion.rs`
 - Threshold configs:
@@ -590,7 +589,6 @@ cargo bench --locked -p nova-core --bench critical_paths
 cargo bench --locked -p nova-syntax --bench parse_java
 cargo bench --locked -p nova-format --bench format
 cargo bench --locked -p nova-refactor --bench refactor
-cargo bench --locked -p nova-ide --bench completion
 cargo bench --locked -p nova-classpath --bench index
 cargo bench --locked -p nova-ide --bench completion
 ```
