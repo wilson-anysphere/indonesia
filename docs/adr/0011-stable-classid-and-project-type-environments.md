@@ -56,13 +56,20 @@ We need a stable project-wide type identity scheme under the following constrain
 4. **Project scoping**
    - A binary name is only meaningful within a `ProjectId` (different projects have different
      classpaths/JDKs). Type identity must therefore be project-scoped.
+   - In JPMS mode, type accessibility also depends on the “from” module, so a project may need
+     module-scoped base environments (see `project_base_type_store_for_module`).
 
 ## Decision
 
 We standardize on the following principle:
 
-> Within a given `ProjectId`, a Java binary name must map to a **single, stable `ClassId`** that is
-> identical across all bodies and all queries.
+> Within a given `ProjectId`, a canonical **class key** must map to a **single, stable `ClassId`**
+> that is identical across all bodies and all queries.
+>
+> - In the simplest classpath-only model, the class key is just `binary_name` (e.g.
+>   `java.lang.String`).
+> - In JPMS mode (and whenever duplicates are possible across origins), the key may need an origin
+>   component and/or the defining module.
 
 To get there, we adopt a **two-phase plan**:
 
