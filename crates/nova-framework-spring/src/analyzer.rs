@@ -743,10 +743,14 @@ fn build_workspace(db: &dyn Database, files: &[FileId]) -> CachedWorkspace {
 
     let mut file_id_to_source = HashMap::new();
     let mut source_to_file_id = Vec::<FileId>::new();
-    let mut sources = Vec::<&str>::new();
-    for (_path, file) in &java_files {
-        let Some(text) = db.file_text(*file) else {
-            continue;
+    let mut sources = Vec::<Cow<'_, str>>::new();
+    for (path, file) in &java_files {
+        let text: Cow<'_, str> = match db.file_text(*file) {
+            Some(text) => Cow::Borrowed(text),
+            None => match std::fs::read_to_string(path) {
+                Ok(text) => Cow::Owned(text),
+                Err(_) => continue,
+            },
         };
         let idx = sources.len();
         sources.push(text);
@@ -754,7 +758,8 @@ fn build_workspace(db: &dyn Database, files: &[FileId]) -> CachedWorkspace {
         source_to_file_id.push(*file);
     }
 
-    let analysis = (!sources.is_empty()).then(|| Arc::new(analyze_java_sources(&sources)));
+    let source_refs: Vec<&str> = sources.iter().map(|s| s.as_ref()).collect();
+    let analysis = (!source_refs.is_empty()).then(|| Arc::new(analyze_java_sources(&source_refs)));
 
     // Recompute the fingerprint here so the cache entry is self-contained.
     let (fingerprint, _) = workspace_fingerprint(db, files);

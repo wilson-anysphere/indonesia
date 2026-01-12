@@ -160,6 +160,109 @@ fn di_diagnostics_are_filtered_per_file() {
 }
 
 #[test]
+fn di_diagnostics_read_unopened_sources_from_disk_when_file_text_is_unavailable() {
+    struct MissingTextDb {
+        inner: MemoryDatabase,
+        missing: FileId,
+    }
+
+    impl Database for MissingTextDb {
+        fn class(&self, class: ClassId) -> &ClassData {
+            self.inner.class(class)
+        }
+
+        fn project_of_class(&self, class: ClassId) -> nova_core::ProjectId {
+            self.inner.project_of_class(class)
+        }
+
+        fn project_of_file(&self, file: FileId) -> nova_core::ProjectId {
+            self.inner.project_of_file(file)
+        }
+
+        fn file_text(&self, file: FileId) -> Option<&str> {
+            if file == self.missing {
+                return None;
+            }
+            self.inner.file_text(file)
+        }
+
+        fn file_path(&self, file: FileId) -> Option<&Path> {
+            self.inner.file_path(file)
+        }
+
+        fn file_id(&self, path: &Path) -> Option<FileId> {
+            self.inner.file_id(path)
+        }
+
+        fn all_files(&self, project: nova_core::ProjectId) -> Vec<FileId> {
+            self.inner.all_files(project)
+        }
+
+        fn all_classes(&self, project: nova_core::ProjectId) -> Vec<ClassId> {
+            self.inner.all_classes(project)
+        }
+
+        fn has_dependency(&self, project: nova_core::ProjectId, group: &str, artifact: &str) -> bool {
+            self.inner.has_dependency(project, group, artifact)
+        }
+
+        fn has_class_on_classpath(&self, project: nova_core::ProjectId, binary_name: &str) -> bool {
+            self.inner.has_class_on_classpath(project, binary_name)
+        }
+
+        fn has_class_on_classpath_prefix(&self, project: nova_core::ProjectId, prefix: &str) -> bool {
+            self.inner.has_class_on_classpath_prefix(project, prefix)
+        }
+    }
+
+    let temp = TempDir::new().unwrap();
+    let root: PathBuf = temp.path().canonicalize().unwrap();
+
+    // Ensure files exist on disk so the analyzer can fall back to filesystem reads.
+    let foo_src = r#"
+        import org.springframework.stereotype.Component;
+
+        @Component
+        class Foo {}
+    "#;
+    let bar_src = r#"
+        import org.springframework.beans.factory.annotation.Autowired;
+        import org.springframework.stereotype.Component;
+
+        @Component
+        class Bar {
+            @Autowired Foo foo;
+        }
+    "#;
+
+    let foo_path = root.join("src/main/java/demo/Foo.java");
+    let bar_path = root.join("src/main/java/demo/Bar.java");
+    write_file(&foo_path, foo_src);
+    write_file(&bar_path, bar_src);
+
+    let mut inner = MemoryDatabase::new();
+    let project = inner.add_project();
+    inner.add_classpath_class(project, "org.springframework.context.ApplicationContext");
+
+    let foo_file = inner.add_file_with_path_and_text(project, foo_path, foo_src);
+    let bar_file = inner.add_file_with_path_and_text(project, bar_path, bar_src);
+
+    let db = MissingTextDb {
+        inner,
+        missing: foo_file,
+    };
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(SpringAnalyzer::new()));
+
+    let bar_diags = registry.framework_diagnostics(&db, bar_file);
+    assert!(
+        bar_diags.iter().all(|d| d.code.as_ref() != SPRING_NO_BEAN),
+        "expected Foo bean to resolve via disk-backed analysis even when file_text is missing; got {bar_diags:#?}"
+    );
+}
+
+#[test]
 fn value_completions_include_application_properties_key_and_set_replace_span() {
     let mut db = MemoryDatabase::new();
     let project = db.add_project();
