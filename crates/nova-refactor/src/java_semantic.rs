@@ -5991,11 +5991,6 @@ fn collect_switch_contexts(
                     walk_expr(body, *item, owner, scope_result, resolver, item_trees, out);
                 }
             }
-            hir::Expr::ArrayInitializer { items, .. } => {
-                for item in items {
-                    walk_expr(body, *item, owner, scope_result, resolver, item_trees, out);
-                }
-            }
             hir::Expr::Unary { expr, .. }
             | hir::Expr::Instanceof { expr, .. }
             | hir::Expr::Cast { expr, .. } => {
@@ -7056,11 +7051,11 @@ fn record_lightweight_stmt(
                 );
             }
         }
-        Stmt::Assert(stmt) => {
+        Stmt::Assert(assert) => {
             record_lightweight_expr(
                 file,
                 text,
-                &stmt.condition,
+                &assert.condition,
                 type_scopes,
                 scope_result,
                 resolver,
@@ -7068,7 +7063,7 @@ fn record_lightweight_stmt(
                 references,
                 spans,
             );
-            if let Some(message) = &stmt.message {
+            if let Some(message) = &assert.message {
                 record_lightweight_expr(
                     file,
                     text,
