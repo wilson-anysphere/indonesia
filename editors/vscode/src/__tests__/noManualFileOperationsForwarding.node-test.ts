@@ -880,6 +880,22 @@ test('noManualFileOperationsForwarding scan flags inline sendNotification.bind(.
   assert.ok(Array.from(violations).some((entry) => entry.includes('workspace/didRenameFiles')));
 });
 
+test('noManualFileOperationsForwarding scan flags sendNotification.call forwarding for create/delete (fixtures)', () => {
+  const srcRoot = '/';
+  const filePath = '/fixture.ts';
+
+  const source = `
+    client.sendNotification.call(client, 'workspace/didCreateFiles', { files: [] });
+    client.sendNotification.call(client, 'workspace/didDeleteFiles', { files: [] });
+  `;
+
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
+  const violations = scanSourceFileForManualFileOperationForwarding(sourceFile, { filePath, srcRoot });
+  const entries = Array.from(violations);
+  assert.ok(entries.some((entry) => entry.includes('workspace/didCreateFiles')));
+  assert.ok(entries.some((entry) => entry.includes('workspace/didDeleteFiles')));
+});
+
 test('noManualFileOperationsForwarding scan flags sendNotification invocation via const alias (fixtures)', () => {
   const srcRoot = '/';
   const filePath = '/fixture.ts';
@@ -942,6 +958,20 @@ test('noManualFileOperationsForwarding scan resolves nested const object propert
   const source = `
     const METHODS = { nested: { rename: 'workspace/didRenameFiles' } } as const;
     client.sendNotification(METHODS.nested.rename, { files: [] });
+  `;
+
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
+  const violations = scanSourceFileForManualFileOperationForwarding(sourceFile, { filePath, srcRoot });
+  assert.ok(Array.from(violations).some((entry) => entry.includes('workspace/didRenameFiles')));
+});
+
+test('noManualFileOperationsForwarding scan resolves nested const object property values via bracket access (fixtures)', () => {
+  const srcRoot = '/';
+  const filePath = '/fixture.ts';
+
+  const source = `
+    const METHODS = { nested: { rename: 'workspace/didRenameFiles' } } as const;
+    client.sendNotification(METHODS['nested']['rename'], { files: [] });
   `;
 
   const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
