@@ -1944,14 +1944,6 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 fn exists_as_jar(path: &Path) -> bool {
-    if !path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
-    {
-        return false;
-    }
-
     // Maven dependency artifacts are typically `.jar` files, but some build systems (and test
     // fixtures) can "explode" jars into directories (often still ending with `.jar`).
     // Accept both files and directories, and treat missing paths as absent.
@@ -2016,17 +2008,6 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
     exists_as_jar(&path).then_some(path)
 }
 
-fn exists_as_jar(path: &Path) -> bool {
-    match std::fs::metadata(path) {
-        Ok(meta) => meta.is_file() || meta.is_dir(),
-        // Missing jars are still returned so callers can synthesize placeholders for single-module
-        // projects (see `tests/cases/maven_missing_jars.rs`). Multi-module workspaces filter
-        // non-existent artifacts later to keep classpaths lean.
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
-        Err(_) => false,
-    }
-}
-
 fn resolve_snapshot_jar_file_name(
     version_dir: &Path,
     artifact_id: &str,
@@ -2085,16 +2066,6 @@ fn resolve_snapshot_jar_file_name(
     } else {
         format!("{artifact_id}-{value}.jar")
     })
-}
-
-fn exists_as_jar(path: &Path) -> bool {
-    if !path.is_file() {
-        return false;
-    }
-
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
 }
 
 fn child_element<'a>(
