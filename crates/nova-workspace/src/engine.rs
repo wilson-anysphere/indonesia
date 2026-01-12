@@ -3237,48 +3237,58 @@ fn reload_project_and_sync(
         loaded.build_system,
         BuildSystem::Maven | BuildSystem::Gradle
     ) {
-        let refresh_build = should_refresh_build_config(workspace_root, changed_files);
-        // `.nova/queries/gradle.json` is a build-tool-produced Gradle snapshot that can update
-        // resolved classpaths/source roots without modifying build scripts. When it changes we
-        // want to re-load the project config (so `nova-project` can consume the snapshot), but we
-        // do NOT want to overwrite the newly loaded classpath with stale build-derived fields.
-        let gradle_snapshot_changed = changed_files
-            .iter()
-            .any(|path| path.ends_with(Path::new(nova_build_model::GRADLE_SNAPSHOT_REL_PATH)));
+        // Build tool integration (Maven/Gradle) is gated behind `nova.toml` because it can spawn
+        // external processes and be slow/unwanted in some environments.
+        let build_integration_enabled = match loaded.build_system {
+            BuildSystem::Maven => options.nova_config.build.maven_enabled(),
+            BuildSystem::Gradle => options.nova_config.build.gradle_enabled(),
+            _ => false,
+        };
 
-        if refresh_build {
-            let cache_dir = build_cache_dir(workspace_root, query_db);
-            let build = BuildManager::with_runner(cache_dir, Arc::clone(build_runner));
+        if build_integration_enabled {
+            let refresh_build = should_refresh_build_config(workspace_root, changed_files);
+            // `.nova/queries/gradle.json` is a build-tool-produced Gradle snapshot that can update
+            // resolved classpaths/source roots without modifying build scripts. When it changes we
+            // want to re-load the project config (so `nova-project` can consume the snapshot), but we
+            // do NOT want to overwrite the newly loaded classpath with stale build-derived fields.
+            let gradle_snapshot_changed = changed_files
+                .iter()
+                .any(|path| path.ends_with(Path::new(nova_build_model::GRADLE_SNAPSHOT_REL_PATH)));
 
-            let compile_config = match loaded.build_system {
-                BuildSystem::Maven => build.java_compile_config_maven(workspace_root, None),
-                BuildSystem::Gradle => build.java_compile_config_gradle(workspace_root, None),
-                _ => unreachable!("build config refresh only applies to Maven/Gradle"),
-            };
+            if refresh_build {
+                let cache_dir = build_cache_dir(workspace_root, query_db);
+                let build = BuildManager::with_runner(cache_dir, Arc::clone(build_runner));
 
-            match compile_config {
-                Ok(cfg) => {
-                    // Preserve generated roots and other workspace metadata discovered by
-                    // `nova-project` while replacing classpath/module-path/source roots with the
-                    // build-tool-derived configuration.
-                    let base = loaded.clone();
-                    loaded = apply_java_compile_config_to_project_config(loaded, &cfg, &base);
+                let compile_config = match loaded.build_system {
+                    BuildSystem::Maven => build.java_compile_config_maven(workspace_root, None),
+                    BuildSystem::Gradle => build.java_compile_config_gradle(workspace_root, None),
+                    _ => unreachable!("build config refresh only applies to Maven/Gradle"),
+                };
+
+                match compile_config {
+                    Ok(cfg) => {
+                        // Preserve generated roots and other workspace metadata discovered by
+                        // `nova-project` while replacing classpath/module-path/source roots with the
+                        // build-tool-derived configuration.
+                        let base = loaded.clone();
+                        loaded = apply_java_compile_config_to_project_config(loaded, &cfg, &base);
+                    }
+                    Err(err) => {
+                        publish_to_subscribers(
+                            subscribers,
+                            WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
+                                "Build tool classpath extraction failed; falling back to heuristic project config: {err}"
+                            ))),
+                        );
+                    }
                 }
-                Err(err) => {
-                    publish_to_subscribers(
-                        subscribers,
-                        WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
-                            "Build tool classpath extraction failed; falling back to heuristic project config: {err}"
-                        ))),
-                    );
-                }
+            } else if !gradle_snapshot_changed
+                && previous_config.build_system == loaded.build_system
+                && previous_config.workspace_root == loaded.workspace_root
+                && !previous_config.workspace_root.as_os_str().is_empty()
+            {
+                loaded = reuse_previous_build_config_fields(loaded, previous_config.as_ref());
             }
-        } else if !gradle_snapshot_changed
-            && previous_config.build_system == loaded.build_system
-            && previous_config.workspace_root == loaded.workspace_root
-            && !previous_config.workspace_root.as_os_str().is_empty()
-        {
-            loaded = reuse_previous_build_config_fields(loaded, previous_config.as_ref());
         }
     }
 
@@ -5712,6 +5722,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
 
+        fs::write(root.join("nova.toml"), "[build]\nenabled = true\n").unwrap();
+
         fs::write(
             root.join("pom.xml"),
             br#"<project><modelVersion>4.0.0</modelVersion></project>"#,
@@ -5831,6 +5843,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
 
+        fs::write(root.join("nova.toml"), "[build]\nenabled = true\n").unwrap();
+
         fs::write(root.join("settings.gradle"), "rootProject.name = 'demo'").unwrap();
         fs::write(root.join("build.gradle"), "plugins { id 'java' }").unwrap();
 
@@ -5947,6 +5961,8 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
+
+        fs::write(root.join("nova.toml"), "[build]\nenabled = true\n").unwrap();
 
         fs::write(root.join("settings.gradle"), "rootProject.name = 'demo'").unwrap();
         fs::write(root.join("build.gradle"), "plugins { id 'java' }").unwrap();
