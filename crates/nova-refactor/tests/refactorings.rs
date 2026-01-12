@@ -6229,6 +6229,40 @@ fn inline_variable_rejects_side_effectful_initializer_when_usage_reorders_other_
 }
 
 #[test]
+fn inline_variable_rejects_side_effectful_initializer_when_usage_is_after_other_call_argument() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  int foo() { return 1; }
+  int bar() { return 2; }
+  void take(int x, int y) {}
+  void m() {
+    int a = foo();
+    take(bar(), a);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, SemanticRefactorError::InlineSideEffects),
+        "expected InlineSideEffects, got: {err:?}"
+    );
+}
+
+#[test]
 fn inline_variable_rejects_side_effectful_initializer_when_usage_is_conditionally_evaluated() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
