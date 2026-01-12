@@ -72,16 +72,28 @@ pub enum ControlFlowHazard {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExtractMethodIssue {
     InvalidSelection,
-    InvalidMethodName { name: String },
-    NameCollision { name: String },
-    MultipleReturnValues { names: Vec<String> },
-    IllegalControlFlow { hazard: ControlFlowHazard },
+    InvalidMethodName {
+        name: String,
+    },
+    NameCollision {
+        name: String,
+    },
+    MultipleReturnValues {
+        names: Vec<String>,
+    },
+    IllegalControlFlow {
+        hazard: ControlFlowHazard,
+    },
     /// The selection references a local type (a class/interface/enum/record/@interface declared
     /// inside the enclosing method/constructor/initializer). Local types are only in scope within
     /// that body/block, but Extract Method inserts the extracted method at the type level where
     /// the local type is out of scope.
-    ReferencesLocalType { name: String },
-    UnknownType { name: String },
+    ReferencesLocalType {
+        name: String,
+    },
+    UnknownType {
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
