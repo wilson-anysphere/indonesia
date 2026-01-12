@@ -58,8 +58,22 @@ export function parseNovaExperimentalCapabilities(initializeResult: unknown): No
  * can fall back to optimistic requests + graceful method-not-found handling.
  */
 export function getSupportedNovaRequests(client: LanguageClient): Set<string> | undefined {
-  const parsed = parseNovaExperimentalCapabilities(client.initializeResult);
-  return parsed?.requests;
+  const root = asObject(client.initializeResult as unknown);
+  const capabilities = asObject(root?.capabilities);
+  const experimental = asObject(capabilities?.experimental);
+  const nova = asObject(experimental?.nova);
+  const requests = parseStringArray(nova?.requests);
+  if (!requests) {
+    return undefined;
+  }
+
+  const out = new Set<string>();
+  for (const method of requests) {
+    if (method.startsWith('nova/')) {
+      out.add(method);
+    }
+  }
+  return out;
 }
 
 export function setNovaExperimentalCapabilities(key: string, initializeResult: unknown): void;

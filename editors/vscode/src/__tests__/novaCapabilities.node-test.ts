@@ -3,12 +3,14 @@ import test from 'node:test';
 
 import {
   formatUnsupportedNovaMethodMessage,
+  getSupportedNovaRequests,
   isNovaMethodNotFoundError,
   isNovaRequestSupported,
   parseNovaExperimentalCapabilities,
   resetNovaExperimentalCapabilities,
   setNovaExperimentalCapabilities,
 } from '../novaCapabilities';
+import type { LanguageClient } from 'vscode-languageclient/node';
 
 test('parseNovaExperimentalCapabilities returns undefined for missing experimental.nova lists', () => {
   assert.equal(parseNovaExperimentalCapabilities(null), undefined);
@@ -109,4 +111,28 @@ test('formatUnsupportedNovaMethodMessage includes method name', () => {
     formatUnsupportedNovaMethodMessage('nova/test/run'),
     'Nova: server does not support nova/test/run. You may be running an older nova-lsp; update or disable allowVersionMismatch.',
   );
+});
+
+test('getSupportedNovaRequests reads initializeResult.capabilities.experimental.nova.requests', () => {
+  const client = {
+    initializeResult: {
+      capabilities: {
+        experimental: {
+          nova: {
+            requests: ['nova/test/run', 'initialize', 123],
+          },
+        },
+      },
+    },
+  } as unknown as LanguageClient;
+
+  const requests = getSupportedNovaRequests(client);
+  assert.ok(requests);
+  assert.equal(requests.has('nova/test/run'), true);
+  assert.equal(requests.has('initialize'), false);
+});
+
+test('getSupportedNovaRequests returns undefined when requests list is missing', () => {
+  const client = { initializeResult: { capabilities: { experimental: { nova: {} } } } } as unknown as LanguageClient;
+  assert.equal(getSupportedNovaRequests(client), undefined);
 });
