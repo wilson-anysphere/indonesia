@@ -911,6 +911,94 @@ where
         actions
     }
 
+    pub fn code_actions_lsp_with_context(
+        &self,
+        cancel: CancellationToken,
+        file: nova_ext::FileId,
+        span: Option<Span>,
+        context_diagnostics: &[lsp_types::Diagnostic],
+    ) -> Vec<lsp_types::CodeActionOrCommand> {
+        let mut actions = Vec::new();
+
+        let source = self.db.file_content(file);
+        let uri: Option<lsp_types::Uri> = self
+            .db
+            .file_path(file)
+            .and_then(|path| nova_core::AbsPathBuf::new(path.to_path_buf()).ok())
+            .and_then(|path| nova_core::path_to_file_uri(&path).ok())
+            .and_then(|uri| uri.parse().ok());
+
+        // These source-level refactors do not depend on diagnostics context.
+        if let Some(uri) = uri.clone() {
+            if source.contains("import") {
+                let file = RefactorFileId::new(uri.to_string());
+                let db = TextDatabase::new([(file.clone(), source.to_string())]);
+                if let Ok(edit) =
+                    organize_imports(&db, OrganizeImportsParams { file: file.clone() })
+                {
+                    if !edit.is_empty() {
+                        if let Ok(lsp_edit) = workspace_edit_to_lsp(&db, &edit) {
+                            actions.push(lsp_types::CodeActionOrCommand::CodeAction(
+                                lsp_types::CodeAction {
+                                    title: "Organize imports".to_string(),
+                                    kind: Some(lsp_types::CodeActionKind::SOURCE_ORGANIZE_IMPORTS),
+                                    edit: Some(lsp_edit),
+                                    ..lsp_types::CodeAction::default()
+                                },
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        if let (Some(uri), Some(span)) = (uri, span) {
+            let source_index = TextIndex::new(source);
+            let selection = source_index.span_to_lsp_range(span);
+
+            actions.extend(crate::refactor::extract_member_code_actions(
+                &uri, source, selection,
+            ));
+
+            if let Some(action) =
+                crate::code_action::extract_method_code_action(source, uri.clone(), selection)
+            {
+                actions.push(lsp_types::CodeActionOrCommand::CodeAction(action));
+            }
+
+            actions.extend(crate::refactor::inline_method_code_actions(
+                &uri,
+                source,
+                selection.start,
+            ));
+
+            // Quick fixes driven by diagnostics should prefer the diagnostics passed by the LSP
+            // client (`CodeActionContext.diagnostics`) so we don't need to recompute diagnostics
+            // for the whole file.
+            actions.extend(type_mismatch_quick_fixes_from_context(
+                source,
+                &uri,
+                span,
+                context_diagnostics,
+            ));
+        }
+
+        let extension_actions = self
+            .code_actions(cancel, file, span)
+            .into_iter()
+            .map(|action| {
+                let kind = action.kind.map(lsp_types::CodeActionKind::from);
+                lsp_types::CodeActionOrCommand::CodeAction(lsp_types::CodeAction {
+                    title: action.title,
+                    kind,
+                    ..lsp_types::CodeAction::default()
+                })
+            });
+        actions.extend(extension_actions);
+
+        actions
+    }
+
     /// Combine Nova's built-in inlay hints with extension-provided inlay hints.
     pub fn inlay_hints_lsp(
         &self,
@@ -1046,6 +1134,100 @@ fn type_mismatch_quick_fixes(
 
         if expected == "String" {
             let edit = single_replace_edit(uri, range, format!("String.valueOf({expr})"));
+            actions.push(lsp_types::CodeActionOrCommand::CodeAction(
+                lsp_types::CodeAction {
+                    title: "Convert to String".to_string(),
+                    kind: Some(lsp_types::CodeActionKind::QUICKFIX),
+                    edit: Some(edit),
+                    is_preferred: Some(true),
+                    ..lsp_types::CodeAction::default()
+                },
+            ));
+        }
+
+        let edit = single_replace_edit(uri, range, format!("({expected}) {expr}"));
+        actions.push(lsp_types::CodeActionOrCommand::CodeAction(
+            lsp_types::CodeAction {
+                title: format!("Cast to {expected}"),
+                kind: Some(lsp_types::CodeActionKind::QUICKFIX),
+                edit: Some(edit),
+                is_preferred: Some(expected != "String"),
+                ..lsp_types::CodeAction::default()
+            },
+        ));
+    }
+
+    actions
+}
+
+fn type_mismatch_quick_fixes_from_context(
+    source: &str,
+    uri: &lsp_types::Uri,
+    selection: Span,
+    context_diagnostics: &[lsp_types::Diagnostic],
+) -> Vec<lsp_types::CodeActionOrCommand> {
+    fn spans_overlap(a: Span, b: Span) -> bool {
+        a.start < b.end && b.start < a.end
+    }
+
+    fn parse_type_mismatch(message: &str) -> Option<(String, String)> {
+        let message = message.strip_prefix("type mismatch: expected ")?;
+        let (expected, found) = message.split_once(", found ")?;
+        Some((expected.trim().to_string(), found.trim().to_string()))
+    }
+
+    fn single_replace_edit(
+        uri: &lsp_types::Uri,
+        range: lsp_types::Range,
+        new_text: String,
+    ) -> lsp_types::WorkspaceEdit {
+        let mut changes: HashMap<lsp_types::Uri, Vec<lsp_types::TextEdit>> = HashMap::new();
+        changes.insert(uri.clone(), vec![lsp_types::TextEdit { range, new_text }]);
+        lsp_types::WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        }
+    }
+
+    let mut actions = Vec::new();
+
+    let source_index = TextIndex::new(source);
+    for diagnostic in context_diagnostics {
+        let Some(lsp_types::NumberOrString::String(code)) = diagnostic.code.as_ref() else {
+            continue;
+        };
+        if code != "type-mismatch" {
+            continue;
+        }
+
+        let Some(start) = source_index.position_to_offset(diagnostic.range.start) else {
+            continue;
+        };
+        let Some(end) = source_index.position_to_offset(diagnostic.range.end) else {
+            continue;
+        };
+        let diag_span = Span::new(start, end);
+        if !spans_overlap(selection, diag_span) {
+            continue;
+        }
+
+        let Some((expected, _found)) = parse_type_mismatch(&diagnostic.message) else {
+            continue;
+        };
+
+        let expr = source
+            .get(diag_span.start..diag_span.end)
+            .unwrap_or_default()
+            .trim();
+        if expr.is_empty() {
+            continue;
+        }
+
+        let range = diagnostic.range.clone();
+
+        if expected == "String" {
+            let edit = single_replace_edit(uri, range.clone(), format!("String.valueOf({expr})"));
             actions.push(lsp_types::CodeActionOrCommand::CodeAction(
                 lsp_types::CodeAction {
                     title: "Convert to String".to_string(),
