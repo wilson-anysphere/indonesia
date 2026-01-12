@@ -33,27 +33,26 @@ Nova communicates with editors through the Language Server Protocol (LSP). This 
 │  ✓ Code lens (+ codeLens/resolve)                                │
 │  ✓ Formatting (document / range / on-type)                       │
 │  ✓ Rename (+ prepareRename)                                      │
-│  ✓ Semantic tokens (full)                                        │
+│  ✓ Semantic tokens (full + delta)                                │
 │  ✓ Inlay hints                                                  │
 │  ○ Hover                                                        │
 │  ○ Signature help                                               │
 │  ○ Find references                                              │
-│  ○ Document highlight                                           │
-│  ○ Folding range                                                │
-│  ○ Selection range                                              │
-│  ○ Semantic tokens (delta)                                      │
-│  ○ Call hierarchy                                               │
-│  ○ Type hierarchy                                               │
+│  ✓ Document highlight                                           │
+│  ✓ Folding range                                                │
+│  ✓ Selection range                                              │
+│  ✓ Call hierarchy                                               │
+│  ✓ Type hierarchy                                               │
 │                                                                  │
 │  TEXT SYNCHRONIZATION                                            │
 │  ✓ didOpen / didChange (incremental) / didClose                  │
-│  ○ Will save / did save                                          │
+│  ✓ Will save / did save                                          │
 │                                                                  │
 │  WORKSPACE FEATURES                                              │
 │  ✓ workspace/executeCommand                                      │
-│  ○ Workspace folders (multi-root)                                │
-│  ○ Configuration (workspace/didChangeConfiguration)              │
-│  ○ File operations registration (create/rename/delete)           │
+│  ✓ Workspace folders (workspace/didChangeWorkspaceFolders)        │
+│  ✓ File operations (create/delete/rename)                        │
+│  ✓ Configuration reload (workspace/didChangeConfiguration)        │
 │                                                                  │
 │  WINDOW FEATURES                                                 │
 │  ✓ window/logMessage (used by AI features)                      │
@@ -66,8 +65,10 @@ Nova communicates with editors through the Language Server Protocol (LSP). This 
 Notes:
 
 - The server currently implements `$/cancelRequest` and uses request-scoped cancellation tokens internally.
+- Workspace folders are supported, but the stdio server currently treats the first workspace folder as the active project root (best-effort multi-root).
 - Diagnostics are provided via the LSP 3.17 **pull** model (`textDocument/diagnostic`). The server does not currently publish `textDocument/publishDiagnostics`.
-- The stdio server is tolerant of `workspace/didChangeWatchedFiles` and `workspace/didRenameFiles` notifications, but it does **not** currently advertise `workspace.fileOperations` or register file watchers dynamically, so editor clients may need explicit configuration if they want to send these.
+- The stdio server requests standard file-operation notifications via `initializeResult.capabilities.workspace.fileOperations` and supports a fallback `nova/workspace/renamePath` notification for clients that cannot send `workspace/didRenameFiles` (see `protocol-extensions.md`).
+- `workspace/didChangeWatchedFiles` is handled, but the server does not dynamically register file watchers today; clients must configure watchers on their side if they want to send these notifications.
 - OS file watching for the workspace engine (used by `nova` CLI / `nova-workspace`) is implemented in `nova-vfs` behind `watch-notify`. See [`file-watching.md`](file-watching.md) for the watcher layering and deterministic testing guidance.
 
 ### Server Architecture
@@ -111,6 +112,7 @@ fn handle_request(method: &str, params: serde_json::Value) -> serde_json::Value 
         "textDocument/completion" => handle_completion(params),
         "completionItem/resolve" => handle_completion_resolve(params),
         "textDocument/semanticTokens/full" => handle_semantic_tokens_full(params),
+        "textDocument/semanticTokens/full/delta" => handle_semantic_tokens_full_delta(params),
         "textDocument/definition" => handle_definition(params),
         "textDocument/diagnostic" => handle_diagnostics(params),
         // ...and several more; see `crates/nova-lsp/src/main.rs::handle_request_json`
@@ -131,6 +133,12 @@ fn handle_notification(method: &str, params: serde_json::Value) {
         }
         "textDocument/didChange" => {
             // Apply incremental edits (`TextDocumentSyncKind::INCREMENTAL`).
+        }
+        "textDocument/willSave" => {
+            // Best-effort: parsed, but typically no work is required.
+        }
+        "textDocument/didSave" => {
+            // Best-effort: refresh from disk (or apply saved text if provided).
         }
         "textDocument/didClose" => {
             // Drop the overlay.
@@ -212,6 +220,9 @@ For the authoritative list and exact JSON schemas, see:
 │  • nova/ai/generateTests                                         │
 │  • nova/completion/more                                          │
 │                                                                  │
+│  SEMANTIC SEARCH                                                  │
+│  • nova/semanticSearch/indexStatus                                │
+│                                                                  │
 │  EXTENSIONS (WASM)                                                │
 │  • nova/extensions/status                                        │
 │  • nova/extensions/navigation                                    │
@@ -219,6 +230,7 @@ For the authoritative list and exact JSON schemas, see:
 │  CUSTOM NOTIFICATIONS (experimental.nova.notifications)           │
 │  • nova/memoryStatusChanged                                      │
 │  • nova/safeModeChanged                                          │
+│  • nova/workspace/renamePath                                     │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
