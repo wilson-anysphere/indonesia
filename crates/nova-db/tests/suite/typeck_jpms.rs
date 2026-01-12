@@ -119,6 +119,71 @@ class Use {
 }
 
 #[test]
+fn jpms_typeck_unreadable_module_path_type_does_not_allow_method_resolution() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+
+    // Include dep.jar in the legacy classpath index as well to ensure we aren't accidentally
+    // "passing" by ignoring the module-path entry entirely.
+    let classpath = ClasspathIndex::build(&[CpEntry::Jar(test_dep_jar())], None).unwrap();
+    db.set_classpath_index(project, Some(ArcEq::new(Arc::new(classpath))));
+
+    let mod_a_root = tmp.path().join("mod-a");
+    let mod_a_src = "module workspace.a { }";
+    let mod_a_info = lower_module_info_source_strict(mod_a_src).unwrap();
+
+    let mut cfg = base_project_config(tmp.path().to_path_buf());
+    cfg.jpms_modules = vec![JpmsModuleRoot {
+        name: ModuleName::new("workspace.a"),
+        root: mod_a_root.clone(),
+        module_info: mod_a_root.join("module-info.java"),
+        info: mod_a_info,
+    }];
+    cfg.module_path = vec![ProjectClasspathEntry {
+        kind: ClasspathEntryKind::Jar,
+        path: test_dep_jar(),
+    }];
+    db.set_project_config(project, Arc::new(cfg));
+
+    let file = FileId::from_raw(1);
+    set_file(
+        &mut db,
+        project,
+        file,
+        "mod-a/src/main/java/com/example/a/Use.java",
+        r#"
+package com.example.a;
+
+class Use {
+    void m() {
+        com.example.dep.Foo f = null;
+        f.id(null);
+    }
+}
+"#,
+    );
+    db.set_project_files(project, Arc::new(vec![file]));
+
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type"
+                && d.message.contains("com.example.dep.Foo")),
+        "expected unresolved-type diagnostic for com.example.dep.Foo, got {diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-method" && d.message.contains("id")),
+        "expected unresolved-method diagnostic for id(..), got {diags:?}"
+    );
+}
+
+#[test]
 fn jpms_typeck_requires_allows_resolution_for_module_path_automatic_modules() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);

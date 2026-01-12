@@ -118,6 +118,117 @@ impl TypeProvider for JavaOnlyJdkTypeProvider<'_> {
     }
 }
 
+/// `TypeProvider` wrapper that enforces JPMS accessibility when lazily loading external stubs.
+///
+/// In JPMS mode, name resolution already respects:
+/// - module readability (`requires`)
+/// - package exports (`exports`)
+///
+/// However, type checking may still try to "rescue" an unresolved `Type::Named` by calling
+/// [`ExternalTypeLoader::ensure_class`], which consults a `TypeProvider` directly. If the provider
+/// can still supply the stub, member/method resolution can succeed even though the type reference
+/// was not accessible under JPMS rules.
+///
+/// This wrapper blocks `TypeProvider` lookups for types that are not accessible from `from` under
+/// the given `ModuleGraph`.
+struct JpmsAccessibleTypeProvider<'a> {
+    from: ModuleName,
+    graph: &'a ModuleGraph,
+    classpath: &'a ModuleAwareClasspathIndex,
+    jdk: &'a nova_jdk::JdkIndex,
+    workspace: Option<&'a nova_resolve::WorkspaceDefMap>,
+    inner: &'a dyn TypeProvider,
+}
+
+impl<'a> JpmsAccessibleTypeProvider<'a> {
+    fn new(
+        from: ModuleName,
+        graph: &'a ModuleGraph,
+        classpath: &'a ModuleAwareClasspathIndex,
+        jdk: &'a nova_jdk::JdkIndex,
+        workspace: Option<&'a nova_resolve::WorkspaceDefMap>,
+        inner: &'a dyn TypeProvider,
+    ) -> Self {
+        Self {
+            from,
+            graph,
+            classpath,
+            jdk,
+            workspace,
+            inner,
+        }
+    }
+
+    fn module_of_binary(&self, binary_name: &str) -> Option<ModuleName> {
+        if let Some(to) = self.classpath.module_of(binary_name) {
+            return Some(to.clone());
+        }
+
+        // If the type exists in the classpath index but has no module metadata,
+        // treat it as belonging to the classpath "unnamed module".
+        if self.classpath.types.lookup_binary(binary_name).is_some() {
+            return Some(ModuleName::unnamed());
+        }
+
+        self.jdk.module_of_type(binary_name)
+    }
+
+    fn type_is_accessible(&self, binary_name: &str) -> bool {
+        // Don't let external stubs override workspace defs (source types).
+        if let Some(workspace) = self.workspace {
+            if workspace
+                .item_by_type_name(&TypeName::new(binary_name.to_string()))
+                .is_some()
+            {
+                return false;
+            }
+        }
+
+        let Some(to) = self.module_of_binary(binary_name) else {
+            // Unknown: allow the lookup. The underlying provider will return `None` if missing.
+            return true;
+        };
+
+        if !self.graph.can_read(&self.from, &to) {
+            return false;
+        }
+
+        let package = binary_name
+            .rsplit_once('.')
+            .map(|(pkg, _)| pkg)
+            .unwrap_or("");
+
+        let Some(info) = self.graph.get(&to) else {
+            // Best-effort: if we can't find module metadata, don't block loading.
+            return true;
+        };
+
+        info.exports_package_to(package, &self.from)
+    }
+}
+
+impl TypeProvider for JpmsAccessibleTypeProvider<'_> {
+    fn lookup_type(&self, binary_name: &str) -> Option<nova_types::TypeDefStub> {
+        self.type_is_accessible(binary_name)
+            .then(|| self.inner.lookup_type(binary_name))
+            .flatten()
+    }
+
+    fn members(&self, binary_name: &str) -> Vec<nova_types::MemberStub> {
+        if !self.type_is_accessible(binary_name) {
+            return Vec::new();
+        }
+        self.inner.members(binary_name)
+    }
+
+    fn supertypes(&self, binary_name: &str) -> Vec<String> {
+        if !self.type_is_accessible(binary_name) {
+            return Vec::new();
+        }
+        self.inner.supertypes(binary_name)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FileExprId {
     pub owner: DefWithBodyId,
@@ -505,10 +616,14 @@ fn type_of_def(db: &dyn NovaTypeck, def: DefWithBodyId) -> Type {
             let workspace = db.workspace_def_map(project);
             let jpms_env = db.jpms_compilation_env(project);
 
-            let jpms_index = jpms_env.as_deref().map(|env| {
+            let from_module = jpms_env.as_deref().map(|_| {
                 let cfg = db.project_config(project);
                 let file_rel = db.file_rel_path(file);
-                let from = module_for_file(&cfg, file_rel.as_str());
+                module_for_file(&cfg, file_rel.as_str())
+            });
+
+            let jpms_index = jpms_env.as_deref().map(|env| {
+                let from = from_module.clone().unwrap_or_else(ModuleName::unnamed);
                 JpmsTypeckIndex::new(env, &workspace, &*jdk, from)
             });
 
@@ -538,7 +653,7 @@ fn type_of_def(db: &dyn NovaTypeck, def: DefWithBodyId) -> Type {
             // declared return type without touching the body HIR/typeck.
             let base_store = db.project_base_type_store(project);
             let mut store = (&*base_store).clone();
-            let provider = if let Some(env) = jpms_env.as_deref() {
+            let base_provider = if let Some(env) = jpms_env.as_deref() {
                 nova_types::ChainTypeProvider::new(vec![
                     &env.classpath as &dyn TypeProvider,
                     &*jdk as &dyn TypeProvider,
@@ -552,7 +667,26 @@ fn type_of_def(db: &dyn NovaTypeck, def: DefWithBodyId) -> Type {
                     None => nova_types::ChainTypeProvider::new(vec![&*jdk as &dyn TypeProvider]),
                 }
             };
-            let mut loader = ExternalTypeLoader::new(&mut store, &provider);
+            let jdk_provider: &dyn TypeProvider = &*jdk;
+            let java_provider = JavaOnlyJdkTypeProvider::new(&base_provider, jdk_provider);
+
+            let jpms_provider = jpms_env.as_deref().map(|env| {
+                let from = from_module.clone().unwrap_or_else(ModuleName::unnamed);
+                JpmsAccessibleTypeProvider::new(
+                    from,
+                    &env.env.graph,
+                    &env.classpath,
+                    &*jdk,
+                    Some(&*workspace),
+                    &java_provider,
+                )
+            });
+            let provider: &dyn TypeProvider = match jpms_provider.as_ref() {
+                Some(provider) => provider,
+                None => &java_provider,
+            };
+
+            let mut loader = ExternalTypeLoader::new(&mut store, provider);
 
             // Define source types in this file so `Type::Class` ids are stable.
             let SourceTypes {
@@ -634,10 +768,14 @@ fn resolve_method_call_demand(
     let workspace = db.workspace_def_map(project);
     let jpms_env = db.jpms_compilation_env(project);
 
-    let jpms_index = jpms_env.as_deref().map(|env| {
+    let from_module = jpms_env.as_deref().map(|_| {
         let cfg = db.project_config(project);
         let file_rel = db.file_rel_path(file);
-        let from = module_for_file(&cfg, file_rel.as_str());
+        module_for_file(&cfg, file_rel.as_str())
+    });
+
+    let jpms_index = jpms_env.as_deref().map(|env| {
+        let from = from_module.clone().unwrap_or_else(ModuleName::unnamed);
         JpmsTypeckIndex::new(env, &workspace, &*jdk, from)
     });
 
@@ -698,8 +836,25 @@ fn resolve_method_call_demand(
         }
     };
     let jdk_provider: &dyn TypeProvider = &*jdk;
-    let provider = JavaOnlyJdkTypeProvider::new(&base_provider, jdk_provider);
-    let mut loader = ExternalTypeLoader::new(&mut store, &provider);
+    let java_provider = JavaOnlyJdkTypeProvider::new(&base_provider, jdk_provider);
+
+    let jpms_provider = jpms_env.as_deref().map(|env| {
+        let from = from_module.clone().unwrap_or_else(ModuleName::unnamed);
+        JpmsAccessibleTypeProvider::new(
+            from,
+            &env.env.graph,
+            &env.classpath,
+            &*jdk,
+            Some(&*workspace),
+            &java_provider,
+        )
+    });
+    let provider: &dyn TypeProvider = match jpms_provider.as_ref() {
+        Some(provider) => provider,
+        None => &java_provider,
+    };
+
+    let mut loader = ExternalTypeLoader::new(&mut store, provider);
 
     // Define source types for the full workspace so workspace `Type::Class` ids are stable within
     // this query and static imports can be resolved across files.
@@ -1649,10 +1804,14 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
     let workspace = db.workspace_def_map(project);
     let jpms_env = db.jpms_compilation_env(project);
 
-    let jpms_index = jpms_env.as_deref().map(|env| {
+    let from_module = jpms_env.as_deref().map(|_| {
         let cfg = db.project_config(project);
         let file_rel = db.file_rel_path(file);
-        let from = module_for_file(&cfg, file_rel.as_str());
+        module_for_file(&cfg, file_rel.as_str())
+    });
+
+    let jpms_index = jpms_env.as_deref().map(|env| {
+        let from = from_module.clone().unwrap_or_else(ModuleName::unnamed);
         JpmsTypeckIndex::new(env, &workspace, &*jdk, from)
     });
 
@@ -1706,8 +1865,25 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
         }
     };
     let jdk_provider: &dyn TypeProvider = &*jdk;
-    let provider = JavaOnlyJdkTypeProvider::new(&base_provider, jdk_provider);
-    let mut loader = ExternalTypeLoader::new(&mut store, &provider);
+    let java_provider = JavaOnlyJdkTypeProvider::new(&base_provider, jdk_provider);
+
+    let jpms_provider = jpms_env.as_deref().map(|env| {
+        let from = from_module.clone().unwrap_or_else(ModuleName::unnamed);
+        JpmsAccessibleTypeProvider::new(
+            from,
+            &env.env.graph,
+            &env.classpath,
+            &*jdk,
+            Some(&*workspace),
+            &java_provider,
+        )
+    });
+    let provider: &dyn TypeProvider = match jpms_provider.as_ref() {
+        Some(provider) => provider,
+        None => &java_provider,
+    };
+
+    let mut loader = ExternalTypeLoader::new(&mut store, provider);
 
     // Define source types for the full workspace so workspace `Type::Class` ids are stable within
     // this body and cross-file member resolution works.
