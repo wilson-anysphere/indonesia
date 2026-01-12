@@ -475,6 +475,50 @@ fn receiver_head_name(receiver: &ast::Expression) -> Option<String> {
 }
 
 fn infer_expr_type(_source: &str, expr: &ast::Expression) -> Option<String> {
+    fn infer_type_from_tokens(tokens: impl Iterator<Item = nova_syntax::SyntaxToken>) -> String {
+        let mut saw_string = false;
+        let mut saw_boolean = false;
+        let mut saw_double = false;
+        let mut saw_float = false;
+        let mut saw_long = false;
+
+        for tok in tokens.filter(|tok| !tok.kind().is_trivia() && tok.kind() != SyntaxKind::Eof) {
+            match tok.kind() {
+                SyntaxKind::StringLiteral | SyntaxKind::TextBlock => saw_string = true,
+                SyntaxKind::TrueKw
+                | SyntaxKind::FalseKw
+                | SyntaxKind::AmpAmp
+                | SyntaxKind::PipePipe
+                | SyntaxKind::Bang
+                | SyntaxKind::EqEq
+                | SyntaxKind::BangEq
+                | SyntaxKind::Less
+                | SyntaxKind::LessEq
+                | SyntaxKind::Greater
+                | SyntaxKind::GreaterEq
+                | SyntaxKind::InstanceofKw => saw_boolean = true,
+                SyntaxKind::DoubleLiteral => saw_double = true,
+                SyntaxKind::FloatLiteral => saw_float = true,
+                SyntaxKind::LongLiteral => saw_long = true,
+                _ => {}
+            }
+        }
+
+        if saw_string {
+            "String".to_string()
+        } else if saw_boolean {
+            "boolean".to_string()
+        } else if saw_double {
+            "double".to_string()
+        } else if saw_float {
+            "float".to_string()
+        } else if saw_long {
+            "long".to_string()
+        } else {
+            "int".to_string()
+        }
+    }
+
     match expr {
         ast::Expression::LiteralExpression(lit) => {
             let tok = lit
@@ -496,6 +540,68 @@ fn infer_expr_type(_source: &str, expr: &ast::Expression) -> Option<String> {
                 .to_string(),
             )
         }
+        ast::Expression::CastExpression(cast) => {
+            let ty = cast.ty()?;
+            if let Some(primitive) = ty.primitive() {
+                let tok = primitive
+                    .syntax()
+                    .descendants_with_tokens()
+                    .filter_map(|el| el.into_token())
+                    .find(|tok| !tok.kind().is_trivia() && tok.kind() != SyntaxKind::Eof)?;
+                let ty = match tok.kind() {
+                    SyntaxKind::BooleanKw => "boolean",
+                    SyntaxKind::ByteKw => "byte",
+                    SyntaxKind::ShortKw => "short",
+                    SyntaxKind::IntKw => "int",
+                    SyntaxKind::LongKw => "long",
+                    SyntaxKind::CharKw => "char",
+                    SyntaxKind::FloatKw => "float",
+                    SyntaxKind::DoubleKw => "double",
+                    _ => "Object",
+                };
+                return Some(ty.to_string());
+            }
+
+            // Best-effort: recognize `(String) <expr>` (avoid array casts like `String[]`).
+            let has_brackets = ty
+                .syntax()
+                .descendants_with_tokens()
+                .filter_map(|el| el.into_token())
+                .any(|tok| tok.kind() == SyntaxKind::LBracket);
+            if !has_brackets {
+                let mut last_ident: Option<String> = None;
+                for tok in ty
+                    .syntax()
+                    .descendants_with_tokens()
+                    .filter_map(|el| el.into_token())
+                    .filter(|tok| tok.kind().is_identifier_like())
+                {
+                    last_ident = Some(tok.text().to_string());
+                }
+
+                if last_ident.as_deref() == Some("String") {
+                    return Some("String".to_string());
+                }
+            }
+
+            None
+        }
+        ast::Expression::ConditionalExpression(cond) => {
+            // Conditional expressions (`?:`) are typed based on their then/else branches, not the
+            // condition. Scan the branches only so boolean literals in the condition don't
+            // incorrectly force a `boolean` inference.
+            let then_branch = cond.then_branch()?;
+            let else_branch = cond.else_branch()?;
+            let then_tokens = then_branch
+                .syntax()
+                .descendants_with_tokens()
+                .filter_map(|el| el.into_token());
+            let else_tokens = else_branch
+                .syntax()
+                .descendants_with_tokens()
+                .filter_map(|el| el.into_token());
+            Some(infer_type_from_tokens(then_tokens.chain(else_tokens)))
+        }
         ast::Expression::BinaryExpression(_)
         | ast::Expression::UnaryExpression(_)
         | ast::Expression::ParenthesizedExpression(_) => {
@@ -510,52 +616,11 @@ fn infer_expr_type(_source: &str, expr: &ast::Expression) -> Option<String> {
             //   - Else if any float literal appears => float
             //   - Else if any long literal appears => long
             //   - Else => int
-            let mut saw_string = false;
-            let mut saw_boolean = false;
-            let mut saw_double = false;
-            let mut saw_float = false;
-            let mut saw_long = false;
-
-            for tok in expr
-                .syntax()
-                .descendants_with_tokens()
-                .filter_map(|el| el.into_token())
-                .filter(|tok| !tok.kind().is_trivia() && tok.kind() != SyntaxKind::Eof)
-            {
-                match tok.kind() {
-                    SyntaxKind::StringLiteral | SyntaxKind::TextBlock => saw_string = true,
-                    SyntaxKind::TrueKw
-                    | SyntaxKind::FalseKw
-                    | SyntaxKind::AmpAmp
-                    | SyntaxKind::PipePipe
-                    | SyntaxKind::Bang
-                    | SyntaxKind::EqEq
-                    | SyntaxKind::BangEq
-                    | SyntaxKind::Less
-                    | SyntaxKind::LessEq
-                    | SyntaxKind::Greater
-                    | SyntaxKind::GreaterEq
-                    | SyntaxKind::InstanceofKw => saw_boolean = true,
-                    SyntaxKind::DoubleLiteral => saw_double = true,
-                    SyntaxKind::FloatLiteral => saw_float = true,
-                    SyntaxKind::LongLiteral => saw_long = true,
-                    _ => {}
-                }
-            }
-
-            if saw_string {
-                Some("String".to_string())
-            } else if saw_boolean {
-                Some("boolean".to_string())
-            } else if saw_double {
-                Some("double".to_string())
-            } else if saw_float {
-                Some("float".to_string())
-            } else if saw_long {
-                Some("long".to_string())
-            } else {
-                Some("int".to_string())
-            }
+            Some(infer_type_from_tokens(
+                expr.syntax()
+                    .descendants_with_tokens()
+                    .filter_map(|el| el.into_token()),
+            ))
         }
         _ => None,
     }
