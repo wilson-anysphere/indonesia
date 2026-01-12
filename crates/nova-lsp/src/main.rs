@@ -3292,21 +3292,16 @@ fn goto_definition_jdk(
     };
     let range = decompiled.range_for(&symbol)?;
 
-    // Register the virtual document in the VFS so follow-up requests can read it.
-    let vfs_path = VfsPath::uri(uri_string.clone());
-    let vfs_file_id = state.analysis.vfs.file_id(vfs_path.clone());
+    // Store the virtual document so follow-up requests can read it via `Vfs::read_to_string`.
+    let uri: lsp_types::Uri = uri_string.parse().ok()?;
+    let vfs_path = VfsPath::from(&uri);
     state
         .analysis
         .vfs
-        .store_virtual_document(vfs_path, decompiled.text.clone());
-    state.analysis.file_exists.insert(vfs_file_id, true);
-    state
-        .analysis
-        .file_contents
-        .insert(vfs_file_id, decompiled.text);
+        .store_virtual_document(vfs_path, decompiled.text);
 
     Some(lsp_types::Location {
-        uri: uri_string.parse().ok()?,
+        uri,
         range: lsp_types::Range::new(
             lsp_types::Position::new(range.start.line, range.start.character),
             lsp_types::Position::new(range.end.line, range.end.character),
