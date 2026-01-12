@@ -44,7 +44,7 @@ jobs:
           tool: cargo-binstall
 
       - name: Install cargo-fuzz
-        run: cargo +nightly binstall cargo-fuzz --version 0.13.1 --no-confirm --locked --disable-strategies compile
+        run: cargo +nightly binstall cargo-fuzz --version 0.13.1 --no-confirm --locked --disable-strategies compile --disable-telemetry
         timeout-minutes: 5
         env:
           GITHUB_TOKEN: ${{ github.token }}
