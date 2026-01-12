@@ -164,12 +164,48 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
         // are multiple popular `@Mapper` annotations (e.g. MyBatis). Requiring `org.mapstruct` in
         // the source keeps applicability conservative.
         let files = db.all_files(project);
-        if files
-            .into_iter()
-            .any(|file| db.file_text(file).is_some_and(looks_like_mapstruct_source))
-        {
+        if files.is_empty() {
+            // If the DB can't enumerate project files, stay permissive so MapStruct features can
+            // still be surfaced for open buffers. The analyzer's per-file entry points are already
+            // guarded by `looks_like_mapstruct_source`.
             return true;
         }
+
+        if files.into_iter().any(|file| {
+            if let Some(text) = db.file_text(file) {
+                return looks_like_mapstruct_source(text);
+            }
+
+            // Fallback: when the DB can enumerate files but doesn't provide their text (e.g.
+            // unopened buffers), probe likely mapper sources from disk.
+            //
+            // Limit the probe to "likely" mapper sources to avoid O(n) file reads for large
+            // workspaces.
+            let Some(path) = db.file_path(file) else {
+                return false;
+            };
+            if !path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("java"))
+            {
+                return false;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                return false;
+            };
+            if !name.contains("Mapper") {
+                return false;
+            }
+
+            let Ok(text) = std::fs::read_to_string(path) else {
+                return false;
+            };
+            looks_like_mapstruct_source(&text)
+        }) {
+            return true;
+        }
+
         // Last resort: if the database preserves fully-qualified annotation names in HIR, accept a
         // direct `org.mapstruct.*` match.
         db.all_classes(project).into_iter().any(|id| {
