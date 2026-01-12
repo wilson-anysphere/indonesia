@@ -7478,8 +7478,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         let mut explicit_type_args_errorish = false;
         let mut explicit_type_args_span: Option<Span> = None;
         for (text, span) in explicit_type_args {
+            let diag_len = self.diagnostics.len();
             let ty = self.resolve_source_type(loader, text.as_str(), Some(*span));
-            explicit_type_args_errorish |= ty.is_errorish();
+            explicit_type_args_errorish |= ty.is_errorish() || self.diagnostics.len() != diag_len;
             resolved_explicit_type_args.push(ty);
             explicit_type_args_span = Some(match explicit_type_args_span {
                 Some(existing) => {

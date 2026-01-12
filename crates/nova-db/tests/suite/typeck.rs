@@ -396,6 +396,33 @@ class C {
 }
 
 #[test]
+fn invalid_explicit_type_args_emit_invalid_type_args_and_recover() {
+    let src = r#"
+import java.util.List;
+class C {
+    void m() {
+        List<String> xs = List.<Missing>of();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-type-args"),
+        "expected invalid-type-args diagnostic, got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected call to still resolve via inference/target typing, got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected no type-mismatch diagnostics, got {diags:?}"
+    );
+}
+
+#[test]
 fn explicit_type_args_influence_var_inference() {
     let src = r#"
 import java.util.List;
