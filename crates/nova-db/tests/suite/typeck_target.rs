@@ -19,7 +19,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use nova_db::{ArcEq, FileId, NovaInputs, NovaTypeck, ProjectId, SalsaRootDatabase, SourceRootId};
+use nova_db::{
+    ArcEq, FileId, NovaInputs, NovaSyntax, NovaTypeck, ProjectId, SalsaRootDatabase, SourceRootId,
+};
 use nova_jdk::JdkIndex;
 use nova_project::{BuildSystem, JavaConfig, JavaVersion, Module, ProjectConfig};
 use tempfile::TempDir;
@@ -69,6 +71,26 @@ fn setup_db(text: &str) -> (SalsaRootDatabase, FileId) {
     let tmp = TempDir::new().unwrap();
 
     let cfg = base_project_config(tmp.path().to_path_buf());
+    db.set_project_config(project, Arc::new(cfg));
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let file = FileId::from_raw(1);
+    set_file(&mut db, project, file, "src/Test.java", text);
+    db.set_project_files(project, Arc::new(vec![file]));
+
+    (db, file)
+}
+
+fn setup_db_with_java(text: &str, source: JavaVersion, enable_preview: bool) -> (SalsaRootDatabase, FileId) {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    let mut cfg = base_project_config(tmp.path().to_path_buf());
+    cfg.java.source = source;
+    cfg.java.target = source;
+    cfg.java.enable_preview = enable_preview;
     db.set_project_config(project, Arc::new(cfg));
     db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
     db.set_classpath_index(project, None);
@@ -303,6 +325,38 @@ class C {
         diags.iter().all(|d| d.code.as_ref() != "switch-type"),
         "expected switch expression to have inferred type; got {diags:?}"
     );
+}
+
+#[test]
+fn switch_expression_is_feature_gated_but_typeck_does_not_crash() {
+    let src = r#"
+class C {
+    String m(int x) {
+        return switch (x) { case 1 -> "a"; default -> "b"; };
+    }
+}
+"#;
+
+    // Switch expressions are preview in Java 13 and require `--enable-preview`; ensure syntax
+    // feature diagnostics still fire while typeck remains resilient.
+    let (db, file) = setup_db_with_java(src, JavaVersion(13), false);
+
+    let feature_diags = db.syntax_feature_diagnostics(file);
+    assert!(
+        feature_diags
+            .iter()
+            .any(|d| d.code.as_ref() == "JAVA_FEATURE_SWITCH_EXPRESSIONS"),
+        "expected JAVA_FEATURE_SWITCH_EXPRESSIONS diagnostic; got {feature_diags:?}"
+    );
+
+    // Typeck should still run without panicking and (best-effort) infer a type for IDE features.
+    let offset = src
+        .find("switch")
+        .expect("snippet should contain switch expression");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
 }
 
 #[test]
