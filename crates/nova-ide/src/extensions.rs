@@ -1186,7 +1186,6 @@ where
             actions.extend(unused_import_quick_fixes_from_context(
                 source,
                 &uri,
-                &cancel,
                 span,
                 context_diagnostics,
             ));
