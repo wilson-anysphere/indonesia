@@ -329,7 +329,14 @@ fn maven_java_compile_config_infers_module_path_via_jpms_heuristic() {
     let build = MavenBuild::with_runner(MavenConfig::default(), runner.clone());
 
     let cfg = build.java_compile_config(&root, None, &cache).unwrap();
-    assert_eq!(cfg.module_path, vec![named.clone()]);
+    // When Maven doesn't expose module-path expressions, the JPMS heuristic approximates the
+    // module-path with the compile classpath (including the output directory) for JPMS projects.
+    assert_eq!(cfg.module_path, cfg.compile_classpath);
+    assert!(cfg.module_path.contains(&named));
+    assert!(cfg
+        .module_path
+        .iter()
+        .any(|p| p.ends_with(Path::new("target/classes"))));
 
     let invocations = runner.invocations();
     assert!(invocations.iter().any(|inv| {
