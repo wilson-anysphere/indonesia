@@ -155,7 +155,11 @@ function resolveNotificationMethod(
   return undefined;
 }
 
-function buildConstStringEnvFromVariableStatements(statements: readonly ts.Statement[]): Map<string, string> {
+function buildConstStringEnvFromVariableStatements(
+  statements: readonly ts.Statement[],
+  imports: Map<string, string>,
+  baseEnv: Map<string, string>,
+): Map<string, string> {
   const declarations: Array<{ name: string; initializer: ts.Expression }> = [];
 
   for (const statement of statements) {
@@ -174,7 +178,8 @@ function buildConstStringEnvFromVariableStatements(statements: readonly ts.State
     }
   }
 
-  const env = new Map<string, string>();
+  const env = new Map<string, string>(baseEnv);
+  const resolved = new Map<string, string>();
   let changed = true;
   while (changed) {
     changed = false;
@@ -182,14 +187,15 @@ function buildConstStringEnvFromVariableStatements(statements: readonly ts.State
       if (env.has(decl.name)) {
         continue;
       }
-      const value = evalConstString(decl.initializer, env);
+      const value = resolveNotificationMethod(decl.initializer, env, imports);
       if (typeof value !== 'undefined') {
         env.set(decl.name, value);
+        resolved.set(decl.name, value);
         changed = true;
       }
     }
   }
-  return env;
+  return resolved;
 }
 
 test('extension does not manually forward workspace file operations (vscode-languageclient handles workspace/fileOperations)', async () => {
@@ -202,8 +208,10 @@ test('extension does not manually forward workspace file operations (vscode-lang
   for (const filePath of tsFiles) {
     const raw = await fs.readFile(filePath, 'utf8');
     const sourceFile = ts.createSourceFile(filePath, raw, ts.ScriptTarget.ESNext, true);
-    const fileEnv = buildConstStringEnvFromVariableStatements(sourceFile.statements);
     const importAliases = buildImportAliasMap(sourceFile);
+    const fileEnv = new Map<string, string>(
+      buildConstStringEnvFromVariableStatements(sourceFile.statements, importAliases, new Map<string, string>()),
+    );
 
     const scanForBannedSendNotifications = (node: ts.Node, env: Map<string, string>) => {
       if (ts.isCallExpression(node) && getCalledMethodName(node.expression, env) === 'sendNotification') {
@@ -217,7 +225,7 @@ test('extension does not manually forward workspace file operations (vscode-lang
 
       let nextEnv = env;
       if (ts.isBlock(node)) {
-        const blockEnv = buildConstStringEnvFromVariableStatements(node.statements);
+        const blockEnv = buildConstStringEnvFromVariableStatements(node.statements, importAliases, env);
         if (blockEnv.size > 0) {
           nextEnv = new Map<string, string>([...env, ...blockEnv]);
         }
@@ -256,7 +264,9 @@ test('extension does not manually forward workspace file operations (vscode-lang
       }
 
       const handlerStatements = ts.isBlock(handlerArg.body) ? handlerArg.body.statements : undefined;
-      const handlerEnv = handlerStatements ? buildConstStringEnvFromVariableStatements(handlerStatements) : new Map<string, string>();
+      const handlerEnv = handlerStatements
+        ? buildConstStringEnvFromVariableStatements(handlerStatements, importAliases, fileEnv)
+        : new Map<string, string>();
       const env = new Map<string, string>([...fileEnv, ...handlerEnv]);
 
       const checkHandler = (handlerNode: ts.Node) => {
