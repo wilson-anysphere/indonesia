@@ -12,6 +12,18 @@ use nova_build_model::{AnnotationProcessing, AnnotationProcessingConfig};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+fn maven_compiler_arg_contains_enable_preview(arg: &str) -> bool {
+    let arg = arg.trim();
+    arg == "--enable-preview" || arg.split_whitespace().any(|tok| tok == "--enable-preview")
+}
+
+fn maven_compiler_arg_looks_like_jpms(arg: &str) -> bool {
+    compiler_arg_looks_like_jpms(arg)
+        || arg
+            .split_whitespace()
+            .any(|tok| compiler_arg_looks_like_jpms(tok))
+}
+
 #[derive(Debug, Clone)]
 pub struct MavenConfig {
     /// Path to the Maven executable (defaults to `mvn` in `PATH`).
@@ -339,8 +351,10 @@ impl MavenBuild {
             .as_deref()
             .map(parse_maven_string_list_output)
             .map(|args| {
-                let enable_preview = args.iter().any(|arg| arg.trim() == "--enable-preview");
-                let looks_like_jpms = args.iter().any(|arg| compiler_arg_looks_like_jpms(arg));
+                let enable_preview = args
+                    .iter()
+                    .any(|arg| maven_compiler_arg_contains_enable_preview(arg));
+                let looks_like_jpms = args.iter().any(|arg| maven_compiler_arg_looks_like_jpms(arg));
                 (enable_preview, looks_like_jpms)
             })
             .unwrap_or((false, false));
@@ -353,9 +367,11 @@ impl MavenBuild {
             )?;
             if let Some(output) = compiler_argument_raw.as_deref() {
                 let args = parse_maven_string_list_output(output);
-                enable_preview |= args.iter().any(|arg| arg.trim() == "--enable-preview");
+                enable_preview |= args
+                    .iter()
+                    .any(|arg| maven_compiler_arg_contains_enable_preview(arg));
                 compiler_args_looks_like_jpms |=
-                    args.iter().any(|arg| compiler_arg_looks_like_jpms(arg));
+                    args.iter().any(|arg| maven_compiler_arg_looks_like_jpms(arg));
             }
         }
 
@@ -2153,6 +2169,70 @@ mod tests {
 
         // Since JPMS flags are present, we should not need to evaluate Maven's module path element
         // expressions.
+        assert!(!runner.invocations().iter().any(|args| {
+            args.iter()
+                .any(|a| a == "-Dexpression=project.compileModulePathElements")
+                || args
+                    .iter()
+                    .any(|a| a == "-Dexpression=project.compileModulepathElements")
+                || args
+                    .iter()
+                    .any(|a| a == "-Dexpression=project.testCompileModulePathElements")
+        }));
+    }
+
+    #[test]
+    fn java_compile_config_detects_jpms_flags_in_compiler_argument_string() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+
+        std::fs::write(
+            project_root.join("pom.xml"),
+            "<project><modelVersion>4.0.0</modelVersion></project>",
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(project_root.join("src/main/java")).unwrap();
+
+        let testdata_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata");
+        let named = testdata_dir.join("named-module.jar");
+        let automatic = testdata_dir.join("automatic-module-name-1.2.3.jar");
+        let dep = testdata_dir.join("dep.jar");
+
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "project.compileClasspathElements".to_string(),
+            format!(
+                "[{},{},{}]\n",
+                named.display(),
+                automatic.display(),
+                dep.display()
+            ),
+        );
+        outputs.insert("project.testClasspathElements".to_string(), "[]\n".to_string());
+        outputs.insert("project.compileSourceRoots".to_string(), "[]\n".to_string());
+        outputs.insert("project.testCompileSourceRoots".to_string(), "[]\n".to_string());
+        outputs.insert("project.testSourceRoots".to_string(), "[]\n".to_string());
+
+        // JPMS signal via a single string containing multiple args separated by whitespace.
+        outputs.insert(
+            "maven.compiler.compilerArgument".to_string(),
+            "--module-path /tmp\n".to_string(),
+        );
+
+        let runner = Arc::new(StaticMavenRunner::new(outputs));
+        let build = MavenBuild::with_runner(MavenConfig::default(), runner.clone());
+        let cache = BuildCache::new(tmp.path().join("cache"));
+
+        let cfg = build
+            .java_compile_config(&project_root, None, &cache)
+            .unwrap();
+
+        assert_eq!(cfg.module_path, vec![named, automatic]);
+
+        // Since JPMS flags are present (even in a whitespace-separated string), we should not need
+        // to evaluate Maven's module path element expressions.
         assert!(!runner.invocations().iter().any(|args| {
             args.iter()
                 .any(|a| a == "-Dexpression=project.compileModulePathElements")
