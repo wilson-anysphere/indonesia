@@ -837,9 +837,33 @@ impl Resolver {
                 }
             }
             OccurrenceKind::MethodRef { receiver } => {
+                // Method references:
+                // - `Type::method`
+                // - `expr::method`
+                // - `Type::new`
+                //
+                // Best-effort rules:
+                // - Prefer interpreting the receiver as a workspace type name when it matches.
+                // - For qualified receivers (`p.Foo`), fall back to the final segment (`Foo`).
+                // - Otherwise, resolve the receiver type from local context (`a::m`, `this::m`).
+
+                let receiver_type_name = || -> Option<&str> {
+                    let receiver = receiver.trim();
+                    if self.index.type_info(receiver).is_some() {
+                        return Some(receiver);
+                    }
+
+                    let last = receiver.rsplit('.').next().unwrap_or(receiver).trim();
+                    if last != receiver && self.index.type_info(last).is_some() {
+                        return Some(last);
+                    }
+
+                    None
+                };
+
                 if ident == "new" {
-                    // Constructor reference: `Type::new` best-effort resolves to the receiver type.
-                    let receiver_ty = receiver.rsplit('.').next().unwrap_or(&receiver).trim();
+                    // Constructor reference: `Type::new` resolves to the receiver type definition.
+                    let receiver_ty = receiver_type_name()?;
                     let def = self.index.resolve_type_definition(receiver_ty)?;
                     return Some(ResolvedSymbol {
                         name: receiver_ty.to_string(),
@@ -848,9 +872,21 @@ impl Resolver {
                     });
                 }
 
+                // 1) `Type::method` (prefer type lookup when the receiver is a known workspace type).
+                if let Some(receiver_ty) = receiver_type_name() {
+                    if let Some(def) = self.index.resolve_method_definition(receiver_ty, &ident) {
+                        return Some(ResolvedSymbol {
+                            name: ident,
+                            kind: ResolvedKind::Method,
+                            def,
+                        });
+                    }
+                }
+
+                // 2) `expr::method` (locals/fields/this/super + chained receivers).
                 let receiver_ty = self
                     .index
-                    .resolve_receiver_type(parsed, ident_span.start, &receiver)
+                    .resolve_receiver_type(parsed, ident_span.start, receiver.trim())
                     .or_else(|| {
                         // Best-effort fallback for qualified type receivers like `p.Foo::bar`:
                         // if the full receiver doesn't resolve (package segments), try the final

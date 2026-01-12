@@ -5,7 +5,7 @@ use std::str::FromStr;
 use lsp_types::{Position, Uri};
 use nova_core::{path_to_file_uri, AbsPathBuf};
 use nova_db::{FileId, InMemoryFileStore};
-use nova_ide::goto_definition;
+use nova_ide::{find_references, goto_definition};
 use tempfile::TempDir;
 
 use crate::text_fixture::offset_to_position;
@@ -147,6 +147,26 @@ class Main { void test(){ java.util.function.Supplier s = A::$0new; } }
 
     assert_eq!(got.uri, fixture.marker_uri(1));
     assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
+fn find_references_includes_method_reference_occurrences() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /A.java
+class A { void $0m(){} }
+//- /Main.java
+class Main { void test(){ Runnable r = A::$1m; } }
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let refs = find_references(&fixture.db, file, pos, false);
+
+    assert_eq!(refs.len(), 1);
+    assert_eq!(refs[0].uri, fixture.marker_uri(1));
+    assert_eq!(refs[0].range.start, fixture.marker_position(1));
 }
 
 fn uri_for_path(path: &Path) -> Uri {
