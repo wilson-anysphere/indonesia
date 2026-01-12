@@ -199,16 +199,16 @@ fn code_actions_with_context_cast_wraps_binary_expression_in_parentheses() {
   void m() {
     int a = 1;
     int b = 2;
-    String s = a + b;
+    byte c = a + b;
   }
 }
 "#;
     db.set_file_text(file, source.to_string());
 
     let stmt_start = source
-        .find("String s = a + b;")
+        .find("byte c = a + b;")
         .expect("expected assignment in fixture");
-    let expr_start = stmt_start + "String s = ".len();
+    let expr_start = stmt_start + "byte c = ".len();
     let expr_end = expr_start + "a + b".len();
 
     let range = Range::new(
@@ -220,7 +220,7 @@ fn code_actions_with_context_cast_wraps_binary_expression_in_parentheses() {
         range,
         severity: Some(DiagnosticSeverity::ERROR),
         code: Some(NumberOrString::String("type-mismatch".to_string())),
-        message: "type mismatch: expected String, found int".to_string(),
+        message: "type mismatch: expected byte, found int".to_string(),
         ..lsp_types::Diagnostic::default()
     };
 
@@ -237,14 +237,14 @@ fn code_actions_with_context_cast_wraps_binary_expression_in_parentheses() {
     let cast_fix = actions.iter().find_map(|action| match action {
         lsp_types::CodeActionOrCommand::CodeAction(action)
             if action.kind == Some(lsp_types::CodeActionKind::QUICKFIX)
-                && action.title == "Cast to String" =>
+                && action.title == "Cast to byte" =>
         {
             Some(action)
         }
         _ => None,
     });
-    let cast_fix = cast_fix.expect("expected Cast to String quickfix");
-    assert_eq!(first_edit_new_text(cast_fix), "(String) (a + b)");
+    let cast_fix = cast_fix.expect("expected Cast to byte quickfix");
+    assert_eq!(first_edit_new_text(cast_fix), "(byte) (a + b)");
 }
 
 #[test]

@@ -199,7 +199,7 @@ class A {
   void m() {
     int a = 1;
     int b = 2;
-    String s = a + b;
+    byte c = a + b;
   }
 }
 "#;
@@ -209,11 +209,11 @@ class A {
     let file = db.file_id_for_path(path);
     db.set_file_text(file, source.to_string());
 
-    let needle = "String s = a + b;";
+    let needle = "byte c = a + b;";
     let stmt_start = source
         .find(needle)
         .expect("expected assignment with binary expression in fixture");
-    let expr_start = stmt_start + "String s = ".len();
+    let expr_start = stmt_start + "byte c = ".len();
     let expr_end = expr_start + "a + b".len();
     let selection = Span::new(expr_start, expr_end);
 
@@ -224,15 +224,15 @@ class A {
     let cast_fix = actions.iter().find_map(|action| match action {
         lsp_types::CodeActionOrCommand::CodeAction(action)
             if action.kind == Some(lsp_types::CodeActionKind::QUICKFIX)
-                && action.title == "Cast to String" =>
+                && action.title == "Cast to byte" =>
         {
             Some(action)
         }
         _ => None,
     });
-    let cast_fix = cast_fix.expect("expected Cast to String quickfix");
+    let cast_fix = cast_fix.expect("expected Cast to byte quickfix");
     let (_uri, edit) = first_edit(cast_fix);
-    assert_eq!(edit.new_text, "(String) (a + b)");
+    assert_eq!(edit.new_text, "(byte) (a + b)");
 }
 
 #[test]
