@@ -1,8 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::{
-    CallKind, ClassId, ClassType, FieldDef, Type, TypeEnv, TypeParamDef, TypeVarId, WildcardBound,
+    CallKind, ClassId, ClassKind, ClassType, FieldDef, Type, TypeEnv, TypeParamDef, TypeVarId,
+    WildcardBound,
 };
 
 /// Per-invocation typing context used by overload resolution and related algorithms.
@@ -42,6 +43,57 @@ impl<'env> TyContext<'env> {
     /// - applies capture conversion for wildcard-containing parameterized types
     pub(crate) fn normalize_receiver_for_member_access(&mut self, receiver: &Type) -> Type {
         let object = Type::class(self.well_known().object, vec![]);
+
+        fn normalize_intersection_for_member_access(env: &dyn TypeEnv, types: Vec<Type>) -> Type {
+            // Flatten nested intersections without pruning: for member access we want to preserve as
+            // much information as possible (e.g. keep interface bounds even when implied by a class),
+            // but still canonicalize ordering so overload resolution is deterministic and prefers class
+            // members over interface members when signatures collide.
+            let mut flat = Vec::new();
+            let mut stack = types;
+            while let Some(t) = stack.pop() {
+                match t {
+                    Type::Intersection(parts) => stack.extend(parts),
+                    other => flat.push(other),
+                }
+            }
+
+            let mut seen = HashSet::new();
+            let mut uniq = Vec::new();
+            for t in flat {
+                if seen.insert(t.clone()) {
+                    uniq.push(t);
+                }
+            }
+
+            if uniq.len() == 1 {
+                return uniq.into_iter().next().unwrap();
+            }
+
+            uniq.sort_by_cached_key(|ty| {
+                let rank: u8 = match ty {
+                    Type::Unknown | Type::Error => 0,
+                    Type::Class(ClassType { def, .. }) => match env.class(*def).map(|c| c.kind) {
+                        Some(ClassKind::Interface) => 2,
+                        Some(ClassKind::Class) | None => 1,
+                    },
+                    Type::Named(name) => env
+                        .lookup_class(name)
+                        .and_then(|id| env.class(id))
+                        .map(|c| c.kind)
+                        .map(|k| match k {
+                            ClassKind::Interface => 2,
+                            ClassKind::Class => 1,
+                        })
+                        .unwrap_or(1),
+                    Type::Array(_) | Type::VirtualInner { .. } => 1,
+                    _ => 2,
+                };
+                (rank, crate::type_sort_key(env, ty))
+            });
+
+            Type::Intersection(uniq)
+        }
 
         fn normalize_inner(ctx: &mut TyContext<'_>, ty: Type, depth: u8, object: &Type) -> Type {
             if depth == 0 {
@@ -89,12 +141,13 @@ impl<'env> TyContext<'env> {
 
         let normalized = normalize_inner(self, receiver.clone(), 8, &object);
         match normalized {
-            Type::Intersection(types) => Type::Intersection(
-                types
+            Type::Intersection(types) => {
+                let captured: Vec<Type> = types
                     .into_iter()
                     .map(|t| self.capture_conversion(&t))
-                    .collect(),
-            ),
+                    .collect();
+                normalize_intersection_for_member_access(self, captured)
+            }
             other => self.capture_conversion(&other),
         }
     }

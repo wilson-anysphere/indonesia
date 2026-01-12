@@ -1,7 +1,7 @@
 use nova_types::{
     is_assignable, is_subtype, resolve_method_call, CallKind, ClassDef, ClassKind, ClassType,
-    FieldDef, MethodCall, MethodResolution, TyContext, Type, TypeEnv, TypeParamDef, TypeStore,
-    WildcardBound,
+    FieldDef, MethodCall, MethodDef, MethodResolution, TyContext, Type, TypeEnv, TypeParamDef,
+    TypeStore, WildcardBound,
 };
 
 use pretty_assertions::assert_eq;
@@ -416,6 +416,71 @@ fn method_resolution_is_order_independent() {
 
     assert_eq!(res_a1, res_a2);
     assert_eq!(res_b1, res_b2);
+}
+
+#[test]
+fn method_resolution_prefers_class_bound_over_interface_bound_for_type_var_receiver() {
+    let mut env = TypeStore::with_minimal_jdk();
+    let object = env.well_known().object;
+    let string = env.well_known().string;
+
+    let iface = env.add_class(ClassDef {
+        name: "com.example.I".to_string(),
+        kind: ClassKind::Interface,
+        type_params: vec![],
+        super_class: None,
+        interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
+        methods: vec![MethodDef {
+            name: "foo".to_string(),
+            type_params: vec![],
+            params: vec![],
+            return_type: Type::class(object, vec![]),
+            is_static: false,
+            is_varargs: false,
+            is_abstract: true,
+        }],
+    });
+
+    let class = env.add_class(ClassDef {
+        name: "com.example.A".to_string(),
+        kind: ClassKind::Class,
+        type_params: vec![],
+        super_class: Some(Type::class(object, vec![])),
+        interfaces: vec![Type::class(iface, vec![])],
+        fields: vec![],
+        constructors: vec![],
+        methods: vec![MethodDef {
+            name: "foo".to_string(),
+            type_params: vec![],
+            params: vec![],
+            return_type: Type::class(string, vec![]),
+            is_static: false,
+            is_varargs: false,
+            is_abstract: false,
+        }],
+    });
+
+    // Intentionally put the interface bound first (even though Java source syntax requires the
+    // class bound first) to ensure receiver normalization is robust and deterministic.
+    let tv = env.add_type_param("T", vec![Type::class(iface, vec![]), Type::class(class, vec![])]);
+
+    let call = MethodCall {
+        receiver: Type::TypeVar(tv),
+        call_kind: CallKind::Instance,
+        name: "foo",
+        args: vec![],
+        expected_return: None,
+        explicit_type_args: vec![],
+    };
+
+    let mut ctx = TyContext::new(&env);
+    let MethodResolution::Found(res) = resolve_method_call(&mut ctx, &call) else {
+        panic!("expected method resolution success");
+    };
+
+    assert_eq!(res.return_type, Type::class(string, vec![]));
 }
 
 #[test]
