@@ -616,17 +616,24 @@ fn read_cache_file_bytes(path: &Path) -> Result<Option<Vec<u8>>, CacheError> {
 }
 
 fn remove_corrupt_path(path: &Path) {
-    match std::fs::remove_file(path) {
-        Ok(()) => {}
-        Err(err) if err.kind() == io::ErrorKind::IsADirectory => {
-            let _ = std::fs::remove_dir_all(path);
-        }
-        Err(_) => {
-            // Best-effort cleanup: treat any unexpected entry as corruption and
-            // try to remove it so future reads degrade to cache misses.
-            let _ = std::fs::remove_dir_all(path);
-        }
+    let meta = std::fs::symlink_metadata(path).ok();
+
+    // Never follow symlinks when deleting "corrupt" cache entries; treat them as
+    // plain directory entries to unlink.
+    if meta.as_ref().is_some_and(|m| m.file_type().is_symlink()) {
+        // On some platforms, directory symlinks/junctions may require `remove_dir`
+        // instead of `remove_file`. Try both, but never recurse.
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir(path);
+        return;
     }
+
+    if meta.as_ref().is_some_and(|m| m.is_dir()) {
+        let _ = std::fs::remove_dir_all(path);
+        return;
+    }
+
+    let _ = std::fs::remove_file(path);
 }
 
 fn ensure_dir_safe(path: &Path) -> Result<(), CacheError> {
