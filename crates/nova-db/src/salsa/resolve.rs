@@ -446,6 +446,11 @@ fn import_diagnostics(db: &dyn NovaResolve, file: FileId) -> Arc<Vec<Diagnostic>
     };
 
     let result = Arc::new(diags);
+    db.record_salsa_memo_bytes(
+        file,
+        TrackedSalsaMemo::ImportDiagnostics,
+        super::estimated_diagnostics_bytes(result.as_ref()),
+    );
     db.record_query_stat("import_diagnostics", start.elapsed());
     result
 }

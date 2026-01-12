@@ -16,7 +16,7 @@ use crate::FileId;
 use super::cancellation as cancel;
 use super::hir::NovaHir;
 use super::stats::HasQueryStats;
-use super::TrackedSalsaBodyMemo;
+use super::{TrackedSalsaBodyMemo, TrackedSalsaMemo};
 use nova_resolve::ids::DefWithBodyId;
 
 #[ra_salsa::query_group(NovaFlowStorage)]
@@ -342,6 +342,11 @@ fn flow_diagnostics_for_file(db: &dyn NovaFlow, file: FileId) -> Arc<Vec<Diagnos
     }
 
     let result = Arc::new(out);
+    db.record_salsa_memo_bytes(
+        file,
+        TrackedSalsaMemo::FlowDiagnostics,
+        super::estimated_diagnostics_bytes(result.as_ref()),
+    );
     db.record_query_stat("flow_diagnostics_for_file", start.elapsed());
     result
 }

@@ -31,7 +31,7 @@ use super::jpms::{module_for_file, JpmsProjectIndex, JpmsTypeProvider};
 use super::resolve::NovaResolve;
 use super::stats::HasQueryStats;
 use super::{
-    ArcEq, HasClassInterner, TrackedSalsaBodyMemo, TrackedSalsaProjectMemo,
+    ArcEq, HasClassInterner, TrackedSalsaBodyMemo, TrackedSalsaMemo, TrackedSalsaProjectMemo,
     TrackedSalsaProjectModuleMemo,
 };
 
@@ -2152,6 +2152,11 @@ fn type_diagnostics(db: &dyn NovaTypeck, file: FileId) -> Vec<Diagnostic> {
         )
     });
 
+    db.record_salsa_memo_bytes(
+        file,
+        TrackedSalsaMemo::TypeDiagnostics,
+        super::estimated_diagnostics_bytes(&diags),
+    );
     db.record_query_stat("type_diagnostics", start.elapsed());
     diags
 }

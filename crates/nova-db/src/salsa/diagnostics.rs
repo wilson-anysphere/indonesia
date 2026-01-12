@@ -10,6 +10,7 @@ use super::cancellation as cancel;
 use super::flow::NovaFlow;
 use super::stats::HasQueryStats;
 use super::typeck::NovaTypeck;
+use super::TrackedSalsaMemo;
 
 #[ra_salsa::query_group(NovaDiagnosticsStorage)]
 pub trait NovaDiagnostics: NovaTypeck + NovaFlow + HasQueryStats {
@@ -95,6 +96,11 @@ fn diagnostics(db: &dyn NovaDiagnostics, file: FileId) -> Arc<Vec<Diagnostic>> {
     });
 
     let result = Arc::new(out);
+    db.record_salsa_memo_bytes(
+        file,
+        TrackedSalsaMemo::Diagnostics,
+        super::estimated_diagnostics_bytes(result.as_ref()),
+    );
     db.record_query_stat("diagnostics", start.elapsed());
     result
 }

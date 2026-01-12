@@ -282,6 +282,17 @@ pub enum TrackedSalsaMemo {
     /// This can be large in projects with many symbols and references, so we
     /// track it separately from parse and item tree memos.
     FileIndexDelta,
+    /// Language-level diagnostics for syntax features that are not enabled at the configured
+    /// language level (e.g. `record` below Java 16).
+    SyntaxFeatureDiagnostics,
+    /// Best-effort diagnostics for import declarations in the file.
+    ImportDiagnostics,
+    /// Type-checking diagnostics for a file (aggregated over bodies + signatures).
+    TypeDiagnostics,
+    /// Flow diagnostics for a file (aggregated over bodies).
+    FlowDiagnostics,
+    /// Aggregated diagnostics for a file (syntax + semantic + flow).
+    Diagnostics,
 }
 
 /// Project-keyed memoized query results tracked for memory accounting.
@@ -437,6 +448,11 @@ struct FileMemoBytes {
     /// Bytes recorded for the `import_map` memo.
     import_map: u64,
     file_index_delta: u64,
+    syntax_feature_diagnostics: u64,
+    import_diagnostics: u64,
+    type_diagnostics: u64,
+    flow_diagnostics: u64,
+    diagnostics: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -496,7 +512,25 @@ impl FileMemoBytes {
             + self.def_map
             + self.import_map
             + self.file_index_delta
+            + self.syntax_feature_diagnostics
+            + self.import_diagnostics
+            + self.type_diagnostics
+            + self.flow_diagnostics
+            + self.diagnostics
     }
+}
+
+fn estimated_diagnostics_bytes(diags: &Vec<nova_types::Diagnostic>) -> u64 {
+    use std::borrow::Cow;
+
+    let mut bytes = (diags.capacity() * std::mem::size_of::<nova_types::Diagnostic>()) as u64;
+    for diag in diags {
+        bytes = bytes.saturating_add(diag.message.capacity() as u64);
+        if let Cow::Owned(code) = &diag.code {
+            bytes = bytes.saturating_add(code.capacity() as u64);
+        }
+    }
+    bytes
 }
 
 impl SalsaMemoFootprint {
@@ -551,6 +585,11 @@ impl SalsaMemoFootprint {
             TrackedSalsaMemo::DefMap => entry.def_map = bytes,
             TrackedSalsaMemo::ImportMap => entry.import_map = bytes,
             TrackedSalsaMemo::FileIndexDelta => entry.file_index_delta = bytes,
+            TrackedSalsaMemo::SyntaxFeatureDiagnostics => entry.syntax_feature_diagnostics = bytes,
+            TrackedSalsaMemo::ImportDiagnostics => entry.import_diagnostics = bytes,
+            TrackedSalsaMemo::TypeDiagnostics => entry.type_diagnostics = bytes,
+            TrackedSalsaMemo::FlowDiagnostics => entry.flow_diagnostics = bytes,
+            TrackedSalsaMemo::Diagnostics => entry.diagnostics = bytes,
         }
 
         let next_total = entry.total();
@@ -6118,6 +6157,39 @@ class Foo {
             manager.report().usage.query_cache,
             after_module_store_bytes,
             "memory manager should see tracked salsa memo usage (including JPMS memos)"
+        );
+    }
+
+    #[test]
+    fn salsa_memo_footprint_tracks_diagnostics_memos() {
+        let manager = MemoryManager::new(MemoryBudget::from_total(10 * 1024 * 1024));
+        let db = Database::new_with_memory_manager(&manager);
+        let project = ProjectId::from_raw(0);
+        db.set_jdk_index(project, Arc::new(nova_jdk::JdkIndex::new()));
+
+        let file = FileId::from_raw(0);
+        // Intentional parse error: missing initializer expression after `=`.
+        db.set_file_text(file, "class Foo { void m() { int x = ; } }");
+        db.set_file_rel_path(file, Arc::new("src/Foo.java".to_string()));
+
+        db.with_snapshot(|snap| {
+            let _ = snap.parse_java(file);
+        });
+        let baseline = db.salsa_memo_bytes();
+
+        db.with_snapshot(|snap| {
+            let _ = snap.diagnostics(file);
+        });
+        let after = db.salsa_memo_bytes();
+
+        assert!(
+            after > baseline,
+            "expected diagnostics-related memos to increase tracked bytes"
+        );
+        assert_eq!(
+            manager.report().usage.query_cache,
+            after,
+            "memory manager should see tracked salsa memo usage (including diagnostics memos)"
         );
     }
 

@@ -335,6 +335,11 @@ fn syntax_feature_diagnostics(db: &dyn NovaSyntax, file: FileId) -> Arc<Vec<Diag
 
     let diagnostics = nova_syntax::feature_gate_diagnostics(&parse.syntax(), level);
     let result = Arc::new(diagnostics);
+    db.record_salsa_memo_bytes(
+        file,
+        TrackedSalsaMemo::SyntaxFeatureDiagnostics,
+        super::estimated_diagnostics_bytes(result.as_ref()),
+    );
     db.record_query_stat("syntax_feature_diagnostics", start.elapsed());
     result
 }
