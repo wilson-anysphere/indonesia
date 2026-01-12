@@ -833,6 +833,86 @@ test('noManualFileOperationsForwarding scan flags Reflect.apply sendNotification
   assert.ok(Array.from(violations).some((entry) => entry.includes('workspace/didRenameFiles')));
 });
 
+test('noManualFileOperationsForwarding scan flags sendNotification.call forwarding (fixtures)', () => {
+  const srcRoot = '/';
+  const filePath = '/fixture.ts';
+
+  const source = `
+    client.sendNotification.call(client, 'workspace/didRenameFiles', { files: [] });
+  `;
+
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
+  const violations = scanSourceFileForManualFileOperationForwarding(sourceFile, { filePath, srcRoot });
+  assert.ok(Array.from(violations).some((entry) => entry.includes('workspace/didRenameFiles')));
+});
+
+test('noManualFileOperationsForwarding scan flags sendNotification.apply forwarding (fixtures)', () => {
+  const srcRoot = '/';
+  const filePath = '/fixture.ts';
+
+  const source = `
+    client.sendNotification.apply(client, ['workspace/didRenameFiles', { files: [] }]);
+  `;
+
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
+  const violations = scanSourceFileForManualFileOperationForwarding(sourceFile, { filePath, srcRoot });
+  assert.ok(Array.from(violations).some((entry) => entry.includes('workspace/didRenameFiles')));
+});
+
+test('noManualFileOperationsForwarding scan flags inline sendNotification.bind(...)(...) calls (fixtures)', () => {
+  const srcRoot = '/';
+  const filePath = '/fixture.ts';
+
+  const source = `
+    client.sendNotification.bind(client)('workspace/didRenameFiles', { files: [] });
+  `;
+
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
+  const violations = scanSourceFileForManualFileOperationForwarding(sourceFile, { filePath, srcRoot });
+  assert.ok(Array.from(violations).some((entry) => entry.includes('workspace/didRenameFiles')));
+});
+
+test('noManualFileOperationsForwarding scan flags sendNotification invocation via const alias (fixtures)', () => {
+  const srcRoot = '/';
+  const filePath = '/fixture.ts';
+
+  const source = `
+    const send = client.sendNotification;
+    send('workspace/didRenameFiles', { files: [] });
+  `;
+
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
+  const violations = scanSourceFileForManualFileOperationForwarding(sourceFile, { filePath, srcRoot });
+  assert.ok(Array.from(violations).some((entry) => entry.includes('workspace/didRenameFiles')));
+});
+
+test('noManualFileOperationsForwarding scan flags sendNotification via destructuring alias (fixtures)', () => {
+  const srcRoot = '/';
+  const filePath = '/fixture.ts';
+
+  const source = `
+    const { sendNotification } = client;
+    sendNotification('workspace/didRenameFiles', { files: [] });
+  `;
+
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
+  const violations = scanSourceFileForManualFileOperationForwarding(sourceFile, { filePath, srcRoot });
+  assert.ok(Array.from(violations).some((entry) => entry.includes('workspace/didRenameFiles')));
+});
+
+test('noManualFileOperationsForwarding scan flags sendNotification via bracket access (fixtures)', () => {
+  const srcRoot = '/';
+  const filePath = '/fixture.ts';
+
+  const source = `
+    client['sendNotification']('workspace/didRenameFiles', { files: [] });
+  `;
+
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
+  const violations = scanSourceFileForManualFileOperationForwarding(sourceFile, { filePath, srcRoot });
+  assert.ok(Array.from(violations).some((entry) => entry.includes('workspace/didRenameFiles')));
+});
+
 test('noManualFileOperationsForwarding scan resolves const object property values (fixtures)', () => {
   const srcRoot = '/';
   const filePath = '/fixture.ts';
