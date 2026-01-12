@@ -242,6 +242,7 @@ pub fn extract_variable_code_actions(
             expr_range,
             name: "extracted".to_string(),
             use_var: true,
+            replace_all: false,
         },
     )
     .is_err()
@@ -272,6 +273,7 @@ pub fn extract_variable_code_actions(
             expr_range,
             name: "extracted".to_string(),
             use_var: false,
+            replace_all: false,
         },
     )
     .is_ok()
@@ -342,6 +344,7 @@ pub fn resolve_extract_variable_code_action(
                 .or(stored_name)
                 .unwrap_or_else(|| "extracted".to_string()),
             use_var,
+            replace_all: false,
         },
     ) {
         Ok(edit) => edit,

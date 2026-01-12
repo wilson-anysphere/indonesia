@@ -175,6 +175,7 @@ fn extract_variable_generates_valid_edit() {
             expr_range: WorkspaceTextRange::new(expr_start, expr_end),
             name: "sum".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap();
@@ -213,6 +214,7 @@ fn extract_variable_replaces_whole_expression_statement() {
             expr_range: WorkspaceTextRange::new(expr_start, expr_end),
             name: "result".into(),
             use_var: false,
+            replace_all: false,
         },
     )
     .unwrap();
@@ -249,6 +251,7 @@ fn extract_variable_splits_multi_declarator_local_declaration() {
             expr_range,
             name: "tmp".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap();
@@ -259,6 +262,48 @@ fn extract_variable_splits_multi_declarator_local_declaration() {
     int a = 1;
     var tmp = a + 2;
     int b = tmp;
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn extract_variable_replace_all_does_not_cross_lambda_boundary() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  void m() {
+    int x = 0;
+    int a = /*select*/1 / x/*end*/;
+    Runnable r = () -> System.out.println(1 / x);
+    int b = 1 / x;
+  }
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "div".into(),
+            use_var: true,
+            replace_all: true,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  void m() {
+    int x = 0;
+    var div = 1 / x;
+    int a = div;
+    Runnable r = () -> System.out.println(1 / x);
+    int b = div;
   }
 }
 "#;
@@ -287,6 +332,7 @@ fn extract_variable_rejects_instanceof_pattern_expression() {
             expr_range,
             name: "tmp".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -321,6 +367,7 @@ fn extract_variable_rejects_empty_name() {
             expr_range: WorkspaceTextRange::new(expr_start, expr_end),
             name: "".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -355,6 +402,7 @@ fn extract_variable_rejects_name_starting_with_digit() {
             expr_range: WorkspaceTextRange::new(expr_start, expr_end),
             name: "1x".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -389,6 +437,7 @@ fn extract_variable_rejects_keyword_name() {
             expr_range: WorkspaceTextRange::new(expr_start, expr_end),
             name: "class".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -424,6 +473,7 @@ fn extract_variable_use_var_false_emits_explicit_type() {
             expr_range: WorkspaceTextRange::new(expr_start, expr_end),
             name: "sum".into(),
             use_var: false,
+            replace_all: false,
         },
     )
     .unwrap();
@@ -460,6 +510,7 @@ fn extract_variable_prefers_typeck_type_when_use_var_false() {
             expr_range,
             name: "y".into(),
             use_var: false,
+            replace_all: false,
         },
     )
     .unwrap();
@@ -500,6 +551,7 @@ class Test {
             expr_range,
             name: "tmp".into(),
             use_var: false,
+            replace_all: false,
         },
     )
     .unwrap();
@@ -660,6 +712,7 @@ class Test {
                 expr_range: range,
                 name: "value".into(),
                 use_var: false,
+                replace_all: false,
             },
         )
         .unwrap();
@@ -692,6 +745,7 @@ fn extract_variable_trims_whitespace_in_selection_range() {
             expr_range: WorkspaceTextRange::new(expr_start - 2, expr_end + 2),
             name: "sum".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap();
@@ -727,6 +781,7 @@ fn extract_variable_allows_initializer_that_depends_on_earlier_declarator() {
             expr_range: WorkspaceTextRange::new(range.start, range.end),
             name: "sum".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap();
@@ -763,6 +818,7 @@ fn extract_variable_allows_initializer_in_first_declarator_of_multi_declarator_s
             expr_range: WorkspaceTextRange::new(range.start, range.end),
             name: "sum".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap();
@@ -798,6 +854,7 @@ fn extract_variable_allows_later_declarator_initializer_even_if_outer_names_exis
             expr_range: WorkspaceTextRange::new(range.start, range.end),
             name: "sum".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap();
@@ -835,6 +892,7 @@ class C {
             expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
             name: "sum".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -868,6 +926,7 @@ fn extract_variable_rejects_expression_bodied_lambda_nested_expression() {
             expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
             name: "sum".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -903,6 +962,7 @@ fn extract_variable_allows_block_bodied_lambda() {
             expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
             name: "sum".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap();
@@ -941,6 +1001,7 @@ fn extract_variable_rejects_name_conflict_with_lambda_parameter() {
             expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
             name: "sum".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -976,6 +1037,7 @@ fn extract_variable_allows_lambda_parameter_when_name_does_not_conflict() {
             expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
             name: "tmp".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap();
@@ -1015,6 +1077,7 @@ fn extract_variable_rejects_name_conflict_with_catch_parameter() {
             expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
             name: "e".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -1052,6 +1115,7 @@ fn extract_variable_rejects_switch_expression_rule_expression() {
             expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
             name: "sum".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -1091,6 +1155,7 @@ fn extract_variable_rejects_switch_expression_rule_expression_nested() {
             expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
             name: "sum".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -1129,6 +1194,7 @@ fn extract_variable_rejects_switch_expression_rule_throw_statement_body() {
             expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
             name: "tmp".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -1172,6 +1238,7 @@ fn extract_variable_rejects_while_condition_extraction() {
             expr_range: WorkspaceTextRange::new(expr_start, expr_end),
             name: "cond".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -1190,6 +1257,7 @@ fn extract_variable_rejects_while_condition_extraction() {
             expr_range: WorkspaceTextRange::new(expr_start, expr_end),
             name: "cond".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -1221,6 +1289,7 @@ fn extract_variable_rejects_for_condition_or_update_extraction() {
             expr_range: WorkspaceTextRange::new(cond_start, cond_end),
             name: "limit".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -1239,6 +1308,7 @@ fn extract_variable_rejects_for_condition_or_update_extraction() {
             expr_range: WorkspaceTextRange::new(update_start, update_end),
             name: "s".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -1272,6 +1342,7 @@ fn extract_variable_rejects_short_circuit_rhs_extraction() {
             expr_range: WorkspaceTextRange::new(expr_start, expr_end),
             name: "v".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -1305,6 +1376,7 @@ fn extract_variable_rejects_ternary_branch_extraction() {
             expr_range: WorkspaceTextRange::new(expr_start, expr_end),
             name: "v".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -1335,6 +1407,7 @@ fn extract_variable_rejects_method_call_expression() {
             expr_range: WorkspaceTextRange::new(expr_start, expr_end),
             name: "call".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -1369,6 +1442,7 @@ fn extract_variable_rejects_new_expression() {
             expr_range: WorkspaceTextRange::new(expr_start, expr_end),
             name: "obj".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -1402,6 +1476,7 @@ class C extends B {
             expr_range,
             name: "sum".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -1436,6 +1511,7 @@ fn extract_variable_rejects_this_constructor_invocation_argument() {
             expr_range,
             name: "sum".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -1473,6 +1549,7 @@ class C extends B {
             expr_range,
             name: "sum".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap();
@@ -1513,6 +1590,7 @@ fn extract_variable_allows_extraction_after_this_constructor_invocation() {
             expr_range,
             name: "sum".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap();
@@ -1552,6 +1630,7 @@ fn extract_variable_rejects_if_body_without_braces_multiline() {
             expr_range,
             name: "sum".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -1587,6 +1666,7 @@ fn extract_variable_rejects_if_body_without_braces_oneline() {
             expr_range,
             name: "sum".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -1622,6 +1702,7 @@ fn extract_variable_rejects_oneline_switch_case_statement() {
             expr_range,
             name: "sum".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -1660,6 +1741,7 @@ fn extract_variable_allows_switch_case_group() {
             expr_range,
             name: "sum".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap();
@@ -1701,6 +1783,7 @@ fn extract_variable_rejects_switch_arrow_single_statement_body() {
             expr_range,
             name: "sum".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -1736,6 +1819,7 @@ fn extract_variable_rejects_labeled_statement_body() {
             expr_range,
             name: "sum".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -1772,6 +1856,7 @@ fn extract_variable_allows_extraction_inside_braced_if_block() {
             expr_range,
             name: "sum".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap();
@@ -1811,6 +1896,7 @@ fn extract_variable_rejects_try_with_resources_resource_specification() {
             expr_range,
             name: "x".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -1847,6 +1933,7 @@ fn extract_variable_allows_extraction_inside_try_body() {
             expr_range,
             name: "sum".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap();
@@ -1884,6 +1971,7 @@ fn extract_variable_rejected_in_annotation_value() {
             expr_range: WorkspaceTextRange::new(expr_start, expr_end),
             name: "tmp".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -1913,6 +2001,7 @@ fn extract_variable_rejected_in_annotation_default_value() {
             expr_range: WorkspaceTextRange::new(expr_start, expr_end),
             name: "tmp".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -1947,6 +2036,7 @@ fn extract_variable_rejected_in_switch_case_label() {
             expr_range: WorkspaceTextRange::new(expr_start, expr_end),
             name: "tmp".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -1981,6 +2071,7 @@ fn extract_variable_rejected_in_switch_expression_case_label() {
             expr_range: WorkspaceTextRange::new(expr_start, expr_end),
             name: "tmp".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -2012,6 +2103,7 @@ fn extract_variable_rejected_in_try_with_resources_resource_initializer() {
             expr_range: selection,
             name: "tmp".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -2047,6 +2139,7 @@ fn extract_variable_rejects_expression_in_assert_condition() {
             expr_range: WorkspaceTextRange::new(expr_start, expr_end),
             name: "sum".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -2078,6 +2171,7 @@ fn extract_variable_rejects_expression_in_assert_message() {
             expr_range: WorkspaceTextRange::new(expr_start, expr_end),
             name: "sum".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -3429,6 +3523,7 @@ fn extract_variable_rejects_assert_condition_extraction() {
             expr_range: selection,
             name: "cond".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();
@@ -3453,6 +3548,7 @@ fn extract_variable_rejects_assert_message_extraction() {
             expr_range: selection,
             name: "msg".into(),
             use_var: true,
+            replace_all: false,
         },
     )
     .unwrap_err();

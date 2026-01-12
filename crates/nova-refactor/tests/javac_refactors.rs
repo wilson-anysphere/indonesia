@@ -231,6 +231,7 @@ fn javac_refactor_extract_variable_compiles_before_after() {
             name: "sum".into(),
             // Use an explicit type rather than `var` so this stays compatible with older JDKs.
             use_var: false,
+            replace_all: false,
         },
     )
     .expect("extract variable should succeed");

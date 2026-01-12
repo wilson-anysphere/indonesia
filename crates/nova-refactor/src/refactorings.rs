@@ -324,6 +324,7 @@ pub struct ExtractVariableParams {
     pub expr_range: TextRange,
     pub name: String,
     pub use_var: bool,
+    pub replace_all: bool,
 }
 
 pub fn extract_variable(
@@ -651,10 +652,19 @@ pub fn extract_variable(
 
     let decl = format!("{indent}{ty} {} = {expr_text};{newline}", &name);
 
-    let mut edit = WorkspaceEdit::new(vec![
-        TextEdit::insert(params.file.clone(), insert_pos, decl),
-        TextEdit::replace(params.file.clone(), expr_range, name),
-    ]);
+    let occurrences = if params.replace_all {
+        find_replace_all_occurrences_same_execution_context(text, root.clone(), &stmt, &expr_text)
+    } else {
+        vec![expr_range]
+    };
+
+    let mut edits = Vec::with_capacity(1 + occurrences.len());
+    edits.push(TextEdit::insert(params.file.clone(), insert_pos, decl));
+    for range in occurrences {
+        edits.push(TextEdit::replace(params.file.clone(), range, name.clone()));
+    }
+
+    let mut edit = WorkspaceEdit::new(edits);
     edit.normalize()?;
     Ok(edit)
 }
@@ -1762,6 +1772,73 @@ fn skip_leading_whitespace(text: &str, mut start: usize, end: usize) -> usize {
         start += 1;
     }
     start
+}
+
+fn normalize_expr_text(text: &str) -> String {
+    text.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+fn find_replace_all_occurrences_same_execution_context(
+    source: &str,
+    root: nova_syntax::SyntaxNode,
+    insertion_stmt: &ast::Statement,
+    selected_text: &str,
+) -> Vec<TextRange> {
+    let selected_norm = normalize_expr_text(selected_text);
+    if selected_norm.is_empty() {
+        return Vec::new();
+    }
+
+    // Execution context owner: the nearest enclosing lambda (if any).
+    let insertion_lambda = insertion_stmt
+        .syntax()
+        .ancestors()
+        .find_map(ast::LambdaExpression::cast);
+
+    // Restrict to the closest enclosing block to avoid replacing occurrences in other methods.
+    let search_root = insertion_stmt
+        .syntax()
+        .ancestors()
+        .find_map(ast::Block::cast)
+        .map(|b| b.syntax().clone())
+        .unwrap_or(root);
+
+    let min_offset = syntax_range(insertion_stmt.syntax()).start;
+
+    let mut ranges = Vec::new();
+    for expr in search_root.descendants().filter_map(ast::Expression::cast) {
+        let range = syntax_range(expr.syntax());
+
+        // The extracted local is declared immediately before `insertion_stmt`, so we only replace
+        // occurrences within that statement and after it.
+        if range.start < min_offset {
+            continue;
+        }
+
+        // Compare against a trimmed version so trailing trivia in expression node ranges does not
+        // affect equivalence matching.
+        let trimmed = trim_range(source, range);
+        let Some(text) = source.get(trimmed.start..trimmed.end) else {
+            continue;
+        };
+        if normalize_expr_text(text) != selected_norm {
+            continue;
+        }
+
+        let expr_lambda = expr
+            .syntax()
+            .ancestors()
+            .find_map(ast::LambdaExpression::cast);
+        if expr_lambda != insertion_lambda {
+            continue;
+        }
+
+        ranges.push(range);
+    }
+
+    ranges.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.end.cmp(&b.end)));
+    ranges.dedup();
+    ranges
 }
 
 fn constant_expression_only_context_reason(expr: &ast::Expression) -> Option<&'static str> {
