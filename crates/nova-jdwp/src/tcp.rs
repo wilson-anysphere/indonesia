@@ -1789,6 +1789,15 @@ mod tests {
     }
 
     #[test]
+    fn read_packet_rejects_oversized_length_prefix_without_reading_rest() {
+        let length = (crate::MAX_JDWP_PACKET_BYTES + 1) as u32;
+        let mut cursor = std::io::Cursor::new(length.to_be_bytes());
+
+        let err = read_packet(&mut cursor).unwrap_err();
+        assert!(matches!(err, JdwpError::Protocol(msg) if msg.contains("packet too large")));
+    }
+
+    #[test]
     fn evaluate_supports_identifier_locals() {
         const THREAD_ID: u64 = 0x1001;
         const FRAME_ID: u64 = 0x2001;
