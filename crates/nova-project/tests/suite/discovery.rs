@@ -1386,6 +1386,40 @@ fn loads_gradle_includebuild_kts_workspace_model() {
 }
 
 #[test]
+fn loads_gradle_includebuild_dependencies_from_included_build_version_catalog() {
+    let root = testdata_path("gradle-includebuild-version-catalog");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+
+    let config = load_project_with_options(&root, &options).expect("load gradle project");
+    assert!(
+        config.dependencies.iter().any(|d| {
+            d.group_id == "com.google.guava"
+                && d.artifact_id == "guava"
+                && d.version.as_deref() == Some("33.0.0-jre")
+        }),
+        "expected workspace dependency list to include guava from included build version catalog"
+    );
+
+    let model =
+        load_workspace_model_with_options(&root, &options).expect("load gradle workspace model");
+    let included = model
+        .module_by_id("gradle::__includedBuild_build-logic")
+        .expect("included build module");
+    assert!(
+        included.dependencies.iter().any(|d| {
+            d.group_id == "com.google.guava"
+                && d.artifact_id == "guava"
+                && d.version.as_deref() == Some("33.0.0-jre")
+        }),
+        "expected included build module to include guava from its own version catalog"
+    );
+}
+
+#[test]
 fn loads_gradle_composite_workspace_model() {
     let root = testdata_path("gradle-composite/root");
     let included_root =

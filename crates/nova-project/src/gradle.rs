@@ -301,6 +301,21 @@ pub(crate) fn load_gradle_project(
     let mut workspace_java = root_java;
     let gradle_properties = load_gradle_properties(root);
     let version_catalog = load_gradle_version_catalog(root, &gradle_properties);
+    // Included builds (`includeBuild(...)`) are separate Gradle builds and can have their own
+    // `gradle.properties` / version catalogs. Collect per-included-build parsing contexts so we can
+    // resolve `libs.*` references inside included build scripts.
+    let mut included_build_contexts: Vec<(String, GradleProperties, Option<GradleVersionCatalog>)> =
+        included_builds
+            .iter()
+            .map(|included| {
+                let build_root = canonicalize_or_fallback(&root.join(&included.dir_rel));
+                let props = load_gradle_properties(&build_root);
+                let catalog = load_gradle_version_catalog(&build_root, &props);
+                (included.project_path.clone(), props, catalog)
+            })
+            .collect();
+    // Deterministic longest-prefix matching.
+    included_build_contexts.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then(a.0.cmp(&b.0)));
     dependencies.extend(parse_gradle_root_dependencies(
         root,
         version_catalog.as_ref(),
@@ -471,11 +486,12 @@ pub(crate) fn load_gradle_project(
         }
 
         // Dependency extraction is best-effort; useful for later external jar resolution.
-        dependencies.extend(parse_gradle_dependencies(
-            &module_root,
-            version_catalog.as_ref(),
-            &gradle_properties,
-        ));
+        let (ctx_props, ctx_catalog) = included_build_contexts
+            .iter()
+            .find(|(prefix, _, _)| project_path.starts_with(prefix))
+            .map(|(_prefix, props, catalog)| (props, catalog.as_ref()))
+            .unwrap_or((&gradle_properties, version_catalog.as_ref()));
+        dependencies.extend(parse_gradle_dependencies(&module_root, ctx_catalog, ctx_props));
 
         // Best-effort: add local jars/directories referenced via `files(...)` / `fileTree(...)`.
         // This intentionally does not attempt full Gradle dependency resolution.
@@ -638,6 +654,47 @@ pub(crate) fn load_gradle_workspace_model(
     retain_dependencies_not_in(&mut root_common_deps, &root_subprojects_deps);
     retain_dependencies_not_in(&mut root_common_deps, &root_allprojects_deps);
     sort_dedup_dependencies(&mut root_common_deps);
+
+    struct IncludedBuildDepsContext {
+        project_path_prefix: String,
+        gradle_properties: GradleProperties,
+        version_catalog: Option<GradleVersionCatalog>,
+        root_common_deps: Vec<Dependency>,
+        root_subprojects_deps: Vec<Dependency>,
+        root_allprojects_deps: Vec<Dependency>,
+    }
+
+    let mut included_build_contexts: Vec<IncludedBuildDepsContext> = included_builds
+        .iter()
+        .map(|included| {
+            let build_root = canonicalize_or_fallback(&root.join(&included.dir_rel));
+            let props = load_gradle_properties(&build_root);
+            let catalog = load_gradle_version_catalog(&build_root, &props);
+            let (subprojects, allprojects) = parse_gradle_root_subprojects_allprojects_dependencies(
+                &build_root,
+                catalog.as_ref(),
+                &props,
+            );
+            let mut common = parse_gradle_root_dependencies(&build_root, catalog.as_ref(), &props);
+            retain_dependencies_not_in(&mut common, &subprojects);
+            retain_dependencies_not_in(&mut common, &allprojects);
+            sort_dedup_dependencies(&mut common);
+            IncludedBuildDepsContext {
+                project_path_prefix: included.project_path.clone(),
+                gradle_properties: props,
+                version_catalog: catalog,
+                root_common_deps: common,
+                root_subprojects_deps: subprojects,
+                root_allprojects_deps: allprojects,
+            }
+        })
+        .collect();
+    included_build_contexts.sort_by(|a, b| {
+        b.project_path_prefix
+            .len()
+            .cmp(&a.project_path_prefix.len())
+            .then(a.project_path_prefix.cmp(&b.project_path_prefix))
+    });
 
     let mut module_configs = Vec::new();
     let mut project_deps: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -854,13 +911,32 @@ pub(crate) fn load_gradle_workspace_model(
                 path: entry.clone(),
             });
         }
-        let mut dependencies =
-            parse_gradle_dependencies(&module_root, version_catalog.as_ref(), &gradle_properties);
-        dependencies.extend(root_common_deps.iter().cloned());
-        if module_ref.project_path != ":" {
-            dependencies.extend(root_subprojects_deps.iter().cloned());
+
+        let project_path = module_ref.project_path.as_str();
+        let mut ctx_root_project_path = ":";
+        let mut ctx_props = &gradle_properties;
+        let mut ctx_catalog = version_catalog.as_ref();
+        let mut ctx_root_common_deps = &root_common_deps;
+        let mut ctx_root_subprojects_deps = &root_subprojects_deps;
+        let mut ctx_root_allprojects_deps = &root_allprojects_deps;
+        for ctx in &included_build_contexts {
+            if project_path.starts_with(&ctx.project_path_prefix) {
+                ctx_root_project_path = &ctx.project_path_prefix;
+                ctx_props = &ctx.gradle_properties;
+                ctx_catalog = ctx.version_catalog.as_ref();
+                ctx_root_common_deps = &ctx.root_common_deps;
+                ctx_root_subprojects_deps = &ctx.root_subprojects_deps;
+                ctx_root_allprojects_deps = &ctx.root_allprojects_deps;
+                break;
+            }
         }
-        dependencies.extend(root_allprojects_deps.iter().cloned());
+
+        let mut dependencies = parse_gradle_dependencies(&module_root, ctx_catalog, ctx_props);
+        dependencies.extend(ctx_root_common_deps.iter().cloned());
+        if project_path != ctx_root_project_path {
+            dependencies.extend(ctx_root_subprojects_deps.iter().cloned());
+        }
+        dependencies.extend(ctx_root_allprojects_deps.iter().cloned());
 
         // Sort/dedup before resolving jars so we don't scan the cache repeatedly
         // for the same coordinates.
