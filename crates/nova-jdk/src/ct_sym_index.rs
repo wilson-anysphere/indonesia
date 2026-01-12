@@ -222,6 +222,68 @@ impl CtSymReleaseIndex {
             bytes
         }
 
+        fn module_info_bytes(info: &ModuleInfo) -> u64 {
+            use std::mem::size_of;
+
+            let mut bytes = 0u64;
+
+            // `ModuleName` wraps a `String` but does not expose capacity, so we
+            // fall back to `len()` for a best-effort approximation.
+            bytes = bytes.saturating_add(info.name.as_str().len() as u64);
+
+            bytes = bytes.saturating_add(
+                (info.requires.capacity() * size_of::<nova_modules::Requires>()) as u64,
+            );
+            for req in &info.requires {
+                bytes = bytes.saturating_add(req.module.as_str().len() as u64);
+            }
+
+            bytes = bytes.saturating_add(
+                (info.exports.capacity() * size_of::<nova_modules::Exports>()) as u64,
+            );
+            for exports in &info.exports {
+                bytes = bytes.saturating_add(exports.package.capacity() as u64);
+                bytes =
+                    bytes.saturating_add((exports.to.capacity() * size_of::<ModuleName>()) as u64);
+                for m in &exports.to {
+                    bytes = bytes.saturating_add(m.as_str().len() as u64);
+                }
+            }
+
+            bytes = bytes.saturating_add(
+                (info.opens.capacity() * size_of::<nova_modules::Opens>()) as u64,
+            );
+            for opens in &info.opens {
+                bytes = bytes.saturating_add(opens.package.capacity() as u64);
+                bytes =
+                    bytes.saturating_add((opens.to.capacity() * size_of::<ModuleName>()) as u64);
+                for m in &opens.to {
+                    bytes = bytes.saturating_add(m.as_str().len() as u64);
+                }
+            }
+
+            bytes =
+                bytes.saturating_add((info.uses.capacity() * size_of::<nova_modules::Uses>()) as u64);
+            for uses in &info.uses {
+                bytes = bytes.saturating_add(uses.service.capacity() as u64);
+            }
+
+            bytes = bytes.saturating_add(
+                (info.provides.capacity() * size_of::<nova_modules::Provides>()) as u64,
+            );
+            for provides in &info.provides {
+                bytes = bytes.saturating_add(provides.service.capacity() as u64);
+                bytes = bytes.saturating_add(
+                    (provides.implementations.capacity() * size_of::<String>()) as u64,
+                );
+                for imp in &provides.implementations {
+                    bytes = bytes.saturating_add(imp.capacity() as u64);
+                }
+            }
+
+            bytes
+        }
+
         fn lock_best_effort<T>(mutex: &Mutex<T>) -> Option<std::sync::MutexGuard<'_, T>> {
             match mutex.lock() {
                 Ok(guard) => Some(guard),
@@ -237,6 +299,16 @@ impl CtSymReleaseIndex {
         for module in &self.modules {
             // `ModuleName` wraps a `String`, but doesn't expose capacity; use len() best-effort.
             bytes = bytes.saturating_add(module.as_str().len() as u64);
+        }
+
+        if let Some(graph) = &self.module_graph {
+            // `ModuleGraph` hides its backing map. Estimate by iterating and
+            // counting nested allocations.
+            bytes = bytes.saturating_add(size_of::<ModuleGraph>() as u64);
+            for (name, info) in graph.iter() {
+                bytes = bytes.saturating_add(name.as_str().len() as u64);
+                bytes = bytes.saturating_add(module_info_bytes(info));
+            }
         }
 
         bytes = bytes.saturating_add(
