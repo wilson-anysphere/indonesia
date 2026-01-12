@@ -1344,3 +1344,134 @@ class C {
         .expect("expected a type at offset for max call");
     assert_eq!(max_ty, "int");
 }
+
+#[test]
+fn assignment_expression_has_lhs_type() {
+    let src = r#"
+class C { long m(){ long x = 0; return x = 1; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src
+        .find("x = 1")
+        .expect("snippet should contain assignment expression")
+        + "x ".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "long");
+}
+
+#[test]
+fn assignment_allows_int_constant_narrowing_to_byte() {
+    let src = r#"
+class C { void m(){ byte b = 0; b = 1; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected `b = 1` to type-check via constant narrowing; got {diags:?}"
+    );
+}
+
+#[test]
+fn assignment_rejects_out_of_range_int_constant_to_byte() {
+    let src = r#"
+class C { void m(){ byte b = 0; b = 1000; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "type-mismatch"),
+        "expected out-of-range constant assignment to produce type-mismatch; got {diags:?}"
+    );
+}
+
+#[test]
+fn compound_add_assign_expression_has_lhs_type() {
+    let src = r#"
+class C { void m(){ byte b = 0; byte c = (b += 1); } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src.find("+=").expect("snippet should contain +=");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "byte");
+}
+
+#[test]
+fn compound_shift_assign_expression_has_lhs_type() {
+    let src = r#"
+class C { void m(){ byte b = 1; byte c = (b <<= 1); } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src.find("<<=").expect("snippet should contain <<=");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "byte");
+}
+
+#[test]
+fn boolean_compound_and_assign_expression_has_boolean_type() {
+    let src = r#"
+class C { void m(){ boolean b = true; boolean c = (b &= false); } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src.find("&=").expect("snippet should contain &=");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "boolean");
+}
+
+#[test]
+fn conditional_null_and_int_boxes_to_integer() {
+    let src = r#"
+class C { Integer m(){ return true ? 1 : null; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src.find('?').expect("snippet should contain ?");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Integer");
+}
