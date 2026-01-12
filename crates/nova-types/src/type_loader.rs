@@ -472,17 +472,36 @@ impl<'a> TypeStoreLoader<'a> {
         type_vars: &HashMap<String, TypeVarId>,
     ) -> Result<Type, TypeLoadError> {
         let binary_name = class_sig_binary_name(sig);
-        let args = sig
-            .segments
-            .last()
-            .map(|seg| {
-                seg.type_arguments
-                    .iter()
-                    .map(|a| self.type_arg_to_type(a, type_vars))
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .unwrap_or_else(|| Ok(Vec::new()))?;
-        self.class_name_to_type(&binary_name, args)
+
+        // JVM generic signatures encode type arguments per "segment" (`Outer<T>.Inner<U>`).
+        // Nova's `Type::Class` does not model the owner type, so we flatten arguments from all
+        // segments in outer-to-inner order, then reconcile the resulting list with the target
+        // class' expected type parameter arity (when known).
+        let mut per_segment_args = Vec::with_capacity(sig.segments.len());
+        for segment in &sig.segments {
+            let mut args = Vec::with_capacity(segment.type_arguments.len());
+            for arg in &segment.type_arguments {
+                args.push(self.type_arg_to_type(arg, type_vars)?);
+            }
+            per_segment_args.push(args);
+        }
+
+        let flattened_args: Vec<Type> = per_segment_args.iter().flatten().cloned().collect();
+
+        match self.ensure_class(&binary_name) {
+            Ok(id) => {
+                let expected_len = self
+                    .store
+                    .class(id)
+                    .map(|c| c.type_params.len())
+                    .unwrap_or(0);
+                let args =
+                    reconcile_class_args(expected_len, &per_segment_args, flattened_args);
+                Ok(Type::class(id, args))
+            }
+            Err(TypeLoadError::MissingType(_)) => Ok(Type::Named(binary_name)),
+            Err(other) => Err(other),
+        }
     }
 
     fn class_name_to_type(
@@ -546,6 +565,46 @@ fn class_sig_binary_name(sig: &ClassTypeSignature) -> String {
         }
         out.push_str(&seg.name);
     }
+    out
+}
+
+fn reconcile_class_args(
+    expected_len: usize,
+    per_segment_args: &[Vec<Type>],
+    flattened: Vec<Type>,
+) -> Vec<Type> {
+    if expected_len == 0 {
+        // `expected_len == 0` can mean either:
+        // 1) the target class truly has no type parameters, or
+        // 2) we're currently looking at a placeholder `ClassDef` (common during
+        //    cycle-safe loading), so the real arity is unknown.
+        //
+        // Dropping type arguments in case (2) loses useful information for IDE
+        // scenarios (e.g. `Enum<E extends Enum<E>>`). Preserve the signature's
+        // type arguments and let later passes reconcile once full class defs
+        // are loaded.
+        return flattened;
+    }
+
+    if flattened.len() == expected_len {
+        return flattened;
+    }
+
+    if let Some(last) = per_segment_args.last() {
+        if last.len() == expected_len {
+            return last.clone();
+        }
+    }
+
+    if flattened.len() > expected_len {
+        let start = flattened.len().saturating_sub(expected_len);
+        return flattened[start..].to_vec();
+    }
+
+    let missing = expected_len.saturating_sub(flattened.len());
+    let mut out = Vec::with_capacity(expected_len);
+    out.extend(std::iter::repeat(Type::Unknown).take(missing));
+    out.extend(flattened);
     out
 }
 
