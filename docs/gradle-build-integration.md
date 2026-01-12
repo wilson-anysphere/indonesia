@@ -211,3 +211,20 @@ Today this is already wired in the reload heuristics:
   as a Gradle “build file” so `reload_project()` reloads configuration when it changes.
 - `nova-workspace`: `crates/nova-workspace/src/watch.rs:is_build_file` classifies the snapshot as a
   build change so watchers can trigger a reload when it updates.
+
+---
+
+## How the snapshot is generated in practice
+
+The snapshot is written whenever `nova-build` executes Gradle for compile config extraction. Common
+call sites include:
+
+- **LSP build/classpath endpoints**: `crates/nova-lsp/src/extensions/build.rs`
+  - `handle_java_classpath` (classpath + source roots + language level) calls
+    `BuildManager::java_compile_config_gradle`, which executes Gradle and may write/update the
+    snapshot.
+  - `handle_build_project` triggers Gradle compilation tasks (`compileJava` / `compileTestJava`),
+    which may also execute Gradle (but this path is about diagnostics/build, not snapshot reading).
+- **Workspace reload build integration**: `crates/nova-workspace/src/engine.rs` reloads the project
+  and may call `BuildManager::java_compile_config_gradle(workspace_root, None)` to refresh the
+  workspace classpath during reloads.
