@@ -302,7 +302,7 @@ cargo install cargo-binstall --locked
 cargo +nightly binstall cargo-fuzz --version 0.13.1 --no-confirm --locked --disable-strategies compile --disable-telemetry
 
 # Alternative (slower, builds from source):
-# cargo +nightly install cargo-fuzz --locked
+# cargo +nightly install cargo-fuzz --version 0.13.1 --locked
 
 # Run from the repository root.
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
@@ -323,7 +323,7 @@ Agent / multi-runner equivalent:
 
 ```bash
 bash scripts/cargo_agent.sh install cargo-binstall --locked
-bash scripts/cargo_agent.sh +nightly binstall cargo-fuzz --version 0.13.1 --no-confirm --locked --disable-strategies compile
+bash scripts/cargo_agent.sh +nightly binstall cargo-fuzz --version 0.13.1 --no-confirm --locked --disable-strategies compile --disable-telemetry
 
 # Run from the repository root. (Repeat with any fuzz target name.)
 RUST_BACKTRACE=1 bash scripts/cargo_agent.sh +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
