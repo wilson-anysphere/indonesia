@@ -1755,3 +1755,51 @@ mod bsp_config_tests {
         assert_eq!(config.args, vec!["--env".to_string()]);
     }
 }
+
+#[cfg(test)]
+mod bazelrc_import_tests {
+    use super::*;
+
+    #[test]
+    fn bazelrc_import_path_from_directive_rest_handles_quoted_paths() {
+        assert_eq!(
+            bazelrc_import_path_from_directive_rest(r#""tools/bazel rc" # comment"#),
+            Some("tools/bazel rc")
+        );
+        assert_eq!(
+            bazelrc_import_path_from_directive_rest(r#"'tools/bazel rc' # comment"#),
+            Some("tools/bazel rc")
+        );
+    }
+
+    #[test]
+    fn bazelrc_import_path_from_directive_rest_handles_unquoted_paths() {
+        assert_eq!(
+            bazelrc_import_path_from_directive_rest("tools/bazel.rc # comment"),
+            Some("tools/bazel.rc")
+        );
+    }
+
+    #[test]
+    fn resolve_bazelrc_import_path_resolves_relative_and_workspace_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        let rel = resolve_bazelrc_import_path(root, "tools/bazel.rc").unwrap();
+        assert_eq!(rel, root.join("tools/bazel.rc"));
+
+        let ws = resolve_bazelrc_import_path(root, "%workspace%/tools/bazel.rc").unwrap();
+        assert_eq!(ws, root.join("tools/bazel.rc"));
+    }
+
+    #[test]
+    fn resolve_bazelrc_import_path_accepts_absolute_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let abs = root.join("tools/bazel.rc");
+        let abs_str = abs.to_str().unwrap();
+
+        let resolved = resolve_bazelrc_import_path(root, abs_str).unwrap();
+        assert_eq!(resolved, abs);
+    }
+}
