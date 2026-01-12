@@ -316,6 +316,13 @@ fn did_change_watched_files_reloads_nova_config() {
         .arg("--stdio")
         .arg("--config")
         .arg(&config_path)
+        // Ensure a developer's legacy AI env-var wiring can't override the config file and make
+        // this test flaky.
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
