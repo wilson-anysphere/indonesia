@@ -122,7 +122,16 @@ impl WorkspaceSnapshot {
                 let content = if has_salsa_content {
                     // Prefer the Salsa input contents (already include open document overlays).
                     if snap.file_exists(*file_id) {
-                        snap.file_content(*file_id)
+                        let salsa_content = snap.file_content(*file_id);
+                        // `nova-workspace` can evict closed-file `file_content` inputs under memory
+                        // pressure by replacing them with an empty placeholder. In that case, fall
+                        // back to reading from the VFS so snapshots remain usable for callers that
+                        // rely on `Workspace::snapshot()` directly.
+                        if salsa_content.is_empty() {
+                            fallback_to_vfs()
+                        } else {
+                            salsa_content
+                        }
                     } else {
                         empty.clone()
                     }

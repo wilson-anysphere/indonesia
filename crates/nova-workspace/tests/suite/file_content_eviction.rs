@@ -114,6 +114,12 @@ fn closed_file_texts_evict_and_reload_while_open_docs_pinned() {
     // immediately re-evicted by background enforcement tasks.
     ws.close_document(&pressure_path);
 
+    // `Workspace::snapshot()` should still surface the real on-disk contents even when the Salsa
+    // input has been evicted to an empty placeholder.
+    let snap_after_evict = ws.snapshot();
+    assert_eq!(snap_after_evict.file_content(closed_a_id), closed_a_text.as_str());
+    assert_eq!(snap_after_evict.file_content(closed_b_id), closed_b_text.as_str());
+
     // On-demand reload: a Salsa query that needs `file_content` should transparently reload the
     // evicted text.
     let parsed = ws.salsa_parse_java(closed_a_id);
