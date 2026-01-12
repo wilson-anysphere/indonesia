@@ -542,6 +542,48 @@ class C {}
 }
 
 #[test]
+fn qualified_type_ignores_value_namespace_for_outer_segment() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(
+        file,
+        r#"
+import java.util.Map;
+class C {
+  void m() { int Map = 0; }
+}
+"#,
+    );
+
+    let jdk = JdkIndex::new();
+    let mut index = TestIndex::default();
+    index.add_type("java.util", "Map");
+    let entry = index.add_type("java.util", "Map$Entry");
+
+    let scopes = build_scopes(&db, file);
+    let &method = scopes.method_scopes.keys().next().expect("method");
+    let owner = BodyOwner::Method(method);
+    let body = queries::body(&db, method);
+    let statements = match &body.stmts[body.root] {
+        hir::Stmt::Block { statements, .. } => statements,
+        other => panic!("expected root block, got {other:?}"),
+    };
+    let stmt_local = statements[0];
+    let local_scope = *scopes
+        .stmt_scopes
+        .get(&(owner, stmt_local))
+        .expect("local statement scope");
+
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let resolved = resolver.resolve_qualified_type_in_scope(
+        &scopes.scopes,
+        local_scope,
+        &QualifiedName::from_dotted("Map.Entry"),
+    );
+    assert_eq!(resolved, Some(entry));
+}
+
+#[test]
 fn resolves_imported_type_from_dependency_jar() {
     let mut db = TestDb::default();
     let file = FileId::from_raw(0);

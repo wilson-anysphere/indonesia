@@ -474,6 +474,75 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Resolve a simple name in the *type namespace* against a given scope.
+    ///
+    /// This intentionally ignores the value namespace (locals/params/fields/
+    /// methods) to match Java's name resolution rules in type contexts (JLS 6.5).
+    pub fn resolve_type_name(
+        &self,
+        scopes: &ScopeGraph,
+        scope: ScopeId,
+        name: &Name,
+    ) -> Option<TypeResolution> {
+        let mut current = Some(scope);
+        while let Some(id) = current {
+            let data = scopes.scope(id);
+
+            if let Some(ty) = data.types.get(name) {
+                return Some(ty.clone());
+            }
+
+            match &data.kind {
+                ScopeKind::Import { imports, package } => {
+                    // Type name lookup order mirrors `resolve_import_detailed`:
+                    // 1) single-type imports
+                    // 2) same-package types
+                    // 3) on-demand imports (star imports; ambiguity is reported)
+                    // 4) implicit `java.lang.*` (preferred over a unique `.*` match)
+                    match self.resolve_single_type_imports_detailed(imports, name) {
+                        TypeLookup::Found(ty) => {
+                            return Some(self.type_resolution_from_name(ty));
+                        }
+                        TypeLookup::Ambiguous(_) => return None,
+                        TypeLookup::NotFound => {}
+                    }
+
+                    if let Some(pkg) = package {
+                        if let Some(ty) = self.resolve_type_in_package_index(pkg, name) {
+                            return Some(self.type_resolution_from_name(ty));
+                        }
+                    }
+
+                    let mut star_match = None;
+                    match self.resolve_star_type_imports_detailed(imports, name) {
+                        TypeLookup::Found(ty) => star_match = Some(ty),
+                        TypeLookup::Ambiguous(_) => return None,
+                        TypeLookup::NotFound => {}
+                    }
+
+                    if let Some(ty) = self.resolve_type_in_java_lang(name) {
+                        return Some(self.type_resolution_from_name(ty));
+                    }
+
+                    if let Some(ty) = star_match {
+                        return Some(self.type_resolution_from_name(ty));
+                    }
+                }
+                ScopeKind::Universe => {
+                    // `java.lang.*` is always implicitly available.
+                    if let Some(ty) = self.resolve_type_in_java_lang(name) {
+                        return Some(self.type_resolution_from_name(ty));
+                    }
+                }
+                _ => {}
+            }
+
+            current = data.parent;
+        }
+
+        None
+    }
+
     /// Like [`Resolver::resolve_qualified_type_in_scope`], but preserves whether
     /// the resolved type is sourced from the current file (`ItemTree`) or from
     /// an external index (JDK/classpath).
@@ -491,16 +560,10 @@ impl<'a> Resolver<'a> {
         let (first, rest) = segments.split_first()?;
 
         if rest.is_empty() {
-            return match self.resolve_name(scopes, scope, first)? {
-                Resolution::Type(ty) => Some(ty),
-                _ => None,
-            };
+            return self.resolve_type_name(scopes, scope, first);
         }
 
-        let owner = match self.resolve_name(scopes, scope, first)? {
-            Resolution::Type(ty) => ty,
-            _ => return None,
-        };
+        let owner = self.resolve_type_name(scopes, scope, first)?;
 
         let owner_name = match &owner {
             TypeResolution::External(ty) => ty.as_str().to_string(),
