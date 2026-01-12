@@ -151,6 +151,16 @@ where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    // In stdio DAP mode we forward debuggee output via pipes. If the user disconnects with
+    // `terminateDebuggee=false`, the adapter exits and closes those pipes. Without SIGPIPE ignored,
+    // debuggees may be terminated by the kernel when they continue writing to stdout/stderr.
+    //
+    // We set SIGPIPE to `SIG_IGN` in the adapter process so launched debuggees inherit the
+    // behavior without requiring unsafe `pre_exec` hooks (which can force `fork` under
+    // `posix_spawn`-capable platforms).
+    #[cfg(unix)]
+    ignore_sigpipe();
+
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Value>();
     let seq = Arc::new(AtomicI64::new(1));
     let terminated_sent = Arc::new(AtomicBool::new(false));
@@ -776,8 +786,6 @@ async fn handle_request_inner(
                     // Ensure `disconnect` with `terminateDebuggee=false` can safely detach without
                     // killing the launched process.
                     cmd.kill_on_drop(false);
-                    #[cfg(unix)]
-                    ignore_sigpipe(&mut cmd);
                     for (k, v) in &args.env {
                         cmd.env(k, v);
                     }
@@ -891,8 +899,6 @@ async fn handle_request_inner(
                     // Ensure `disconnect` with `terminateDebuggee=false` can safely detach without
                     // killing the launched JVM.
                     cmd.kill_on_drop(false);
-                    #[cfg(unix)]
-                    ignore_sigpipe(&mut cmd);
                     if let Some(cwd) = args.cwd.as_deref() {
                         cmd.current_dir(cwd);
                     }
@@ -1495,8 +1501,6 @@ async fn handle_request_inner(
                     // Ensure `disconnect` with `terminateDebuggee=false` can safely detach without
                     // killing the launched process.
                     cmd.kill_on_drop(false);
-                    #[cfg(unix)]
-                    ignore_sigpipe(&mut cmd);
                     for (k, v) in &args.env {
                         cmd.env(k, v);
                     }
@@ -1608,8 +1612,6 @@ async fn handle_request_inner(
                     // Ensure `disconnect` with `terminateDebuggee=false` can safely detach without
                     // killing the launched JVM.
                     cmd.kill_on_drop(false);
-                    #[cfg(unix)]
-                    ignore_sigpipe(&mut cmd);
                     if let Some(cwd) = args.cwd.as_deref() {
                         cmd.current_dir(cwd);
                     }
@@ -4436,19 +4438,9 @@ fn truncate_message(mut message: String, max_len: usize) -> String {
 }
 
 #[cfg(unix)]
-fn ignore_sigpipe(cmd: &mut Command) {
-    // When the adapter runs over stdio, launched debuggees have stdout/stderr wired to pipes so we
-    // can forward output via DAP events. If the user disconnects with
-    // `terminateDebuggee=false`, the adapter will exit and those pipes will be closed; subsequent
-    // debuggee writes would normally raise SIGPIPE and terminate the process. Ignore SIGPIPE so a
-    // detach doesn't unexpectedly kill the launched debuggee.
-    use std::os::unix::process::CommandExt;
-
+fn ignore_sigpipe() {
     unsafe {
-        cmd.as_std_mut().pre_exec(|| {
-            libc::signal(libc::SIGPIPE, libc::SIG_IGN);
-            Ok(())
-        });
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
     }
 }
 
