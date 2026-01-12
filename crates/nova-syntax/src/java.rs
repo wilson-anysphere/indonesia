@@ -1378,6 +1378,9 @@ impl Lowerer {
                 Some(ast::Stmt::LocalVar(self.lower_local_var_stmt(node)))
             }
             SyntaxKind::ExpressionStatement => Some(ast::Stmt::Expr(self.lower_expr_stmt(node))),
+            SyntaxKind::ExplicitConstructorInvocation => {
+                Some(ast::Stmt::Expr(self.lower_expr_stmt(node)))
+            }
             SyntaxKind::ReturnStatement => Some(ast::Stmt::Return(self.lower_return_stmt(node))),
             SyntaxKind::Block => Some(ast::Stmt::Block(self.lower_block(node))),
             SyntaxKind::IfStatement => Some(ast::Stmt::If(self.lower_if_stmt(node))),
@@ -2701,6 +2704,7 @@ fn is_statement_kind(kind: SyntaxKind) -> bool {
         kind,
         SyntaxKind::LocalVariableDeclarationStatement
             | SyntaxKind::ExpressionStatement
+            | SyntaxKind::ExplicitConstructorInvocation
             | SyntaxKind::ReturnStatement
             | SyntaxKind::Block
             | SyntaxKind::IfStatement
@@ -2837,6 +2841,46 @@ mod tests {
         assert!(
             matches!(c_decl.initializer, Some(ast::Expr::ConstructorReference(_))),
             "expected constructor reference initializer"
+        );
+    }
+
+    #[test]
+    fn parse_block_lowers_explicit_constructor_invocation_this() {
+        let block = parse_block("{ this(); }", 0);
+
+        assert_eq!(block.statements.len(), 1);
+        let ast::Stmt::Expr(expr_stmt) = &block.statements[0] else {
+            panic!("expected expression statement");
+        };
+
+        let ast::Expr::Call(call) = &expr_stmt.expr else {
+            panic!("expected call expression");
+        };
+
+        assert!(
+            matches!(call.callee.as_ref(), ast::Expr::This(_)),
+            "expected call callee to be `this`, got {:?}",
+            call.callee
+        );
+    }
+
+    #[test]
+    fn parse_block_lowers_explicit_constructor_invocation_super() {
+        let block = parse_block("{ super(); }", 0);
+
+        assert_eq!(block.statements.len(), 1);
+        let ast::Stmt::Expr(expr_stmt) = &block.statements[0] else {
+            panic!("expected expression statement");
+        };
+
+        let ast::Expr::Call(call) = &expr_stmt.expr else {
+            panic!("expected call expression");
+        };
+
+        assert!(
+            matches!(call.callee.as_ref(), ast::Expr::Super(_)),
+            "expected call callee to be `super`, got {:?}",
+            call.callee
         );
     }
 }

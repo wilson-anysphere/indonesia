@@ -79,3 +79,25 @@ class C {
         "expected `var` catch parameter to report an unresolved type; got {diags:?}"
     );
 }
+
+#[test]
+fn type_at_offset_finds_explicit_constructor_invocation() {
+    let src = r#"
+class C {
+    C() { this(1); }
+    C(int x) {}
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("this(1)")
+        .expect("snippet should contain explicit constructor invocation")
+        + 1;
+    let ty = db.type_at_offset_display(file, offset as u32);
+    assert!(
+        ty.is_some(),
+        "expected a type at offset inside explicit constructor invocation, got {ty:?}; diagnostics: {:?}",
+        db.type_diagnostics(file)
+    );
+}
