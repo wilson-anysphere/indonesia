@@ -12,6 +12,7 @@ use crate::FileId;
 use super::cancellation as cancel;
 use super::inputs::NovaInputs;
 use super::stats::HasQueryStats;
+use super::HasJavaParseStore;
 use super::HasFilePaths;
 use super::{HasJavaParseCache, HasSalsaMemoStats, HasSyntaxTreeStore, TrackedSalsaMemo};
 
@@ -27,6 +28,7 @@ pub trait NovaSyntax:
     + HasSalsaMemoStats
     + HasSyntaxTreeStore
     + HasJavaParseCache
+    + HasJavaParseStore
 {
     /// Parse a file into a syntax tree (memoized and dependency-tracked).
     fn parse(&self, file: FileId) -> Arc<ParseResult>;
@@ -138,6 +140,14 @@ fn parse_java(db: &dyn NovaSyntax, file: FileId) -> Arc<JavaParseResult> {
         Arc::new(String::new())
     };
 
+    if let Some(store) = db.java_parse_store() {
+        if let Some(cached) = store.get_if_text_matches(file, &text) {
+            db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ParseJava, text.len() as u64);
+            db.record_query_stat("parse_java", start.elapsed());
+            return cached;
+        }
+    }
+
     // NOTE: `nova_syntax` supports incremental reparsing (`parse_java_incremental` /
     // `reparse_java`) by splicing updated green subtrees into the previous tree.
     // Wiring edit propagation through Salsa inputs is handled separately.
@@ -160,6 +170,10 @@ fn parse_java(db: &dyn NovaSyntax, file: FileId) -> Arc<JavaParseResult> {
     let result = Arc::new(parsed);
     db.java_parse_cache()
         .insert(file, text.clone(), result.clone());
+
+    if let Some(store) = db.java_parse_store() {
+        store.insert(file, Arc::clone(&text), Arc::clone(&result));
+    }
     db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ParseJava, text.len() as u64);
     db.record_query_stat("parse_java", start.elapsed());
     result

@@ -4337,3 +4337,38 @@ fn parse_java_expression_reports_trailing_tokens() {
         result.errors[0].message
     );
 }
+
+#[test]
+fn java_parse_store_reuses_parse_results_for_open_documents() {
+    use std::sync::Arc;
+
+    use nova_memory::{MemoryBudget, MemoryManager};
+    use nova_vfs::OpenDocuments;
+
+    let manager = MemoryManager::new(MemoryBudget::from_total(1024 * 1024));
+    let open_docs = Arc::new(OpenDocuments::default());
+    let store = crate::JavaParseStore::new(&manager, open_docs.clone());
+
+    let file = nova_core::FileId::from_raw(1);
+    open_docs.open(file);
+
+    let text = Arc::new("class Foo {}".to_string());
+    let parse = Arc::new(crate::parse_java(text.as_str()));
+    store.insert(file, Arc::clone(&text), Arc::clone(&parse));
+
+    let hit = store
+        .get_if_text_matches(file, &text)
+        .expect("expected cache hit for open doc with identical Arc<String>");
+    assert!(Arc::ptr_eq(&hit, &parse));
+
+    // `JavaParseStore` uses pointer identity; a different `Arc` with identical
+    // text should miss.
+    let same_text_different_arc = Arc::new(text.as_str().to_string());
+    assert!(store
+        .get_if_text_matches(file, &same_text_different_arc)
+        .is_none());
+
+    // Closing the document should prevent reuse even when the text pointer matches.
+    open_docs.close(file);
+    assert!(store.get_if_text_matches(file, &text).is_none());
+}

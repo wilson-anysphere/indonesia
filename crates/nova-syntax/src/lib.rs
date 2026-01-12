@@ -17,6 +17,7 @@ mod language_level;
 mod lexer;
 mod literals;
 mod parser;
+mod java_parse_store;
 mod syntax_kind;
 mod tree_store;
 mod util;
@@ -37,6 +38,7 @@ pub use parser::{
     JavaFragmentParseResult, JavaParseResult, SyntaxElement, SyntaxNode, SyntaxToken,
 };
 pub use syntax_kind::{JavaLanguage, SyntaxKind, SYNTAX_SCHEMA_VERSION};
+pub use java_parse_store::JavaParseStore;
 pub use tree_store::SyntaxTreeStore;
 
 /// Options that influence parsing diagnostics.

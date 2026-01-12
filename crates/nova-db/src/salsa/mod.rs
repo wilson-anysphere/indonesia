@@ -216,6 +216,15 @@ pub trait HasSyntaxTreeStore {
     fn syntax_tree_store(&self) -> Option<Arc<SyntaxTreeStore>>;
 }
 
+/// Accessor for the optional open-document Java parse store.
+///
+/// This is intentionally outside Salsa's dependency tracking: it's a best-effort
+/// cache used to pin expensive-to-build parse trees for open documents across
+/// Salsa memo eviction.
+pub trait HasJavaParseStore {
+    fn java_parse_store(&self) -> Option<Arc<nova_syntax::JavaParseStore>>;
+}
+
 /// File-keyed memoized query results tracked for memory accounting.
 ///
 /// This is intentionally coarse: it is used to approximate the footprint of
@@ -682,6 +691,7 @@ pub struct RootDatabase {
     class_interner: Arc<ParkingMutex<ClassIdInterner>>,
     memo_footprint: Arc<SalsaMemoFootprint>,
     java_parse_cache: Arc<JavaParseCache>,
+    java_parse_store: Option<Arc<nova_syntax::JavaParseStore>>,
 }
 
 impl Default for RootDatabase {
@@ -707,6 +717,7 @@ impl RootDatabase {
             class_interner: Arc::new(ParkingMutex::new(ClassIdInterner::default())),
             memo_footprint: Arc::new(SalsaMemoFootprint::default()),
             java_parse_cache: Arc::new(JavaParseCache::default()),
+            java_parse_store: None,
         };
 
         // Provide a sensible default `ProjectConfig` so callers can start
@@ -751,6 +762,10 @@ impl RootDatabase {
 
     pub fn set_file_path_arc(&mut self, file: FileId, path: Arc<String>) {
         self.file_paths.write().insert(file, path);
+    }
+
+    pub fn set_java_parse_store(&mut self, store: Option<Arc<nova_syntax::JavaParseStore>>) {
+        self.java_parse_store = store;
     }
 
     pub fn persistence_stats(&self) -> crate::PersistenceStats {
@@ -854,6 +869,18 @@ impl HasSyntaxTreeStore for ra_salsa::Snapshot<RootDatabase> {
     }
 }
 
+impl HasJavaParseStore for RootDatabase {
+    fn java_parse_store(&self) -> Option<Arc<nova_syntax::JavaParseStore>> {
+        self.java_parse_store.clone()
+    }
+}
+
+impl HasJavaParseStore for ra_salsa::Snapshot<RootDatabase> {
+    fn java_parse_store(&self) -> Option<Arc<nova_syntax::JavaParseStore>> {
+        std::ops::Deref::deref(self).java_parse_store.clone()
+    }
+}
+
 impl HasClassInterner for RootDatabase {
     fn class_interner(&self) -> &Arc<ParkingMutex<ClassIdInterner>> {
         &self.class_interner
@@ -865,7 +892,6 @@ impl HasClassInterner for ra_salsa::Snapshot<RootDatabase> {
         &std::ops::Deref::deref(self).class_interner
     }
 }
-
 impl ra_salsa::Database for RootDatabase {
     fn salsa_event(&self, event: ra_salsa::Event) {
         match event.kind {
@@ -932,6 +958,7 @@ impl ra_salsa::ParallelDatabase for RootDatabase {
             syntax_tree_store: self.syntax_tree_store.clone(),
             memo_footprint: self.memo_footprint.clone(),
             java_parse_cache: self.java_parse_cache.clone(),
+            java_parse_store: self.java_parse_store.clone(),
         })
     }
 }
@@ -1080,6 +1107,7 @@ impl MemoryEvictor for SalsaMemoEvictor {
             let syntax_tree_store = db.syntax_tree_store.clone();
             let java_parse_cache = db.java_parse_cache.clone();
             java_parse_cache.clear();
+            let java_parse_store = db.java_parse_store.clone();
             let mut fresh = RootDatabase {
                 storage: ra_salsa::Storage::default(),
                 stats,
@@ -1090,6 +1118,7 @@ impl MemoryEvictor for SalsaMemoEvictor {
                 syntax_tree_store,
                 memo_footprint: self.footprint.clone(),
                 java_parse_cache,
+                java_parse_store,
             };
             inputs.apply_to(&mut fresh);
             *db = fresh;
@@ -1334,6 +1363,10 @@ impl Database {
     pub fn with_write<T>(&self, f: impl FnOnce(&mut RootDatabase) -> T) -> T {
         let mut db = self.inner.lock();
         f(&mut db)
+    }
+
+    pub fn set_java_parse_store(&self, store: Option<Arc<nova_syntax::JavaParseStore>>) {
+        self.inner.lock().set_java_parse_store(store);
     }
 
     pub fn request_cancellation(&self) {
@@ -1830,6 +1863,7 @@ impl Database {
             let syntax_tree_store = db.syntax_tree_store.clone();
             let java_parse_cache = db.java_parse_cache.clone();
             java_parse_cache.clear();
+            let java_parse_store = db.java_parse_store.clone();
             let mut fresh = RootDatabase {
                 storage: ra_salsa::Storage::default(),
                 stats,
@@ -1840,6 +1874,7 @@ impl Database {
                 syntax_tree_store,
                 memo_footprint: self.memo_footprint.clone(),
                 java_parse_cache,
+                java_parse_store,
             };
             inputs.apply_to(&mut fresh);
             *db = fresh;
@@ -3777,6 +3812,47 @@ class Foo {
             db.inner.lock().java_parse_cache.entry_count() > 0,
             "expected incremental parse cache to be repopulated after reparse"
         );
+    }
+
+    #[test]
+    fn parse_java_results_are_pinned_for_open_documents_across_memo_eviction() {
+        use nova_syntax::JavaParseStore;
+        use nova_vfs::OpenDocuments;
+
+        let manager = MemoryManager::new(MemoryBudget::from_total(1024 * 1024));
+        let db = Database::new_with_memory_manager(&manager);
+
+        let open_docs = Arc::new(OpenDocuments::default());
+        let store = JavaParseStore::new(&manager, open_docs.clone());
+        db.set_java_parse_store(Some(store));
+
+        let open_file = FileId::from_raw(1);
+        let closed_file = FileId::from_raw(2);
+
+        let open_text = Arc::new("class Open {}".to_string());
+        let closed_text = Arc::new("class Closed {}".to_string());
+
+        db.set_file_exists(open_file, true);
+        db.set_file_content(open_file, Arc::clone(&open_text));
+        db.set_file_exists(closed_file, true);
+        db.set_file_content(closed_file, Arc::clone(&closed_text));
+
+        // Both files are initially open, so both results are inserted.
+        open_docs.open(open_file);
+        open_docs.open(closed_file);
+        let (open_before, closed_before) =
+            db.with_snapshot(|snap| (snap.parse_java(open_file), snap.parse_java(closed_file)));
+
+        // Close one file, then evict Salsa memos. Only the open file should reuse
+        // its parse tree from the open-document store.
+        open_docs.close(closed_file);
+        db.evict_salsa_memos(MemoryPressure::Critical);
+
+        let (open_after, closed_after) =
+            db.with_snapshot(|snap| (snap.parse_java(open_file), snap.parse_java(closed_file)));
+
+        assert!(Arc::ptr_eq(&open_before, &open_after));
+        assert!(!Arc::ptr_eq(&closed_before, &closed_after));
     }
 
     #[test]

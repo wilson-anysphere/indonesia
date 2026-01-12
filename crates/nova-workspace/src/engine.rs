@@ -24,7 +24,7 @@ use nova_project::{
     BuildSystem, JavaConfig, LoadOptions, ProjectConfig, ProjectError, SourceRootOrigin,
 };
 use nova_scheduler::{Cancelled, Debouncer, KeyedDebouncer, PoolKind, Scheduler, SchedulerConfig};
-use nova_syntax::SyntaxTreeStore;
+use nova_syntax::{JavaParseStore, SyntaxTreeStore};
 use nova_types::{CompletionItem, Diagnostic as NovaDiagnostic};
 use nova_vfs::{
     ChangeEvent, ContentChange, DocumentError, FileChange, FileId, FileSystem, FileWatcher,
@@ -451,8 +451,12 @@ impl WorkspaceEngine {
         let query_db = salsa::Database::new_with_persistence(&workspace_root, persistence);
         query_db.register_salsa_memo_evictor(&memory);
         query_db.register_salsa_cancellation_on_memory_pressure(&memory);
-        query_db.attach_item_tree_store(&memory, open_docs);
+        query_db.attach_item_tree_store(&memory, open_docs.clone());
         query_db.set_syntax_tree_store(syntax_trees);
+
+        // Pin full-fidelity Java parse trees for open documents across Salsa memo eviction.
+        let java_parse_store = JavaParseStore::new(&memory, open_docs.clone());
+        query_db.set_java_parse_store(Some(java_parse_store));
 
         let overlay_docs_memory_registration =
             memory.register_tracker("vfs_documents", MemoryCategory::Other);
@@ -3993,6 +3997,45 @@ mod tests {
         assert!(
             Arc::ptr_eq(&classpath_before, &classpath_after),
             "expected classpath index to be reused when classpath/module-path are unchanged"
+        );
+    }
+
+    #[test]
+    fn open_documents_reuse_parse_java_across_salsa_memo_eviction() {
+        use std::sync::Arc;
+
+        use nova_db::NovaSyntax;
+        use nova_memory::MemoryPressure;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+        let file = root.join("src/Main.java");
+        fs::write(&file, "class Main {}".as_bytes()).unwrap();
+
+        let workspace = crate::Workspace::open(root).unwrap();
+        let engine = workspace.engine_for_tests();
+        let vfs_path = VfsPath::local(file.clone());
+
+        let file_id = workspace.open_document(vfs_path.clone(), "class Main { int x; }".to_string(), 1);
+        let text_arc = engine.query_db.with_snapshot(|snap| snap.file_content(file_id));
+
+        let first = engine.query_db.with_snapshot(|snap| snap.parse_java(file_id));
+        engine.query_db.evict_salsa_memos(MemoryPressure::Critical);
+        let second = engine.query_db.with_snapshot(|snap| snap.parse_java(file_id));
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "expected parse_java results to be reused for open documents across memo eviction"
+        );
+
+        // Closing the document should disable pinning even if the text `Arc` matches.
+        workspace.close_document(&vfs_path);
+        engine.query_db.set_file_content(file_id, text_arc);
+        engine.query_db.evict_salsa_memos(MemoryPressure::Critical);
+        let third = engine.query_db.with_snapshot(|snap| snap.parse_java(file_id));
+        assert!(
+            !Arc::ptr_eq(&first, &third),
+            "expected parse_java results to be recomputed for closed documents after memo eviction"
         );
     }
 
