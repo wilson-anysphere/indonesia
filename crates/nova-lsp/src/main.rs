@@ -8,10 +8,12 @@ use lsp_types::{
     CallHierarchyIncomingCallsParams, CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams,
     CodeAction, CodeActionKind, CodeLens as LspCodeLens, Command as LspCommand, CompletionItem,
     CompletionItemKind, CompletionList, CompletionParams, CompletionTextEdit,
-    DidChangeWatchedFilesParams as LspDidChangeWatchedFilesParams, DocumentSymbolParams,
-    FileChangeType as LspFileChangeType, InlayHintParams as LspInlayHintParams,
-    Location as LspLocation, Position as LspTypesPosition, Range as LspTypesRange,
-    RenameParams as LspRenameParams, SymbolInformation, SymbolKind as LspSymbolKind,
+    DidChangeWatchedFilesParams as LspDidChangeWatchedFilesParams, DocumentHighlight,
+    DocumentHighlightKind, DocumentHighlightParams, DocumentSymbolParams,
+    FileChangeType as LspFileChangeType, FoldingRange, FoldingRangeKind, FoldingRangeParams,
+    InlayHintParams as LspInlayHintParams, Location as LspLocation, Position as LspTypesPosition,
+    Range as LspTypesRange, RenameParams as LspRenameParams, SelectionRange,
+    SelectionRangeParams, SymbolInformation, SymbolKind as LspSymbolKind,
     TextDocumentPositionParams, TextEdit, TypeHierarchyPrepareParams, TypeHierarchySubtypesParams,
     TypeHierarchySupertypesParams, Uri as LspUri, WorkspaceEdit as LspWorkspaceEdit,
     WorkspaceSymbolParams,
@@ -564,6 +566,9 @@ fn initialize_result_json() -> serde_json::Value {
             "implementationProvider": true,
             "declarationProvider": true,
             "typeDefinitionProvider": true,
+            "documentHighlightProvider": true,
+            "foldingRangeProvider": { "lineFoldingOnly": true },
+            "selectionRangeProvider": true,
             "callHierarchyProvider": true,
             "typeHierarchyProvider": true,
             "diagnosticProvider": {
@@ -2034,6 +2039,42 @@ fn handle_request_json(
                 return Ok(server_shutting_down_error(id));
             }
             let result = handle_type_definition(params, state);
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
+            })
+        }
+        "textDocument/documentHighlight" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_document_highlight(params, state);
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
+            })
+        }
+        "textDocument/foldingRange" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_folding_range(params, state);
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
+            })
+        }
+        "textDocument/selectionRange" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_selection_range(params, state);
             Ok(match result {
                 Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
                 Err(err) => {
@@ -4574,6 +4615,207 @@ fn ident_range_at(text: &str, offset: usize) -> Option<(usize, usize)> {
     } else {
         Some((start, end))
     }
+}
+
+fn handle_document_highlight(
+    params: serde_json::Value,
+    state: &mut ServerState,
+) -> Result<serde_json::Value, String> {
+    fn is_ident_continue(b: u8) -> bool {
+        (b as char).is_ascii_alphanumeric() || b == b'_' || b == b'$'
+    }
+
+    let params: DocumentHighlightParams =
+        serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let uri = params.text_document_position_params.text_document.uri;
+    let position = params.text_document_position_params.position;
+
+    let file_id = state.analysis.ensure_loaded(&uri);
+    if !state.analysis.exists(file_id) {
+        return serde_json::to_value(Vec::<DocumentHighlight>::new()).map_err(|e| e.to_string());
+    }
+
+    let source = state.analysis.file_content(file_id);
+    let offset = position_to_offset_utf16(source, position).unwrap_or(0);
+    let Some((start, end)) = ident_range_at(source, offset) else {
+        return serde_json::to_value(Vec::<DocumentHighlight>::new()).map_err(|e| e.to_string());
+    };
+    let ident = &source[start..end];
+
+    let bytes = source.as_bytes();
+    let ident_len = ident.len();
+    let mut highlights = Vec::new();
+
+    for (idx, _) in source.match_indices(ident) {
+        if idx > 0 && is_ident_continue(bytes[idx - 1]) {
+            continue;
+        }
+        if idx + ident_len < bytes.len() && is_ident_continue(bytes[idx + ident_len]) {
+            continue;
+        }
+
+        let range = LspTypesRange::new(
+            offset_to_position_utf16(source, idx),
+            offset_to_position_utf16(source, idx + ident_len),
+        );
+        highlights.push(DocumentHighlight {
+            range,
+            kind: Some(DocumentHighlightKind::TEXT),
+        });
+    }
+
+    serde_json::to_value(highlights).map_err(|e| e.to_string())
+}
+
+fn handle_folding_range(
+    params: serde_json::Value,
+    state: &mut ServerState,
+) -> Result<serde_json::Value, String> {
+    let params: FoldingRangeParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let uri = params.text_document.uri;
+
+    let file_id = state.analysis.ensure_loaded(&uri);
+    if !state.analysis.exists(file_id) {
+        return serde_json::to_value(Vec::<FoldingRange>::new()).map_err(|e| e.to_string());
+    }
+
+    let text = state.analysis.file_content(file_id);
+    let bytes = text.as_bytes();
+    let mut ranges = Vec::new();
+
+    let mut line: u32 = 0;
+    let mut brace_stack: Vec<u32> = Vec::new();
+
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\n' => {
+                line = line.saturating_add(1);
+                i += 1;
+            }
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
+                // Line comment: skip until newline so braces inside it don't count.
+                i += 2;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'*' => {
+                // Block comment folding range: `/* ... */`.
+                let start_line = line;
+                i += 2;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'\n' => {
+                            line = line.saturating_add(1);
+                            i += 1;
+                        }
+                        b'*' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
+                            i += 2;
+                            break;
+                        }
+                        _ => {
+                            i += 1;
+                        }
+                    }
+                }
+                let end_line = line;
+                if start_line < end_line {
+                    ranges.push(FoldingRange {
+                        start_line,
+                        start_character: None,
+                        end_line,
+                        end_character: None,
+                        kind: Some(FoldingRangeKind::Comment),
+                        collapsed_text: None,
+                    });
+                }
+            }
+            b'{' => {
+                brace_stack.push(line);
+                i += 1;
+            }
+            b'}' => {
+                if let Some(start_line) = brace_stack.pop() {
+                    let end_line = line;
+                    if start_line < end_line {
+                        ranges.push(FoldingRange {
+                            start_line,
+                            start_character: None,
+                            end_line,
+                            end_character: None,
+                            kind: Some(FoldingRangeKind::Region),
+                            collapsed_text: None,
+                        });
+                    }
+                }
+                i += 1;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
+    serde_json::to_value(ranges).map_err(|e| e.to_string())
+}
+
+fn handle_selection_range(
+    params: serde_json::Value,
+    state: &mut ServerState,
+) -> Result<serde_json::Value, String> {
+    let params: SelectionRangeParams =
+        serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let uri = params.text_document.uri;
+
+    let file_id = state.analysis.ensure_loaded(&uri);
+    if !state.analysis.exists(file_id) {
+        return serde_json::to_value(Vec::<SelectionRange>::new()).map_err(|e| e.to_string());
+    }
+
+    let text = state.analysis.file_content(file_id);
+    let document_end = offset_to_position_utf16(text, text.len());
+    let document_range = LspTypesRange::new(LspTypesPosition::new(0, 0), document_end);
+
+    let mut out = Vec::new();
+    for position in params.positions {
+        let offset = position_to_offset_utf16(text, position).unwrap_or(0);
+
+        let line_start = text[..offset].rfind('\n').map(|idx| idx + 1).unwrap_or(0);
+        let line_end = text[offset..]
+            .find('\n')
+            .map(|rel| offset + rel)
+            .unwrap_or(text.len());
+        let line_range = LspTypesRange::new(
+            offset_to_position_utf16(text, line_start),
+            offset_to_position_utf16(text, line_end),
+        );
+
+        let leaf_range = ident_range_at(text, offset)
+            .map(|(start, end)| {
+                LspTypesRange::new(
+                    offset_to_position_utf16(text, start),
+                    offset_to_position_utf16(text, end),
+                )
+            })
+            .unwrap_or_else(|| line_range);
+
+        let document = SelectionRange {
+            range: document_range,
+            parent: None,
+        };
+        let line = SelectionRange {
+            range: line_range,
+            parent: Some(Box::new(document)),
+        };
+        let leaf = SelectionRange {
+            range: leaf_range,
+            parent: Some(Box::new(line)),
+        };
+        out.push(leaf);
+    }
+
+    serde_json::to_value(out).map_err(|e| e.to_string())
 }
 
 fn code_action_to_lsp(action: NovaCodeAction) -> serde_json::Value {
