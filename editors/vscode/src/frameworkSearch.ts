@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { formatUnsupportedNovaMethodMessage, isNovaMethodNotFoundError, isNovaRequestSupported } from './novaCapabilities';
 import { uriFromFileLike } from './frameworkDashboard';
+import { formatWebEndpointDescription, formatWebEndpointLabel, webEndpointNavigationTarget, type WebEndpoint } from './frameworks/webEndpoints';
 import { formatError, isSafeModeError } from './safeMode';
 import { utf8ByteOffsetToUtf16Offset } from './utf8';
 
@@ -9,15 +10,6 @@ export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | u
 type FrameworkSearchKind = 'web-endpoints' | 'micronaut-endpoints' | 'micronaut-beans';
 
 const NOT_SUPPORTED_MESSAGE = 'Not supported by this Nova version';
-
-interface WebEndpoint {
-  path: string;
-  methods: string[];
-  // Best-effort relative path. May be `null`/missing when the server can't determine a source location.
-  file?: string | null;
-  line: number; // 1-based
-}
-
 interface WebEndpointsResponse {
   endpoints: WebEndpoint[];
 }
@@ -214,23 +206,21 @@ async function fetchItemsForKind(
         }
 
         const ep = endpoint as Partial<WebEndpoint>;
-        const methods = Array.isArray(ep.methods)
-          ? ep.methods.filter((m): m is string => typeof m === 'string' && m.length > 0)
-          : [];
-        const methodLabel = methods.length > 0 ? methods.join(', ') : 'ANY';
-        const endpointPath = typeof ep.path === 'string' ? ep.path : '';
-        const file = typeof ep.file === 'string' && ep.file.length > 0 ? ep.file : ep.file ?? undefined;
-        const line = typeof ep.line === 'number' ? ep.line : 1;
+        const parsed: WebEndpoint = {
+          path: typeof ep.path === 'string' ? ep.path : '',
+          methods: Array.isArray(ep.methods) ? ep.methods.filter((m): m is string => typeof m === 'string') : [],
+          file: typeof ep.file === 'string' || ep.file == null ? (ep.file as string | null | undefined) : undefined,
+          line: typeof ep.line === 'number' ? ep.line : 1,
+        };
 
-        const label = `${methodLabel} ${endpointPath}`.trim();
-        const description = typeof file === 'string' && typeof line === 'number' ? `${file}:${line}` : undefined;
+        const nav = webEndpointNavigationTarget(parsed);
         items.push({
           novaKind: kind,
           projectRoot,
-          file,
-          line,
-          label: label || '(unknown endpoint)',
-          description,
+          file: nav?.file,
+          line: nav?.line ?? 1,
+          label: formatWebEndpointLabel(parsed),
+          description: formatWebEndpointDescription(parsed),
         });
       }
       return items;
@@ -444,6 +434,11 @@ function validateMicronautSchemaVersion(schemaVersion: unknown, method: string):
 }
 
 async function navigateToFrameworkItem(item: FrameworkPickItem, baseUri: vscode.Uri): Promise<void> {
+  if (item.novaKind === 'web-endpoints' && !webEndpointNavigationTarget({ file: item.file, line: item.line })) {
+    void vscode.window.showInformationMessage('Nova: Location unavailable for this endpoint.');
+    return;
+  }
+
   const uri = uriFromFileLike(item.file, { baseUri, projectRoot: item.projectRoot });
   if (!uri) {
     void vscode.window.showErrorMessage('Nova: Could not resolve source location for this item.');

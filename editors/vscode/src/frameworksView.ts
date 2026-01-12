@@ -7,18 +7,9 @@ import {
   uriFromFileLike,
   type NovaRequest,
 } from './frameworkDashboard';
+import { formatWebEndpointDescription, formatWebEndpointLabel, webEndpointNavigationTarget, type WebEndpoint } from './frameworks/webEndpoints';
 
 type FrameworkCategory = 'web-endpoints' | 'micronaut-endpoints' | 'micronaut-beans';
-
-type WebEndpoint = {
-  path: string;
-  methods: string[];
-  // Best-effort relative path. May be `null`/missing when the server can't determine a source location.
-  file?: string | null;
-  // 1-based line number.
-  line: number;
-};
-
 type WebEndpointsResponse = {
   endpoints: WebEndpoint[];
 };
@@ -174,26 +165,22 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
       }
       case 'web-endpoint': {
         const endpoint = element.endpoint;
-        const methods = Array.isArray(endpoint.methods)
-          ? endpoint.methods.filter((m): m is string => typeof m === 'string' && m.trim().length > 0).sort((a, b) => a.localeCompare(b))
-          : [];
-        const methodLabel = methods.length > 0 ? methods.join(', ') : 'ANY';
-        const label = `${methodLabel} ${endpoint.path}`.trim();
-
-        const item = new vscode.TreeItem(label || '(unknown endpoint)', vscode.TreeItemCollapsibleState.None);
+        const item = new vscode.TreeItem(formatWebEndpointLabel(endpoint), vscode.TreeItemCollapsibleState.None);
         item.contextValue = NOVA_FRAMEWORK_ENDPOINT_CONTEXT;
+        item.description = formatWebEndpointDescription(endpoint);
+        item.tooltip = item.description;
 
-        const file = typeof endpoint.file === 'string' && endpoint.file.trim().length > 0 ? endpoint.file.trim() : undefined;
-        item.tooltip = file ? `${file}:${endpoint.line}` : 'Location unavailable';
-
-        const uri = uriFromFileLike(endpoint.file, { baseUri: element.baseUri, projectRoot: element.projectRoot });
-        if (uri && typeof endpoint.line === 'number' && Number.isFinite(endpoint.line)) {
-          item.resourceUri = uri;
-          item.command = {
-            command: 'nova.frameworks.open',
-            title: 'Open Endpoint',
-            arguments: [{ kind: 'line', uri, line: endpoint.line }],
-          };
+        const nav = webEndpointNavigationTarget(endpoint);
+        if (nav) {
+          const uri = uriFromFileLike(nav.file, { baseUri: element.baseUri, projectRoot: element.projectRoot });
+          if (uri) {
+            item.resourceUri = uri;
+            item.command = {
+              command: 'nova.frameworks.open',
+              title: 'Open Endpoint',
+              arguments: [{ kind: 'line', uri, line: nav.line }],
+            };
+          }
         }
         return item;
       }
