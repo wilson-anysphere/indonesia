@@ -1,7 +1,11 @@
 import * as vscode from 'vscode';
 import { formatError } from './safeMode';
 
-export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
+export type NovaRequest = <R>(
+  method: string,
+  params?: unknown,
+  opts?: { token?: vscode.CancellationToken },
+) => Promise<R | undefined>;
 
 const SHOW_METRICS_COMMAND = 'nova.showRequestMetrics';
 const RESET_METRICS_COMMAND = 'nova.resetRequestMetrics';
@@ -13,7 +17,12 @@ export function registerNovaMetricsCommands(context: vscode.ExtensionContext, re
   context.subscriptions.push(
     vscode.commands.registerCommand(SHOW_METRICS_COMMAND, async () => {
       try {
-        const metrics = await request<unknown>('nova/metrics');
+        const metrics = await vscode.window.withProgress<unknown | undefined>(
+          { location: vscode.ProgressLocation.Notification, title: 'Nova: Fetching request metrics…', cancellable: true },
+          async (_progress, token) => {
+            return await request<unknown>('nova/metrics', undefined, { token });
+          },
+        );
         if (typeof metrics === 'undefined') {
           // Request was gated (unsupported method) and the shared request helper already displayed
           // a user-facing message.
@@ -46,7 +55,12 @@ export function registerNovaMetricsCommands(context: vscode.ExtensionContext, re
   context.subscriptions.push(
     vscode.commands.registerCommand(RESET_METRICS_COMMAND, async () => {
       try {
-        const resp = await request<unknown>('nova/resetMetrics');
+        const resp = await vscode.window.withProgress<unknown | undefined>(
+          { location: vscode.ProgressLocation.Notification, title: 'Nova: Resetting request metrics…', cancellable: true },
+          async (_progress, token) => {
+            return await request<unknown>('nova/resetMetrics', undefined, { token });
+          },
+        );
         if (typeof resp === 'undefined') {
           // Request was gated (unsupported method) and the shared request helper already displayed
           // a user-facing message.

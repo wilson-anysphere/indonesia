@@ -1857,9 +1857,12 @@ export async function activate(context: vscode.ExtensionContext) {
       }
 
       try {
-        await sendNovaRequest('nova/java/organizeImports', {
-          uri: editor.document.uri.toString(),
-        });
+        await vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Notification, title: 'Nova: Organizing imports…', cancellable: true },
+          async (_progress, token) => {
+            await sendNovaRequest('nova/java/organizeImports', { uri: editor.document.uri.toString() }, { token });
+          },
+        );
       } catch (err) {
         const message = formatError(err);
         vscode.window.showErrorMessage(`Nova: organize imports failed: ${message}`);
