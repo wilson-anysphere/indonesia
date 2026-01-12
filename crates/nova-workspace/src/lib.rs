@@ -202,6 +202,37 @@ impl Workspace {
         Ok(files)
     }
 
+    fn java_files_in_cancelable(
+        &self,
+        root: &Path,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<PathBuf>> {
+        Cancelled::check(cancel)?;
+
+        match fs::metadata(root) {
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) => {
+                return Err(err).with_context(|| format!("failed to read {}", root.display()));
+            }
+        }
+
+        let mut files = Vec::new();
+        for entry in WalkDir::new(root).follow_links(true) {
+            Cancelled::check(cancel)?;
+            let entry = entry?;
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("java") {
+                files.push(path.to_path_buf());
+            }
+        }
+        files.sort();
+        Ok(files)
+    }
+
     fn project_java_files(&self) -> Result<Vec<PathBuf>> {
         match nova_project::load_project_with_workspace_config(&self.root) {
             Ok(config) => {
@@ -214,6 +245,31 @@ impl Workspace {
                 Ok(files)
             }
             Err(ProjectError::UnknownProjectType { .. }) => self.java_files_in(&self.root),
+            Err(err) => Err(anyhow::anyhow!(err))
+                .with_context(|| format!("failed to load project at {}", self.root.display())),
+        }
+    }
+
+    fn project_java_files_cancelable(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<PathBuf>> {
+        Cancelled::check(cancel)?;
+
+        match nova_project::load_project_with_workspace_config(&self.root) {
+            Ok(config) => {
+                let mut files = Vec::new();
+                for root in config.source_roots {
+                    Cancelled::check(cancel)?;
+                    files.extend(self.java_files_in_cancelable(&root.path, cancel)?);
+                }
+                files.sort();
+                files.dedup();
+                Ok(files)
+            }
+            Err(ProjectError::UnknownProjectType { .. }) => {
+                self.java_files_in_cancelable(&self.root, cancel)
+            }
             Err(err) => Err(anyhow::anyhow!(err))
                 .with_context(|| format!("failed to load project at {}", self.root.display())),
         }
@@ -256,7 +312,7 @@ impl Workspace {
         let start = Instant::now();
 
         Cancelled::check(cancel)?;
-        let files = self.project_java_files()?;
+        let files = self.project_java_files_cancelable(cancel)?;
         Cancelled::check(cancel)?;
         let cache_dir = self.open_cache_dir()?;
 
