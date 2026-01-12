@@ -13,7 +13,6 @@ use nova_types::{
     lub, ClassDef, ClassKind, Diagnostic, PrimitiveType, Span, Type, TypeEnv, TypeVarId,
     WildcardBound,
 };
-use unicode_ident::{is_xid_continue, is_xid_start};
 
 use crate::{Resolver, ScopeGraph, ScopeId, TypeNameResolution};
 
@@ -1122,11 +1121,11 @@ fn primitive_from_str(s: &str) -> Option<PrimitiveType> {
 }
 
 fn is_ident_start(ch: char) -> bool {
-    ch == '_' || ch == '$' || is_xid_start(ch)
+    ch == '_' || ch == '$' || unicode_ident::is_xid_start(ch)
 }
 
 fn is_ident_part(ch: char) -> bool {
-    is_ident_start(ch) || is_xid_continue(ch)
+    is_ident_start(ch) || unicode_ident::is_xid_continue(ch)
 }
 
 fn reconcile_class_args(
