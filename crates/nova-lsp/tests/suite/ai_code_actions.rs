@@ -1524,7 +1524,15 @@ fn stdio_server_ai_generate_method_body_sends_apply_edit() {
         }),
     );
 
-    let (messages, _resp) = drain_notifications_until_id(&mut stdout, 3);
+    let (messages, resp) = drain_notifications_until_id(&mut stdout, 3);
+    assert!(
+        resp.get("error").is_none(),
+        "expected executeCommand success, got: {resp:#?}"
+    );
+    assert!(
+        resp.get("result").map_or(false, |v| v.is_null()),
+        "expected executeCommand result null, got: {resp:#?}"
+    );
     let apply_edit = find_apply_edit_request(&messages);
 
     assert_eq!(
@@ -1717,7 +1725,15 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
         }),
     );
 
-    let (messages, _resp) = drain_notifications_until_id(&mut stdout, 3);
+    let (messages, resp) = drain_notifications_until_id(&mut stdout, 3);
+    assert!(
+        resp.get("error").is_none(),
+        "expected executeCommand success, got: {resp:#?}"
+    );
+    assert!(
+        resp.get("result").map_or(false, |v| v.is_null()),
+        "expected executeCommand result null, got: {resp:#?}"
+    );
     let apply_edit = find_apply_edit_request(&messages);
 
     assert_eq!(
