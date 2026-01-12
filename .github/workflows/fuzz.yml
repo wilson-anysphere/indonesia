@@ -33,6 +33,7 @@ jobs:
             . -> target
             fuzz -> target
             crates/nova-dap/fuzz -> target
+            crates/nova-jdwp/fuzz -> target
             crates/nova-remote-proto/fuzz -> target
             crates/nova-remote-rpc/fuzz -> target
 
@@ -148,6 +149,11 @@ jobs:
         run: cargo +nightly fuzz run --codegen-units 16 --features refactor refactor_smoke -- -max_total_time=30 -max_len=262144
         timeout-minutes: 30
 
+      - name: nova-jdwp/decode_packet_bytes
+        working-directory: crates/nova-jdwp
+        run: cargo +nightly fuzz run --codegen-units 16 decode_packet_bytes -- -max_total_time=30 -max_len=262144
+        timeout-minutes: 20
+
       - name: Cargo.lock unchanged
         if: always()
         shell: bash
@@ -173,6 +179,7 @@ jobs:
           path: |
             fuzz/artifacts/**
             crates/nova-dap/fuzz/artifacts/**
+            crates/nova-jdwp/fuzz/artifacts/**
             crates/nova-remote-proto/fuzz/artifacts/**
             crates/nova-remote-rpc/fuzz/artifacts/**
           if-no-files-found: ignore

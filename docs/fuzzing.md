@@ -238,6 +238,22 @@ cargo +nightly fuzz run read_dap_message -- -max_total_time=60 -max_len=262144
 Seed corpora live under `fuzz/corpus/<target>/` (and under `crates/*/fuzz/corpus/<target>/` for
 per-crate harnesses).
 
+### JDWP fuzzers (`nova-jdwp`)
+
+`crates/nova-jdwp` has a small per-crate fuzz harness focused on **JDWP packet framing** (length
+prefix validation, bounded allocations, and hang resistance):
+
+- `crates/nova-jdwp/fuzz/`:
+  - `decode_packet_bytes`
+
+Run this from the crate directory (not the repo root):
+
+```bash
+cd crates/nova-jdwp
+cargo +nightly fuzz list
+cargo +nightly fuzz run decode_packet_bytes -- -max_total_time=60 -max_len=262144
+```
+
 ### Java seed corpus duplication (`fuzz_syntax_parse` / `fuzz_format`)
 
 The Java seed corpora for the `fuzz_syntax_parse` and `fuzz_format` targets are intentionally
