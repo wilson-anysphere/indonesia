@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { State, type LanguageClient } from 'vscode-languageclient/node';
 import * as path from 'node:path';
+import { NOVA_FRAMEWORK_ENDPOINT_CONTEXT } from './frameworkDashboard';
 
 type WebEndpoint = {
   path: string;
@@ -92,7 +93,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Endpoint
     const label = `${methodLabel} ${endpoint.path}`;
 
     const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
-    item.contextValue = 'novaFrameworkEndpoint';
+    item.contextValue = NOVA_FRAMEWORK_ENDPOINT_CONTEXT;
     item.tooltip = `${endpoint.file}:${endpoint.line}`;
 
     const uri = resolveEndpointUri(element.baseUri, endpoint.file);
