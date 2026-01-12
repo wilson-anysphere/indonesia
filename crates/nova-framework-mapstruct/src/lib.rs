@@ -178,6 +178,8 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
         }
 
         let project = db.project_of_file(file);
+        let has_mapstruct_dependency = db.has_dependency(project, "org.mapstruct", "mapstruct")
+            || db.has_dependency(project, "org.mapstruct", "mapstruct-processor");
         let workspace = self.workspace.workspace(db, project);
         let mut diagnostics: Vec<Diagnostic> = workspace
             .analysis
@@ -242,6 +244,68 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
             }
         }
 
+        // Some `Database` implementations can't enumerate project files via `all_files` (and
+        // `FrameworkAnalyzer` implementors are expected to degrade gracefully when that happens).
+        //
+        // In that case we still want per-file diagnostics (at least missing dependency + ambiguous
+        // methods) for the current buffer.
+        let has_workspace_mapper = workspace
+            .analysis
+            .mappers
+            .iter()
+            .any(|m| m.file.as_path() == path);
+        if !has_workspace_mapper {
+            // Prefer the filesystem-based per-file analysis, which can resolve DTO property sets
+            // even when the DB hasn't loaded those source files.
+            if let Some(root) = nova_project::workspace_root(path) {
+                if let Ok(extra) =
+                    crate::diagnostics_for_file(&root, path, text, has_mapstruct_dependency)
+                {
+                    return extra;
+                }
+            }
+
+            // Fallback: in-memory only diagnostics from the current file.
+            let Ok(mappers) = discover_mappers_in_source(path, text) else {
+                return diagnostics;
+            };
+
+            if !has_mapstruct_dependency {
+                for mapper in &mappers {
+                    diagnostics.push(Diagnostic::error(
+                        "MAPSTRUCT_MISSING_DEPENDENCY",
+                        "MapStruct annotations are present but no org.mapstruct dependency was detected",
+                        Some(mapper.name_span),
+                    ));
+                }
+            }
+
+            // Ambiguous mapping methods (same source->target).
+            for mapper in &mappers {
+                let mut seen: HashMap<(String, String), Span> = HashMap::new();
+                for method in &mapper.methods {
+                    let key = (
+                        method.source_type.qualified_name(),
+                        method.target_type.qualified_name(),
+                    );
+                    if let Some(prev) = seen.get(&key) {
+                        diagnostics.push(Diagnostic::error(
+                            "MAPSTRUCT_AMBIGUOUS_MAPPING_METHOD",
+                            format!(
+                                "Ambiguous mapping method for {} -> {} (another candidate at {}..{})",
+                                key.0, key.1, prev.start, prev.end
+                            ),
+                            Some(method.name_span),
+                        ));
+                    } else {
+                        seen.insert(key, method.name_span);
+                    }
+                }
+            }
+
+            return diagnostics;
+        }
+
         // Best-effort: if the in-memory workspace model can't compute unmapped target
         // properties (e.g. DTO sources aren't loaded in the DB), fall back to the
         // filesystem-based analyzer for this file.
@@ -266,10 +330,6 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
 
             if has_mapping_methods {
                 if let Some(root) = nova_project::workspace_root(path) {
-                    let has_mapstruct_dependency =
-                        db.has_dependency(project, "org.mapstruct", "mapstruct")
-                            || db.has_dependency(project, "org.mapstruct", "mapstruct-processor");
-
                     if let Ok(extra) =
                         crate::diagnostics_for_file(&root, path, text, has_mapstruct_dependency)
                     {
