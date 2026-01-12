@@ -2927,7 +2927,8 @@ fn handle_workspace_symbol(
     let mut out = Vec::new();
     for symbol in symbols {
         for loc in symbol.locations {
-            let mut path = PathBuf::from(loc.file);
+            let file = loc.file;
+            let mut path = PathBuf::from(&file);
             if !path.is_absolute() {
                 path = workspace.root().join(path);
             }
@@ -2954,7 +2955,7 @@ fn handle_workspace_symbol(
                 #[allow(deprecated)]
                 deprecated: None,
                 location,
-                container_name: None,
+                container_name: Some(file),
             });
         }
     }
