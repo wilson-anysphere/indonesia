@@ -116,3 +116,69 @@ class A {
         edit.new_text
     );
 }
+
+#[test]
+fn completion_method_reference_type_receiver_includes_static_method() {
+    let (db, file, pos, _text) = fixture(
+        r#"
+class Foo {
+  static void stat() {}
+}
+class A {
+  void m() {
+    Foo::st<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "stat"),
+        "expected completion list to contain Foo::stat; got {items:#?}"
+    );
+}
+
+#[test]
+fn completion_method_reference_instance_receiver_includes_method() {
+    let (db, file, pos, _text) = fixture(
+        r#"
+class Foo {
+  void inst() {}
+}
+class A {
+  void m(Foo f) {
+    f::in<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "inst"),
+        "expected completion list to contain f::inst; got {items:#?}"
+    );
+}
+
+#[test]
+fn completion_method_reference_constructor_includes_new() {
+    let (db, file, pos, _text) = fixture(
+        r#"
+class Foo {
+  Foo() {}
+}
+class A {
+  void m() {
+    Foo::<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label == "new"),
+        "expected completion list to contain Foo::new; got {items:#?}"
+    );
+}

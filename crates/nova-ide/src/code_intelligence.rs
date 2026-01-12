@@ -3375,6 +3375,20 @@ pub(crate) fn core_completions(
         }
         return decorate_completions(&text_index, prefix_start, offset, items);
     }
+
+    let before_double_colon = skip_whitespace_backwards(text, prefix_start);
+    if before_double_colon >= 2
+        && text.as_bytes()[before_double_colon - 1] == b':'
+        && text.as_bytes()[before_double_colon - 2] == b':'
+    {
+        let receiver = receiver_before_double_colon(text, before_double_colon - 2);
+        return decorate_completions(
+            &text_index,
+            prefix_start,
+            offset,
+            method_reference_completions(db, file, offset, &receiver, &prefix),
+        );
+    }
     if is_new_expression_type_completion_context(text, prefix_start) {
         if cancel.is_cancelled() {
             return Vec::new();
@@ -3829,6 +3843,19 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         }
     }
 
+    let before_double_colon = skip_whitespace_backwards(text, prefix_start);
+    if before_double_colon >= 2
+        && text.as_bytes()[before_double_colon - 1] == b':'
+        && text.as_bytes()[before_double_colon - 2] == b':'
+    {
+        let receiver = receiver_before_double_colon(text, before_double_colon - 2);
+        return decorate_completions(
+            &text_index,
+            prefix_start,
+            offset,
+            method_reference_completions(db, file, offset, &receiver, &prefix),
+        );
+    }
     if is_new_expression_type_completion_context(text, prefix_start) {
         return decorate_completions(
             &text_index,
@@ -4950,6 +4977,105 @@ fn member_completions(
     }
 
     deduplicate_completion_items(&mut items);
+    let ctx = CompletionRankingContext::default();
+    rank_completions(prefix, &mut items, &ctx);
+    items
+}
+
+fn method_reference_completions(
+    db: &dyn Database,
+    file: FileId,
+    offset: usize,
+    receiver: &str,
+    prefix: &str,
+) -> Vec<CompletionItem> {
+    let receiver = receiver.trim();
+    if receiver.is_empty() {
+        return Vec::new();
+    }
+
+    let text = db.file_content(file);
+    let analysis = analyze(text);
+
+    let mut types = completion_type_store(db, file);
+    let file_ctx = JavaFileTypeContext::from_tokens(&analysis.tokens);
+
+    let (receiver_ty, call_kind) = match receiver {
+        "this" => (
+            enclosing_class(&analysis, offset)
+                .map(|class| parse_source_type_in_context(&mut types, &file_ctx, &class.name))
+                .unwrap_or(Type::Unknown),
+            CallKind::Instance,
+        ),
+        "super" => (
+            enclosing_class(&analysis, offset)
+                .and_then(|class| class.extends.as_deref())
+                .map(|extends| parse_source_type_in_context(&mut types, &file_ctx, extends))
+                .unwrap_or_else(|| parse_source_type_in_context(&mut types, &file_ctx, "Object")),
+            CallKind::Instance,
+        ),
+        other => infer_receiver(&mut types, &analysis, &file_ctx, other, offset),
+    };
+
+    if matches!(receiver_ty, Type::Unknown | Type::Error) {
+        return Vec::new();
+    }
+
+    ensure_type_methods_loaded(&mut types, &receiver_ty);
+
+    let class_id = match &receiver_ty {
+        Type::Class(nova_types::ClassType { def, .. }) => Some(*def),
+        Type::Named(name) => ensure_class_id(&mut types, name.as_str()),
+        _ => None,
+    };
+
+    let mut items = Vec::new();
+
+    if let Some(class_id) = class_id {
+        if let Some(class_def) = types.class(class_id) {
+            let mut candidates: Vec<&MethodDef> = class_def.methods.iter().collect();
+
+            match call_kind {
+                CallKind::Instance => {
+                    let instance: Vec<&MethodDef> =
+                        candidates.iter().copied().filter(|m| !m.is_static).collect();
+                    if !instance.is_empty() {
+                        candidates = instance;
+                    }
+                }
+                CallKind::Static => {
+                    let static_methods: Vec<&MethodDef> =
+                        candidates.iter().copied().filter(|m| m.is_static).collect();
+                    if !static_methods.is_empty() {
+                        candidates = static_methods;
+                    }
+                }
+            }
+
+            let mut seen = HashSet::<String>::new();
+            for method in candidates {
+                if !seen.insert(method.name.clone()) {
+                    continue;
+                }
+                items.push(CompletionItem {
+                    label: method.name.clone(),
+                    kind: Some(CompletionItemKind::METHOD),
+                    insert_text: Some(method.name.clone()),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
+    if call_kind == CallKind::Static && matches!(receiver_ty, Type::Class(_) | Type::Named(_)) {
+        items.push(CompletionItem {
+            label: "new".to_string(),
+            kind: Some(CompletionItemKind::CONSTRUCTOR),
+            insert_text: Some("new".to_string()),
+            ..Default::default()
+        });
+    }
+
     let ctx = CompletionRankingContext::default();
     rank_completions(prefix, &mut items, &ctx);
     items
@@ -6162,6 +6288,7 @@ fn general_completions(
             }),
         }
     }
+
     // Best-effort type name completions from the cached workspace index.
     //
     // We intentionally guard on a non-empty prefix: large workspaces can contain tens of thousands
@@ -10648,6 +10775,24 @@ pub(crate) fn receiver_before_dot(text: &str, dot_offset: usize) -> String {
         }
     }
     text.get(start..end).unwrap_or("").trim().to_string()
+}
+
+pub(crate) fn receiver_before_double_colon(text: &str, double_colon_offset: usize) -> String {
+    let bytes = text.as_bytes();
+    let mut end = double_colon_offset;
+    while end > 0 && (bytes[end - 1] as char).is_ascii_whitespace() {
+        end -= 1;
+    }
+    let mut start = end;
+    while start > 0 {
+        let ch = bytes[start - 1] as char;
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.' {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    text[start..end].trim().to_string()
 }
 
 #[cfg(test)]
