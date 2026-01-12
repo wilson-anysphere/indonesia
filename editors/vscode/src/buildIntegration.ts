@@ -87,6 +87,7 @@ type WorkspaceBuildState = {
   silentDiagnosticsRefreshQueued?: boolean;
   statusTimer?: NodeJS.Timeout;
   buildCommandInFlight?: boolean;
+  pendingDiagnosticsRefreshAfterBuildCommand?: boolean;
   diagnosticFiles: Set<string>;
 };
 
@@ -244,6 +245,12 @@ export function registerNovaBuildIntegration(
           // sync even when builds are triggered outside of `nova.buildProject`.
           if (!state.buildCommandInFlight) {
             void refreshBuildDiagnostics(folder, { silent: true });
+          } else {
+            // `nova.buildProject` will normally refresh diagnostics at the end, but builds can
+            // complete while the progress UI is still up and the user can cancel that flow before
+            // the manual refresh occurs. Track a pending refresh so we can still update Problems
+            // once the command finishes.
+            state.pendingDiagnosticsRefreshAfterBuildCommand = true;
           }
         }
 
@@ -849,6 +856,9 @@ export function registerNovaBuildIntegration(
                 buildOutput.appendLine('Build status polling timed out before completion.');
               }
 
+              // `nova.buildProject` explicitly refreshes diagnostics; clear any pending auto-refresh
+              // request that may have been queued while the command was running.
+              workspaceState.pendingDiagnosticsRefreshAfterBuildCommand = false;
               const diagnostics = await refreshBuildDiagnostics(folder, target ? { target } : undefined);
               const diagnosticList = diagnostics?.diagnostics ?? [];
               const errors = diagnosticList.filter((d) => d.severity === 'error').length;
@@ -898,6 +908,10 @@ export function registerNovaBuildIntegration(
         }
       } finally {
         workspaceState.buildCommandInFlight = false;
+        if (workspaceState.pendingDiagnosticsRefreshAfterBuildCommand) {
+          workspaceState.pendingDiagnosticsRefreshAfterBuildCommand = false;
+          void refreshBuildDiagnostics(folder, { silent: true });
+        }
       }
     }),
   );
