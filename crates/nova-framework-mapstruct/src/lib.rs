@@ -665,6 +665,8 @@ pub fn diagnostics_for_file(
             let mut mapped: HashSet<String> =
                 source_props.intersection(&target_props).cloned().collect();
             for mapping in &method.mappings {
+                // MapStruct targets can refer to nested paths (`foo.bar`). For unmapped property
+                // diagnostics we only care about the top-level target property name (`foo`).
                 let target = mapping.target.split('.').next().unwrap_or(&mapping.target).trim();
                 if !target.is_empty() {
                     mapped.insert(target.to_string());
