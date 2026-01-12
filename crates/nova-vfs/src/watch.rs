@@ -222,7 +222,9 @@ impl ManualFileWatcher {
     /// Returns a cloneable handle that can be used to inject events even after the watcher has been
     /// moved into another thread.
     pub fn handle(&self) -> ManualFileWatcherHandle {
-        ManualFileWatcherHandle { tx: self.tx.clone() }
+        ManualFileWatcherHandle {
+            tx: self.tx.clone(),
+        }
     }
 
     /// Inject a synthetic watcher event.
@@ -779,7 +781,6 @@ mod notify_impl {
             let (events_tx, events_rx) = channel::bounded::<WatchMessage>(1);
             let (stop_tx, stop_rx) = channel::bounded::<()>(0);
             let overflowed = Arc::new(AtomicBool::new(false));
-
             let overflowed_for_thread = Arc::clone(&overflowed);
             let thread = std::thread::spawn(move || {
                 run_notify_drain_loop(raw_rx, events_tx, stop_rx, overflowed_for_thread);
@@ -819,6 +820,117 @@ mod notify_impl {
             assert_eq!(msg, WatchEvent::Rescan);
 
             let _ = stop_tx.send(());
+            assert_eq!(msg, WatchEvent::Rescan);
+
+            let _ = stop_tx.send(());
+            let _ = thread.join();
+        }
+
+        #[test]
+        fn emits_deleted_on_stop_when_rename_from_is_pending() {
+            let (raw_tx, raw_rx) = channel::bounded::<notify::Result<notify::Event>>(16);
+            let (events_tx, events_rx) = channel::bounded::<WatchMessage>(16);
+            let (stop_tx, stop_rx) = channel::bounded::<()>(0);
+            let overflowed = Arc::new(AtomicBool::new(false));
+
+            let from = PathBuf::from("/tmp/pending.java");
+            let ev_from = notify::Event {
+                kind: EventKind::Modify(ModifyKind::Name(RenameMode::From)),
+                paths: vec![from.clone()],
+                attrs: Default::default(),
+            };
+            // Ensure the drain loop processes the rename-from before we signal stop by following it
+            // with an event that produces output.
+            let ev_modify = notify::Event {
+                kind: EventKind::Modify(ModifyKind::Any),
+                paths: vec![PathBuf::from("/tmp/other.java")],
+                attrs: Default::default(),
+            };
+
+            raw_tx.send(Ok(ev_from)).unwrap();
+            raw_tx.send(Ok(ev_modify)).unwrap();
+
+            let overflowed_for_thread = Arc::clone(&overflowed);
+            let thread = std::thread::spawn(move || {
+                run_notify_drain_loop(raw_rx, events_tx, stop_rx, overflowed_for_thread);
+            });
+
+            // Consume the modify event output so we know the rename-from has been enqueued.
+            let msg = events_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("expected watcher message")
+                .expect("expected ok watcher event");
+            assert!(matches!(msg, WatchEvent::Changes { .. }));
+
+            // Stop the watcher and expect it to flush the pending rename-from as a delete.
+            stop_tx.send(()).unwrap();
+
+            let msg = events_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("expected watcher message")
+                .expect("expected ok watcher event");
+            assert_eq!(
+                msg,
+                WatchEvent::Changes {
+                    changes: vec![FileChange::Deleted {
+                        path: VfsPath::local(from),
+                    }]
+                }
+            );
+
+            let _ = thread.join();
+        }
+
+        #[test]
+        fn emits_deleted_when_notify_channel_disconnects_with_pending_rename_from() {
+            let (raw_tx, raw_rx) = channel::bounded::<notify::Result<notify::Event>>(16);
+            let (events_tx, events_rx) = channel::bounded::<WatchMessage>(16);
+            let (_stop_tx, stop_rx) = channel::bounded::<()>(0);
+            let overflowed = Arc::new(AtomicBool::new(false));
+
+            let from = PathBuf::from("/tmp/pending_disconnect.java");
+            let ev_from = notify::Event {
+                kind: EventKind::Modify(ModifyKind::Name(RenameMode::From)),
+                paths: vec![from.clone()],
+                attrs: Default::default(),
+            };
+            let ev_modify = notify::Event {
+                kind: EventKind::Modify(ModifyKind::Any),
+                paths: vec![PathBuf::from("/tmp/other_disconnect.java")],
+                attrs: Default::default(),
+            };
+
+            raw_tx.send(Ok(ev_from)).unwrap();
+            raw_tx.send(Ok(ev_modify)).unwrap();
+            drop(raw_tx);
+
+            let overflowed_for_thread = Arc::clone(&overflowed);
+            let thread = std::thread::spawn(move || {
+                run_notify_drain_loop(raw_rx, events_tx, stop_rx, overflowed_for_thread);
+            });
+
+            // First message: modify output.
+            let msg = events_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("expected watcher message")
+                .expect("expected ok watcher event");
+            assert!(matches!(msg, WatchEvent::Changes { .. }));
+
+            // Second message: forced flush on disconnect should surface the pending rename-from as a
+            // delete.
+            let msg = events_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("expected watcher message")
+                .expect("expected ok watcher event");
+            assert_eq!(
+                msg,
+                WatchEvent::Changes {
+                    changes: vec![FileChange::Deleted {
+                        path: VfsPath::local(from),
+                    }]
+                }
+            );
+
             let _ = thread.join();
         }
 
