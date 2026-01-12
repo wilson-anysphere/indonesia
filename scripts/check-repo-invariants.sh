@@ -141,17 +141,17 @@ fi
 # so we can keep the patterns in this script without self-matching.
 banned_test_target_patterns=(
   # `nova-lsp` navigation tests were folded into `--test=stdio_server` (run with a test-name filter).
-  '--test(=|[[:space:]]+)navigation\\b'
+  '--test(=|[[:space:]]+)navigation([^[:alnum:]_-]|$)'
   # `nova-format` formatter tests are consolidated into `--test=harness`.
-  '--test(=|[[:space:]]+)format_fixtures\\b'
-  '--test(=|[[:space:]]+)format_snapshots\\b'
+  '--test(=|[[:space:]]+)format_fixtures([^[:alnum:]_-]|$)'
+  '--test(=|[[:space:]]+)format_snapshots([^[:alnum:]_-]|$)'
   # `nova-syntax` suites were folded into the `harness` test binary.
-  '--test(=|[[:space:]]+)javac_corpus\\b'
-  '--test(=|[[:space:]]+)golden_corpus\\b'
+  '--test(=|[[:space:]]+)javac_corpus([^[:alnum:]_-]|$)'
+  '--test(=|[[:space:]]+)golden_corpus([^[:alnum:]_-]|$)'
   # `nova-dap` real JVM tests live under the consolidated `real_jvm` harness.
   # (So this target name is intentionally allowed.)
   # `nova-cli` real-project tests are part of the consolidated `harness`.
-  '--test(=|[[:space:]]+)real_projects\\b'
+  '--test(=|[[:space:]]+)real_projects([^[:alnum:]_-]|$)'
 )
 
 for pat in "${banned_test_target_patterns[@]}"; do
