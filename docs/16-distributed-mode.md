@@ -184,6 +184,9 @@ You can override the worker binary path via:
 nova-lsp --distributed --distributed-worker-command /path/to/nova-worker
 ```
 
+If `--distributed-worker-command` is omitted, `nova-lsp` will prefer a sibling `nova-worker` next
+to the `nova-lsp` executable (if present) and otherwise fall back to `nova-worker` on `PATH`.
+
 When enabled, `nova-lsp` starts the router after the LSP `initialize` handshake and forwards
 best-effort file updates to the router for indexing/search. See
 `ServerState::start_distributed_after_initialize` and `parse_distributed_cli` in
