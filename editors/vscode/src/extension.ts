@@ -1916,6 +1916,7 @@ export async function activate(context: vscode.ExtensionContext) {
   }): Promise<NovaAiShowCommandArgs | undefined> => {
     const editor = vscode.window.activeTextEditor;
     if (!editor || editor.document.languageId !== 'java') {
+      void vscode.window.showInformationMessage('Nova AI: Open a Java file to run this command.');
       return undefined;
     }
 
@@ -2090,16 +2091,16 @@ export async function activate(context: vscode.ExtensionContext) {
   const handleAiDisabled = async (): Promise<void> => {
     const picked = await vscode.window.showWarningMessage(
       'Nova AI is disabled by settings (`nova.ai.enabled = false`). Enable it and restart the language server to use AI features.',
-      'Enable AI',
+      'Enable AI (Workspace)',
+      'Enable AI (User)',
       'Open Settings',
       'Restart Language Server',
     );
-    if (picked === 'Enable AI') {
-      await vscode.workspace.getConfiguration('nova').update('ai.enabled', true, vscode.ConfigurationTarget.Global);
-      const restart = await vscode.window.showInformationMessage(
-        'Nova: AI enabled. Restart nova-lsp to apply changes.',
-        'Restart Language Server',
-      );
+    if (picked === 'Enable AI (Workspace)' || picked === 'Enable AI (User)') {
+      const target =
+        picked === 'Enable AI (Workspace)' ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
+      await vscode.workspace.getConfiguration('nova').update('ai.enabled', true, target);
+      const restart = await vscode.window.showInformationMessage('Nova: AI enabled. Restart nova-lsp to apply changes.', 'Restart Language Server');
       if (restart === 'Restart Language Server') {
         await vscode.commands.executeCommand('workbench.action.restartLanguageServer');
       }
