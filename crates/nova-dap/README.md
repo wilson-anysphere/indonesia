@@ -16,7 +16,7 @@ stack frames, locals, and best-effort evaluation.
 3. Adapter emits the `initialized` event (exactly once per session)
 
 After `initialized`, the client may send breakpoint configuration requests
-(`setBreakpoints`, `setExceptionBreakpoints`) either **before** or **after**
+(`setBreakpoints`, `setFunctionBreakpoints`, `setExceptionBreakpoints`) either **before** or **after**
 `attach` / `launch`.
 
 If breakpoint/exception configuration arrives before the debugger is attached,

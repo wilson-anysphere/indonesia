@@ -97,6 +97,7 @@ struct SessionLifecycle {
 struct PendingConfiguration {
     breakpoints: HashMap<String, Vec<BreakpointSpec>>,
     exception_breakpoints: Option<(bool, bool)>,
+    function_breakpoints: Option<Vec<FunctionBreakpointSpec>>,
 }
 
 impl Default for SessionLifecycle {
@@ -308,6 +309,7 @@ async fn handle_request_inner(
                 sess.lifecycle = LifecycleState::Initialized;
                 sess.kind = None;
                 sess.awaiting_configuration_done_resume = false;
+                sess.project_root = None;
             }
 
             {
@@ -1041,6 +1043,11 @@ async fn handle_request_inner(
                 })
                 .unwrap_or_default();
 
+            {
+                let mut pending = pending_config.lock().await;
+                pending.function_breakpoints = Some(breakpoints.clone());
+            }
+
             let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
                 Some(guard) => guard,
                 None => {
@@ -1057,13 +1064,25 @@ async fn handle_request_inner(
             };
 
             let Some(dbg) = guard.as_mut() else {
+                // Allow function breakpoint configuration before attach/launch by caching it and
+                // returning an "unverified" response. The cached configuration will be applied
+                // automatically once the debugger is attached.
+                let pending_bps: Vec<Value> = breakpoints
+                    .iter()
+                    .map(|_| {
+                        json!({
+                            "verified": false,
+                            "message": "pending attach/launch",
+                        })
+                    })
+                    .collect();
                 send_response(
                     out_tx,
                     seq,
                     request,
-                    false,
+                    true,
+                    Some(json!({ "breakpoints": pending_bps })),
                     None,
-                    Some("not attached".to_string()),
                 );
                 return;
             };
@@ -2963,12 +2982,16 @@ async fn apply_pending_configuration(
     debugger: &Arc<Mutex<Option<Debugger>>>,
     pending_config: &Arc<Mutex<PendingConfiguration>>,
 ) {
-    let (breakpoints, exception_breakpoints) = {
+    let (breakpoints, exception_breakpoints, function_breakpoints) = {
         let pending = pending_config.lock().await;
-        (pending.breakpoints.clone(), pending.exception_breakpoints)
+        (
+            pending.breakpoints.clone(),
+            pending.exception_breakpoints,
+            pending.function_breakpoints.clone(),
+        )
     };
 
-    if breakpoints.is_empty() && exception_breakpoints.is_none() {
+    if breakpoints.is_empty() && exception_breakpoints.is_none() && function_breakpoints.is_none() {
         return;
     }
 
@@ -2992,6 +3015,15 @@ async fn apply_pending_configuration(
             return;
         }
         let _ = dbg.set_exception_breakpoints(caught, uncaught).await;
+    }
+
+    if let Some(function_breakpoints) = function_breakpoints {
+        if cancel.is_cancelled() {
+            return;
+        }
+        let _ = dbg
+            .set_function_breakpoints(cancel, function_breakpoints)
+            .await;
     }
 }
 
