@@ -14,6 +14,16 @@ entry point for smoke-testing / CI usage.
 - Testing & CI (how to run/update suites locally): [`docs/14-testing-infrastructure.md`](./docs/14-testing-infrastructure.md)
 - Full document set: [`docs/`](./docs)
 
+## Repo invariants (CI-equivalent)
+
+Nova enforces architecture invariants (crate layering, docs ↔ code consistency) via `nova-devtools`.
+
+Run the same suite locally with:
+
+```bash
+./scripts/check-repo-invariants.sh
+```
+
 ## Install
 
 Nova is distributed as standalone binaries (`nova-lsp`, `nova-dap`) and a VS Code extension.
