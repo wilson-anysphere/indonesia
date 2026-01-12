@@ -1101,37 +1101,62 @@ export function registerNovaBuildIntegration(
       // `nova.buildProject` behaviour for Bazel selectors).
       const buildTool: BuildTool = target ? 'auto' : await getBuildBuildTool(folder);
 
-      try {
-        const response = await request('nova/reloadProject', {
-          projectRoot,
-          buildTool,
-          ...(module ? { module } : {}),
-          ...(projectPath ? { projectPath } : {}),
-          ...(target ? { target } : {}),
-        });
-        if (typeof response === 'undefined') {
-          return;
-        }
-      } catch (err) {
-        if (isMethodNotFoundError(err)) {
-          void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage('nova/reloadProject'));
-          return;
-        }
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Nova: Reloading project (${folder.name})…`, cancellable: true },
+        async (_progress, token) => {
+          if (token.isCancellationRequested) {
+            return;
+          }
 
-        const message = formatError(err);
-        void vscode.window.showErrorMessage(`Nova: reload project failed: ${message}`);
-        return;
-      }
+          try {
+            const response = await request('nova/reloadProject', {
+              projectRoot,
+              buildTool,
+              ...(module ? { module } : {}),
+              ...(projectPath ? { projectPath } : {}),
+              ...(target ? { target } : {}),
+            }, { token });
+            if (typeof response === 'undefined') {
+              return;
+            }
+          } catch (err) {
+            if (token.isCancellationRequested || isRequestCancelledError(err)) {
+              return;
+            }
+            if (isMethodNotFoundError(err)) {
+              void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage('nova/reloadProject'));
+              return;
+            }
 
-      // Best-effort: reloads can change the project model; refresh the Nova Project explorer if present.
-      try {
-        await vscode.commands.executeCommand('nova.refreshProjectExplorer');
-      } catch {
-        // Command is optional; ignore if not contributed.
-      }
+            const message = formatError(err);
+            void vscode.window.showErrorMessage(`Nova: reload project failed: ${message}`);
+            return;
+          }
 
-      await refreshBuildDiagnostics(folder);
-      void pollBuildStatusAndSchedule(folder);
+          if (token.isCancellationRequested) {
+            return;
+          }
+
+          // Best-effort: reloads can change the project model; refresh the Nova Project explorer if present.
+          try {
+            await vscode.commands.executeCommand('nova.refreshProjectExplorer');
+          } catch {
+            // Command is optional; ignore if not contributed.
+          }
+
+          if (token.isCancellationRequested) {
+            return;
+          }
+
+          await refreshBuildDiagnostics(folder, { token });
+
+          if (token.isCancellationRequested) {
+            return;
+          }
+
+          void pollBuildStatusAndSchedule(folder, token);
+        },
+      );
     }),
   );
 
