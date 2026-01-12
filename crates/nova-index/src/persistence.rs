@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::OnceLock;
 
 pub const INDEX_SCHEMA_VERSION: u32 = 2;
 
@@ -2422,6 +2423,235 @@ impl ShardedIndexView {
     }
 }
 
+#[derive(Debug)]
+pub struct LoadedLazyShardedIndexView {
+    pub view: LazyShardedIndexView,
+    pub invalidated_files: Vec<String>,
+}
+
+/// Query interface over sharded, persisted indexes that loads individual shard archives on demand.
+///
+/// Unlike [`ShardedIndexView`], this struct does not eagerly open or validate every shard during
+/// construction. Instead, each shard is opened the first time it is accessed via [`Self::shard`]
+/// and the result (including failures) is cached for subsequent calls.
+///
+/// Missing or corrupt shards are therefore discovered lazily: callers should treat `None` results
+/// from [`Self::shard`] as an indication that the shard needs to be rebuilt.
+#[derive(Debug)]
+pub struct LazyShardedIndexView {
+    shard_count: u32,
+    shards_root: PathBuf,
+    invalidated_files: BTreeSet<String>,
+    shards: Vec<OnceLock<Option<LoadedShardIndexArchives>>>,
+}
+
+impl LazyShardedIndexView {
+    #[must_use]
+    pub fn shard_count(&self) -> usize {
+        self.shard_count as usize
+    }
+
+    #[must_use]
+    pub fn shard(&self, shard_id: ShardId) -> Option<&LoadedShardIndexArchives> {
+        let cell = self.shards.get(shard_id as usize)?;
+        let archives = cell.get_or_init(|| {
+            let shard_dir = shard_dir(&self.shards_root, shard_id);
+            load_shard_archives(&shard_dir)
+        });
+        archives.as_ref()
+    }
+
+    /// Returns `true` if `file` should be treated as stale and filtered out of archived query
+    /// results.
+    #[inline]
+    pub fn is_file_invalidated(&self, file: &str) -> bool {
+        self.invalidated_files.contains(file)
+    }
+
+    /// Returns the set of shards that have been accessed and were found to be missing or corrupt.
+    ///
+    /// Note that this does not report shards that have not been accessed yet.
+    #[must_use]
+    pub fn missing_shards(&self) -> BTreeSet<ShardId> {
+        self.shards
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, cell)| match cell.get()? {
+                None => Some(idx as ShardId),
+                Some(_) => None,
+            })
+            .collect()
+    }
+
+    /// Return all symbol definition locations for `symbol` across all available shards.
+    ///
+    /// This convenience helper will load every shard (lazily) to answer the query. Callers that
+    /// only need to inspect a subset of shards should instead call [`Self::shard`] directly.
+    #[must_use]
+    pub fn symbol_locations<'a>(
+        &'a self,
+        symbol: &str,
+    ) -> impl Iterator<Item = LocationRef<'a>> + 'a {
+        let invalidated_files = &self.invalidated_files;
+
+        let mut lists = Vec::new();
+        for shard_id in 0..self.shard_count {
+            let Some(shard) = self.shard(shard_id) else {
+                continue;
+            };
+            if let Some(locations) = shard.symbols.archived().symbols.get(symbol) {
+                lists.push(locations);
+            }
+        }
+
+        lists
+            .into_iter()
+            .flat_map(move |locations| locations.iter())
+            .filter(move |loc| !invalidated_files.contains(loc.file.as_str()))
+            .map(|loc| LocationRef {
+                file: loc.file.as_str(),
+                line: loc.line,
+                column: loc.column,
+            })
+    }
+
+    /// Returns all symbol names that have at least one location in a non-invalidated file.
+    ///
+    /// This convenience helper will load every shard (lazily) to answer the query.
+    pub fn symbol_names<'a>(&'a self) -> impl Iterator<Item = &'a str> + 'a {
+        let invalidated_files = &self.invalidated_files;
+        let mut names: BTreeSet<&'a str> = BTreeSet::new();
+
+        for shard_id in 0..self.shard_count {
+            let Some(shard) = self.shard(shard_id) else {
+                continue;
+            };
+
+            for (name, locations) in shard.symbols.archived().symbols.iter() {
+                if locations
+                    .iter()
+                    .any(|loc| !invalidated_files.contains(loc.file.as_str()))
+                {
+                    names.insert(name.as_str());
+                }
+            }
+        }
+
+        names.into_iter()
+    }
+
+    #[must_use]
+    pub fn reference_locations<'a>(
+        &'a self,
+        symbol: &str,
+    ) -> impl Iterator<Item = LocationRef<'a>> + 'a {
+        let invalidated_files = &self.invalidated_files;
+
+        let mut lists = Vec::new();
+        for shard_id in 0..self.shard_count {
+            let Some(shard) = self.shard(shard_id) else {
+                continue;
+            };
+            if let Some(locations) = shard.references.archived().references.get(symbol) {
+                lists.push(locations);
+            }
+        }
+
+        lists
+            .into_iter()
+            .flat_map(move |locations| locations.iter())
+            .filter(move |loc| !invalidated_files.contains(loc.file.as_str()))
+            .map(|loc| LocationRef {
+                file: loc.file.as_str(),
+                line: loc.line,
+                column: loc.column,
+            })
+    }
+
+    /// Returns all symbols that have at least one reference location in a non-invalidated file.
+    ///
+    /// This convenience helper will load every shard (lazily) to answer the query.
+    pub fn referenced_symbols<'a>(&'a self) -> impl Iterator<Item = &'a str> + 'a {
+        let invalidated_files = &self.invalidated_files;
+        let mut symbols: BTreeSet<&'a str> = BTreeSet::new();
+
+        for shard_id in 0..self.shard_count {
+            let Some(shard) = self.shard(shard_id) else {
+                continue;
+            };
+
+            for (symbol, locations) in shard.references.archived().references.iter() {
+                if locations
+                    .iter()
+                    .any(|loc| !invalidated_files.contains(loc.file.as_str()))
+                {
+                    symbols.insert(symbol.as_str());
+                }
+            }
+        }
+
+        symbols.into_iter()
+    }
+
+    #[must_use]
+    pub fn annotation_locations<'a>(
+        &'a self,
+        annotation: &str,
+    ) -> impl Iterator<Item = LocationRef<'a>> + 'a {
+        let invalidated_files = &self.invalidated_files;
+
+        let mut lists = Vec::new();
+        for shard_id in 0..self.shard_count {
+            let Some(shard) = self.shard(shard_id) else {
+                continue;
+            };
+            if let Some(locations) = shard
+                .annotations
+                .archived()
+                .annotations
+                .get(annotation)
+            {
+                lists.push(locations);
+            }
+        }
+
+        lists
+            .into_iter()
+            .flat_map(move |locations| locations.iter())
+            .filter(move |loc| !invalidated_files.contains(loc.file.as_str()))
+            .map(|loc| LocationRef {
+                file: loc.file.as_str(),
+                line: loc.line,
+                column: loc.column,
+            })
+    }
+
+    /// Returns all annotation names that have at least one location in a non-invalidated file.
+    ///
+    /// This convenience helper will load every shard (lazily) to answer the query.
+    pub fn annotation_names<'a>(&'a self) -> impl Iterator<Item = &'a str> + 'a {
+        let invalidated_files = &self.invalidated_files;
+        let mut names: BTreeSet<&'a str> = BTreeSet::new();
+
+        for shard_id in 0..self.shard_count {
+            let Some(shard) = self.shard(shard_id) else {
+                continue;
+            };
+
+            for (name, locations) in shard.annotations.archived().annotations.iter() {
+                if locations
+                    .iter()
+                    .any(|loc| !invalidated_files.contains(loc.file.as_str()))
+                {
+                    names.insert(name.as_str());
+                }
+            }
+        }
+
+        names.into_iter()
+    }
+}
+
 /// Deterministically map a relative file path to a shard id.
 ///
 /// Sharding is stable across runs for the same `path`/`shard_count` combination.
@@ -2846,6 +3076,61 @@ pub fn load_sharded_index_archives_fast(
         Err(_) => return Ok(None),
     };
     load_sharded_index_archives_from_fast_snapshot(cache_dir, &current_snapshot, shard_count)
+}
+
+/// Loads sharded indexes as a zero-copy view backed by validated `rkyv` archives, loading shard
+/// archives on demand.
+///
+/// This behaves like [`load_sharded_index_view`] except it does **not** eagerly open/validate
+/// every shard during the load step. Missing or corrupt shards are discovered when callers first
+/// access them via [`LazyShardedIndexView::shard`] (or via helper methods that scan all shards).
+pub fn load_sharded_index_view_lazy(
+    cache_dir: &CacheDir,
+    current_snapshot: &ProjectSnapshot,
+    shard_count: u32,
+) -> Result<Option<LoadedLazyShardedIndexView>, IndexPersistenceError> {
+    if shard_count == 0 {
+        return Err(IndexPersistenceError::InvalidShardCount { shard_count });
+    }
+
+    let metadata_path = cache_dir.metadata_path();
+    if !metadata_path.exists() && !cache_dir.metadata_bin_path().exists() {
+        return Ok(None);
+    }
+    let metadata = match CacheMetadata::load(metadata_path) {
+        Ok(metadata) => metadata,
+        Err(_) => return Ok(None),
+    };
+    if !metadata.is_compatible() {
+        return Ok(None);
+    }
+    if &metadata.project_hash != current_snapshot.project_hash() {
+        return Ok(None);
+    }
+
+    let shards_root = cache_dir.indexes_dir().join(SHARDS_DIR_NAME);
+    match read_shard_manifest(&shards_root) {
+        Some(value) if value == shard_count => {}
+        _ => return Ok(None),
+    }
+
+    let invalidated_files_set: BTreeSet<String> = metadata
+        .diff_files(current_snapshot)
+        .into_iter()
+        .collect();
+    let invalidated_files = invalidated_files_set.iter().cloned().collect();
+
+    let shards = (0..shard_count).map(|_| OnceLock::new()).collect();
+
+    Ok(Some(LoadedLazyShardedIndexView {
+        view: LazyShardedIndexView {
+            shard_count,
+            shards_root,
+            invalidated_files: invalidated_files_set,
+            shards,
+        },
+        invalidated_files,
+    }))
 }
 
 pub fn load_sharded_index_view(

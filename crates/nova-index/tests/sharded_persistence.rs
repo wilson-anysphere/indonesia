@@ -1,9 +1,9 @@
 use nova_cache::{CacheConfig, CacheDir, ProjectSnapshot};
 use nova_index::{
     affected_shards, load_sharded_index_archives, load_sharded_index_archives_fast,
-    load_sharded_index_view, save_sharded_indexes, save_sharded_indexes_incremental,
-    shard_id_for_path, AnnotationLocation, InheritanceEdge, ProjectIndexes, ReferenceLocation,
-    ShardedIndexOverlay, SymbolLocation,
+    load_sharded_index_view, load_sharded_index_view_lazy, save_sharded_indexes,
+    save_sharded_indexes_incremental, shard_id_for_path, AnnotationLocation, InheritanceEdge,
+    ProjectIndexes, ReferenceLocation, ShardedIndexOverlay, SymbolLocation,
 };
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -13,6 +13,13 @@ fn empty_shards(shard_count: u32) -> Vec<ProjectIndexes> {
     (0..shard_count)
         .map(|_| ProjectIndexes::default())
         .collect()
+}
+
+fn assert_send_sync<T: Send + Sync>() {}
+
+#[test]
+fn lazy_sharded_index_view_is_send_sync() {
+    assert_send_sync::<nova_index::LazyShardedIndexView>();
 }
 
 #[test]
@@ -547,6 +554,101 @@ fn corrupt_shard_is_partial_cache_miss() {
             .collect::<BTreeSet<_>>(),
         expected_invalidated
     );
+}
+
+#[test]
+fn lazy_sharded_index_view_discovers_corrupt_shards_on_access() {
+    let shard_count = 64;
+
+    let temp = tempfile::tempdir().unwrap();
+    let project_root = temp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    // Pick two file names that land in different shards so we can corrupt one shard without
+    // affecting queries for the other.
+    let mut paths = Vec::new();
+    let mut seen = BTreeSet::new();
+    for idx in 0..500u32 {
+        let name = format!("File{idx}.java");
+        let shard_id = shard_id_for_path(&name, shard_count);
+        if seen.insert(shard_id) {
+            paths.push(name);
+        }
+        if paths.len() >= 2 {
+            break;
+        }
+    }
+    assert_eq!(paths.len(), 2);
+
+    for name in &paths {
+        std::fs::write(project_root.join(name), format!("class {} {{}}", name)).unwrap();
+    }
+
+    let snapshot =
+        ProjectSnapshot::new(&project_root, paths.iter().map(PathBuf::from).collect()).unwrap();
+
+    let cache_dir = CacheDir::new(
+        &project_root,
+        CacheConfig {
+            cache_root_override: Some(temp.path().join("cache-root")),
+        },
+    )
+    .unwrap();
+
+    let mut shards = empty_shards(shard_count);
+    for name in &paths {
+        let shard = shard_id_for_path(name, shard_count) as usize;
+        let symbol = name.trim_end_matches(".java");
+        shards[shard].symbols.insert(
+            symbol,
+            SymbolLocation {
+                file: name.clone(),
+                line: 1,
+                column: 1,
+            },
+        );
+    }
+    save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards).unwrap();
+
+    // Corrupt one shard file.
+    let corrupt_shard = shard_id_for_path(&paths[0], shard_count);
+    let corrupt_path = cache_dir
+        .indexes_dir()
+        .join("shards")
+        .join(corrupt_shard.to_string())
+        .join("symbols.idx");
+    std::fs::write(&corrupt_path, b"corrupt").unwrap();
+
+    // The lazy loader should still succeed (it doesn't open shards up-front).
+    let loaded = load_sharded_index_view_lazy(&cache_dir, &snapshot, shard_count)
+        .unwrap()
+        .unwrap();
+    assert!(loaded.invalidated_files.is_empty());
+    assert!(loaded.view.missing_shards().is_empty());
+
+    // Accessing a healthy shard should work without discovering the corrupt shard.
+    let healthy_shard = shard_id_for_path(&paths[1], shard_count);
+    let healthy_symbol = paths[1].trim_end_matches(".java");
+    let shard = loaded
+        .view
+        .shard(healthy_shard)
+        .expect("healthy shard should load");
+    let locations = shard
+        .symbols
+        .archived()
+        .symbols
+        .get(healthy_symbol)
+        .expect("expected symbol to be present");
+    assert_eq!(locations.iter().count(), 1);
+    assert_eq!(
+        locations.iter().next().unwrap().file.as_str(),
+        paths[1].as_str()
+    );
+    assert!(loaded.view.missing_shards().is_empty());
+
+    // Accessing the corrupt shard should treat it as missing (no panic).
+    assert!(loaded.view.shard(corrupt_shard).is_none());
+    assert!(loaded.view.missing_shards().contains(&corrupt_shard));
 }
 
 #[test]
