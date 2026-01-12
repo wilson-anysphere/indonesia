@@ -152,7 +152,7 @@ pub fn rename(
     }
 
     match kind {
-        Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter) => {
+        Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter | JavaSymbolKind::TypeParameter) => {
             let conflicts = check_rename_conflicts(db, params.symbol, &params.new_name);
             if !conflicts.is_empty() {
                 return Err(RefactorError::Conflicts(conflicts));
@@ -1469,7 +1469,47 @@ pub fn inline_variable(
     let init_is_order_sensitive = initializer_is_order_sensitive(init_expr.syntax());
     let init_replacement = parenthesize_initializer(init_text, &init_expr);
 
-    let all_refs = db.find_references(params.symbol);
+    let mut all_refs = db.find_references(params.symbol);
+    if all_refs.is_empty() && params.inline_all {
+        // Best-effort fallback: if semantic reference collection failed (e.g. due to incomplete
+        // scoping for certain constructs like switch case groups), try to find identifier tokens
+        // by name in the enclosing block.
+        //
+        // This keeps `inline_variable` usable in common cases even when the semantic model is
+        // incomplete. We intentionally scope the search to the nearest enclosing `{ ... }` block
+        // and only consider occurrences after the declaration statement to avoid accidentally
+        // capturing unrelated identifiers earlier in the method.
+        let search_root = decl_stmt
+            .syntax()
+            .ancestors()
+            .find_map(ast::Block::cast)
+            .map(|b| b.syntax().clone())
+            .unwrap_or_else(|| root.clone());
+
+        let decl_end = decl.statement_range.end;
+        for tok in search_root
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+        {
+            if tok.kind() != SyntaxKind::Identifier {
+                continue;
+            }
+            if tok.text() != def.name.as_str() {
+                continue;
+            }
+            let range = syntax_token_range(&tok);
+            if range == def.name_range {
+                continue;
+            }
+            if range.start < decl_end {
+                continue;
+            }
+            all_refs.push(crate::semantic::Reference {
+                file: def.file.clone(),
+                range,
+            });
+        }
+    }
 
     let targets = if params.inline_all {
         all_refs.clone()
@@ -4384,7 +4424,10 @@ fn find_local_variable_declaration(
 
         let mut target_idx = declarators.iter().position(|decl| {
             decl.name_token()
-                .map(|tok| syntax_token_range(&tok) == name_range)
+                .map(|tok| {
+                    let range = syntax_token_range(&tok);
+                    range.start < name_range.end && name_range.start < range.end
+                })
                 .unwrap_or(false)
         });
 

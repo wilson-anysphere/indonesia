@@ -5,7 +5,7 @@ use nova_core::{Name, QualifiedName};
 use nova_db::salsa::{Database as SalsaDatabase, NovaHir, NovaIndexing, NovaTypeck};
 use nova_db::{FileId as DbFileId, ProjectId};
 use nova_hir::hir;
-use nova_hir::ids::{FieldId, ItemId, MethodId};
+use nova_hir::ids::{ConstructorId, FieldId, ItemId, MethodId};
 use nova_hir::item_tree::Modifiers as HirModifiers;
 use nova_hir::item_tree::{FieldKind, Item, Member};
 use nova_hir::queries::HirDatabase;
@@ -41,6 +41,7 @@ impl SymbolId {
 pub enum JavaSymbolKind {
     Package,
     Type,
+    TypeParameter,
     Method,
     Field,
     Local,
@@ -80,7 +81,21 @@ enum ResolutionKey {
     /// symbol, so any `MethodId` from the set can be used to recover the group's `SymbolId`.
     Method(MethodId),
     Type(ItemId),
+    TypeParam(TypeParamKey),
     Package(DbFileId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum TypeParamOwner {
+    Type(ItemId),
+    Method(MethodId),
+    Constructor(ConstructorId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct TypeParamKey {
+    owner: TypeParamOwner,
+    index: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -326,6 +341,21 @@ impl RefactorJavaDatabase {
 
                 let scope = scope_interner.intern(*file_id, method_scope);
                 let method_data = tree.method(method);
+                for (idx, tp) in method_data.type_params.iter().enumerate() {
+                    candidates.push(SymbolCandidate {
+                        key: ResolutionKey::TypeParam(TypeParamKey {
+                            owner: TypeParamOwner::Method(method),
+                            index: idx,
+                        }),
+                        file: file.clone(),
+                        name: tp.name.clone(),
+                        name_range: TextRange::new(tp.name_range.start, tp.name_range.end),
+                        scope,
+                        kind: JavaSymbolKind::TypeParameter,
+                        type_info: None,
+                        method_signature: None,
+                    });
+                }
                 for (idx, param) in method_data.params.iter().enumerate() {
                     candidates.push(SymbolCandidate {
                         key: ResolutionKey::Param(ParamRef {
@@ -353,6 +383,21 @@ impl RefactorJavaDatabase {
                     .expect("constructor scope map must contain key");
                 let scope = scope_interner.intern(*file_id, ctor_scope);
                 let ctor_data = tree.constructor(ctor);
+                for (idx, tp) in ctor_data.type_params.iter().enumerate() {
+                    candidates.push(SymbolCandidate {
+                        key: ResolutionKey::TypeParam(TypeParamKey {
+                            owner: TypeParamOwner::Constructor(ctor),
+                            index: idx,
+                        }),
+                        file: file.clone(),
+                        name: tp.name.clone(),
+                        name_range: TextRange::new(tp.name_range.start, tp.name_range.end),
+                        scope,
+                        kind: JavaSymbolKind::TypeParameter,
+                        type_info: None,
+                        method_signature: None,
+                    });
+                }
                 for (idx, param) in ctor_data.params.iter().enumerate() {
                     candidates.push(SymbolCandidate {
                         key: ResolutionKey::Param(ParamRef {
@@ -823,6 +868,27 @@ impl RefactorJavaDatabase {
             refs.dedup_by(|a, b| a.file == b.file && a.range == b.range);
         }
 
+        // Collect type-parameter reference spans by walking syntax `Type` nodes.
+        for (file, file_id) in &file_ids {
+            let Some(text) = files.get(file).map(|t| t.as_ref()) else {
+                continue;
+            };
+            let parse = nova_syntax::parse_java(text);
+            let tree = item_trees
+                .get(file_id)
+                .cloned()
+                .unwrap_or_else(|| snap.hir_item_tree(*file_id));
+
+            record_type_param_references(
+                file,
+                &parse,
+                tree.as_ref(),
+                &resolution_to_symbol,
+                &mut references,
+                &mut spans,
+            );
+        }
+
         spans.sort_by(|(file_a, range_a, sym_a), (file_b, range_b, sym_b)| {
             file_a
                 .cmp(file_b)
@@ -1063,6 +1129,29 @@ fn collect_type_candidates(
         return;
     };
     let class_scope_interned = scope_interner.intern(db_file, class_scope);
+
+    // Type parameter declarations.
+    let type_params: &[nova_hir::item_tree::TypeParam] = match item {
+        ItemId::Class(id) => tree.class(id).type_params.as_slice(),
+        ItemId::Interface(id) => tree.interface(id).type_params.as_slice(),
+        ItemId::Record(id) => tree.record(id).type_params.as_slice(),
+        _ => &[],
+    };
+    for (idx, tp) in type_params.iter().enumerate() {
+        candidates.push(SymbolCandidate {
+            key: ResolutionKey::TypeParam(TypeParamKey {
+                owner: TypeParamOwner::Type(item),
+                index: idx,
+            }),
+            file: file.clone(),
+            name: tp.name.clone(),
+            name_range: TextRange::new(tp.name_range.start, tp.name_range.end),
+            scope: class_scope_interned,
+            kind: JavaSymbolKind::TypeParameter,
+            type_info: None,
+            method_signature: None,
+        });
+    }
 
     // Member declarations.
     let mut methods_by_name: HashMap<String, Vec<(MethodId, TextRange)>> = HashMap::new();
@@ -3518,6 +3607,205 @@ fn record_type_references_in_range(
             spans.push((file.clone(), abs_range, symbol));
         }
     }
+}
+
+fn record_type_param_references(
+    file: &FileId,
+    parse: &nova_syntax::JavaParseResult,
+    tree: &nova_hir::item_tree::ItemTree,
+    resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+    references: &mut [Vec<Reference>],
+    spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+) {
+    fn record(
+        file: &FileId,
+        symbol: SymbolId,
+        range: TextRange,
+        references: &mut [Vec<Reference>],
+        spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+    ) {
+        references[symbol.as_usize()].push(Reference {
+            file: file.clone(),
+            range,
+        });
+        spans.push((file.clone(), range, symbol));
+    }
+
+    fn record_type_usages_in_range(
+        file: &FileId,
+        parse: &nova_syntax::JavaParseResult,
+        owner_range: TextRange,
+        type_param_name: &str,
+        symbol: SymbolId,
+        references: &mut [Vec<Reference>],
+        spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+    ) {
+        for ty in parse.syntax().descendants().filter_map(ast::Type::cast) {
+            let node_range = ty.syntax().text_range();
+            let start = u32::from(node_range.start()) as usize;
+            let end = u32::from(node_range.end()) as usize;
+            if start < owner_range.start || end > owner_range.end {
+                continue;
+            }
+
+            let Some(named) = ty.named() else {
+                continue;
+            };
+
+            // Named types are represented as identifier-like tokens and `.` separators directly
+            // under the `NamedType` node (not as an `ast::Name` node). A type-parameter reference
+            // is always a simple (unqualified) identifier.
+            if named
+                .syntax()
+                .children_with_tokens()
+                .filter_map(|el| el.into_token())
+                .any(|tok| tok.kind() == nova_syntax::SyntaxKind::Dot)
+            {
+                continue;
+            }
+
+            let mut idents = named
+                .syntax()
+                .children_with_tokens()
+                .filter_map(|el| el.into_token())
+                .filter(|tok| tok.kind().is_identifier_like())
+                .collect::<Vec<_>>();
+
+            if idents.len() != 1 {
+                continue;
+            }
+
+            let ident = idents.pop().expect("idents.len() == 1");
+            if ident.text() != type_param_name {
+                continue;
+            }
+
+            let range = token_text_range(&ident);
+            record(file, symbol, range, references, spans);
+        }
+    }
+
+    fn item_range(tree: &nova_hir::item_tree::ItemTree, item: ItemId) -> Option<nova_types::Span> {
+        Some(match item {
+            ItemId::Class(id) => tree.class(id).range,
+            ItemId::Interface(id) => tree.interface(id).range,
+            ItemId::Enum(id) => tree.enum_(id).range,
+            ItemId::Record(id) => tree.record(id).range,
+            ItemId::Annotation(id) => tree.annotation(id).range,
+        })
+    }
+
+    fn record_item(
+        file: &FileId,
+        parse: &nova_syntax::JavaParseResult,
+        tree: &nova_hir::item_tree::ItemTree,
+        item: ItemId,
+        resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+        references: &mut [Vec<Reference>],
+        spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+    ) {
+        let Some(owner_span) = item_range(tree, item) else {
+            return;
+        };
+        let owner_range = TextRange::new(owner_span.start, owner_span.end);
+
+        let type_params: &[nova_hir::item_tree::TypeParam] = match item {
+            ItemId::Class(id) => tree.class(id).type_params.as_slice(),
+            ItemId::Interface(id) => tree.interface(id).type_params.as_slice(),
+            ItemId::Record(id) => tree.record(id).type_params.as_slice(),
+            _ => &[],
+        };
+        for (idx, tp) in type_params.iter().enumerate() {
+            let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::TypeParam(TypeParamKey {
+                owner: TypeParamOwner::Type(item),
+                index: idx,
+            })) else {
+                continue;
+            };
+            record_type_usages_in_range(
+                file,
+                parse,
+                owner_range,
+                &tp.name,
+                symbol,
+                references,
+                spans,
+            );
+        }
+
+        for member in item_members(tree, item) {
+            match member {
+                Member::Method(method_id) => {
+                    let method = tree.method(*method_id);
+                    let range = TextRange::new(method.range.start, method.range.end);
+                    for (idx, tp) in method.type_params.iter().enumerate() {
+                        let Some(&symbol) =
+                            resolution_to_symbol.get(&ResolutionKey::TypeParam(TypeParamKey {
+                                owner: TypeParamOwner::Method(*method_id),
+                                index: idx,
+                            }))
+                        else {
+                            continue;
+                        };
+                        record_type_usages_in_range(
+                            file, parse, range, &tp.name, symbol, references, spans,
+                        );
+                    }
+                }
+                Member::Constructor(ctor_id) => {
+                    let ctor = tree.constructor(*ctor_id);
+                    let range = TextRange::new(ctor.range.start, ctor.range.end);
+                    for (idx, tp) in ctor.type_params.iter().enumerate() {
+                        let Some(&symbol) =
+                            resolution_to_symbol.get(&ResolutionKey::TypeParam(TypeParamKey {
+                                owner: TypeParamOwner::Constructor(*ctor_id),
+                                index: idx,
+                            }))
+                        else {
+                            continue;
+                        };
+                        record_type_usages_in_range(
+                            file, parse, range, &tp.name, symbol, references, spans,
+                        );
+                    }
+                }
+                Member::Type(child) => {
+                    let child_id = item_to_item_id(*child);
+                    record_item(
+                        file,
+                        parse,
+                        tree,
+                        child_id,
+                        resolution_to_symbol,
+                        references,
+                        spans,
+                    );
+                }
+                Member::Field(_) | Member::Initializer(_) => {}
+            }
+        }
+    }
+
+    for item in &tree.items {
+        let item_id = item_to_item_id(*item);
+        record_item(
+            file,
+            parse,
+            tree,
+            item_id,
+            resolution_to_symbol,
+            references,
+            spans,
+        );
+    }
+}
+
+fn token_text_range(token: &nova_syntax::SyntaxToken) -> TextRange {
+    let range = token.text_range();
+    TextRange::new(
+        u32::from(range.start()) as usize,
+        u32::from(range.end()) as usize,
+    )
 }
 
 fn is_ident_start_char(ch: char) -> bool {
