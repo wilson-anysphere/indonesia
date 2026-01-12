@@ -227,13 +227,19 @@ pub fn framework_diagnostics(
     //
     // Gate behind a cheap text heuristic so we don't hit the filesystem / parser for the vast
     // majority of Java files.
-    let maybe_mapstruct_file = text.contains("org.mapstruct");
+    let maybe_mapstruct_file = text.contains("@Mapper")
+        || text.contains("@org.mapstruct.Mapper")
+        || text.contains("@Mapping")
+        || text.contains("org.mapstruct");
     if maybe_mapstruct_file {
         if cancel.is_cancelled() {
             return diagnostics;
         }
 
         if let Some(file_path) = db.file_path(file) {
+            if cancel.is_cancelled() {
+                return diagnostics;
+            }
             let root = project_root_for_path(file_path);
 
             if cancel.is_cancelled() {
