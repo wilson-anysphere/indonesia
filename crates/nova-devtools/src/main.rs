@@ -150,17 +150,13 @@ fn run() -> anyhow::Result<ExitCode> {
         "check-repo-invariants" => {
             let opts = parse_check_repo_invariants_args(args)?;
 
-            let mut overall_ok = true;
-            let mut diagnostics = Vec::new();
-
             let deps = nova_devtools::check_deps::check(
                 &opts.config,
                 opts.manifest_path.as_deref(),
                 opts.metadata_path.as_deref(),
             )
             .with_context(|| format!("check-deps failed using config {}", opts.config.display()))?;
-            overall_ok &= deps.ok;
-            diagnostics.extend(deps.diagnostics.clone());
+            let deps_ok = deps.ok;
 
             let layers = nova_devtools::check_layers::check(
                 &opts.config,
@@ -170,8 +166,7 @@ fn run() -> anyhow::Result<ExitCode> {
             .with_context(|| {
                 format!("check-layers failed using config {}", opts.config.display())
             })?;
-            overall_ok &= layers.ok;
-            diagnostics.extend(layers.diagnostics.clone());
+            let layers_ok = layers.ok;
 
             let arch = nova_devtools::check_arch_map::check(
                 &opts.architecture_map,
@@ -185,8 +180,7 @@ fn run() -> anyhow::Result<ExitCode> {
                     opts.architecture_map.display()
                 )
             })?;
-            overall_ok &= arch.ok;
-            diagnostics.extend(arch.diagnostics.clone());
+            let arch_ok = arch.ok;
 
             let proto = nova_devtools::check_protocol_extensions::check(&opts.protocol_extensions)
                 .with_context(|| {
@@ -195,16 +189,22 @@ fn run() -> anyhow::Result<ExitCode> {
                         opts.protocol_extensions.display()
                     )
                 })?;
-            overall_ok &= proto.ok;
-            diagnostics.extend(proto.diagnostics.clone());
+            let proto_ok = proto.ok;
+
+            let overall_ok = deps_ok && layers_ok && arch_ok && proto_ok;
 
             if opts.json {
+                let mut diagnostics = Vec::new();
+                diagnostics.extend(deps.diagnostics);
+                diagnostics.extend(layers.diagnostics);
+                diagnostics.extend(arch.diagnostics);
+                diagnostics.extend(proto.diagnostics);
                 emit_report("check-repo-invariants", true, overall_ok, diagnostics)?;
             } else {
-                print_human("check-deps", deps.ok, &deps.diagnostics);
-                print_human("check-layers", layers.ok, &layers.diagnostics);
-                print_human("check-architecture-map", arch.ok, &arch.diagnostics);
-                print_human("check-protocol-extensions", proto.ok, &proto.diagnostics);
+                print_human("check-deps", deps_ok, &deps.diagnostics);
+                print_human("check-layers", layers_ok, &layers.diagnostics);
+                print_human("check-architecture-map", arch_ok, &arch.diagnostics);
+                print_human("check-protocol-extensions", proto_ok, &proto.diagnostics);
 
                 if overall_ok {
                     println!("check-repo-invariants: ok");
