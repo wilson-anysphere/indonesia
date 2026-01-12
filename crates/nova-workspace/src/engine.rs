@@ -34,7 +34,6 @@ use nova_vfs::{
     ChangeEvent, ContentChange, DocumentError, FileChange, FileId, FileSystem, FileWatcher,
     LocalFs, NotifyFileWatcher, OpenDocuments, Vfs, VfsPath, WatchEvent, WatchMode,
 };
-use walkdir::WalkDir;
 
 use crate::snapshot::WorkspaceDbView;
 use crate::watch::{categorize_event, ChangeCategory, WatchConfig};
@@ -674,6 +673,7 @@ pub(crate) struct WorkspaceEngine {
     overlay_docs_memory_registration: MemoryRegistration,
     pub(crate) query_db: salsa::Database,
     closed_file_texts: Arc<ClosedFileTextStore>,
+    workspace_loader: Arc<Mutex<salsa::WorkspaceLoader>>,
     indexes: Arc<Mutex<ProjectIndexes>>,
     indexes_evictor: Arc<WorkspaceProjectIndexesEvictor>,
     build_runner: Arc<dyn CommandRunner>,
@@ -704,13 +704,17 @@ enum WatchCommand {
 #[derive(Debug)]
 struct ProjectState {
     workspace_root: Option<PathBuf>,
-    config: Arc<ProjectConfig>,
     load_options: LoadOptions,
-    source_roots: Vec<SourceRootEntry>,
-    classpath_fingerprint: Option<Fingerprint>,
-    jdk_fingerprint: Option<Fingerprint>,
+    projects: Vec<ProjectId>,
+    project_roots: Vec<ProjectRoots>,
     pending_build_changes: HashSet<PathBuf>,
     last_reload_started_at: Option<Instant>,
+}
+
+#[derive(Debug, Clone)]
+struct ProjectRoots {
+    project: ProjectId,
+    source_roots: Vec<SourceRootEntry>,
 }
 
 #[derive(Debug, Clone)]
@@ -724,24 +728,9 @@ impl Default for ProjectState {
     fn default() -> Self {
         Self {
             workspace_root: None,
-            config: Arc::new(ProjectConfig {
-                workspace_root: PathBuf::new(),
-                build_system: BuildSystem::Simple,
-                java: JavaConfig::default(),
-                modules: Vec::new(),
-                jpms_modules: Vec::new(),
-                jpms_workspace: None,
-                source_roots: Vec::new(),
-                module_path: Vec::new(),
-                classpath: Vec::new(),
-                output_dirs: Vec::new(),
-                dependencies: Vec::new(),
-                workspace_model: None,
-            }),
             load_options: LoadOptions::default(),
-            source_roots: Vec::new(),
-            classpath_fingerprint: None,
-            jdk_fingerprint: None,
+            projects: Vec::new(),
+            project_roots: Vec::new(),
             pending_build_changes: HashSet::new(),
             last_reload_started_at: None,
         }
@@ -930,6 +919,7 @@ impl WorkspaceEngine {
             overlay_docs_memory_registration,
             query_db,
             closed_file_texts,
+            workspace_loader: Arc::new(Mutex::new(salsa::WorkspaceLoader::new())),
             indexes,
             indexes_evictor,
             build_runner,
@@ -991,25 +981,37 @@ impl WorkspaceEngine {
     pub fn set_workspace_root(&self, root: impl AsRef<Path>) -> Result<()> {
         let root = fs::canonicalize(root.as_ref())
             .with_context(|| format!("failed to canonicalize {}", root.as_ref().display()))?;
-        let (nova_config, nova_config_path) = nova_config::load_for_workspace(&root)
-            .with_context(|| format!("failed to load nova config for {}", root.display()))?;
         {
             let mut state = self
                 .project_state
                 .lock()
                 .expect("workspace project state mutex poisoned");
             state.workspace_root = Some(root.clone());
-            state.load_options = LoadOptions {
-                nova_config,
-                nova_config_path,
-                ..LoadOptions::default()
-            };
-            state.config = Arc::new(fallback_project_config(&root));
-            state.source_roots = build_source_roots(&state.config);
-            state.classpath_fingerprint = None;
-            state.jdk_fingerprint = None;
+            state.load_options = LoadOptions::default();
+            state.projects.clear();
+            state.project_roots.clear();
             state.pending_build_changes.clear();
             state.last_reload_started_at = None;
+        }
+
+        {
+            let mut loader = self
+                .workspace_loader
+                .lock()
+                .expect("workspace loader mutex poisoned");
+            *loader = salsa::WorkspaceLoader::new();
+        }
+
+        {
+            let mut cfg = self
+                .watch_config
+                .write()
+                .expect("workspace watch config lock poisoned");
+            cfg.workspace_root = root.clone();
+            cfg.source_roots.clear();
+            cfg.generated_source_roots.clear();
+            cfg.module_roots.clear();
+            cfg.nova_config_path = None;
         }
 
         // Load initial project state + file list.
@@ -1688,6 +1690,7 @@ impl WorkspaceEngine {
         let vfs = self.vfs.clone();
         let query_db = self.query_db.clone();
         let closed_file_texts = Arc::clone(&self.closed_file_texts);
+        let workspace_loader = Arc::clone(&self.workspace_loader);
         let subscribers = Arc::clone(&self.subscribers);
         let build_runner = Arc::clone(&self.build_runner);
         let build_runner_is_default = self.build_runner_is_default;
@@ -1719,6 +1722,7 @@ impl WorkspaceEngine {
                     &vfs,
                     &query_db,
                     closed_file_texts.as_ref(),
+                    &workspace_loader,
                     &project_state,
                     &watch_config,
                     &watcher_command_store,
@@ -1773,6 +1777,7 @@ impl WorkspaceEngine {
             &self.vfs,
             &self.query_db,
             self.closed_file_texts.as_ref(),
+            &self.workspace_loader,
             &self.project_state,
             &self.watch_config,
             &self.watcher_command_store,
@@ -2079,6 +2084,7 @@ impl WorkspaceEngine {
         let open_docs = self.vfs.open_documents();
         let vfs = self.vfs.clone();
         let closed_file_texts = Arc::clone(&self.closed_file_texts);
+        let project_state = Arc::clone(&self.project_state);
 
         self.index_debouncer
             .debounce("workspace-index", move |token| {
@@ -2107,9 +2113,25 @@ impl WorkspaceEngine {
                     WorkspaceEvent::Status(WorkspaceStatus::IndexingStarted),
                 );
 
-                let project = ProjectId::from_raw(0);
-                let project_files: Vec<FileId> =
-                    query_db.with_snapshot(|snap| snap.project_files(project).as_ref().clone());
+                let projects: Vec<ProjectId> = {
+                    let state = project_state
+                        .lock()
+                        .expect("workspace project state mutex poisoned");
+                    if state.projects.is_empty() {
+                        vec![ProjectId::from_raw(0)]
+                    } else {
+                        state.projects.clone()
+                    }
+                };
+
+                let mut project_files: Vec<FileId> = Vec::new();
+                query_db.with_snapshot(|snap| {
+                    for &project in &projects {
+                        project_files.extend(snap.project_files(project).iter().copied());
+                    }
+                });
+                project_files.sort();
+                project_files.dedup();
                 let open_files = open_docs.snapshot();
 
                 let files = match degraded {
@@ -2179,10 +2201,38 @@ impl WorkspaceEngine {
 
                 let indexing_result: std::result::Result<ProjectIndexes, Cancelled> = match degraded
                 {
-                    BackgroundIndexingMode::Full => query_db
-                        .with_snapshot_catch_cancelled(|snap| snap.project_indexes(project))
-                        .map(|indexes| (*indexes).clone())
-                        .map_err(|_cancelled| Cancelled),
+                    BackgroundIndexingMode::Full => {
+                        let mut indexes = ProjectIndexes::default();
+                        let mut cancelled = false;
+
+                        for &project in &projects {
+                            if ctx.token().is_cancelled()
+                                || aborted_due_to_memory
+                                    .load(std::sync::atomic::Ordering::Relaxed)
+                            {
+                                cancelled = true;
+                                break;
+                            }
+
+                            let project_indexes = match query_db
+                                .with_snapshot_catch_cancelled(|snap| snap.project_indexes(project))
+                            {
+                                Ok(indexes) => indexes,
+                                Err(_) => {
+                                    cancelled = true;
+                                    break;
+                                }
+                            };
+
+                            indexes.merge_from((*project_indexes).clone());
+                        }
+
+                        if cancelled {
+                            Err(Cancelled)
+                        } else {
+                            Ok(indexes)
+                        }
+                    }
                     BackgroundIndexingMode::Reduced => {
                         let mut indexes = ProjectIndexes::default();
                         let mut cancelled = false;
@@ -2274,7 +2324,9 @@ impl WorkspaceEngine {
                     // Best-effort persistence: indexing results are still valid even if we fail to
                     // write them to disk.
                     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        let _ = query_db.persist_project_indexes(project);
+                        if projects.len() == 1 {
+                            let _ = query_db.persist_project_indexes(projects[0]);
+                        }
                     }));
                 }
 
@@ -2318,37 +2370,7 @@ impl WorkspaceEngine {
     }
 
     fn ensure_file_inputs(&self, file_id: FileId, path: &VfsPath) {
-        let project = ProjectId::from_raw(0);
-        self.query_db.set_file_project(file_id, project);
-
-        let (workspace_root, source_roots) = {
-            let state = self
-                .project_state
-                .lock()
-                .expect("workspace project state mutex poisoned");
-            (state.workspace_root.clone(), state.source_roots.clone())
-        };
-
-        let local_path = path.as_local_path();
-        let source_root = local_path
-            .and_then(|local| source_root_for_path(&source_roots, local))
-            .unwrap_or_else(|| SourceRootId::from_raw(0));
-        self.query_db.set_source_root(file_id, source_root);
-
-        let rel_path = if let (Some(workspace_root), Some(local)) = (workspace_root, local_path) {
-            rel_path_for_workspace(&workspace_root, local)
-        } else {
-            None
-        }
-        .unwrap_or_else(|| normalize_rel_path(&path.to_string()));
-        let rel_path_arc = Arc::new(rel_path);
-        self.query_db.set_file_rel_path(file_id, rel_path_arc);
-        // `file_path` is a non-tracked persistence key used to warm-start Salsa queries
-        // (parse/HIR/typeck/flow). It is intentionally kept project-relative and normalized for
-        // cross-platform cache reuse.
-        //
-        // `nova-db` keeps it in sync with `file_rel_path` (sharing the same `Arc<String>`), so
-        // workspace-managed files should only set `file_rel_path` here.
+        ensure_file_inputs(file_id, path, &self.query_db, &self.project_state);
     }
 
     fn apply_path_event(&self, path: &Path) {
@@ -2549,49 +2571,13 @@ impl WorkspaceEngine {
     }
 
     fn update_project_files_membership(&self, path: &VfsPath, file_id: FileId, exists: bool) {
-        let Some(local) = path.as_local_path() else {
-            return;
-        };
-        let is_java = local.extension().and_then(|ext| ext.to_str()) == Some("java");
-
-        let should_track = {
-            let state = self
-                .project_state
-                .lock()
-                .expect("workspace project state mutex poisoned");
-            let Some(workspace_root) = state.workspace_root.as_ref() else {
-                return;
-            };
-            let in_workspace = local.starts_with(workspace_root);
-            let in_source_root = state.source_roots.is_empty()
-                || source_root_for_path(&state.source_roots, local).is_some();
-            is_java && in_workspace && in_source_root
-        };
-
-        let project = ProjectId::from_raw(0);
-        let current: Vec<FileId> = self
-            .query_db
-            .with_snapshot(|snap| snap.project_files(project).as_ref().clone());
-        let mut ids: HashSet<FileId> = current.into_iter().collect();
-        if exists && should_track {
-            ids.insert(file_id);
-        } else {
-            ids.remove(&file_id);
-        }
-
-        let mut entries: Vec<(String, FileId)> = Vec::new();
-        self.query_db.with_snapshot(|snap| {
-            for id in ids.iter().copied() {
-                if !snap.file_exists(id) {
-                    continue;
-                }
-                let rel = snap.file_rel_path(id);
-                entries.push((rel.as_ref().clone(), id));
-            }
-        });
-        entries.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-        let ordered: Vec<FileId> = entries.into_iter().map(|(_, id)| id).collect();
-        self.query_db.set_project_files(project, Arc::new(ordered));
+        update_project_files_membership(
+            path,
+            file_id,
+            exists,
+            &self.query_db,
+            &self.project_state,
+        );
     }
 
     fn publish_diagnostics(&self, file: VfsPath) {
@@ -2897,51 +2883,130 @@ fn rel_path_for_workspace(workspace_root: &Path, path: &Path) -> Option<String> 
     Some(normalize_rel_path(rel.as_ref()))
 }
 
-fn source_root_for_path(roots: &[SourceRootEntry], path: &Path) -> Option<SourceRootId> {
-    let mut best: Option<&SourceRootEntry> = None;
-    for root in roots {
-        if !path.starts_with(&root.path) {
-            continue;
-        }
-        match best {
-            None => best = Some(root),
-            Some(prev) if root.path_components > prev.path_components => best = Some(root),
-            Some(prev) if root.path_components == prev.path_components && root.path < prev.path => {
-                best = Some(root)
+fn project_source_root_for_path(
+    projects: &[ProjectRoots],
+    path: &Path,
+) -> Option<(ProjectId, SourceRootId)> {
+    let mut best: Option<(ProjectId, &SourceRootEntry)> = None;
+    for project in projects {
+        for root in &project.source_roots {
+            if !path.starts_with(&root.path) {
+                continue;
             }
-            Some(_) => {}
+            match best {
+                None => best = Some((project.project, root)),
+                Some((_best_project, best_root)) if root.path_components > best_root.path_components => {
+                    best = Some((project.project, root));
+                }
+                Some((_best_project, best_root))
+                    if root.path_components == best_root.path_components && root.path < best_root.path =>
+                {
+                    best = Some((project.project, root));
+                }
+                Some((best_project, best_root))
+                    if root.path_components == best_root.path_components
+                        && root.path == best_root.path
+                        && project.project.to_raw() < best_project.to_raw() =>
+                {
+                    best = Some((project.project, root));
+                }
+                Some(_) => {}
+            }
         }
     }
-    best.map(|root| root.id)
+    best.map(|(project, root)| (project, root.id))
 }
 
-fn build_source_roots(config: &ProjectConfig) -> Vec<SourceRootEntry> {
-    let mut roots: Vec<PathBuf> = config
-        .source_roots
-        .iter()
-        .map(|r| match VfsPath::local(r.path.clone()) {
-            VfsPath::Local(path) => path,
-            _ => unreachable!("VfsPath::local produced a non-local path"),
-        })
-        .collect();
-    if roots.is_empty() {
-        roots.push(match VfsPath::local(config.workspace_root.clone()) {
-            VfsPath::Local(path) => path,
-            _ => unreachable!("VfsPath::local produced a non-local path"),
-        });
-    }
-    roots.sort();
-    roots.dedup();
+fn ensure_file_inputs(
+    file_id: FileId,
+    path: &VfsPath,
+    query_db: &salsa::Database,
+    project_state: &Arc<Mutex<ProjectState>>,
+) {
+    let (workspace_root, project_roots) = {
+        let state = project_state
+            .lock()
+            .expect("workspace project state mutex poisoned");
+        (state.workspace_root.clone(), state.project_roots.clone())
+    };
 
-    roots
-        .into_iter()
-        .enumerate()
-        .map(|(idx, path)| SourceRootEntry {
-            path_components: path.components().count(),
-            path,
-            id: SourceRootId::from_raw(idx as u32),
-        })
-        .collect()
+    let default_project = ProjectId::from_raw(0);
+    let default_root = SourceRootId::from_raw(0);
+
+    let (project, source_root) = path
+        .as_local_path()
+        .and_then(|local| project_source_root_for_path(&project_roots, local))
+        .unwrap_or((default_project, default_root));
+    query_db.set_file_project(file_id, project);
+    query_db.set_source_root(file_id, source_root);
+
+    let rel_path = if let (Some(workspace_root), Some(local)) = (workspace_root, path.as_local_path())
+    {
+        rel_path_for_workspace(&workspace_root, local)
+            .unwrap_or_else(|| normalize_rel_path(&local.to_string_lossy()))
+    } else if let Some(local) = path.as_local_path() {
+        normalize_rel_path(&local.to_string_lossy())
+    } else {
+        normalize_rel_path(&path.to_string())
+    };
+
+    // `set_file_rel_path` keeps the non-tracked file-path persistence key in sync.
+    query_db.set_file_rel_path(file_id, Arc::new(rel_path));
+}
+
+fn update_project_files_membership(
+    path: &VfsPath,
+    file_id: FileId,
+    exists: bool,
+    query_db: &salsa::Database,
+    project_state: &Arc<Mutex<ProjectState>>,
+) {
+    let Some(local) = path.as_local_path() else {
+        return;
+    };
+    let is_java = local.extension().and_then(|ext| ext.to_str()) == Some("java");
+
+    let (workspace_root, project_roots, mut projects) = {
+        let state = project_state
+            .lock()
+            .expect("workspace project state mutex poisoned");
+        (
+            state.workspace_root.clone(),
+            state.project_roots.clone(),
+            state.projects.clone(),
+        )
+    };
+
+    if projects.is_empty() {
+        projects.push(ProjectId::from_raw(0));
+    }
+
+    let target_project = if !is_java {
+        None
+    } else if let Some((project, _root)) = project_source_root_for_path(&project_roots, local) {
+        Some(project)
+    } else if project_roots.is_empty()
+        && workspace_root
+            .as_ref()
+            .is_some_and(|workspace_root| local.starts_with(workspace_root))
+    {
+        Some(ProjectId::from_raw(0))
+    } else {
+        None
+    };
+
+    let should_track = exists && is_java && target_project.is_some();
+
+    if let Some(target) = target_project {
+        if !projects.contains(&target) {
+            projects.push(target);
+        }
+    }
+
+    for project in projects {
+        let present = should_track && target_project == Some(project);
+        update_project_files_for_project(query_db, project, file_id, present);
+    }
 }
 
 fn watch_roots_from_project_config(
@@ -2971,104 +3036,33 @@ fn watch_roots_from_project_config(
     (source_roots, generated_source_roots, module_roots)
 }
 
-fn java_files_under(root: &Path) -> Result<Vec<PathBuf>> {
-    match fs::metadata(root) {
-        Ok(meta) if meta.is_dir() => {}
-        Ok(_) => return Ok(Vec::new()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(err) => return Err(err).with_context(|| format!("failed to read {}", root.display())),
+fn update_project_files_for_project(
+    query_db: &salsa::Database,
+    project: ProjectId,
+    file_id: FileId,
+    present: bool,
+) {
+    let current: Vec<FileId> = query_db.with_snapshot(|snap| snap.project_files(project).as_ref().clone());
+    let mut ids: HashSet<FileId> = current.into_iter().collect();
+    if present {
+        ids.insert(file_id);
+    } else {
+        ids.remove(&file_id);
     }
 
-    let mut files = Vec::new();
-    for entry in WalkDir::new(root).follow_links(true) {
-        let entry = entry?;
-        if !entry.file_type().is_file() {
-            continue;
+    let mut entries: Vec<(String, FileId)> = Vec::new();
+    query_db.with_snapshot(|snap| {
+        for id in ids.iter().copied() {
+            if !snap.file_exists(id) {
+                continue;
+            }
+            let rel = snap.file_rel_path(id);
+            entries.push((rel.as_ref().clone(), id));
         }
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("java") {
-            files.push(path.to_path_buf());
-        }
-    }
-    Ok(files)
-}
-
-fn fallback_project_config(workspace_root: &Path) -> ProjectConfig {
-    use nova_project::{SourceRoot, SourceRootKind};
-
-    let root = workspace_root.to_path_buf();
-    let module_name = root
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("root")
-        .to_string();
-
-    ProjectConfig {
-        workspace_root: root.clone(),
-        build_system: BuildSystem::Simple,
-        java: JavaConfig::default(),
-        modules: vec![nova_project::Module {
-            name: module_name,
-            root,
-            annotation_processing: Default::default(),
-        }],
-        jpms_modules: Vec::new(),
-        jpms_workspace: None,
-        source_roots: vec![SourceRoot {
-            kind: SourceRootKind::Main,
-            origin: SourceRootOrigin::Source,
-            path: workspace_root.to_path_buf(),
-        }],
-        module_path: Vec::new(),
-        classpath: Vec::new(),
-        output_dirs: Vec::new(),
-        dependencies: Vec::new(),
-        workspace_model: None,
-    }
-}
-
-fn classpath_fingerprint(config: &ProjectConfig) -> Fingerprint {
-    let mut bytes = Vec::new();
-    // Classpath indexing behavior depends on the effective Java target release
-    // (multi-release JAR selection), so include it in the fingerprint to ensure
-    // the cached classpath index is invalidated when the language level changes.
-    bytes.extend_from_slice(&config.java.target.0.to_le_bytes());
-    for entry in config.classpath.iter().chain(config.module_path.iter()) {
-        bytes.push(match entry.kind {
-            nova_project::ClasspathEntryKind::Directory => b'D',
-            nova_project::ClasspathEntryKind::Jar => b'J',
-        });
-        bytes.extend_from_slice(entry.path.to_string_lossy().as_bytes());
-        bytes.push(0);
-    }
-    Fingerprint::from_bytes(bytes)
-}
-
-fn jdk_fingerprint(config: &nova_core::JdkConfig, requested_release: Option<u16>) -> Fingerprint {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&requested_release.unwrap_or(0).to_le_bytes());
-    bytes.extend_from_slice(&config.release.unwrap_or(0).to_le_bytes());
-    if let Some(home) = &config.home {
-        bytes.extend_from_slice(home.to_string_lossy().as_bytes());
-    }
-    bytes.push(0);
-    for (release, home) in &config.toolchains {
-        bytes.extend_from_slice(&release.to_le_bytes());
-        bytes.extend_from_slice(home.to_string_lossy().as_bytes());
-        bytes.push(0);
-    }
-
-    // When no explicit toolchain/home override is configured, JDK discovery falls back to the
-    // environment (`JAVA_HOME` / `java` on PATH). Include `JAVA_HOME` in the fingerprint so
-    // switching toolchains mid-process triggers a rediscovery on the next reload.
-    if config.preferred_home(requested_release).is_none() {
-        if let Some(java_home) = std::env::var_os("JAVA_HOME") {
-            bytes.extend_from_slice(java_home.to_string_lossy().as_bytes());
-        }
-        bytes.push(0);
-    }
-
-    Fingerprint::from_bytes(bytes)
+    });
+    entries.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    let ordered: Vec<FileId> = entries.into_iter().map(|(_, id)| id).collect();
+    query_db.set_project_files(project, Arc::new(ordered));
 }
 
 fn build_cache_dir(workspace_root: &Path, query_db: &salsa::Database) -> PathBuf {
@@ -3429,6 +3423,7 @@ fn reload_project_and_sync(
     vfs: &Vfs<LocalFs>,
     query_db: &salsa::Database,
     closed_file_texts: &ClosedFileTextStore,
+    workspace_loader: &Arc<Mutex<salsa::WorkspaceLoader>>,
     project_state: &Arc<Mutex<ProjectState>>,
     watch_config: &Arc<RwLock<WatchConfig>>,
     watcher_command_store: &Arc<Mutex<Option<channel::Sender<WatchCommand>>>>,
@@ -3436,182 +3431,343 @@ fn reload_project_and_sync(
     build_runner: &Arc<dyn CommandRunner>,
     build_runner_is_default: bool,
 ) -> Result<()> {
-    let (previous_config, mut options, previous_classpath_fingerprint, previous_jdk_fingerprint) = {
-        let state = project_state
+    let mut file_id_for_path = |path: &Path| vfs.file_id(VfsPath::local(path.to_path_buf()));
+
+    let gradle_snapshot_changed = changed_files
+        .iter()
+        .any(|path| path.ends_with(Path::new(nova_build_model::GRADLE_SNAPSHOT_REL_PATH)));
+
+    // Load Nova config early so build integration gating/timeouts pick up changes to `nova.toml`
+    // during the current reload.
+    let nova_config_path = nova_config::discover_config_path(workspace_root);
+    let (workspace_config, loaded_config_path) =
+        nova_config::load_for_workspace(workspace_root).unwrap_or_else(|_| {
+            // If config loading fails, fall back to defaults; the workspace should still open.
+            (nova_config::NovaConfig::default(), nova_config_path.clone())
+        });
+    {
+        let mut state = project_state
             .lock()
             .expect("workspace project state mutex poisoned");
-        (
-            Arc::clone(&state.config),
-            state.load_options.clone(),
-            state.classpath_fingerprint.clone(),
-            state.jdk_fingerprint.clone(),
-        )
-    };
+        state.load_options.nova_config = workspace_config.clone();
+        state.load_options.nova_config_path = loaded_config_path;
+    }
 
-    let fallback_config = if previous_config.workspace_root.as_os_str().is_empty()
-        || previous_config.workspace_root.as_path() != workspace_root
-    {
-        Some(fallback_project_config(workspace_root))
-    } else {
-        None
-    };
-    let base_config = fallback_config
-        .as_ref()
-        .unwrap_or_else(|| previous_config.as_ref());
+    // 1) Load/reload workspace model via the shared `WorkspaceLoader`.
+    //
+    // Capture the previous single-project config (when possible) so Maven/Gradle build-derived
+    // config fields can be reused on reloads that do not modify build inputs.
+    let (projects, previous_config, previous_classpath_index) = {
+        let mut loader = workspace_loader
+            .lock()
+            .expect("workspace loader mutex poisoned");
 
-    // `nova-project` only reloads the full project model when build files change. Generated-source
-    // roots can change when nova-apt updates its snapshot at
-    // `.nova/apt-cache/generated-roots.json`, so force a full reload when that file is in the
-    // change set.
-    let effective_changed_files = if changed_files.iter().any(|path| {
-        path.file_name()
-            .is_some_and(|name| name == "generated-roots.json")
-            && path.ends_with(Path::new(".nova/apt-cache/generated-roots.json"))
-    }) {
-        &[] as &[PathBuf]
-    } else {
-        changed_files
-    };
+        let should_reload = loader
+            .workspace_root()
+            .is_some_and(|root| root == workspace_root);
 
-    let mut loaded =
-        match nova_project::reload_project(base_config, &mut options, effective_changed_files) {
-            Ok(config) => config,
-            Err(ProjectError::UnknownProjectType { .. }) => fallback_project_config(workspace_root),
-            Err(err) => {
-                return Err(anyhow::Error::new(err)).with_context(|| {
+        let previous_projects = if should_reload {
+            loader.projects()
+        } else {
+            Vec::new()
+        };
+        let previous_config = if should_reload && previous_projects.len() == 1 {
+            Some(query_db.with_snapshot(|snap| snap.project_config(previous_projects[0])))
+        } else {
+            None
+        };
+        let previous_classpath_index = if should_reload && previous_projects.len() == 1 {
+            query_db.with_snapshot(|snap| {
+                snap.classpath_index(previous_projects[0])
+                    .map(|index| index.0)
+            })
+        } else {
+            None
+        };
+
+        // Treat an empty `changed_files` slice as an unknown change set (full rescan). In that
+        // case, re-run a full `load` so all file contents are refreshed from disk.
+        if should_reload && !changed_files.is_empty() {
+            loader
+                .reload(query_db, changed_files, &mut file_id_for_path)
+                .map_err(anyhow::Error::new)
+                .with_context(|| {
                     format!(
-                        "failed to load project configuration at {}",
+                        "failed to reload workspace model at {}",
                         workspace_root.display()
                     )
-                });
-            }
-        };
+                })?;
+        } else {
+            loader
+                .load(query_db, workspace_root, &mut file_id_for_path)
+                .map_err(anyhow::Error::new)
+                .with_context(|| {
+                    format!(
+                        "failed to load workspace model at {}",
+                        workspace_root.display()
+                    )
+                })?;
+        }
 
-    if matches!(
-        loaded.build_system,
-        BuildSystem::Maven | BuildSystem::Gradle
-    ) {
-        let build_integration_cfg = &options.nova_config.build;
-        let (mode, timeout, kind) = match loaded.build_system {
-            BuildSystem::Maven => (
-                build_integration_cfg.maven_mode(),
-                build_integration_cfg.maven_timeout(),
-                BuildSystemKind::Maven,
-            ),
-            BuildSystem::Gradle => (
-                build_integration_cfg.gradle_mode(),
-                build_integration_cfg.gradle_timeout(),
-                BuildSystemKind::Gradle,
-            ),
-            _ => unreachable!("build integration only applies to Maven/Gradle"),
-        };
+        (loader.projects(), previous_config, previous_classpath_index)
+    };
 
-        let refresh_build = should_refresh_build_config(workspace_root, changed_files);
-        // `.nova/queries/gradle.json` is a build-tool-produced Gradle snapshot that can update
-        // resolved classpaths/source roots without modifying build scripts. When it changes we
-        // want to re-load the project config (so `nova-project` can consume the snapshot), but we
-        // do NOT want to overwrite the newly loaded classpath with stale build-derived fields.
-        let gradle_snapshot_changed = changed_files
-            .iter()
-            .any(|path| path.ends_with(Path::new(nova_build_model::GRADLE_SNAPSHOT_REL_PATH)));
+    // 2) Optional build tool integration (Maven/Gradle).
+    //
+    // This is intentionally best-effort: failures should not prevent the workspace from loading.
+    //
+    // NOTE: For now, only attempt build integration in single-module workspaces. Multi-module
+    // build integration requires module-aware invocations (Maven module path / Gradle project
+    // path) which are not yet wired through this loader path.
+    let refresh_build = should_refresh_build_config(workspace_root, changed_files);
+    if projects.len() == 1 {
+        let project = projects[0];
+        let current_config = query_db.with_snapshot(|snap| snap.project_config(project));
 
-        if refresh_build {
-            match mode {
-                BuildIntegrationMode::Off => {}
-                BuildIntegrationMode::Auto => {
-                    let cache_dir = build_cache_dir(workspace_root, query_db);
-                    if let Some(cfg) = cached_java_compile_config(workspace_root, kind, &cache_dir)
-                    {
-                        let base = loaded.clone();
-                        loaded = apply_java_compile_config_to_project_config(loaded, &cfg, &base);
-                    }
-                }
-                BuildIntegrationMode::On => {
-                    let cache_dir = build_cache_dir(workspace_root, query_db);
-                    // When using the default build runner, respect the configured build
-                    // integration timeout. Custom runners are expected to implement their own
-                    // timeout semantics.
-                    let runner: Arc<dyn CommandRunner> = if build_runner_is_default {
-                        #[cfg(not(test))]
+        if matches!(
+            current_config.build_system,
+            BuildSystem::Maven | BuildSystem::Gradle
+        ) {
+            let build_integration_cfg = &workspace_config.build;
+            let (mode, timeout, kind) = match current_config.build_system {
+                BuildSystem::Maven => (
+                    build_integration_cfg.maven_mode(),
+                    build_integration_cfg.maven_timeout(),
+                    BuildSystemKind::Maven,
+                ),
+                BuildSystem::Gradle => (
+                    build_integration_cfg.gradle_mode(),
+                    build_integration_cfg.gradle_timeout(),
+                    BuildSystemKind::Gradle,
+                ),
+                _ => unreachable!("build integration only applies to Maven/Gradle"),
+            };
+
+            if refresh_build {
+                match mode {
+                    BuildIntegrationMode::Off => {}
+                    BuildIntegrationMode::Auto => {
+                        let cache_dir = build_cache_dir(workspace_root, query_db);
+                        if let Some(cfg) = cached_java_compile_config(workspace_root, kind, &cache_dir)
                         {
-                            Arc::new(nova_build::DefaultCommandRunner {
-                                timeout: Some(timeout),
-                                cancellation: None,
-                            })
-                        }
-                        #[cfg(test)]
-                        {
-                            Arc::clone(build_runner)
-                        }
-                    } else {
-                        Arc::clone(build_runner)
-                    };
-                    let build = BuildManager::with_runner(cache_dir, runner);
-
-                    let compile_config = match loaded.build_system {
-                        BuildSystem::Maven => build.java_compile_config_maven(workspace_root, None),
-                        BuildSystem::Gradle => {
-                            build.java_compile_config_gradle(workspace_root, None)
-                        }
-                        _ => unreachable!("build config refresh only applies to Maven/Gradle"),
-                    };
-
-                    match compile_config {
-                        Ok(cfg) => {
-                            // Preserve generated roots and other workspace metadata discovered by
-                            // `nova-project` while replacing classpath/module-path/source roots with the
-                            // build-tool-derived configuration.
-                            let base = loaded.clone();
-                            loaded =
-                                apply_java_compile_config_to_project_config(loaded, &cfg, &base);
-                        }
-                        Err(err) => {
-                            publish_to_subscribers(
-                                subscribers,
-                                WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
-                                    "Build tool classpath extraction failed; falling back to heuristic project config: {err}"
-                                ))),
+                            let base = (*current_config).clone();
+                            let updated = apply_java_compile_config_to_project_config(
+                                base.clone(),
+                                &cfg,
+                                &base,
                             );
+                            query_db.set_project_config(project, Arc::new(updated.clone()));
+
+                            let requested_release = Some(updated.java.target.0)
+                                .filter(|release| *release >= 1)
+                                .or_else(|| {
+                                    Some(updated.java.source.0).filter(|release| *release >= 1)
+                                });
+
+                            let classpath_entries: Vec<nova_classpath::ClasspathEntry> = updated
+                                .classpath
+                                .iter()
+                                .chain(updated.module_path.iter())
+                                .map(nova_classpath::ClasspathEntry::from)
+                                .collect();
+
+                            if classpath_entries.is_empty() {
+                                query_db.set_classpath_index(project, None);
+                            } else {
+                                let classpath_cache_dir = query_db.classpath_cache_dir();
+                                match nova_classpath::ClasspathIndex::build_with_options(
+                                    &classpath_entries,
+                                    classpath_cache_dir.as_deref(),
+                                    nova_classpath::IndexOptions {
+                                        target_release: requested_release,
+                                    },
+                                ) {
+                                    Ok(index) => query_db
+                                        .set_classpath_index(project, Some(Arc::new(index))),
+                                    Err(_) => query_db.set_classpath_index(project, None),
+                                }
+                            }
+                        }
+                    }
+                    BuildIntegrationMode::On => {
+                        let cache_dir = build_cache_dir(workspace_root, query_db);
+
+                        // When using the default build runner, respect the configured build
+                        // integration timeout. Custom runners are expected to implement their own
+                        // timeout semantics.
+                        let runner: Arc<dyn CommandRunner> = if build_runner_is_default {
+                            #[cfg(not(test))]
+                            {
+                                Arc::new(nova_build::DefaultCommandRunner {
+                                    timeout: Some(timeout),
+                                    cancellation: None,
+                                })
+                            }
+                            #[cfg(test)]
+                            {
+                                Arc::clone(build_runner)
+                            }
+                        } else {
+                            Arc::clone(build_runner)
+                        };
+
+                        let build = BuildManager::with_runner(cache_dir, runner);
+
+                        let compile_config = match current_config.build_system {
+                            BuildSystem::Maven => {
+                                build.java_compile_config_maven(workspace_root, None)
+                            }
+                            BuildSystem::Gradle => {
+                                build.java_compile_config_gradle(workspace_root, None)
+                            }
+                            _ => unreachable!("build integration only applies to Maven/Gradle"),
+                        };
+
+                        match compile_config {
+                            Ok(cfg) => {
+                                let base = (*current_config).clone();
+                                let updated = apply_java_compile_config_to_project_config(
+                                    base.clone(),
+                                    &cfg,
+                                    &base,
+                                );
+                                query_db.set_project_config(project, Arc::new(updated.clone()));
+
+                                let requested_release = Some(updated.java.target.0)
+                                    .filter(|release| *release >= 1)
+                                    .or_else(|| {
+                                        Some(updated.java.source.0)
+                                            .filter(|release| *release >= 1)
+                                    });
+
+                                let classpath_entries: Vec<nova_classpath::ClasspathEntry> = updated
+                                    .classpath
+                                    .iter()
+                                    .chain(updated.module_path.iter())
+                                    .map(nova_classpath::ClasspathEntry::from)
+                                    .collect();
+
+                                if classpath_entries.is_empty() {
+                                    query_db.set_classpath_index(project, None);
+                                } else {
+                                    let classpath_cache_dir = query_db.classpath_cache_dir();
+                                    match nova_classpath::ClasspathIndex::build_with_options(
+                                        &classpath_entries,
+                                        classpath_cache_dir.as_deref(),
+                                        nova_classpath::IndexOptions {
+                                            target_release: requested_release,
+                                        },
+                                    ) {
+                                        Ok(index) => query_db
+                                            .set_classpath_index(project, Some(Arc::new(index))),
+                                        Err(_) => query_db.set_classpath_index(project, None),
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                publish_to_subscribers(
+                                    subscribers,
+                                    WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
+                                        "Build tool classpath extraction failed; falling back to heuristic project config: {err}"
+                                    ))),
+                                );
+                            }
                         }
                     }
                 }
+            } else if mode != BuildIntegrationMode::Off
+                && !gradle_snapshot_changed
+                && previous_config
+                    .as_ref()
+                    .is_some_and(|previous_config| {
+                        previous_config.build_system == current_config.build_system
+                            && previous_config.workspace_root == current_config.workspace_root
+                            && !previous_config.workspace_root.as_os_str().is_empty()
+                    })
+            {
+                if let Some(previous_config) = previous_config.as_ref() {
+                    let merged =
+                        reuse_previous_build_config_fields((*current_config).clone(), previous_config);
+                    query_db.set_project_config(project, Arc::new(merged));
+                    query_db.set_classpath_index(project, previous_classpath_index.clone());
+                }
             }
-        } else if mode != BuildIntegrationMode::Off
-            && !gradle_snapshot_changed
-            && previous_config.build_system == loaded.build_system
-            && previous_config.workspace_root == loaded.workspace_root
-            && !previous_config.workspace_root.as_os_str().is_empty()
-        {
-            loaded = reuse_previous_build_config_fields(loaded, previous_config.as_ref());
         }
     }
 
-    let had_classpath_fingerprint = previous_classpath_fingerprint.is_some();
-    let config_changed = &loaded != previous_config.as_ref();
-    let config = if config_changed {
-        Arc::new(loaded)
-    } else {
-        Arc::clone(&previous_config)
-    };
-    let source_roots = build_source_roots(&config);
-    let (watch_source_roots, watch_generated_roots, watch_module_roots) =
-        watch_roots_from_project_config(&config);
-    let nova_config_path = options.nova_config_path.clone();
-    let next_classpath_fingerprint = classpath_fingerprint(&config);
-    let classpath_changed = match &previous_classpath_fingerprint {
-        Some(prev) => prev != &next_classpath_fingerprint,
-        None => true,
+    // Snapshot configs for root calculations.
+    let project_configs: Vec<(ProjectId, Arc<ProjectConfig>)> = query_db.with_snapshot(|snap| {
+        projects
+            .iter()
+            .map(|&project| (project, snap.project_config(project)))
+            .collect()
+    });
+
+    // 3) Collect per-project roots and watcher roots based on loaded configs.
+    let (project_roots, watch_source_roots, watch_generated_roots, watch_module_roots) = {
+        let mut loader = workspace_loader
+            .lock()
+            .expect("workspace loader mutex poisoned");
+
+        let mut watch_source_roots = Vec::new();
+        let mut watch_generated_roots = Vec::new();
+        let mut watch_module_roots = Vec::new();
+        let mut project_roots = Vec::new();
+
+        for (project, cfg) in project_configs {
+            let (src_roots, gen_roots, module_roots) = watch_roots_from_project_config(&cfg);
+            watch_source_roots.extend(src_roots);
+            watch_generated_roots.extend(gen_roots);
+            watch_module_roots.extend(module_roots);
+
+            let mut root_paths: Vec<PathBuf> =
+                cfg.source_roots.iter().map(|r| r.path.clone()).collect();
+            root_paths.sort();
+            root_paths.dedup();
+
+            let source_roots = root_paths
+                .into_iter()
+                .map(|path| {
+                    let id = loader.source_root_id_for_path(project, &path);
+                    let path = match VfsPath::local(path) {
+                        VfsPath::Local(path) => path,
+                        _ => unreachable!("VfsPath::local produced a non-local path"),
+                    };
+                    SourceRootEntry {
+                        path_components: path.components().count(),
+                        path,
+                        id,
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            project_roots.push(ProjectRoots { project, source_roots });
+        }
+
+        watch_source_roots.sort();
+        watch_source_roots.dedup();
+        watch_generated_roots.sort();
+        watch_generated_roots.dedup();
+        watch_module_roots.sort();
+        watch_module_roots.dedup();
+
+        (
+            project_roots,
+            watch_source_roots,
+            watch_generated_roots,
+            watch_module_roots,
+        )
     };
 
     {
         let mut state = project_state
             .lock()
             .expect("workspace project state mutex poisoned");
-        state.config = Arc::clone(&config);
-        state.load_options = options;
-        state.source_roots = source_roots.clone();
-        state.classpath_fingerprint = Some(next_classpath_fingerprint.clone());
+        state.projects = projects.clone();
+        state.project_roots = project_roots;
     }
+
+    let nova_config_path = nova_config::discover_config_path(workspace_root);
 
     {
         let mut cfg = watch_config
@@ -3644,24 +3800,39 @@ fn reload_project_and_sync(
         let _ = tx.try_send(WatchCommand::Refresh);
     }
 
-    let project = ProjectId::from_raw(0);
-    if !had_classpath_fingerprint || config_changed {
-        query_db.set_project_config(project, Arc::clone(&config));
-    }
-    let requested_release = Some(config.java.target.0)
-        .filter(|release| *release >= 1)
-        .or_else(|| Some(config.java.source.0).filter(|release| *release >= 1));
+    // 5) Derive the target release for JDK discovery from the loaded project configs. When
+    // multiple projects are present, prefer the highest release to avoid indexing a JDK that's too
+    // old for any module in the workspace.
+    let requested_release = query_db.with_snapshot(|snap| {
+        projects
+            .iter()
+            .filter_map(|&project| {
+                let cfg = snap.project_config(project);
+                Some(cfg.java.target.0)
+                    .filter(|release| *release >= 1)
+                    .or_else(|| Some(cfg.java.source.0).filter(|release| *release >= 1))
+            })
+            .max()
+    });
 
     // Best-effort JDK index discovery.
     //
-    // We intentionally do not fail workspace loading when JDK discovery or indexing fails: Nova can
-    // still operate with a tiny built-in JDK index (used by unit tests / bootstrapping), but many
-    // IDE features (decompilation, richer type info) benefit from a real platform index.
-    let (workspace_config, _) =
+    // We intentionally do not fail workspace loading when JDK discovery or indexing fails: Nova
+    // can still operate with a tiny built-in JDK index (used by unit tests / bootstrapping), but
+    // many IDE features (decompilation, richer type info) benefit from a real platform index.
+    let (workspace_config, loaded_config_path) =
         nova_config::load_for_workspace(workspace_root).unwrap_or_else(|_| {
             // If config loading fails, fall back to defaults; the workspace should still open.
-            (nova_config::NovaConfig::default(), None)
+            (nova_config::NovaConfig::default(), nova_config_path.clone())
         });
+
+    {
+        let mut state = project_state
+            .lock()
+            .expect("workspace project state mutex poisoned");
+        state.load_options.nova_config = workspace_config.clone();
+        state.load_options.nova_config_path = loaded_config_path;
+    }
     let jdk_config = {
         // Nova config paths are expected to be relative to the workspace root when possible.
         // `NovaConfig::jdk_config` returns raw `PathBuf`s from the config file, so resolve them
@@ -3689,185 +3860,77 @@ fn reload_project_and_sync(
         cfg
     };
 
-    let next_jdk_fingerprint = jdk_fingerprint(&jdk_config, requested_release);
-    let jdk_changed = match &previous_jdk_fingerprint {
-        Some(prev) => prev != &next_jdk_fingerprint,
-        None => true,
-    };
-    let current_jdk_backing = query_db.with_snapshot(|snap| snap.jdk_index(project).info().backing);
-    let should_discover_jdk =
-        jdk_changed || current_jdk_backing == nova_jdk::JdkIndexBacking::Builtin;
-
-    {
-        let mut state = project_state
-            .lock()
-            .expect("workspace project state mutex poisoned");
-        state.jdk_fingerprint = Some(next_jdk_fingerprint);
-    }
-
+    // Only attempt expensive on-disk JDK indexing when the workspace explicitly configures a JDK.
+    // Otherwise keep the built-in fallback index installed by `WorkspaceLoader` (fast,
+    // deterministic and suitable for tests / bootstrapping).
+    let should_discover_jdk = jdk_config.home.is_some() || !jdk_config.toolchains.is_empty();
     if should_discover_jdk {
-        // JDK discovery is best-effort. In addition to returning `Err`, some discovery paths may
-        // panic under extreme resource pressure (e.g. failing to spawn output reader threads while
-        // probing `java` on PATH). Treat any panic as a discovery failure and fall back to the
-        // built-in stub index so the workspace can still load.
-        let jdk_index = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let jdk_index =
             nova_jdk::JdkIndex::discover_for_release(Some(&jdk_config), requested_release)
-        }))
-        .ok()
-        .and_then(|res| res.ok())
-        .unwrap_or_else(nova_jdk::JdkIndex::new);
-        query_db.set_jdk_index(project, Arc::new(jdk_index));
-    }
-
-    if !had_classpath_fingerprint || classpath_changed {
-        // Best-effort classpath index. This can be expensive, so fall back to `None` if it fails.
-        let classpath_entries: Vec<nova_classpath::ClasspathEntry> = config
-            .classpath
-            .iter()
-            .chain(config.module_path.iter())
-            .map(nova_classpath::ClasspathEntry::from)
-            .collect();
-        if classpath_entries.is_empty() {
-            query_db.set_classpath_index(project, None);
-        } else {
-            let classpath_cache_dir = query_db.classpath_cache_dir();
-            match nova_classpath::ClasspathIndex::build_with_options(
-                &classpath_entries,
-                classpath_cache_dir.as_deref(),
-                nova_classpath::IndexOptions {
-                    target_release: requested_release,
-                },
-            ) {
-                Ok(index) => query_db.set_classpath_index(project, Some(Arc::new(index))),
-                Err(_) => query_db.set_classpath_index(project, None),
-            }
+                .unwrap_or_else(|_| nova_jdk::JdkIndex::new());
+        let jdk_index = Arc::new(jdk_index);
+        for project in &projects {
+            query_db.set_jdk_index(*project, Arc::clone(&jdk_index));
         }
     }
 
-    // JPMS-only updates (i.e. `module-info.java` edits) do not affect workspace source roots or
-    // membership, so we can avoid a full rescan of Java files. The file watcher already
-    // propagates the on-disk edit into the VFS/Salsa file inputs.
-    if !changed_files.is_empty()
-        && changed_files.iter().all(|path| {
-            path.file_name()
-                .is_some_and(|name| name == "module-info.java")
-        })
-    {
-        return Ok(());
-    }
-
-    // Snapshot previous project files so we can mark removed ones as non-existent.
-    let previous_files: Vec<FileId> =
-        query_db.with_snapshot(|snap| snap.project_files(project).as_ref().clone());
-    let previous_set: HashSet<FileId> = previous_files.iter().copied().collect();
-
-    // Scan Java files under declared roots.
-    let mut paths = Vec::new();
-    for root in &config.source_roots {
-        paths.extend(java_files_under(&root.path)?);
-    }
-
-    // Preserve open documents even if they temporarily disappear from disk.
-    for file in vfs.open_documents().snapshot() {
-        let Some(path) = vfs.path_for_id(file) else {
+    // 6) Ensure open-document overlays remain authoritative: after the loader reads from disk,
+    // reapply the current in-memory contents.
+    for file_id in vfs.open_documents().snapshot() {
+        let Some(path) = vfs.path_for_id(file_id) else {
             continue;
         };
-        let Some(local) = path.as_local_path() else {
-            continue;
-        };
-        if local.extension().and_then(|ext| ext.to_str()) != Some("java") {
-            continue;
+        ensure_file_inputs(file_id, &path, query_db, project_state);
+        query_db.set_file_exists(file_id, true);
+        if let Ok(text) = vfs.read_to_string(&path) {
+            query_db.set_file_content(file_id, Arc::new(text));
         }
-        if local.starts_with(workspace_root) {
-            paths.push(local.to_path_buf());
-        }
+        update_project_files_membership(&path, file_id, true, query_db, project_state);
     }
 
-    paths.sort();
-    paths.dedup();
-
+    // 7) Keep the closed-file text store in sync with loader updates.
+    //
+    // The shared `WorkspaceLoader` updates `file_exists` and refreshes `file_content` for changed
+    // paths, but the workspace owns eviction/tracking for closed-file contents. Reconcile here so:
+    // - deleted files drop their `file_content` allocations
+    // - refreshed files clear any previous "evicted" marker and become tracked again
+    // - evicted placeholders remain evicted until restored by another subsystem
     let open_docs = vfs.open_documents();
-    let mut next_entries: Vec<(Arc<String>, FileId)> = Vec::new();
-
-    for path in paths {
-        let vfs_path = VfsPath::local(path.clone());
-        let file_id = vfs.file_id(vfs_path);
-
-        let Some(rel_path) = rel_path_for_workspace(workspace_root, &path) else {
+    let empty_text = empty_file_content();
+    let file_ids: Vec<FileId> =
+        query_db.with_snapshot(|snap| snap.all_file_ids().as_ref().clone());
+    for file_id in file_ids {
+        if open_docs.is_open(file_id) {
+            continue;
+        }
+        let Some(path) = vfs.path_for_id(file_id) else {
             continue;
         };
-
-        let rel_path = Arc::new(rel_path);
-        // `set_file_rel_path` keeps the non-tracked persistence `file_path` in sync with
-        // `file_rel_path`, sharing the same `Arc<String>` for stable persistence keys without
-        // duplicating the underlying string.
-        query_db.set_file_rel_path(file_id, rel_path.clone());
-        query_db.set_file_project(file_id, project);
-        let root_id = source_root_for_path(&source_roots, &path).unwrap_or_else(|| {
-            source_roots
-                .first()
-                .map(|r| r.id)
-                .unwrap_or_else(|| SourceRootId::from_raw(0))
-        });
-        query_db.set_source_root(file_id, root_id);
-
-        let exists = vfs.exists(&VfsPath::local(path.clone()));
-        query_db.set_file_exists(file_id, exists);
-        if !exists {
-            if !open_docs.is_open(file_id) {
-                query_db.set_file_content(file_id, empty_file_content());
-                closed_file_texts.clear(file_id);
-            }
+        // Restrict this pass to local/workspace-managed files. Decompilation/archives may not have
+        // stable on-disk state and are handled elsewhere.
+        if path.as_local_path().is_none() {
             continue;
         }
 
-        if !open_docs.is_open(file_id) {
-            match fs::read_to_string(&path) {
-                Ok(text) => {
-                    let text_arc = Arc::new(text);
-                    query_db.set_file_content(file_id, Arc::clone(&text_arc));
-                    query_db.set_file_is_dirty(file_id, false);
-                    closed_file_texts.track_closed_file_content(file_id, &text_arc);
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    query_db.set_file_exists(file_id, false);
-                    query_db.set_file_content(file_id, empty_file_content());
-                    closed_file_texts.clear(file_id);
-                    continue;
-                }
-                Err(_) if !previous_set.contains(&file_id) => {
-                    // Ensure the input is initialized for new files even if we cannot read them.
-                    query_db.set_file_content(file_id, empty_file_content());
-                    query_db.set_file_is_dirty(file_id, true);
-                    closed_file_texts.clear(file_id);
-                }
-                Err(_) => {
-                    // Keep previous contents for existing files on transient errors.
-                }
-            }
+        let exists = query_db.with_snapshot(|snap| snap.file_exists(file_id));
+        if !exists {
+            query_db.set_file_content(file_id, Arc::clone(&empty_text));
+            query_db.set_file_is_dirty(file_id, false);
+            closed_file_texts.clear(file_id);
+            continue;
         }
 
-        next_entries.push((rel_path, file_id));
-    }
+        let text = query_db.with_snapshot(|snap| snap.file_content(file_id));
+        let is_placeholder = Arc::ptr_eq(&text, &empty_text);
+        let is_evicted = closed_file_texts.is_evicted(file_id);
 
-    // Mark removed files as deleted.
-    let next_set: HashSet<FileId> = next_entries.iter().map(|(_, id)| *id).collect();
-    for old in previous_files {
-        if !next_set.contains(&old) {
-            query_db.set_file_exists(old, false);
-            if !open_docs.is_open(old) {
-                query_db.set_file_content(old, empty_file_content());
-                closed_file_texts.clear(old);
-            }
+        if is_evicted && is_placeholder {
+            continue;
         }
+
+        query_db.set_file_is_dirty(file_id, false);
+        closed_file_texts.track_closed_file_content(file_id, &text);
     }
-
-    next_entries.sort_by(|(a_path, a_id), (b_path, b_id)| {
-        a_path.as_str().cmp(b_path.as_str()).then(a_id.cmp(b_id))
-    });
-    let ordered: Vec<FileId> = next_entries.into_iter().map(|(_, id)| id).collect();
-    query_db.set_project_files(project, Arc::new(ordered));
-
     Ok(())
 }
 
@@ -4072,6 +4135,11 @@ mod tests {
             );
         });
     }
+    fn fixture_root(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../nova-project/testdata")
+            .join(name)
+    }
 
     #[test]
     fn build_config_refresh_triggers_for_gradle_dependency_lockfiles() {
@@ -4107,6 +4175,19 @@ mod tests {
         }
     }
 
+    fn copy_dir_all(from: &Path, to: &Path) {
+        fs::create_dir_all(to).expect("create_dir_all");
+        for entry in fs::read_dir(from).expect("read_dir") {
+            let entry = entry.expect("read_dir entry");
+            let ty = entry.file_type().expect("file_type");
+            let dst = to.join(entry.file_name());
+            if ty.is_dir() {
+                copy_dir_all(&entry.path(), &dst);
+            } else {
+                fs::copy(entry.path(), dst).expect("copy");
+            }
+        }
+    }
     async fn wait_for_indexing_ready(rx: &async_channel::Receiver<WorkspaceEvent>) {
         let mut saw_started = false;
         let mut saw_progress = false;
@@ -5814,7 +5895,8 @@ mode = "off"
                 .lock()
                 .expect("workspace project state mutex poisoned");
             state.workspace_root = Some(root.clone());
-            state.source_roots.clear();
+            state.projects.clear();
+            state.project_roots.clear();
         }
         let project = ProjectId::from_raw(0);
 
@@ -6248,9 +6330,13 @@ mode = "off"
 
         let workspace = crate::Workspace::open(root).unwrap();
         let engine = workspace.engine_for_tests();
-        let project = ProjectId::from_raw(0);
+        let file_id = engine
+            .vfs
+            .get_id(&VfsPath::local(java.clone()))
+            .expect("Main.java should be registered in the VFS");
 
         engine.query_db.with_snapshot(|snap| {
+            let project = snap.file_project(file_id);
             assert_eq!(
                 snap.project_config(project).build_system,
                 BuildSystem::Simple
@@ -6264,12 +6350,12 @@ mode = "off"
         engine.reload_project_now(&[pom]).unwrap();
 
         engine.query_db.with_snapshot(|snap| {
+            let project = snap.file_project(file_id);
             assert_eq!(
                 snap.project_config(project).build_system,
                 BuildSystem::Maven
             );
-            assert_eq!(snap.project_files(project).len(), 1);
-            let file_id = snap.project_files(project)[0];
+            assert!(snap.project_files(project).contains(&file_id));
             assert!(snap.file_exists(file_id));
             assert_eq!(
                 snap.file_rel_path(file_id).as_str(),
@@ -6820,6 +6906,176 @@ mode = "off"
             assert!(
                 !std::sync::Arc::ptr_eq(&before.0, &after.0),
                 "expected classpath index to be rebuilt when target release changes"
+            );
+        });
+    }
+
+    #[test]
+    fn loads_maven_multi_module_workspace_with_distinct_projects() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("maven-multi");
+        copy_dir_all(&fixture_root("maven-multi"), &root);
+        let root = root.canonicalize().unwrap_or(root);
+
+        let workspace = crate::Workspace::open(&root).unwrap();
+        let engine = workspace.engine_for_tests();
+
+        let (app_project, lib_project) = {
+            let loader = engine
+                .workspace_loader
+                .lock()
+                .expect("workspace loader mutex poisoned");
+            (
+                loader
+                    .project_id_for_module("maven:com.example:app")
+                    .expect("app project"),
+                loader
+                    .project_id_for_module("maven:com.example:lib")
+                    .expect("lib project"),
+            )
+        };
+        assert_ne!(app_project, lib_project);
+
+        engine.query_db.with_snapshot(|snap| {
+            let app_cfg = snap.project_config(app_project);
+            assert!(
+                app_cfg
+                    .source_roots
+                    .iter()
+                    .any(|r| r.path.ends_with(Path::new("app/src/main/java"))),
+                "expected app source root in {:#?}",
+                app_cfg.source_roots
+            );
+
+            let lib_cfg = snap.project_config(lib_project);
+            assert!(
+                lib_cfg
+                    .source_roots
+                    .iter()
+                    .any(|r| r.path.ends_with(Path::new("lib/src/main/java"))),
+                "expected lib source root in {:#?}",
+                lib_cfg.source_roots
+            );
+
+            let app_file = snap
+                .project_files(app_project)
+                .iter()
+                .copied()
+                .find(|&file| snap.file_rel_path(file).as_ref().ends_with("App.java"))
+                .expect("App.java file id");
+            let lib_file = snap
+                .project_files(lib_project)
+                .iter()
+                .copied()
+                .find(|&file| snap.file_rel_path(file).as_ref().ends_with("Lib.java"))
+                .expect("Lib.java file id");
+
+            assert_eq!(snap.file_project(app_file), app_project);
+            assert_eq!(snap.file_project(lib_file), lib_project);
+            assert_ne!(snap.file_project(app_file), snap.file_project(lib_file));
+        });
+    }
+
+    #[test]
+    fn loads_gradle_multi_module_workspace_with_distinct_projects() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("gradle-multi");
+        copy_dir_all(&fixture_root("gradle-multi"), &root);
+        let root = root.canonicalize().unwrap_or(root);
+
+        let workspace = crate::Workspace::open(&root).unwrap();
+        let engine = workspace.engine_for_tests();
+
+        let (app_project, lib_project) = {
+            let loader = engine
+                .workspace_loader
+                .lock()
+                .expect("workspace loader mutex poisoned");
+            (
+                loader
+                    .project_id_for_module("gradle::app")
+                    .expect("app project"),
+                loader
+                    .project_id_for_module("gradle::lib")
+                    .expect("lib project"),
+            )
+        };
+        assert_ne!(app_project, lib_project);
+
+        engine.query_db.with_snapshot(|snap| {
+            let app_cfg = snap.project_config(app_project);
+            assert!(
+                app_cfg
+                    .source_roots
+                    .iter()
+                    .any(|r| r.path.ends_with(Path::new("app/src/main/java"))),
+                "expected app source root in {:#?}",
+                app_cfg.source_roots
+            );
+            let lib_cfg = snap.project_config(lib_project);
+            assert!(
+                lib_cfg
+                    .source_roots
+                    .iter()
+                    .any(|r| r.path.ends_with(Path::new("lib/src/main/java"))),
+                "expected lib source root in {:#?}",
+                lib_cfg.source_roots
+            );
+        });
+    }
+
+    #[test]
+    fn project_reload_reuses_classpath_index_when_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("maven-multi");
+        copy_dir_all(&fixture_root("maven-multi"), &root);
+        let root = root.canonicalize().unwrap_or(root);
+
+        let workspace = crate::Workspace::open(&root).unwrap();
+        let engine = workspace.engine_for_tests();
+
+        let app_project = {
+            let loader = engine
+                .workspace_loader
+                .lock()
+                .expect("workspace loader mutex poisoned");
+            loader
+                .project_id_for_module("maven:com.example:app")
+                .expect("app project")
+        };
+
+        let before = engine.query_db.with_snapshot(|snap| {
+            snap.classpath_index(app_project)
+                .expect("classpath index should be set")
+        });
+
+        // Add a new file under the existing source root and reload. This should not change the
+        // module's classpath, so the cached `ClasspathIndex` should be reused.
+        let extra = root.join("app/src/main/java/com/example/app/Extra.java");
+        fs::write(
+            &extra,
+            "package com.example.app; public class Extra { int x = 1; }",
+        )
+        .unwrap();
+
+        engine.reload_project_now(&[extra]).unwrap();
+
+        engine.query_db.with_snapshot(|snap| {
+            let after = snap
+                .classpath_index(app_project)
+                .expect("classpath index should be set");
+            assert!(
+                std::sync::Arc::ptr_eq(&before.0, &after.0),
+                "expected classpath index to be reused when classpath is unchanged"
+            );
+
+            assert!(
+                snap.project_files(app_project).iter().any(|&file| {
+                    snap.file_rel_path(file)
+                        .as_ref()
+                        .ends_with("app/src/main/java/com/example/app/Extra.java")
+                }),
+                "expected Extra.java to be part of the app project"
             );
         });
     }

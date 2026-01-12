@@ -7,8 +7,10 @@ use nova_classpath::{ClasspathEntry, ClasspathIndex, IndexOptions};
 use nova_core::ClassId;
 use nova_jdk::{JdkIndex, BUILTIN_JDK_BINARY_NAMES};
 use nova_project::{
-    JavaConfig, JavaLanguageLevel, JpmsModuleRoot, Module, ProjectConfig, SourceRoot,
-    WorkspaceModuleConfig, WorkspaceProjectModel,
+    BuildSystem, JavaConfig, JavaLanguageLevel, JpmsModuleRoot, JpmsWorkspace,
+    LanguageLevelProvenance, Module, ModuleLanguageLevel, ProjectConfig, SourceRoot,
+    SourceRootKind, SourceRootOrigin, WorkspaceModuleBuildId, WorkspaceModuleConfig,
+    WorkspaceProjectModel,
 };
 use thiserror::Error;
 use walkdir::WalkDir;
@@ -54,6 +56,11 @@ pub struct WorkspaceLoader {
     module_to_project: BTreeMap<String, ProjectId>,
     next_project_id: u32,
 
+    // Projects active in the most recently loaded workspace model, in deterministic module-id
+    // order. We keep this separate from `module_to_project` so we can preserve stable ids for
+    // modules that disappear temporarily without treating them as part of the current workspace.
+    active_projects: Vec<ProjectId>,
+
     source_root_ids: HashMap<(ProjectId, PathBuf), SourceRootId>,
     next_source_root_id: u32,
 
@@ -89,9 +96,9 @@ impl WorkspaceLoader {
         self.workspace_root.as_deref()
     }
 
-    /// List all known projects (stable order by module id).
+    /// List all projects in the most recently loaded workspace model (stable order by module id).
     pub fn projects(&self) -> Vec<ProjectId> {
-        self.module_to_project.values().copied().collect()
+        self.active_projects.clone()
     }
 
     /// Look up the stable `ProjectId` for a build-module id (e.g. `maven:group:artifact`).
@@ -133,7 +140,17 @@ impl WorkspaceLoader {
         changed_files: Option<&[PathBuf]>,
         file_id_for_path: &mut impl FnMut(&Path) -> FileId,
     ) -> Result<(), WorkspaceLoadError> {
-        let model = nova_project::load_workspace_model_with_workspace_config(path)?;
+        let model = match nova_project::load_workspace_model_with_workspace_config(path) {
+            Ok(model) => model,
+            Err(nova_project::ProjectError::UnknownProjectType { .. }) => {
+                // Match `nova-workspace`'s historical behavior by treating "unknown" workspaces as a
+                // simple single-module project rooted at `path`, using the root directory itself as
+                // the source root. This allows empty folders (or folders without a `src/` yet) to
+                // be opened in the IDE.
+                fallback_workspace_model(path)
+            }
+            Err(err) => return Err(err.into()),
+        };
         self.workspace_root = Some(model.workspace_root.clone());
 
         let changed_set = changed_files.map(|files| {
@@ -147,8 +164,10 @@ impl WorkspaceLoader {
         let mut modules = model.modules.clone();
         modules.sort_by(|a, b| a.id.cmp(&b.id));
 
+        let mut active_projects = Vec::with_capacity(modules.len());
         for module in modules {
             let project = self.project_id_for_module_or_insert(&module.id);
+            active_projects.push(project);
             let project_config = project_config_from_workspace_module(&model, &module);
             let target_release = project_config.java.target.0;
             db.set_project_config(project, Arc::new(project_config));
@@ -224,6 +243,8 @@ impl WorkspaceLoader {
             self.apply_project_class_ids(db, project, &files_for_project);
         }
 
+        self.active_projects = active_projects;
+
         Ok(())
     }
 
@@ -237,7 +258,7 @@ impl WorkspaceLoader {
         id
     }
 
-    fn source_root_id_for_path(&mut self, project: ProjectId, path: &Path) -> SourceRootId {
+    pub fn source_root_id_for_path(&mut self, project: ProjectId, path: &Path) -> SourceRootId {
         let key = (project, path.to_path_buf());
         if let Some(&id) = self.source_root_ids.get(&key) {
             return id;
@@ -406,6 +427,45 @@ impl WorkspaceLoader {
 
         db.set_project_class_ids(project, Arc::new(mapping));
     }
+}
+
+fn fallback_workspace_model(root: &Path) -> WorkspaceProjectModel {
+    let workspace_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let module_name = workspace_root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("root")
+        .to_string();
+
+    let source_roots = vec![SourceRoot {
+        kind: SourceRootKind::Main,
+        origin: SourceRootOrigin::Source,
+        path: workspace_root.clone(),
+    }];
+
+    let module_config = WorkspaceModuleConfig {
+        id: format!("simple:{module_name}"),
+        name: module_name.clone(),
+        root: workspace_root.clone(),
+        build_id: WorkspaceModuleBuildId::Simple,
+        language_level: ModuleLanguageLevel {
+            level: JavaLanguageLevel::from_java_config(JavaConfig::default()),
+            provenance: LanguageLevelProvenance::Default,
+        },
+        source_roots,
+        output_dirs: Vec::new(),
+        module_path: Vec::new(),
+        classpath: Vec::new(),
+        dependencies: Vec::new(),
+    };
+
+    WorkspaceProjectModel::new(
+        workspace_root,
+        BuildSystem::Simple,
+        JavaConfig::default(),
+        vec![module_config],
+        Vec::new(),
+    )
 }
 
 fn rel_path_under_root(root: &Path, path: &Path) -> String {
