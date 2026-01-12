@@ -1519,6 +1519,143 @@ fn collect_declared_types_by_name(
         }
     }
 
+    // Try-with-resources variables are declared in `ResourceSpecification`, not in ordinary local
+    // variable declaration statements.
+    for try_stmt in method_body
+        .syntax()
+        .descendants()
+        .filter_map(ast::TryStatement::cast)
+    {
+        let Some(resources) = try_stmt.resources() else {
+            continue;
+        };
+        for resource in resources.resources() {
+            // Local variable declaration form: `Type name = initializer`.
+            let ty = resource.syntax().children().find_map(ast::Type::cast);
+            let decl = resource
+                .syntax()
+                .children()
+                .find_map(ast::VariableDeclarator::cast);
+            let (Some(ty), Some(decl)) = (ty, decl) else {
+                continue;
+            };
+            let Some(name_tok) = decl.name_token() else {
+                continue;
+            };
+            let name = name_tok.text().to_string();
+            let offset = u32::from(name_tok.text_range().start()) as usize;
+
+            let ty_text_full = slice_syntax(source, ty.syntax()).unwrap_or("Object").trim();
+            let ty_text = strip_type_arguments(ty_text_full);
+            if ty_text.is_empty() {
+                continue;
+            }
+
+            out.entry(name).or_default().push(DeclaredTypeCandidate {
+                offset,
+                ty: ty_text.to_string(),
+            });
+        }
+    }
+
+    // Catch clause parameters aren't represented as a `Parameter` node in the typed AST, but they
+    // do introduce locals that we may need when inferring thrown exception types for extractions
+    // within the catch body.
+    for catch in method_body
+        .syntax()
+        .descendants()
+        .filter_map(ast::CatchClause::cast)
+    {
+        let Some(body) = catch.body() else {
+            continue;
+        };
+        let body_start = syntax_range(body.syntax()).start;
+        let header_tokens: Vec<_> = catch
+            .syntax()
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .filter(|tok| u32::from(tok.text_range().end()) as usize <= body_start)
+            .collect();
+
+        let Some(name_tok) = header_tokens
+            .iter()
+            .rev()
+            .find(|tok| tok.kind().is_identifier_like())
+        else {
+            continue;
+        };
+        let Some(lparen) = header_tokens
+            .iter()
+            .find(|tok| tok.kind() == SyntaxKind::LParen)
+        else {
+            continue;
+        };
+
+        let lparen_end = u32::from(lparen.text_range().end()) as usize;
+        let name_start = u32::from(name_tok.text_range().start()) as usize;
+        if lparen_end >= name_start || name_start > source.len() {
+            continue;
+        }
+
+        // Best-effort: recover the textual type between `(` and the param name.
+        //
+        // If this is a multi-catch (`A | B e`), we intentionally skip it to avoid picking an
+        // incorrect throws type.
+        let ty_text_full = source.get(lparen_end..name_start).unwrap_or("Object").trim();
+        if ty_text_full.contains('|') {
+            continue;
+        }
+
+        let ty_text = strip_type_arguments(ty_text_full);
+        if ty_text.is_empty() {
+            continue;
+        }
+
+        let name = name_tok.text().to_string();
+        let offset = u32::from(name_tok.text_range().start()) as usize;
+        out.entry(name).or_default().push(DeclaredTypeCandidate {
+            offset,
+            ty: ty_text.to_string(),
+        });
+    }
+
+    // Variables introduced by classic `for` headers (e.g. `for (int i = 0; ...)`) and
+    // enhanced-for headers (best-effort; varies by syntax shape).
+    for for_stmt in method_body
+        .syntax()
+        .descendants()
+        .filter_map(ast::ForStatement::cast)
+    {
+        let Some(header) = for_stmt.header() else {
+            continue;
+        };
+
+        // Local variable declaration form: `Type x = ...` / `Type x, y = ...`.
+        if let (Some(ty), Some(list)) = (
+            header.syntax().children().find_map(ast::Type::cast),
+            header
+                .syntax()
+                .children()
+                .find_map(ast::VariableDeclaratorList::cast),
+        ) {
+            let ty_text_full = slice_syntax(source, ty.syntax()).unwrap_or("Object").trim();
+            let ty_text = strip_type_arguments(ty_text_full);
+            if !ty_text.is_empty() {
+                for decl in list.declarators() {
+                    let Some(name_tok) = decl.name_token() else {
+                        continue;
+                    };
+                    let name = name_tok.text().to_string();
+                    let offset = u32::from(name_tok.text_range().start()) as usize;
+                    out.entry(name).or_default().push(DeclaredTypeCandidate {
+                        offset,
+                        ty: ty_text.to_string(),
+                    });
+                }
+            }
+        }
+    }
+
     // Keep behavior deterministic.
     for candidates in out.values_mut() {
         candidates.sort_by_key(|cand| cand.offset);
@@ -1635,7 +1772,14 @@ fn infer_thrown_exception_type_from_expr(
                     break;
                 }
             }
-            best.map(|cand| cand.ty.clone())
+            best.and_then(|cand| {
+                let ty_text = strip_type_arguments(&cand.ty);
+                if ty_text.is_empty() || ty_text.contains('|') {
+                    None
+                } else {
+                    Some(ty_text.to_string())
+                }
+            })
         }
         _ => None,
     }
