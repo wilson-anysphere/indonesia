@@ -2442,33 +2442,29 @@ export async function activate(context: vscode.ExtensionContext) {
     progressTitle: string,
   ): Promise<string> => {
     const workspaces = vscode.workspace.workspaceFolders ?? [];
-    const activeUri = vscode.window.activeTextEditor?.document.uri;
     const lspArgs = Array.isArray(args.lspArguments) ? args.lspArguments : [];
-    const uriFromArgs = (() => {
-      for (const entry of lspArgs) {
-        if (!entry || typeof entry !== 'object') {
-          continue;
-        }
-        const uri = (entry as { uri?: unknown }).uri;
-        if (typeof uri === 'string' && uri.trim()) {
-          return uri;
-        }
-        const textDocument = (entry as { textDocument?: unknown }).textDocument;
-        if (textDocument && typeof textDocument === 'object') {
-          const tdUri = (textDocument as { uri?: unknown }).uri;
-          if (typeof tdUri === 'string' && tdUri.trim()) {
-            return tdUri;
-          }
-        }
-      }
-      return undefined;
-    })();
-    const hintedUri = uriFromArgs ? vscode.Uri.parse(uriFromArgs) : undefined;
+    const activeDocumentUri = vscode.window.activeTextEditor?.document.uri.toString();
+    const routedWorkspaceKey = routeWorkspaceFolderUri({
+      workspaceFolders: workspaces.map((workspace) => ({
+        name: workspace.name,
+        fsPath: workspace.uri.fsPath,
+        uri: workspace.uri.toString(),
+      })),
+      activeDocumentUri,
+      method: 'workspace/executeCommand',
+      params: {
+        command: args.lspCommand,
+        arguments: lspArgs,
+      },
+    });
 
     const targetFolder =
-      (hintedUri ? vscode.workspace.getWorkspaceFolder(hintedUri) : undefined) ??
-      (activeUri ? vscode.workspace.getWorkspaceFolder(activeUri) : undefined) ??
-      (workspaces.length === 1 ? workspaces[0] : workspaces.length > 1 ? await promptWorkspaceFolder(workspaces, 'Select workspace folder to run Nova AI') : undefined);
+      (routedWorkspaceKey ? workspaces.find((workspace) => workspace.uri.toString() === routedWorkspaceKey) : undefined) ??
+      (workspaces.length === 1
+        ? workspaces[0]
+        : workspaces.length > 1
+          ? await promptWorkspaceFolder(workspaces, 'Select workspace folder to run Nova AI')
+          : undefined);
     if (!targetFolder) {
       throw new Error('Nova AI: Open a workspace folder to run this command.');
     }
