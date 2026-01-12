@@ -135,7 +135,11 @@ export function registerNovaBuildFileWatchers(
     // Nova's own build-file fingerprinting intentionally skips these trees.
     const rel = path.relative(folder.uri.fsPath, uri.fsPath);
     const normalizedRel = rel.replace(/\\/g, '/');
-    if (normalizedRel === '.nova/config.toml' || normalizedRel === '.nova/apt-cache/generated-roots.json') {
+    if (
+      normalizedRel === '.nova/config.toml' ||
+      normalizedRel === '.nova/apt-cache/generated-roots.json' ||
+      normalizedRel === '.nova/queries/gradle.json'
+    ) {
       // Allowlisted `.nova/` inputs that genuinely affect project configuration.
     } else {
       const segments = normalizedRel.split('/').filter(Boolean);

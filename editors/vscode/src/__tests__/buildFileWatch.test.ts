@@ -215,6 +215,88 @@ describe('buildFileWatch', () => {
     vi.useRealTimers();
   });
 
+  it('auto-reload triggers for .nova/queries/gradle.json changes (Gradle snapshot handoff)', async () => {
+    vi.useFakeTimers();
+
+    const watchers: MockFileSystemWatcher[] = [];
+
+    const workspaceFolder = {
+      uri: { fsPath: '/workspace', toString: () => 'file:///workspace' },
+      name: 'workspace',
+      index: 0,
+    };
+
+    const fileUri = {
+      fsPath: '/workspace/.nova/queries/gradle.json',
+      toString: () => 'file:///workspace/.nova/queries/gradle.json',
+    };
+
+    const output = { appendLine: vi.fn() };
+
+    const request = vi.fn(async () => undefined);
+
+    let resolveDiagnosticsRefresh: (() => void) | undefined;
+    const diagnosticsRefresh = new Promise<void>((resolve) => {
+      resolveDiagnosticsRefresh = resolve;
+    });
+
+    const executeCommand = vi.fn(async (command: string) => {
+      if (command === 'nova.build.refreshDiagnostics') {
+        resolveDiagnosticsRefresh?.();
+      }
+      return undefined;
+    });
+
+    vi.doMock(
+      'vscode',
+      () => ({
+        workspace: {
+          getConfiguration: () => ({
+            get: (key: string, defaultValue: unknown) => {
+              if (key === 'build.buildTool') {
+                return 'gradle';
+              }
+              return defaultValue;
+            },
+          }),
+          getWorkspaceFolder: () => workspaceFolder,
+          createFileSystemWatcher: () => {
+            const watcher = new MockFileSystemWatcher();
+            watchers.push(watcher);
+            return watcher;
+          },
+        },
+        commands: { executeCommand },
+        Disposable: MockDisposable,
+      }),
+      { virtual: true },
+    );
+
+    const { registerNovaBuildFileWatchers } = await import('../buildFileWatch');
+
+    const context = { subscriptions: [] as unknown[] };
+
+    registerNovaBuildFileWatchers(context as never, request as never, {
+      output: output as never,
+      formatError: (err: unknown) => String(err),
+      isMethodNotFoundError: () => false,
+    });
+
+    watchers[0].fireDidChange(fileUri);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await diagnosticsRefresh;
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith(
+      'nova/reloadProject',
+      { projectRoot: '/workspace', buildTool: 'gradle' },
+      { allowMethodFallback: true },
+    );
+
+    vi.useRealTimers();
+  });
+
   it('does not auto-reload for changes under node_modules', async () => {
     vi.useFakeTimers();
 
