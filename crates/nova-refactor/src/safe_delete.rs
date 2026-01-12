@@ -1253,19 +1253,48 @@ fn infer_var_type_in_scope(text: &str, offset: usize, var_name: &str) -> Option<
         // Grab token before ` var_name`.
         let prefix = &before[..pos];
         let prefix = prefix.trim_end();
-        let type_start = prefix
-            .rfind(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '$')
-            .map(|p| p + 1)
-            .unwrap_or(0);
-        let ty = &prefix[type_start..];
-        if !ty.is_empty()
-            && ty
-                .chars()
-                .next()
-                .map(|c| c.is_ascii_uppercase())
-                .unwrap_or(false)
+
+        // Walk backwards to the previous whitespace boundary, but ignore whitespace inside
+        // generic arguments (`Map<String, Integer> m`).
+        let bytes = prefix.as_bytes();
+        let mut i = prefix.len();
+        let mut angle_depth: usize = 0;
+        while i > 0 {
+            let b = bytes[i - 1];
+            match b {
+                b'>' => angle_depth += 1,
+                b'<' => angle_depth = angle_depth.saturating_sub(1),
+                _ => {}
+            }
+
+            if angle_depth == 0 && b.is_ascii_whitespace() {
+                break;
+            }
+            i -= 1;
+        }
+
+        let ty = prefix[i..].trim();
+        if ty.is_empty() {
+            search_pos = pos;
+            continue;
+        }
+
+        // Reduce `java.util.Map<String, Integer>` => `Map`, `int[]` => `int`.
+        let mut base = ty.split('<').next().unwrap_or(ty).trim();
+        base = base.trim_end_matches("[]").trim();
+        if let Some((_, last)) = base.rsplit_once(|c: char| c == '.' || c == '$') {
+            base = last.trim();
+        }
+
+        if !base.is_empty()
+            && (is_java_primitive_type(base)
+                || base
+                    .chars()
+                    .next()
+                    .map(|c| c.is_ascii_uppercase())
+                    .unwrap_or(false))
         {
-            return Some(ty.to_string());
+            return Some(base.to_string());
         }
         search_pos = pos;
     }

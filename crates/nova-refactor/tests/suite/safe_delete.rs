@@ -503,6 +503,63 @@ class A {
 }
 
 #[test]
+fn safe_delete_ignores_other_overload_calls_with_same_arity_for_generic_var_args() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        "A.java".to_string(),
+        r#"
+import java.util.HashMap;
+import java.util.Map;
+
+class A {
+    public void foo(int x) {
+    }
+
+    public void foo(Map<String, Integer> m) {
+    }
+
+    public void entry() {
+        Map<String, Integer> m = new HashMap<String, Integer>();
+        foo(m);
+    }
+}
+"#
+        .to_string(),
+    );
+
+    let index = Index::new(files.clone());
+    let target = index
+        .method_overload_by_param_types("A", "foo", &[String::from("int")])
+        .expect("foo(int) exists");
+
+    let outcome = safe_delete(
+        &index,
+        SafeDeleteTarget::Symbol(target),
+        SafeDeleteMode::Safe,
+    )
+    .expect("safe delete runs");
+
+    let edit = match outcome {
+        SafeDeleteOutcome::Applied { edit } => edit,
+        SafeDeleteOutcome::Preview { report } => {
+            panic!("expected direct application (no usages), got: {report:?}")
+        }
+    };
+
+    let updated = apply_workspace_edit(&files, &edit);
+    let a = updated.get("A.java").unwrap();
+    assert!(
+        !a.contains("void foo(int x)"),
+        "foo(int) declaration should be removed"
+    );
+    assert!(
+        a.contains("void foo(Map<String, Integer> m)"),
+        "other overload should remain: {a}"
+    );
+    assert!(a.contains("foo(m)"), "call site should remain: {a}");
+}
+
+#[test]
 fn safe_delete_blocks_when_target_overload_called_with_same_arity() {
     let mut files = BTreeMap::new();
     files.insert(
