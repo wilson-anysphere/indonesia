@@ -1593,6 +1593,8 @@ Notes:
   - This override is read at process start; a server restart is required for changes to take effect.
   - This only affects **async multi-token** AI completions; standard (non-AI) completions returned
     from `textDocument/completion` are unaffected.
+  - VS Code note: the Nova VS Code extension surfaces `nova.aiCompletions.maxItems` by setting this
+    env var when starting `nova-lsp` and prompts for a server restart when it changes.
 - Other server-side env var overrides that can disable AI completions entirely:
   - `NOVA_DISABLE_AI=1` disables all AI features.
   - `NOVA_DISABLE_AI_COMPLETIONS=1` disables multi-token completions.
