@@ -245,7 +245,7 @@ fn project_base_type_store(db: &dyn NovaTypeck, project: ProjectId) -> ArcEq<Typ
     // exports enforcement.
     if db.jpms_compilation_env(project).is_none() {
         if let Some(cp) = db.classpath_index(project).as_deref() {
-            for (idx, name) in cp.binary_names_sorted().iter().enumerate() {
+            for (idx, name) in cp.iter_binary_names().enumerate() {
                 cancel::checkpoint_cancelled_every(db, idx as u32, 4096);
                 store.intern_class_id(name);
             }
