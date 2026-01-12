@@ -1,18 +1,16 @@
 use std::{
     path::{Path, PathBuf},
     process::Stdio,
-    sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
 use nova_build::{BuildManager, DefaultCommandRunner};
 use nova_jdwp::wire::JdwpClient;
 use nova_scheduler::CancellationToken;
+use tempfile::TempDir;
 use tokio::process::Command;
 
 use crate::hot_swap::{CompileError, CompiledClass};
-
-static HOT_SWAP_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct HotSwapJavacConfig {
@@ -175,23 +173,22 @@ pub(crate) async fn compile_java_for_hot_swap(
         )));
     }
 
-    let output_dir = match hot_swap_temp_dir() {
-        Ok(dir) => dir,
-        Err(err) => {
-            return Err(CompileError::new(format!(
-                "failed to create hot swap output directory: {err}"
-            )))
-        }
-    };
+    let temp_dir = hot_swap_temp_dir().map_err(|err| {
+        CompileError::new(format!("failed to create hot swap output directory: {err}"))
+    })?;
 
-    let compile_result = compile_java_to_dir(cancel, javac, source_file, &output_dir).await;
-    let compiled = match compile_result {
-        Ok(classes) => Ok(classes),
-        Err(err) => Err(err),
-    };
+    let result = compile_java_to_dir(cancel, javac, source_file, temp_dir.path()).await;
 
-    let _ = std::fs::remove_dir_all(&output_dir);
-    compiled
+    if keep_hot_swap_temp_dir() {
+        let path = temp_dir.keep();
+        tracing::info!(
+            path = %path.display(),
+            "{} is set; keeping hot-swap compilation temp directory",
+            KEEP_HOT_SWAP_TEMP_ENV,
+        );
+    }
+
+    result
 }
 
 pub(crate) async fn compile_java_to_dir(
@@ -377,13 +374,20 @@ mod tests {
     }
 }
 
-pub(crate) fn hot_swap_temp_dir() -> std::io::Result<PathBuf> {
+const KEEP_HOT_SWAP_TEMP_ENV: &str = "NOVA_DAP_KEEP_HOT_SWAP_TEMP";
+
+fn keep_hot_swap_temp_dir() -> bool {
+    let Some(value) = std::env::var_os(KEEP_HOT_SWAP_TEMP_ENV) else {
+        return false;
+    };
+    let value = value.to_string_lossy();
+    !value.is_empty() && value != "0"
+}
+
+pub(crate) fn hot_swap_temp_dir() -> std::io::Result<TempDir> {
     let base = std::env::temp_dir().join("nova-dap-hot-swap");
     std::fs::create_dir_all(&base)?;
-    let id = HOT_SWAP_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = base.join(format!("compile-{id}-{}", std::process::id()));
-    std::fs::create_dir(&dir)?;
-    Ok(dir)
+    tempfile::Builder::new().prefix("compile-").tempdir_in(base)
 }
 
 fn collect_class_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {

@@ -207,12 +207,11 @@ impl Debugger {
         );
 
         // Compile in a throwaway directory.
-        let output_dir = hot_swap_temp_dir().map_err(|err| {
+        let temp_dir = hot_swap_temp_dir().map_err(|err| {
             DebuggerError::InvalidRequest(format!("failed to create javac output dir: {err}"))
         })?;
-        let _cleanup = TempDirCleanup(output_dir.clone());
 
-        let source_path = output_dir.join(format!("{simple_name}.java"));
+        let source_path = temp_dir.path().join(format!("{simple_name}.java"));
         std::fs::write(&source_path, &source).map_err(|err| {
             DebuggerError::InvalidRequest(format!(
                 "failed to write generated eval source {}: {err}",
@@ -223,7 +222,8 @@ impl Debugger {
         // If we don't have a resolved build-system language level, default to a conservative
         // `--release 8` so the injected helper class can load on older debuggee JVMs.
         let javac = crate::javac::apply_stream_eval_defaults(javac);
-        let compiled = match compile_java_to_dir(cancel, &javac, &source_path, &output_dir).await {
+        let compiled =
+            match compile_java_to_dir(cancel, &javac, &source_path, temp_dir.path()).await {
             Ok(classes) => classes,
             Err(err) => {
                 if cancel.is_cancelled() {
@@ -507,14 +507,6 @@ impl Debugger {
             Some(msg) if !msg.is_empty() => format!("{runtime_type}: {msg}"),
             _ => runtime_type,
         })
-    }
-}
-
-struct TempDirCleanup(PathBuf);
-
-impl Drop for TempDirCleanup {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 

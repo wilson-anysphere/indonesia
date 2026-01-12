@@ -22,6 +22,7 @@ tokio = { version = "1", default-features = false, features = ["io-std", "io-uti
 tokio-util = "0.7"
 base64 = "0.22"
 libc = "0.2"
+tempfile = { workspace = true }
 
 nova-core = { path = "../nova-core" }
 nova-db = { path = "../nova-db" }
@@ -58,5 +59,4 @@ name = "nova_dap_test_helper"
 path = "tests/fixtures/nova_dap_test_helper.rs"
 
 [dev-dependencies]
-tempfile = "3.10.1"
 nova-jdwp = { path = "../nova-jdwp", features = ["wire-test-support"] }

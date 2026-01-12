@@ -19,6 +19,29 @@ fn tool_available(name: &str) -> bool {
         .is_ok()
 }
 
+fn hot_swap_compile_temp_dirs() -> Vec<PathBuf> {
+    let base = std::env::temp_dir().join("nova-dap-hot-swap");
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&base) else {
+        return out;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if name.starts_with("compile-") {
+            out.push(path);
+        }
+    }
+    out.sort();
+    out
+}
+
 #[tokio::test]
 async fn dap_can_attach_set_breakpoints_and_stop() {
     let jdwp = MockJdwpServer::spawn().await.unwrap();
@@ -692,6 +715,12 @@ async fn dap_hot_swap_can_compile_changed_files_with_javac() {
         return;
     }
 
+    // Ensure the test environment is deterministic even if a previous run left
+    // behind temp directories.
+    std::env::remove_var("NOVA_DAP_KEEP_HOT_SWAP_TEMP");
+    let hot_swap_base = std::env::temp_dir().join("nova-dap-hot-swap");
+    let _ = std::fs::remove_dir_all(hot_swap_base);
+
     let mut caps = vec![false; 32];
     caps[7] = true; // canRedefineClasses
     let jdwp = MockJdwpServer::spawn_with_capabilities(caps).await.unwrap();
@@ -742,6 +771,12 @@ async fn dap_hot_swap_can_compile_changed_files_with_javac() {
 
     client.disconnect().await;
     server_task.await.unwrap().unwrap();
+
+    let leaked = hot_swap_compile_temp_dirs();
+    assert!(
+        leaked.is_empty(),
+        "expected hot-swap compilation temp dirs to be cleaned up, found: {leaked:?}"
+    );
 }
 
 #[tokio::test]
