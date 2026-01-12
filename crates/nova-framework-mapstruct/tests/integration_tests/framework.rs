@@ -44,6 +44,45 @@ import org.mapstruct.Mapper;
 }
 
 #[test]
+fn navigation_links_mapper_to_generated_implementation_when_indexed() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+    db.add_classpath_class(project, "org.mapstruct.Mapper");
+
+    let mapper = r#"
+package com.example;
+
+import org.mapstruct.Mapper;
+
+@Mapper
+public interface CarMapper {}
+"#;
+
+    let mapper_path = root.join("src/main/java/com/example/CarMapper.java");
+    write_file(&mapper_path, mapper);
+    let mapper_file = db.add_file_with_path_and_text(project, mapper_path, mapper);
+
+    let impl_src = r#"
+package com.example;
+
+public class CarMapperImpl implements CarMapper {}
+"#;
+    let impl_path = root.join("target/generated-sources/annotations/com/example/CarMapperImpl.java");
+    write_file(&impl_path, impl_src);
+    let impl_file = db.add_file_with_path_and_text(project, impl_path, impl_src);
+
+    let analyzer = MapStructAnalyzer::new();
+    let targets = analyzer.navigation(&db, &nova_framework::Symbol::File(mapper_file));
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].file, impl_file);
+    assert!(targets[0].label.contains("CarMapperImpl"));
+    assert!(targets[0].span.is_none());
+}
+
+#[test]
 fn completion_in_mapping_target_suggests_target_properties() {
     let mut db = MemoryDatabase::new();
     let project = db.add_project();

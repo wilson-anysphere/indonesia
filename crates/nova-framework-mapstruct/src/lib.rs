@@ -191,6 +191,58 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
         }
     }
 
+    fn navigation(
+        &self,
+        db: &dyn Database,
+        symbol: &nova_framework::Symbol,
+    ) -> Vec<nova_framework::NavigationTarget> {
+        let nova_framework::Symbol::File(file) = *symbol else {
+            return Vec::new();
+        };
+
+        let Some(text) = db.file_text(file) else {
+            return Vec::new();
+        };
+        let Some(path) = db.file_path(file) else {
+            return Vec::new();
+        };
+        if path.extension().and_then(|e| e.to_str()) != Some("java") {
+            return Vec::new();
+        }
+        if !looks_like_mapstruct_source(text) {
+            return Vec::new();
+        }
+        let Some(root) = nova_project::workspace_root(path) else {
+            return Vec::new();
+        };
+
+        let Ok(mappers) = discover_mappers_in_source(path, text) else {
+            return Vec::new();
+        };
+
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+
+        for mapper in &mappers {
+            let Some(impl_path) = generated_mapper_impl_file(&root, mapper) else {
+                continue;
+            };
+            let Some(impl_file) = db.file_id(&impl_path) else {
+                continue;
+            };
+            if !seen.insert(impl_file) {
+                continue;
+            }
+            out.push(nova_framework::NavigationTarget {
+                file: impl_file,
+                span: None,
+                label: format!("Generated {}", mapper.implementation_name),
+            });
+        }
+
+        out
+    }
+
     fn completions(&self, db: &dyn Database, ctx: &CompletionContext) -> Vec<CompletionItem> {
         let Some(path) = db.file_path(ctx.file) else {
             return Vec::new();
@@ -1332,6 +1384,46 @@ fn infer_type_node<'a>(node: Node<'a>) -> Option<Node<'a>> {
             }
         }
     }
+    None
+}
+
+fn generated_mapper_impl_file(project_root: &Path, mapper: &MapperModel) -> Option<PathBuf> {
+    let impl_name = mapper.implementation_name.as_str();
+    let package_path = mapper
+        .implementation_package
+        .as_deref()
+        .unwrap_or("")
+        .replace('.', "/");
+    let rel_path = if package_path.is_empty() {
+        format!("{impl_name}.java")
+    } else {
+        format!("{package_path}/{impl_name}.java")
+    };
+
+    for root in discover_generated_source_roots(project_root) {
+        let candidate = root.join(&rel_path);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
+    // Fallback: scan generated roots for a file named `<MapperName>Impl.java` (or
+    // custom implementation name if configured).
+    for root in discover_generated_source_roots(project_root) {
+        let Ok(files) = collect_java_files(&root) else {
+            continue;
+        };
+        for file in files {
+            if file
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s == impl_name)
+            {
+                return Some(file);
+            }
+        }
+    }
+
     None
 }
 
