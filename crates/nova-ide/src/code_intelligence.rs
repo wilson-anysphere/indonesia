@@ -2873,9 +2873,11 @@ fn import_path_completions(
         }
     }
     for seg in workspace_segments {
+        let insert_text = format!("{seg}.");
         let mut item = CompletionItem {
             label: seg,
             kind: Some(CompletionItemKind::MODULE),
+            insert_text: Some(insert_text),
             ..Default::default()
         };
         mark_workspace_completion_item(&mut item);
@@ -2908,9 +2910,11 @@ fn import_path_completions(
             }
         }
         for seg in jdk_segments {
+            let insert_text = format!("{seg}.");
             items.push(CompletionItem {
                 label: seg,
                 kind: Some(CompletionItemKind::MODULE),
+                insert_text: Some(insert_text),
                 ..Default::default()
             });
         }
@@ -18085,6 +18089,23 @@ pub(crate) fn receiver_before_double_colon(text: &str, double_colon_offset: usiz
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn import_path_package_segment_completions_insert_trailing_dot() {
+        let mut db = nova_db::InMemoryFileStore::new();
+        let foo_file = db.file_id_for_path("/__nova_test_ws__/src/com/foo/Foo.java");
+        db.set_file_text(foo_file, "package com.foo; class Foo {}".to_string());
+
+        let text = "import com.\nclass Test {}".to_string();
+        let offset = text.find("com.").expect("expected `com.` in fixture") + "com.".len();
+        let items = import_path_completions(&db, &text, offset, "").expect("completions");
+
+        let foo = items
+            .iter()
+            .find(|item| item.label == "foo")
+            .expect("expected `foo` package segment completion");
+        assert_eq!(foo.insert_text.as_deref(), Some("foo."));
+    }
 
     #[test]
     fn method_reference_double_colon_offset_does_not_underflow_on_short_prefix() {
