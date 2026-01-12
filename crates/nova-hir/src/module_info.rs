@@ -14,8 +14,12 @@ pub enum ModuleInfoLowerError {
         message: String,
         range: nova_syntax::TextRange,
     },
+    #[error("invalid parse root (expected a compilation unit)")]
+    InvalidRoot,
     #[error("module-info.java is missing a module declaration")]
     MissingModuleDeclaration,
+    #[error("module-info.java module declaration is missing a name")]
+    MissingModuleName,
 }
 
 impl From<nova_syntax::ParseError> for ModuleInfoLowerError {
@@ -39,30 +43,55 @@ pub struct ModuleInfoLowerResult {
 /// features can continue operating on partially-correct code.
 pub fn lower_module_info_source(src: &str) -> ModuleInfoLowerResult {
     let parse = parse_java(src);
-    let unit = CompilationUnit::cast(parse.syntax()).expect("root node is a compilation unit");
-    let info = unit.module_declaration().as_ref().map(lower_module_decl);
+    let root = parse.syntax();
+
+    let mut errors: Vec<ModuleInfoLowerError> = parse
+        .errors
+        .into_iter()
+        .map(ModuleInfoLowerError::from)
+        .collect();
+
+    let Some(unit) = CompilationUnit::cast(root) else {
+        errors.push(ModuleInfoLowerError::InvalidRoot);
+        return ModuleInfoLowerResult { info: None, errors };
+    };
+
+    let Some(decl) = unit.module_declaration() else {
+        errors.push(ModuleInfoLowerError::MissingModuleDeclaration);
+        return ModuleInfoLowerResult { info: None, errors };
+    };
+
+    let decl_name_text = decl.name().map(|name| name.text());
+    if decl_name_text.as_deref().map_or(true, str::is_empty) {
+        errors.push(ModuleInfoLowerError::MissingModuleName);
+    }
+
+    let info = Some(lower_module_decl(&decl));
 
     ModuleInfoLowerResult {
         info,
-        errors: parse
-            .errors
-            .into_iter()
-            .map(ModuleInfoLowerError::from)
-            .collect(),
+        errors,
     }
 }
 
-/// Strict lowering wrapper that returns the first parse error.
+/// Strict lowering wrapper that fails fast on malformed `module-info.java` sources.
 pub fn lower_module_info_source_strict(src: &str) -> Result<ModuleInfo, ModuleInfoLowerError> {
     let parse = parse_java(src);
-    if let Some(err) = parse.errors.first() {
-        return Err(ModuleInfoLowerError::from(err.clone()));
-    }
+    let root = parse.syntax();
 
-    let unit = CompilationUnit::cast(parse.syntax()).expect("root node is a compilation unit");
+    let unit = CompilationUnit::cast(root).ok_or(ModuleInfoLowerError::InvalidRoot)?;
     let decl = unit
         .module_declaration()
         .ok_or(ModuleInfoLowerError::MissingModuleDeclaration)?;
+
+    let decl_name_text = decl.name().map(|name| name.text());
+    if decl_name_text.as_deref().map_or(true, str::is_empty) {
+        return Err(ModuleInfoLowerError::MissingModuleName);
+    }
+
+    if let Some(err) = parse.errors.first() {
+        return Err(ModuleInfoLowerError::from(err.clone()));
+    }
 
     Ok(lower_module_decl(&decl))
 }
@@ -78,64 +107,100 @@ pub fn lower_module_decl(decl: &ModuleDeclaration) -> ModuleInfo {
         for directive in body.directives() {
             match directive.kind() {
                 nova_syntax::SyntaxKind::RequiresDirective => {
-                    let directive =
-                        RequiresDirective::cast(directive).expect("requires directive kind");
+                    let Some(directive) = RequiresDirective::cast(directive) else {
+                        continue;
+                    };
                     let Some(module) = directive.module() else {
                         continue;
                     };
+                    let module = module.text();
+                    if module.is_empty() {
+                        continue;
+                    }
                     requires.push(Requires {
-                        module: ModuleName::new(module.text()),
+                        module: ModuleName::new(module),
                         is_transitive: directive.is_transitive(),
                         is_static: directive.is_static(),
                     });
                 }
                 nova_syntax::SyntaxKind::ExportsDirective => {
-                    let directive =
-                        ExportsDirective::cast(directive).expect("exports directive kind");
+                    let Some(directive) = ExportsDirective::cast(directive) else {
+                        continue;
+                    };
                     let Some(package) = directive.package() else {
                         continue;
                     };
+                    let package = package.text();
+                    if package.is_empty() {
+                        continue;
+                    }
                     exports.push(Exports {
-                        package: package.text(),
+                        package,
                         to: directive
                             .to_modules()
-                            .map(|name| ModuleName::new(name.text()))
+                            .filter_map(|name| {
+                                let text = name.text();
+                                (!text.is_empty()).then_some(ModuleName::new(text))
+                            })
                             .collect(),
                     });
                 }
                 nova_syntax::SyntaxKind::OpensDirective => {
-                    let directive = OpensDirective::cast(directive).expect("opens directive kind");
+                    let Some(directive) = OpensDirective::cast(directive) else {
+                        continue;
+                    };
                     let Some(package) = directive.package() else {
                         continue;
                     };
+                    let package = package.text();
+                    if package.is_empty() {
+                        continue;
+                    }
                     opens.push(Opens {
-                        package: package.text(),
+                        package,
                         to: directive
                             .to_modules()
-                            .map(|name| ModuleName::new(name.text()))
+                            .filter_map(|name| {
+                                let text = name.text();
+                                (!text.is_empty()).then_some(ModuleName::new(text))
+                            })
                             .collect(),
                     });
                 }
                 nova_syntax::SyntaxKind::UsesDirective => {
-                    let directive = UsesDirective::cast(directive).expect("uses directive kind");
+                    let Some(directive) = UsesDirective::cast(directive) else {
+                        continue;
+                    };
                     let Some(service) = directive.service() else {
                         continue;
                     };
+                    let service = service.text();
+                    if service.is_empty() {
+                        continue;
+                    }
                     uses.push(Uses {
-                        service: service.text(),
+                        service,
                     });
                 }
                 nova_syntax::SyntaxKind::ProvidesDirective => {
-                    let directive =
-                        ProvidesDirective::cast(directive).expect("provides directive kind");
+                    let Some(directive) = ProvidesDirective::cast(directive) else {
+                        continue;
+                    };
                     let Some(service) = directive.service() else {
                         continue;
                     };
+                    let service = service.text();
+                    if service.is_empty() {
+                        continue;
+                    }
                     provides.push(Provides {
-                        service: service.text(),
+                        service,
                         implementations: directive
                             .implementations()
-                            .map(|name| name.text())
+                            .filter_map(|name| {
+                                let text = name.text();
+                                (!text.is_empty()).then_some(text)
+                            })
                             .collect(),
                     });
                 }
@@ -146,12 +211,59 @@ pub fn lower_module_decl(decl: &ModuleDeclaration) -> ModuleInfo {
 
     ModuleInfo {
         kind: ModuleKind::Explicit,
-        name: ModuleName::new(decl.name().expect("module declarations have a name").text()),
+        name: ModuleName::new(
+            decl.name()
+                .map(|name| name.text())
+                .and_then(|text| (!text.is_empty()).then_some(text))
+                .unwrap_or_else(|| "<missing>".to_string()),
+        ),
         is_open: decl.is_open(),
         requires,
         exports,
         opens,
         uses,
         provides,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn best_effort_lowering_missing_name_is_panic_free() {
+        let res = lower_module_info_source("module { }");
+        assert!(
+            res.errors.contains(&ModuleInfoLowerError::MissingModuleName),
+            "expected MissingModuleName, got {:?}",
+            res.errors
+        );
+        let info = res.info.expect("best-effort should still return ModuleInfo");
+        assert_eq!(info.name.as_str(), "<missing>");
+    }
+
+    #[test]
+    fn best_effort_lowering_reports_missing_module_declaration() {
+        let res = lower_module_info_source("class A {}");
+        assert!(
+            res.errors
+                .contains(&ModuleInfoLowerError::MissingModuleDeclaration),
+            "expected MissingModuleDeclaration, got {:?}",
+            res.errors
+        );
+        assert_eq!(res.info, None);
+    }
+
+    #[test]
+    fn strict_lowering_missing_name_is_err() {
+        assert!(lower_module_info_source_strict("module { }").is_err());
+    }
+
+    #[test]
+    fn malformed_directive_does_not_panic() {
+        let res = lower_module_info_source("module m { requires ; }");
+        let info = res.info.expect("should lower module header even with broken directives");
+        assert_eq!(info.name.as_str(), "m");
+        assert!(info.requires.is_empty());
     }
 }
