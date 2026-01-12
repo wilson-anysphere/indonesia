@@ -313,7 +313,13 @@ fn verify_method_usage(
         &target.name,
         arg_count,
     );
-    let matching = filter_overloads_by_argument_types(index, &overloads, &arg_types);
+    // Type filtering is best-effort and intentionally conservative. If we inferred argument types
+    // but they don't match any overload's (lexical) signature, fall back to arity-only matching so
+    // we don't miss valid calls due to subtyping (e.g. `foo(Map)` called with `new HashMap()`).
+    let mut matching = filter_overloads_by_argument_types(index, &overloads, &arg_types);
+    if matching.is_empty() {
+        matching = overloads;
+    }
 
     match matching.as_slice() {
         [] => return None,
@@ -800,7 +806,7 @@ fn looks_like_generic_argument_list(text: &str, lt_offset: usize) -> bool {
 
     // Scan forward until we either:
     // - find a matching `>` (=> looks like generics), or
-    // - hit a top-level `,` / `)` (=> likely a comparison operator).
+    // - hit the end of the current call argument list (=> likely a comparison operator).
     let mut i = lt_offset + 1;
     let mut paren_depth = 1usize;
     let mut brace_depth = 0usize;
@@ -875,10 +881,6 @@ fn looks_like_generic_argument_list(text: &str, lt_offset: usize) -> bool {
                 if angle_depth == 0 {
                     return true;
                 }
-            }
-            b',' if paren_depth == 1 && brace_depth == 0 && bracket_depth == 0 => {
-                // We hit a top-level argument separator before seeing a closing `>`.
-                return false;
             }
             _ => {}
         }

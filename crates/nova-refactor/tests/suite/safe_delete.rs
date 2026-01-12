@@ -602,3 +602,48 @@ class Derived extends Base {
     assert_eq!(report.usages[0].file, "Derived.java");
     assert_eq!(report.usages[0].kind, UsageKind::Override);
 }
+
+#[test]
+fn safe_delete_blocks_when_call_arg_contains_generic_commas() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        "A.java".to_string(),
+        r#"
+import java.util.HashMap;
+import java.util.Map;
+
+class A {
+    public void foo(Map<String, Integer> m) {
+    }
+
+    public void entry() {
+        foo(new HashMap<String, Integer>());
+    }
+}
+"#
+        .to_string(),
+    );
+
+    let index = Index::new(files);
+    let target = index.find_method("A", "foo").expect("method exists").id;
+
+    let outcome = safe_delete(
+        &index,
+        SafeDeleteTarget::Symbol(target),
+        SafeDeleteMode::Safe,
+    )
+    .expect("safe delete runs");
+
+    let report = match outcome {
+        SafeDeleteOutcome::Preview { report } => report,
+        SafeDeleteOutcome::Applied { .. } => panic!("expected preview (call usage)"),
+    };
+
+    assert_eq!(
+        report.usages.len(),
+        1,
+        "expected one call usage; got: {report:?}"
+    );
+    assert_eq!(report.usages[0].file, "A.java");
+    assert_eq!(report.usages[0].kind, UsageKind::Call);
+}
