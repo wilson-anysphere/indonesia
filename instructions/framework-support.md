@@ -297,13 +297,12 @@ List<User> findByName(@Param("name") String name);
 1. **Create crate** - `nova-framework-<name>`
 2. **Implement trait** - `FrameworkAnalyzer`
 3. **Register analyzer** - In the consumer's `AnalyzerRegistry`.
-   For Nova’s shipped analyzers, add it to `nova-framework-builtins`. `nova-ide`'s generic
-   `IdeExtensions::<DB>::with_default_registry` constructs
-   `nova_framework_builtins::builtin_registry()` and runs it through `FrameworkAnalyzerRegistryProvider`.
- 
-   `nova-lsp` currently uses `IdeExtensions::<dyn nova_db::Database + Send + Sync>::with_default_registry`,
-   which registers `FrameworkAnalyzerRegistryProvider::empty()` (fast no-op).
-   Some framework features are still implemented via `crates/nova-ide/src/framework_cache.rs`.
+   For Nova’s shipped analyzers, add it to `nova-framework-builtins`. `nova-ide`'s
+   `IdeExtensions::<DB>::with_default_registry` constructs `nova_framework_builtins::builtin_registry()`
+   and registers it via `FrameworkAnalyzerRegistryProvider` (diagnostics/completions/navigation/inlay
+   hints), alongside the legacy `FrameworkDiagnosticProvider`/`FrameworkCompletionProvider` backed by
+   `crates/nova-ide/src/framework_cache.rs`.
+   (If you want a fast no-op provider, `FrameworkAnalyzerRegistryProvider::empty()` is available.)
 4. **Add tests** - Framework-specific test cases
 5. **Document** - Update framework docs
 

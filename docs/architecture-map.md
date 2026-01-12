@@ -251,8 +251,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
       and `FrameworkAnalyzerRegistryProvider` (`crates/nova-ide/src/extensions.rs`).
       `nova-ide`'s generic `IdeExtensions::<DB>::with_default_registry` builds the analyzer list via
       `nova-framework-builtins` and registers the provider for diagnostics/completions/navigation/inlay
-      hints, while the dyn-db constructor used by `nova-lsp` still registers
-      `FrameworkAnalyzerRegistryProvider::empty()` (fast no-op).
+      hints. (`FrameworkAnalyzerRegistryProvider::empty()` exists as a fast no-op option.)
 
 ### `nova-framework-builtins`
 - **Purpose:** centralized construction/registration of Nova’s built-in `nova-framework-*` analyzers so downstream crates (IDE, LSP, etc.) don’t need to maintain their own lists.

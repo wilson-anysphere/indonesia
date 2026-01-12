@@ -521,14 +521,12 @@ In the IDE, `crates/nova-ide/src/extensions.rs` wires two framework paths:
   `nova_framework::Database`), and calls `framework_*_with_cancel` methods to cooperate with request
   cancellation/timeouts.
 
-  `IdeExtensions::with_default_registry` has two relevant constructors today:
+  `IdeExtensions::with_default_registry` builds `nova_framework_builtins::builtin_registry()` and
+  registers a `FrameworkAnalyzerRegistryProvider` for diagnostics, completions, navigation, and
+  inlay hints.
 
-  - `IdeExtensions::<DB>::with_default_registry` (generic DB; used by many `nova-ide` tests) builds
-    `nova_framework_builtins::builtin_registry()` and registers the provider for diagnostics,
-    completions, navigation, and inlay hints.
-  - `IdeExtensions::<dyn nova_db::Database + Send + Sync>::with_default_registry` (used by
-    `nova-lsp`) currently registers `FrameworkAnalyzerRegistryProvider::empty()` (fast no-op) for
-    diagnostics/completions.
+  `FrameworkAnalyzerRegistryProvider::empty()` exists as a fast no-op provider if you need to
+  disable registry-backed analyzers without changing call sites.
 
 ### Plugin integration constraint (Database adapter)
 
