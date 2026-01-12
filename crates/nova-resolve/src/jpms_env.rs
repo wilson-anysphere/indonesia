@@ -142,8 +142,12 @@ pub fn build_jpms_compilation_environment(
     classpath_entries: &[ClasspathEntry],
     cache_dir: Option<&Path>,
 ) -> Result<JpmsCompilationEnvironment> {
+    let target_release = workspace
+        .map(|workspace| workspace.java.target.0)
+        .filter(|release| *release >= 1)
+        .or(jdk.info().api_release);
     let options = IndexOptions {
-        target_release: jdk.info().api_release,
+        target_release,
     };
     build_jpms_compilation_environment_with_options(
         jdk,
@@ -214,6 +218,7 @@ fn empty_module(kind: ModuleKind, name: ModuleName) -> ModuleInfo {
 mod tests {
     use super::*;
 
+    use std::io::Write;
     use std::path::PathBuf;
 
     use crate::jpms::JpmsResolver;
@@ -221,7 +226,7 @@ mod tests {
     use nova_core::{QualifiedName, TypeName};
     use nova_hir::module_info::lower_module_info_source_strict;
     use nova_jdk::JdkIndex;
-    use nova_project::{BuildSystem, JavaConfig, ProjectConfig};
+    use nova_project::{BuildSystem, JavaConfig, JavaVersion, ProjectConfig};
     use nova_project::{JpmsModuleRoot, Module};
     use tempfile::TempDir;
 
@@ -510,5 +515,159 @@ mod tests {
             resolver_b.resolve_qualified_name(&ty),
             Some(TypeName::from("com.example.dep.Foo"))
         );
+    }
+
+    fn minimal_class_bytes(internal_name: &str, interfaces: &[&str]) -> Vec<u8> {
+        fn push_u16(out: &mut Vec<u8>, value: u16) {
+            out.extend_from_slice(&value.to_be_bytes());
+        }
+        fn push_u32(out: &mut Vec<u8>, value: u32) {
+            out.extend_from_slice(&value.to_be_bytes());
+        }
+        fn push_utf8(out: &mut Vec<u8>, s: &str) {
+            out.push(1); // CONSTANT_Utf8
+            push_u16(out, s.len() as u16);
+            out.extend_from_slice(s.as_bytes());
+        }
+        fn push_class(out: &mut Vec<u8>, name_index: u16) {
+            out.push(7); // CONSTANT_Class
+            push_u16(out, name_index);
+        }
+
+        const MAJOR_JAVA_8: u16 = 52;
+        let super_internal = "java/lang/Object";
+
+        // Constant pool:
+        // 1: Utf8 this
+        // 2: Class #1
+        // 3: Utf8 super
+        // 4: Class #3
+        // 5+: (interfaces) Utf8 + Class pairs
+        let cp_count: u16 = (4 + interfaces.len() * 2 + 1) as u16;
+
+        let mut bytes = Vec::new();
+        push_u32(&mut bytes, 0xCAFEBABE);
+        push_u16(&mut bytes, 0); // minor
+        push_u16(&mut bytes, MAJOR_JAVA_8);
+        push_u16(&mut bytes, cp_count);
+
+        push_utf8(&mut bytes, internal_name);
+        push_class(&mut bytes, 1);
+        push_utf8(&mut bytes, super_internal);
+        push_class(&mut bytes, 3);
+
+        let mut interface_class_indices: Vec<u16> = Vec::with_capacity(interfaces.len());
+        for (i, interface) in interfaces.iter().enumerate() {
+            let utf8_index = 5 + (i * 2) as u16;
+            let class_index = utf8_index + 1;
+            push_utf8(&mut bytes, interface);
+            push_class(&mut bytes, utf8_index);
+            interface_class_indices.push(class_index);
+        }
+
+        // access_flags (public + super)
+        push_u16(&mut bytes, 0x0021);
+        // this_class
+        push_u16(&mut bytes, 2);
+        // super_class
+        push_u16(&mut bytes, 4);
+        // interfaces_count
+        push_u16(&mut bytes, interfaces.len() as u16);
+        for idx in interface_class_indices {
+            push_u16(&mut bytes, idx);
+        }
+        // fields_count, methods_count, attributes_count
+        push_u16(&mut bytes, 0);
+        push_u16(&mut bytes, 0);
+        push_u16(&mut bytes, 0);
+
+        bytes
+    }
+
+    fn write_multi_release_jar(
+        jar_path: &std::path::Path,
+        base_class_bytes: &[u8],
+        mr_class_bytes: &[u8],
+    ) {
+        let file = std::fs::File::create(jar_path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::FileOptions::default();
+
+        zip.start_file("META-INF/MANIFEST.MF", options).unwrap();
+        zip.write_all(b"Manifest-Version: 1.0\nMulti-Release: true\n")
+            .unwrap();
+
+        zip.start_file("com/example/mr/Override.class", options)
+            .unwrap();
+        zip.write_all(base_class_bytes).unwrap();
+
+        zip.start_file("META-INF/versions/9/com/example/mr/Override.class", options)
+            .unwrap();
+        zip.write_all(mr_class_bytes).unwrap();
+
+        zip.finish().unwrap();
+    }
+
+    #[test]
+    fn compilation_environment_indexes_multi_release_jars_based_on_workspace_target_release() {
+        let tmp = TempDir::new().unwrap();
+
+        let jar_path = tmp.path().join("mr.jar");
+        let internal_name = "com/example/mr/Override";
+        let base_bytes = minimal_class_bytes(internal_name, &[]);
+        let mr_bytes = minimal_class_bytes(internal_name, &["java/lang/Runnable"]);
+        write_multi_release_jar(&jar_path, &base_bytes, &mr_bytes);
+
+        let module_path = [ClasspathEntry::Jar(jar_path)];
+        let classpath: [ClasspathEntry; 0] = [];
+
+        let jdk = JdkIndex::new();
+        assert_eq!(jdk.info().api_release, None);
+
+        let root = tmp.path().to_path_buf();
+        let mk_project = |target: JavaVersion| ProjectConfig {
+            workspace_root: root.clone(),
+            build_system: BuildSystem::Simple,
+            java: JavaConfig {
+                source: target,
+                target,
+                enable_preview: false,
+            },
+            modules: vec![Module {
+                name: "dummy".to_string(),
+                root: root.clone(),
+                annotation_processing: Default::default(),
+            }],
+            jpms_modules: Vec::new(),
+            jpms_workspace: None,
+            source_roots: Vec::new(),
+            module_path: Vec::new(),
+            classpath: Vec::new(),
+            output_dirs: Vec::new(),
+            dependencies: Vec::new(),
+            workspace_model: None,
+        };
+
+        let project_9 = mk_project(JavaVersion(9));
+        let env_9 =
+            build_jpms_compilation_environment(&jdk, Some(&project_9), &module_path, &classpath, None)
+                .unwrap();
+        let stub_9 = env_9
+            .classpath
+            .types
+            .lookup_binary("com.example.mr.Override")
+            .expect("expected class to be indexed");
+        assert_eq!(stub_9.interfaces, vec!["java.lang.Runnable".to_string()]);
+
+        let project_8 = mk_project(JavaVersion::JAVA_8);
+        let env_8 =
+            build_jpms_compilation_environment(&jdk, Some(&project_8), &module_path, &classpath, None)
+                .unwrap();
+        let stub_8 = env_8
+            .classpath
+            .types
+            .lookup_binary("com.example.mr.Override")
+            .expect("expected class to be indexed");
+        assert!(stub_8.interfaces.is_empty());
     }
 }

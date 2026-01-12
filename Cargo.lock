@@ -4174,6 +4174,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "walkdir",
+ "zip 0.6.6",
 ]
 
 [[package]]
