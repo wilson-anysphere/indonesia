@@ -32,6 +32,7 @@ import {
   SAFE_MODE_EXEMPT_REQUESTS,
   formatError,
   formatSafeModeReason,
+  isMethodNotFoundError,
   isSafeModeError,
   parseSafeModeEnabled,
   parseSafeModeReason,
@@ -1674,7 +1675,7 @@ export async function activate(context: vscode.ExtensionContext) {
             updateSafeModeStatus(enabled);
           }
         } catch (err) {
-          if (isNovaMethodNotFoundError(err)) {
+          if (isMethodNotFoundError(err)) {
             // Best-effort: safe mode endpoints might not exist yet.
           } else if (isSafeModeError(err)) {
             updateSafeModeStatus(true);

@@ -750,6 +750,13 @@ export function registerNovaBuildIntegration(
 
       await refreshBuildDiagnostics(folder);
       void pollBuildStatusAndSchedule(folder);
+
+      // Best-effort: keep the Project Explorer in sync after a manual reload.
+      try {
+        await vscode.commands.executeCommand('nova.refreshProjectExplorer');
+      } catch {
+        // ignore
+      }
     }),
   );
 
