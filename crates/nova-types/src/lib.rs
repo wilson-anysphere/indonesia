@@ -546,13 +546,25 @@ pub trait ClasspathTypes {
 
 impl ClasspathTypes for () {}
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct TypeStore {
     classes: Vec<ClassDef>,
     class_by_name: HashMap<String, ClassId>,
     tombstones: HashMap<String, ClassId>,
     type_params: Vec<TypeParamDef>,
     well_known: Option<WellKnownTypes>,
+}
+
+impl Clone for TypeStore {
+    fn clone(&self) -> Self {
+        Self {
+            classes: self.classes.clone(),
+            class_by_name: self.class_by_name.clone(),
+            tombstones: self.tombstones.clone(),
+            type_params: self.type_params.clone(),
+            well_known: self.well_known.clone(),
+        }
+    }
 }
 
 impl Default for TypeStore {
