@@ -1141,13 +1141,10 @@ fn constant_expression_only_context_reason(expr: &ast::Expression) -> Option<&'s
 fn extract_variable_crosses_execution_boundary(expr: &ast::Expression) -> Option<&'static str> {
     let expr_range = syntax_range(expr.syntax());
 
-    // Walk up to the nearest enclosing statement; if we cross into a lambda/switch execution
-    // context that cannot contain an inserted statement, reject the refactoring.
+    // Walk up the syntax tree; if we cross into a lambda/switch execution context that cannot
+    // contain an inserted statement (without additional wrapping conversions), reject the
+    // refactoring.
     for node in expr.syntax().ancestors() {
-        if ast::Statement::cast(node.clone()).is_some() {
-            break;
-        }
-
         if let Some(lambda) = ast::LambdaExpression::cast(node.clone()) {
             if lambda.body().and_then(|body| body.expression()).is_some() {
                 return Some("cannot extract from expression-bodied lambda");
