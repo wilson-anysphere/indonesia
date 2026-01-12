@@ -9,11 +9,13 @@
 //!   basic diagnostics in query strings.
 
 mod applicability;
+mod analyzer;
 mod entity;
 mod jpql;
 
 pub use applicability::is_jpa_applicable;
 pub use applicability::is_jpa_applicable_with_classpath;
+pub use analyzer::JpaAnalyzer;
 pub use entity::{
     AnalysisResult, Entity, EntityModel, Field, Relationship, RelationshipKind, SourceDiagnostic,
     JPA_MAPPEDBY_MISSING, JPA_MAPPEDBY_NOT_RELATIONSHIP, JPA_MAPPEDBY_WRONG_TARGET, JPA_MISSING_ID,
