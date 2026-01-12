@@ -41,8 +41,10 @@ jobs:
         timeout-minutes: 5
 
       - name: Install cargo-fuzz
-        run: cargo binstall cargo-fuzz --version 0.13.1 --no-confirm
+        run: cargo binstall cargo-fuzz --version 0.13.1 --no-confirm --locked --disable-strategies compile
         timeout-minutes: 5
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: fuzz_syntax_parse
         run: cargo +nightly fuzz run --codegen-units 16 fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
