@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::edit::{TextEdit, TextRange, WorkspaceEdit};
+use crate::edit::{EditError, TextEdit, TextRange, WorkspaceEdit};
 use crate::semantic::{RefactorDatabase, SemanticChange};
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -40,6 +40,13 @@ fn validate_offset(
             len: text.len(),
         });
     }
+    if !text.is_char_boundary(offset) {
+        return Err(EditError::InvalidUtf8Boundary {
+            file: file.clone(),
+            offset,
+        }
+        .into());
+    }
     Ok(())
 }
 
@@ -55,6 +62,20 @@ fn validate_range(
             range,
             len: text.len(),
         });
+    }
+    if !text.is_char_boundary(range.start) {
+        return Err(EditError::InvalidUtf8Boundary {
+            file: file.clone(),
+            offset: range.start,
+        }
+        .into());
+    }
+    if !text.is_char_boundary(range.end) {
+        return Err(EditError::InvalidUtf8Boundary {
+            file: file.clone(),
+            offset: range.end,
+        }
+        .into());
     }
     Ok(())
 }
@@ -275,6 +296,35 @@ mod tests {
                 range: TextRange::new(10, 11),
                 len: 3
             }
+        );
+    }
+
+    #[test]
+    fn move_invalid_utf8_boundary_returns_error_instead_of_panicking() {
+        let src = FileId::new("file:///src");
+        let dst = FileId::new("file:///dst");
+        let mut db = TestDb::default();
+        db.files.insert(src.clone(), "aé".to_string());
+        db.files.insert(dst.clone(), "x".to_string());
+
+        // `é` is 2 bytes in UTF-8; `2` is not a character boundary in "aé" (len=3).
+        let err = materialize(
+            &db,
+            [SemanticChange::Move {
+                file: src.clone(),
+                range: TextRange::new(2, 3),
+                target_file: dst,
+                target_offset: 0,
+            }],
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            err,
+            MaterializeError::Edit(EditError::InvalidUtf8Boundary {
+                file: src,
+                offset: 2,
+            })
         );
     }
 }

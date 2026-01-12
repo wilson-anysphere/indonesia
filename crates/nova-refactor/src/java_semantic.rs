@@ -1594,7 +1594,9 @@ fn record_type_references_in_range(
     if range.start >= range.end || range.end > file_text.len() {
         return;
     }
-    let slice = &file_text[range.start..range.end];
+    let Some(slice) = file_text.get(range.start..range.end) else {
+        return;
+    };
     let mut i = 0usize;
 
     while i < slice.len() {
