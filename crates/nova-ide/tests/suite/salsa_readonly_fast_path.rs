@@ -72,6 +72,10 @@ fn salsa_fast_path_is_read_only() {
         after_first.by_query.contains_key("flow_diagnostics_for_file"),
         "expected nova_ide::core_file_diagnostics to execute flow_diagnostics_for_file at least once"
     );
+    assert!(
+        after_first.by_query.contains_key("import_diagnostics"),
+        "expected nova_ide::core_file_diagnostics to execute import_diagnostics at least once"
+    );
 
     let _ = nova_ide::core_file_diagnostics(&db, file, &cancel);
     let after_second = salsa.query_stats();
@@ -96,5 +100,16 @@ fn salsa_fast_path_is_read_only() {
     assert_eq!(
         second_flow.validated_memoized, first_flow.validated_memoized,
         "flow_diagnostics_for_file should not validate memoized results without any Salsa write"
+    );
+
+    let first_imports = stat(&after_first, "import_diagnostics");
+    let second_imports = stat(&after_second, "import_diagnostics");
+    assert_eq!(
+        second_imports.executions, first_imports.executions,
+        "import_diagnostics should not re-execute without any Salsa write"
+    );
+    assert_eq!(
+        second_imports.validated_memoized, first_imports.validated_memoized,
+        "import_diagnostics should not validate memoized results without any Salsa write"
     );
 }
