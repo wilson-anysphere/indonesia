@@ -159,15 +159,18 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
         // Text fallback: if we can enumerate files and read contents, look for MapStruct usage in
         // sources. This is the most precise signal available without build metadata.
         let files = db.all_files(project);
-        if files.into_iter().any(|file| {
-            db.file_text(file)
-                .is_some_and(|text| looks_like_mapstruct_source(text))
-        }) {
+        if files
+            .into_iter()
+            .any(|file| db.file_text(file).is_some_and(looks_like_mapstruct_source))
+        {
             return true;
         }
 
-        // Structural fallback: if the host database exposes HIR classes but cannot enumerate files
-        // (or does not provide file text), still attempt to detect `@Mapper` usages.
+        // Structural fallback: if the host database exposes HIR classes, look for `@Mapper`.
+        //
+        // Note: IDE adapters may only expose concrete `class` declarations via `all_classes`
+        // (excluding `interface` declarations). File-text scanning above is therefore important for
+        // detecting `@Mapper` interfaces when annotations are not surfaced through `all_classes`.
         let classes = db.all_classes(project);
         classes.into_iter().any(|id| {
             let class = db.class(id);
@@ -180,63 +183,29 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
     }
 
     fn diagnostics(&self, db: &dyn Database, file: nova_vfs::FileId) -> Vec<Diagnostic> {
-        let Some(file_path) = db.file_path(file) else {
+        let Some(text) = db.file_text(file) else {
             return Vec::new();
         };
-        if file_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_none_or(|ext| !ext.eq_ignore_ascii_case("java"))
-        {
+        let Some(path) = db.file_path(file) else {
+            return Vec::new();
+        };
+        if path.extension().and_then(|e| e.to_str()) != Some("java") {
+            return Vec::new();
+        }
+        if !looks_like_mapstruct_source(text) {
             return Vec::new();
         }
 
-        // Determine the workspace/project root for this file. Prefer Nova's shared build marker
-        // discovery and fall back to the file's parent directory when nothing is found.
-        let root = nova_project::workspace_root(file_path)
-            .or_else(|| file_path.parent().map(|p| p.to_path_buf()))
-            .unwrap_or_else(|| file_path.to_path_buf());
+        let Some(root) = nova_project::workspace_root(path) else {
+            return Vec::new();
+        };
 
         let project = db.project_of_file(file);
-        // Missing-dependency diagnostics are keyed off build metadata (Maven/Gradle), not
-        // classpath heuristics.
-        let has_mapstruct_build_dependency = has_mapstruct_build_dependency(db, project);
-
-        let mut out = Vec::new();
-
-        // Best-effort: include diagnostics derived from the in-memory database (open buffers).
-        if let Some(text) = db.file_text(file) {
-            if looks_like_mapstruct_source(text) {
-                let workspace = self.workspace.workspace(db, project);
-                out.extend(
-                    workspace
-                        .analysis
-                        .diagnostics
-                        .iter()
-                        .filter(|d| d.file.as_path() == file_path)
-                        .map(|d| d.diagnostic.clone()),
-                );
-            }
+        let has_mapstruct_dependency = has_mapstruct_build_dependency(db, project);
+        match crate::diagnostics_for_file(&root, path, text, has_mapstruct_dependency) {
+            Ok(diags) => diags,
+            Err(_) => Vec::new(),
         }
-
-        // Add filesystem-based diagnostics derived from scanning the workspace on disk.
-        if let Some(analysis) = self
-            .fs_cache
-            .analysis_for_root(&root, has_mapstruct_build_dependency)
-        {
-            for diag in analysis
-                .diagnostics
-                .iter()
-                .filter(|d| d.file.as_path() == file_path)
-                .map(|d| d.diagnostic.clone())
-            {
-                if !out.contains(&diag) {
-                    out.push(diag);
-                }
-            }
-        }
-
-        out
     }
 
     fn navigation(
