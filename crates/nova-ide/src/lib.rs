@@ -13,6 +13,7 @@ pub mod decompile;
 pub mod diagnostics;
 pub mod extensions;
 pub mod format;
+pub mod framework_class_data;
 pub mod framework_cache;
 pub mod framework_db;
 pub mod java_semantics;
