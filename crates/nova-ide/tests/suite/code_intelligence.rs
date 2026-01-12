@@ -1316,6 +1316,56 @@ fn completion_new_expression_adds_import_edit_for_arraylist_without_imports() {
 }
 
 #[test]
+fn completion_new_expression_adds_import_after_package_declaration() {
+    let (db, file, pos) = fixture("package com.foo;\nclass A { void m(){ new Arr<|> } }");
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "ArrayList")
+        .expect("expected ArrayList completion item");
+
+    let edits = item
+        .additional_text_edits
+        .as_ref()
+        .expect("expected additional_text_edits for ArrayList completion");
+
+    let import_edit = edits
+        .iter()
+        .find(|e| e.new_text == "import java.util.ArrayList;\n")
+        .expect("expected import edit for java.util.ArrayList");
+
+    assert_eq!(import_edit.range.start, lsp_types::Position::new(1, 0));
+    assert_eq!(import_edit.range.end, lsp_types::Position::new(1, 0));
+}
+
+#[test]
+fn completion_new_expression_adds_import_after_existing_imports() {
+    let (db, file, pos) = fixture(
+        "package com.foo;\nimport java.util.List;\nclass A { void m(){ new Arr<|> } }",
+    );
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "ArrayList")
+        .expect("expected ArrayList completion item");
+
+    let edits = item
+        .additional_text_edits
+        .as_ref()
+        .expect("expected additional_text_edits for ArrayList completion");
+
+    let import_edit = edits
+        .iter()
+        .find(|e| e.new_text == "import java.util.ArrayList;\n")
+        .expect("expected import edit for java.util.ArrayList");
+
+    assert_eq!(import_edit.range.start, lsp_types::Position::new(2, 0));
+    assert_eq!(import_edit.range.end, lsp_types::Position::new(2, 0));
+}
+
+#[test]
 fn completion_new_expression_includes_string_without_imports() {
     let (db, file, pos) = fixture(
         r#"
