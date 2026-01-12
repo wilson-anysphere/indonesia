@@ -2,9 +2,9 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use nova_project::{
-    load_project, load_project_with_options, load_workspace_model,
-    load_workspace_model_with_options, BuildSystem, ClasspathEntryKind, JavaVersion,
-    LanguageLevelProvenance, LoadOptions, OutputDirKind, SourceRootKind, SourceRootOrigin,
+    load_project_with_options, load_workspace_model_with_options, BuildSystem, ClasspathEntryKind,
+    JavaVersion, LanguageLevelProvenance, LoadOptions, OutputDirKind, SourceRootKind,
+    SourceRootOrigin,
 };
 use tempfile::tempdir;
 

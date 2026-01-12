@@ -18,10 +18,6 @@ fn maven_workspace_model_includes_transitive_external_deps_of_workspace_module_d
     let maven_repo = root.join("m2");
     fs::create_dir_all(&maven_repo).expect("mkdir m2");
 
-    let guava_jar = maven_repo.join("com/google/guava/guava/33.0.0-jre/guava-33.0.0-jre.jar");
-    fs::create_dir_all(guava_jar.parent().expect("guava jar parent")).expect("mkdir guava jar dir");
-    fs::write(&guava_jar, b"").expect("write guava jar placeholder");
-
     // Root aggregator with two workspace modules.
     write_file(
         &root.join("pom.xml"),
