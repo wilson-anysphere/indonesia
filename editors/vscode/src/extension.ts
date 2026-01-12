@@ -2051,12 +2051,12 @@ export async function activate(context: vscode.ExtensionContext) {
   registerNovaBuildFileWatchers(context, requestWithFallback, {
     output: serverOutput,
     formatError,
-    isMethodNotFoundError,
+    isMethodNotFoundError: isNovaMethodNotFoundError,
   });
   registerNovaBuildIntegration(context, {
     request: requestWithFallback,
     formatError,
-    isMethodNotFoundError,
+    isMethodNotFoundError: isNovaMethodNotFoundError,
     projectModelCache,
   });
 
@@ -2196,7 +2196,7 @@ async function sendNovaRequest<R>(
     }
     return result;
   } catch (err) {
-    if (method.startsWith('nova/') && isMethodNotFoundError(err)) {
+    if (method.startsWith('nova/') && isNovaMethodNotFoundError(err)) {
       if (opts.allowMethodFallback) {
         throw err;
       } else {
