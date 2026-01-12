@@ -1999,6 +1999,10 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
     Some(path)
 }
 
+fn exists_as_jar(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|meta| meta.is_file())
+}
+
 fn resolve_snapshot_jar_file_name(
     version_dir: &Path,
     artifact_id: &str,
