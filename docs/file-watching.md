@@ -30,6 +30,18 @@ consumer receives a rescan signal, it should fall back to walking/relisting the 
 rebuilding its view of the filesystem (treat watcher events as a hint, not an authoritative source
 of truth).
 
+## Watch paths and modes (`WatchMode`)
+
+`nova_vfs::FileWatcher` is defined in terms of watching **paths**, not just “workspace roots”.
+
+- Directory paths can be watched:
+  - **Recursively** (`WatchMode::Recursive`) to include all descendants.
+  - **Non-recursively** (`WatchMode::NonRecursive`) to watch only the directory itself.
+- File paths are effectively always watched **non-recursively**.
+
+`WatchMode` is owned by `nova-vfs` so higher layers can express “recursive vs non-recursive” without
+depending on `notify`’s backend-specific enums.
+
 ## Dynamic watch roots (workspace reloads)
 
 In `nova-workspace`, the set of watch roots can change after a project reload. For example:
