@@ -795,6 +795,7 @@ pub fn extract_variable(
                 "cannot extract from explicit constructor invocation (`this(...)` / `super(...)`)",
         });
     }
+    reject_extract_variable_written_deps_in_same_statement(&expr, &stmt)?;
     reject_unsafe_extract_variable_context(&expr, &stmt)?;
     reject_extract_variable_eval_order_guard(text, selection, &expr, &stmt)?;
 
@@ -1012,6 +1013,142 @@ pub fn extract_variable(
     let mut edit = WorkspaceEdit::new(edits);
     edit.normalize()?;
     Ok(edit)
+}
+
+const EXTRACT_VARIABLE_WRITES_BEFORE_SELECTION_REASON: &str =
+    "cannot extract expression that depends on a variable written earlier in the same statement";
+
+fn reject_extract_variable_written_deps_in_same_statement(
+    expr: &ast::Expression,
+    stmt: &ast::Statement,
+) -> Result<(), RefactorError> {
+    let deps = collect_simple_name_dependencies(expr);
+    if deps.is_empty() {
+        return Ok(());
+    }
+
+    let expr_range = syntax_range(expr.syntax());
+    let selection_start = expr_range.start;
+
+    for node in stmt.syntax().descendants() {
+        if let Some(assignment) = ast::AssignmentExpression::cast(node.clone()) {
+            let Some(lhs) = assignment.lhs() else {
+                continue;
+            };
+            let Some(lhs_name) = simple_name_from_expression(&lhs) else {
+                continue;
+            };
+
+            // Only consider assignments that syntactically occur before the selection.
+            let lhs_range = syntax_range(lhs.syntax());
+            if lhs_range.end > selection_start {
+                continue;
+            }
+
+            // Special-case: `x = ...` writes to `x` *after* evaluating the RHS. When the selection
+            // is inside the RHS, treat this as a write-after-selection (safe w.r.t. this guard).
+            if let Some(rhs) = assignment.rhs() {
+                let rhs_range = syntax_range(rhs.syntax());
+                if contains_range(rhs_range, expr_range) {
+                    continue;
+                }
+            }
+
+            if deps.contains(&lhs_name) {
+                return Err(RefactorError::ExtractNotSupported {
+                    reason: EXTRACT_VARIABLE_WRITES_BEFORE_SELECTION_REASON,
+                });
+            }
+        }
+
+        if let Some(unary) = ast::UnaryExpression::cast(node) {
+            if !unary_is_inc_or_dec(&unary) {
+                continue;
+            }
+
+            let Some(operand) = unary.operand() else {
+                continue;
+            };
+            let Some(name) = simple_name_from_expression(&operand) else {
+                continue;
+            };
+
+            let unary_range = syntax_range(unary.syntax());
+            if unary_range.end > selection_start {
+                continue;
+            }
+
+            if deps.contains(&name) {
+                return Err(RefactorError::ExtractNotSupported {
+                    reason: EXTRACT_VARIABLE_WRITES_BEFORE_SELECTION_REASON,
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn collect_simple_name_dependencies(expr: &ast::Expression) -> HashSet<String> {
+    let mut out = HashSet::new();
+
+    for node in expr.syntax().descendants() {
+        let Some(name_expr) = ast::NameExpression::cast(node.clone()) else {
+            continue;
+        };
+
+        // Avoid obvious false positives: for `foo(x)` the callee `foo` is a method name, not a
+        // variable read.
+        if let Some(parent) = node.parent() {
+            if let Some(call) = ast::MethodCallExpression::cast(parent.clone()) {
+                if call.callee().is_some_and(|callee| callee.syntax() == &node) {
+                    continue;
+                }
+            }
+        }
+
+        if let Some(name) = simple_name_from_name_expression(&name_expr) {
+            out.insert(name);
+        }
+    }
+
+    out
+}
+
+fn simple_name_from_expression(expr: &ast::Expression) -> Option<String> {
+    match expr {
+        ast::Expression::NameExpression(name_expr) => simple_name_from_name_expression(name_expr),
+        _ => None,
+    }
+}
+
+fn simple_name_from_name_expression(expr: &ast::NameExpression) -> Option<String> {
+    let mut name: Option<String> = None;
+    let mut has_dot = false;
+
+    for tok in expr
+        .syntax()
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .filter(|tok| !tok.kind().is_trivia())
+    {
+        if tok.kind() == SyntaxKind::Dot {
+            has_dot = true;
+        }
+
+        if tok.kind().is_identifier_like() {
+            if name.is_some() {
+                return None;
+            }
+            name = Some(tok.text().to_string());
+        }
+    }
+
+    if has_dot {
+        return None;
+    }
+
+    name
 }
 
 pub struct InlineVariableParams {

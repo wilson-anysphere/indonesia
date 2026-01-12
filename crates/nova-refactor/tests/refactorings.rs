@@ -673,6 +673,88 @@ fn extract_variable_allows_name_that_matches_field_when_later_access_is_qualifie
 }
 
 #[test]
+fn extract_variable_rejects_dependency_written_earlier_in_same_statement() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  void m(int x) {
+    foo(x = 1, /*select*/x/*end*/);
+  }
+
+  void foo(int a, int b) {}
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src)]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "tmp".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason
+                    == "cannot extract expression that depends on a variable written earlier in the same statement"
+        ),
+        "expected ExtractNotSupported, got: {err:?}"
+    );
+}
+
+#[test]
+fn extract_variable_allows_selection_inside_assignment_rhs() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  int x;
+
+  int foo(int a) { return a; }
+
+  void m() {
+    x = foo(/*select*/x/*end*/);
+  }
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "tmp".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  int x;
+
+  int foo(int a) { return a; }
+
+  void m() {
+    var tmp = x;
+    x = foo(tmp);
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn extract_variable_rejects_instanceof_pattern_expression() {
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
