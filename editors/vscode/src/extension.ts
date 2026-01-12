@@ -16,7 +16,6 @@ import { registerNovaProjectExplorer } from './projectExplorer';
 import { ProjectModelCache } from './projectModelCache';
 import { registerNovaTestDebugRunProfile } from './testDebug';
 import { registerNovaServerCommands, type NovaServerCommandHandlers } from './serverCommands';
-import { toDidCreateFilesParams, toDidDeleteFilesParams, toDidRenameFilesParams } from './fileOperations';
 import { getNovaWatchedFileGlobPatterns } from './fileWatchers';
 import {
   formatUnsupportedNovaMethodMessage,
@@ -411,85 +410,7 @@ export async function activate(context: vscode.ExtensionContext) {
   const fileWatchers = getNovaWatchedFileGlobPatterns().map((pattern) => vscode.workspace.createFileSystemWatcher(pattern));
   context.subscriptions.push(...fileWatchers);
 
-  // VS Code's file system watcher events can miss the file operation notifications
-  // (create/delete/rename) expected by Nova's analysis layer. Forward explicit
-  // file operation events for file:// URIs while the client is running.
-  context.subscriptions.push(
-    vscode.workspace.onDidCreateFiles((event) => {
-      const languageClient = client;
-      if (!languageClient || languageClient.state !== State.Running) {
-        return;
-      }
-
-      // For safety, only forward local file creates. Non-file schemes (e.g.
-      // untitled:) are not meaningful to the server's filesystem-backed analysis.
-      const files = event.files.filter((uri) => uri.scheme === 'file').map((uri) => uri.toString());
-
-      if (files.length === 0) {
-        return;
-      }
-
-      try {
-        void languageClient.sendNotification('workspace/didCreateFiles', toDidCreateFilesParams(files));
-      } catch {
-        // Best-effort: ignore failures if the client/server is shutting down.
-      }
-    }),
-  );
-
-  context.subscriptions.push(
-    vscode.workspace.onDidDeleteFiles((event) => {
-      const languageClient = client;
-      if (!languageClient || languageClient.state !== State.Running) {
-        return;
-      }
-
-      // For safety, only forward local file deletes. Non-file schemes (e.g.
-      // untitled:) are not meaningful to the server's filesystem-backed analysis.
-      const files = event.files.filter((uri) => uri.scheme === 'file').map((uri) => uri.toString());
-
-      if (files.length === 0) {
-        return;
-      }
-
-      try {
-        void languageClient.sendNotification('workspace/didDeleteFiles', toDidDeleteFilesParams(files));
-      } catch {
-        // Best-effort: ignore failures if the client/server is shutting down.
-      }
-    }),
-  );
-
-  // VS Code's file system watcher events may represent renames as delete+create,
-  // and can miss `workspace/didRenameFiles` semantics required by Nova's analysis
-  // layer.
-  context.subscriptions.push(
-    vscode.workspace.onDidRenameFiles((event) => {
-      const languageClient = client;
-      if (!languageClient || languageClient.state !== State.Running) {
-        return;
-      }
-
-      // For safety, only forward local file renames. Non-file schemes (e.g.
-      // untitled:) are not meaningful to the server's filesystem-backed analysis.
-      const files = event.files
-        .filter(({ oldUri, newUri }) => oldUri.scheme === 'file' && newUri.scheme === 'file')
-        .map(({ oldUri, newUri }) => ({ oldUri: oldUri.toString(), newUri: newUri.toString() }));
-
-      if (files.length === 0) {
-        return;
-      }
-
-      try {
-        void languageClient.sendNotification('workspace/didRenameFiles', toDidRenameFilesParams(files));
-      } catch {
-        // Best-effort: ignore failures if the client/server is shutting down.
-      }
-    }),
-  );
-
   let serverCommandHandlers: NovaServerCommandHandlers | undefined;
-
   const clientOptions: LanguageClientOptions = {
     documentSelector,
     outputChannel: serverOutput,
