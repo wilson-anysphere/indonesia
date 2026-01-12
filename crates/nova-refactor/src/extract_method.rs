@@ -76,6 +76,11 @@ pub enum ExtractMethodIssue {
     NameCollision { name: String },
     MultipleReturnValues { names: Vec<String> },
     IllegalControlFlow { hazard: ControlFlowHazard },
+    /// The selection references a local type (a class/interface/enum/record/@interface declared
+    /// inside the enclosing method/constructor/initializer). Local types are only in scope within
+    /// that body/block, but Extract Method inserts the extracted method at the type level where
+    /// the local type is out of scope.
+    ReferencesLocalType { name: String },
     UnknownType { name: String },
 }
 
@@ -149,6 +154,7 @@ impl ExtractMethod {
         };
 
         let enclosing_type_body = find_enclosing_type_body(method.syntax());
+        let local_type_names = collect_local_type_names(&method_body);
 
         let mut issues = Vec::new();
         if !is_valid_java_identifier(&self.name) {
@@ -196,6 +202,14 @@ impl ExtractMethod {
                     hazards: Vec::new(),
                     issues,
                 });
+            }
+
+            if let Some(name) = find_referenced_local_type_name_in_range(
+                method_body.syntax(),
+                selection,
+                &local_type_names,
+            ) {
+                issues.push(ExtractMethodIssue::ReferencesLocalType { name });
             }
 
             let mut hazards = Vec::new();
@@ -294,6 +308,14 @@ impl ExtractMethod {
                 hazards: Vec::new(),
                 issues,
             });
+        }
+
+        if let Some(name) = find_referenced_local_type_name_in_range(
+            method_body.syntax(),
+            selection,
+            &local_type_names,
+        ) {
+            issues.push(ExtractMethodIssue::ReferencesLocalType { name });
         }
 
         if expression_has_local_mutation(&selected_expr) {
@@ -790,6 +812,77 @@ fn type_body_has_method_named(type_body: &EnclosingTypeBody, name: &str) -> bool
             };
             method.name_token().is_some_and(|tok| tok.text() == name)
         })
+}
+
+fn collect_local_type_names(body: &ast::Block) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for stmt in body
+        .syntax()
+        .descendants()
+        .filter_map(ast::LocalTypeDeclarationStatement::cast)
+    {
+        let Some(decl) = stmt.declaration() else {
+            continue;
+        };
+        let name_tok = match decl {
+            ast::TypeDeclaration::ClassDeclaration(it) => it.name_token(),
+            ast::TypeDeclaration::InterfaceDeclaration(it) => it.name_token(),
+            ast::TypeDeclaration::EnumDeclaration(it) => it.name_token(),
+            ast::TypeDeclaration::RecordDeclaration(it) => it.name_token(),
+            ast::TypeDeclaration::AnnotationTypeDeclaration(it) => it.name_token(),
+            ast::TypeDeclaration::EmptyDeclaration(_) => None,
+            _ => None,
+        };
+        let Some(name_tok) = name_tok else {
+            continue;
+        };
+        names.insert(name_tok.text().to_string());
+    }
+    names
+}
+
+fn find_referenced_local_type_name_in_range(
+    enclosing_body: &nova_syntax::SyntaxNode,
+    selection: TextRange,
+    local_type_names: &HashSet<String>,
+) -> Option<String> {
+    if local_type_names.is_empty() {
+        return None;
+    }
+
+    // Conservative heuristic: if any identifier-like token in the selection matches a local type
+    // declared in the enclosing body, treat it as a reference.
+    //
+    // This may reject some otherwise-valid selections (e.g. a variable whose name happens to match
+    // a local type), but prevents Extract Method from generating uncompilable code.
+    let mut idents: Vec<(String, TextRange)> = Vec::new();
+    for tok in enclosing_body
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+    {
+        if !tok.kind().is_identifier_like() {
+            continue;
+        }
+        let range = tok.text_range();
+        let start = u32::from(range.start()) as usize;
+        let end = u32::from(range.end()) as usize;
+        if start < selection.start || end > selection.end {
+            continue;
+        }
+        idents.push((tok.text().to_string(), TextRange::new(start, end)));
+    }
+    idents.sort_by(|a, b| {
+        a.1.start
+            .cmp(&b.1.start)
+            .then_with(|| a.1.end.cmp(&b.1.end))
+    });
+
+    for (name, _) in idents {
+        if local_type_names.contains(&name) {
+            return Some(name);
+        }
+    }
+    None
 }
 
 fn collect_control_flow_hazards(
