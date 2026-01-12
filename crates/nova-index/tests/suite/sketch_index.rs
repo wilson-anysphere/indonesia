@@ -81,6 +81,26 @@ fn method_param_splitting_handles_generic_commas_and_string_literals() {
 }
 
 #[test]
+fn method_param_parsing_ignores_block_comments_with_parens() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        "A.java".to_string(),
+        r#"class A {
+    void baz(int a /* ) */ , int b) {}
+}
+"#
+        .to_string(),
+    );
+    let index = Index::new(files);
+
+    let sig = vec!["int".to_string(), "int".to_string()];
+    let id = index
+        .method_overload_by_param_types("A", "baz", &sig)
+        .expect("baz(int, int) should be indexed");
+    assert_eq!(index.method_param_types(id).unwrap(), ["int", "int"]);
+}
+
+#[test]
 fn fields_are_indexed_including_multiple_declarators() {
     let mut files = BTreeMap::new();
     files.insert(

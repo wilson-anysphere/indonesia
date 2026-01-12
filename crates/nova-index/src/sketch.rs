@@ -468,6 +468,36 @@ fn skip_java_char(bytes: &[u8], mut i: usize) -> usize {
     bytes.len()
 }
 
+fn trim_end_ws_and_comments(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let mut end = bytes.len();
+    loop {
+        while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+            end -= 1;
+        }
+        if end < 2 {
+            return end;
+        }
+
+        // Strip trailing block comments: `/* ... */`
+        if bytes[end - 2] == b'*' && bytes[end - 1] == b'/' {
+            if let Some(start) = text[..end - 2].rfind("/*") {
+                end = start;
+                continue;
+            }
+        }
+
+        // Strip trailing line comments: `// ...`
+        let line_start = text[..end].rfind('\n').map(|p| p + 1).unwrap_or(0);
+        if let Some(pos) = text[line_start..end].rfind("//") {
+            end = line_start + pos;
+            continue;
+        }
+
+        return end;
+    }
+}
+
 fn find_identifier_occurrences(text: &str, name: &str) -> Vec<TextRange> {
     let bytes = text.as_bytes();
     let mut out = Vec::new();
@@ -805,22 +835,6 @@ fn parse_members_in_class(
                 i = skip_java_char(bytes, i);
                 continue;
             }
-            b'\'' => {
-                // Skip char literals.
-                i += 1;
-                while i < bytes.len() {
-                    if bytes[i] == b'\\' {
-                        i += 2;
-                        continue;
-                    }
-                    if bytes[i] == b'\'' {
-                        i += 1;
-                        break;
-                    }
-                    i += 1;
-                }
-                continue;
-            }
             _ => {}
         }
 
@@ -961,19 +975,23 @@ fn find_matching_paren(text: &str, open_paren: usize) -> Option<usize> {
                 i = skip_java_char(bytes, i);
                 continue;
             }
-            b'\'' => {
-                // Skip char literals.
-                i += 1;
-                while i < bytes.len() {
-                    if bytes[i] == b'\\' {
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
+                i += 2;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'*' => {
+                i += 2;
+                while i + 1 < bytes.len() {
+                    if bytes[i] == b'*' && bytes[i + 1] == b'/' {
                         i += 2;
-                        continue;
-                    }
-                    if bytes[i] == b'\'' {
                         break;
                     }
                     i += 1;
                 }
+                continue;
             }
             _ => {}
         }
@@ -1020,17 +1038,12 @@ fn parse_fields_in_statement(
 
 fn last_identifier_range(text: &str) -> Option<(usize, usize)> {
     let bytes = text.as_bytes();
-    let mut end = bytes.len();
-    while end > 0 && bytes[end - 1].is_ascii_whitespace() {
-        end -= 1;
-    }
+    let mut end = trim_end_ws_and_comments(text);
 
     // Support `name[]` style declarators by stripping trailing `[]` pairs.
     while end >= 2 && &text[end - 2..end] == "[]" {
         end -= 2;
-        while end > 0 && bytes[end - 1].is_ascii_whitespace() {
-            end -= 1;
-        }
+        end = trim_end_ws_and_comments(&text[..end]);
     }
 
     if end == 0 {
@@ -1075,18 +1088,12 @@ fn parse_param_list(params_src: &str) -> (Vec<String>, Vec<String>) {
 
 fn parse_single_param(param: &str) -> (String, Option<String>) {
     // Strip any trailing array suffix on the name token (e.g. `int x[]`).
-    let bytes = param.as_bytes();
-    let mut end = bytes.len();
-    while end > 0 && bytes[end - 1].is_ascii_whitespace() {
-        end -= 1;
-    }
+    let mut end = trim_end_ws_and_comments(param);
     let mut array_suffix = 0usize;
     while end >= 2 && &param[end - 2..end] == "[]" {
         array_suffix += 1;
         end -= 2;
-        while end > 0 && bytes[end - 1].is_ascii_whitespace() {
-            end -= 1;
-        }
+        end = trim_end_ws_and_comments(&param[..end]);
     }
     let core = &param[..end];
     let Some((name_start, name_end)) = last_identifier_range(core) else {
