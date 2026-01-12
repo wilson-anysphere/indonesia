@@ -19,7 +19,7 @@ fn compute_gradle_fingerprint(workspace_root: &Path) -> String {
 #[test]
 fn gradle_snapshot_settings_kts_projectdir_override_applies_snapshot_by_project_path() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let workspace_root = tmp.path();
+    let workspace_root = tmp.path().canonicalize().expect("canonicalize tempdir");
 
     std::fs::write(
         workspace_root.join("settings.gradle.kts"),
@@ -43,7 +43,7 @@ fn gradle_snapshot_settings_kts_projectdir_override_applies_snapshot_by_project_
     std::fs::create_dir_all(jar.parent().unwrap()).unwrap();
     std::fs::write(&jar, b"not a real jar").unwrap();
 
-    let fingerprint = compute_gradle_fingerprint(workspace_root);
+    let fingerprint = compute_gradle_fingerprint(&workspace_root);
     let snapshot_path = workspace_root.join(GRADLE_SNAPSHOT_REL_PATH);
     std::fs::create_dir_all(snapshot_path.parent().unwrap()).unwrap();
 
@@ -83,7 +83,8 @@ fn gradle_snapshot_settings_kts_projectdir_override_applies_snapshot_by_project_
         ..LoadOptions::default()
     };
 
-    let project = load_project_with_options(workspace_root, &options).expect("load gradle project");
+    let project =
+        load_project_with_options(&workspace_root, &options).expect("load gradle project");
     assert_eq!(project.build_system, BuildSystem::Gradle);
 
     let app_module = project
@@ -119,7 +120,7 @@ fn gradle_snapshot_settings_kts_projectdir_override_applies_snapshot_by_project_
     );
 
     let model =
-        load_workspace_model_with_options(workspace_root, &options).expect("load gradle model");
+        load_workspace_model_with_options(&workspace_root, &options).expect("load gradle model");
     let app = model
         .module_by_id("gradle::app")
         .expect("app module config");
