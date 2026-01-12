@@ -18,8 +18,12 @@ type BuildSystemKind = ProjectModelUnit['kind'];
 
 type ListKind = 'sourceRoots' | 'classpath' | 'modulePath';
 
-type ConfigurationListKind = 'outputDirs' | 'dependencies';
+type ConfigurationListKind = 'modules' | 'sourceRoots' | 'classpath' | 'modulePath' | 'outputDirs' | 'dependencies';
 
+type ConfigurationModuleEntry = NonNullable<ProjectConfigurationResponse['modules']>[number];
+type ConfigurationSourceRootEntry = NonNullable<ProjectConfigurationResponse['sourceRoots']>[number];
+type ConfigurationClasspathEntry = NonNullable<ProjectConfigurationResponse['classpath']>[number];
+type ConfigurationModulePathEntry = NonNullable<ProjectConfigurationResponse['modulePath']>[number];
 type ConfigurationOutputDirEntry = NonNullable<ProjectConfigurationResponse['outputDirs']>[number];
 type ConfigurationDependencyEntry = NonNullable<ProjectConfigurationResponse['dependencies']>[number];
 
@@ -30,6 +34,38 @@ type NovaProjectExplorerNode =
   | { type: 'workspaceInfo'; id: string; label: string; description?: string }
   | { type: 'unit'; id: string; workspace: vscode.WorkspaceFolder; projectRoot: string; unit: ProjectModelUnit }
   | { type: 'unitInfo'; id: string; label: string; description?: string }
+  | {
+      type: 'configGroup';
+      id: string;
+      label: string;
+      workspace: vscode.WorkspaceFolder;
+      listKind: 'modules';
+      entries: ConfigurationModuleEntry[];
+    }
+  | {
+      type: 'configGroup';
+      id: string;
+      label: string;
+      workspace: vscode.WorkspaceFolder;
+      listKind: 'sourceRoots';
+      entries: ConfigurationSourceRootEntry[];
+    }
+  | {
+      type: 'configGroup';
+      id: string;
+      label: string;
+      workspace: vscode.WorkspaceFolder;
+      listKind: 'classpath';
+      entries: ConfigurationClasspathEntry[];
+    }
+  | {
+      type: 'configGroup';
+      id: string;
+      label: string;
+      workspace: vscode.WorkspaceFolder;
+      listKind: 'modulePath';
+      entries: ConfigurationModulePathEntry[];
+    }
   | {
       type: 'configGroup';
       id: string;
@@ -52,7 +88,13 @@ type NovaProjectExplorerNode =
       label: string;
       workspace: vscode.WorkspaceFolder;
       listKind: ConfigurationListKind;
-      entries: ConfigurationOutputDirEntry[] | ConfigurationDependencyEntry[];
+      entries:
+        | ConfigurationModuleEntry[]
+        | ConfigurationSourceRootEntry[]
+        | ConfigurationClasspathEntry[]
+        | ConfigurationModulePathEntry[]
+        | ConfigurationOutputDirEntry[]
+        | ConfigurationDependencyEntry[];
       start: number;
       end: number;
     }
@@ -489,6 +531,46 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
           });
         }
 
+        const modules = Array.isArray(config.modules) ? config.modules.filter(Boolean) : [];
+        nodes.push({
+          type: 'configGroup',
+          id: `${element.id}:modules`,
+          label: `Modules (${modules.length})`,
+          workspace,
+          listKind: 'modules',
+          entries: modules,
+        });
+
+        const sourceRoots = Array.isArray(config.sourceRoots) ? config.sourceRoots.filter(Boolean) : [];
+        nodes.push({
+          type: 'configGroup',
+          id: `${element.id}:sourceRoots`,
+          label: `Source Roots (${sourceRoots.length})`,
+          workspace,
+          listKind: 'sourceRoots',
+          entries: sourceRoots,
+        });
+
+        const classpath = Array.isArray(config.classpath) ? config.classpath.filter(Boolean) : [];
+        nodes.push({
+          type: 'configGroup',
+          id: `${element.id}:classpath`,
+          label: `Classpath (${classpath.length})`,
+          workspace,
+          listKind: 'classpath',
+          entries: classpath,
+        });
+
+        const modulePath = Array.isArray(config.modulePath) ? config.modulePath.filter(Boolean) : [];
+        nodes.push({
+          type: 'configGroup',
+          id: `${element.id}:modulePath`,
+          label: `Module Path (${modulePath.length})`,
+          workspace,
+          listKind: 'modulePath',
+          entries: modulePath,
+        });
+
         const outputDirs = Array.isArray(config.outputDirs) ? config.outputDirs.filter(Boolean) : [];
         nodes.push({
           type: 'configGroup',
@@ -605,34 +687,24 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
       }
 
       case 'configGroup': {
-        if (element.listKind === 'outputDirs') {
-          const entries = element.entries;
-          if (entries.length <= CONFIG_LIST_PAGE_SIZE) {
-            return entries.map((entry, idx) => createConfigOutputDirNode(element, entry, idx));
+        if (element.entries.length <= CONFIG_LIST_PAGE_SIZE) {
+          switch (element.listKind) {
+            case 'modules':
+              return element.entries.map((entry, idx) => createConfigModuleNode(element, entry, idx));
+            case 'sourceRoots':
+              return element.entries.map((entry, idx) => createConfigSourceRootNode(element, entry, idx));
+            case 'classpath':
+              return element.entries.map((entry, idx) => createConfigClasspathEntryNode(element, entry, idx));
+            case 'modulePath':
+              return element.entries.map((entry, idx) => createConfigModulePathEntryNode(element, entry, idx));
+            case 'outputDirs':
+              return element.entries.map((entry, idx) => createConfigOutputDirNode(element, entry, idx));
+            case 'dependencies':
+              return element.entries.map((entry, idx) => createConfigDependencyNode(element, entry, idx));
           }
-
-          const chunks: NovaProjectExplorerNode[] = [];
-          for (let start = 0; start < entries.length; start += CONFIG_LIST_PAGE_SIZE) {
-            const end = Math.min(entries.length, start + CONFIG_LIST_PAGE_SIZE);
-            chunks.push({
-              type: 'configChunk',
-              id: `${element.id}:chunk:${start}-${end}`,
-              label: `Entries ${start + 1}\u2013${end}`,
-              workspace: element.workspace,
-              listKind: element.listKind,
-              entries,
-              start,
-              end,
-            });
-          }
-          return chunks;
         }
 
         const entries = element.entries;
-        if (entries.length <= CONFIG_LIST_PAGE_SIZE) {
-          return entries.map((entry, idx) => createConfigDependencyNode(element, entry, idx));
-        }
-
         const chunks: NovaProjectExplorerNode[] = [];
         for (let start = 0; start < entries.length; start += CONFIG_LIST_PAGE_SIZE) {
           const end = Math.min(entries.length, start + CONFIG_LIST_PAGE_SIZE);
@@ -652,10 +724,32 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
 
       case 'configChunk': {
         const slice = element.entries.slice(element.start, element.end);
-        if (element.listKind === 'outputDirs') {
-          return slice.map((entry, idx) => createConfigOutputDirNode(element, entry as ConfigurationOutputDirEntry, element.start + idx));
+        switch (element.listKind) {
+          case 'modules':
+            return slice.map((entry, idx) =>
+              createConfigModuleNode(element, entry as ConfigurationModuleEntry, element.start + idx),
+            );
+          case 'sourceRoots':
+            return slice.map((entry, idx) =>
+              createConfigSourceRootNode(element, entry as ConfigurationSourceRootEntry, element.start + idx),
+            );
+          case 'classpath':
+            return slice.map((entry, idx) =>
+              createConfigClasspathEntryNode(element, entry as ConfigurationClasspathEntry, element.start + idx),
+            );
+          case 'modulePath':
+            return slice.map((entry, idx) =>
+              createConfigModulePathEntryNode(element, entry as ConfigurationModulePathEntry, element.start + idx),
+            );
+          case 'outputDirs':
+            return slice.map((entry, idx) =>
+              createConfigOutputDirNode(element, entry as ConfigurationOutputDirEntry, element.start + idx),
+            );
+          case 'dependencies':
+            return slice.map((entry, idx) =>
+              createConfigDependencyNode(element, entry as ConfigurationDependencyEntry, element.start + idx),
+            );
         }
-        return slice.map((entry, idx) => createConfigDependencyNode(element, entry as ConfigurationDependencyEntry, element.start + idx));
       }
 
       case 'workspaceInfo':
@@ -717,7 +811,26 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
           count > 0 ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None,
         );
         item.id = element.id;
-        item.iconPath = element.listKind === 'outputDirs' ? vscode.ThemeIcon.Folder : new vscode.ThemeIcon('package');
+        switch (element.listKind) {
+          case 'modules':
+            item.iconPath = new vscode.ThemeIcon('project');
+            break;
+          case 'sourceRoots':
+            item.iconPath = vscode.ThemeIcon.Folder;
+            break;
+          case 'classpath':
+            item.iconPath = new vscode.ThemeIcon('library');
+            break;
+          case 'modulePath':
+            item.iconPath = new vscode.ThemeIcon('folder-library');
+            break;
+          case 'outputDirs':
+            item.iconPath = vscode.ThemeIcon.Folder;
+            break;
+          case 'dependencies':
+            item.iconPath = new vscode.ThemeIcon('package');
+            break;
+        }
         return item;
       }
 
@@ -903,6 +1016,139 @@ function createConfigOutputDirNode(
     command: uri
       ? {
           title: 'Reveal Output Dir',
+          command: COMMAND_REVEAL_PATH,
+          arguments: [uri],
+        }
+      : undefined,
+  };
+}
+
+function createConfigModuleNode(
+  parent: { id: string; workspace: vscode.WorkspaceFolder },
+  entry: ConfigurationModuleEntry,
+  idx: number,
+): NovaProjectExplorerNode {
+  const name = typeof entry.name === 'string' && entry.name.trim().length > 0 ? entry.name.trim() : `Module ${idx + 1}`;
+  const rawRoot = typeof entry.root === 'string' ? entry.root : '';
+  const resolved = rawRoot ? resolvePossiblyRelativePath(parent.workspace.uri.fsPath, rawRoot) : '';
+  const uri = resolved ? vscode.Uri.file(resolved) : undefined;
+
+  return {
+    type: 'path',
+    id: `${parent.id}:module:${idx}:${rawRoot || name}`,
+    label: name,
+    description: resolved || rawRoot || undefined,
+    uri,
+    icon: new vscode.ThemeIcon('project'),
+    command: uri
+      ? {
+          title: 'Reveal Module Root',
+          command: COMMAND_REVEAL_PATH,
+          arguments: [uri],
+        }
+      : undefined,
+  };
+}
+
+function createConfigSourceRootNode(
+  parent: { id: string; workspace: vscode.WorkspaceFolder },
+  entry: ConfigurationSourceRootEntry,
+  idx: number,
+): NovaProjectExplorerNode {
+  const rawPath = typeof entry.path === 'string' ? entry.path : '';
+  const resolved = rawPath ? resolvePossiblyRelativePath(parent.workspace.uri.fsPath, rawPath) : '';
+  const uri = resolved ? vscode.Uri.file(resolved) : undefined;
+
+  const kind = typeof entry.kind === 'string' && entry.kind.trim().length > 0 ? entry.kind.trim() : undefined;
+  const origin = typeof entry.origin === 'string' && entry.origin.trim().length > 0 ? entry.origin.trim() : undefined;
+
+  const metaParts: string[] = [];
+  if (kind) {
+    metaParts.push(`kind=${kind}`);
+  }
+  if (origin) {
+    metaParts.push(`origin=${origin}`);
+  }
+  const meta = metaParts.join(', ');
+
+  const descriptionParts: string[] = [];
+  if (resolved && resolved !== rawPath) {
+    descriptionParts.push(resolved);
+  }
+  if (meta) {
+    descriptionParts.push(meta);
+  }
+
+  return {
+    type: 'path',
+    id: `${parent.id}:sourceRoot:${idx}:${rawPath}`,
+    label: rawPath || (resolved ? path.basename(resolved) : `Source Root ${idx + 1}`),
+    description: descriptionParts.join(' • ') || meta || (resolved || undefined),
+    uri,
+    icon: vscode.ThemeIcon.Folder,
+    command: uri
+      ? {
+          title: 'Reveal Source Root',
+          command: COMMAND_REVEAL_PATH,
+          arguments: [uri],
+        }
+      : undefined,
+  };
+}
+
+function createConfigClasspathEntryNode(
+  parent: { id: string; workspace: vscode.WorkspaceFolder },
+  entry: ConfigurationClasspathEntry,
+  idx: number,
+): NovaProjectExplorerNode {
+  const rawPath = typeof entry.path === 'string' ? entry.path : '';
+  const resolved = rawPath ? resolvePossiblyRelativePath(parent.workspace.uri.fsPath, rawPath) : '';
+  const uri = resolved ? vscode.Uri.file(resolved) : undefined;
+
+  const kind = typeof entry.kind === 'string' && entry.kind.trim().length > 0 ? entry.kind.trim() : 'classpath';
+  const baseName = resolved ? path.basename(resolved) : rawPath ? path.basename(rawPath) : '';
+  const label = baseName && baseName !== kind ? `${kind}: ${baseName}` : kind;
+
+  return {
+    type: 'path',
+    id: `${parent.id}:classpath:${idx}:${rawPath}`,
+    label,
+    description: resolved || rawPath || undefined,
+    uri,
+    icon: new vscode.ThemeIcon('symbol-file'),
+    command: uri
+      ? {
+          title: 'Reveal Classpath Entry',
+          command: COMMAND_REVEAL_PATH,
+          arguments: [uri],
+        }
+      : undefined,
+  };
+}
+
+function createConfigModulePathEntryNode(
+  parent: { id: string; workspace: vscode.WorkspaceFolder },
+  entry: ConfigurationModulePathEntry,
+  idx: number,
+): NovaProjectExplorerNode {
+  const rawPath = typeof entry.path === 'string' ? entry.path : '';
+  const resolved = rawPath ? resolvePossiblyRelativePath(parent.workspace.uri.fsPath, rawPath) : '';
+  const uri = resolved ? vscode.Uri.file(resolved) : undefined;
+
+  const kind = typeof entry.kind === 'string' && entry.kind.trim().length > 0 ? entry.kind.trim() : 'modulePath';
+  const baseName = resolved ? path.basename(resolved) : rawPath ? path.basename(rawPath) : '';
+  const label = baseName && baseName !== kind ? `${kind}: ${baseName}` : kind;
+
+  return {
+    type: 'path',
+    id: `${parent.id}:modulePath:${idx}:${rawPath}`,
+    label,
+    description: resolved || rawPath || undefined,
+    uri,
+    icon: new vscode.ThemeIcon('symbol-file'),
+    command: uri
+      ? {
+          title: 'Reveal Module Path Entry',
           command: COMMAND_REVEAL_PATH,
           arguments: [uri],
         }
