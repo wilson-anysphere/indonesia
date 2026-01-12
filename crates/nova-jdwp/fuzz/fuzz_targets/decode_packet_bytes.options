@@ -2,4 +2,7 @@ max_len=262144
 timeout=1
 jobs=1
 workers=1
-
+# Extra safety: if framing regressions reintroduce unbounded allocation, fail fast
+# instead of OOM-ing the CI runner.
+rss_limit_mb=512
+malloc_limit_mb=512
