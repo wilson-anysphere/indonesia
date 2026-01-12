@@ -832,8 +832,13 @@ fn parse_first_formatted_javac_location(output: &str) -> Option<(usize, usize)> 
     // `format_javac_failure` emits one diagnostic per line in the form:
     // `<file>:<line>:<col>: <message>`
     let line = output.lines().find(|l| !l.trim().is_empty())?;
-    let mut parts = line.rsplitn(4, ':');
-    let _msg = parts.next()?;
+
+    // Important: the message itself can contain `:` (e.g. `incompatible types: cannot infer...`),
+    // so we *must not* split on `:` across the whole line. Instead split once on the first
+    // `": "` separator between `<file>:<line>:<col>:` and the message.
+    let (location, _message) = line.split_once(": ")?;
+
+    let mut parts = location.rsplitn(3, ':');
     let col_s = parts.next()?.trim();
     let line_s = parts.next()?.trim();
     let _file = parts.next()?; // may contain ':' on Windows; rsplitn keeps it intact.
@@ -921,7 +926,10 @@ can locate your source file so it can copy your project's imports."
     }
 
     // Private access failures (injected helper class is not an inner class).
-    if lower.contains("has private access") || lower.contains("private access") {
+    if lower.contains("has private access")
+        || lower.contains("private access")
+        || lower.contains("cannot access private")
+    {
         hints.push(
             "The stream debugger compiles an injected helper class. It can only access public / \
 protected / package-private members; private members are not accessible from the helper. Consider \
@@ -1066,6 +1074,42 @@ mod tests {
         assert!(
             message.contains("java.util.stream.Collectors"),
             "expected Collectors hint in output:\n{message}"
+        );
+    }
+
+    #[test]
+    fn stream_eval_compile_failure_stage_detection_tolerates_colons_in_message() {
+        let source_path = Path::new("/tmp/NovaStreamEval_Test.java");
+        let source = concat!(
+            "package com.example;\n",
+            "\n",
+            "import java.util.*;\n",
+            "import java.util.stream.*;\n",
+            "\n",
+            "public final class NovaStreamEval_Test {\n",
+            "  // filler\n",
+            "  // filler\n",
+            "  // filler\n",
+            "  public static Object stage0(java.util.List<Integer> list) { return list.stream().map(x -> x + 1).count(); }\n",
+            "}\n",
+        );
+
+        // Simulate the formatted output from `javac::format_javac_failure`. The message contains a
+        // colon (`incompatible types: ...`), which should not confuse stage attribution.
+        let formatted = "/tmp/NovaStreamEval_Test.java:10:5: incompatible types: cannot infer type-variable(s) T";
+        let javac_err = crate::hot_swap::CompileError::new(formatted);
+
+        let message = format_stream_eval_compile_failure(
+            source_path,
+            source,
+            &[String::from("list.stream().map(x -> x + 1).count()")],
+            None,
+            &javac_err,
+        );
+
+        assert!(
+            message.contains("Stage: source sample"),
+            "expected stage attribution despite colon in message:\n{message}"
         );
     }
 } 
