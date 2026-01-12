@@ -176,6 +176,7 @@ enum VarKey {
 
 struct HandleTable<K, T> {
     next: i64,
+    epoch: i64,
     by_id: HashMap<i64, T>,
     by_key: HashMap<K, i64>,
 }
@@ -197,6 +198,7 @@ impl<K, T> Default for HandleTable<K, T> {
     fn default() -> Self {
         Self {
             next: 0,
+            epoch: 0,
             by_id: HashMap::new(),
             by_key: HashMap::new(),
         }
@@ -216,7 +218,12 @@ where
         }
 
         self.next += 1;
-        let id = self.next;
+        // Encode a 1-bit epoch in the low bit of the ID so that handles can be reset each
+        // stop without risking collisions with IDs from the immediately previous stop.
+        //
+        // This keeps IDs small (important for DAP clients that treat ids as `i32`) and
+        // ensures ids remain bounded over long stepping sessions.
+        let id = (self.next << 1) | self.epoch;
         self.by_id.insert(id, value);
         self.by_key.insert(key, id);
         id
@@ -227,6 +234,12 @@ where
     }
 
     fn clear(&mut self) {
+        let had_handles = self.next != 0;
+        if had_handles {
+            self.epoch ^= 1;
+        }
+
+        self.next = 0;
         self.by_id = HashMap::new();
         self.by_key = HashMap::new();
     }

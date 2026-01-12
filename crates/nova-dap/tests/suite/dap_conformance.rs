@@ -408,7 +408,6 @@ async fn transcript_cancel_delayed_request() {
 }
 
 #[tokio::test]
-#[ignore = "Optional stress/regression test (Task 208)"]
 async fn stress_handles_do_not_grow_unbounded() {
     let jdwp = MockJdwpServer::spawn().await.unwrap();
     let (client, server_task) = spawn_wire_server();
@@ -424,7 +423,8 @@ async fn stress_handles_do_not_grow_unbounded() {
     let mut max_frame_id = 0i64;
     let mut max_scope_ref = 0i64;
 
-    for _ in 0..200 {
+    // Keep this test reasonably fast while still catching unbounded growth regressions.
+    for _ in 0..80 {
         let frame_id = client.first_frame_id(thread_id).await;
         max_frame_id = max_frame_id.max(frame_id);
 
