@@ -218,6 +218,29 @@ configuration needed for discovery/classpath construction. Other build-tool outp
 diagnostics, annotation processing details) are tracked separately (typically via `nova-build`’s
 cache/orchestrator APIs) and are **not** part of this file yet.
 
+### Special case: Gradle `buildSrc/`
+
+Gradle treats `buildSrc/` as a special build: it is automatically compiled and put on the
+buildscript classpath, but it is **not** a normal subproject and does **not** appear in
+`settings.gradle(.kts)`.
+
+To make `buildSrc` sources navigable without invoking Gradle, `nova-project` includes `buildSrc/` as
+an additional module when it exists and contains Java sources under conventional layouts
+(e.g. `buildSrc/src/main/java`).
+
+Nova represents `buildSrc` using a stable synthetic Gradle project path:
+
+- project path: `:__buildSrc` (chosen to avoid collisions with real Gradle project paths)
+- module id: `gradle::__buildSrc`
+- module root: `<workspace>/buildSrc`
+
+This synthetic path may also appear in `.nova/queries/gradle.json`:
+
+- if `javaCompileConfigs[":__buildSrc"]` exists, `nova-project` consumes it (source roots/output
+  dirs/classpaths) just like any other Gradle module,
+- otherwise, `nova-project` falls back to heuristics for `buildSrc` (e.g. `src/*/java` source roots,
+  `build/classes/java/{main,test}` output dirs).
+
 Example (abridged):
 
 ```json
