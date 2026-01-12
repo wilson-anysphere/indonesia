@@ -1056,16 +1056,6 @@ fn looks_like_value_identifier(name: &str) -> bool {
         .is_some_and(|b| matches!(b, b'a'..=b'z'))
 }
 
-fn is_java_identifier(token: &str) -> bool {
-    let mut chars = token.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-
-    (first.is_ascii_alphabetic() || first == '_' || first == '$')
-        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$')
-}
-
 fn looks_like_type_identifier(name: &str) -> bool {
     if !crate::quick_fixes::is_java_identifier(name) {
         return false;
@@ -1074,16 +1064,6 @@ fn looks_like_type_identifier(name: &str) -> bool {
     name.as_bytes()
         .first()
         .is_some_and(|b| matches!(b, b'A'..=b'Z'))
-}
-
-fn is_java_identifier(token: &str) -> bool {
-    let mut chars = token.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-
-    (first.is_ascii_alphabetic() || first == '_' || first == '$')
-        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$')
 }
 
 fn parse_type_mismatch(message: &str) -> Option<(String, String)> {
