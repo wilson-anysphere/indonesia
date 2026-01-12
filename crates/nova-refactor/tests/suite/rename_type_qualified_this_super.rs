@@ -255,3 +255,145 @@ class Outer {
     assert!(after.contains("class Renamed"));
     assert!(after.contains("Renamed.Inner.super.toString()"));
 }
+
+#[test]
+fn rename_type_updates_nested_qualified_this_inner_segment() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Outer {
+  class Inner {
+    class Deep {
+      void m(){ Outer.Inner.this.toString(); }
+    }
+  }
+}
+"#;
+
+    let mut files = BTreeMap::new();
+    files.insert(file.clone(), src.to_string());
+
+    let offset = src.find("class Inner").unwrap() + "class ".len() + 1;
+    let edit = rename_type(
+        &files,
+        RenameTypeParams {
+            file: file.clone(),
+            offset,
+            new_name: "RenamedInner".into(),
+        },
+    )
+    .unwrap();
+
+    let after_files = apply_workspace_edit(&files, &edit).unwrap();
+    let after = after_files.get(&file).unwrap();
+
+    assert!(after.contains("class Outer"));
+    assert!(after.contains("class RenamedInner"));
+    assert!(after.contains("Outer.RenamedInner.this.toString()"));
+    assert!(!after.contains("Outer.Inner.this"));
+}
+
+#[test]
+fn rename_type_can_be_invoked_from_nested_qualified_this_inner_segment() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Outer {
+  class Inner {
+    class Deep {
+      void m(){ Outer.Inner.this.toString(); }
+    }
+  }
+}
+"#;
+
+    let mut files = BTreeMap::new();
+    files.insert(file.clone(), src.to_string());
+
+    let start = src.find("Outer.Inner.this").unwrap();
+    let offset = start + "Outer.".len() + 1; // on `Inner`
+    let edit = rename_type(
+        &files,
+        RenameTypeParams {
+            file: file.clone(),
+            offset,
+            new_name: "RenamedInner".into(),
+        },
+    )
+    .unwrap();
+
+    let after_files = apply_workspace_edit(&files, &edit).unwrap();
+    let after = after_files.get(&file).unwrap();
+
+    assert!(after.contains("class Outer"));
+    assert!(after.contains("class RenamedInner"));
+    assert!(after.contains("Outer.RenamedInner.this.toString()"));
+}
+
+#[test]
+fn rename_type_updates_nested_qualified_super_inner_segment() {
+    let file = FileId::new("Test.java");
+    let src = r#"class BaseInner {}
+class Outer {
+  class Inner extends BaseInner {
+    class Deep {
+      void m(){ Outer.Inner.super.toString(); }
+    }
+  }
+}
+"#;
+
+    let mut files = BTreeMap::new();
+    files.insert(file.clone(), src.to_string());
+
+    let offset = src.find("class Inner").unwrap() + "class ".len() + 1;
+    let edit = rename_type(
+        &files,
+        RenameTypeParams {
+            file: file.clone(),
+            offset,
+            new_name: "RenamedInner".into(),
+        },
+    )
+    .unwrap();
+
+    let after_files = apply_workspace_edit(&files, &edit).unwrap();
+    let after = after_files.get(&file).unwrap();
+
+    assert!(after.contains("class Outer"));
+    assert!(after.contains("class RenamedInner extends BaseInner"));
+    assert!(after.contains("Outer.RenamedInner.super.toString()"));
+    assert!(!after.contains("Outer.Inner.super"));
+}
+
+#[test]
+fn rename_type_can_be_invoked_from_nested_qualified_super_inner_segment() {
+    let file = FileId::new("Test.java");
+    let src = r#"class BaseInner {}
+class Outer {
+  class Inner extends BaseInner {
+    class Deep {
+      void m(){ Outer.Inner.super.toString(); }
+    }
+  }
+}
+"#;
+
+    let mut files = BTreeMap::new();
+    files.insert(file.clone(), src.to_string());
+
+    let start = src.find("Outer.Inner.super").unwrap();
+    let offset = start + "Outer.".len() + 1; // on `Inner`
+    let edit = rename_type(
+        &files,
+        RenameTypeParams {
+            file: file.clone(),
+            offset,
+            new_name: "RenamedInner".into(),
+        },
+    )
+    .unwrap();
+
+    let after_files = apply_workspace_edit(&files, &edit).unwrap();
+    let after = after_files.get(&file).unwrap();
+
+    assert!(after.contains("class Outer"));
+    assert!(after.contains("class RenamedInner extends BaseInner"));
+    assert!(after.contains("Outer.RenamedInner.super.toString()"));
+}
