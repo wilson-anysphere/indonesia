@@ -32,7 +32,6 @@ pub fn check(
         }
     };
     let allowlist = parse_allowlist(&allowlist_raw);
-
     let workspace = crate::workspace::load_workspace_graph(manifest_path, metadata_path)?;
 
     let mut diagnostics = Vec::new();
@@ -70,29 +69,13 @@ pub fn check(
 
         root_test_file_counts.insert(krate.clone(), root_rs_files.len());
 
-        if root_rs_files.len() > 2 && allowlist.contains(krate) {
-            let mut file_names: Vec<String> = root_rs_files
-                .iter()
-                .filter_map(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
-                .collect();
-            file_names.sort();
-
-            diagnostics.push(
-                Diagnostic::warning(
-                    "test-layout-too-many-root-tests-allowlisted",
-                    format!(
-                        "crate `{krate}` has {} root-level integration test files in {}: {} (allowlisted; max allowed without allowlist: 2)",
-                        root_rs_files.len(),
-                        tests_dir.display(),
-                        file_names.join(", ")
-                    ),
-                )
-                .with_file(manifest.display().to_string())
-                .with_suggestion(test_layout_suggestion()),
-            );
-        } else if let Some(diag) =
-            diagnostic_for_root_test_files(krate, manifest, &tests_dir, &root_rs_files)
-        {
+        if let Some(diag) = diagnostic_for_root_test_files(
+            krate,
+            manifest,
+            &tests_dir,
+            &root_rs_files,
+            allowlist.contains(krate),
+        ) {
             diagnostics.push(diag);
         }
     }
@@ -139,6 +122,7 @@ fn diagnostic_for_root_test_files(
     manifest: &Path,
     tests_dir: &Path,
     root_rs_files: &[PathBuf],
+    allowlisted: bool,
 ) -> Option<Diagnostic> {
     let count = root_rs_files.len();
     if count <= 1 {
@@ -156,6 +140,15 @@ fn diagnostic_for_root_test_files(
             "test-layout-two-root-tests",
             format!(
                 "crate `{krate}` has {count} root-level integration test files in {}: {} (prefer consolidating unless there’s a strong reason to keep two harness entrypoints)",
+                tests_dir.display(),
+                file_names.join(", ")
+            ),
+        )
+    } else if allowlisted {
+        Diagnostic::warning(
+            "test-layout-too-many-root-tests-allowlisted",
+            format!(
+                "crate `{krate}` has {count} root-level integration test files in {}: {} (exceeds max allowed: 2, but is allowlisted)",
                 tests_dir.display(),
                 file_names.join(", ")
             ),
@@ -299,5 +292,95 @@ nova-dap   # inline comment
         let files = root_level_rs_files(&tmp.path().join("does-not-exist")).unwrap();
         assert!(files.is_empty());
     }
-}
 
+    #[test]
+    fn diagnostic_for_root_test_files_is_none_for_zero_or_one() {
+        let tmp = TempDir::new().unwrap();
+        let manifest = tmp.path().join("Cargo.toml");
+        fs::write(&manifest, "").unwrap();
+
+        let tests_dir = tmp.path().join("tests");
+
+        assert!(diagnostic_for_root_test_files(
+            "my-crate",
+            &manifest,
+            &tests_dir,
+            &[],
+            false,
+        )
+        .is_none());
+
+        assert!(diagnostic_for_root_test_files(
+            "my-crate",
+            &manifest,
+            &tests_dir,
+            &[tests_dir.join("a.rs")],
+            false,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn diagnostic_for_root_test_files_warns_at_two_and_errors_at_three() {
+        let tmp = TempDir::new().unwrap();
+        let manifest = tmp.path().join("Cargo.toml");
+        fs::write(&manifest, "").unwrap();
+        let tests_dir = tmp.path().join("tests");
+
+        let warn = diagnostic_for_root_test_files(
+            "my-crate",
+            &manifest,
+            &tests_dir,
+            &[tests_dir.join("b.rs"), tests_dir.join("a.rs")],
+            false,
+        )
+        .unwrap();
+        assert_eq!(warn.level, DiagnosticLevel::Warning);
+        assert_eq!(warn.code, "test-layout-two-root-tests");
+        assert!(warn.message.contains("a.rs"));
+        assert!(warn.message.contains("b.rs"));
+
+        let err = diagnostic_for_root_test_files(
+            "my-crate",
+            &manifest,
+            &tests_dir,
+            &[
+                tests_dir.join("c.rs"),
+                tests_dir.join("b.rs"),
+                tests_dir.join("a.rs"),
+            ],
+            false,
+        )
+        .unwrap();
+        assert_eq!(err.level, DiagnosticLevel::Error);
+        assert_eq!(err.code, "test-layout-too-many-root-tests");
+        assert!(err.message.contains("a.rs"));
+        assert!(err.message.contains("b.rs"));
+        assert!(err.message.contains("c.rs"));
+    }
+
+    #[test]
+    fn diagnostic_for_root_test_files_allows_three_when_allowlisted() {
+        let tmp = TempDir::new().unwrap();
+        let manifest = tmp.path().join("Cargo.toml");
+        fs::write(&manifest, "").unwrap();
+        let tests_dir = tmp.path().join("tests");
+
+        let diag = diagnostic_for_root_test_files(
+            "my-crate",
+            &manifest,
+            &tests_dir,
+            &[
+                tests_dir.join("c.rs"),
+                tests_dir.join("b.rs"),
+                tests_dir.join("a.rs"),
+            ],
+            true,
+        )
+        .unwrap();
+        assert_eq!(diag.level, DiagnosticLevel::Warning);
+        assert_eq!(diag.code, "test-layout-too-many-root-tests-allowlisted");
+        assert!(diag.message.contains("a.rs"));
+        assert!(diag.message.contains("allowlisted"));
+    }
+}
