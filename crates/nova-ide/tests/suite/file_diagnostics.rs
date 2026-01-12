@@ -13,6 +13,22 @@ fn fixture_file(text: &str) -> (InMemoryFileStore, nova_db::FileId) {
 }
 
 #[test]
+fn file_diagnostics_includes_unresolved_import_code() {
+    let (db, file) = fixture_file(
+        r#"
+import does.not.Exist;
+class A {}
+"#,
+    );
+
+    let diags = file_diagnostics(&db, file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "unresolved-import"),
+        "expected unresolved-import diagnostic; got {diags:#?}"
+    );
+}
+
+#[test]
 fn file_diagnostics_includes_unresolved_import() {
     let (db, file) = fixture_file(
         r#"

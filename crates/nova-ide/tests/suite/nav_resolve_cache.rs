@@ -3,22 +3,7 @@ use std::path::PathBuf;
 use nova_db::InMemoryFileStore;
 use nova_ide::goto_definition;
 
-fn offset_to_position(text: &str, offset: usize) -> lsp_types::Position {
-    let mut line = 0u32;
-    let mut col = 0u32;
-    for (idx, ch) in text.char_indices() {
-        if idx >= offset {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            col = 0;
-        } else {
-            col += 1;
-        }
-    }
-    lsp_types::Position::new(line, col)
-}
+use crate::text_fixture::{offset_to_position, CARET};
 
 #[test]
 fn workspace_index_is_cached_across_navigation_requests() {
@@ -36,7 +21,6 @@ fn workspace_index_is_cached_across_navigation_requests() {
     let file_a = db.file_id_for_path(&file_a_path);
     db.set_file_text(file_a, "class A { void foo() {} }\n".to_string());
 
-    let caret = "<|>";
     let file_b_path = root.join("B.java");
     let file_b_text_with_caret = r#"
 class B {
@@ -47,9 +31,9 @@ class B {
 }
 "#;
     let caret_offset = file_b_text_with_caret
-        .find(caret)
+        .find(CARET)
         .expect("fixture must contain <|> caret marker");
-    let file_b_text = file_b_text_with_caret.replace(caret, "");
+    let file_b_text = file_b_text_with_caret.replace(CARET, "");
     let file_b_pos = offset_to_position(&file_b_text, caret_offset);
 
     let file_b = db.file_id_for_path(&file_b_path);
