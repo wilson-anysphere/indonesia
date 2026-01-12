@@ -44,6 +44,7 @@ mod inline_method;
 mod java;
 mod move_java;
 mod move_member;
+mod rename_type;
 mod safe_delete;
 
 pub mod extract_method;
@@ -54,7 +55,6 @@ mod lsp;
 mod materialize;
 mod preview;
 mod refactorings;
-mod rename_type;
 mod semantic;
 
 pub use change_signature::{
@@ -74,6 +74,7 @@ pub use move_member::{
     move_method, move_method_workspace_edit, move_static_member, move_static_member_workspace_edit,
     MoveMemberError, MoveMethodParams, MoveStaticMemberParams,
 };
+pub use rename_type::{rename_type, RenameTypeError, RenameTypeParams};
 pub use safe_delete::{
     apply_edits, safe_delete, safe_delete_delete_anyway_edit, safe_delete_preview, SafeDeleteError,
     SafeDeleteMode, SafeDeleteOutcome, SafeDeleteReport, SafeDeleteSymbol, SafeDeleteTarget,
@@ -102,5 +103,4 @@ pub use refactorings::{
     InlineVariableParams, OrganizeImportsParams, RefactorError as SemanticRefactorError,
     RenameParams,
 };
-pub use rename_type::{rename_type, RenameTypeError, RenameTypeParams};
 pub use semantic::{Conflict, RefactorDatabase, SemanticChange};

@@ -50,15 +50,23 @@ struct WorkspaceAnalysis {
     workspace_def_map: WorkspaceDefMap,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Segment {
+    text: String,
+    range: TextRange,
+}
+
 /// Rename a Java type (class/interface/enum/record/annotation) and update all references in the
 /// provided workspace `files`.
 ///
-/// This is currently a best-effort semantic rename:
+/// This is a best-effort semantic rename:
 /// - It resolves candidate references through Nova's scope graph + resolver.
 /// - It updates type references expressed via `ast::Type` nodes.
-/// - It also updates qualified `this`/`super` expressions (`Outer.this`, `Outer.super`), whose
-///   qualifiers are *type names* but live on `ThisExpression.qualifier` / `SuperExpression.qualifier`
-///   rather than in `ast::Type`.
+/// - It updates qualified type names by resolving *all* prefixes of a qualified name as potential
+///   types. This ensures renaming an enclosing type updates `Outer.Inner` occurrences.
+/// - It updates `ast::Name` nodes (imports/module directives/etc.), including `import static` owner
+///   chains.
+/// - It also updates qualified `this`/`super` expressions (`Outer.this`, `Outer.super`).
 pub fn rename_type(
     files: &BTreeMap<FileId, String>,
     params: RenameTypeParams,
@@ -96,6 +104,12 @@ pub fn rename_type(
     // 2) Rename references across the workspace.
     for file in analysis.files.values() {
         edits.extend(collect_type_reference_edits(
+            &resolver,
+            file,
+            target,
+            &params.new_name,
+        ));
+        edits.extend(collect_name_reference_edits(
             &resolver,
             file,
             target,
@@ -200,59 +214,70 @@ impl WorkspaceAnalysis {
                 offset,
             });
         };
-
         // Prefer resolving a typed `Name` node (common for `ast::Type` and many other type
-        // positions). Qualified `this` / `super` qualifiers are currently represented as a
-        // `NameExpression` that may not contain an `ast::Name`, so handle those separately.
-        let mut resolved: Option<(QualifiedName, SyntaxNode)> =
-            parent.ancestors().find_map(|node| {
-                let name = ast::Name::cast(node.clone())?;
-                let (qname, _) = name_to_qname_and_last_token_range(&name)?;
-                Some((qname, node))
-            });
+        // positions). Qualified `this` / `super` qualifiers are represented as `NameExpression`s
+        // that may not contain an `ast::Name`, so handle those separately.
+        let token_start = u32::from(token.text_range().start()) as usize;
 
-        if resolved.is_none() {
-            let token_range = token.text_range();
-            let token_start = u32::from(token_range.start());
+        let mut segments: Option<Vec<Segment>> = parent
+            .ancestors()
+            .find_map(ast::Name::cast)
+            .map(|name| segments_from_name(&name));
+        let mut scope_node: Option<SyntaxNode> = parent
+            .ancestors()
+            .find_map(ast::Name::cast)
+            .map(|name| name.syntax().clone());
 
+        if segments.is_none() {
             if let Some(expr) = parent.ancestors().find_map(ast::ThisExpression::cast) {
                 if let Some(qual) = expr.qualifier() {
                     let qual_range = qual.syntax().text_range();
-                    if token_start >= u32::from(qual_range.start())
-                        && token_start <= u32::from(qual_range.end())
-                    {
-                        if let Some((qname, _)) = qualifier_expression_name(&qual) {
-                            resolved = Some((qname, expr.syntax().clone()));
-                        }
+                    let start = u32::from(qual_range.start()) as usize;
+                    let end = u32::from(qual_range.end()) as usize;
+                    if token_start >= start && token_start <= end {
+                        segments = segments_from_qualifier_expression(&qual);
+                        scope_node = Some(expr.syntax().clone());
                     }
                 }
             }
         }
 
-        if resolved.is_none() {
-            let token_range = token.text_range();
-            let token_start = u32::from(token_range.start());
-
+        if segments.is_none() {
             if let Some(expr) = parent.ancestors().find_map(ast::SuperExpression::cast) {
                 if let Some(qual) = expr.qualifier() {
                     let qual_range = qual.syntax().text_range();
-                    if token_start >= u32::from(qual_range.start())
-                        && token_start <= u32::from(qual_range.end())
-                    {
-                        if let Some((qname, _)) = qualifier_expression_name(&qual) {
-                            resolved = Some((qname, expr.syntax().clone()));
-                        }
+                    let start = u32::from(qual_range.start()) as usize;
+                    let end = u32::from(qual_range.end()) as usize;
+                    if token_start >= start && token_start <= end {
+                        segments = segments_from_qualifier_expression(&qual);
+                        scope_node = Some(expr.syntax().clone());
                     }
                 }
             }
         }
 
-        let Some((qname, scope_node)) = resolved else {
+        let Some(segments) = segments else {
             return Err(RenameTypeError::NoTypeAtOffset {
                 file: file.clone(),
                 offset,
             });
         };
+
+        let Some(scope_node) = scope_node else {
+            return Err(RenameTypeError::NoTypeAtOffset {
+                file: file.clone(),
+                offset,
+            });
+        };
+
+        let Some(seg_idx) = segment_index_at_offset(&segments, offset) else {
+            return Err(RenameTypeError::NoTypeAtOffset {
+                file: file.clone(),
+                offset,
+            });
+        };
+
+        let prefix_qname = prefix_qname(&segments[..=seg_idx]);
 
         let scope = scope_for_node(
             &analysis.scopes,
@@ -269,7 +294,7 @@ impl WorkspaceAnalysis {
         let resolved = resolver.resolve_qualified_type_resolution_in_scope(
             &analysis.scopes.scopes,
             scope,
-            &qname,
+            &prefix_qname,
         );
         match resolved {
             Some(TypeResolution::Source(item)) => Ok(item),
@@ -311,24 +336,62 @@ fn collect_type_reference_edits(
         let Some(named) = ty.named() else {
             continue;
         };
-        let Some(name) = support::child::<ast::Name>(named.syntax()) else {
-            continue;
-        };
 
-        let Some((qname, last_range)) = name_to_qname_and_last_token_range(&name) else {
+        // Prefer a `Name` child when available (gives stable token boundaries).
+        let segments = support::child::<ast::Name>(named.syntax())
+            .map(|name| segments_from_name(&name))
+            .unwrap_or_else(|| segments_from_syntax(named.syntax()));
+
+        if segments.is_empty() {
             continue;
-        };
+        }
+
+        let scope = scope_for_node(&file.scopes, &file.ast_id_map, ty.syntax(), file.db_file);
+        record_qualified_type_prefix_matches(
+            resolver,
+            &file.scopes.scopes,
+            scope,
+            &segments,
+            target,
+            &mut edits,
+            &file.file,
+            new_name,
+        );
+    }
+
+    edits
+}
+
+fn collect_name_reference_edits(
+    resolver: &Resolver<'_>,
+    file: &FileAnalysis,
+    target: ItemId,
+    new_name: &str,
+) -> Vec<TextEdit> {
+    let mut edits = Vec::new();
+
+    for name in file
+        .parse
+        .syntax()
+        .descendants()
+        .filter_map(ast::Name::cast)
+    {
+        let segments = segments_from_name(&name);
+        if segments.is_empty() {
+            continue;
+        }
 
         let scope = scope_for_node(&file.scopes, &file.ast_id_map, name.syntax(), file.db_file);
-        let resolved =
-            resolver.resolve_qualified_type_resolution_in_scope(&file.scopes.scopes, scope, &qname);
-        if matches!(resolved, Some(TypeResolution::Source(item)) if item == target) {
-            edits.push(TextEdit::replace(
-                file.file.clone(),
-                last_range,
-                new_name.to_string(),
-            ));
-        }
+        record_qualified_type_prefix_matches(
+            resolver,
+            &file.scopes.scopes,
+            scope,
+            &segments,
+            target,
+            &mut edits,
+            &file.file,
+            new_name,
+        );
     }
 
     edits
@@ -348,19 +411,24 @@ fn collect_qualified_this_super_edits(
         let Some(qual) = expr.qualifier() else {
             continue;
         };
-        let Some((qname, last_range)) = qualifier_expression_name(&qual) else {
+        let Some(segments) = segments_from_qualifier_expression(&qual) else {
             continue;
         };
-        let scope = scope_for_node(&file.scopes, &file.ast_id_map, expr.syntax(), file.db_file);
-        let resolved =
-            resolver.resolve_qualified_type_resolution_in_scope(&file.scopes.scopes, scope, &qname);
-        if matches!(resolved, Some(TypeResolution::Source(item)) if item == target) {
-            edits.push(TextEdit::replace(
-                file.file.clone(),
-                last_range,
-                new_name.to_string(),
-            ));
+        if segments.is_empty() {
+            continue;
         }
+
+        let scope = scope_for_node(&file.scopes, &file.ast_id_map, expr.syntax(), file.db_file);
+        record_qualified_type_prefix_matches(
+            resolver,
+            &file.scopes.scopes,
+            scope,
+            &segments,
+            target,
+            &mut edits,
+            &file.file,
+            new_name,
+        );
     }
 
     // Qualified `super` expressions (`Outer.super`).
@@ -368,75 +436,133 @@ fn collect_qualified_this_super_edits(
         let Some(qual) = expr.qualifier() else {
             continue;
         };
-        let Some((qname, last_range)) = qualifier_expression_name(&qual) else {
+        let Some(segments) = segments_from_qualifier_expression(&qual) else {
             continue;
         };
-        let scope = scope_for_node(&file.scopes, &file.ast_id_map, expr.syntax(), file.db_file);
-        let resolved =
-            resolver.resolve_qualified_type_resolution_in_scope(&file.scopes.scopes, scope, &qname);
-        if matches!(resolved, Some(TypeResolution::Source(item)) if item == target) {
-            edits.push(TextEdit::replace(
-                file.file.clone(),
-                last_range,
-                new_name.to_string(),
-            ));
+        if segments.is_empty() {
+            continue;
         }
+
+        let scope = scope_for_node(&file.scopes, &file.ast_id_map, expr.syntax(), file.db_file);
+        record_qualified_type_prefix_matches(
+            resolver,
+            &file.scopes.scopes,
+            scope,
+            &segments,
+            target,
+            &mut edits,
+            &file.file,
+            new_name,
+        );
     }
 
     edits
 }
 
-fn qualifier_expression_name(expr: &ast::Expression) -> Option<(QualifiedName, TextRange)> {
+fn segments_from_qualifier_expression(expr: &ast::Expression) -> Option<Vec<Segment>> {
     match expr {
         ast::Expression::NameExpression(it) => {
             // `NameExpression` does not currently expose a typed accessor for its name and the
             // tree shape may or may not include an explicit `ast::Name` child. Be defensive:
-            // - prefer a `Name` node when present (gives trivia-free text + direct ident tokens)
-            // - otherwise fall back to concatenating non-trivia direct child tokens
+            // - prefer a `Name` node when present
+            // - otherwise fall back to identifier-like direct child tokens
             if let Some(name) = it.syntax().children().find_map(ast::Name::cast) {
-                return name_to_qname_and_last_token_range(&name);
+                return Some(segments_from_name(&name));
             }
 
-            syntax_to_qname_and_last_token_range(it.syntax())
+            Some(segments_from_syntax(it.syntax()))
         }
         _ => None,
     }
 }
 
-fn name_to_qname_and_last_token_range(name: &ast::Name) -> Option<(QualifiedName, TextRange)> {
-    let text = name.text();
-    if text.is_empty() || text.contains('*') {
-        return None;
-    }
-
-    let last_ident = support::ident_tokens(name.syntax()).last()?;
-    let last_range = token_text_range(&last_ident);
-
-    Some((QualifiedName::from_dotted(&text), last_range))
+fn segments_from_name(name: &ast::Name) -> Vec<Segment> {
+    support::ident_tokens(name.syntax())
+        .map(|tok| Segment {
+            text: tok.text().to_string(),
+            range: token_text_range(&tok),
+        })
+        .collect()
 }
 
-fn syntax_to_qname_and_last_token_range(node: &SyntaxNode) -> Option<(QualifiedName, TextRange)> {
-    let mut text = String::new();
-    let mut last_ident: Option<SyntaxToken> = None;
-
-    for tok in node
-        .children_with_tokens()
+fn segments_from_syntax(node: &SyntaxNode) -> Vec<Segment> {
+    node.children_with_tokens()
         .filter_map(|el| el.into_token())
-        .filter(|tok| !tok.kind().is_trivia())
-    {
-        if tok.kind().is_identifier_like() {
-            last_ident = Some(tok.clone());
-        }
-        text.push_str(tok.text());
-    }
+        .filter(|tok| tok.kind().is_identifier_like())
+        .map(|tok| Segment {
+            text: tok.text().to_string(),
+            range: token_text_range(&tok),
+        })
+        .collect()
+}
 
-    if text.is_empty() || text.contains('*') {
+fn segment_index_at_offset(segments: &[Segment], offset: usize) -> Option<usize> {
+    if segments.is_empty() {
         return None;
     }
 
-    let last_ident = last_ident?;
-    let last_range = token_text_range(&last_ident);
-    Some((QualifiedName::from_dotted(&text), last_range))
+    // Prefer a segment whose identifier token contains the offset.
+    if let Some((idx, _)) = segments
+        .iter()
+        .enumerate()
+        .find(|(_, seg)| seg.range.start <= offset && offset < seg.range.end)
+    {
+        return Some(idx);
+    }
+
+    // If the cursor is on a dot or between tokens, prefer the previous segment.
+    segments
+        .iter()
+        .enumerate()
+        .filter(|(_, seg)| seg.range.end <= offset)
+        .map(|(idx, _)| idx)
+        .last()
+        .or(Some(segments.len().saturating_sub(1)))
+}
+
+fn prefix_qname(segments: &[Segment]) -> QualifiedName {
+    let mut prefix = String::new();
+    for (idx, seg) in segments.iter().enumerate() {
+        if idx > 0 {
+            prefix.push('.');
+        }
+        prefix.push_str(&seg.text);
+    }
+    QualifiedName::from_dotted(&prefix)
+}
+
+fn record_qualified_type_prefix_matches(
+    resolver: &Resolver<'_>,
+    scopes: &nova_resolve::ScopeGraph,
+    scope: nova_resolve::ScopeId,
+    segments: &[Segment],
+    target: ItemId,
+    edits: &mut Vec<TextEdit>,
+    file: &FileId,
+    new_name: &str,
+) {
+    let mut prefix = String::new();
+    for (idx, seg) in segments.iter().enumerate() {
+        if idx > 0 {
+            prefix.push('.');
+        }
+        prefix.push_str(&seg.text);
+
+        let qn = QualifiedName::from_dotted(&prefix);
+        let Some(TypeResolution::Source(item)) =
+            resolver.resolve_qualified_type_resolution_in_scope(scopes, scope, &qn)
+        else {
+            continue;
+        };
+
+        if item == target {
+            edits.push(TextEdit::replace(
+                file.clone(),
+                seg.range,
+                new_name.to_string(),
+            ));
+        }
+    }
 }
 
 fn token_text_range(token: &SyntaxToken) -> TextRange {

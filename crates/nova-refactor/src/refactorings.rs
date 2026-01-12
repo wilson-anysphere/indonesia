@@ -908,7 +908,6 @@ pub fn inline_variable(
     // tree (the declaration statement and usage tokens), so avoid failing fast on parse errors;
     // downstream lookups will return `InlineNotSupported` if the required structure cannot be
     // recovered.
-
     let root = parsed.syntax();
 
     // Variables declared in `for` headers or as try-with-resources bindings have special lifetime
