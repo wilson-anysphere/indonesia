@@ -89,6 +89,21 @@ impl Drop for KillOnDrop {
     }
 }
 
+#[cfg(unix)]
+fn pid_exists(pid: u32) -> bool {
+    let res = unsafe { libc::kill(pid as i32, 0) };
+    if res == 0 {
+        return true;
+    }
+
+    match std::io::Error::last_os_error().raw_os_error() {
+        Some(code) if code == libc::ESRCH => false,
+        // Even if we're not allowed to signal the process, we know it exists.
+        Some(code) if code == libc::EPERM => true,
+        _ => false,
+    }
+}
+
 #[tokio::test]
 async fn dap_launch_disconnect_terminate_debuggee_false_detaches_without_exited_event() {
     let jdwp = MockJdwpServer::spawn().await.unwrap();
@@ -122,7 +137,13 @@ async fn dap_launch_disconnect_terminate_debuggee_false_detaches_without_exited_
         json!({
             "cwd": temp.path().to_string_lossy(),
             "command": helper,
-            "args": ["--pid-file", pid_path.to_string_lossy()],
+            "args": [
+                "--pid-file",
+                pid_path.to_string_lossy(),
+                "--heartbeat",
+                "--sleep-ms",
+                "50"
+            ],
             "env": { "NOVA_DAP_TEST": "1" },
             "host": "127.0.0.1",
             "port": jdwp.addr().port(),
@@ -177,13 +198,15 @@ async fn dap_launch_disconnect_terminate_debuggee_false_detaches_without_exited_
     }
     assert!(saw_terminated, "expected terminated event after disconnect");
 
+    // Wait for the adapter to fully shut down so the debuggee's stdout/stderr pipes are closed.
+    server_task.await.unwrap().unwrap();
+
     // The launched process should remain running after the adapter detaches.
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
-        let proc_path = format!("/proc/{pid}");
         let mut still_running = false;
         for _ in 0..50 {
-            if Path::new(&proc_path).exists() {
+            if pid_exists(pid) {
                 still_running = true;
                 break;
             }
@@ -194,7 +217,4 @@ async fn dap_launch_disconnect_terminate_debuggee_false_detaches_without_exited_
             "expected helper process {pid} to still be running after detach"
         );
     }
-
-    server_task.await.unwrap().unwrap();
 }
-

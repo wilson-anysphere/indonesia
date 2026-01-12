@@ -12,6 +12,7 @@ fn main() {
     let mut exit_code: i32 = 0;
     let mut print_line_len: Option<usize> = None;
     let mut print_line_len_stderr: Option<usize> = None;
+    let mut heartbeat: bool = false;
 
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -38,6 +39,7 @@ fn main() {
             "--print-line-len-stderr" => {
                 print_line_len_stderr = args.next().and_then(|v| v.parse::<usize>().ok());
             }
+            "--heartbeat" => heartbeat = true,
             _ => {}
         }
     }
@@ -75,6 +77,18 @@ fn main() {
 
     loop {
         thread::sleep(Duration::from_millis(sleep_ms));
+        if heartbeat {
+            // When the adapter is launched in stdio mode, stdout/stderr are pipes.
+            // If the adapter detaches and exits, those pipes are closed and future writes will
+            // fail. This helper is used in detach tests, so we ignore write errors here.
+            let mut out = io::stdout().lock();
+            let _ = writeln!(&mut out, "nova-dap test helper heartbeat pid={pid}");
+            let _ = out.flush();
+
+            let mut err = io::stderr().lock();
+            let _ = writeln!(&mut err, "nova-dap test helper heartbeat stderr pid={pid}");
+            let _ = err.flush();
+        }
     }
 }
 

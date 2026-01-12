@@ -776,6 +776,8 @@ async fn handle_request_inner(
                     // Ensure `disconnect` with `terminateDebuggee=false` can safely detach without
                     // killing the launched process.
                     cmd.kill_on_drop(false);
+                    #[cfg(unix)]
+                    ignore_sigpipe(&mut cmd);
                     for (k, v) in &args.env {
                         cmd.env(k, v);
                     }
@@ -889,6 +891,8 @@ async fn handle_request_inner(
                     // Ensure `disconnect` with `terminateDebuggee=false` can safely detach without
                     // killing the launched JVM.
                     cmd.kill_on_drop(false);
+                    #[cfg(unix)]
+                    ignore_sigpipe(&mut cmd);
                     if let Some(cwd) = args.cwd.as_deref() {
                         cmd.current_dir(cwd);
                     }
@@ -1489,6 +1493,8 @@ async fn handle_request_inner(
                     // Ensure `disconnect` with `terminateDebuggee=false` can safely detach without
                     // killing the launched process.
                     cmd.kill_on_drop(false);
+                    #[cfg(unix)]
+                    ignore_sigpipe(&mut cmd);
                     for (k, v) in &args.env {
                         cmd.env(k, v);
                     }
@@ -1600,6 +1606,8 @@ async fn handle_request_inner(
                     // Ensure `disconnect` with `terminateDebuggee=false` can safely detach without
                     // killing the launched JVM.
                     cmd.kill_on_drop(false);
+                    #[cfg(unix)]
+                    ignore_sigpipe(&mut cmd);
                     if let Some(cwd) = args.cwd.as_deref() {
                         cmd.current_dir(cwd);
                     }
@@ -4352,6 +4360,23 @@ fn truncate_message(mut message: String, max_len: usize) -> String {
     message.truncate(max_len);
     message.push_str(OUTPUT_TRUNCATION_MARKER);
     message
+}
+
+#[cfg(unix)]
+fn ignore_sigpipe(cmd: &mut Command) {
+    // When the adapter runs over stdio, launched debuggees have stdout/stderr wired to pipes so we
+    // can forward output via DAP events. If the user disconnects with
+    // `terminateDebuggee=false`, the adapter will exit and those pipes will be closed; subsequent
+    // debuggee writes would normally raise SIGPIPE and terminate the process. Ignore SIGPIPE so a
+    // detach doesn't unexpectedly kill the launched debuggee.
+    use std::os::unix::process::CommandExt;
+
+    unsafe {
+        cmd.as_std_mut().pre_exec(|| {
+            libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+            Ok(())
+        });
+    }
 }
 
 fn spawn_output_task<R>(
