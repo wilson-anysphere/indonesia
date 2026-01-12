@@ -1077,7 +1077,9 @@ fn record_body_references(
                     return;
                 };
 
-                let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Field(field)) else {
+                let Some(&symbol) =
+                    resolution_to_symbol.get(&ResolutionKey::Field(field))
+                else {
                     return;
                 };
                 let range = TextRange::new(name_range.start, name_range.end);
