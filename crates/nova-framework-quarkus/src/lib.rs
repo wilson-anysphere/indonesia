@@ -464,7 +464,9 @@ fn collect_application_properties<'a>(db: &'a dyn Database, project: ProjectId) 
         }
 
         let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if !file_name.starts_with("application")
+        let is_application = file_name.starts_with("application");
+        let is_microprofile_config = file_name == "microprofile-config.properties";
+        if !is_application && !is_microprofile_config
             || !path
                 .extension()
                 .and_then(|e| e.to_str())
