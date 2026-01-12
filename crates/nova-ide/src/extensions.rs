@@ -522,9 +522,12 @@ where
 
         let mut fw_registry = AnalyzerRegistry::new();
         fw_registry.register(Box::new(nova_framework_lombok::LombokAnalyzer::new()));
+        fw_registry.register(Box::new(nova_framework_spring::SpringAnalyzer::new()));
+        fw_registry.register(Box::new(nova_framework_jpa::JpaAnalyzer::new()));
         fw_registry.register(Box::new(nova_framework_micronaut::MicronautAnalyzer::new()));
         fw_registry.register(Box::new(nova_framework_quarkus::QuarkusAnalyzer::new()));
         fw_registry.register(Box::new(nova_framework_dagger::DaggerAnalyzer::default()));
+        fw_registry.register(Box::new(nova_framework_mapstruct::MapStructAnalyzer::new()));
 
         let provider = FrameworkAnalyzerRegistryProvider::new(Arc::new(fw_registry)).into_arc();
         let _ = registry.register_diagnostic_provider(provider.clone());
@@ -548,9 +551,12 @@ impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
 
         let mut fw_registry = AnalyzerRegistry::new();
         fw_registry.register(Box::new(nova_framework_lombok::LombokAnalyzer::new()));
+        fw_registry.register(Box::new(nova_framework_spring::SpringAnalyzer::new()));
+        fw_registry.register(Box::new(nova_framework_jpa::JpaAnalyzer::new()));
         fw_registry.register(Box::new(nova_framework_micronaut::MicronautAnalyzer::new()));
         fw_registry.register(Box::new(nova_framework_quarkus::QuarkusAnalyzer::new()));
         fw_registry.register(Box::new(nova_framework_dagger::DaggerAnalyzer::default()));
+        fw_registry.register(Box::new(nova_framework_mapstruct::MapStructAnalyzer::new()));
 
         let provider = FrameworkAnalyzerRegistryProvider::new(Arc::new(fw_registry)).into_arc();
         let _ = registry.register_diagnostic_provider(provider.clone());
