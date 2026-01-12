@@ -97,14 +97,15 @@ Some tests compare Nova’s output against on-disk “golden” expectations (pa
 before/after fixtures). To update those expectations:
 
 Note: the parser golden corpus is the `golden_corpus` test module inside the consolidated `harness`
-integration test binary (`crates/nova-syntax/tests/harness.rs`). There is no standalone
-integration test target named `golden_corpus` — run it via `--test harness` (optionally filtering by
-test name).
+integration test binary (`crates/nova-syntax/tests/harness.rs`). There is no standalone integration
+test target named `golden_corpus` — run it via `--test harness` (optionally filtering by test
+name).
 
 ```bash
 # Agent / multi-runner (required) — also works fine on workstations.
 # (Workstation equivalent: replace `bash scripts/cargo_agent.sh` with `cargo`.)
 bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness
+bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::golden_corpus
 BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::golden_corpus
 BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-refactor
 ```
