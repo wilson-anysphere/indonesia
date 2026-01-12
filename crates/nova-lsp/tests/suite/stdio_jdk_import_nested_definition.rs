@@ -240,11 +240,43 @@ fn stdio_definition_into_jdk_resolves_nested_type_imports() {
     };
     assert_eq!(uri, expected_uri);
 
+    // Nested type via imported outer: `import java.util.List; List.Entry e;`.
+    let outer_text = "import java.util.List;\nclass Main { List.Entry e; }\n";
     write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": { "uri": main_uri.as_str(), "version": 3 },
+                "contentChanges": [{ "text": outer_text }]
+            }
+        }),
     );
-    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
+
+    let offset = outer_text.rfind("Entry").expect("Entry token exists");
+    let position = utf16_position(outer_text, offset);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "textDocument/definition",
+            "params": {
+                "textDocument": { "uri": main_uri.as_str() },
+                "position": { "line": position.line, "character": position.character }
+            }
+        }),
+    );
+    let resp = read_response_with_id(&mut stdout, 4);
+    let location = resp.get("result").expect("definition result");
+    let Some(uri) = location.get("uri").and_then(|v| v.as_str()) else {
+        panic!("expected definition uri, got: {resp:?}");
+    };
+    assert_eq!(uri, expected_uri);
+
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "id": 5, "method": "shutdown" }));
+    let _shutdown_resp = read_response_with_id(&mut stdout, 5);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 

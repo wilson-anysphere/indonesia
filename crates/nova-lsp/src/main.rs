@@ -4956,7 +4956,25 @@ fn goto_definition_jdk(
                 stub = receiver_stub;
             } else {
                 let qualified = format!("{receiver}.{ident}");
-                stub = resolve_jdk_type(jdk, text, &qualified).or(receiver_stub);
+                stub = resolve_jdk_type(jdk, text, &qualified)
+                    .or_else(|| {
+                        // Best-effort support for nested types referenced via an imported outer
+                        // type, e.g. `Map.Entry` where `Map` is imported as `java.util.Map`.
+                        if !looks_like_type_name(receiver) {
+                            return None;
+                        }
+                        if !ident
+                            .chars()
+                            .next()
+                            .is_some_and(|c| c.is_ascii_uppercase())
+                        {
+                            return None;
+                        }
+                        let receiver_stub = receiver_stub.as_ref()?;
+                        let nested = format!("{}.{}", receiver_stub.binary_name, ident);
+                        resolve_jdk_type(jdk, text, &nested)
+                    })
+                    .or(receiver_stub);
             }
         }
     }

@@ -569,6 +569,9 @@ pub fn diagnostics_with_extensions(
     let db = extensions.db();
     let text = db.file_content(file);
     let mut diagnostics = crate::diagnostics(db.as_ref(), file);
+
+    // Append extension-provided diagnostics after built-ins. `IdeExtensions::diagnostics` is
+    // deterministic (provider-id order via `ExtensionRegistry`).
     diagnostics.extend(extensions.diagnostics(cancel, file).into_iter().map(|d| {
         lsp_types::Diagnostic {
             range: d
