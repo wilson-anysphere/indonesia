@@ -2160,6 +2160,16 @@ pub(crate) fn core_completions(
         }
         return Vec::new();
     }
+
+    // Import clause completions should run before all other Java completions (member/postfix/general)
+    // because the syntax overlaps (`import java.util.<cursor>` would otherwise be treated as a dot
+    // completion on the identifier `java`).
+    if let Some(ctx) = import_context(text, offset) {
+        let items = import_completions(&text_index, offset, &ctx);
+        if !items.is_empty() {
+            return decorate_completions(&text_index, ctx.replace_start, offset, items);
+        }
+    }
     let (prefix_start, prefix) = identifier_prefix(text, offset);
 
     if let Some(ctx) = package_decl_completion_context(text, offset) {
@@ -6329,7 +6339,8 @@ fn expected_argument_type_for_completion(
 ) -> Option<Type> {
     let (call, active_parameter) = call_expr_for_argument_list(analysis, offset)?;
 
-    let (receiver_ty, call_kind) = infer_call_receiver_for_argument_completion(types, analysis, call)?;
+    let (receiver_ty, call_kind) =
+        infer_call_receiver_for_argument_completion(types, analysis, call)?;
     if matches!(receiver_ty, Type::Unknown | Type::Error) {
         return None;
     }

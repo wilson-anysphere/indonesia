@@ -345,3 +345,38 @@ fn dagger_diagnostics_are_surfaced_via_ide_extensions() {
         "expected Dagger missing binding diagnostic; got {diags:#?}"
     );
 }
+
+#[test]
+fn java_import_completions_are_surfaced_via_ide_extensions() {
+    use crate::framework_harness::offset_to_position;
+
+    let java_path = PathBuf::from("/imports/src/main/java/A.java");
+    let java_text = r#"
+import java.u<|>;
+class A {}
+"#;
+
+    let fixture = fixture_multi(java_path, java_text, vec![]);
+    let items =
+        fixture
+            .ide
+            .completions_lsp(CancellationToken::new(), fixture.file, fixture.position);
+    let item = items
+        .iter()
+        .find(|i| i.label == "util" || i.label == "util.")
+        .expect("expected java.util package completion via ide_extensions");
+
+    let u_offset = fixture
+        .text
+        .find("java.u")
+        .expect("expected java.u in fixture")
+        + "java.".len();
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+
+    assert_eq!(edit.range.start, offset_to_position(&fixture.text, u_offset));
+    assert_eq!(edit.range.end, fixture.position);
+}
