@@ -2187,7 +2187,16 @@ fn extend_type_ref_diagnostics(out: &mut Vec<Diagnostic>, file_text: &str, diags
         if span.start == 0 || span.start > file_text.len() {
             return true;
         }
-        file_text.as_bytes().get(span.start - 1) != Some(&b'@')
+
+        let bytes = file_text.as_bytes();
+        let mut i = span.start;
+        while i > 0 && bytes[i - 1].is_ascii_whitespace() {
+            i -= 1;
+        }
+        if i == 0 {
+            return true;
+        }
+        bytes.get(i - 1) != Some(&b'@')
     }));
 }
 
