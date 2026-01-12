@@ -171,6 +171,11 @@ pub trait NovaTypeck: NovaResolve + HasQueryStats + HasClassInterner {
     fn type_of_def(&self, def: DefWithBodyId) -> Type;
 
     fn resolve_method_call(&self, file: FileId, call_site: FileExprId) -> Option<ResolvedMethod>;
+    fn resolve_method_call_demand(
+        &self,
+        file: FileId,
+        call_site: FileExprId,
+    ) -> Option<ResolvedMethod>;
     fn type_diagnostics(&self, file: FileId) -> Vec<Diagnostic>;
 
     /// Best-effort helper used by IDE features: infer the type of the smallest expression that
@@ -292,6 +297,164 @@ fn resolve_method_call(
     body.call_resolutions
         .get(call_site.expr.idx())
         .and_then(|m| m.clone())
+}
+
+fn resolve_method_call_demand(
+    db: &dyn NovaTypeck,
+    _file: FileId,
+    call_site: FileExprId,
+) -> Option<ResolvedMethod> {
+    let start = Instant::now();
+
+    #[cfg(feature = "tracing")]
+    let _span =
+        tracing::debug_span!("query", name = "resolve_method_call_demand", ?call_site).entered();
+
+    cancel::check_cancelled(db);
+
+    let owner = call_site.owner;
+    let file = def_file(owner);
+    let project = db.file_project(file);
+    let jdk = db.jdk_index(project);
+    let classpath = db.classpath_index(project);
+    let workspace = db.workspace_def_map(project);
+    let jpms_env = db.jpms_compilation_env(project);
+
+    let jpms_index = jpms_env.as_deref().map(|env| {
+        let cfg = db.project_config(project);
+        let file_rel = db.file_rel_path(file);
+        let from = module_for_file(&cfg, file_rel.as_str());
+        JpmsTypeckIndex::new(env, &workspace, &*jdk, from)
+    });
+
+    let workspace_index = WorkspaceFirstIndex {
+        workspace: &workspace,
+        classpath: classpath.as_deref().map(|cp| cp as &dyn TypeIndex),
+    };
+
+    let resolver = if let Some(index) = jpms_index.as_ref() {
+        nova_resolve::Resolver::new(index).with_workspace(&workspace)
+    } else {
+        nova_resolve::Resolver::new(&*jdk)
+            .with_classpath(&workspace_index)
+            .with_workspace(&workspace)
+    };
+
+    let scopes = db.scope_graph(file);
+    let body_scope = match owner {
+        DefWithBodyId::Method(m) => scopes.method_scopes.get(&m).copied(),
+        DefWithBodyId::Constructor(c) => scopes.constructor_scopes.get(&c).copied(),
+        DefWithBodyId::Initializer(i) => scopes.initializer_scopes.get(&i).copied(),
+    }
+    .unwrap_or(scopes.file_scope);
+
+    let tree = db.hir_item_tree(file);
+    let body = match owner {
+        DefWithBodyId::Method(m) => db.hir_body(m),
+        DefWithBodyId::Constructor(c) => db.hir_constructor_body(c),
+        DefWithBodyId::Initializer(i) => db.hir_initializer_body(i),
+    };
+
+    if call_site.expr.idx() >= body.exprs.len() {
+        return None;
+    }
+
+    // Only resolve actual call-site expressions.
+    let HirExpr::Call { .. } = &body.exprs[call_site.expr] else {
+        return None;
+    };
+
+    let expr_scopes = db.expr_scopes(owner);
+
+    // Build an env for this body (same setup as `typeck_body`, but without running `check_body`).
+    let base_store = db.project_base_type_store(project);
+    let mut store = (&*base_store).clone();
+    let provider = if let Some(env) = jpms_env.as_deref() {
+        nova_types::ChainTypeProvider::new(vec![
+            &env.classpath as &dyn TypeProvider,
+            &*jdk as &dyn TypeProvider,
+        ])
+    } else {
+        match classpath.as_deref() {
+            Some(cp) => nova_types::ChainTypeProvider::new(vec![
+                cp as &dyn TypeProvider,
+                &*jdk as &dyn TypeProvider,
+            ]),
+            None => nova_types::ChainTypeProvider::new(vec![&*jdk as &dyn TypeProvider]),
+        }
+    };
+    let mut loader = ExternalTypeLoader::new(&mut store, &provider);
+
+    // Define source types in this file so `Type::Class` ids are stable within this query.
+    let (field_types, method_types, source_type_vars) =
+        define_source_types(&resolver, &scopes, &tree, &mut loader);
+
+    let type_vars = type_vars_for_owner(
+        owner,
+        body_scope,
+        &scopes.scopes,
+        &tree,
+        &mut loader,
+        &source_type_vars,
+    );
+
+    let (expected_return, _) = resolve_expected_return_type(
+        &resolver,
+        &scopes.scopes,
+        body_scope,
+        &tree,
+        owner,
+        &type_vars,
+        &mut loader,
+    );
+    let (param_types, _) = resolve_param_types(
+        &resolver,
+        &scopes.scopes,
+        body_scope,
+        &tree,
+        owner,
+        &type_vars,
+        &mut loader,
+    );
+
+    let mut checker = BodyChecker::new(
+        db,
+        owner,
+        &resolver,
+        &scopes.scopes,
+        body_scope,
+        &tree,
+        &body,
+        expr_scopes,
+        type_vars,
+        expected_return,
+        param_types,
+        field_types,
+        method_types,
+    );
+
+    // Best-effort local type table for locals with explicit types. This improves overload
+    // resolution for arguments like `foo(x)` without walking the whole body.
+    for (idx, local) in body.locals.iter() {
+        if local.ty_text.trim() == "var" {
+            continue;
+        }
+        let idx = idx as usize;
+        if idx >= checker.local_types.len() {
+            continue;
+        }
+        let ty = checker.resolve_source_type(&mut loader, &local.ty_text, Some(local.ty_range));
+        checker.local_types[idx] = ty;
+    }
+
+    let _ = checker.infer_expr(&mut loader, call_site.expr);
+    let resolved = checker
+        .call_resolutions
+        .get(call_site.expr.idx())
+        .and_then(|m| m.clone());
+
+    db.record_query_stat("resolve_method_call_demand", start.elapsed());
+    resolved
 }
 
 fn type_diagnostics(db: &dyn NovaTypeck, file: FileId) -> Vec<Diagnostic> {

@@ -1,13 +1,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use nova_db::salsa::FileExprId;
 use nova_db::{
     ArcEq, FileId, NovaHir, NovaInputs, NovaTypeck, ProjectId, SalsaRootDatabase, SourceRootId,
 };
 use nova_jdk::JdkIndex;
 use nova_project::{BuildSystem, JavaConfig, Module, ProjectConfig};
 use nova_resolve::ids::DefWithBodyId;
-use nova_types::{PrimitiveType, Type};
+use nova_types::{PrimitiveType, Type, TypeEnv, TypeStore};
 use tempfile::TempDir;
 
 #[path = "../typeck/diagnostics.rs"]
@@ -481,6 +482,75 @@ class C {
     assert!(
         diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
         "expected foreach var element type to be inferred; got {diags:?}"
+    );
+}
+
+#[test]
+fn resolve_method_call_demand_resolves_single_call_without_typeck_body() {
+    let src = r#"
+class C {
+    String m() {
+        return "x".substring(1);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+
+    // Find the call expression inside `C.m`.
+    let tree = db.hir_item_tree(file);
+    let (&m_ast_id, _) = tree
+        .methods
+        .iter()
+        .find(|(_, method)| method.name == "m")
+        .expect("expected method m");
+    let m_id = nova_hir::ids::MethodId::new(file, m_ast_id);
+    let body = db.hir_body(m_id);
+    let call_expr = body
+        .stmts
+        .iter()
+        .find_map(|(_, stmt)| match stmt {
+            nova_hir::hir::Stmt::Return {
+                expr: Some(expr), ..
+            } => Some(*expr),
+            _ => None,
+        })
+        .expect("expected return statement with expression");
+
+    assert!(
+        matches!(&body.exprs[call_expr], nova_hir::hir::Expr::Call { .. }),
+        "expected return expression to be a Call"
+    );
+
+    let call_site = FileExprId {
+        owner: DefWithBodyId::Method(m_id),
+        expr: call_expr,
+    };
+
+    db.clear_query_stats();
+    let resolved = db
+        .resolve_method_call_demand(file, call_site)
+        .expect("expected method call resolution");
+
+    assert_eq!(resolved.name, "substring");
+
+    // `substring` return type should be `String` (from the minimal-JDK stub env).
+    let types = TypeStore::with_minimal_jdk();
+    assert_eq!(
+        resolved.return_type,
+        Type::class(types.well_known().string, vec![])
+    );
+
+    let stats = db.query_stats();
+    let typeck_body_activity = stats
+        .by_query
+        .get("typeck_body")
+        .map(|s| (s.executions, s.validated_memoized))
+        .unwrap_or((0, 0));
+    assert_eq!(
+        typeck_body_activity,
+        (0, 0),
+        "resolve_method_call_demand should not invoke full-body type checking"
     );
 }
 
