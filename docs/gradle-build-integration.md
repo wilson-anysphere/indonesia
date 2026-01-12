@@ -152,6 +152,41 @@ configuration needed for discovery/classpath construction. Other build-tool outp
 diagnostics, annotation processing details) are tracked separately (typically via `nova-build`’s
 cache/orchestrator APIs) and are **not** part of this file yet.
 
+Example (abridged):
+
+```json
+{
+  "schemaVersion": 1,
+  "buildFingerprint": "0123abcd...",
+  "projects": [
+    { "path": ":", "projectDir": "/path/to/workspace" },
+    { "path": ":app", "projectDir": "/path/to/workspace/app" }
+  ],
+  "javaCompileConfigs": {
+    ":app": {
+      "projectDir": "/path/to/workspace/app",
+      "compileClasspath": [
+        "/path/to/workspace/app/build/classes/java/main",
+        "/home/me/.gradle/caches/.../some-dep.jar"
+      ],
+      "testClasspath": [
+        "/path/to/workspace/app/build/classes/java/test",
+        "/path/to/workspace/app/build/classes/java/main"
+      ],
+      "modulePath": [],
+      "mainSourceRoots": ["/path/to/workspace/app/src/main/java"],
+      "testSourceRoots": ["/path/to/workspace/app/src/test/java"],
+      "mainOutputDir": "/path/to/workspace/app/build/classes/java/main",
+      "testOutputDir": "/path/to/workspace/app/build/classes/java/test",
+      "source": "17",
+      "target": "17",
+      "release": "21",
+      "enablePreview": false
+    }
+  }
+}
+```
+
 ---
 
 ## Heuristic mode vs snapshot mode (`nova-project`)
