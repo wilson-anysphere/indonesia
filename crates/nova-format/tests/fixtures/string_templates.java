@@ -21,5 +21,9 @@ class StringTemplates {
 
         // Template text that equals a keyword.
         String keyword = STR."for";
+
+        String d = STR."Lambda: \{() -> { return 1; }} done";
+
+        String e = STR."Nested: \{STR."Inner \{name}"}";
     }
 }
