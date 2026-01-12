@@ -1,4 +1,3 @@
-use insta::assert_snapshot;
 use nova_core::{apply_text_edits, Position};
 use nova_format::{edits_for_on_type_formatting, format_java, FormatConfig};
 use nova_syntax::parse;
@@ -6,7 +5,19 @@ use pretty_assertions::assert_eq;
 use std::fs;
 use std::path::Path;
 
-mod suite;
+macro_rules! assert_fixture_snapshot {
+    ($name:literal, $value:expr $(,)?) => {{
+        let mut settings = insta::Settings::clone_current();
+        settings.set_snapshot_path(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots"),
+        );
+        settings.set_prepend_module_to_snapshot(false);
+
+        settings.bind(|| {
+            insta::assert_snapshot!(concat!("format_fixtures__", $name), $value);
+        });
+    }};
+}
 
 fn format_with_config(input: &str, config: &FormatConfig) -> String {
     let tree = parse(input);
@@ -46,209 +57,209 @@ fn idempotence_corpus_fixtures_default_config() {
 
 #[test]
 fn snapshot_generics() {
-    let input = include_str!("fixtures/generics.java");
+    let input = include_str!("../fixtures/generics.java");
     let config = FormatConfig::default();
     let formatted = format_with_config(input, &config);
-    assert_snapshot!("generics", formatted);
+    assert_fixture_snapshot!("generics", formatted);
     assert_idempotent("generics", input, &config);
 }
 
 #[test]
 fn snapshot_string_templates() {
-    let input = include_str!("fixtures/string_templates.java");
+    let input = include_str!("../fixtures/string_templates.java");
     let config = FormatConfig::default();
     let formatted = format_with_config(input, &config);
-    assert_snapshot!("string_templates", formatted);
+    assert_fixture_snapshot!("string_templates", formatted);
     assert_idempotent("string_templates", input, &config);
 }
 
 #[test]
 fn snapshot_annotations() {
-    let input = include_str!("fixtures/annotations.java");
+    let input = include_str!("../fixtures/annotations.java");
     let config = FormatConfig {
         max_line_length: 60,
         ..FormatConfig::default()
     };
     let formatted = format_with_config(input, &config);
-    assert_snapshot!("annotations", formatted);
+    assert_fixture_snapshot!("annotations", formatted);
     assert_idempotent("annotations", input, &config);
 }
 
 #[test]
 fn snapshot_lambdas_and_method_refs() {
-    let input = include_str!("fixtures/lambdas_method_refs.java");
+    let input = include_str!("../fixtures/lambdas_method_refs.java");
     let config = FormatConfig::default();
     let formatted = format_with_config(input, &config);
-    assert_snapshot!("lambdas_method_refs", formatted);
+    assert_fixture_snapshot!("lambdas_method_refs", formatted);
     assert_idempotent("lambdas_method_refs", input, &config);
 }
 
 #[test]
 fn snapshot_switch_expressions() {
-    let input = include_str!("fixtures/switch_expressions.java");
+    let input = include_str!("../fixtures/switch_expressions.java");
     let config = FormatConfig::default();
     let formatted = format_with_config(input, &config);
-    assert_snapshot!("switch_expressions", formatted);
+    assert_fixture_snapshot!("switch_expressions", formatted);
     assert_idempotent("switch_expressions", input, &config);
 }
 
 #[test]
 fn snapshot_try_with_resources() {
-    let input = include_str!("fixtures/try_with_resources.java");
+    let input = include_str!("../fixtures/try_with_resources.java");
     let config = FormatConfig::default();
     let formatted = format_with_config(input, &config);
-    assert_snapshot!("try_with_resources", formatted);
+    assert_fixture_snapshot!("try_with_resources", formatted);
     assert_idempotent("try_with_resources", input, &config);
 }
 
 #[test]
 fn snapshot_chained_calls_wrapping() {
-    let input = include_str!("fixtures/chained_calls.java");
+    let input = include_str!("../fixtures/chained_calls.java");
     let config = FormatConfig {
         max_line_length: 60,
         ..FormatConfig::default()
     };
     let formatted = format_with_config(input, &config);
-    assert_snapshot!("chained_calls", formatted);
+    assert_fixture_snapshot!("chained_calls", formatted);
     assert_idempotent("chained_calls", input, &config);
 }
 
 #[test]
 fn snapshot_binary_expression_wrapping() {
-    let input = include_str!("fixtures/binary_expressions.java");
+    let input = include_str!("../fixtures/binary_expressions.java");
     let config = FormatConfig {
         max_line_length: 40,
         ..FormatConfig::default()
     };
     let formatted = format_with_config(input, &config);
-    assert_snapshot!("binary_expressions", formatted);
+    assert_fixture_snapshot!("binary_expressions", formatted);
     assert_idempotent("binary_expressions", input, &config);
 }
 
 #[test]
 fn snapshot_broken_code_is_panic_free() {
-    let input = include_str!("fixtures/broken_code.java");
+    let input = include_str!("../fixtures/broken_code.java");
     let config = FormatConfig::default();
     let formatted = format_with_config(input, &config);
-    assert_snapshot!("broken_code", formatted);
+    assert_fixture_snapshot!("broken_code", formatted);
     // The second pass must also be stable even with malformed input.
     assert_idempotent("broken_code", input, &config);
 }
 
 #[test]
 fn snapshot_method_reference_type_args() {
-    let input = include_str!("fixtures/method_reference_type_args.java");
+    let input = include_str!("../fixtures/method_reference_type_args.java");
     let config = FormatConfig::default();
     let formatted = format_with_config(input, &config);
-    assert_snapshot!("method_reference_type_args", formatted);
+    assert_fixture_snapshot!("method_reference_type_args", formatted);
     assert_idempotent("method_reference_type_args", input, &config);
 }
 
 #[test]
 fn snapshot_control_flow_constructs() {
-    let input = include_str!("fixtures/do_while_synchronized_switch.java");
+    let input = include_str!("../fixtures/do_while_synchronized_switch.java");
     let config = FormatConfig::default();
     let formatted = format_with_config(input, &config);
-    assert_snapshot!("control_flow_constructs", formatted);
+    assert_fixture_snapshot!("control_flow_constructs", formatted);
     assert_idempotent("control_flow_constructs", input, &config);
 }
 
 #[test]
 fn snapshot_wildcards_and_varargs() {
-    let input = include_str!("fixtures/wildcards_and_varargs.java");
+    let input = include_str!("../fixtures/wildcards_and_varargs.java");
     let config = FormatConfig::default();
     let formatted = format_with_config(input, &config);
-    assert_snapshot!("wildcards_and_varargs", formatted);
+    assert_fixture_snapshot!("wildcards_and_varargs", formatted);
     assert_idempotent("wildcards_and_varargs", input, &config);
 }
 
 #[test]
 fn snapshot_switch_case_comments() {
-    let input = include_str!("fixtures/switch_case_comment.java");
+    let input = include_str!("../fixtures/switch_case_comment.java");
     let config = FormatConfig::default();
     let formatted = format_with_config(input, &config);
-    assert_snapshot!("switch_case_comment", formatted);
+    assert_fixture_snapshot!("switch_case_comment", formatted);
     assert_idempotent("switch_case_comment", input, &config);
 }
 
 #[test]
 fn snapshot_diamond_operator() {
-    let input = include_str!("fixtures/diamond_operator.java");
+    let input = include_str!("../fixtures/diamond_operator.java");
     let config = FormatConfig::default();
     let formatted = format_with_config(input, &config);
-    assert_snapshot!("diamond_operator", formatted);
+    assert_fixture_snapshot!("diamond_operator", formatted);
     assert_idempotent("diamond_operator", input, &config);
 }
 
 #[test]
 fn snapshot_qualified_generics() {
-    let input = include_str!("fixtures/qualified_generics.java");
+    let input = include_str!("../fixtures/qualified_generics.java");
     let config = FormatConfig::default();
     let formatted = format_with_config(input, &config);
-    assert_snapshot!("qualified_generics", formatted);
+    assert_fixture_snapshot!("qualified_generics", formatted);
     assert_idempotent("qualified_generics", input, &config);
 }
 
 #[test]
 fn snapshot_comparison_uppercase_constants() {
-    let input = include_str!("fixtures/comparison_uppercase_constants.java");
+    let input = include_str!("../fixtures/comparison_uppercase_constants.java");
     let config = FormatConfig::default();
     let formatted = format_with_config(input, &config);
-    assert_snapshot!("comparison_uppercase_constants", formatted);
+    assert_fixture_snapshot!("comparison_uppercase_constants", formatted);
     assert_idempotent("comparison_uppercase_constants", input, &config);
 }
 
 #[test]
 fn snapshot_array_initializers() {
-    let input = include_str!("fixtures/array_initializers.java");
+    let input = include_str!("../fixtures/array_initializers.java");
     let config = FormatConfig::default();
     let formatted = format_with_config(input, &config);
-    assert_snapshot!("array_initializers", formatted);
+    assert_fixture_snapshot!("array_initializers", formatted);
     assert_idempotent("array_initializers", input, &config);
 }
 
 #[test]
 fn snapshot_annotation_array_values() {
-    let input = include_str!("fixtures/annotation_array_values.java");
+    let input = include_str!("../fixtures/annotation_array_values.java");
     let config = FormatConfig::default();
     let formatted = format_with_config(input, &config);
-    assert_snapshot!("annotation_array_values", formatted);
+    assert_fixture_snapshot!("annotation_array_values", formatted);
     assert_idempotent("annotation_array_values", input, &config);
 }
 
 #[test]
 fn snapshot_initializer_blocks() {
-    let input = include_str!("fixtures/instance_initializer_block.java");
+    let input = include_str!("../fixtures/instance_initializer_block.java");
     let config = FormatConfig::default();
     let formatted = format_with_config(input, &config);
-    assert_snapshot!("instance_initializer_block", formatted);
+    assert_fixture_snapshot!("instance_initializer_block", formatted);
     assert_idempotent("instance_initializer_block", input, &config);
 }
 
 #[test]
 fn snapshot_ternary_and_labels() {
-    let input = include_str!("fixtures/ternary_and_labels.java");
+    let input = include_str!("../fixtures/ternary_and_labels.java");
     let config = FormatConfig::default();
     let formatted = format_with_config(input, &config);
-    assert_snapshot!("ternary_and_labels", formatted);
+    assert_fixture_snapshot!("ternary_and_labels", formatted);
     assert_idempotent("ternary_and_labels", input, &config);
 }
 
 #[test]
 fn snapshot_for_each_loops() {
-    let input = include_str!("fixtures/for_each_loops.java");
+    let input = include_str!("../fixtures/for_each_loops.java");
     let config = FormatConfig::default();
     let formatted = format_with_config(input, &config);
-    assert_snapshot!("for_each_loops", formatted);
+    assert_fixture_snapshot!("for_each_loops", formatted);
     assert_idempotent("for_each_loops", input, &config);
 }
 
 #[test]
 fn snapshot_unary_operators() {
-    let input = include_str!("fixtures/unary_operators.java");
+    let input = include_str!("../fixtures/unary_operators.java");
     let config = FormatConfig::default();
     let formatted = format_with_config(input, &config);
-    assert_snapshot!("unary_operators", formatted);
+    assert_fixture_snapshot!("unary_operators", formatted);
     assert_idempotent("unary_operators", input, &config);
 }
 

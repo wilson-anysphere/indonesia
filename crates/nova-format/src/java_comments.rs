@@ -120,9 +120,9 @@ impl<'a> JavaComments<'a> {
         // - `blank_line_after` on the last comment => there was an extra blank line between this
         //   comment block and the following token.
         //
-        // The formatter will already emit the "base" newline(s) needed to place the comment block
-        // on its own line. Here we only emit *one* additional hardline to represent that blank
-        // line.
+        // The surrounding formatter is expected to emit the base newline(s) needed to place the
+        // comment block on its own line. We only emit *one* additional hardline to represent the
+        // empty line.
         if comments
             .first()
             .is_some_and(|comment| comment.blank_line_before)
@@ -162,7 +162,6 @@ impl<'a> JavaComments<'a> {
                     parts.push(Doc::hardline());
                 }
             }
-
         }
 
         if comments
