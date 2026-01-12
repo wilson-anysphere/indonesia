@@ -748,8 +748,9 @@ pub fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
             name == "gradle.properties"
                 || is_gradle_version_catalog
                 || is_gradle_dependency_lockfile
-                || name == "gradlew"
-                || name == "gradlew.bat"
+                // Wrapper scripts are only treated as build markers at the build root (mirrors
+                // Gradle build-file fingerprinting semantics in `nova-build-model`).
+                || matches!(name, "gradlew" | "gradlew.bat") && path == Path::new(name)
                 || name.starts_with("build.gradle")
                 || name.starts_with("settings.gradle")
                 || is_gradle_script_plugin

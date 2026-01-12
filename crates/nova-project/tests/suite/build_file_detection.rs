@@ -53,6 +53,9 @@ fn gradle_is_build_file_recognizes_expected_paths() {
     }
 
     let negatives = [
+        // Wrapper scripts must be at the build root.
+        "sub/gradlew",
+        "sub/gradlew.bat",
         // Wrapper properties must be in the canonical wrapper location.
         "gradle-wrapper.properties",
         "gradle/gradle-wrapper.properties",
