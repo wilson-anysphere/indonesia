@@ -430,6 +430,14 @@ impl WorkspaceEngine {
     }
 
     pub fn start_watching(self: &Arc<Self>) -> Result<WatcherHandle> {
+        self.start_watching_with_watcher_factory(NotifyFileWatcher::new)
+    }
+
+    fn start_watching_with_watcher_factory<W, F>(self: &Arc<Self>, watcher_factory: F) -> Result<WatcherHandle>
+    where
+        W: FileWatcher + 'static,
+        F: FnOnce() -> std::io::Result<W> + Send + 'static,
+    {
         let watch_root = {
             let state = self
                 .project_state
@@ -470,7 +478,7 @@ impl WorkspaceEngine {
             let mut watch_root_manager = WatchRootManager::new(Duration::from_secs(2));
             let retry_tick = channel::tick(Duration::from_secs(2));
 
-            let mut watcher = match NotifyFileWatcher::new() {
+            let mut watcher = match watcher_factory() {
                 Ok(watcher) => watcher,
                 Err(err) => {
                     publish_to_subscribers(
@@ -2047,6 +2055,7 @@ mod tests {
     use nova_memory::{MemoryBudget, MemoryCategory};
     use nova_index::{AnnotationLocation, InheritanceEdge, ReferenceLocation, SymbolLocation};
     use nova_project::BuildSystem;
+    use nova_vfs::{ManualFileWatcher, ManualFileWatcherHandle};
     use std::fs;
     use std::time::Duration;
     use tokio::time::timeout;
@@ -3456,28 +3465,63 @@ mod tests {
         );
     }
 
-    #[test]
-    #[ignore = "relies on OS file watcher timings"]
-    fn notify_watcher_propagates_disk_edits_into_workspace() {
-        use std::time::Duration;
-
+    #[tokio::test]
+    async fn manual_watcher_propagates_disk_edits_into_workspace() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        fs::create_dir_all(root.join("src")).unwrap();
-        let file = root.join("src/Main.java");
-        fs::write(&file, "class Main {}".as_bytes()).unwrap();
+        let project_root = dir.path().join("project");
+        fs::create_dir_all(project_root.join("src")).unwrap();
+        fs::write(project_root.join("src/Main.java"), "class Main {}".as_bytes()).unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let project_root = project_root.canonicalize().unwrap();
+        let file = project_root.join("src/Main.java");
 
-        let workspace = crate::Workspace::open(root).unwrap();
-        let _handle = workspace.start_watching().unwrap();
+        let workspace = crate::Workspace::open(&project_root).unwrap();
+        let rx = workspace.subscribe();
+        let engine = workspace.engine.clone();
 
-        fs::write(&file, "class Main { int x; }".as_bytes()).unwrap();
-        std::thread::sleep(Duration::from_millis(250));
-
-        let engine = workspace.engine_for_tests();
         let vfs_path = VfsPath::local(file.clone());
-        let file_id = engine.vfs.get_id(&vfs_path).unwrap();
+        let file_id = engine.vfs.get_id(&vfs_path).expect("file id allocated");
+
+        let manual = ManualFileWatcher::new();
+        let handle: ManualFileWatcherHandle = manual.handle();
+        let _watcher = engine
+            .start_watching_with_watcher_factory(move || Ok(manual))
+            .unwrap();
+
+        let updated = "class Main { int x; }";
+        fs::write(&file, updated.as_bytes()).unwrap();
+        handle
+            .push(WatchEvent {
+                changes: vec![FileChange::Modified { path: vfs_path.clone() }],
+            })
+            .unwrap();
+
+        let vfs_path_for_wait = vfs_path.clone();
+        timeout(Duration::from_secs(5), async move {
+            loop {
+                let event = rx
+                    .recv()
+                    .await
+                    .expect("workspace event channel unexpectedly closed");
+                match event {
+                    WorkspaceEvent::FileChanged { file } if file == vfs_path_for_wait => break,
+                    WorkspaceEvent::Status(WorkspaceStatus::IndexingError(err)) => {
+                        panic!("workspace watcher error: {err}");
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for file watcher to update workspace");
+
+        assert_eq!(
+            engine.vfs.get_id(&vfs_path),
+            Some(file_id),
+            "FileId should remain stable across disk edits"
+        );
         engine.query_db.with_snapshot(|snap| {
-            assert_eq!(snap.file_content(file_id).as_str(), "class Main { int x; }");
+            assert_eq!(snap.file_content(file_id).as_str(), updated);
         });
     }
 }

@@ -178,6 +178,29 @@ pub struct ManualFileWatcher {
     watched: HashSet<PathBuf>,
 }
 
+/// Cloneable handle for injecting events into a [`ManualFileWatcher`] after it has been moved into
+/// another thread (e.g. a workspace watcher driver).
+#[derive(Debug, Clone)]
+pub struct ManualFileWatcherHandle {
+    tx: channel::Sender<WatchMessage>,
+}
+
+impl ManualFileWatcherHandle {
+    /// Inject a synthetic watcher event.
+    pub fn push(&self, event: WatchEvent) -> io::Result<()> {
+        self.tx
+            .send(Ok(event))
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "watch receiver dropped"))
+    }
+
+    /// Inject an asynchronous watcher error.
+    pub fn push_error(&self, error: io::Error) -> io::Result<()> {
+        self.tx
+            .send(Err(error))
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "watch receiver dropped"))
+    }
+}
+
 impl Default for ManualFileWatcher {
     fn default() -> Self {
         Self::new()
@@ -194,6 +217,12 @@ impl ManualFileWatcher {
             unwatch_calls: Vec::new(),
             watched: HashSet::new(),
         }
+    }
+
+    /// Returns a cloneable handle that can be used to inject events even after the watcher has been
+    /// moved into another thread.
+    pub fn handle(&self) -> ManualFileWatcherHandle {
+        ManualFileWatcherHandle { tx: self.tx.clone() }
     }
 
     /// Inject a synthetic watcher event.
