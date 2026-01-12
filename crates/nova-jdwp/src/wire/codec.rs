@@ -259,8 +259,12 @@ impl<'a> JdwpReader<'a> {
         self.require(len)?;
         let bytes = &self.buf[self.pos..self.pos + len];
         self.pos += len;
-        String::from_utf8(bytes.to_vec())
-            .map_err(|e| JdwpError::Protocol(format!("invalid utf-8 string: {e}")))
+        let mut out = Vec::new();
+        out.try_reserve_exact(len).map_err(|_| {
+            JdwpError::Protocol(format!("unable to allocate string buffer ({len} bytes)"))
+        })?;
+        out.extend_from_slice(bytes);
+        String::from_utf8(out).map_err(|e| JdwpError::Protocol(format!("invalid utf-8 string: {e}")))
     }
 
     pub fn read_bytes(&mut self, len: usize) -> Result<&'a [u8]> {

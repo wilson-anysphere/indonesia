@@ -297,34 +297,33 @@ pub fn decode_packet_bytes(bytes: &[u8]) -> Result<(), JdwpError> {
     let length = u32::from_be_bytes(*len_bytes) as usize;
     validate_jdwp_packet_length(length).map_err(JdwpError::Protocol)?;
 
-    // Emulate the real network readers: allocate based on the length prefix and
-    // only then attempt to read/copy the remaining bytes.
-    let rest_len = length - 4;
-    let mut rest = Vec::new();
-    rest.try_reserve_exact(rest_len).map_err(|_| {
+    let payload_len = length - JDWP_HEADER_LEN;
+    let mut payload = Vec::new();
+    payload.try_reserve_exact(payload_len).map_err(|_| {
         JdwpError::Protocol(format!(
-            "unable to allocate packet buffer ({rest_len} bytes)"
+            "unable to allocate packet buffer ({payload_len} bytes)"
         ))
     })?;
 
     if bytes.len() < length {
         // `read_exact` would fail here, but only after we've already allocated
-        // `rest_len` bytes.
+        // `payload_len` bytes.
         return Err(JdwpError::Protocol("unexpected end of packet".to_string()));
     }
-    rest.extend_from_slice(&bytes[4..length]);
 
-    let _id = u32::from_be_bytes(rest[0..4].try_into().expect("4 byte slice"));
-    let flags = rest[4];
+    // Parse the fixed header.
+    let header = &bytes[..JDWP_HEADER_LEN];
+    let _id = u32::from_be_bytes(header[4..8].try_into().expect("4 byte slice"));
+    let flags = header[8];
     if (flags & 0x80) != 0 {
         let _error_code =
-            u16::from_be_bytes(rest[5..7].try_into().expect("2 byte slice"));
-        let _payload = rest[7..].to_vec();
+            u16::from_be_bytes(header[9..11].try_into().expect("2 byte slice"));
     } else {
-        let _command_set = rest[5];
-        let _command = rest[6];
-        let _payload = rest[7..].to_vec();
+        let _command_set = header[9];
+        let _command = header[10];
     }
+
+    payload.extend_from_slice(&bytes[JDWP_HEADER_LEN..length]);
 
     Ok(())
 }

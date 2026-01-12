@@ -1518,32 +1518,37 @@ fn read_packet(reader: &mut impl Read) -> Result<Packet, JdwpError> {
     let length = u32::from_be_bytes(len_buf) as usize;
     crate::validate_jdwp_packet_length(length).map_err(JdwpError::Protocol)?;
 
-    let rest_len = length - 4;
-    let mut rest = Vec::new();
-    rest.try_reserve_exact(rest_len).map_err(|_| {
+    // Read the fixed header remainder after the length field:
+    //   u32 id, u8 flags, u16 error_code | (u8 command_set, u8 command)
+    let mut header = [0u8; 7];
+    reader.read_exact(&mut header)?;
+
+    let id = u32::from_be_bytes(header[0..4].try_into().unwrap());
+    let flags = header[4];
+
+    let payload_len = length - crate::JDWP_HEADER_LEN;
+    let mut payload = Vec::new();
+    payload.try_reserve_exact(payload_len).map_err(|_| {
         JdwpError::Protocol(format!(
-            "unable to allocate packet buffer ({rest_len} bytes)"
+            "unable to allocate packet buffer ({payload_len} bytes)"
         ))
     })?;
-    rest.resize(rest_len, 0);
-    reader.read_exact(&mut rest)?;
-
-    let id = u32::from_be_bytes(rest[0..4].try_into().unwrap());
-    let flags = rest[4];
+    payload.resize(payload_len, 0);
+    reader.read_exact(&mut payload)?;
 
     if flags & 0x80 != 0 {
-        let error_code = u16::from_be_bytes(rest[5..7].try_into().unwrap());
+        let error_code = u16::from_be_bytes(header[5..7].try_into().unwrap());
         Ok(Packet::Reply {
             id,
             error_code,
-            data: rest[7..].to_vec(),
+            data: payload,
         })
     } else {
         Ok(Packet::Command {
             id,
-            command_set: rest[5],
-            command: rest[6],
-            data: rest[7..].to_vec(),
+            command_set: header[5],
+            command: header[6],
+            data: payload,
         })
     }
 }
@@ -1702,7 +1707,12 @@ impl<'a> Cursor<'a> {
     fn read_string(&mut self) -> Result<String, JdwpError> {
         let len = self.read_u32()? as usize;
         let bytes = self.read_exact(len)?;
-        Ok(String::from_utf8(bytes.to_vec())?)
+        let mut out = Vec::new();
+        out.try_reserve_exact(len).map_err(|_| {
+            JdwpError::Protocol(format!("unable to allocate string buffer ({len} bytes)"))
+        })?;
+        out.extend_from_slice(bytes);
+        Ok(String::from_utf8(out)?)
     }
 }
 
