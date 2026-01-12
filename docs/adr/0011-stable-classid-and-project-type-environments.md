@@ -3,8 +3,14 @@
 ## Context
 
 Nova’s semantic analysis currently constructs a `nova_types::TypeStore` **per body** (see
-`crates/nova-db/src/salsa/typeck.rs:typeck_body`). `TypeStore` allocates `ClassId` values densely
-(`ClassId` is effectively an index into a `Vec<ClassDef>`).
+[`crates/nova-db/src/salsa/typeck.rs:typeck_body`](../../crates/nova-db/src/salsa/typeck.rs#L147)).
+`TypeStore` allocates `ClassId` values densely: a new class id is assigned by appending to an
+internal `Vec<ClassDef>`, so `ClassId` is effectively “the insertion index” (see
+[`crates/nova-types/src/lib.rs:TypeStore::intern_class_id`](../../crates/nova-types/src/lib.rs#L903)).
+
+During typechecking, external types are loaded on demand via
+[`crates/nova-types-bridge/src/lib.rs:ExternalTypeLoader`](../../crates/nova-types-bridge/src/lib.rs#L23),
+which reserves ids by calling `TypeStore::intern_class_id` as new binary names are encountered.
 
 This has an important (and currently undesirable) property:
 
@@ -20,6 +26,12 @@ incremental semantic analysis:
 - Cross-file / cross-body features (e.g. member lookup caches, subtyping caches, framework models)
   cannot rely on `ClassId` as a stable key.
 - Evaluation order must not affect semantic outputs in a Salsa-driven system.
+- `Type` implements `Eq`/`Hash` and `Type::Class` equality is defined in terms of `ClassId`. If
+  `ClassId` is not project-stable, then:
+  - two bodies can produce semantically identical types that compare **not equal** (false negatives),
+    breaking cross-body comparisons and causing unnecessary query churn, and
+  - (worse) if callers accidentally mix `Type` values from different body-local stores, two unrelated
+    classes can share the same raw `u32` and compare **equal** (false positives), breaking correctness.
 
 ### Constraints
 
