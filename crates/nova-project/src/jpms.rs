@@ -42,7 +42,12 @@ pub(crate) fn workspace_uses_jpms(jpms_modules: &[JpmsModuleRoot]) -> bool {
 ///   `META-INF/versions/9/module-info.class`), or
 /// - an `Automatic-Module-Name` attribute in `META-INF/MANIFEST.MF`.
 ///
-/// All remaining dependencies stay on the classpath.
+/// All remaining *directory* dependencies stay on the classpath.
+///
+/// Note: jar/jmod entries are always treated as module-path candidates when JPMS is enabled, even
+/// if the file isn't present on disk yet (e.g. dependency jars that haven't been downloaded). This
+/// keeps `WorkspaceProjectModel` and `ProjectConfig` consistent with typical JPMS tooling, where
+/// missing archives can still be assigned automatic module names based on their filenames.
 pub(crate) fn classify_dependency_entries(
     jpms_modules: &[JpmsModuleRoot],
     entries: Vec<ClasspathEntry>,
@@ -52,7 +57,7 @@ pub(crate) fn classify_dependency_entries(
         let mut classpath = Vec::new();
 
         for entry in entries {
-            if is_stable_named_module(&entry.path) {
+            if is_archive_path(&entry.path) || is_stable_named_module(&entry.path) {
                 module_path.push(entry);
             } else {
                 classpath.push(entry);
@@ -109,6 +114,12 @@ pub(crate) fn build_jpms_workspace(
         graph,
         module_roots,
     })
+}
+
+fn is_archive_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("jmod"))
 }
 
 fn discover_jpms_module_root(module_root: &Path) -> Option<JpmsModuleRoot> {
