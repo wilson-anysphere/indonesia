@@ -99,7 +99,7 @@ Notable “delta” areas to be aware of:
   - `crates/nova-vfs/` has archive path types + overlay support, and the current `nova-lsp` stdio server uses a `nova_vfs::Vfs<LocalFs>` overlay for open documents (`AnalysisState` in `crates/nova-lsp/src/main.rs`).
   - Some LSP-facing features still assume `file:` URIs and/or legacy schemes:
     - `crates/nova-lsp/src/refactor_workspace.rs` requires `file://` URIs for project-root discovery.
-    - Virtual decompiled documents are still primarily exposed via the legacy `nova-decompile:` scheme (`crates/nova-lsp/src/decompile.rs`), even though ADR0006 defines a canonical `nova:///decompiled/...` form.
+    - JDK go-to-definition emits canonical ADR0006 `nova:///decompiled/...` URIs (see `goto_definition_jdk` in `crates/nova-lsp/src/main.rs`), but legacy `nova-decompile:` handling still exists for compatibility (`crates/nova-lsp/src/decompile.rs` and `crates/nova-vfs/src/path.rs`).
 - **Distributed mode (docs/16-distributed-mode.md):**
   - The router/worker stack exists (`crates/nova-router/`, `crates/nova-worker/`, `crates/nova-remote-proto/`) but is not yet integrated into the shipped `nova-lsp` binary.
 - **Protocol extensions:**
