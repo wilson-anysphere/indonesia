@@ -106,6 +106,10 @@ jobs:
         run: cargo +nightly fuzz run --codegen-units 16 fuzz_junit_report -- -max_total_time=60 -max_len=262144
         timeout-minutes: 20
 
+      - name: fuzz_completion
+        run: cargo +nightly fuzz run --codegen-units 16 fuzz_completion -- -max_total_time=30 -max_len=262144
+        timeout-minutes: 20
+
       - name: refactor_smoke (best-effort; --features refactor)
         run: cargo +nightly fuzz run --codegen-units 16 --features refactor refactor_smoke -- -max_total_time=30 -max_len=262144
         timeout-minutes: 30
