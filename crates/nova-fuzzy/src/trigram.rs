@@ -146,6 +146,8 @@ pub struct TrigramCandidateScratch {
     lists: Vec<(u32, u32)>,
     cursors: Vec<usize>,
     out: Vec<SymbolId>,
+    #[cfg(feature = "unicode")]
+    unicode_buf: String,
 }
 
 #[inline]
@@ -210,6 +212,9 @@ impl TrigramIndex {
         scratch.lists.clear();
         scratch.out.clear();
 
+        #[cfg(feature = "unicode")]
+        trigrams_with_unicode_buf(query, &mut scratch.q_trigrams, &mut scratch.unicode_buf);
+        #[cfg(not(feature = "unicode"))]
         trigrams(query, &mut scratch.q_trigrams);
         if scratch.q_trigrams.is_empty() {
             return &[];
