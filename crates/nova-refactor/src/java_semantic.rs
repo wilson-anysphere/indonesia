@@ -5168,10 +5168,10 @@ fn record_lightweight_expr(
             spans,
         ),
         Expr::Cast(expr) => {
-            record_type_names_in_range(
+            record_lightweight_expr(
                 file,
                 text,
-                TextRange::new(expr.ty.range.start, expr.ty.range.end),
+                &expr.expr,
                 type_scopes,
                 scope_result,
                 resolver,
@@ -5179,10 +5179,10 @@ fn record_lightweight_expr(
                 references,
                 spans,
             );
-            record_lightweight_expr(
+            record_type_names_in_range(
                 file,
                 text,
-                &expr.expr,
+                TextRange::new(expr.ty.range.start, expr.ty.range.end),
                 type_scopes,
                 scope_result,
                 resolver,
