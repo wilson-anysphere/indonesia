@@ -1057,6 +1057,34 @@ class C { void m(){ byte b = 1 + 2; } }
 }
 
 #[test]
+fn byte_initializer_allows_char_constant() {
+    let src = r#"
+class C { void m(){ byte b = 'a'; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected `byte b = 'a'` to type-check via constant narrowing; got {diags:?}"
+    );
+}
+
+#[test]
+fn byte_initializer_rejects_out_of_range_char_constant() {
+    let src = r#"
+class C { void m(){ byte b = '\u0100'; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "type-mismatch"),
+        "expected `byte b = '\\u0100'` to produce a type-mismatch diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn reports_type_mismatch_for_bad_assignment() {
     let src = r#"
 class C {

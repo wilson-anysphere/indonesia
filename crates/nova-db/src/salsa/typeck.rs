@@ -202,6 +202,13 @@ fn const_value_for_expr(body: &HirBody, expr: HirExprId) -> Option<ConstValue> {
             ..
         } => parse_java_int_literal(value).map(ConstValue::Int),
         HirExpr::Literal {
+            kind: LiteralKind::Char,
+            value,
+            ..
+        } => nova_syntax::unescape_char_literal(value)
+            .ok()
+            .map(|ch| ConstValue::Int(i64::from(u32::from(ch)))),
+        HirExpr::Literal {
             kind: LiteralKind::Bool,
             value,
             ..

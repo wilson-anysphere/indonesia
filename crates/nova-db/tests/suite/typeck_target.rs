@@ -132,6 +132,20 @@ class C { char m(){ return 'a'; } }
 }
 
 #[test]
+fn byte_initializer_allows_char_constant_narrowing() {
+    let src = r#"
+class C { void m(){ byte b = 'a'; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected `byte b = 'a'` to type-check via constant narrowing; got {diags:?}"
+    );
+}
+
+#[test]
 fn text_block_is_string() {
     let src = r#"
 class C { String m(){ return """x"""; } }
