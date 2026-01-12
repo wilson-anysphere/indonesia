@@ -274,6 +274,30 @@ impl GradleBuild {
             }
         }
 
+        // Optimization: for multi-project builds, fetch all module configs up-front when a
+        // workspace-level query is requested. This avoids first running the root-only task and
+        // then falling back to the batch task for aggregator roots.
+        if project_path.is_none() && gradle_settings_suggest_multi_project(project_root) {
+            if self.java_compile_configs_all(project_root, cache).is_ok() {
+                if let Some(cached) = cache.get_module(
+                    project_root,
+                    BuildSystemKind::Gradle,
+                    &fingerprint,
+                    module_key,
+                )? {
+                    if let Some(cfg) = cached.java_compile_config {
+                        return Ok(cfg);
+                    }
+                    if let Some(entries) = cached.classpath {
+                        return Ok(JavaCompileConfig {
+                            compile_classpath: entries,
+                            ..JavaCompileConfig::default()
+                        });
+                    }
+                }
+            }
+        }
+
         // Optimization: when a per-module config is requested and there's a cache miss, attempt to
         // fetch *all* project configs in a single Gradle invocation. This avoids N× Gradle
         // startups in multi-module workspaces when callers query multiple modules in sequence.
