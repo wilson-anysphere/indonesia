@@ -161,7 +161,7 @@ Current implementation policy (semantic + statement-aware):
 - **Formatting:** newline style (LF vs CRLF) and indentation are preserved. The inserted declaration uses the indentation of the enclosing statement, and we preserve surrounding blank lines as much as possible.
 - **Type annotation:**
   - `use_var: true` emits `var <name> = <expr>;`
-  - `use_var: false` emits an explicit Java type when we can infer it **best-effort** from semantic type information. If we cannot infer a type confidently, the refactoring is rejected rather than guessing.
+  - `use_var: false` emits an explicit Java type when we can infer it **best-effort**. If we cannot infer a type confidently, the refactoring is rejected rather than guessing. In practice, clients should default to `use_var: true` for maximum applicability.
 - **Applicability:** the implementation is intentionally conservative and rejects extractions from contexts where hoisting the expression would change semantics or where we cannot reliably pick a statement insertion point. Known non-applicable contexts include:
   - expressions that are the condition of `while (...) { ... }` loops
   - expressions that are the condition of `do { ... } while (...);` loops
@@ -635,6 +635,8 @@ pub fn convert_to_record(
 ## Integration with LSP
 
 ```rust
+use serde_json::json;
+
 /// Handle code action request for refactoring
 pub fn refactoring_code_actions(
     db: &dyn Database,
