@@ -2294,6 +2294,75 @@ fn inline_variable_increment_is_rejected() {
 }
 
 #[test]
+fn inline_variable_rejects_crossing_lambda_execution_context() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int x = 1;
+    int a = x;
+    Runnable r = () -> System.out.println(a);
+    x = 2;
+    r.run();
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(err, SemanticRefactorError::InlineNotSupported));
+}
+
+#[test]
+fn inline_variable_allows_inlining_within_same_lambda_execution_context() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    Runnable r = () -> {
+      int a = 1 + 2;
+      System.out.println(a);
+    };
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  void m() {
+    Runnable r = () -> {
+      System.out.println((1 + 2));
+    };
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn rename_local_variable_inside_array_access() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {

@@ -445,6 +445,81 @@ pub fn inline_variable(
         return Err(RefactorError::InlineNotSupported);
     }
 
+    // Reject inlining across lambda execution-context boundaries. Inlining a local into a lambda
+    // body (or out of it) can change evaluation timing and captured-variable semantics.
+    //
+    // Example:
+    // ```
+    // int x = 1;
+    // int a = x;
+    // Runnable r = () -> System.out.println(a);
+    // x = 2;
+    // r.run(); // prints 1
+    // ```
+    //
+    // Inlining `a` inside the lambda would become `() -> println(x)`, printing 2 instead.
+    {
+        #[derive(Clone, Debug, PartialEq, Eq)]
+        struct LambdaContext {
+            file: FileId,
+            range: TextRange,
+        }
+
+        fn lambda_context_at(
+            db: &dyn RefactorDatabase,
+            cache: &mut HashMap<FileId, nova_syntax::SyntaxNode>,
+            file: &FileId,
+            token_range: TextRange,
+        ) -> Result<Option<LambdaContext>, RefactorError> {
+            let root = if let Some(root) = cache.get(file) {
+                root.clone()
+            } else {
+                let text = db
+                    .file_text(file)
+                    .ok_or_else(|| RefactorError::UnknownFile(file.clone()))?;
+                let parsed = parse_java(text);
+                if !parsed.errors.is_empty() {
+                    return Err(RefactorError::InlineNotSupported);
+                }
+                let root = parsed.syntax();
+                cache.insert(file.clone(), root.clone());
+                root
+            };
+
+            let Some(tok) = root
+                .descendants_with_tokens()
+                .filter_map(|el| el.into_token())
+                .find(|tok| syntax_token_range(tok) == token_range)
+            else {
+                return Err(RefactorError::InlineNotSupported);
+            };
+
+            let Some(parent) = tok.parent() else {
+                return Err(RefactorError::InlineNotSupported);
+            };
+
+            let Some(lambda) = parent.ancestors().find_map(ast::LambdaExpression::cast) else {
+                return Ok(None);
+            };
+
+            Ok(Some(LambdaContext {
+                file: file.clone(),
+                range: syntax_range(lambda.syntax()),
+            }))
+        }
+
+        let mut cache: HashMap<FileId, nova_syntax::SyntaxNode> = HashMap::new();
+        cache.insert(def.file.clone(), root.clone());
+
+        let decl_ctx = lambda_context_at(db, &mut cache, &def.file, def.name_range)?;
+        for usage in &targets {
+            let usage_ctx = lambda_context_at(db, &mut cache, &usage.file, usage.range)?;
+            if decl_ctx != usage_ctx {
+                return Err(RefactorError::InlineNotSupported);
+            }
+        }
+    }
+
     let remove_decl = params.inline_all || all_refs.len() == 1;
 
     if init_has_side_effects && !(remove_decl && targets.len() == 1) {
