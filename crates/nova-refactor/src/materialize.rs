@@ -257,6 +257,83 @@ mod tests {
     }
 
     #[test]
+    fn remove_out_of_bounds_returns_invalid_range() {
+        let file = FileId::new("file:///test");
+        let mut db = TestDb::default();
+        db.files.insert(file.clone(), "abc".to_string());
+
+        let err = materialize(
+            &db,
+            [SemanticChange::Remove {
+                file: file.clone(),
+                range: TextRange::new(0, 10),
+            }],
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            err,
+            MaterializeError::InvalidRange {
+                file,
+                range: TextRange::new(0, 10),
+                len: 3
+            }
+        );
+    }
+
+    #[test]
+    fn change_type_out_of_bounds_returns_invalid_range() {
+        let file = FileId::new("file:///test");
+        let mut db = TestDb::default();
+        db.files.insert(file.clone(), "abc".to_string());
+
+        let err = materialize(
+            &db,
+            [SemanticChange::ChangeType {
+                file: file.clone(),
+                range: TextRange::new(0, 10),
+                new_type: "int".to_string(),
+            }],
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            err,
+            MaterializeError::InvalidRange {
+                file,
+                range: TextRange::new(0, 10),
+                len: 3
+            }
+        );
+    }
+
+    #[test]
+    fn update_references_out_of_bounds_returns_invalid_range() {
+        let file = FileId::new("file:///test");
+        let mut db = TestDb::default();
+        db.files.insert(file.clone(), "abc".to_string());
+
+        let err = materialize(
+            &db,
+            [SemanticChange::UpdateReferences {
+                file: file.clone(),
+                range: TextRange::new(0, 10),
+                new_text: "x".to_string(),
+            }],
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            err,
+            MaterializeError::InvalidRange {
+                file,
+                range: TextRange::new(0, 10),
+                len: 3
+            }
+        );
+    }
+
+    #[test]
     fn rename_out_of_bounds_reference_returns_invalid_range() {
         let file = FileId::new("file:///test");
         let mut db = TestDb::default();
@@ -325,6 +402,42 @@ mod tests {
                 file: src,
                 offset: 2,
             })
+        );
+    }
+
+    #[test]
+    fn rename_out_of_bounds_definition_returns_invalid_range() {
+        let file = FileId::new("file:///test");
+        let mut db = TestDb::default();
+        db.files.insert(file.clone(), "abc".to_string());
+
+        let symbol = SymbolId::new(0);
+        db.defs.insert(
+            symbol,
+            SymbolDefinition {
+                file: file.clone(),
+                name: "a".to_string(),
+                name_range: TextRange::new(10, 11),
+                scope: 0,
+            },
+        );
+
+        let err = materialize(
+            &db,
+            [SemanticChange::Rename {
+                symbol,
+                new_name: "b".to_string(),
+            }],
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            err,
+            MaterializeError::InvalidRange {
+                file,
+                range: TextRange::new(10, 11),
+                len: 3
+            }
         );
     }
 }
