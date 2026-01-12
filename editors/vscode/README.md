@@ -28,6 +28,8 @@ Nova supports VS Code multi-root workspaces and routes most Nova commands/reques
 
 Nova contributes a **Nova Frameworks** view in the Explorer sidebar (Explorer → **Nova Frameworks**).
 
+The view only populates when Nova’s language server is running. If you see an empty-state message instead, open a Java file (to start Nova automatically) or run **Nova: Install/Update Server** (`nova.installOrUpdateServer`).
+
 The dashboard surfaces framework-derived navigation targets, including:
 
 - **Web endpoints** (from `nova/web/endpoints`)
