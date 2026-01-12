@@ -2049,6 +2049,40 @@ mod tests {
     }
 
     #[test]
+    fn load_build_metadata_resolves_include_flat_module_outside_workspace_root() {
+        let tmp = TempDir::new().unwrap();
+        let outer = tmp.path();
+        let workspace_root = outer.join("workspace");
+        std::fs::create_dir_all(&workspace_root).unwrap();
+        std::fs::write(workspace_root.join("settings.gradle"), "includeFlat 'app'\n").unwrap();
+
+        let src_root = outer.join("app/src/main/java");
+        std::fs::create_dir_all(&src_root).unwrap();
+        std::fs::write(src_root.join("Hello.java"), "class Hello {}").unwrap();
+
+        let params = NovaProjectParams {
+            project_root: workspace_root.to_string_lossy().to_string(),
+            build_tool: Some(BuildTool::Gradle),
+            module: None,
+            project_path: Some(":app".to_string()),
+            target: None,
+        };
+
+        let metadata = load_build_metadata(&params);
+        let expected = src_root.canonicalize().unwrap();
+        let actual: Vec<PathBuf> = metadata
+            .source_roots
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+
+        assert!(
+            actual.iter().any(|root| *root == expected),
+            "expected {expected:?} in {actual:?}"
+        );
+    }
+
+    #[test]
     fn parse_java_major_accepts_common_formats() {
         assert_eq!(parse_java_major("17"), Some(17));
         assert_eq!(parse_java_major("1.8"), Some(8));

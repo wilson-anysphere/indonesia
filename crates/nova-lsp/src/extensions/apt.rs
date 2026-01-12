@@ -579,6 +579,29 @@ mod tests {
     }
 
     #[test]
+    fn selected_module_root_resolves_gradle_include_flat_outside_workspace_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_root = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace_root).unwrap();
+        std::fs::write(workspace_root.join("settings.gradle"), "includeFlat 'app'\n").unwrap();
+        std::fs::create_dir_all(dir.path().join("app")).unwrap();
+
+        let (project, _config) = load_project_with_workspace_config(&workspace_root).unwrap();
+
+        let params = NovaGeneratedSourcesParams {
+            project_root: workspace_root.to_string_lossy().to_string(),
+            module: None,
+            project_path: Some(":app".into()),
+            target: None,
+        };
+
+        assert_eq!(
+            selected_module_root(&project, &params),
+            Some(dir.path().join("app").canonicalize().unwrap())
+        );
+    }
+
+    #[test]
     fn resolve_target_normalizes_maven_root_module() {
         let project = nova_project::ProjectConfig {
             workspace_root: PathBuf::from("/workspace"),

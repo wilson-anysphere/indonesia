@@ -68,4 +68,22 @@ mod tests {
             Some("application")
         );
     }
+
+    #[test]
+    fn resolves_include_flat_module_outside_workspace_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_root = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace_root).unwrap();
+        std::fs::write(
+            workspace_root.join("settings.gradle"),
+            "includeFlat 'app'\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("app")).unwrap();
+
+        let resolved = resolve_gradle_module_root(&workspace_root, ":app").expect("module root");
+        let expected = dir.path().join("app").canonicalize().unwrap();
+
+        assert_eq!(resolved, expected);
+    }
 }
