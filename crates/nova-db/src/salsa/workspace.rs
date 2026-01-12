@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use nova_cache::normalize_rel_path;
-use nova_classpath::{ClasspathEntry, ClasspathIndex};
+use nova_classpath::{ClasspathEntry, ClasspathIndex, IndexOptions};
 use nova_jdk::JdkIndex;
 use nova_project::{
     JavaConfig, JavaLanguageLevel, JpmsModuleRoot, JpmsWorkspace, Module, ProjectConfig,
@@ -33,6 +33,7 @@ pub enum WorkspaceLoadError {
 struct ClasspathSpec {
     classpath: Vec<nova_project::ClasspathEntry>,
     module_path: Vec<nova_project::ClasspathEntry>,
+    target_release: u16,
 }
 
 /// Glue between `nova-project`'s workspace model and `nova-db` Salsa inputs.
@@ -143,11 +144,12 @@ impl WorkspaceLoader {
         for module in modules {
             let project = self.project_id_for_module_or_insert(&module.id);
             let project_config = project_config_from_workspace_module(&model, &module);
+            let target_release = project_config.java.target.0;
             db.set_project_config(project, Arc::new(project_config));
 
             // External indexes.
             db.set_jdk_index(project, Arc::clone(&self.jdk_index));
-            self.apply_classpath_index(db, project, &module);
+            self.apply_classpath_index(db, project, &module, target_release);
 
             // File set + source roots.
             let file_roots = scan_java_files(&module.source_roots);
@@ -254,10 +256,12 @@ impl WorkspaceLoader {
         db: &Database,
         project: ProjectId,
         module: &WorkspaceModuleConfig,
+        target_release: u16,
     ) {
         let spec = ClasspathSpec {
             classpath: module.classpath.clone(),
             module_path: module.module_path.clone(),
+            target_release,
         };
 
         let unchanged = self
@@ -295,7 +299,13 @@ impl WorkspaceLoader {
         let index = if entries.is_empty() {
             None
         } else {
-            match ClasspathIndex::build(&entries, classpath_cache_dir.as_deref()) {
+            match ClasspathIndex::build_with_options(
+                &entries,
+                classpath_cache_dir.as_deref(),
+                IndexOptions {
+                    target_release: Some(target_release),
+                },
+            ) {
                 Ok(index) => Some(Arc::new(index)),
                 Err(_) => None,
             }

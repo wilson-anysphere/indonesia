@@ -225,6 +225,52 @@ fn reload_preserves_stable_ids_and_reuses_indexes_when_unchanged() {
 }
 
 #[test]
+fn reload_rebuilds_classpath_index_when_target_release_changes() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().join("maven-multi");
+    copy_dir_all(&fixture_root("maven-multi"), &root);
+
+    let db = Database::new();
+    let mut loader = WorkspaceLoader::new();
+    let mut alloc = file_id_allocator();
+    loader.load(&db, &root, &mut alloc).expect("load workspace");
+
+    let app_project = loader
+        .project_id_for_module("maven:com.example:app")
+        .expect("app project");
+
+    let before_cp = db.with_snapshot(|snap| {
+        snap.classpath_index(app_project)
+            .expect("classpath index should be set")
+    });
+
+    // Change the effective Java target release for the workspace and reload. This should
+    // invalidate the cached classpath index even if the classpath entries themselves are
+    // unchanged (multi-release selection depends on `--release`).
+    let pom_path = root.join("pom.xml");
+    let pom = fs::read_to_string(&pom_path).expect("read pom.xml");
+    let pom = pom.replace(
+        "<maven.compiler.target>17</maven.compiler.target>",
+        "<maven.compiler.target>8</maven.compiler.target>",
+    );
+    fs::write(&pom_path, pom).expect("write pom.xml");
+
+    loader.reload(&db, &[], &mut alloc).expect("reload");
+
+    db.with_snapshot(|snap| {
+        assert_eq!(snap.project_config(app_project).java.target.0, 8);
+
+        let after_cp = snap
+            .classpath_index(app_project)
+            .expect("classpath index should be set");
+        assert!(
+            !std::sync::Arc::ptr_eq(&before_cp.0, &after_cp.0),
+            "expected classpath index to be rebuilt when target release changes"
+        );
+    });
+}
+
+#[test]
 fn java_language_level_is_project_scoped() {
     let root = fixture_root("maven-multi");
     let db = Database::new();
