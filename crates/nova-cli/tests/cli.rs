@@ -30,10 +30,10 @@ fn path_with_test_executable(name: &str) -> (TempDir, std::ffi::OsString) {
     let exe_name = format!("{name}{}", std::env::consts::EXE_SUFFIX);
     let dest = temp.path().join(exe_name);
 
-    if std::fs::hard_link(&stub, &dest).is_err() {
-        // `hard_link` can fail on some filesystems; fall back to a copy.
-        std::fs::copy(&stub, &dest).expect("copy nova-lsp test server");
-    }
+    // Avoid hard-linking the stub binary: on some platforms/filesystems this can
+    // intermittently fail with `ETXTBSY` ("text file busy") if Cargo is still
+    // finalizing the original executable while tests start running.
+    std::fs::copy(&stub, &dest).expect("copy nova CLI test server");
 
     let mut entries =
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect::<Vec<_>>();
@@ -215,14 +215,11 @@ fn lsp_stdio_initialize_shutdown_exit_passthrough() {
 fn dap_version_passthrough_matches_nova_dap() {
     let (_temp, path_with_nova_dap) = path_with_test_nova_dap();
 
-    let nova_dap_path = _temp
-        .path()
-        .join(format!("nova-dap{}", std::env::consts::EXE_SUFFIX));
-
-    let direct = ProcessCommand::new(&nova_dap_path)
+    let stub = lsp_test_server();
+    let direct = ProcessCommand::new(&stub)
         .arg("--version")
         .output()
-        .expect("run nova-dap --version");
+        .expect("run test server --version");
     assert!(
         direct.status.success(),
         "direct stderr: {}",
@@ -246,7 +243,6 @@ fn dap_version_passthrough_matches_nova_dap() {
         "expected identical stdout for `nova-dap --version` and `nova dap --version`"
     );
 
-    let stub = lsp_test_server();
     let via_nova_path = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
         .arg("dap")
         .arg("--path")

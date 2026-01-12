@@ -1002,17 +1002,30 @@ fn spawn_passthrough_command(
         None => Command::new(command_name),
     };
 
-    let status = cmd
-        .args(args)
+    cmd.args(args)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .with_context(|| format!("failed to spawn {command_name}"))?;
+        .stderr(Stdio::inherit());
 
-    Ok(exit_code_from_status(status))
+    // Prefer an `exec()`-style handoff on Unix so `nova lsp` behaves exactly like
+    // running `nova-lsp` directly (signal handling, process identity, etc.).
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = cmd.exec();
+        return Err(err).with_context(|| format!("failed to exec {command_name}"));
+    }
+
+    #[cfg(not(unix))]
+    {
+        let status = cmd
+            .status()
+            .with_context(|| format!("failed to spawn {command_name}"))?;
+        Ok(exit_code_from_status(status))
+    }
 }
 
+#[cfg(not(unix))]
 fn exit_code_from_status(status: std::process::ExitStatus) -> i32 {
     if let Some(code) = status.code() {
         return code;

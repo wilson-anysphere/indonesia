@@ -11,6 +11,9 @@ path = "src/main.rs"
 [[bin]]
 name = "nova-cli-test-lsp"
 path = "tests/fixtures/nova_lsp_test_helper.rs"
+# This binary exists solely as an integration-test fixture and is not intended
+# to be executed as a Rust test harness.
+test = false
 
 [features]
 default = ["extensions"]
