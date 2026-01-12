@@ -343,7 +343,7 @@ impl ItemTreeLower<'_> {
                             SyntaxKind::CompactConstructorDeclaration,
                             cons.name_range,
                         )
-                    })?;
+                })?;
                 let ast_id = self.ast_id_map.ast_id(&node)?;
                 let id = ConstructorId::new(self.file, ast_id);
                 let type_params = lower_type_params(&node);

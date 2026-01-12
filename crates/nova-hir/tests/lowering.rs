@@ -412,6 +412,37 @@ class Foo { <T> Foo(T t) { } }
 }
 
 #[test]
+fn lower_method_and_constructor_throws_clauses() {
+    let source = r#"
+class Foo {
+  void m() throws java.io.IOException, RuntimeException { }
+  Foo() throws Exception { }
+}
+"#;
+
+    let db = TestDb {
+        files: vec![Arc::from(source)],
+    };
+    let file = FileId::from_raw(0);
+
+    let tree = item_tree(&db, file);
+
+    let method = tree
+        .methods
+        .values()
+        .find(|method| method.name == "m")
+        .expect("m method");
+    assert_eq!(method.throws, vec!["java.io.IOException", "RuntimeException"]);
+
+    let ctor = tree
+        .constructors
+        .values()
+        .find(|ctor| ctor.name == "Foo")
+        .expect("Foo constructor");
+    assert_eq!(ctor.throws, vec!["Exception"]);
+}
+
+#[test]
 fn lower_record_compact_constructor() {
     let source = r#"
 record Point(int x, int y) {
