@@ -409,6 +409,22 @@ mod tests {
     }
 
     #[test]
+    fn module_info_java_is_treated_as_build_file() {
+        let root = PathBuf::from("/tmp/workspace");
+        let module_info = root.join("src/main/java/module-info.java");
+        assert!(is_build_file(&module_info));
+    }
+
+    #[test]
+    fn module_info_java_change_is_categorized_as_build() {
+        let root = PathBuf::from("/tmp/workspace");
+        let config = WatchConfig::new(root.clone());
+        let module_info = root.join("src/main/java/module-info.java");
+        let event = NormalizedEvent::Modified(module_info);
+        assert_eq!(categorize_event(&config, &event), Some(ChangeCategory::Build));
+    }
+
+    #[test]
     fn java_edits_remain_source_changes() {
         let root = PathBuf::from("/tmp/workspace");
         let config = WatchConfig::new(root.clone());
