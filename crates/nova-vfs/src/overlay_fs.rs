@@ -41,6 +41,18 @@ impl<F: FileSystem> OverlayFs<F> {
         docs.entry(to).or_insert(doc);
     }
 
+    /// Rename a document, overwriting any document already open at the destination path.
+    ///
+    /// This is primarily used to keep the overlay consistent when a file is renamed/moved on disk
+    /// while it is open in the editor.
+    pub fn rename_overwrite(&self, from: &VfsPath, to: VfsPath) {
+        let mut docs = self.docs.lock().expect("overlay mutex poisoned");
+        let Some(doc) = docs.remove(from) else {
+            return;
+        };
+        docs.insert(to, doc);
+    }
+
     pub fn is_open(&self, path: &VfsPath) -> bool {
         let docs = self.docs.lock().expect("overlay mutex poisoned");
         docs.contains_key(path)

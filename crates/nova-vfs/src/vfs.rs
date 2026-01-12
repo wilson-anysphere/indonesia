@@ -60,13 +60,37 @@ impl<F: FileSystem> Vfs<F> {
 
     /// Rename (or move) a path, preserving the existing `FileId` when possible.
     pub fn rename_path(&self, from: &VfsPath, to: VfsPath) -> FileId {
-        let to_for_overlay = to.clone();
-        let id = {
-            let mut ids = self.ids.lock().expect("file id registry mutex poisoned");
-            ids.rename_path(from, to)
-        };
-        self.fs.rename(from, to_for_overlay);
-        id
+        // If the source path is open in the overlay, keep the overlay in sync and preserve the
+        // source `FileId` even when the destination path already has an id.
+        //
+        // This avoids losing in-memory edits during rename storms (e.g. git checkouts) and keeps
+        // workspace engines from accidentally overwriting open buffers with disk content.
+        if self.fs.is_open(from) {
+            let to_for_overlay = to.clone();
+            let (id, displaced) = {
+                let mut ids = self.ids.lock().expect("file id registry mutex poisoned");
+                let displaced = ids.get_id(&to);
+                let id = ids.rename_path_preserve_source(from, to);
+                (id, displaced)
+            };
+
+            self.fs.rename_overwrite(from, to_for_overlay);
+            self.open_docs.open(id);
+            if let Some(displaced) = displaced {
+                if displaced != id {
+                    self.open_docs.close(displaced);
+                }
+            }
+            id
+        } else {
+            let to_for_overlay = to.clone();
+            let id = {
+                let mut ids = self.ids.lock().expect("file id registry mutex poisoned");
+                ids.rename_path(from, to)
+            };
+            self.fs.rename(from, to_for_overlay);
+            id
+        }
     }
 
     /// Returns all currently-tracked file ids (sorted).
@@ -227,6 +251,30 @@ mod tests {
         assert_eq!(vfs.get_id(&to), Some(id));
         assert_eq!(vfs.path_for_id(id), Some(to));
         assert!(vfs.open_documents().is_open(id));
+    }
+
+    #[test]
+    fn vfs_rename_path_preserves_open_document_id_even_when_destination_known() {
+        let vfs = Vfs::new(LocalFs::new());
+        let dir = tempfile::tempdir().unwrap();
+        let from = VfsPath::local(dir.path().join("a.java"));
+        let to = VfsPath::local(dir.path().join("b.java"));
+
+        let to_id = vfs.file_id(to.clone());
+        let from_id = vfs.open_document(from.clone(), "hello".to_string(), 1);
+        assert_ne!(to_id, from_id);
+        assert!(vfs.open_documents().is_open(from_id));
+
+        let moved = vfs.rename_path(&from, to.clone());
+        assert_eq!(moved, from_id);
+        assert_eq!(vfs.get_id(&to), Some(from_id));
+        assert_eq!(vfs.path_for_id(to_id), None);
+
+        assert!(!vfs.overlay().is_open(&from));
+        assert!(vfs.overlay().is_open(&to));
+        assert_eq!(vfs.read_to_string(&to).unwrap(), "hello");
+        assert!(vfs.open_documents().is_open(from_id));
+        assert!(!vfs.open_documents().is_open(to_id));
     }
 
     #[cfg(feature = "lsp")]

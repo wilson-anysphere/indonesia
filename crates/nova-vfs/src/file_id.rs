@@ -52,6 +52,32 @@ impl FileIdRegistry {
         id_from
     }
 
+    /// Rename (or move) a path while always preserving the source `FileId`.
+    ///
+    /// This differs from [`rename_path`]: if `to` is already known, its `FileId` is displaced and
+    /// the source id is moved to `to` instead. This is useful for editor overlays where the open
+    /// document identity must be preserved across renames.
+    pub(crate) fn rename_path_preserve_source(&mut self, from: &VfsPath, to: VfsPath) -> FileId {
+        let Some(id_from) = self.path_to_id.remove(from) else {
+            return self.file_id(to);
+        };
+
+        // If the destination path is already known, drop its mapping so that `id_from` can take it.
+        if let Some(id_to) = self.path_to_id.remove(&to) {
+            if id_to != id_from {
+                if let Some(slot) = self.id_to_path.get_mut(id_to.to_raw() as usize) {
+                    *slot = None;
+                }
+            }
+        }
+
+        if let Some(slot) = self.id_to_path.get_mut(id_from.to_raw() as usize) {
+            *slot = Some(to.clone());
+        }
+        self.path_to_id.insert(to, id_from);
+        id_from
+    }
+
     /// Returns all currently-tracked file ids (sorted).
     pub fn all_file_ids(&self) -> Vec<FileId> {
         let mut ids: Vec<_> = self.path_to_id.values().copied().collect();

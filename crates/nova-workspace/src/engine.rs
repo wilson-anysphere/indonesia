@@ -709,20 +709,9 @@ impl WorkspaceEngine {
         let id_from = self.vfs.get_id(&from_vfs);
         let to_was_known = self.vfs.get_id(&to_vfs).is_some();
         let open_docs = self.vfs.open_documents();
-        let from_is_open = id_from.is_some_and(|id| open_docs.is_open(id));
-        let is_new_id = if from_is_open {
-            !to_was_known
-        } else {
-            id_from.is_none() && !to_was_known
-        };
+        let is_new_id = id_from.is_none() && !to_was_known;
 
-        // `Vfs::rename_path` currently does not update overlay entries; avoid renaming open
-        // documents until `nova-vfs` grows first-class support for this.
-        let file_id = if from_is_open {
-            self.vfs.file_id(to_vfs.clone())
-        } else {
-            self.vfs.rename_path(&from_vfs, to_vfs.clone())
-        };
+        let file_id = self.vfs.rename_path(&from_vfs, to_vfs.clone());
 
         self.ensure_file_inputs(file_id, &to_vfs);
         let exists = self.vfs.exists(&to_vfs);
@@ -1321,6 +1310,43 @@ mod tests {
                 snap.file_content(file_id).as_str(),
                 "class Main { overlay }"
             );
+        });
+    }
+
+    #[test]
+    fn move_events_preserve_open_document_overlay_and_file_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+        let file_a = root.join("src/A.java");
+        fs::write(&file_a, "class A { disk }".as_bytes()).unwrap();
+
+        let workspace = crate::Workspace::open(root).unwrap();
+        let vfs_a = VfsPath::local(file_a.clone());
+        let file_id = workspace.open_document(vfs_a.clone(), "class A { overlay }".to_string(), 1);
+
+        let engine = workspace.engine_for_tests();
+        assert!(engine.vfs.open_documents().is_open(file_id));
+
+        let file_b = root.join("src/B.java");
+        fs::rename(&file_a, &file_b).unwrap();
+        workspace.apply_filesystem_events(vec![NormalizedEvent::Moved {
+            from: file_a.clone(),
+            to: file_b.clone(),
+        }]);
+
+        let vfs_b = VfsPath::local(file_b.clone());
+        assert_eq!(engine.vfs.get_id(&vfs_a), None);
+        assert_eq!(engine.vfs.get_id(&vfs_b), Some(file_id));
+        assert_eq!(
+            engine.vfs.read_to_string(&vfs_b).unwrap(),
+            "class A { overlay }"
+        );
+
+        engine.query_db.with_snapshot(|snap| {
+            assert!(snap.file_exists(file_id));
+            assert_eq!(snap.file_content(file_id).as_str(), "class A { overlay }");
+            assert_eq!(snap.file_rel_path(file_id).as_str(), "src/B.java");
         });
     }
 
