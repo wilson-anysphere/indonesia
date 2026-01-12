@@ -1374,6 +1374,9 @@ pub(crate) fn core_file_diagnostics_cancelable(
         }
         with_salsa_snapshot_for_single_file(db, file, text, |snap| {
             diagnostics.extend(snap.type_diagnostics(file));
+            if cancel.is_cancelled() {
+                return;
+            }
             diagnostics.extend(snap.flow_diagnostics_for_file(file).iter().cloned());
         });
     }
@@ -1395,6 +1398,10 @@ pub(crate) fn core_file_diagnostics_cancelable(
             format!("Cannot resolve symbol '{}'", call.name),
             Some(call.name_span),
         ));
+    }
+
+    if cancel.is_cancelled() {
+        return Vec::new();
     }
 
     diagnostics
