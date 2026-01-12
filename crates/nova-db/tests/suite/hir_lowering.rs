@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use nova_db::salsa::{NovaHir, NovaInputs};
+use nova_db::salsa::{NovaFlow, NovaHir, NovaInputs};
 use nova_db::{FileId, SalsaRootDatabase};
 use nova_hir::hir::{Body, Expr, ExprId};
 
@@ -123,4 +123,74 @@ class Foo {
         }
     }
     assert!(call_paths.iter().any(|path| path == "System.out.println"));
+}
+
+fn flow_diagnostics_for_method(source: &str, method_name: &str) -> Vec<nova_types::Diagnostic> {
+    let mut db = SalsaRootDatabase::default();
+    let file = FileId::from_raw(0);
+    db.set_file_exists(file, true);
+    db.set_file_content(file, Arc::new(source.to_string()));
+
+    let snap = db.snapshot();
+    let tree = snap.hir_item_tree(file);
+    let (&method_ast_id, _) = tree
+        .methods
+        .iter()
+        .find(|(_, method)| method.name == method_name)
+        .unwrap_or_else(|| panic!("expected method `{method_name}` to exist"));
+    let method_id = nova_hir::ids::MethodId::new(file, method_ast_id);
+
+    snap.flow_diagnostics(method_id).as_ref().clone()
+}
+
+fn assert_has_diagnostic_code(diags: &[nova_types::Diagnostic], code: &str) {
+    assert!(
+        diags.iter().any(|diag| diag.code.as_ref() == code),
+        "expected diagnostic with code `{code}`, got: {diags:#?}",
+    );
+}
+
+#[test]
+fn flow_diagnostics_reports_unreachable_code() {
+    let source = r#"
+class Foo {
+    void m() {
+        return;
+        int x = 1;
+    }
+}
+"#;
+
+    let diags = flow_diagnostics_for_method(source, "m");
+    assert_has_diagnostic_code(&diags, "FLOW_UNREACHABLE");
+}
+
+#[test]
+fn flow_diagnostics_reports_use_before_assignment() {
+    let source = r#"
+class Foo {
+    void m() {
+        int x;
+        System.out.println(x);
+    }
+}
+"#;
+
+    let diags = flow_diagnostics_for_method(source, "m");
+    assert_has_diagnostic_code(&diags, "FLOW_UNASSIGNED");
+}
+
+#[test]
+fn flow_diagnostics_reports_possible_null_dereference() {
+    let source = r#"
+class Foo {
+    void m(String s) {
+        s = null;
+        s.length();
+    }
+}
+"#;
+
+    let diags = flow_diagnostics_for_method(source, "m");
+    assert_has_diagnostic_code(&diags, "FLOW_NULL_DEREF");
 }
