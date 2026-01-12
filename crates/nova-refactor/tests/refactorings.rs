@@ -839,6 +839,49 @@ fn extract_variable_allows_name_that_matches_field_when_later_access_is_qualifie
 }
 
 #[test]
+fn extract_variable_allows_name_that_matches_field_when_replace_all_replaces_later_unqualified_uses()
+{
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  int value = 0;
+
+  void m() {
+    System.out.println(/*select*/value/*end*/);
+    System.out.println(value);
+  }
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "value".into(),
+            use_var: true,
+            replace_all: true,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  int value = 0;
+
+  void m() {
+    var value = value;
+    System.out.println(value);
+    System.out.println(value);
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn extract_variable_rejects_name_that_would_shadow_field_used_later_unqualified_in_switch_case_group() {
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {

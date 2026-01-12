@@ -1233,8 +1233,20 @@ pub fn extract_variable(
         }
         (stmt_range.start, String::new(), " ")
     };
+
+    let mut replacement_ranges = if params.replace_all {
+        find_replace_all_occurrences_same_execution_context(text, root.clone(), &stmt, &expr_text)
+    } else {
+        vec![expr_range]
+    };
+    if params.replace_all && !replacement_ranges.iter().any(|r| *r == expr_range) {
+        replacement_ranges.push(expr_range);
+        replacement_ranges.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.end.cmp(&b.end)));
+        replacement_ranges.dedup();
+    }
+
     check_extract_variable_name_conflicts(&params.file, &stmt, insert_pos, &name)?;
-    check_extract_variable_field_shadowing(&stmt, &params.file, &name, expr_range)?;
+    check_extract_variable_field_shadowing(&stmt, &params.file, &name, &replacement_ranges)?;
 
     let ty = if params.use_var {
         "var".to_string()
@@ -1363,18 +1375,9 @@ pub fn extract_variable(
     }
     let decl = format!("{indent}{ty} {} = {expr_text};{newline}", &name);
 
-    let mut occurrences = if params.replace_all {
-        find_replace_all_occurrences_same_execution_context(text, root.clone(), &stmt, &expr_text)
-    } else {
-        vec![expr_range]
-    };
-    if occurrences.is_empty() {
-        occurrences.push(expr_range);
-    }
-
-    let mut edits = Vec::with_capacity(1 + occurrences.len());
+    let mut edits = Vec::with_capacity(1 + replacement_ranges.len());
     edits.push(TextEdit::insert(params.file.clone(), insert_pos, decl));
-    for range in occurrences {
+    for range in replacement_ranges {
         edits.push(TextEdit::replace(params.file.clone(), range, name.clone()));
     }
 
@@ -3122,7 +3125,7 @@ fn check_extract_variable_field_shadowing(
     stmt: &ast::Statement,
     file: &FileId,
     name: &str,
-    replacement_range: TextRange,
+    replacement_ranges: &[TextRange],
 ) -> Result<(), RefactorError> {
     if !enclosing_type_declares_field_named(stmt.syntax(), name) {
         return Ok(());
@@ -3153,7 +3156,10 @@ fn check_extract_variable_field_shadowing(
         if range.start < stmt_start {
             continue;
         }
-        if ranges_overlap(range, replacement_range) {
+        if replacement_ranges
+            .iter()
+            .any(|replacement_range| ranges_overlap(range, *replacement_range))
+        {
             continue;
         }
         let Some(tok) = ast::support::ident_token(name_expr.syntax()) else {
