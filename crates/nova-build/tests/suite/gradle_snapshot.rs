@@ -25,6 +25,38 @@ impl CommandRunner for FakeRunner {
     }
 }
 
+#[derive(Debug)]
+struct CountingRunner {
+    output: CommandOutput,
+    invocations: std::sync::Mutex<usize>,
+}
+
+impl CountingRunner {
+    fn new(output: CommandOutput) -> Self {
+        Self {
+            output,
+            invocations: std::sync::Mutex::new(0),
+        }
+    }
+
+    fn invocations(&self) -> usize {
+        *self.invocations.lock().expect("lock poisoned")
+    }
+}
+
+impl CommandRunner for CountingRunner {
+    fn run(
+        &self,
+        _cwd: &Path,
+        _program: &Path,
+        _args: &[String],
+    ) -> std::io::Result<CommandOutput> {
+        let mut invocations = self.invocations.lock().expect("lock poisoned");
+        *invocations += 1;
+        Ok(self.output.clone())
+    }
+}
+
 fn exit_status(code: i32) -> ExitStatus {
     #[cfg(unix)]
     {
@@ -516,5 +548,149 @@ fn writes_gradle_snapshot_for_aggregator_root_union_config() {
     assert!(
         cfg.compile_classpath.contains(&dep_jar),
         "expected union root classpath to include subproject dependency"
+    );
+}
+
+#[test]
+fn refreshes_gradle_snapshot_from_cached_projects() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+    std::fs::write(project_root.join("settings.gradle"), "include(':app')\n").unwrap();
+
+    let app_dir = project_root.join("app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+
+    let payload = serde_json::json!({
+        "projects": [
+            { "path": ":", "projectDir": project_root.to_string_lossy() },
+            { "path": ":app", "projectDir": app_dir.to_string_lossy() },
+        ]
+    });
+    let stdout = format!(
+        "NOVA_PROJECTS_BEGIN\n{}\nNOVA_PROJECTS_END\n",
+        serde_json::to_string(&payload).unwrap()
+    );
+
+    let runner = Arc::new(CountingRunner::new(CommandOutput {
+        status: exit_status(0),
+        stdout,
+        stderr: String::new(),
+        truncated: false,
+    }));
+    let gradle = GradleBuild::with_runner(GradleConfig::default(), runner.clone());
+    let cache = BuildCache::new(tmp.path().join("cache"));
+
+    let _projects = gradle.projects(&project_root, &cache).expect("projects");
+    assert_eq!(runner.invocations(), 1);
+
+    let snapshot_path = project_root.join(GRADLE_SNAPSHOT_REL_PATH);
+    assert!(snapshot_path.is_file(), "snapshot file should be created");
+
+    // Delete the snapshot, then ensure it is repopulated from the cached projects list.
+    std::fs::remove_file(&snapshot_path).expect("remove snapshot");
+    assert!(!snapshot_path.exists(), "snapshot should be removed");
+
+    let _projects2 = gradle.projects(&project_root, &cache).expect("projects (cached)");
+    assert_eq!(
+        runner.invocations(),
+        1,
+        "expected projects() cache hit to avoid invoking Gradle"
+    );
+
+    assert!(
+        snapshot_path.is_file(),
+        "snapshot file should be recreated from cached projects"
+    );
+}
+
+#[test]
+fn refreshes_gradle_snapshot_from_cached_java_compile_config() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+    std::fs::write(project_root.join("settings.gradle"), "include(':app')\n").unwrap();
+
+    let app_dir = project_root.join("app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+
+    // `java_compile_config(project_path=Some(..))` attempts `java_compile_configs_all` first for
+    // multi-project builds; provide the batch output so the first call only invokes Gradle once.
+    let payload = serde_json::json!({
+        "projects": [
+            {
+                "path": ":",
+                "projectDir": project_root.to_string_lossy(),
+                "config": {
+                    "projectPath": ":",
+                    "projectDir": project_root.to_string_lossy(),
+                    "compileClasspath": [],
+                    "testCompileClasspath": [],
+                    "mainSourceRoots": [],
+                    "testSourceRoots": [],
+                    "mainOutputDirs": [],
+                    "testOutputDirs": [],
+                    "compileCompilerArgs": [],
+                    "testCompilerArgs": [],
+                    "inferModulePath": false,
+                }
+            },
+            {
+                "path": ":app",
+                "projectDir": app_dir.to_string_lossy(),
+                "config": {
+                    "projectPath": ":app",
+                    "projectDir": app_dir.to_string_lossy(),
+                    "compileClasspath": [],
+                    "testCompileClasspath": [],
+                    "mainSourceRoots": [],
+                    "testSourceRoots": [],
+                    "mainOutputDirs": [],
+                    "testOutputDirs": [],
+                    "compileCompilerArgs": [],
+                    "testCompilerArgs": [],
+                    "inferModulePath": false,
+                }
+            }
+        ]
+    });
+    let stdout = format!(
+        "NOVA_ALL_JSON_BEGIN\n{}\nNOVA_ALL_JSON_END\n",
+        serde_json::to_string(&payload).unwrap()
+    );
+
+    let runner = Arc::new(CountingRunner::new(CommandOutput {
+        status: exit_status(0),
+        stdout,
+        stderr: String::new(),
+        truncated: false,
+    }));
+    let gradle = GradleBuild::with_runner(GradleConfig::default(), runner.clone());
+    let cache = BuildCache::new(tmp.path().join("cache"));
+
+    let _cfg = gradle
+        .java_compile_config(&project_root, Some(":app"), &cache)
+        .expect("java compile config");
+    assert_eq!(runner.invocations(), 1);
+
+    let snapshot_path = project_root.join(GRADLE_SNAPSHOT_REL_PATH);
+    assert!(snapshot_path.is_file(), "snapshot file should be created");
+
+    // Delete the snapshot, then ensure it is repopulated from the cached module config.
+    std::fs::remove_file(&snapshot_path).expect("remove snapshot");
+    assert!(!snapshot_path.exists(), "snapshot should be removed");
+
+    let _cfg2 = gradle
+        .java_compile_config(&project_root, Some(":app"), &cache)
+        .expect("java compile config (cached)");
+    assert_eq!(
+        runner.invocations(),
+        1,
+        "expected java_compile_config() cache hit to avoid invoking Gradle"
+    );
+
+    assert!(
+        snapshot_path.is_file(),
+        "snapshot file should be recreated from cached module config"
     );
 }
