@@ -23,7 +23,7 @@ use nova_jdwp::wire::{
 
 use crate::breakpoints::map_line_breakpoints;
 use crate::eval_context::EvalOptions;
-use crate::object_registry::{ObjectHandle, ObjectRegistry, PINNED_SCOPE_REF};
+use crate::object_registry::{ObjectHandle, ObjectRegistry, OBJECT_HANDLE_BASE, PINNED_SCOPE_REF};
 
 #[allow(dead_code)]
 mod java_eval;
@@ -2045,6 +2045,7 @@ impl Debugger {
                 ))
             }
         };
+        let mut segments = parsed.segments;
 
         let Some(frame) = self.frame_handles.get(frame_id).copied() else {
             return Ok(Some(
@@ -2066,6 +2067,60 @@ impl Debugger {
                         id: object_id,
                     },
                     None,
+                )
+            }
+            EvalBase::Local(name) if name == "__novaPinned" => {
+                let Some(EvalSegment::Index(raw_handle)) = segments.first().cloned() else {
+                    return Ok(Some(json!({
+                        "result": format!("unsupported expression: {expr}"),
+                        "variablesReference": 0
+                    })));
+                };
+
+                // Consume the `__novaPinned[<handle>]` segment. The remaining segments operate
+                // on the pinned object value.
+                segments.remove(0);
+
+                if raw_handle < 0 {
+                    return Ok(Some(json!({
+                        "result": format!("unsupported expression: {expr}"),
+                        "variablesReference": 0
+                    })));
+                }
+                let Ok(handle_u32) = u32::try_from(raw_handle) else {
+                    return Ok(Some(json!({
+                        "result": format!("unsupported expression: {expr}"),
+                        "variablesReference": 0
+                    })));
+                };
+
+                let Some(handle) = self.objects.handle_from_variables_reference(
+                    OBJECT_HANDLE_BASE + i64::from(handle_u32),
+                ) else {
+                    return Ok(Some(
+                        json!({"result": format!("not found: {expr}"), "variablesReference": 0}),
+                    ));
+                };
+
+                if !self.objects.is_pinned(handle) {
+                    return Ok(Some(
+                        json!({"result": format!("not found: {expr}"), "variablesReference": 0}),
+                    ));
+                }
+
+                let Some(object_id) = self.objects.object_id(handle) else {
+                    return Ok(Some(
+                        json!({"result": format!("not found: {expr}"), "variablesReference": 0}),
+                    ));
+                };
+
+                let static_type = self.objects.runtime_type(handle).map(|t| t.to_string());
+                (
+                    JdwpValue::Object {
+                        tag: b'L',
+                        id: object_id,
+                    },
+                    static_type,
                 )
             }
             EvalBase::Local(name) => {
@@ -2115,7 +2170,7 @@ impl Debugger {
             }
         };
 
-        for segment in parsed.segments {
+        for segment in segments {
             check_cancel(cancel)?;
             match segment {
                 EvalSegment::Field(name) => match value {

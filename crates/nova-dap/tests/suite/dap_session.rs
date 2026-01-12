@@ -1675,6 +1675,99 @@ async fn dap_evaluate_supports_field_and_array_expressions() {
 }
 
 #[tokio::test]
+async fn dap_evaluate_supports_pinned_objects_via_nova_pinned_scope() {
+    let jdwp = MockJdwpServer::spawn().await.unwrap();
+    let (client, server_task) = spawn_wire_server();
+
+    client.initialize_handshake().await;
+    client.attach("127.0.0.1", jdwp.addr().port()).await;
+    client.set_breakpoints("Main.java", &[3]).await;
+
+    let thread_id = client.first_thread_id().await;
+    client.continue_with_thread_id(Some(thread_id)).await;
+    let _ = client.wait_for_stopped_reason("breakpoint").await;
+
+    let frame_id = client.first_frame_id(thread_id).await;
+    let locals_ref = client.first_scope_variables_reference(frame_id).await;
+
+    let vars_resp = client.variables(locals_ref).await;
+    let locals = vars_resp
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
+
+    let obj_ref = locals
+        .iter()
+        .find(|v| v.get("name").and_then(|n| n.as_str()) == Some("obj"))
+        .and_then(|v| v.get("variablesReference"))
+        .and_then(|v| v.as_i64())
+        .expect("expected locals to contain `obj` handle");
+    assert!(
+        obj_ref > OBJECT_HANDLE_BASE,
+        "expected obj to have an object handle"
+    );
+
+    let pin_resp = client
+        .request(
+            "nova/pinObject",
+            json!({ "variablesReference": obj_ref, "pinned": true }),
+        )
+        .await;
+    assert_eq!(
+        pin_resp.pointer("/body/pinned").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+
+    let handle_id = obj_ref - OBJECT_HANDLE_BASE;
+    assert!(handle_id > 0, "unexpected handle id derived from obj_ref");
+
+    let eval_pinned = client
+        .request(
+            "evaluate",
+            json!({
+                "expression": format!("__novaPinned[{handle_id}]"),
+                "frameId": frame_id,
+            }),
+        )
+        .await;
+    assert_eq!(
+        eval_pinned.get("success").and_then(|v| v.as_bool()),
+        Some(true),
+        "evaluate response was not successful: {eval_pinned}"
+    );
+    assert_eq!(
+        eval_pinned
+            .pointer("/body/variablesReference")
+            .and_then(|v| v.as_i64()),
+        Some(obj_ref),
+        "expected pinned eval to preserve object handle variablesReference: {eval_pinned}"
+    );
+    let result = eval_pinned
+        .pointer("/body/result")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert!(!result.is_empty(), "expected non-empty evaluate result");
+
+    let eval_field = client
+        .request(
+            "evaluate",
+            json!({
+                "expression": format!("__novaPinned[{handle_id}].field"),
+                "frameId": frame_id,
+            }),
+        )
+        .await;
+    assert_eq!(
+        eval_field.pointer("/body/result").and_then(|v| v.as_str()),
+        Some("7"),
+        "expected pinned field eval to return 7: {eval_field}"
+    );
+
+    client.disconnect().await;
+    server_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn dap_emits_output_for_expression_value_on_step() {
     // Enable `canGetMethodReturnValues` so the adapter can install a MethodExitWithReturnValue
     // request during stepping.
