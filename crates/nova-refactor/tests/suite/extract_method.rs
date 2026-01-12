@@ -1076,7 +1076,7 @@ fn extract_method_preserves_final_on_declared_return_value() {
     let fixture = r#"
 class C {
     void m() {
-        /*start*/final int x = 1;/*end*/
+        /*start*/final int x = 1;/*end*/ // comment
         System.out.println(x);
     }
 }
@@ -1098,7 +1098,7 @@ class C {
     let expected = r#"
 class C {
     void m() {
-        final int x = initX();
+        final int x = initX(); // comment
         System.out.println(x);
     }
 

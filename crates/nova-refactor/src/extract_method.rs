@@ -2566,20 +2566,16 @@ fn local_var_is_final_in_selection(body: &ast::Block, selection: TextRange, name
         .descendants()
         .filter_map(ast::LocalVariableDeclarationStatement::cast)
     {
-        let stmt_range = syntax_range(stmt.syntax());
-        if stmt_range.start < selection.start || stmt_range.end > selection.end {
-            continue;
-        }
         let Some(list) = stmt.declarator_list() else {
             continue;
         };
-        let declares_name = list.declarators().any(|decl| {
+        let declares_name_in_selection = list.declarators().any(|decl| {
             let Some(tok) = decl.name_token() else {
                 return false;
             };
-            tok.text() == name
+            tok.text() == name && span_within_range(span_of_token(&tok), selection)
         });
-        if !declares_name {
+        if !declares_name_in_selection {
             continue;
         }
         return stmt.modifiers().is_some_and(|mods| {
