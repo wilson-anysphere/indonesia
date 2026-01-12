@@ -11,6 +11,7 @@ use once_cell::sync::OnceCell;
 use thiserror::Error;
 
 use crate::discovery::{JdkDiscoveryError, JdkInstallation};
+use crate::ct_sym;
 use crate::jar;
 use crate::jmod;
 use crate::persist;
@@ -849,9 +850,15 @@ pub enum JdkIndexError {
 
     #[error(transparent)]
     Jar(#[from] jar::JarError),
+
+    #[error(transparent)]
+    CtSym(#[from] ct_sym::CtSymError),
+
+    #[error("ct.sym does not contain release {release}; available releases: {available:?}")]
+    CtSymReleaseNotFound { release: u32, available: Vec<u32> },
 }
 
-fn classfile_to_stub(class_file: ClassFile) -> JdkClassStub {
+pub(crate) fn classfile_to_stub(class_file: ClassFile) -> JdkClassStub {
     JdkClassStub {
         binary_name: internal_to_binary(&class_file.this_class),
         internal_name: class_file.this_class,
@@ -882,14 +889,14 @@ fn classfile_to_stub(class_file: ClassFile) -> JdkClassStub {
     }
 }
 
-fn is_non_type_classfile(internal_name: &str) -> bool {
+pub(crate) fn is_non_type_classfile(internal_name: &str) -> bool {
     internal_name == "module-info"
         || internal_name.ends_with("/module-info")
         || internal_name.ends_with("/package-info")
         || internal_name.ends_with("package-info")
 }
 
-fn is_direct_java_lang_member(internal_name: &str) -> bool {
+pub(crate) fn is_direct_java_lang_member(internal_name: &str) -> bool {
     // Universe scope is only `java.lang.*`, not `java.lang.reflect.*`.
     let rest = internal_name
         .strip_prefix("java/lang/")
@@ -899,7 +906,7 @@ fn is_direct_java_lang_member(internal_name: &str) -> bool {
     !rest.contains('/') && !rest.contains('$')
 }
 
-fn normalize_binary_prefix(prefix: &str) -> Cow<'_, str> {
+pub(crate) fn normalize_binary_prefix(prefix: &str) -> Cow<'_, str> {
     if prefix.contains('/') {
         Cow::Owned(prefix.replace('/', "."))
     } else {

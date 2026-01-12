@@ -10,7 +10,7 @@ use zip::ZipArchive;
 const META_INF_SYM_PREFIX: &str = "META-INF/sym/";
 
 #[derive(Debug, Error)]
-pub(crate) enum CtSymError {
+pub enum CtSymError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
