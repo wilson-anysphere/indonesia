@@ -2063,3 +2063,63 @@ class C { void m(){ byte b = 0; byte c = ++b; } }
         .expect("expected a type at offset");
     assert_eq!(ty, "byte");
 }
+
+#[test]
+fn instanceof_with_primitive_target_is_error() {
+    let src = r#"
+class C { void m(){ boolean b = "x" instanceof int; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "instanceof-invalid-type"),
+        "expected instanceof-invalid-type diagnostic; got {diags:?}"
+    );
+
+    let offset = src.find("instanceof").expect("snippet should contain instanceof");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "boolean");
+}
+
+#[test]
+fn instanceof_between_unrelated_types_is_error() {
+    let src = r#"
+class C { void m(){ boolean b = "x" instanceof Integer; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-instanceof"),
+        "expected invalid-instanceof diagnostic; got {diags:?}"
+    );
+
+    let offset = src.find("instanceof").expect("snippet should contain instanceof");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "boolean");
+}
+
+#[test]
+fn array_length_field_types_as_int() {
+    let src = r#"
+class C { int m(){ int[] a = {1,2}; return a.length; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src.find("length").expect("snippet should contain length");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "int");
+}
