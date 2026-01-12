@@ -15,13 +15,15 @@ pub enum NormalizedEvent {
 }
 
 impl NormalizedEvent {
-    pub fn paths(&self) -> Vec<&Path> {
-        match self {
+    pub fn paths(&self) -> impl Iterator<Item = &Path> {
+        let (first, second) = match self {
             NormalizedEvent::Created(p)
             | NormalizedEvent::Modified(p)
-            | NormalizedEvent::Deleted(p) => vec![p.as_path()],
-            NormalizedEvent::Moved { from, to } => vec![from.as_path(), to.as_path()],
-        }
+            | NormalizedEvent::Deleted(p) => (p.as_path(), None),
+            NormalizedEvent::Moved { from, to } => (from.as_path(), Some(to.as_path())),
+        };
+
+        std::iter::once(first).chain(second.into_iter())
     }
 }
 
