@@ -259,8 +259,9 @@ fn type_of_def(db: &dyn NovaTypeck, def: DefWithBodyId) -> Type {
             let mut loader = ExternalTypeLoader::new(&mut store, &provider);
 
             // Define source types in this file so `Type::Class` ids are stable.
-            let SourceTypes { source_type_vars, .. } =
-                define_source_types(&resolver, &scopes, &tree, &mut loader);
+            let SourceTypes {
+                source_type_vars, ..
+            } = define_source_types(&resolver, &scopes, &tree, &mut loader);
 
             let type_vars = type_vars_for_owner(
                 &resolver,
@@ -2127,9 +2128,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 }
             }
             HirExpr::Unary {
-                op,
-                expr: operand,
-                ..
+                op, expr: operand, ..
             } => {
                 let inner = self.infer_expr(loader, *operand).ty;
                 let span = self.body.exprs[expr].range();
@@ -2333,7 +2332,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                                     let found = format_type(env_ro, &rhs_ty);
                                     self.diagnostics.push(Diagnostic::error(
                                         "type-mismatch",
-                                        format!("type mismatch: expected {expected}, found {found}"),
+                                        format!(
+                                            "type mismatch: expected {expected}, found {found}"
+                                        ),
                                         Some(self.body.exprs[*rhs].range()),
                                     ));
                                 }
@@ -2926,9 +2927,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 {
                     self.diagnostics.push(Diagnostic::error(
                         "static-context",
-                        format!(
-                            "cannot reference instance field `{name}` from a static context"
-                        ),
+                        format!("cannot reference instance field `{name}` from a static context"),
                         Some(self.body.exprs[expr].range()),
                     ));
                     return ExprInfo {
@@ -3222,10 +3221,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 }
 
                 // Handle static-imported methods.
-                match self
-                    .resolver
-                    .resolve_name_detailed(self.scopes, self.scope_id, &Name::from(name.as_str()))
-                {
+                match self.resolver.resolve_name_detailed(
+                    self.scopes,
+                    self.scope_id,
+                    &Name::from(name.as_str()),
+                ) {
                     NameResolution::Resolved(Resolution::StaticMember(
                         StaticMemberResolution::External(id),
                     )) => {
@@ -3985,8 +3985,12 @@ impl SourceTypes {
         self.method_types.extend(other.method_types);
         self.field_owners.extend(other.field_owners);
         self.method_owners.extend(other.method_owners);
-        self.source_type_vars.classes.extend(other.source_type_vars.classes);
-        self.source_type_vars.methods.extend(other.source_type_vars.methods);
+        self.source_type_vars
+            .classes
+            .extend(other.source_type_vars.classes);
+        self.source_type_vars
+            .methods
+            .extend(other.source_type_vars.methods);
     }
 }
 
