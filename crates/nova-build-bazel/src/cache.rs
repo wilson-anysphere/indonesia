@@ -35,8 +35,14 @@ pub struct CacheEntry {
     pub expr_version_hex: String,
     /// Digests of all files that influence `info`.
     ///
-    /// This includes workspace-level configuration (`WORKSPACE`, `MODULE.bazel`, `.bazelrc`, ...)
-    /// and the BUILD files for packages in the target's transitive dependency closure.
+    /// This always includes workspace-level configuration (`WORKSPACE`, `MODULE.bazel`, `.bazelrc`,
+    /// ...).
+    ///
+    /// For [`CompileInfoProvider::Aquery`] entries, this also includes the BUILD / `.bzl` files for
+    /// packages in the target's transitive dependency closure (via `bazel query`).
+    ///
+    /// For [`CompileInfoProvider::Bsp`] entries, this is best-effort and may omit transitive BUILD /
+    /// `.bzl` inputs to avoid invoking `bazel` subprocesses when BSP provides the compile info.
     pub files: Vec<FileDigest>,
     #[serde(default)]
     pub provider: CompileInfoProvider,

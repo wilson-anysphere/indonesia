@@ -33,6 +33,19 @@ const LOADFILES_QUERY_TEMPLATE: &str = "loadfiles(deps(TARGET))";
 const DEPS_QUERY_TEMPLATE: &str = "deps(TARGET)";
 const TEXTPROTO_PARSER_VERSION: &str = "aquery-textproto-streaming-v7";
 
+// Core workspace-level Bazel config files that can influence query/aquery evaluation (even if
+// absent). These are always included in cache invalidation inputs.
+const CORE_BAZEL_CONFIG_FILES: [&str; 8] = [
+    "WORKSPACE",
+    "WORKSPACE.bazel",
+    "MODULE.bazel",
+    "MODULE.bazel.lock",
+    ".bazelrc",
+    ".bazelignore",
+    ".bazelversion",
+    "bazelisk.rc",
+];
+
 fn compile_info_expr_version_hex() -> String {
     // Keep this in sync with the query expressions above; changes should invalidate cached compile
     // info even if file digests happen to remain the same.
@@ -768,7 +781,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             #[cfg(feature = "bsp")]
             {
                 if let Some(info) = self.target_compile_info_via_bsp_workspace(target) {
-                    let files = self.compile_info_file_digests_for_target(target)?;
+                    let files = self.compile_info_file_digests_for_target_via_bsp(target)?;
                     self.cache.insert(CacheEntry {
                         target: target.to_string(),
                         expr_version_hex: self.compile_info_expr_version_hex.clone(),
@@ -962,16 +975,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         let mut inputs = BTreeSet::<PathBuf>::new();
 
         // Always include core workspace config files (even if absent) for sound invalidation.
-        for name in [
-            "WORKSPACE",
-            "WORKSPACE.bazel",
-            "MODULE.bazel",
-            "MODULE.bazel.lock",
-            ".bazelrc",
-            ".bazelignore",
-            ".bazelversion",
-            "bazelisk.rc",
-        ] {
+        for name in CORE_BAZEL_CONFIG_FILES {
             inputs.insert(self.root.join(name));
         }
 
@@ -984,6 +988,9 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         if let Some(build_file) = build_file_for_label(&self.root, target)? {
             inputs.insert(build_file);
         }
+
+        // For aquery-derived entries we include transitive BUILD / .bzl files via `bazel query`
+        // below. This produces sound invalidation at the cost of additional Bazel invocations.
 
         // Collect all BUILD / BUILD.bazel files that can influence `deps(target)` evaluation.
         //
@@ -1074,6 +1081,39 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                 Ok(())
             },
         );
+
+        let mut digests = Vec::with_capacity(inputs.len());
+        for path in inputs {
+            digests.push(digest_file_or_absent(&path)?);
+        }
+        digests.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(digests)
+    }
+
+    #[cfg(feature = "bsp")]
+    fn compile_info_file_digests_for_target_via_bsp(
+        &self,
+        target: &str,
+    ) -> Result<Vec<FileDigest>> {
+        let mut inputs = BTreeSet::<PathBuf>::new();
+
+        // In BSP mode we try to avoid invoking `bazel` (subprocesses) as much as possible. That
+        // means we can't cheaply query the full transitive closure of BUILD / loaded `.bzl` files.
+        //
+        // Instead, use a conservative best-effort set of workspace-local inputs:
+        // - workspace-level config files (WORKSPACE, MODULE.bazel, .bazelrc, ...)
+        // - the BUILD file for the target's package (when resolvable on disk)
+        //
+        // Callers can still explicitly invalidate caches via `invalidate_changed_files`.
+        for name in CORE_BAZEL_CONFIG_FILES {
+            inputs.insert(self.root.join(name));
+        }
+        for rel in bazel_config_files(&self.root) {
+            inputs.insert(self.root.join(rel));
+        }
+        if let Some(build_file) = build_file_for_label(&self.root, target)? {
+            inputs.insert(build_file);
+        }
 
         let mut digests = Vec::with_capacity(inputs.len());
         for path in inputs {
