@@ -63,7 +63,8 @@ use std::time::Duration;
 
 use parking_lot::Mutex as ParkingMutex;
 use parking_lot::RwLock;
-
+ 
+use nova_core::ProjectDatabase;
 use nova_memory::{
     EvictionRequest, EvictionResult, MemoryCategory, MemoryEvictor, MemoryManager, MemoryPressure,
 };
@@ -1100,6 +1101,25 @@ impl crate::SourceDatabase for Database {
     fn file_id(&self, path: &Path) -> Option<FileId> {
         let path = path.to_path_buf();
         self.with_snapshot(|snap| crate::SourceDatabase::file_id(snap, &path))
+    }
+}
+
+impl ProjectDatabase for Database {
+    fn project_files(&self) -> Vec<PathBuf> {
+        let file_ids = crate::SourceDatabase::all_file_ids(self);
+        let mut paths: Vec<PathBuf> = file_ids
+            .as_ref()
+            .iter()
+            .filter_map(|file_id| crate::SourceDatabase::file_path(self, *file_id))
+            .collect();
+        paths.sort();
+        paths.dedup();
+        paths
+    }
+
+    fn file_text(&self, path: &Path) -> Option<String> {
+        let file_id = crate::SourceDatabase::file_id(self, path)?;
+        Some(crate::SourceDatabase::file_content(self, file_id).as_ref().clone())
     }
 }
 

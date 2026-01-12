@@ -32,3 +32,16 @@ fn salsa_db_view_implements_project_database() {
     assert_eq!(text, "class A {}");
 }
 
+#[test]
+fn salsa_database_implements_project_database() {
+    let db = SalsaDatabase::new();
+    let file = FileId::from_raw(0);
+    db.set_file_text(file, "class A {}".to_string());
+    db.set_file_path(file, "src/A.java");
+
+    let files = ProjectDatabase::project_files(&db);
+    assert_eq!(files, vec![PathBuf::from("src/A.java")]);
+
+    let text = ProjectDatabase::file_text(&db, &files[0]).expect("file text");
+    assert_eq!(text, "class A {}");
+}
