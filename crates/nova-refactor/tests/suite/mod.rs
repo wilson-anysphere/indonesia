@@ -18,6 +18,7 @@ mod move_java_unicode_block_comment;
 mod move_package;
 mod organize_imports;
 mod preview_file_ops;
+mod javac_refactors;
 mod rename_constructor_symbol_at;
 mod rename_members;
 mod rename_package;

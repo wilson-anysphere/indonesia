@@ -46,6 +46,7 @@ mod nav_resolve_chains;
 mod nav_resolve_inheritance;
 mod organize_imports_code_action;
 mod quarkus_intel;
+mod quickfix_unresolved_reference;
 mod quick_fixes;
 mod quickfix_unresolved_reference;
 mod salsa_cross_file_imports;

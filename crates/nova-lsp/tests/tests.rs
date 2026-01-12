@@ -41,6 +41,8 @@ mod mapstruct_goto_definition;
 mod mapstruct_implementation;
 #[path = "suite/metrics.rs"]
 mod metrics;
+#[path = "suite/framework_analyzer_registry_integration.rs"]
+mod framework_analyzer_registry_integration;
 #[path = "suite/micronaut_extensions.rs"]
 mod micronaut_extensions;
 #[path = "suite/navigation.rs"]
