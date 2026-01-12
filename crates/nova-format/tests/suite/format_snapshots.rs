@@ -1247,6 +1247,82 @@ class Foo {
 }
 
 #[test]
+fn pretty_document_formatting_is_idempotent_on_module_directives_with_blank_line_comment() {
+    let input = concat!(
+        "module foo {\n",
+        "    requires java.base;\n",
+        "\n",
+        "    // comment\n",
+        "    exports foo;\n",
+        "}\n",
+    );
+    let config = FormatConfig::default();
+    let edits = edits_for_document_formatting_with_strategy(
+        input,
+        &config,
+        FormatStrategy::JavaPrettyAst,
+    );
+    let formatted = apply_text_edits(input, &edits).unwrap();
+    assert_eq!(
+        formatted,
+        concat!(
+            "module foo {\n",
+            "    requires java.base;\n",
+            "\n",
+            "    // comment\n",
+            "    exports foo;\n",
+            "}\n",
+        )
+    );
+
+    let edits_again = edits_for_document_formatting_with_strategy(
+        &formatted,
+        &config,
+        FormatStrategy::JavaPrettyAst,
+    );
+    let formatted_again = apply_text_edits(&formatted, &edits_again).unwrap();
+    assert_eq!(formatted_again, formatted);
+}
+
+#[test]
+fn pretty_document_formatting_is_idempotent_on_members_with_blank_line_comment() {
+    let input = concat!(
+        "class Foo {\n",
+        "    int x;\n",
+        "\n",
+        "    // comment\n",
+        "    int y;\n",
+        "}\n",
+    );
+    let config = FormatConfig::default();
+    let edits = edits_for_document_formatting_with_strategy(
+        input,
+        &config,
+        FormatStrategy::JavaPrettyAst,
+    );
+    let formatted = apply_text_edits(input, &edits).unwrap();
+    assert_eq!(
+        formatted,
+        concat!(
+            "class Foo {\n",
+            "    int x;\n",
+            "\n",
+            "    // comment\n",
+            "    int y;\n",
+            "}\n",
+        )
+    );
+
+    let edits_again = edits_for_document_formatting_with_strategy(
+        &formatted,
+        &config,
+        FormatStrategy::JavaPrettyAst,
+    );
+    let formatted_again = apply_text_edits(&formatted, &edits_again).unwrap();
+    assert_eq!(formatted_again, formatted);
+}
+
+#[test]
 fn pretty_preserves_single_blank_line_between_imports_with_trailing_comment() {
     let input = "import java.util.List; // list\n\nimport java.util.Map;\nclass Foo{}\n";
     let edits = edits_for_document_formatting_with_strategy(

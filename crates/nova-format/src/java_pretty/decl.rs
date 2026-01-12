@@ -199,12 +199,25 @@ impl<'a> JavaPrettyFormatter<'a> {
 
         for (idx, member) in members.iter().enumerate() {
             if idx > 0 {
-                parts.push(Doc::hardline());
+                let mut hardlines: usize = 1;
                 if let Some(prev_end) = prev_end {
                     let start = u32::from(member.text_range().start());
                     if super::has_blank_line_between_offsets(self.source, prev_end, start) {
-                        parts.push(Doc::hardline());
+                        hardlines = 2;
                     }
+                }
+
+                if hardlines >= 2 {
+                    if let Some((first, _)) = super::boundary_significant_tokens(member) {
+                        let key = TokenKey::from(&first);
+                        if self.comments.leading_blank_line_before(key) {
+                            hardlines = hardlines.saturating_sub(1);
+                        }
+                    }
+                }
+
+                for _ in 0..hardlines {
+                    parts.push(Doc::hardline());
                 }
             }
 
