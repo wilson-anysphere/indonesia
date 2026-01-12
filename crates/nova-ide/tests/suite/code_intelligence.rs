@@ -407,6 +407,31 @@ fn completion_in_incomplete_static_keyword_suggests_static() {
 }
 
 #[test]
+fn completion_in_import_static_keyword_position_suggests_static() {
+    let (db, file, pos) = fixture(
+        r#"
+import stat<|>
+class A {}
+"#,
+    );
+    let items = completions(&db, file, pos);
+
+    let static_item = items
+        .iter()
+        .find(|i| i.label == "static")
+        .unwrap_or_else(|| panic!("expected `static` completion item; got {items:#?}"));
+
+    let Some(CompletionTextEdit::Edit(edit)) = static_item.text_edit.as_ref() else {
+        panic!("expected `static` completion to contain text_edit; got {static_item:#?}");
+    };
+
+    assert_eq!(
+        edit.new_text, "static ",
+        "expected `static` completion to insert the keyword plus trailing space; got {static_item:#?}"
+    );
+}
+
+#[test]
 fn completion_in_incomplete_final_keyword_suggests_final() {
     let (db, file, pos) = fixture("fina<|>");
     let items = completions(&db, file, pos);

@@ -3651,6 +3651,24 @@ fn import_completions(
         text_index.offset_to_position(offset),
     );
 
+    let mut items = Vec::new();
+
+    // `import static ...` begins with a keyword in the same slot as the import path. When users are
+    // still typing `static` (e.g. `import stat|`), `import_context` will treat it as part of the
+    // path and `import_completions` can otherwise return an empty list. Offer `static` as a keyword
+    // completion so the import flow stays smooth in mid-edit.
+    if !ctx.is_static && ctx.base_prefix.is_empty() {
+        items.push(CompletionItem {
+            label: "static".to_string(),
+            kind: Some(CompletionItemKind::KEYWORD),
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                range: replace_range,
+                new_text: "static ".to_string(),
+            })),
+            ..Default::default()
+        });
+    }
+
     let workspace = WorkspaceJavaIndex::build(db);
 
     let jdk = JDK_INDEX
@@ -3708,7 +3726,6 @@ fn import_completions(
         .collect();
     workspace_classes.sort();
     workspace_classes.dedup();
-    let mut items = Vec::new();
 
     // Package segment completions.
     let mut seen_pkgs: HashSet<String> = HashSet::new();
