@@ -8082,6 +8082,12 @@ fn run_ai_generate_tests_code_action(
     let source = load_document_text(state, uri)
         .ok_or_else(|| (-32603, format!("missing document text for `{}`", uri)))?;
 
+    let target = args.target.clone();
+    let context = args.context.clone();
+    let source_snippet = byte_range_for_ide_range(&source, range)
+        .and_then(|r| source.get(r).map(|s| s.to_string()))
+        .filter(|s| !s.trim().is_empty());
+
     let insert_range = LspTypesRange::new(
         LspTypesPosition::new(range.start.line, range.start.character),
         LspTypesPosition::new(range.end.line, range.end.character),
@@ -8102,6 +8108,10 @@ fn run_ai_generate_tests_code_action(
             nova_lsp::AiCodeAction::GenerateTest {
                 file: file_rel.clone(),
                 insert_range,
+                target: Some(target),
+                source_file: Some(file_rel.clone()),
+                source_snippet,
+                context,
             },
             &workspace,
             &root_uri,
@@ -8880,8 +8890,13 @@ fn run_ai_generate_tests(
     let range = args
         .range
         .ok_or_else(|| (-32602, "missing range for generateTests".to_string()))?;
+    let target = args.target.clone();
+    let context = args.context.clone();
     let source_text = load_document_text(state, uri)
         .ok_or_else(|| (-32602, format!("missing document text for `{}`", uri)))?;
+    let source_snippet = byte_range_for_ide_range(&source_text, range)
+        .and_then(|r| source_text.get(r).map(|s| s.to_string()))
+        .filter(|s| !s.trim().is_empty());
     let abs_path = path_from_uri(uri).ok_or_else(|| (-32602, format!("unsupported uri: {uri}")))?;
 
     if is_ai_excluded_path(state, &abs_path) {
@@ -8960,6 +8975,10 @@ fn run_ai_generate_tests(
             AiCodeAction::GenerateTest {
                 file: action_file.clone(),
                 insert_range,
+                target: Some(target),
+                source_file: Some(source_rel_path.clone()),
+                source_snippet,
+                context,
             },
             &workspace,
             &root_uri,

@@ -702,6 +702,239 @@ local_only = true
 }
 
 #[test]
+fn stdio_server_generate_tests_prompt_includes_target_and_source_when_editing_derived_test_file() {
+    let _lock = crate::support::stdio_server_lock();
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+    let root_uri = uri_for_path(root);
+
+    let src_main_dir = root.join("src/main/java/com/example");
+    std::fs::create_dir_all(&src_main_dir).expect("create src/main/java");
+    let src_test_dir = root.join("src/test/java/com/example");
+    std::fs::create_dir_all(&src_test_dir).expect("create src/test/java");
+
+    let source_path = src_main_dir.join("Calculator.java");
+    let source_uri = uri_for_path(&source_path);
+    let source = concat!(
+        "package com.example;\n",
+        "\n",
+        "class Calculator {\n",
+        "    int add(int a, int b) {\n",
+        "        return a + b;\n",
+        "    }\n",
+        "}\n",
+    );
+    std::fs::write(&source_path, source).expect("write Calculator.java");
+
+    // Ensure the derived test file exists but is empty so the test-generation prompt would be
+    // otherwise unhelpful without the source-target context.
+    let test_path = src_test_dir.join("CalculatorTest.java");
+    std::fs::write(&test_path, "").expect("write empty CalculatorTest.java");
+
+    let expected_target = "int add(int a, int b) {";
+
+    let patch = json!({
+        "edits": [{
+            "file": "src/test/java/com/example/CalculatorTest.java",
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 0 }
+            },
+            "text": "package com.example;\n\nclass CalculatorTest {}\n"
+        }]
+    });
+    let completion = serde_json::to_string(&patch).expect("patch json");
+
+    let mock_server = MockServer::start();
+    let mock = mock_server.mock(|when, then| {
+        when.method(POST)
+            .path("/complete")
+            .body_contains("Test target:")
+            .body_contains(expected_target)
+            .body_contains("Selected source snippet:")
+            .body_contains("return a + b;");
+        then.status(200)
+            .json_body(json!({ "completion": completion }));
+    });
+
+    let config_path = root.join("nova.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "http"
+url = "{}/complete"
+model = "default"
+
+[ai.privacy]
+local_only = true
+"#,
+            mock_server.base_url()
+        ),
+    )
+    .expect("write config");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": root_uri, "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": source_uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": source
+                }
+            }
+        }),
+    );
+
+    // Select the method body so GenerateTestsArgs.target and the source snippet are meaningful.
+    let method_start_offset = source
+        .find("    int add(int a, int b) {")
+        .expect("method start");
+    let method_end_offset = source
+        .find("    }\n")
+        .expect("method end")
+        .saturating_add("    }\n".len());
+    let pos = TextPos::new(source);
+    let selection_start = pos.lsp_position(method_start_offset).expect("selection start");
+    let selection_end = pos.lsp_position(method_end_offset).expect("selection end");
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": { "uri": uri_for_path(&source_path) },
+                "range": Range::new(selection_start, selection_end),
+                "context": { "diagnostics": [] }
+            }
+        }),
+    );
+    let resp = read_response_with_id(&mut stdout, 2);
+    let actions = resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .expect("code actions array");
+    let action = actions
+        .iter()
+        .find(|a| a.get("title").and_then(|t| t.as_str()) == Some("Generate tests with AI"))
+        .expect("generate tests action");
+    let cmd = action
+        .pointer("/command/command")
+        .and_then(|v| v.as_str())
+        .expect("command string");
+    assert_eq!(cmd, nova_ide::COMMAND_GENERATE_TESTS);
+    let args = action
+        .pointer("/command/arguments")
+        .cloned()
+        .expect("command arguments");
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "workspace/executeCommand",
+            "params": { "command": cmd, "arguments": args }
+        }),
+    );
+
+    let mut apply_edit = None;
+    let exec_resp = loop {
+        let msg = read_jsonrpc_message(&mut stdout);
+        if msg.get("method").and_then(|v| v.as_str()) == Some("workspace/applyEdit") {
+            let id = msg.get("id").cloned().expect("applyEdit id");
+            apply_edit = Some(msg.clone());
+            write_jsonrpc_message(
+                &mut stdin,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "applied": true }
+                }),
+            );
+            continue;
+        }
+        if msg.get("id").and_then(|v| v.as_i64()) == Some(3) {
+            break msg;
+        }
+    };
+
+    assert!(
+        exec_resp.get("error").is_none(),
+        "expected executeCommand success, got: {exec_resp:#?}"
+    );
+
+    let apply_edit = apply_edit.expect("server emitted workspace/applyEdit request");
+    let edit_value = apply_edit.pointer("/params/edit").cloned().expect("edit");
+    let edit: WorkspaceEdit = serde_json::from_value(edit_value).expect("workspace edit");
+
+    let test_uri = Uri::from_str(&uri_for_path(&test_path)).expect("test uri");
+    let changes = edit.changes.expect("changes map");
+    assert!(
+        changes.contains_key(&test_uri),
+        "expected edit to touch derived test file, got: {changes:#?}"
+    );
+
+    mock.assert_hits(1);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
 fn stdio_server_ai_excluded_paths_blocks_patch_based_code_edits_without_model_call() {
     let _lock = crate::support::stdio_server_lock();
 

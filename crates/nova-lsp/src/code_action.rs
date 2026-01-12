@@ -25,7 +25,22 @@ use tokio_util::sync::CancellationToken;
 pub enum AiCodeAction {
     ExplainError { diagnostic: Diagnostic },
     GenerateMethodBody { file: String, insert_range: Range },
-    GenerateTest { file: String, insert_range: Range },
+    GenerateTest {
+        file: String,
+        insert_range: Range,
+        /// A human readable description of the symbol under test (e.g. method signature).
+        ///
+        /// This is provided by `GenerateTestsArgs.target` and is particularly important when
+        /// writing tests into a *different* destination file (e.g. a derived `src/test/java/...`
+        /// file), where the destination file contents alone may not contain enough information.
+        target: Option<String>,
+        /// Relative path to the file containing the code under test.
+        source_file: Option<String>,
+        /// Snippet of the selected code under test (best-effort).
+        source_snippet: Option<String>,
+        /// Optional surrounding context (best-effort, e.g. enclosing class).
+        context: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -118,7 +133,14 @@ impl<'a> AiCodeActionExecutor<'a> {
                 );
                 Ok(CodeActionOutcome::WorkspaceEdit(edit))
             }
-            AiCodeAction::GenerateTest { file, insert_range } => {
+            AiCodeAction::GenerateTest {
+                file,
+                insert_range,
+                target,
+                source_file,
+                source_snippet,
+                context,
+            } => {
                 if let Some(progress) = progress {
                     progress.report(CodegenProgressEvent {
                         stage: CodegenProgressStage::BuildingPrompt,
@@ -126,13 +148,16 @@ impl<'a> AiCodeActionExecutor<'a> {
                         message: "Building context…".to_string(),
                     });
                 }
-                let prompt = build_insert_prompt(
-                    "Generate Java unit tests for the marked range.",
+                let prompt = build_generate_tests_prompt(
                     &file,
                     insert_range,
                     workspace,
                     root_uri,
                     &self.privacy,
+                    /*target=*/ target.as_deref(),
+                    /*source_file=*/ source_file.as_deref(),
+                    /*source_snippet=*/ source_snippet.as_deref(),
+                    /*context=*/ context.as_deref(),
                 );
 
                 let mut config = self.config.clone();
@@ -165,6 +190,55 @@ impl<'a> AiCodeActionExecutor<'a> {
                 Ok(CodeActionOutcome::WorkspaceEdit(edit))
             }
         }
+    }
+}
+
+fn build_generate_tests_prompt(
+    file: &str,
+    insert_range: Range,
+    workspace: &VirtualWorkspace,
+    root_uri: &Uri,
+    privacy: &AiPrivacyConfig,
+    target: Option<&str>,
+    source_file: Option<&str>,
+    source_snippet: Option<&str>,
+    context: Option<&str>,
+) -> String {
+    let mut preamble = String::new();
+    if let Some(target) = target.filter(|t| !t.trim().is_empty()) {
+        preamble.push_str("Test target: ");
+        preamble.push_str(target.trim());
+        preamble.push('\n');
+    }
+    if let Some(source_file) = source_file.filter(|f| !f.trim().is_empty()) {
+        preamble.push_str("Source file under test: ");
+        preamble.push_str(source_file.trim());
+        preamble.push('\n');
+    }
+    if let Some(source_snippet) = source_snippet.filter(|s| !s.trim().is_empty()) {
+        preamble.push_str("\nSelected source snippet:\n```java\n");
+        preamble.push_str(source_snippet.trim_end());
+        preamble.push_str("\n```\n");
+    }
+    if let Some(context) = context.filter(|s| !s.trim().is_empty()) {
+        preamble.push_str("\nSurrounding context:\n```java\n");
+        preamble.push_str(context.trim_end());
+        preamble.push_str("\n```\n");
+    }
+
+    let insert = build_insert_prompt(
+        "Generate Java unit tests for the target described above and write them into the marked range.",
+        file,
+        insert_range,
+        workspace,
+        root_uri,
+        privacy,
+    );
+
+    if preamble.trim().is_empty() {
+        insert
+    } else {
+        format!("{preamble}\n{insert}")
     }
 }
 
@@ -833,6 +907,10 @@ mod tests {
                 AiCodeAction::GenerateTest {
                     file: test_file.to_string(),
                     insert_range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+                    target: None,
+                    source_file: None,
+                    source_snippet: None,
+                    context: None,
                 },
                 &workspace,
                 &root_uri(),
@@ -908,6 +986,10 @@ mod tests {
                     character: 0,
                 },
             },
+            target: None,
+            source_file: None,
+            source_snippet: None,
+            context: None,
         };
 
         let err = executor
