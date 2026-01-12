@@ -324,6 +324,27 @@ class C implements I { void $0test(){ new C().foo(); } }
 }
 
 #[test]
+fn prepare_call_hierarchy_on_new_expression_receiver_call_site_resolves_interface_default_method() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /I.java
+interface I { default void $1foo() {} }
+//- /C.java
+class C implements I { void test(){ new C().$0foo(); } }
+"#,
+    );
+
+    let file_c = fixture.marker_file(0);
+    let pos_foo = fixture.marker_position(0);
+    let items = prepare_call_hierarchy(&fixture.db, file_c, pos_foo)
+        .expect("expected call hierarchy preparation");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].name, "foo");
+    assert_eq!(items[0].uri, fixture.marker_uri(1));
+    assert_eq!(items[0].selection_range.start, fixture.marker_position(1));
+}
+
+#[test]
 fn call_hierarchy_resolves_receiverless_interface_default_method() {
     let fixture = FileIdFixture::parse(
         r#"
