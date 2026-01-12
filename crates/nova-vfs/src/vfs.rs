@@ -59,38 +59,46 @@ impl<F: FileSystem> Vfs<F> {
     }
 
     /// Rename (or move) a path, preserving the existing `FileId` when possible.
+    ///
+    /// If `from` is open in the overlay, the in-memory document is updated so that reads through
+    /// `to` continue to see overlay contents instead of falling back to disk.
+    ///
+    /// If `to` is already interned, the [`FileIdRegistry`] keeps the destination `FileId` and
+    /// drops the source mapping (treating this as a delete + modify). In that case we keep an
+    /// existing overlay document at `to` if present; otherwise, an open overlay document from
+    /// `from` is moved to `to` and open-document tracking is updated to match the returned id.
     pub fn rename_path(&self, from: &VfsPath, to: VfsPath) -> FileId {
-        // If the source path is open in the overlay, keep the overlay in sync and preserve the
-        // source `FileId` even when the destination path already has an id.
-        //
-        // This avoids losing in-memory edits during rename storms (e.g. git checkouts) and keeps
-        // workspace engines from accidentally overwriting open buffers with disk content.
-        if self.fs.is_open(from) {
-            let to_for_overlay = to.clone();
-            let (id, displaced) = {
-                let mut ids = self.ids.lock().expect("file id registry mutex poisoned");
-                let displaced = ids.get_id(&to);
-                let id = ids.rename_path_preserve_source(from, to);
-                (id, displaced)
-            };
+        let to_clone = to.clone();
 
-            self.fs.rename_overwrite(from, to_for_overlay);
-            self.open_docs.open(id);
-            if let Some(displaced) = displaced {
-                if displaced != id {
-                    self.open_docs.close(displaced);
+        // Capture the pre-rename ids so we can keep open-document tracking consistent if the
+        // rename collapses `from` into an existing destination id.
+        let id_from = self.get_id(from);
+
+        // Update the overlay first so reads through `to` still see in-memory document contents.
+        let from_open = self.fs.is_open(from);
+        if from_open {
+            self.fs.rename(from, to_clone.clone());
+        }
+
+        let id = {
+            let mut ids = self.ids.lock().expect("file id registry mutex poisoned");
+            ids.rename_path(from, to)
+        };
+
+        // If the rename changed the file id for an open document, make sure `OpenDocuments`
+        // doesn't retain a now-unreachable id.
+        if from_open {
+            if let Some(id_from) = id_from {
+                if id_from != id {
+                    self.open_docs.close(id_from);
+                }
+                if self.fs.is_open(&to_clone) {
+                    self.open_docs.open(id);
                 }
             }
-            id
-        } else {
-            let to_for_overlay = to.clone();
-            let id = {
-                let mut ids = self.ids.lock().expect("file id registry mutex poisoned");
-                ids.rename_path(from, to)
-            };
-            self.fs.rename(from, to_for_overlay);
-            id
         }
+
+        id
     }
 
     /// Returns all currently-tracked file ids (sorted).
@@ -254,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn vfs_rename_path_preserves_open_document_id_even_when_destination_known() {
+    fn vfs_rename_path_to_existing_path_keeps_destination_id_for_open_document() {
         let vfs = Vfs::new(LocalFs::new());
         let dir = tempfile::tempdir().unwrap();
         let from = VfsPath::local(dir.path().join("a.java"));
@@ -266,15 +274,15 @@ mod tests {
         assert!(vfs.open_documents().is_open(from_id));
 
         let moved = vfs.rename_path(&from, to.clone());
-        assert_eq!(moved, from_id);
-        assert_eq!(vfs.get_id(&to), Some(from_id));
-        assert_eq!(vfs.path_for_id(to_id), None);
+        assert_eq!(moved, to_id);
+        assert_eq!(vfs.get_id(&to), Some(to_id));
+        assert_eq!(vfs.path_for_id(from_id), None);
 
         assert!(!vfs.overlay().is_open(&from));
         assert!(vfs.overlay().is_open(&to));
         assert_eq!(vfs.read_to_string(&to).unwrap(), "hello");
-        assert!(vfs.open_documents().is_open(from_id));
-        assert!(!vfs.open_documents().is_open(to_id));
+        assert!(vfs.open_documents().is_open(to_id));
+        assert!(!vfs.open_documents().is_open(from_id));
     }
 
     #[cfg(feature = "lsp")]

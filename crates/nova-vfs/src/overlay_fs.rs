@@ -33,12 +33,29 @@ impl<F: FileSystem> OverlayFs<F> {
         docs.remove(path);
     }
 
-    pub fn rename(&self, from: &VfsPath, to: VfsPath) {
+    /// Renames an open document in the overlay from `from` to `to`.
+    ///
+    /// Returns `true` if a document was moved, `false` otherwise.
+    ///
+    /// If `to` is already open, the destination document is kept and the source
+    /// document (if any) is dropped.
+    pub fn rename(&self, from: &VfsPath, to: VfsPath) -> bool {
+        if from == &to {
+            return false;
+        }
+
         let mut docs = self.docs.lock().expect("overlay mutex poisoned");
         let Some(doc) = docs.remove(from) else {
-            return;
+            return false;
         };
-        docs.entry(to).or_insert(doc);
+
+        match docs.entry(to) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(doc);
+                true
+            }
+            std::collections::hash_map::Entry::Occupied(_) => false,
+        }
     }
 
     /// Rename a document, overwriting any document already open at the destination path.
