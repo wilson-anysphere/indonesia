@@ -1,5 +1,7 @@
 mod class_members;
+mod default_well_known;
 mod glb;
+mod interface_object_supertype;
 mod java_format;
 mod jls_conversions;
 mod jls_generics;
