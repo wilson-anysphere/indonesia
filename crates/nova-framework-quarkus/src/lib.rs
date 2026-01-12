@@ -471,19 +471,17 @@ fn find_previous_at_outside_literals(source: &str, before: usize) -> Option<usiz
     let bytes = source.as_bytes();
     let mut in_string = false;
     let mut in_char = false;
-    let mut in_line_comment = false;
     let mut in_block_comment = false;
+
+    // Candidate `@` on the current line segment. We can't safely return a `@` until we know we
+    // didn't just pick one from the middle of a `//` comment (because the `//` start is to the
+    // *left* of the comment text when scanning backwards).
+    let mut candidate_at: Option<usize> = None;
 
     let mut i = before.min(bytes.len());
     while i > 0 {
         i -= 1;
 
-        if in_line_comment {
-            if bytes[i] == b'\n' {
-                in_line_comment = false;
-            }
-            continue;
-        }
         if in_block_comment {
             if i >= 1 && bytes[i - 1] == b'/' && bytes[i] == b'*' {
                 in_block_comment = false;
@@ -492,18 +490,30 @@ fn find_previous_at_outside_literals(source: &str, before: usize) -> Option<usiz
             continue;
         }
 
-        // Comment detection (only when we're not inside a string/char literal).
-        if !in_string && !in_char {
-            if i >= 1 && bytes[i - 1] == b'/' && bytes[i] == b'/' {
-                in_line_comment = true;
-                i -= 1;
-                continue;
+        // Finalize the current line: we now know any candidate wasn't inside a `//` comment on
+        // that line (if it were, we'd have hit `//` and cleared `candidate_at`).
+        if bytes[i] == b'\n' && !in_string && !in_char {
+            if let Some(at) = candidate_at.take() {
+                return Some(at);
             }
-            if i >= 1 && bytes[i - 1] == b'*' && bytes[i] == b'/' {
-                in_block_comment = true;
-                i -= 1;
-                continue;
-            }
+            continue;
+        }
+
+        // Enter block comment mode when scanning backwards past `*/`.
+        if !in_string && !in_char && i >= 1 && bytes[i - 1] == b'*' && bytes[i] == b'/' {
+            in_block_comment = true;
+            i -= 1;
+            continue;
+        }
+
+        // Line comment start (`//`) found. Discard any `@` we've seen to the right on this line.
+        //
+        // NOTE: There is no `//` operator in Java; outside string/char literals, this always
+        // starts a comment.
+        if !in_string && !in_char && i >= 1 && bytes[i - 1] == b'/' && bytes[i] == b'/' {
+            candidate_at = None;
+            i -= 1;
+            continue;
         }
 
         match bytes[i] {
@@ -513,12 +523,18 @@ fn find_previous_at_outside_literals(source: &str, before: usize) -> Option<usiz
             b'\'' if !is_escaped_quote(bytes, i) && !in_string => {
                 in_char = !in_char;
             }
-            b'@' if !in_string && !in_char => return Some(i),
+            b'@' if !in_string && !in_char => {
+                // Store the nearest `@` on this line, but keep scanning to see whether it's inside
+                // a `//` comment.
+                if candidate_at.is_none() {
+                    candidate_at = Some(i);
+                }
+            }
             _ => {}
         }
     }
 
-    None
+    candidate_at
 }
 
 #[derive(Debug, Clone)]
