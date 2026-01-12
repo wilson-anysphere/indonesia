@@ -202,7 +202,7 @@ fn project_index_shards(db: &dyn NovaIndexing, project: ProjectId) -> Arc<Vec<Pr
         let cache_dir = cache_dir.as_ref().expect("cache_dir checked above");
         let fast_snapshot = fast_snapshot.as_ref().expect("snapshot built above");
 
-        let loaded = match nova_index::load_sharded_index_archives_from_fast_snapshot(
+        let loaded = match nova_index::load_sharded_index_view_lazy_from_fast_snapshot(
             cache_dir,
             fast_snapshot,
             shard_count,
@@ -212,63 +212,95 @@ fn project_index_shards(db: &dyn NovaIndexing, project: ProjectId) -> Arc<Vec<Pr
         };
 
         if let Some(loaded) = loaded {
-            let mut loaded_shards = Vec::with_capacity(shard_count as usize);
-            let mut corrupt_shards = std::collections::BTreeSet::new();
+            invalidated_files = loaded.invalidated_files;
 
-            for (shard_idx, shard) in loaded.shards.into_iter().enumerate() {
-                let shard_id = shard_idx as u32;
-                let indexes = match shard {
-                    Some(archives) => {
-                        let Ok(symbols) = archives.symbols.to_owned() else {
-                            corrupt_shards.insert(shard_id);
-                            loaded_shards.push(ProjectIndexes::default());
-                            continue;
-                        };
-                        let Ok(references) = archives.references.to_owned() else {
-                            corrupt_shards.insert(shard_id);
-                            loaded_shards.push(ProjectIndexes::default());
-                            continue;
-                        };
-                        let Ok(inheritance) = archives.inheritance.to_owned() else {
-                            corrupt_shards.insert(shard_id);
-                            loaded_shards.push(ProjectIndexes::default());
-                            continue;
-                        };
-                        let Ok(annotations) = archives.annotations.to_owned() else {
-                            corrupt_shards.insert(shard_id);
-                            loaded_shards.push(ProjectIndexes::default());
-                            continue;
-                        };
+            // If every existing file is invalidated, we don't need to load any persisted shards:
+            // we'll rebuild everything from scratch anyway.
+            let invalidated_set: std::collections::HashSet<&str> =
+                invalidated_files.iter().map(|path| path.as_str()).collect();
+            let indexing_all_files = path_to_file
+                .keys()
+                .all(|path| invalidated_set.contains(path.as_str()));
 
-                        ProjectIndexes {
-                            symbols,
-                            references,
-                            inheritance,
-                            annotations,
-                        }
+            if !indexing_all_files {
+                let mut loaded_shards = Vec::with_capacity(shard_count as usize);
+                let mut corrupt_shards = std::collections::BTreeSet::new();
+
+                // Only shards that contain at least one unchanged file need to be loaded from disk.
+                // Shards where all files are invalidated can be rebuilt from scratch.
+                let mut shard_has_unchanged = vec![false; shard_count as usize];
+                for path in path_to_file.keys() {
+                    if invalidated_set.contains(path.as_str()) {
+                        continue;
                     }
-                    None => ProjectIndexes::default(),
-                };
-                loaded_shards.push(indexes);
-            }
+                    let shard_id = shard_id_for_path(path, shard_count) as usize;
+                    shard_has_unchanged[shard_id] = true;
+                }
 
-            if loaded_shards.len() == shard_count as usize {
-                used_disk_cache = true;
-                shards = loaded_shards;
+                for shard_id in 0..shard_count {
+                    cancel::checkpoint_cancelled(db, shard_id);
 
-                // If we had to fall back to a default shard (due to corruption while materializing
-                // an archive), force all files that map to that shard to be reindexed.
-                let mut invalidated: std::collections::BTreeSet<String> =
-                    loaded.invalidated_files.into_iter().collect();
-                if !corrupt_shards.is_empty() {
-                    for path in path_to_file.keys() {
-                        let shard_id = shard_id_for_path(path, shard_count);
-                        if corrupt_shards.contains(&shard_id) {
-                            invalidated.insert(path.clone());
+                    let indexes = if shard_has_unchanged[shard_id as usize] {
+                        match loaded.view.shard(shard_id) {
+                            Some(archives) => {
+                                let Ok(symbols) = archives.symbols.to_owned() else {
+                                    corrupt_shards.insert(shard_id);
+                                    loaded_shards.push(ProjectIndexes::default());
+                                    continue;
+                                };
+                                let Ok(references) = archives.references.to_owned() else {
+                                    corrupt_shards.insert(shard_id);
+                                    loaded_shards.push(ProjectIndexes::default());
+                                    continue;
+                                };
+                                let Ok(inheritance) = archives.inheritance.to_owned() else {
+                                    corrupt_shards.insert(shard_id);
+                                    loaded_shards.push(ProjectIndexes::default());
+                                    continue;
+                                };
+                                let Ok(annotations) = archives.annotations.to_owned() else {
+                                    corrupt_shards.insert(shard_id);
+                                    loaded_shards.push(ProjectIndexes::default());
+                                    continue;
+                                };
+
+                                ProjectIndexes {
+                                    symbols,
+                                    references,
+                                    inheritance,
+                                    annotations,
+                                }
+                            }
+                            None => {
+                                corrupt_shards.insert(shard_id);
+                                ProjectIndexes::default()
+                            }
                         }
+                    } else {
+                        ProjectIndexes::default()
+                    };
+                    loaded_shards.push(indexes);
+                }
+
+                if loaded_shards.len() == shard_count as usize {
+                    used_disk_cache = true;
+                    shards = loaded_shards;
+
+                    // If we had to fall back to a default shard (due to corruption while
+                    // materializing an archive), force all files that map to that shard to be
+                    // reindexed.
+                    if !corrupt_shards.is_empty() {
+                        let mut invalidated: std::collections::BTreeSet<String> =
+                            invalidated_files.into_iter().collect();
+                        for path in path_to_file.keys() {
+                            let shard_id = shard_id_for_path(path, shard_count);
+                            if corrupt_shards.contains(&shard_id) {
+                                invalidated.insert(path.clone());
+                            }
+                        }
+                        invalidated_files = invalidated.into_iter().collect();
                     }
                 }
-                invalidated_files = invalidated.into_iter().collect();
             }
         }
     }
