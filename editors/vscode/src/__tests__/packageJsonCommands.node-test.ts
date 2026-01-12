@@ -150,6 +150,50 @@ test('package.json contributes Run/Debug Test/Main command palette entries via l
   assert.ok(activationEvents.includes('onCommand:nova.debugMainInteractive'));
 });
 
+test('package.json contributes Nova AI show commands (avoids LSP executeCommand ID collisions)', async () => {
+  const pkgPath = path.resolve(__dirname, '../../package.json');
+  const raw = await fs.readFile(pkgPath, 'utf8');
+  const pkg = JSON.parse(raw) as {
+    activationEvents?: unknown;
+    contributes?: { commands?: unknown };
+  };
+
+  const activationEvents = Array.isArray(pkg.activationEvents) ? pkg.activationEvents : [];
+  const commands = Array.isArray(pkg.contributes?.commands) ? pkg.contributes.commands : [];
+
+  const byId = new Map<string, { title?: unknown }>();
+  for (const entry of commands) {
+    if (!entry || typeof entry !== 'object') {
+      continue;
+    }
+    const id = (entry as { command?: unknown }).command;
+    if (typeof id !== 'string') {
+      continue;
+    }
+    byId.set(id, { title: (entry as { title?: unknown }).title });
+  }
+
+  // Contributed commands are VS Code-side wrappers that run the underlying `workspace/executeCommand`
+  // call and show the returned AI output.
+  assert.equal(byId.get('nova.ai.showExplainError')?.title, 'Nova AI: Explain Error');
+  assert.equal(byId.get('nova.ai.showGenerateMethodBody')?.title, 'Nova AI: Generate Method Body');
+  assert.equal(byId.get('nova.ai.showGenerateTests')?.title, 'Nova AI: Generate Tests');
+
+  assert.ok(activationEvents.includes('onCommand:nova.ai.showExplainError'));
+  assert.ok(activationEvents.includes('onCommand:nova.ai.showGenerateMethodBody'));
+  assert.ok(activationEvents.includes('onCommand:nova.ai.showGenerateTests'));
+
+  // Server-provided `workspace/executeCommand` IDs must not be contributed to avoid collisions with
+  // vscode-languageclient's auto-registered command handlers.
+  assert.equal(byId.get('nova.ai.explainError')?.title, undefined);
+  assert.equal(byId.get('nova.ai.generateMethodBody')?.title, undefined);
+  assert.equal(byId.get('nova.ai.generateTests')?.title, undefined);
+
+  assert.ok(!activationEvents.includes('onCommand:nova.ai.explainError'));
+  assert.ok(!activationEvents.includes('onCommand:nova.ai.generateMethodBody'));
+  assert.ok(!activationEvents.includes('onCommand:nova.ai.generateTests'));
+});
+
 test('package.json contributes Nova Frameworks view context-menu commands', async () => {
   const pkgPath = path.resolve(__dirname, '../../package.json');
   const raw = await fs.readFile(pkgPath, 'utf8');
