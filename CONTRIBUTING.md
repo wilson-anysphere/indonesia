@@ -57,8 +57,8 @@ Some tests compare Nova’s output against on-disk “golden” expectations (pa
 before/after fixtures). To update those expectations:
 
 ```bash
-BLESS=1 cargo test -p nova-syntax parse_class_snapshot
-BLESS=1 cargo test -p nova-refactor
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-refactor
 ```
 
 #### Formatter snapshots (`INSTA_UPDATE=always`)
@@ -66,8 +66,8 @@ BLESS=1 cargo test -p nova-refactor
 Nova’s formatter tests use `insta` snapshots. To update snapshots:
 
 ```bash
-INSTA_UPDATE=always cargo test -p nova-format --test format_fixtures
-INSTA_UPDATE=always cargo test -p nova-format --test format_snapshots
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_snapshots
 ```
 
 #### `javac` differential tests (ignored)

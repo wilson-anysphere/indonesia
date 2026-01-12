@@ -151,24 +151,28 @@ CI runs tests on Linux, macOS, and Windows. Keep these platform differences in m
 
 Nova uses “golden” fixtures when the expected output is easiest to review as text on disk.
 
-#### 2a) Parser golden snapshots (syntax tree dumps)
+#### 2a) Parser golden corpus (syntax tree + error dumps)
 
 **Where:**
 
-- Snapshot files: `crates/nova-syntax/src/snapshots/`
-  - example: `crates/nova-syntax/src/snapshots/parse_class.tree`
-- Test code: `crates/nova-syntax/src/tests.rs`
+- Inputs and expected outputs live under `crates/nova-syntax/testdata/`:
+  - `testdata/parser/**/*.java` — inputs expected to parse without errors
+    - `*.tree` contains a debug dump of the produced syntax tree
+  - `testdata/recovery/**/*.java` — inputs expected to produce parse errors but still recover
+    - `*.tree` contains a debug dump of the recovered syntax tree
+    - `*.errors` contains canonicalized parse errors
+- Test code: `crates/nova-syntax/tests/golden_corpus.rs`
 
 **Run locally:**
 
 ```bash
-cargo test -p nova-syntax parse_class_snapshot
+bash scripts/cargo_agent.sh test -p nova-syntax --test golden_corpus
 ```
 
-**Update / bless snapshots (writes to `src/snapshots/`):**
+**Update / bless expectations (writes `.tree`/`.errors` files next to the fixtures):**
 
 ```bash
-BLESS=1 cargo test -p nova-syntax parse_class_snapshot
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test golden_corpus
 ```
 
 #### 2b) Refactoring before/after fixtures
@@ -181,19 +185,19 @@ BLESS=1 cargo test -p nova-syntax parse_class_snapshot
 **Run locally:**
 
 ```bash
-cargo test -p nova-refactor
+bash scripts/cargo_agent.sh test -p nova-refactor
 ```
 
 **Update / bless the `after/` directories (writes under `tests/fixtures/`):**
 
 ```bash
-BLESS=1 cargo test -p nova-refactor
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-refactor
 ```
 
 Tip: bless a single failing test while iterating:
 
 ```bash
-BLESS=1 cargo test -p nova-refactor move_instance_method_adds_receiver_param_and_updates_calls
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-refactor move_instance_method_adds_receiver_param_and_updates_calls
 ```
 
 #### 2c) Other fixture roots you’ll see in the repo
@@ -220,14 +224,14 @@ Nova uses [`insta`](https://crates.io/crates/insta) snapshots for formatter outp
 **Run locally:**
 
 ```bash
-cargo test -p nova-format --test format_fixtures
-cargo test -p nova-format --test format_snapshots
+bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
+bash scripts/cargo_agent.sh test -p nova-format --test format_snapshots
 ```
 
 There is also an ignored large-file regression/stress test:
 
 ```bash
-cargo test -p nova-format formats_large_file_regression -- --ignored
+bash scripts/cargo_agent.sh test -p nova-format formats_large_file_regression -- --ignored
 ```
 
 #### 2e) In-memory fixture helpers (`nova-test-utils`)
@@ -542,14 +546,14 @@ HTML is written under `target/llvm-cov/html/`.
 
 Set `BLESS=1` to rewrite on-disk expectations for file-based golden tests:
 
-- `crates/nova-syntax/src/snapshots/*` (parser snapshot files)
+- `crates/nova-syntax/testdata/**` (parser golden corpus: `.tree` / `.errors` files next to `.java` fixtures)
 - `crates/nova-refactor/tests/fixtures/**/after/**` (refactor before/after fixtures)
 
 Example:
 
 ```bash
-BLESS=1 cargo test -p nova-syntax parse_class_snapshot
-BLESS=1 cargo test -p nova-refactor
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-refactor
 ```
 
 Always inspect `git diff` after blessing.
@@ -564,8 +568,8 @@ Nova uses `insta` snapshots for formatter tests in `crates/nova-format/tests/`:
 To update inline snapshots:
 
 ```bash
-INSTA_UPDATE=always cargo test -p nova-format --test format_fixtures
-INSTA_UPDATE=always cargo test -p nova-format --test format_snapshots
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_snapshots
 ```
 
 Always inspect `git diff` after updating snapshots.
@@ -613,17 +617,15 @@ Note: `.github/workflows/release.yml` exists for packaging and release automatio
 
 ## Adding a new fixture (common recipes)
 
-### Add a new parser snapshot
+### Add a new parser golden corpus fixture
 
-1. Add a new snapshot file under `crates/nova-syntax/src/snapshots/` (e.g. `my_case.tree`).
-2. Add a test in `crates/nova-syntax/src/tests.rs` that:
-   - parses an input string
-   - dumps `crate::parser::debug_dump(...)`
-   - compares against the snapshot file
-3. Generate/update the snapshot with:
+1. Add a new `.java` fixture under `crates/nova-syntax/testdata/`:
+   - `testdata/parser/**` for inputs expected to parse without errors
+   - `testdata/recovery/**` for inputs expected to produce parse errors but still recover
+2. Generate/update the expected `.tree`/`.errors` outputs with:
 
 ```bash
-BLESS=1 cargo test -p nova-syntax <your_test_name>
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test golden_corpus
 ```
 
 ### Add a new refactoring before/after fixture
@@ -636,7 +638,7 @@ BLESS=1 cargo test -p nova-syntax <your_test_name>
 4. Generate/update the `after/` directory with:
 
 ```bash
-BLESS=1 cargo test -p nova-refactor <your_test_name>
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-refactor <your_test_name>
 ```
 
 ### Add a new formatter fixture snapshot
@@ -647,7 +649,7 @@ BLESS=1 cargo test -p nova-refactor <your_test_name>
 3. Generate/update the `.snap` file with:
 
 ```bash
-INSTA_UPDATE=always cargo test -p nova-format --test format_fixtures
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
 ```
 
 ---
