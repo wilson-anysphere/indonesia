@@ -104,3 +104,4 @@ pub use refactorings::{
     RenameParams,
 };
 pub use semantic::{Conflict, RefactorDatabase, SemanticChange};
+pub use semantic::{Reference, SymbolDefinition};

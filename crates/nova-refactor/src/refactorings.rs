@@ -1885,6 +1885,127 @@ pub fn inline_variable(
         }
     }
 
+    // Reject inlining across nested type boundaries (anonymous/local/inner classes). Inlining a
+    // local into a nested type body (or out of it) can change evaluation timing and captured-value
+    // semantics, even when the initializer has no side effects.
+    //
+    // Example:
+    // ```
+    // class C {
+    //   int foo = 1;
+    //   void m() {
+    //     int a = foo;
+    //     Runnable r = new Runnable() { public void run() { System.out.println(a); } };
+    //     foo = 2;
+    //     r.run(); // prints 1
+    //   }
+    // }
+    // ```
+    //
+    // Inlining `a` inside the anonymous class would become `... println(foo)`, printing 2 instead.
+    {
+        #[derive(Clone, Debug, PartialEq, Eq)]
+        struct TypeContext {
+            file: FileId,
+            range: TextRange,
+        }
+
+        fn type_context_at(
+            db: &dyn RefactorDatabase,
+            cache: &mut HashMap<FileId, nova_syntax::SyntaxNode>,
+            file: &FileId,
+            token_range: TextRange,
+        ) -> Result<Option<TypeContext>, RefactorError> {
+            let root = if let Some(root) = cache.get(file) {
+                root.clone()
+            } else {
+                let text = db
+                    .file_text(file)
+                    .ok_or_else(|| RefactorError::UnknownFile(file.clone()))?;
+                let parsed = parse_java(text);
+                let root = parsed.syntax();
+                cache.insert(file.clone(), root.clone());
+                root
+            };
+
+            let Some(tok) = root
+                .descendants_with_tokens()
+                .filter_map(|el| el.into_token())
+                .filter(|tok| !tok.kind().is_trivia())
+                .find(|tok| {
+                    let range = syntax_token_range(tok);
+                    range.start <= token_range.start && token_range.start < range.end
+                })
+            else {
+                return Err(RefactorError::InlineNotSupported);
+            };
+
+            let Some(parent) = tok.parent() else {
+                return Err(RefactorError::InlineNotSupported);
+            };
+
+            for anc in parent.ancestors() {
+                if let Some(decl) = ast::ClassDeclaration::cast(anc.clone()) {
+                    return Ok(Some(TypeContext {
+                        file: file.clone(),
+                        range: syntax_range(decl.syntax()),
+                    }));
+                }
+                if let Some(decl) = ast::InterfaceDeclaration::cast(anc.clone()) {
+                    return Ok(Some(TypeContext {
+                        file: file.clone(),
+                        range: syntax_range(decl.syntax()),
+                    }));
+                }
+                if let Some(decl) = ast::EnumDeclaration::cast(anc.clone()) {
+                    return Ok(Some(TypeContext {
+                        file: file.clone(),
+                        range: syntax_range(decl.syntax()),
+                    }));
+                }
+                if let Some(decl) = ast::RecordDeclaration::cast(anc.clone()) {
+                    return Ok(Some(TypeContext {
+                        file: file.clone(),
+                        range: syntax_range(decl.syntax()),
+                    }));
+                }
+                if let Some(decl) = ast::AnnotationTypeDeclaration::cast(anc.clone()) {
+                    return Ok(Some(TypeContext {
+                        file: file.clone(),
+                        range: syntax_range(decl.syntax()),
+                    }));
+                }
+
+                // Anonymous classes have a `ClassBody` without a `ClassDeclaration` wrapper.
+                if let Some(body) = ast::ClassBody::cast(anc) {
+                    let is_named_class_body = body
+                        .syntax()
+                        .parent()
+                        .is_some_and(|p| ast::ClassDeclaration::can_cast(p.kind()));
+                    if !is_named_class_body {
+                        return Ok(Some(TypeContext {
+                            file: file.clone(),
+                            range: syntax_range(body.syntax()),
+                        }));
+                    }
+                }
+            }
+
+            Ok(None)
+        }
+
+        let mut cache: HashMap<FileId, nova_syntax::SyntaxNode> = HashMap::new();
+        cache.insert(def.file.clone(), root.clone());
+
+        let decl_ctx = type_context_at(db, &mut cache, &def.file, def.name_range)?;
+        for usage in &targets {
+            let usage_ctx = type_context_at(db, &mut cache, &usage.file, usage.range)?;
+            if decl_ctx != usage_ctx {
+                return Err(RefactorError::InlineNotSupported);
+            }
+        }
+    }
+
     ensure_inline_variable_value_stable(
         db,
         &parsed,

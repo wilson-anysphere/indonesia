@@ -1,8 +1,8 @@
 use nova_refactor::{
     apply_text_edits, apply_workspace_edit, extract_variable, inline_variable, materialize, rename,
     Conflict, ExtractVariableParams, FileId, InlineVariableParams, JavaSymbolKind,
-    RefactorDatabase, RefactorJavaDatabase, RenameParams, SemanticChange, SemanticRefactorError,
-    TextDatabase, WorkspaceTextRange,
+    RefactorDatabase, RefactorJavaDatabase, Reference, RenameParams, SemanticChange,
+    SemanticRefactorError, SymbolDefinition, SymbolId, TextDatabase, WorkspaceTextRange,
 };
 use nova_test_utils::extract_range;
 use pretty_assertions::assert_eq;
@@ -8197,6 +8197,37 @@ fn inline_variable_rejects_crossing_lambda_execution_context() {
 }
 
 #[test]
+fn inline_variable_rejects_crossing_anonymous_class_boundary() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int x = 1;
+    int a = x;
+    Runnable r = new Runnable() {
+      public void run() { System.out.println(a); }
+    };
+    x = 2;
+    r.run();
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(err, SemanticRefactorError::InlineNotSupported));
+}
+
+#[test]
 fn inline_variable_rejects_mutated_dependency() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
@@ -8289,6 +8320,145 @@ fn inline_variable_allows_field_dependency_when_no_writes_or_shadowing() {
 
     let after = apply_text_edits(src, &edit.text_edits).unwrap();
     let expected = r#"class C { int x = 1; void m() { System.out.println(x); } }
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn inline_variable_allows_inlining_within_same_anonymous_class_body() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    Runnable r = new Runnable() {
+      public void run() {
+        int a = 1 + 2;
+        System.out.println(a);
+      }
+    };
+  }
+}
+"#;
+
+    // `RefactorJavaDatabase` does not currently index local declarations inside anonymous class
+    // bodies. Inline Variable itself is syntax-driven once we have semantic inputs, so test it with
+    // a small stub `RefactorDatabase`.
+    let dummy_file = FileId::new("Dummy.java");
+    let dummy_src = "class Dummy { void m() { int x = 0; } }";
+    let dummy_db = RefactorJavaDatabase::new([(dummy_file.clone(), dummy_src.to_string())]);
+    let dummy_offset = dummy_src.find("int x").unwrap() + "int ".len();
+    let symbol = dummy_db
+        .symbol_at(&dummy_file, dummy_offset)
+        .expect("dummy symbol");
+
+    let decl_offset = src.find("int a").unwrap() + "int ".len();
+    let name_range = WorkspaceTextRange::new(decl_offset, decl_offset + 1);
+
+    let usage_offset = src.find("println(a)").unwrap() + "println(".len();
+    let usage_range = WorkspaceTextRange::new(usage_offset, usage_offset + 1);
+
+    let def = SymbolDefinition {
+        file: file.clone(),
+        name: "a".to_string(),
+        name_range,
+        scope: 0,
+    };
+    let refs = vec![Reference {
+        file: file.clone(),
+        range: usage_range,
+    }];
+
+    struct SingleSymbolDb {
+        file: FileId,
+        text: String,
+        symbol: SymbolId,
+        def: SymbolDefinition,
+        refs: Vec<Reference>,
+    }
+
+    impl RefactorDatabase for SingleSymbolDb {
+        fn file_text(&self, file: &FileId) -> Option<&str> {
+            (file == &self.file).then_some(&self.text)
+        }
+
+        fn symbol_at(&self, file: &FileId, offset: usize) -> Option<SymbolId> {
+            if file != &self.file {
+                return None;
+            }
+            let in_def = self.def.name_range.start <= offset && offset < self.def.name_range.end;
+            let in_ref = self
+                .refs
+                .iter()
+                .any(|r| r.range.start <= offset && offset < r.range.end);
+            (in_def || in_ref).then_some(self.symbol)
+        }
+
+        fn symbol_definition(&self, symbol: SymbolId) -> Option<SymbolDefinition> {
+            (symbol == self.symbol).then(|| self.def.clone())
+        }
+
+        fn symbol_scope(&self, symbol: SymbolId) -> Option<u32> {
+            (symbol == self.symbol).then_some(self.def.scope)
+        }
+
+        fn symbol_kind(&self, symbol: SymbolId) -> Option<JavaSymbolKind> {
+            (symbol == self.symbol).then_some(JavaSymbolKind::Local)
+        }
+
+        fn resolve_name_in_scope(&self, scope: u32, name: &str) -> Option<SymbolId> {
+            (scope == self.def.scope && name == self.def.name).then_some(self.symbol)
+        }
+
+        fn would_shadow(&self, _scope: u32, _name: &str) -> Option<SymbolId> {
+            None
+        }
+
+        fn find_references(&self, symbol: SymbolId) -> Vec<Reference> {
+            if symbol == self.symbol {
+                self.refs.clone()
+            } else {
+                Vec::new()
+            }
+        }
+
+        fn resolve_name_expr(&self, file: &FileId, range: WorkspaceTextRange) -> Option<SymbolId> {
+            if file != &self.file {
+                return None;
+            }
+            self.refs
+                .iter()
+                .any(|r| r.range == range)
+                .then_some(self.symbol)
+        }
+    }
+
+    let db = SingleSymbolDb {
+        file: file.clone(),
+        text: src.to_string(),
+        symbol,
+        def,
+        refs,
+    };
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    let expected = r#"class Test {
+  void m() {
+    Runnable r = new Runnable() {
+      public void run() {
+        System.out.println((1 + 2));
+      }
+    };
+  }
+}
 "#;
     assert_eq!(after, expected);
 }
