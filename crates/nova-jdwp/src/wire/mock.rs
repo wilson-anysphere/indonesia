@@ -1127,13 +1127,15 @@ async fn handle_packet(
                     let event_packet = encode_command(packet_id, 64, 100, &payload);
 
                     // Queue the invoke reply to be delivered after a ThreadReference.Resume.
-                    let return_value = args.first().cloned().unwrap_or(JdwpValue::Void);
-                    let mut reply_w = JdwpWriter::new();
-                    reply_w.write_tagged_value(&return_value, sizes);
-                    reply_w.write_object_id(0, sizes); // exception
-                    let pending = PendingInvokeMethodReply {
-                        packet_id: packet.id,
-                        thread: thread_id,
+                     let return_value = args.first().cloned().unwrap_or(JdwpValue::Void);
+                     let mut reply_w = JdwpWriter::new();
+                     reply_w.write_tagged_value(&return_value, sizes);
+                     // JDWP spec: `exception` is a tagged object id.
+                     reply_w.write_u8(b'L');
+                     reply_w.write_object_id(0, sizes); // exception
+                     let pending = PendingInvokeMethodReply {
+                         packet_id: packet.id,
+                         thread: thread_id,
                         error_code: 0,
                         payload: reply_w.into_vec(),
                     };
@@ -2196,6 +2198,8 @@ async fn handle_packet(
                     let return_value = args.first().cloned().unwrap_or(JdwpValue::Void);
                     let mut w = JdwpWriter::new();
                     w.write_tagged_value(&return_value, sizes);
+                    // JDWP spec: `exception` is a tagged object id.
+                    w.write_u8(b'L');
                     w.write_object_id(0, sizes); // exception
                     (0, w.into_vec())
                 }
@@ -2627,6 +2631,8 @@ async fn handle_packet(
                     );
                     let mut w = JdwpWriter::new();
                     w.write_tagged_value(&return_value, sizes);
+                    // JDWP spec: `exception` is a tagged object id.
+                    w.write_u8(b'L');
                     w.write_object_id(0, sizes); // exception
                     (0, w.into_vec())
                 }
@@ -2735,6 +2741,8 @@ async fn handle_packet(
 
                     let mut w = JdwpWriter::new();
                     w.write_tagged_value(&return_value, sizes);
+                    // JDWP spec: `exception` is a tagged object id.
+                    w.write_u8(b'L');
                     w.write_object_id(0, sizes); // exception
                     (0, w.into_vec())
                 }
@@ -2851,13 +2859,13 @@ async fn handle_packet(
                 }
                 6 => *state.thread_start_request.lock().await = Some(request_id),
                 7 => *state.thread_death_request.lock().await = Some(request_id),
-                42 => *state.method_exit_request.lock().await = Some(request_id),
                 EVENT_KIND_CLASS_PREPARE => {
                     *state.class_prepare_request.lock().await = Some(MockSimpleEventRequest {
                         request_id,
                         suspend_policy,
                     })
                 }
+                42 => *state.method_exit_request.lock().await = Some(request_id),
                 EVENT_KIND_CLASS_UNLOAD => {
                     *state.class_unload_request.lock().await = Some(MockSimpleEventRequest {
                         request_id,
@@ -2927,15 +2935,15 @@ async fn handle_packet(
                         *guard = None;
                     }
                 }
-                42 => {
-                    let mut guard = state.method_exit_request.lock().await;
-                    if guard.map(|v| v == request_id).unwrap_or(false) {
-                        *guard = None;
-                    }
-                }
                 EVENT_KIND_CLASS_PREPARE => {
                     let mut guard = state.class_prepare_request.lock().await;
                     if guard.map(|v| v.request_id == request_id).unwrap_or(false) {
+                        *guard = None;
+                    }
+                }
+                42 => {
+                    let mut guard = state.method_exit_request.lock().await;
+                    if guard.map(|v| v == request_id).unwrap_or(false) {
                         *guard = None;
                     }
                 }

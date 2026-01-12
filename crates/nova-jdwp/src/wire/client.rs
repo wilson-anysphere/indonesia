@@ -1168,6 +1168,8 @@ impl JdwpClient {
         let payload = self.send_command_raw(3, 3, w.into_vec()).await?;
         let mut r = JdwpReader::new(&payload);
         let return_value = r.read_tagged_value(&sizes)?;
+        // JDWP spec: `exception` is a tagged object id.
+        let _exception_tag = r.read_u8()?;
         let exception = r.read_object_id(&sizes)?;
         Ok((return_value, exception))
     }
@@ -1235,6 +1237,8 @@ impl JdwpClient {
         let payload = self.send_command_raw(5, 1, w.into_vec()).await?;
         let mut r = JdwpReader::new(&payload);
         let return_value = r.read_tagged_value(&sizes)?;
+        // JDWP spec: `exception` is a tagged object id.
+        let _exception_tag = r.read_u8()?;
         let exception = r.read_object_id(&sizes)?;
         Ok((return_value, exception))
     }
@@ -1522,6 +1526,8 @@ impl JdwpClient {
         let payload = self.send_command_raw(9, 6, w.into_vec()).await?;
         let mut r = JdwpReader::new(&payload);
         let return_value = r.read_tagged_value(&sizes)?;
+        // JDWP spec: `exception` is a tagged object id.
+        let _exception_tag = r.read_u8()?;
         let exception = r.read_object_id(&sizes)?;
         Ok((return_value, exception))
     }
