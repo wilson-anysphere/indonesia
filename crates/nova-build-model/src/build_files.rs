@@ -133,7 +133,7 @@ fn included_build_roots_from_settings(workspace_root: &Path) -> io::Result<Vec<P
     Ok(roots)
 }
 
-fn parse_gradle_settings_included_builds(contents: &str) -> Vec<String> {
+pub fn parse_gradle_settings_included_builds(contents: &str) -> Vec<String> {
     // Best-effort extraction of Gradle composite builds:
     // - Groovy: `includeBuild 'build-logic'`
     // - Groovy/Kotlin: `includeBuild("build-logic")`

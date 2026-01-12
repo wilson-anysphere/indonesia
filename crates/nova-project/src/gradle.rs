@@ -1822,52 +1822,8 @@ fn parse_gradle_settings_included_projects(contents: &str) -> Vec<String> {
 }
 
 pub(crate) fn parse_gradle_settings_included_builds(contents: &str) -> Vec<String> {
-    // Best-effort extraction of Gradle composite builds:
-    // - Groovy: `includeBuild 'build-logic'`
-    // - Groovy/Kotlin: `includeBuild("build-logic")`
-    //
-    // We intentionally only extract the first quoted string argument per call; `includeBuild`
-    // accepts a single path argument, and this reduces false positives when a config closure
-    // contains additional string literals.
-    let contents = strip_gradle_comments(contents);
-
-    let mut out: BTreeSet<String> = BTreeSet::new();
-
-    for start in find_keyword_outside_strings(&contents, "includeBuild") {
-        let mut idx = start + "includeBuild".len();
-        let bytes = contents.as_bytes();
-        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
-            idx += 1;
-        }
-        if idx >= bytes.len() {
-            continue;
-        }
-
-        let args = if bytes[idx] == b'(' {
-            extract_balanced_parens(&contents, idx)
-                .map(|(args, _end)| args)
-                .unwrap_or_default()
-        } else {
-            extract_unparenthesized_args_until_eol_or_continuation(&contents, idx)
-        };
-
-        let Some(raw_dir) = extract_quoted_strings(&args).into_iter().next() else {
-            continue;
-        };
-        let raw_dir = raw_dir.trim();
-        if raw_dir.is_empty() {
-            continue;
-        }
-
-        // Keep behavior consistent with other settings parsers: ignore absolute paths to avoid
-        // escaping the workspace root.
-        let Some(dir_rel) = normalize_dir_rel(raw_dir) else {
-            continue;
-        };
-        out.insert(dir_rel);
-    }
-
-    out.into_iter().collect()
+    // Keep `includeBuild(...)` parsing in sync with Gradle build-file fingerprinting.
+    nova_build_model::parse_gradle_settings_included_builds(contents)
 }
 
 fn parse_gradle_settings_include_flat_project_dirs(contents: &str) -> BTreeMap<String, String> {

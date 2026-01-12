@@ -6,7 +6,9 @@ mod gradle_snapshot;
 mod model;
 pub mod package;
 
-pub use build_files::{collect_gradle_build_files, BuildFileFingerprint};
+pub use build_files::{
+    collect_gradle_build_files, parse_gradle_settings_included_builds, BuildFileFingerprint,
+};
 pub use generated_roots_snapshot::*;
 pub use gradle_snapshot::*;
 pub use model::*;
