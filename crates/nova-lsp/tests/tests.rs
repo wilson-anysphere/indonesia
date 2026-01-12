@@ -53,6 +53,9 @@ mod refactor_variable;
 mod refactor_workspace_snapshot;
 #[path = "suite/references.rs"]
 mod references;
+#[cfg(debug_assertions)]
+#[path = "suite/salsa_cancellation.rs"]
+mod salsa_cancellation;
 #[path = "suite/semantic_search_index_status_stdio.rs"]
 mod semantic_search_index_status_stdio;
 #[cfg(feature = "ai")]

@@ -34,7 +34,7 @@ use nova_ai_codegen::{
     PromptCompletionProvider,
 };
 use nova_core::WasmHostDb;
-use nova_db::{Database, FileId as DbFileId, InMemoryFileStore};
+use nova_db::{Database, FileId as DbFileId, InMemoryFileStore, SalsaDatabase};
 use nova_decompile::DecompiledDocumentStore;
 use nova_ext::{ExtensionManager, ExtensionMetadata, ExtensionRegistry};
 use nova_ide::extensions::IdeExtensions;
@@ -428,7 +428,8 @@ fn main() -> std::io::Result<()> {
     std::thread::spawn({
         let incoming_tx = incoming_tx.clone();
         let request_cancellation = request_cancellation.clone();
-        move || message_router(receiver, incoming_tx, request_cancellation)
+        let salsa = state.analysis.salsa.clone();
+        move || message_router(receiver, incoming_tx, request_cancellation, Some(salsa))
     });
     drop(incoming_tx);
 
@@ -445,26 +446,30 @@ fn main() -> std::io::Result<()> {
                 let start = Instant::now();
                 let mut did_panic = false;
 
-                let response = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    handle_request(request, cancel_token, &mut state, &client)
-                })) {
-                    Ok(Ok(response)) => response,
-                    Ok(Err(err)) => {
-                        request_cancellation.finish(cancel_id);
-                        metrics.record_request(&method, start.elapsed());
-                        metrics.record_error(&method);
-                        return Err(err);
-                    }
-                    Err(_) => {
-                        did_panic = true;
-                        tracing::error!(
-                            target = "nova.lsp",
-                            method,
-                            "panic while handling request"
-                        );
-                        response_error(request_id, -32603, "Internal error (panic)")
-                    }
-                };
+                let response =
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        nova_db::catch_cancelled(|| {
+                            handle_request(request, cancel_token, &mut state, &client)
+                        })
+                    })) {
+                        Ok(Ok(Ok(response))) => response,
+                        Ok(Ok(Err(err))) => {
+                            request_cancellation.finish(cancel_id);
+                            metrics.record_request(&method, start.elapsed());
+                            metrics.record_error(&method);
+                            return Err(err);
+                        }
+                        Ok(Err(_cancelled)) => response_error(request_id, -32800, "Request cancelled"),
+                        Err(_) => {
+                            did_panic = true;
+                            tracing::error!(
+                                target = "nova.lsp",
+                                method,
+                                "panic while handling request"
+                            );
+                            response_error(request_id, -32603, "Internal error (panic)")
+                        }
+                    };
                 let response_is_error = response.error.is_some();
 
                 request_cancellation.finish(cancel_id);
@@ -765,6 +770,7 @@ fn message_router(
     receiver: Receiver<Message>,
     sender: Sender<IncomingMessage>,
     request_cancellation: nova_lsp::RequestCancellation,
+    salsa: Option<SalsaDatabase>,
 ) {
     let metrics = nova_metrics::MetricsRegistry::global();
 
@@ -775,7 +781,17 @@ fn message_router(
                 if let Ok(params) =
                     serde_json::from_value::<lsp_types::CancelParams>(notification.params)
                 {
-                    request_cancellation.cancel(params.id);
+                    let cancelled = request_cancellation.cancel(params.id.clone());
+                    if cancelled {
+                        if let Some(salsa) = salsa.as_ref() {
+                            // Best-effort and non-panicking: cancellation is advisory and should
+                            // never crash the router thread.
+                            let _ =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    salsa.request_cancellation();
+                                }));
+                        }
+                    }
                 }
                 metrics.record_request("$/cancelRequest", start.elapsed());
             }
@@ -2478,6 +2494,40 @@ fn handle_request_json(
                     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err.to_string() } })
                 }
             })
+        }
+        #[cfg(debug_assertions)]
+        "nova/internal/interruptibleWork" => {
+            #[derive(Debug, Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct InterruptibleWorkParams {
+                steps: u32,
+            }
+
+            let params: InterruptibleWorkParams = match serde_json::from_value(params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return Ok(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": { "code": -32602, "message": err.to_string() }
+                    }));
+                }
+            };
+
+            // NOTE: This request is intentionally only available in debug builds. It is used by
+            // integration tests to validate that `$/cancelRequest` triggers Salsa cancellation and
+            // that `ra_salsa::Cancelled` is treated as a normal LSP request cancellation.
+            use nova_db::NovaIde as _;
+            let _ = client.notify(
+                "nova/internal/interruptibleWorkStarted",
+                json!({ "id": id.clone() }),
+            );
+            let value = state
+                .analysis
+                .salsa
+                .with_snapshot(|snap| snap.interruptible_work(nova_db::FileId::from_raw(0), params.steps));
+
+            Ok(json!({ "jsonrpc": "2.0", "id": id, "result": { "value": value } }))
         }
         nova_lsp::EXTENSIONS_STATUS_METHOD => {
             nova_lsp::hardening::record_request();
