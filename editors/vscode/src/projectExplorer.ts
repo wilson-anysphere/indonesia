@@ -39,6 +39,7 @@ type NovaProjectExplorerNode =
       id: string;
       label: string;
       workspace: vscode.WorkspaceFolder;
+      baseDir: string;
       listKind: 'modules';
       entries: ConfigurationModuleEntry[];
     }
@@ -47,6 +48,7 @@ type NovaProjectExplorerNode =
       id: string;
       label: string;
       workspace: vscode.WorkspaceFolder;
+      baseDir: string;
       listKind: 'sourceRoots';
       entries: ConfigurationSourceRootEntry[];
     }
@@ -55,6 +57,7 @@ type NovaProjectExplorerNode =
       id: string;
       label: string;
       workspace: vscode.WorkspaceFolder;
+      baseDir: string;
       listKind: 'classpath';
       entries: ConfigurationClasspathEntry[];
     }
@@ -63,6 +66,7 @@ type NovaProjectExplorerNode =
       id: string;
       label: string;
       workspace: vscode.WorkspaceFolder;
+      baseDir: string;
       listKind: 'modulePath';
       entries: ConfigurationModulePathEntry[];
     }
@@ -71,6 +75,7 @@ type NovaProjectExplorerNode =
       id: string;
       label: string;
       workspace: vscode.WorkspaceFolder;
+      baseDir: string;
       listKind: 'outputDirs';
       entries: ConfigurationOutputDirEntry[];
     }
@@ -79,6 +84,7 @@ type NovaProjectExplorerNode =
       id: string;
       label: string;
       workspace: vscode.WorkspaceFolder;
+      baseDir: string;
       listKind: 'dependencies';
       entries: ConfigurationDependencyEntry[];
     }
@@ -87,6 +93,7 @@ type NovaProjectExplorerNode =
       id: string;
       label: string;
       workspace: vscode.WorkspaceFolder;
+      baseDir: string;
       listKind: ConfigurationListKind;
       entries:
         | ConfigurationModuleEntry[]
@@ -526,16 +533,19 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
           });
         }
 
-        const workspaceRoot =
+        const workspaceRootRaw =
           typeof config.workspaceRoot === 'string' && config.workspaceRoot.trim().length > 0 ? config.workspaceRoot.trim() : undefined;
-        if (workspaceRoot) {
-          const resolved = resolvePossiblyRelativePath(workspace.uri.fsPath, workspaceRoot);
-          const uri = resolved ? vscode.Uri.file(resolved) : undefined;
+        const resolvedWorkspaceRoot = workspaceRootRaw
+          ? resolvePossiblyRelativePath(workspace.uri.fsPath, workspaceRootRaw)
+          : workspace.uri.fsPath;
+        const configBaseDir = resolvedWorkspaceRoot || workspace.uri.fsPath;
+        if (workspaceRootRaw) {
+          const uri = resolvedWorkspaceRoot ? vscode.Uri.file(resolvedWorkspaceRoot) : undefined;
           nodes.push({
             type: 'path',
             id: `${element.id}:workspaceRoot`,
             label: 'Workspace Root',
-            description: resolved || workspaceRoot,
+            description: resolvedWorkspaceRoot || workspaceRootRaw,
             uri,
             icon: vscode.ThemeIcon.Folder,
             command: uri
@@ -565,6 +575,7 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
           id: `${element.id}:modules`,
           label: `Modules (${modules.length})`,
           workspace,
+          baseDir: configBaseDir,
           listKind: 'modules',
           entries: modules,
         });
@@ -575,6 +586,7 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
           id: `${element.id}:sourceRoots`,
           label: `Source Roots (${sourceRoots.length})`,
           workspace,
+          baseDir: configBaseDir,
           listKind: 'sourceRoots',
           entries: sourceRoots,
         });
@@ -585,6 +597,7 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
           id: `${element.id}:classpath`,
           label: `Classpath (${classpath.length})`,
           workspace,
+          baseDir: configBaseDir,
           listKind: 'classpath',
           entries: classpath,
         });
@@ -595,6 +608,7 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
           id: `${element.id}:modulePath`,
           label: `Module Path (${modulePath.length})`,
           workspace,
+          baseDir: configBaseDir,
           listKind: 'modulePath',
           entries: modulePath,
         });
@@ -605,6 +619,7 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
           id: `${element.id}:outputDirs`,
           label: `Output Dirs (${outputDirs.length})`,
           workspace,
+          baseDir: configBaseDir,
           listKind: 'outputDirs',
           entries: outputDirs,
         });
@@ -615,6 +630,7 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
           id: `${element.id}:dependencies`,
           label: `Dependencies (${dependencies.length})`,
           workspace,
+          baseDir: configBaseDir,
           listKind: 'dependencies',
           entries: dependencies,
         });
@@ -741,6 +757,7 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
             id: `${element.id}:chunk:${start}-${end}`,
             label: `Entries ${start + 1}\u2013${end}`,
             workspace: element.workspace,
+            baseDir: element.baseDir,
             listKind: element.listKind,
             entries,
             start,
@@ -1024,12 +1041,13 @@ function createClasspathEntryNode(
 }
 
 function createConfigOutputDirNode(
-  parent: { id: string; workspace: vscode.WorkspaceFolder },
+  parent: { id: string; workspace: vscode.WorkspaceFolder; baseDir?: string },
   entry: ConfigurationOutputDirEntry,
   idx: number,
 ): NovaProjectExplorerNode {
   const rawPath = typeof entry.path === 'string' ? entry.path : '';
-  const resolved = rawPath ? resolvePossiblyRelativePath(parent.workspace.uri.fsPath, rawPath) : '';
+  const baseDir = parent.baseDir ?? parent.workspace.uri.fsPath;
+  const resolved = rawPath ? resolvePossiblyRelativePath(baseDir, rawPath) : '';
   const uri = resolved ? vscode.Uri.file(resolved) : undefined;
 
   const kind = typeof entry.kind === 'string' && entry.kind.trim().length > 0 ? entry.kind.trim() : 'output';
@@ -1054,13 +1072,14 @@ function createConfigOutputDirNode(
 }
 
 function createConfigModuleNode(
-  parent: { id: string; workspace: vscode.WorkspaceFolder },
+  parent: { id: string; workspace: vscode.WorkspaceFolder; baseDir?: string },
   entry: ConfigurationModuleEntry,
   idx: number,
 ): NovaProjectExplorerNode {
   const name = typeof entry.name === 'string' && entry.name.trim().length > 0 ? entry.name.trim() : `Module ${idx + 1}`;
   const rawRoot = typeof entry.root === 'string' ? entry.root : '';
-  const resolved = rawRoot ? resolvePossiblyRelativePath(parent.workspace.uri.fsPath, rawRoot) : '';
+  const baseDir = parent.baseDir ?? parent.workspace.uri.fsPath;
+  const resolved = rawRoot ? resolvePossiblyRelativePath(baseDir, rawRoot) : '';
   const uri = resolved ? vscode.Uri.file(resolved) : undefined;
 
   return {
@@ -1081,12 +1100,13 @@ function createConfigModuleNode(
 }
 
 function createConfigSourceRootNode(
-  parent: { id: string; workspace: vscode.WorkspaceFolder },
+  parent: { id: string; workspace: vscode.WorkspaceFolder; baseDir?: string },
   entry: ConfigurationSourceRootEntry,
   idx: number,
 ): NovaProjectExplorerNode {
   const rawPath = typeof entry.path === 'string' ? entry.path : '';
-  const resolved = rawPath ? resolvePossiblyRelativePath(parent.workspace.uri.fsPath, rawPath) : '';
+  const baseDir = parent.baseDir ?? parent.workspace.uri.fsPath;
+  const resolved = rawPath ? resolvePossiblyRelativePath(baseDir, rawPath) : '';
   const uri = resolved ? vscode.Uri.file(resolved) : undefined;
 
   const kind = typeof entry.kind === 'string' && entry.kind.trim().length > 0 ? entry.kind.trim() : undefined;
@@ -1127,12 +1147,13 @@ function createConfigSourceRootNode(
 }
 
 function createConfigClasspathEntryNode(
-  parent: { id: string; workspace: vscode.WorkspaceFolder },
+  parent: { id: string; workspace: vscode.WorkspaceFolder; baseDir?: string },
   entry: ConfigurationClasspathEntry,
   idx: number,
 ): NovaProjectExplorerNode {
   const rawPath = typeof entry.path === 'string' ? entry.path : '';
-  const resolved = rawPath ? resolvePossiblyRelativePath(parent.workspace.uri.fsPath, rawPath) : '';
+  const baseDir = parent.baseDir ?? parent.workspace.uri.fsPath;
+  const resolved = rawPath ? resolvePossiblyRelativePath(baseDir, rawPath) : '';
   const uri = resolved ? vscode.Uri.file(resolved) : undefined;
 
   const kind = typeof entry.kind === 'string' && entry.kind.trim().length > 0 ? entry.kind.trim() : 'classpath';
@@ -1157,12 +1178,13 @@ function createConfigClasspathEntryNode(
 }
 
 function createConfigModulePathEntryNode(
-  parent: { id: string; workspace: vscode.WorkspaceFolder },
+  parent: { id: string; workspace: vscode.WorkspaceFolder; baseDir?: string },
   entry: ConfigurationModulePathEntry,
   idx: number,
 ): NovaProjectExplorerNode {
   const rawPath = typeof entry.path === 'string' ? entry.path : '';
-  const resolved = rawPath ? resolvePossiblyRelativePath(parent.workspace.uri.fsPath, rawPath) : '';
+  const baseDir = parent.baseDir ?? parent.workspace.uri.fsPath;
+  const resolved = rawPath ? resolvePossiblyRelativePath(baseDir, rawPath) : '';
   const uri = resolved ? vscode.Uri.file(resolved) : undefined;
 
   const kind = typeof entry.kind === 'string' && entry.kind.trim().length > 0 ? entry.kind.trim() : 'modulePath';
