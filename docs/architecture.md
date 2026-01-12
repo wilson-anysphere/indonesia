@@ -117,6 +117,7 @@ Notable “delta” areas to be aware of:
   - Current scope is intentionally narrow/experimental:
     - `workspace/symbol` is served via the distributed router (`handle_workspace_symbol` in `crates/nova-lsp/src/main.rs`).
     - The frontend forwards best-effort file text updates to the router from `textDocument/didOpen`, `textDocument/didChange`, and `workspace/didChangeWatchedFiles` notifications (`handle_notification` in `crates/nova-lsp/src/main.rs`).
+    - Unsaved buffer text is forwarded via `UpdateFile`, but is not persisted/rehydrated across worker restarts yet (a restarted worker rehydrates from disk until the frontend resends updates); see “Unsaved editor text” in [`docs/16-distributed-mode.md`](16-distributed-mode.md).
     - Most other LSP features still run in-process (the router/worker layer is not yet a general “semantic query RPC”).
     - See `crates/nova-lsp/tests/stdio_distributed_workspace_symbol.rs` for an end-to-end stdio integration test covering the distributed `workspace/symbol` flow.
 - **Protocol extensions:**
