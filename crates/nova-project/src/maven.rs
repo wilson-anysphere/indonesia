@@ -1899,7 +1899,10 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
         if let Some(resolved) =
             resolve_snapshot_jar_file_name(&version_dir, &dep.artifact_id, classifier)
         {
-            return Some(version_dir.join(resolved));
+            let resolved_path = version_dir.join(resolved);
+            if exists_as_jar(&resolved_path) {
+                return Some(resolved_path);
+            }
         }
 
         // If the timestamped SNAPSHOT jar isn't present in the repo, fall back to the
@@ -1910,6 +1913,12 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
 
     let path = version_dir.join(default_file_name(version));
     exists_as_jar(&path).then_some(path)
+}
+
+fn exists_as_jar(path: &Path) -> bool {
+    // Maven dependencies are usually `.jar` files, but some build setups (and test fixtures)
+    // "explode" jars into directories (sometimes still ending with `.jar`).
+    path.is_file() || path.is_dir()
 }
 
 fn resolve_snapshot_jar_file_name(
