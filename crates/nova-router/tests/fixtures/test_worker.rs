@@ -5,7 +5,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
 use nova_remote_proto::v3::{
-    Capabilities, ProtocolVersion, Request, Response, SupportedVersions, WorkerHello,
+    Capabilities, ProtocolVersion, Request, Response, RpcError as ProtoRpcError, RpcErrorCode,
+    SupportedVersions, WorkerHello,
 };
 use nova_remote_proto::{RpcMessage, ShardId, ShardIndex, WorkerStats};
 use nova_remote_rpc::{RpcConnection, RpcTransportError};
@@ -69,7 +70,7 @@ async fn main() -> Result<()> {
             if maybe_exit_after_handshake(&cfg, attempt, args.shard_id).await? {
                 return Ok(());
             }
-            run_v3(conn, args.shard_id).await
+            run_v3(conn, args.shard_id, args.cache_dir.clone(), cfg).await
         }
         None => run_legacy_v2(&args, &cfg, attempt).await,
     }
@@ -334,16 +335,24 @@ async fn maybe_exit_after_handshake(
     Ok(true)
 }
 
-async fn run_v3(conn: RpcConnection, shard_id: ShardId) -> Result<()> {
+async fn run_v3(
+    conn: RpcConnection,
+    shard_id: ShardId,
+    cache_dir: PathBuf,
+    cfg: TestWorkerConfig,
+) -> Result<()> {
     let state = std::sync::Arc::new(tokio::sync::Mutex::new(WorkerState::new(shard_id)));
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+    let block_index_until_cancel = cfg.block_index_until_cancel;
 
     conn.set_request_handler({
         let state = state.clone();
         let shutdown_tx = shutdown_tx.clone();
-        move |_ctx, req| {
+        let cache_dir = cache_dir.clone();
+        move |ctx, req| {
             let state = state.clone();
             let shutdown_tx = shutdown_tx.clone();
+            let cache_dir = cache_dir.clone();
             async move {
                 match req {
                     Request::LoadFiles { revision, files } => {
@@ -353,6 +362,14 @@ async fn run_v3(conn: RpcConnection, shard_id: ShardId) -> Result<()> {
                         Ok(Response::Ack)
                     }
                     Request::IndexShard { revision, files } => {
+                        if block_index_until_cancel {
+                            let mut cancel = ctx.cancellation();
+                            record_index_started(&cache_dir, shard_id);
+                            cancel.cancelled().await;
+                            record_index_cancellation(&cache_dir, shard_id);
+                            return Err(cancelled_error());
+                        }
+
                         let mut guard = state.lock().await;
                         guard.revision = revision;
                         guard.file_count = files.len().try_into().unwrap_or(u32::MAX);
@@ -525,6 +542,7 @@ struct TestWorkerConfig {
     connect_delay_attempts: u32,
     exit_after_handshake_attempts: u32,
     exit_after_handshake_delay_ms: u64,
+    block_index_until_cancel: bool,
 }
 
 impl TestWorkerConfig {
@@ -569,11 +587,40 @@ impl TestWorkerConfig {
                         .parse()
                         .unwrap_or(cfg.exit_after_handshake_delay_ms);
                 }
+                "block_index_until_cancel" => {
+                    cfg.block_index_until_cancel = parse_bool(value);
+                }
                 _ => {}
             }
         }
 
         cfg
+    }
+}
+
+fn parse_bool(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn record_index_cancellation(cache_dir: &Path, shard_id: ShardId) {
+    let path = cache_dir.join(format!("index-cancelled-shard{shard_id}.marker"));
+    let _ = std::fs::write(&path, b"cancelled");
+}
+
+fn record_index_started(cache_dir: &Path, shard_id: ShardId) {
+    let path = cache_dir.join(format!("index-started-shard{shard_id}.marker"));
+    let _ = std::fs::write(&path, b"started");
+}
+
+fn cancelled_error() -> ProtoRpcError {
+    ProtoRpcError {
+        code: RpcErrorCode::Cancelled,
+        message: "request cancelled".into(),
+        retryable: true,
+        details: None,
     }
 }
 

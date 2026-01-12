@@ -38,6 +38,10 @@ use supervisor::RestartBackoff;
 
 pub type Result<T> = anyhow::Result<T>;
 
+fn rpc_cancelled_error() -> anyhow::Error {
+    anyhow!(nova_remote_rpc::RpcError::Canceled)
+}
+
 /// Initialize structured logging and install the global panic hook used by Nova.
 ///
 /// `nova-router` is typically embedded within `nova-lsp`, which is responsible
@@ -62,6 +66,7 @@ const FALLBACK_SCAN_LIMIT: usize = 50_000;
 const MAX_CONCURRENT_HANDSHAKES: usize = 128;
 const WORKER_RPC_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 const WORKER_RPC_READ_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const WORKER_RPC_CANCEL_TIMEOUT: Duration = Duration::from_millis(200);
 const WORKER_SHUTDOWN_RPC_TIMEOUT: Duration = Duration::from_secs(2);
 
 const WORKER_RESTART_BACKOFF_INITIAL: Duration = Duration::from_millis(50);
@@ -439,18 +444,32 @@ impl QueryRouter {
         }
     }
 
-    pub async fn index_workspace(&self) -> Result<()> {
+    pub async fn index_workspace_cancelable(&self, cancel: CancellationToken) -> Result<()> {
         match &self.inner {
-            RouterMode::InProcess(router) => router.index_workspace().await,
-            RouterMode::Distributed(router) => router.index_workspace().await,
+            RouterMode::InProcess(router) => router.index_workspace_cancelable(cancel).await,
+            RouterMode::Distributed(router) => router.index_workspace_cancelable(cancel).await,
+        }
+    }
+
+    pub async fn index_workspace(&self) -> Result<()> {
+        self.index_workspace_cancelable(CancellationToken::new()).await
+    }
+
+    pub async fn update_file_cancelable(
+        &self,
+        cancel: CancellationToken,
+        path: PathBuf,
+        text: String,
+    ) -> Result<()> {
+        match &self.inner {
+            RouterMode::InProcess(router) => router.update_file_cancelable(cancel, path, text).await,
+            RouterMode::Distributed(router) => router.update_file_cancelable(cancel, path, text).await,
         }
     }
 
     pub async fn update_file(&self, path: PathBuf, text: String) -> Result<()> {
-        match &self.inner {
-            RouterMode::InProcess(router) => router.update_file(path, text).await,
-            RouterMode::Distributed(router) => router.update_file(path, text).await,
-        }
+        self.update_file_cancelable(CancellationToken::new(), path, text)
+            .await
     }
 
     pub async fn worker_stats(&self) -> Result<HashMap<ShardId, WorkerStats>> {
@@ -478,11 +497,20 @@ impl QueryRouter {
     ///
     /// This is intentionally minimal: it exists to enable an end-to-end distributed analysis
     /// prototype. Callers should treat failures as non-fatal.
-    pub async fn diagnostics(&self, path: PathBuf) -> Vec<RemoteDiagnostic> {
+    pub async fn diagnostics_cancelable(
+        &self,
+        cancel: CancellationToken,
+        path: PathBuf,
+    ) -> Vec<RemoteDiagnostic> {
         match &self.inner {
             RouterMode::InProcess(_) => Vec::new(),
-            RouterMode::Distributed(router) => router.diagnostics(path).await,
+            RouterMode::Distributed(router) => router.diagnostics_cancelable(cancel, path).await,
         }
+    }
+
+    pub async fn diagnostics(&self, path: PathBuf) -> Vec<RemoteDiagnostic> {
+        self.diagnostics_cancelable(CancellationToken::new(), path)
+            .await
     }
 }
 
@@ -519,13 +547,30 @@ impl InProcessRouter {
     }
 
     async fn index_workspace(&self) -> Result<()> {
+        self.index_workspace_cancelable(CancellationToken::new()).await
+    }
+
+    async fn index_workspace_cancelable(&self, cancel: CancellationToken) -> Result<()> {
+        if cancel.is_cancelled() {
+            return Err(rpc_cancelled_error());
+        }
+
         let token = self.next_index_token().await;
         let revision = self.global_revision.fetch_add(1, Ordering::SeqCst) + 1;
         let mut join_set = JoinSet::new();
 
         // Spawn all per-shard indexing tasks first so multi-shard work actually runs concurrently.
         for (shard_id, root) in self.layout.source_roots.iter().enumerate() {
+            if cancel.is_cancelled() {
+                token.cancel();
+                return Err(rpc_cancelled_error());
+            }
+
             let files = collect_java_files(&root.path).await?;
+            if cancel.is_cancelled() {
+                token.cancel();
+                return Err(rpc_cancelled_error());
+            }
             let shard_id = shard_id as ShardId;
             let task = self
                 .scheduler
@@ -540,7 +585,20 @@ impl InProcessRouter {
         }
 
         let mut indexes = HashMap::new();
-        while let Some(res) = join_set.join_next().await {
+        while !join_set.is_empty() {
+            let res = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    token.cancel();
+                    return Err(rpc_cancelled_error());
+                }
+                res = join_set.join_next() => res,
+            };
+
+            let Some(res) = res else {
+                break;
+            };
+
             let (shard_id, symbols) = match res {
                 Ok((shard_id, res)) => (shard_id, res),
                 Err(err) => {
@@ -572,6 +630,9 @@ impl InProcessRouter {
         if token.is_cancelled() {
             return Ok(());
         }
+        if cancel.is_cancelled() {
+            return Err(rpc_cancelled_error());
+        }
 
         {
             let mut guard = self.shard_indexes.lock().await;
@@ -584,6 +645,20 @@ impl InProcessRouter {
     }
 
     async fn update_file(&self, path: PathBuf, text: String) -> Result<()> {
+        self.update_file_cancelable(CancellationToken::new(), path, text)
+            .await
+    }
+
+    async fn update_file_cancelable(
+        &self,
+        cancel: CancellationToken,
+        path: PathBuf,
+        text: String,
+    ) -> Result<()> {
+        if cancel.is_cancelled() {
+            return Err(rpc_cancelled_error());
+        }
+
         let token = self.next_index_token().await;
         let shard_id = self
             .layout
@@ -597,6 +672,10 @@ impl InProcessRouter {
 
         let mut shard_files =
             collect_java_files(&self.layout.source_roots[shard_id as usize].path).await?;
+        if cancel.is_cancelled() {
+            token.cancel();
+            return Err(rpc_cancelled_error());
+        }
         let path_str = path.to_string_lossy().to_string();
         if let Some(file) = shard_files.iter_mut().find(|f| f.path == path_str) {
             file.text = text;
@@ -615,7 +694,17 @@ impl InProcessRouter {
                 Cancelled::check(&token)?;
                 Ok(symbols)
             });
-        let symbols = match task.join().await {
+
+        let join_result = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                token.cancel();
+                return Err(rpc_cancelled_error());
+            }
+            res = task.join() => res,
+        };
+
+        let symbols = match join_result {
             Ok(symbols) => symbols,
             Err(TaskError::Cancelled) => return Ok(()),
             Err(TaskError::Panicked) => return Err(anyhow!("indexing task panicked")),
@@ -626,6 +715,9 @@ impl InProcessRouter {
 
         if token.is_cancelled() {
             return Ok(());
+        }
+        if cancel.is_cancelled() {
+            return Err(rpc_cancelled_error());
         }
         let new_index = ShardIndex {
             shard_id,
@@ -791,22 +883,39 @@ impl DistributedRouter {
     }
 
     async fn index_workspace(&self) -> Result<()> {
+        self.index_workspace_cancelable(CancellationToken::new()).await
+    }
+
+    async fn index_workspace_cancelable(&self, cancel: CancellationToken) -> Result<()> {
+        if cancel.is_cancelled() {
+            return Err(rpc_cancelled_error());
+        }
+
         let revision = self.state.global_revision.fetch_add(1, Ordering::SeqCst) + 1;
         let mut join_set = JoinSet::new();
         for shard_id in 0..(self.state.layout.source_roots.len() as ShardId) {
             let state = self.state.clone();
             let root = self.state.layout.source_roots[shard_id as usize].path.clone();
+            let cancel = cancel.clone();
 
             join_set.spawn(async move {
+                if cancel.is_cancelled() {
+                    return Err(rpc_cancelled_error());
+                }
+
                 let files = collect_java_files(&root)
                     .await
                     .with_context(|| format!("collect files for shard {shard_id} ({})", root.display()))?;
 
-                let worker = wait_for_worker(state.clone(), shard_id)
+                if cancel.is_cancelled() {
+                    return Err(rpc_cancelled_error());
+                }
+
+                let worker = wait_for_worker_cancelable(state.clone(), shard_id, &cancel)
                     .await
                     .with_context(|| format!("wait for worker for shard {shard_id}"))?;
 
-                let resp = worker_call(&worker, Request::IndexShard { revision, files })
+                let resp = worker_call_cancelable(&worker, &cancel, Request::IndexShard { revision, files })
                     .await
                     .with_context(|| format!("index shard {shard_id}"))?;
 
@@ -816,8 +925,22 @@ impl DistributedRouter {
 
         let mut updated_any = false;
         let mut error: Option<anyhow::Error> = None;
+        let mut cancelled = false;
 
-        while let Some(res) = join_set.join_next().await {
+        while !join_set.is_empty() {
+            let res = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    cancelled = true;
+                    break;
+                }
+                res = join_set.join_next() => res,
+            };
+
+            let Some(res) = res else {
+                break;
+            };
+
             let (shard_id, worker, resp) = match res {
                 Ok(Ok(res)) => res,
                 Ok(Err(err)) => {
@@ -856,6 +979,15 @@ impl DistributedRouter {
             }
         }
 
+        if cancelled {
+            // Detach the in-flight tasks so they can observe the cancellation token and (if a
+            // request was already started) best-effort send v3 Cancel packets to workers.
+            tokio::spawn(async move {
+                while join_set.join_next().await.is_some() {}
+            });
+            return Err(rpc_cancelled_error());
+        }
+
         // If anything went wrong mid-flight, abort remaining RPC tasks.
         drop(join_set);
 
@@ -879,6 +1011,20 @@ impl DistributedRouter {
     }
 
     async fn update_file(&self, path: PathBuf, text: String) -> Result<()> {
+        self.update_file_cancelable(CancellationToken::new(), path, text)
+            .await
+    }
+
+    async fn update_file_cancelable(
+        &self,
+        cancel: CancellationToken,
+        path: PathBuf,
+        text: String,
+    ) -> Result<()> {
+        if cancel.is_cancelled() {
+            return Err(rpc_cancelled_error());
+        }
+
         let shard_id = self
             .state
             .layout
@@ -889,13 +1035,14 @@ impl DistributedRouter {
             .ok_or_else(|| anyhow!("file {path:?} not in any source root"))?;
 
         let revision = self.state.global_revision.fetch_add(1, Ordering::SeqCst) + 1;
-        let worker = wait_for_worker(self.state.clone(), shard_id).await?;
+        let worker = wait_for_worker_cancelable(self.state.clone(), shard_id, &cancel).await?;
         let file = FileText {
             path: path.to_string_lossy().to_string(),
             text,
         };
 
-        let resp = worker_call(&worker, Request::UpdateFile { revision, file }).await?;
+        let resp = worker_call_cancelable(&worker, &cancel, Request::UpdateFile { revision, file })
+            .await?;
         match resp {
             Response::ShardIndex(index) => {
                 if index.shard_id != shard_id {
@@ -943,6 +1090,19 @@ impl DistributedRouter {
     }
 
     async fn diagnostics(&self, path: PathBuf) -> Vec<RemoteDiagnostic> {
+        self.diagnostics_cancelable(CancellationToken::new(), path)
+            .await
+    }
+
+    async fn diagnostics_cancelable(
+        &self,
+        cancel: CancellationToken,
+        path: PathBuf,
+    ) -> Vec<RemoteDiagnostic> {
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
+
         let shard_id = self
             .state
             .layout
@@ -955,9 +1115,15 @@ impl DistributedRouter {
             return Vec::new();
         };
 
-        let worker = match wait_for_worker(self.state.clone(), shard_id).await {
+        let worker = match wait_for_worker_cancelable(self.state.clone(), shard_id, &cancel).await {
             Ok(worker) => worker,
             Err(err) => {
+                if err
+                    .downcast_ref::<nova_remote_rpc::RpcError>()
+                    .is_some_and(|err| matches!(err, nova_remote_rpc::RpcError::Canceled))
+                {
+                    return Vec::new();
+                }
                 warn!(
                     shard_id,
                     error = ?err,
@@ -969,7 +1135,8 @@ impl DistributedRouter {
 
         let worker_id = worker.worker_id;
         let path_str = path.to_string_lossy().to_string();
-        match worker_call(&worker, Request::Diagnostics { path: path_str }).await {
+        match worker_call_cancelable(&worker, &cancel, Request::Diagnostics { path: path_str }).await
+        {
             Ok(Response::Diagnostics { diagnostics }) => diagnostics,
             Ok(other) => {
                 warn!(
@@ -981,6 +1148,12 @@ impl DistributedRouter {
                 Vec::new()
             }
             Err(err) => {
+                if err
+                    .downcast_ref::<nova_remote_rpc::RpcError>()
+                    .is_some_and(|err| matches!(err, nova_remote_rpc::RpcError::Canceled))
+                {
+                    return Vec::new();
+                }
                 warn!(
                     shard_id,
                     worker_id,
@@ -1077,8 +1250,25 @@ impl DistributedRouter {
 }
 
 async fn wait_for_worker(state: Arc<RouterState>, shard_id: ShardId) -> Result<WorkerHandle> {
+    let cancel = CancellationToken::new();
+    wait_for_worker_cancelable(state, shard_id, &cancel).await
+}
+
+async fn wait_for_worker_cancelable(
+    state: Arc<RouterState>,
+    shard_id: ShardId,
+    cancel: &CancellationToken,
+) -> Result<WorkerHandle> {
+    if cancel.is_cancelled() {
+        return Err(rpc_cancelled_error());
+    }
+
     timeout(WORKER_WAIT_TIMEOUT, async {
         loop {
+            if cancel.is_cancelled() {
+                return Err(rpc_cancelled_error());
+            }
+
             if let Some(worker) = {
                 let guard = state.shards.lock().await;
                 guard.get(&shard_id).and_then(|s| s.worker.clone())
@@ -1091,7 +1281,12 @@ async fn wait_for_worker(state: Arc<RouterState>, shard_id: ShardId) -> Result<W
                 }
                 return Ok(worker);
             }
-            state.notify.notified().await;
+
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err(rpc_cancelled_error()),
+                _ = state.notify.notified() => {}
+            }
         }
     })
     .await
@@ -1117,6 +1312,19 @@ async fn apply_shard_index(state: Arc<RouterState>, index: ShardIndex) {
 }
 
 async fn worker_call(worker: &WorkerHandle, request: Request) -> Result<Response> {
+    let cancel = CancellationToken::new();
+    worker_call_cancelable(worker, &cancel, request).await
+}
+
+async fn worker_call_cancelable(
+    worker: &WorkerHandle,
+    cancel: &CancellationToken,
+    request: Request,
+) -> Result<Response> {
+    if cancel.is_cancelled() {
+        return Err(rpc_cancelled_error());
+    }
+
     let pending: PendingCall =
         match timeout(WORKER_RPC_WRITE_TIMEOUT, worker.conn.start_call(request)).await {
             Ok(Ok(pending)) => pending,
@@ -1138,21 +1346,36 @@ async fn worker_call(worker: &WorkerHandle, request: Request) -> Result<Response
             }
         };
 
-    match timeout(WORKER_RPC_READ_TIMEOUT, pending.wait()).await {
-        Ok(Ok(resp)) => Ok(resp),
-        Ok(Err(err)) => Err(anyhow!(err)).with_context(|| {
-            format!(
-                "receive response from worker {} (shard {})",
-                worker.worker_id, worker.shard_id
-            )
-        }),
-        Err(_) => {
-            let _ = worker.conn.shutdown().await;
-            Err(anyhow!(
-                "timed out waiting for response from worker {} (shard {})",
-                worker.worker_id,
-                worker.shard_id
-            ))
+    let request_id = pending.request_id();
+
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => {
+            // Best-effort: cancellation is advisory and the caller may already have moved on.
+            let _ = timeout(WORKER_RPC_CANCEL_TIMEOUT, worker.conn.cancel(request_id)).await;
+            Err(rpc_cancelled_error())
+        }
+        res = timeout(WORKER_RPC_READ_TIMEOUT, pending.wait()) => {
+            match res {
+                Ok(Ok(resp)) => Ok(resp),
+                Ok(Err(err)) => match err {
+                    nova_remote_rpc::RpcError::Canceled => Err(rpc_cancelled_error()),
+                    err => Err(anyhow!(err)).with_context(|| {
+                        format!(
+                            "receive response from worker {} (shard {})",
+                            worker.worker_id, worker.shard_id
+                        )
+                    }),
+                },
+                Err(_) => {
+                    let _ = worker.conn.shutdown().await;
+                    Err(anyhow!(
+                        "timed out waiting for response from worker {} (shard {})",
+                        worker.worker_id,
+                        worker.shard_id
+                    ))
+                }
+            }
         }
     }
 }
@@ -1459,6 +1682,7 @@ async fn handle_new_connection(
         .unwrap_or(nova_remote_rpc::DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN);
     cfg.capabilities.max_frame_len = max_rpc_len;
     cfg.capabilities.max_packet_len = max_rpc_len;
+    cfg.capabilities.supports_cancel = true;
 
     let reservation = Arc::new(tokio::sync::Mutex::new(None::<(ShardId, WorkerId)>));
     let reservation_hook = reservation.clone();
