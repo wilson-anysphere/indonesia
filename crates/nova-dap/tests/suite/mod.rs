@@ -35,6 +35,7 @@ mod real_jvm;
 mod source_mapping;
 mod stack_trace_paging;
 mod stream_debug;
+mod slow_client_backpressure;
 mod watchpoints;
 mod wire_breakpoint_mapping;
 mod wire_format;
