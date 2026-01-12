@@ -6973,6 +6973,7 @@ fn parse_source_type_in_context(
 
     let mut ty = match s {
         "void" => Type::Void,
+        "null" => Type::Null,
         "boolean" => Type::Primitive(PrimitiveType::Boolean),
         "byte" => Type::Primitive(PrimitiveType::Byte),
         "short" => Type::Primitive(PrimitiveType::Short),
@@ -9342,10 +9343,15 @@ fn general_completions(
 
     // Common Java literals/keywords that should always be available in expression
     // completion, even when semantic / expected-type inference is unavailable.
-    for lit in ["null", "true", "false"] {
+    //
+    // Provide best-effort `detail` types so expected-type filtering/ranking can treat these like
+    // typed expression candidates (e.g. suggest `true`/`false` in boolean contexts, filter `null`
+    // out of primitive contexts).
+    for (lit, ty) in [("null", "null"), ("true", "boolean"), ("false", "boolean")] {
         items.push(CompletionItem {
             label: lit.to_string(),
             kind: Some(CompletionItemKind::VALUE),
+            detail: Some(ty.to_string()),
             ..Default::default()
         });
     }
@@ -10633,14 +10639,45 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
             let expected_bonus: i32 = if static_import_bonus(&item) > 0 {
                 0
             } else {
-                match (expected_ty.as_ref(), item.detail.as_deref()) {
-                    (Some(expected), Some(detail)) => types
+                match (expected_ty.as_ref(), item.kind, item.detail.as_deref()) {
+                    (Some(expected), Some(kind), Some(detail)) => types
                         .as_mut()
-                        .and_then(|types| {
-                            let item_ty = parse_source_type(types, detail);
-                            nova_types::assignment_conversion(types, &item_ty, expected)
+                        .map(|types| {
+                            // Reuse the same "type extraction" rules as the expected-type
+                            // filtering pass so methods are scored on their return type.
+                            let candidate_src: Option<&str> = match kind {
+                                CompletionItemKind::VARIABLE
+                                | CompletionItemKind::FIELD
+                                | CompletionItemKind::PROPERTY
+                                | CompletionItemKind::VALUE
+                                | CompletionItemKind::CONSTANT => Some(detail),
+                                CompletionItemKind::METHOD
+                                | CompletionItemKind::FUNCTION
+                                | CompletionItemKind::CONSTRUCTOR => {
+                                    detail.split_whitespace().next()
+                                }
+                                _ => None,
+                            };
+                            let Some(candidate_src) = candidate_src else {
+                                return 0;
+                            };
+
+                            // Avoid giving "expected type" bonus to unknown/unresolved types; those
+                            // should not out-rank clearly typed candidates.
+                            if expected.is_errorish() || !is_resolved_type(types, expected) {
+                                return 0;
+                            }
+
+                            let candidate_ty = parse_source_type(types, candidate_src);
+                            if candidate_ty.is_errorish() || !is_resolved_type(types, &candidate_ty)
+                            {
+                                return 0;
+                            }
+
+                            nova_types::assignment_conversion(types, &candidate_ty, expected)
                                 .is_some()
                                 .then_some(10)
+                                .unwrap_or(0)
                         })
                         .unwrap_or(0),
                     _ => 0,
