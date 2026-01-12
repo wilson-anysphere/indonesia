@@ -792,29 +792,25 @@ impl DistributedRouter {
 
     async fn index_workspace(&self) -> Result<()> {
         let revision = self.state.global_revision.fetch_add(1, Ordering::SeqCst) + 1;
-        let shard_ids: Vec<ShardId> =
-            (0..self.state.layout.source_roots.len() as ShardId).collect();
-        let mut results = Vec::new();
-
-        for shard_id in shard_ids {
-            let root = {
-                let guard = self.state.shards.lock().await;
-                guard
-                    .get(&shard_id)
-                    .map(|s| s.root.clone())
-                    .ok_or_else(|| anyhow!("unknown shard {shard_id}"))?
-            };
-            let files = collect_java_files(&root).await?;
-            let worker = wait_for_worker(self.state.clone(), shard_id).await?;
-            results.push((shard_id, worker, files));
-        }
-
-        // Fan out indexing requests to all workers concurrently.
         let mut join_set = JoinSet::new();
-        for (shard_id, worker, files) in results {
+        for shard_id in 0..(self.state.layout.source_roots.len() as ShardId) {
+            let state = self.state.clone();
+            let root = self.state.layout.source_roots[shard_id as usize].path.clone();
+
             join_set.spawn(async move {
-                let resp = worker_call(&worker, Request::IndexShard { revision, files }).await;
-                (shard_id, worker, resp)
+                let files = collect_java_files(&root)
+                    .await
+                    .with_context(|| format!("collect files for shard {shard_id} ({})", root.display()))?;
+
+                let worker = wait_for_worker(state.clone(), shard_id)
+                    .await
+                    .with_context(|| format!("wait for worker for shard {shard_id}"))?;
+
+                let resp = worker_call(&worker, Request::IndexShard { revision, files })
+                    .await
+                    .with_context(|| format!("index shard {shard_id}"))?;
+
+                Ok::<_, anyhow::Error>((shard_id, worker, resp))
             });
         }
 
@@ -823,17 +819,13 @@ impl DistributedRouter {
 
         while let Some(res) = join_set.join_next().await {
             let (shard_id, worker, resp) = match res {
-                Ok(res) => res,
-                Err(err) => {
-                    error = Some(anyhow!("indexing task panicked: {err}"));
+                Ok(Ok(res)) => res,
+                Ok(Err(err)) => {
+                    error = Some(err);
                     break;
                 }
-            };
-
-            let resp = match resp {
-                Ok(resp) => resp,
                 Err(err) => {
-                    error = Some(err);
+                    error = Some(anyhow!("indexing task panicked: {err}"));
                     break;
                 }
             };
