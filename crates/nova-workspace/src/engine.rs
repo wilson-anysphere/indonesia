@@ -286,6 +286,7 @@ struct ProjectState {
     load_options: LoadOptions,
     source_roots: Vec<SourceRootEntry>,
     classpath_fingerprint: Option<Fingerprint>,
+    jdk_fingerprint: Option<Fingerprint>,
     pending_build_changes: HashSet<PathBuf>,
     last_reload_started_at: Option<Instant>,
 }
@@ -318,6 +319,7 @@ impl Default for ProjectState {
             load_options: LoadOptions::default(),
             source_roots: Vec::new(),
             classpath_fingerprint: None,
+            jdk_fingerprint: None,
             pending_build_changes: HashSet::new(),
             last_reload_started_at: None,
         }
@@ -1873,6 +1875,33 @@ fn classpath_fingerprint(config: &ProjectConfig) -> Fingerprint {
     Fingerprint::from_bytes(bytes)
 }
 
+fn jdk_fingerprint(config: &nova_core::JdkConfig, requested_release: Option<u16>) -> Fingerprint {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&requested_release.unwrap_or(0).to_le_bytes());
+    bytes.extend_from_slice(&config.release.unwrap_or(0).to_le_bytes());
+    if let Some(home) = &config.home {
+        bytes.extend_from_slice(home.to_string_lossy().as_bytes());
+    }
+    bytes.push(0);
+    for (release, home) in &config.toolchains {
+        bytes.extend_from_slice(&release.to_le_bytes());
+        bytes.extend_from_slice(home.to_string_lossy().as_bytes());
+        bytes.push(0);
+    }
+
+    // When no explicit toolchain/home override is configured, JDK discovery falls back to the
+    // environment (`JAVA_HOME` / `java` on PATH). Include `JAVA_HOME` in the fingerprint so
+    // switching toolchains mid-process triggers a rediscovery on the next reload.
+    if config.preferred_home(requested_release).is_none() {
+        if let Some(java_home) = std::env::var_os("JAVA_HOME") {
+            bytes.extend_from_slice(java_home.to_string_lossy().as_bytes());
+        }
+        bytes.push(0);
+    }
+
+    Fingerprint::from_bytes(bytes)
+}
+
 fn reload_project_and_sync(
     workspace_root: &Path,
     changed_files: &[PathBuf],
@@ -1882,7 +1911,7 @@ fn reload_project_and_sync(
     watch_config: &Arc<RwLock<WatchConfig>>,
     watcher_command_store: &Arc<Mutex<Option<channel::Sender<WatchCommand>>>>,
 ) -> Result<()> {
-    let (previous_config, mut options, previous_classpath_fingerprint) = {
+    let (previous_config, mut options, previous_classpath_fingerprint, previous_jdk_fingerprint) = {
         let state = project_state
             .lock()
             .expect("workspace project state mutex poisoned");
@@ -1890,6 +1919,7 @@ fn reload_project_and_sync(
             Arc::clone(&state.config),
             state.load_options.clone(),
             state.classpath_fingerprint.clone(),
+            state.jdk_fingerprint.clone(),
         )
     };
 
@@ -2031,9 +2061,35 @@ fn reload_project_and_sync(
         cfg
     };
 
-    let jdk_index = nova_jdk::JdkIndex::discover_for_release(Some(&jdk_config), requested_release)
-        .unwrap_or_else(|_| nova_jdk::JdkIndex::new());
-    query_db.set_jdk_index(project, Arc::new(jdk_index));
+    let next_jdk_fingerprint = jdk_fingerprint(&jdk_config, requested_release);
+    let jdk_changed = match &previous_jdk_fingerprint {
+        Some(prev) => prev != &next_jdk_fingerprint,
+        None => true,
+    };
+    let current_jdk_backing = query_db.with_snapshot(|snap| snap.jdk_index(project).info().backing);
+    let should_discover_jdk =
+        jdk_changed || current_jdk_backing == nova_jdk::JdkIndexBacking::Builtin;
+
+    {
+        let mut state = project_state
+            .lock()
+            .expect("workspace project state mutex poisoned");
+        state.jdk_fingerprint = Some(next_jdk_fingerprint);
+    }
+
+    if should_discover_jdk {
+        // JDK discovery is best-effort. In addition to returning `Err`, some discovery paths may
+        // panic under extreme resource pressure (e.g. failing to spawn output reader threads while
+        // probing `java` on PATH). Treat any panic as a discovery failure and fall back to the
+        // built-in stub index so the workspace can still load.
+        let jdk_index = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            nova_jdk::JdkIndex::discover_for_release(Some(&jdk_config), requested_release)
+        }))
+        .ok()
+        .and_then(|res| res.ok())
+        .unwrap_or_else(nova_jdk::JdkIndex::new);
+        query_db.set_jdk_index(project, Arc::new(jdk_index));
+    }
 
     if !had_classpath_fingerprint || classpath_changed {
         // Best-effort classpath index. This can be expensive, so fall back to `None` if it fails.
@@ -2931,7 +2987,6 @@ mod tests {
                 .map(|c| c.bytes)
                 .unwrap_or(0)
         }
-
         let baseline = overlay_bytes(&memory);
 
         let dir = tempfile::tempdir().unwrap();
