@@ -105,6 +105,24 @@ class A {}
 }
 
 #[test]
+fn diagnostics_do_not_consume_the_whole_file_when_an_import_is_missing_a_semicolon() {
+    let mut db = InMemoryFileStore::new();
+    let path = PathBuf::from("/test.java");
+    let file = db.file_id_for_path(&path);
+    db.set_file_text(
+        file,
+        "import java.util.List\nimport java.util.Map;\nclass A { Map<String, String> m; }\n"
+            .to_string(),
+    );
+
+    let diags = file_diagnostics(&db, file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unused-import"),
+        "expected no unused-import diagnostics; got {diags:#?}"
+    );
+}
+
+#[test]
 fn quick_fix_removes_unused_import_line() {
     let mut db = InMemoryFileStore::new();
     let path = PathBuf::from("/test.java");

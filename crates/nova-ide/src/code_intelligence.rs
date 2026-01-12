@@ -1239,6 +1239,7 @@ fn unused_import_diagnostics(java_source: &str) -> Vec<Diagnostic> {
 
         let mut segments: Vec<String> = Vec::new();
         let mut saw_star = false;
+        let mut complete_stmt = false;
         let mut stmt_end = import_start;
 
         while idx < tokens.len() {
@@ -1249,6 +1250,13 @@ fn unused_import_diagnostics(java_source: &str) -> Vec<Diagnostic> {
                 | nova_syntax::SyntaxKind::LineComment
                 | nova_syntax::SyntaxKind::BlockComment
                 | nova_syntax::SyntaxKind::DocComment => {
+                    // Incomplete imports are common while editing (`import foo.Bar` without a
+                    // trailing `;`). Avoid consuming tokens from the rest of the file by treating
+                    // any newline as the end of the import statement (best-effort).
+                    if tok.text(java_source).contains('\n') {
+                        stmt_end = tok.range.start as usize;
+                        break;
+                    }
                     idx += 1;
                     continue;
                 }
@@ -1269,11 +1277,13 @@ fn unused_import_diagnostics(java_source: &str) -> Vec<Diagnostic> {
                 nova_syntax::SyntaxKind::Semicolon => {
                     stmt_end = tok.range.end as usize;
                     idx += 1;
+                    complete_stmt = true;
                     break;
                 }
                 nova_syntax::SyntaxKind::Eof => {
                     stmt_end = tok.range.end as usize;
                     idx += 1;
+                    complete_stmt = true;
                     break;
                 }
                 _ => {
@@ -1285,6 +1295,11 @@ fn unused_import_diagnostics(java_source: &str) -> Vec<Diagnostic> {
 
         if stmt_end > 0 {
             last_import_end = last_import_end.max(line_end_offset(java_source, stmt_end));
+        }
+
+        // Skip generating unused-import diagnostics for incomplete import statements.
+        if !complete_stmt {
+            continue;
         }
 
         if is_static || saw_star || segments.is_empty() {
