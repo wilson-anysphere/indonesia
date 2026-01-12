@@ -960,6 +960,52 @@ class Foo {
 }
 
 #[test]
+fn pretty_collapses_extra_blank_lines_after_package() {
+    let input = "package foo.bar; // pkg\n\n\nimport java.util.List;\nclass Foo{}\n";
+    let edits = edits_for_document_formatting_with_strategy(
+        input,
+        &FormatConfig::default(),
+        FormatStrategy::JavaPrettyAst,
+    );
+    let formatted = apply_text_edits(input, &edits).unwrap();
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+package foo.bar; // pkg
+
+import java.util.List;
+
+class Foo {
+}
+"###
+    );
+}
+
+#[test]
+fn pretty_preserves_single_blank_line_between_imports_with_trailing_comment() {
+    let input = "import java.util.List; // list\n\nimport java.util.Map;\nclass Foo{}\n";
+    let edits = edits_for_document_formatting_with_strategy(
+        input,
+        &FormatConfig::default(),
+        FormatStrategy::JavaPrettyAst,
+    );
+    let formatted = apply_text_edits(input, &edits).unwrap();
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+import java.util.List; // list
+
+import java.util.Map;
+
+class Foo {
+}
+"###
+    );
+}
+
+#[test]
 fn pretty_formats_module_declaration() {
     let input = "module  foo.bar{requires  java.base;exports foo.bar.api  to  other.mod;}\n";
     let edits = edits_for_document_formatting_with_strategy(

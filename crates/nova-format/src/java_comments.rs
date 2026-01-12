@@ -7,15 +7,13 @@
 //! This module bridges [`CommentStore`] with the [`Doc`](crate::doc::Doc) model:
 //! - It builds a `CommentStore` from a `SyntaxNode` and source text.
 //! - It formats leading/trailing comments for a given `TokenKey` as `Doc`.
-//! - It encodes blank line metadata by emitting up to two hard line breaks between anchors.
+//! - It preserves blank lines between consecutive comments attached to the same anchor.
 //!
 //! The APIs here are intended for the upcoming AST-aware formatter; they are kept small and
 //! deterministic so comment placement remains stable across formatting passes.
 
-use std::collections::HashMap;
-
 use nova_core::{TextRange, TextSize};
-use nova_syntax::{SyntaxKind, SyntaxNode};
+use nova_syntax::SyntaxNode;
 
 use crate::comment_printer::{fmt_comment, FmtCtx};
 use crate::doc::Doc;
@@ -28,14 +26,6 @@ use crate::{Comment, CommentKind, CommentStore, TokenKey};
 pub struct JavaComments<'a> {
     source: &'a str,
     store: CommentStore,
-    sig_tokens: Vec<TokenKey>,
-    sig_index: HashMap<TokenKey, usize>,
-    /// Set when trailing comments emitted an extra blank line after a token.
-    ///
-    /// The next call to [`take_leading_doc`](Self::take_leading_doc) will clear this flag and
-    /// suppress `blank_line_before` on the first leading comment to avoid producing two blank
-    /// lines when both sides report the same gap.
-    suppress_next_leading_blank_line: bool,
 }
 
 impl<'a> JavaComments<'a> {
@@ -44,40 +34,22 @@ impl<'a> JavaComments<'a> {
     pub fn new(root: &SyntaxNode, source: &'a str) -> Self {
         let store = CommentStore::new(root, source);
 
-        let sig_tokens: Vec<TokenKey> = root
-            .descendants_with_tokens()
-            .filter_map(|el| el.into_token())
-            .filter(|tok| is_significant_token(tok.kind()))
-            .map(|tok| TokenKey::from(tok.text_range()))
-            .collect();
-
-        let sig_index = sig_tokens
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(idx, key)| (key, idx))
-            .collect();
-
         Self {
             source,
             store,
-            sig_tokens,
-            sig_index,
-            suppress_next_leading_blank_line: false,
         }
     }
 
     /// Drain and format the leading comments that attach *before* `token`.
     #[must_use]
     pub fn take_leading_doc(&mut self, token: TokenKey, indent: usize) -> Doc<'a> {
-        let suppress_blank_line = std::mem::take(&mut self.suppress_next_leading_blank_line);
         let comments = self.store.take_leading(token);
         if comments.is_empty() {
             return Doc::nil();
         }
 
         let ctx = FmtCtx::new(indent);
-        self.fmt_leading_comments(&ctx, &comments, suppress_blank_line)
+        self.fmt_leading_comments(&ctx, &comments)
     }
 
     /// Drain and format the trailing comments that attach *after* `token`.
@@ -89,7 +61,7 @@ impl<'a> JavaComments<'a> {
         }
 
         let ctx = FmtCtx::new(indent);
-        self.fmt_trailing_comments(&ctx, token, &comments)
+        self.fmt_trailing_comments(&ctx, &comments)
     }
 
     /// Drain trailing comments attached to `token` but format them as *leading* comments.
@@ -105,7 +77,7 @@ impl<'a> JavaComments<'a> {
         }
 
         let ctx = FmtCtx::new(indent);
-        self.fmt_leading_comments(&ctx, &comments, false)
+        self.fmt_leading_comments(&ctx, &comments)
     }
 
     pub fn assert_drained(&self) {
@@ -124,16 +96,8 @@ impl<'a> JavaComments<'a> {
         &self,
         ctx: &FmtCtx,
         comments: &[Comment],
-        suppress_blank_line_before: bool,
     ) -> Doc<'a> {
         let mut parts: Vec<Doc<'a>> = Vec::new();
-        let Some(first) = comments.first() else {
-            return Doc::nil();
-        };
-
-        if first.blank_line_before && !suppress_blank_line_before {
-            parts.push(Doc::hardline());
-        }
 
         for (idx, comment) in comments.iter().enumerate() {
             parts.push(fmt_comment(ctx, comment, self.source));
@@ -167,40 +131,16 @@ impl<'a> JavaComments<'a> {
                     parts.push(Doc::hardline());
                 }
             }
-            if comment.blank_line_after {
-                parts.push(Doc::hardline());
-            }
         }
 
         Doc::concat(parts)
     }
 }
 
-fn is_synthetic_missing(kind: SyntaxKind) -> bool {
-    matches!(
-        kind,
-        SyntaxKind::MissingSemicolon
-            | SyntaxKind::MissingRParen
-            | SyntaxKind::MissingRBrace
-            | SyntaxKind::MissingRBracket
-            | SyntaxKind::MissingGreater
-    )
-}
-
-fn is_significant_token(kind: SyntaxKind) -> bool {
-    !kind.is_trivia() && !is_synthetic_missing(kind)
-}
-
 impl<'a> JavaComments<'a> {
-    fn next_sig(&self, token: TokenKey) -> Option<TokenKey> {
-        let idx = self.sig_index.get(&token).copied()?;
-        self.sig_tokens.get(idx + 1).copied()
-    }
-
     fn fmt_trailing_comments(
-        &mut self,
+        &self,
         ctx: &FmtCtx,
-        token: TokenKey,
         comments: &[Comment],
     ) -> Doc<'a> {
         let mut parts: Vec<Doc<'a>> = Vec::new();
@@ -255,26 +195,9 @@ impl<'a> JavaComments<'a> {
                 continue;
             }
 
-            let boundary_start = self.trailing_boundary_start(token);
-            if has_blank_line_between(self.source, comment.text_range.end(), boundary_start) {
-                parts.push(Doc::hardline());
-                self.suppress_next_leading_blank_line = true;
-            }
         }
 
         Doc::concat(parts)
-    }
-
-    fn trailing_boundary_start(&self, token: TokenKey) -> TextSize {
-        let Some(next_sig) = self.next_sig(token) else {
-            return TextSize::from(self.source.len() as u32);
-        };
-
-        self.store
-            .peek_leading(next_sig)
-            .first()
-            .map(|c| c.text_range.start())
-            .unwrap_or_else(|| TextSize::from(next_sig.start))
     }
 }
 
