@@ -22,6 +22,10 @@ pub enum RefactorError {
     UnknownFile(FileId),
     #[error("expected a variable with initializer for inline")]
     InlineNotSupported,
+    #[error("no variable usage at the given cursor/usage range")]
+    InlineNoUsageAtCursor,
+    #[error("variable initializer has side effects and cannot be inlined safely")]
+    InlineSideEffects,
     #[error("failed to parse Java source")]
     ParseError,
     #[error("selection does not resolve to a single expression")]
@@ -210,6 +214,10 @@ pub fn extract_variable(
 pub struct InlineVariableParams {
     pub symbol: SymbolId,
     pub inline_all: bool,
+    /// When `inline_all` is false, identifies which usage should be inlined.
+    ///
+    /// This must match the byte range of a reference returned by `find_references(symbol)`.
+    pub usage_range: Option<TextRange>,
 }
 
 pub fn inline_variable(
@@ -224,38 +232,70 @@ pub fn inline_variable(
         .file_text(&def.file)
         .ok_or_else(|| RefactorError::UnknownFile(def.file.clone()))?;
 
-    let decl_start = line_start(text, def.name_range.start);
-    let semi = text[def.name_range.end..]
-        .find(';')
-        .map(|o| def.name_range.end + o);
-    let Some(semi) = semi else {
+    let parsed = parse_java(text);
+    if !parsed.errors.is_empty() {
         return Err(RefactorError::InlineNotSupported);
+    }
+
+    let root = parsed.syntax();
+    let decl = find_local_variable_declaration(&root, def.name_range)
+        .ok_or(RefactorError::InlineNotSupported)?;
+
+    let init_expr = decl.initializer;
+    let init_range = syntax_range(init_expr.syntax());
+    let init_text = text
+        .get(init_range.start..init_range.end)
+        .unwrap_or_default()
+        .trim();
+    if init_text.is_empty() {
+        return Err(RefactorError::InlineNotSupported);
+    }
+
+    let init_has_side_effects = has_side_effects(init_expr.syntax());
+    let init_replacement = parenthesize_initializer(init_text, &init_expr);
+
+    let all_refs = db.find_references(params.symbol);
+
+    // Disallow inlining when the variable is written to after initialization.
+    if is_variable_written_to(db, &all_refs) {
+        return Err(RefactorError::InlineNotSupported);
+    }
+
+    let targets = if params.inline_all {
+        all_refs.clone()
+    } else {
+        let Some(usage_range) = params.usage_range else {
+            return Err(RefactorError::InlineNoUsageAtCursor);
+        };
+        let Some(reference) = all_refs
+            .iter()
+            .find(|r| r.range.start == usage_range.start && r.range.end == usage_range.end)
+            .cloned()
+        else {
+            return Err(RefactorError::InlineNoUsageAtCursor);
+        };
+        vec![reference]
     };
 
-    let eq = text[def.name_range.end..semi]
-        .find('=')
-        .map(|o| def.name_range.end + o);
-    let Some(eq) = eq else {
-        return Err(RefactorError::InlineNotSupported);
-    };
-
-    let mut init = text[eq + 1..semi].trim().to_string();
-    if init.is_empty() {
+    if targets.is_empty() {
         return Err(RefactorError::InlineNotSupported);
     }
 
-    // Preserve parentheses for simple binary expressions.
-    if init.contains(' ') && !(init.starts_with('(') && init.ends_with(')')) {
-        init = format!("({init})");
+    let remove_decl = params.inline_all || all_refs.len() == 1;
+
+    if init_has_side_effects && !(remove_decl && targets.len() == 1) {
+        return Err(RefactorError::InlineSideEffects);
     }
 
-    let mut edits = Vec::new();
-    for usage in db.find_references(params.symbol) {
-        edits.push(TextEdit::replace(usage.file, usage.range, init.clone()));
-    }
+    let mut edits: Vec<TextEdit> = targets
+        .into_iter()
+        .map(|usage| TextEdit::replace(usage.file, usage.range, init_replacement.clone()))
+        .collect();
 
-    if params.inline_all {
-        let decl_end = consume_trailing_newline(text, semi + 1);
+    if remove_decl {
+        let stmt_range = decl.statement_range;
+        let decl_start = line_start(text, stmt_range.start);
+        let decl_end = statement_end_including_trailing_newline(text, stmt_range.end);
         edits.push(TextEdit::delete(
             def.file.clone(),
             TextRange::new(decl_start, decl_end),
@@ -492,11 +532,197 @@ fn current_indent(text: &str, line_start: usize) -> String {
     indent
 }
 
-fn consume_trailing_newline(text: &str, mut offset: usize) -> usize {
-    if offset < text.len() && text.as_bytes()[offset] == b'\n' {
-        offset += 1;
+#[derive(Debug)]
+struct LocalVarDeclInfo {
+    statement_range: TextRange,
+    initializer: ast::Expression,
+}
+
+fn find_local_variable_declaration(
+    root: &nova_syntax::SyntaxNode,
+    name_range: TextRange,
+) -> Option<LocalVarDeclInfo> {
+    for stmt in root
+        .descendants()
+        .filter_map(ast::LocalVariableDeclarationStatement::cast)
+    {
+        let list = stmt.declarator_list()?;
+        let declarators: Vec<_> = list.declarators().collect();
+
+        let matches_symbol = declarators.iter().any(|decl| {
+            decl.name_token()
+                .map(|tok| syntax_token_range(&tok) == name_range)
+                .unwrap_or(false)
+        });
+        if !matches_symbol {
+            continue;
+        }
+
+        // Reject multi-declarator statements until we properly rewrite them.
+        if declarators.len() != 1 {
+            return None;
+        }
+
+        let decl = declarators.into_iter().next()?;
+        let initializer = decl.initializer()?;
+        let statement_range = syntax_range(stmt.syntax());
+
+        return Some(LocalVarDeclInfo {
+            statement_range,
+            initializer,
+        });
     }
+    None
+}
+
+fn syntax_token_range(tok: &nova_syntax::SyntaxToken) -> TextRange {
+    let range = tok.text_range();
+    TextRange::new(
+        u32::from(range.start()) as usize,
+        u32::from(range.end()) as usize,
+    )
+}
+
+fn has_side_effects(expr: &nova_syntax::SyntaxNode) -> bool {
+    if expr.descendants().any(|node| {
+        matches!(
+            node.kind(),
+            SyntaxKind::MethodCallExpression
+                | SyntaxKind::NewExpression
+                | SyntaxKind::AssignmentExpression
+        )
+    }) {
+        return true;
+    }
+
+    // Include ++/-- (both prefix and postfix) as side effects.
+    expr.descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .any(|tok| matches!(tok.kind(), SyntaxKind::PlusPlus | SyntaxKind::MinusMinus))
+}
+
+fn parenthesize_initializer(text: &str, expr: &ast::Expression) -> String {
+    if matches!(expr, ast::Expression::ParenthesizedExpression(_)) {
+        return text.to_string();
+    }
+
+    let needs_parens = matches!(
+        expr,
+        ast::Expression::BinaryExpression(_)
+            | ast::Expression::UnaryExpression(_)
+            | ast::Expression::ConditionalExpression(_)
+            | ast::Expression::AssignmentExpression(_)
+    );
+
+    if needs_parens {
+        format!("({text})")
+    } else {
+        text.to_string()
+    }
+}
+
+fn statement_end_including_trailing_newline(text: &str, stmt_end: usize) -> usize {
+    let mut offset = stmt_end.min(text.len());
+
+    // Consume trailing spaces/tabs at end-of-line so we don't leave whitespace-only lines behind.
+    while offset < text.len() {
+        match text.as_bytes()[offset] {
+            b' ' | b'\t' => offset += 1,
+            _ => break,
+        }
+    }
+
+    let newline = NewlineStyle::detect(text);
+    let newline_str = newline.as_str();
+
+    if text.get(offset..).unwrap_or_default().starts_with(newline_str) {
+        return offset + newline_str.len();
+    }
+
+    // Mixed-newline fallback.
+    if text.get(offset..).unwrap_or_default().starts_with("\r\n") {
+        return offset + 2;
+    }
+    if text.get(offset..).unwrap_or_default().starts_with('\n') {
+        return offset + 1;
+    }
+    if text.get(offset..).unwrap_or_default().starts_with('\r') {
+        return offset + 1;
+    }
+
     offset
+}
+
+fn is_variable_written_to(db: &dyn RefactorDatabase, refs: &[crate::semantic::Reference]) -> bool {
+    // Parse each file once.
+    let mut parsed_by_file: HashMap<FileId, Option<nova_syntax::SyntaxNode>> = HashMap::new();
+
+    for reference in refs {
+        let root = parsed_by_file
+            .entry(reference.file.clone())
+            .or_insert_with(|| {
+                let Some(text) = db.file_text(&reference.file) else {
+                    return None;
+                };
+                let parsed = parse_java(text);
+                if !parsed.errors.is_empty() {
+                    return None;
+                }
+                Some(parsed.syntax())
+            })
+            .clone();
+
+        let Some(root) = root else {
+            // If we can't parse, be conservative.
+            return true;
+        };
+
+        if is_write_reference(&root, reference.range) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn is_write_reference(root: &nova_syntax::SyntaxNode, range: TextRange) -> bool {
+    let Some(tok) = root
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .find(|tok| tok.kind() == SyntaxKind::Identifier && syntax_token_range(tok) == range)
+    else {
+        return false;
+    };
+
+    let token_range = range;
+    let Some(parent) = tok.parent() else {
+        return false;
+    };
+
+    // Detect assignment LHS.
+    for node in parent.ancestors() {
+        if let Some(assign) = ast::AssignmentExpression::cast(node.clone()) {
+            if let Some(lhs) = assign.lhs() {
+                let lhs_range = syntax_range(lhs.syntax());
+                if lhs_range.start <= token_range.start && token_range.end <= lhs_range.end {
+                    return true;
+                }
+            }
+        }
+
+        if let Some(unary) = ast::UnaryExpression::cast(node) {
+            let has_inc_dec = unary
+                .syntax()
+                .children_with_tokens()
+                .filter_map(|el| el.into_token())
+                .any(|tok| matches!(tok.kind(), SyntaxKind::PlusPlus | SyntaxKind::MinusMinus));
+            if has_inc_dec {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 #[derive(Clone, Debug)]

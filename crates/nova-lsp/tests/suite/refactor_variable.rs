@@ -117,6 +117,34 @@ class C {
     let actions = inline_variable_code_actions(&uri, source, position);
     assert_eq!(actions.len(), 2);
 
+    // Apply the single-usage variant (should keep the declaration).
+    let single = actions
+        .iter()
+        .find_map(|action| match action {
+            lsp_types::CodeActionOrCommand::CodeAction(action) if action.title == "Inline variable" => {
+                Some(action.clone())
+            }
+            _ => None,
+        })
+        .expect("inline variable action");
+
+    let edit = single.edit.expect("edit");
+    let changes = edit.changes.expect("changes");
+    let edits = changes.get(&uri).expect("edits for uri");
+    let actual = apply_lsp_edits(source, edits);
+
+    let expected = r#"
+class C {
+    void m() {
+        int a = 1 + 2;
+        System.out.println((1 + 2));
+        System.out.println(a);
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+
     // Apply the "all usages" variant (should delete the declaration).
     let all = actions
         .into_iter()

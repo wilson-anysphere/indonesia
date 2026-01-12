@@ -1,6 +1,7 @@
 use nova_refactor::{
-    apply_text_edits, extract_variable, rename, Conflict, ExtractVariableParams, FileId,
-    RefactorJavaDatabase, RenameParams, SemanticRefactorError, WorkspaceTextRange,
+    apply_text_edits, extract_variable, inline_variable, rename, Conflict, ExtractVariableParams,
+    FileId, InlineVariableParams, RefactorDatabase, RefactorJavaDatabase, RenameParams,
+    SemanticRefactorError, WorkspaceTextRange,
 };
 use pretty_assertions::assert_eq;
 
@@ -439,4 +440,169 @@ fn rename_shadowing_conflict_detected_in_nested_block_scope() {
             .any(|c| matches!(c, Conflict::Shadowing { name, .. } if name == "outer")),
         "expected Shadowing conflict: {conflicts:?}"
     );
+}
+
+#[test]
+fn inline_variable_all_usages_replaces_and_deletes_declaration() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int a = 1 + 2;
+    System.out.println(a);
+    System.out.println(a);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  void m() {
+    System.out.println((1 + 2));
+    System.out.println((1 + 2));
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn inline_variable_single_usage_replaces_only_selected_use() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int a = 1 + 2;
+    System.out.println(a);
+    System.out.println(a);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let mut refs = db.find_references(symbol);
+    refs.sort_by_key(|r| r.range.start);
+    assert_eq!(refs.len(), 2, "expected two references");
+    let first_usage = refs[0].range;
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: false,
+            usage_range: Some(first_usage),
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  void m() {
+    int a = 1 + 2;
+    System.out.println((1 + 2));
+    System.out.println(a);
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn inline_variable_side_effectful_initializer_is_rejected() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  int foo() { return 1; }
+  void m() {
+    int a = foo();
+    System.out.println(a);
+    System.out.println(a);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(err, SemanticRefactorError::InlineSideEffects));
+}
+
+#[test]
+fn inline_variable_for_init_declaration_is_not_supported() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    for (int a = 1; a < 2; a++) {
+      System.out.println(a);
+    }
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(err, SemanticRefactorError::InlineNotSupported));
+}
+
+#[test]
+fn inline_variable_reassigned_variable_is_not_supported() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int a = 1;
+    a = 2;
+    System.out.println(a);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(err, SemanticRefactorError::InlineNotSupported));
 }
