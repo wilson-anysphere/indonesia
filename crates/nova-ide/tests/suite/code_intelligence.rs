@@ -1064,7 +1064,7 @@ class A {
 }
 
 #[test]
-fn completion_does_not_offer_postfix_for_qualified_receiver() {
+fn completion_includes_postfix_for_this_qualified_receiver() {
     let (db, file, pos) = fixture(
         r#"
 class A {
@@ -1076,12 +1076,56 @@ class A {
 "#,
     );
 
+    let text_without_caret = db
+        .file_text(file)
+        .expect("expected file content for fixture")
+        .to_string();
+    let expr_start = text_without_caret
+        .find("this.s.nn")
+        .expect("expected this.s.nn in fixture");
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "nn" && i.kind == Some(lsp_types::CompletionItemKind::SNIPPET))
+        .expect("expected postfix `nn` snippet completion");
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+
+    assert_eq!(
+        edit.range.start,
+        offset_to_position(&text_without_caret, expr_start)
+    );
+    assert_eq!(edit.range.end, pos);
+    assert!(
+        edit.new_text.contains("if (this.s != null)"),
+        "expected snippet to contain `if (this.s != null)`; got {:?}",
+        edit.new_text
+    );
+}
+
+#[test]
+fn completion_does_not_offer_postfix_for_non_this_qualified_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  String s = "";
+  void m(A other) {
+    other.s.nn<|>
+  }
+}
+"#,
+    );
+
     let items = completions(&db, file, pos);
     assert!(
         !items
             .iter()
             .any(|i| { i.label == "nn" && i.kind == Some(lsp_types::CompletionItemKind::SNIPPET) }),
-        "expected no postfix `nn` snippet for qualified receiver; got {items:#?}"
+        "expected no postfix `nn` snippet for non-this qualified receiver; got {items:#?}"
     );
 }
 

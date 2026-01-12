@@ -2951,13 +2951,48 @@ fn simple_receiver_before_dot(text: &str, dot_offset: usize) -> Option<SimpleRec
         return None;
     };
 
-    // Avoid offering postfix templates for qualified expressions like `this.foo.if`
-    // or `pkg.Type.if` (we only support single-token receivers for now). Without
-    // this guard we'd rewrite only the last segment (e.g. `foo.if`) and leave the
-    // qualifier behind (`this.`), producing invalid code.
+    // Best-effort support for `this.foo.if` / `super.foo.if`: if we see a `.` before the
+    // receiver identifier, include the qualifier so the rewrite replaces the full
+    // expression (`this.foo.if` -> `if (this.foo) { ... }`).
+    //
+    // Still reject other qualified expressions like `pkg.Type.if` / `obj.field.if` for now,
+    // because we can't safely find the start of the full expression and would otherwise
+    // rewrite only the last segment (`field.if`) leaving a dangling qualifier (`obj.`).
+    let mut start = start;
+    let mut expr = expr;
     let before_start = skip_whitespace_backwards(text, start);
     if before_start > 0 && bytes.get(before_start - 1) == Some(&b'.') {
-        return None;
+        let dot = before_start - 1;
+        let qualifier_end = skip_whitespace_backwards(text, dot);
+        if qualifier_end == 0 {
+            return None;
+        }
+        let mut qualifier_start = qualifier_end;
+        while qualifier_start > 0 && is_ident_continue(bytes[qualifier_start - 1] as char) {
+            qualifier_start -= 1;
+        }
+        if qualifier_start == qualifier_end
+            || !text
+                .as_bytes()
+                .get(qualifier_start)
+                .is_some_and(|b| is_ident_start(*b as char))
+        {
+            return None;
+        }
+
+        let qualifier = text.get(qualifier_start..qualifier_end)?.trim();
+        if qualifier == "this" || qualifier == "super" {
+            // Ensure we aren't part of a larger qualified expression like `Outer.this.foo`.
+            let before_qualifier = skip_whitespace_backwards(text, qualifier_start);
+            if before_qualifier > 0 && bytes.get(before_qualifier - 1) == Some(&b'.') {
+                return None;
+            }
+
+            start = qualifier_start;
+            expr = text.get(start..receiver_end)?.to_string();
+        } else {
+            return None;
+        }
     }
 
     Some(SimpleReceiverExpr {
@@ -2978,6 +3013,16 @@ fn postfix_completions(
     }
 
     let analysis = analyze(text);
+    // Postfix templates only make sense in expression contexts. To avoid showing them in e.g.
+    // `import java.u<cursor>` package completions, require that the cursor is inside a method body.
+    if !analysis
+        .methods
+        .iter()
+        .any(|method| span_contains(method.body_span, offset))
+    {
+        return Vec::new();
+    }
+
     let mut types = TypeStore::with_minimal_jdk();
     let receiver_ty = infer_simple_expr_type(&mut types, &analysis, &receiver.expr, offset);
 
@@ -3062,6 +3107,20 @@ fn infer_simple_expr_type(
     }
     if expr.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
         return Type::int();
+    }
+
+    // Best-effort `this.<field>` / `super.<field>` support.
+    if let Some((qualifier, rest)) = expr.split_once('.') {
+        let qualifier = qualifier.trim();
+        let rest = rest.trim();
+        if (qualifier == "this" || qualifier == "super")
+            && rest.chars().next().is_some_and(is_ident_start)
+            && rest.chars().all(is_ident_continue)
+        {
+            if let Some(field) = analysis.fields.iter().find(|f| f.name == rest) {
+                return parse_source_type(types, &field.ty);
+            }
+        }
     }
 
     // Identifier (local vars / params / fields).
