@@ -3399,6 +3399,10 @@ pub fn load_sharded_index_archives_fast(
 /// This behaves like [`load_sharded_index_view`] except it does **not** eagerly open/validate
 /// every shard during the load step. Missing or corrupt shards are discovered when callers first
 /// access them via [`LazyShardedIndexView::shard`] (or via helper methods that scan all shards).
+///
+/// Note: `invalidated_files` is computed solely from metadata vs the provided snapshot. If a shard
+/// is missing/corrupt, that condition is only discovered on first access and is *not* reflected in
+/// `invalidated_files` until the caller observes a `None` shard.
 pub fn load_sharded_index_view_lazy(
     cache_dir: &CacheDir,
     current_snapshot: &ProjectSnapshot,
