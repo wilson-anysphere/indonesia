@@ -1,4 +1,4 @@
-use std::collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque};
+use std::collections::{hash_map::DefaultHasher, BTreeSet, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -77,6 +77,7 @@ struct CachedWorkspace {
     analysis: Option<Arc<AnalysisResult>>,
     file_id_to_source: HashMap<FileId, usize>,
     source_to_file_id: Vec<FileId>,
+    profiles: Vec<String>,
 }
 
 /// Spring framework analyzer that plugs `nova-framework-spring` into the
@@ -396,6 +397,34 @@ impl FrameworkAnalyzer for SpringAnalyzer {
                 }
                 AnnotationStringContext::Profile => {
                     let mut items = profile_completions();
+                    if let Some(workspace) = self.cached_workspace(db, ctx.project) {
+                        // Profiles derived from `application-<profile>.properties|yml|yaml` file names.
+                        items.extend(workspace.profiles.iter().map(|profile| CompletionItem {
+                            label: profile.clone(),
+                            detail: None,
+                            replace_span: None,
+                        }));
+
+                        // Profiles discovered from `@Profile` annotations on beans.
+                        if let Some(analysis) = workspace.analysis.as_ref() {
+                            items.extend(
+                                analysis
+                                    .model
+                                    .beans
+                                    .iter()
+                                    .flat_map(|b| b.profiles.iter())
+                                    .filter(|p| !p.trim().is_empty())
+                                    .map(|profile| CompletionItem {
+                                        label: profile.clone(),
+                                        detail: None,
+                                        replace_span: None,
+                                    }),
+                            );
+                        }
+                    }
+
+                    items.sort_by(|a, b| a.label.cmp(&b.label));
+                    items.dedup_by(|a, b| a.label == b.label);
                     if let Some(replace_span) = replace_span {
                         for item in &mut items {
                             item.replace_span = Some(replace_span);
@@ -601,6 +630,14 @@ fn build_workspace(db: &dyn Database, files: &[FileId]) -> CachedWorkspace {
     config_files.sort_by(|(a, _), (b, _)| a.cmp(b));
     metadata_files.sort_by(|(a, _), (b, _)| a.cmp(b));
 
+    let mut profiles = BTreeSet::new();
+    for (path, _file) in &config_files {
+        if let Some(profile) = profile_from_application_config_file_name(file_name(path)) {
+            profiles.insert(profile);
+        }
+    }
+    let profiles: Vec<String> = profiles.into_iter().collect();
+
     let mut metadata = MetadataIndex::new();
     for (_path, file) in &metadata_files {
         let Some(text) = db.file_text(*file) else {
@@ -653,6 +690,7 @@ fn build_workspace(db: &dyn Database, files: &[FileId]) -> CachedWorkspace {
         analysis,
         file_id_to_source,
         source_to_file_id,
+        profiles,
     }
 }
 
@@ -715,6 +753,19 @@ fn file_name(path: &Path) -> &str {
     // also split on backslashes.
     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
     name.rsplit('\\').next().unwrap_or(name)
+}
+
+fn profile_from_application_config_file_name(file_name: &str) -> Option<String> {
+    let stem = Path::new(file_name).file_stem()?.to_str()?;
+    if !starts_with_ignore_ascii_case(stem, "application-") {
+        return None;
+    }
+    let profile = stem.get("application-".len()..)?.trim();
+    if profile.is_empty() {
+        None
+    } else {
+        Some(profile.to_string())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
