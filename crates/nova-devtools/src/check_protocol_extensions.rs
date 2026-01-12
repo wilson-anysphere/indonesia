@@ -422,4 +422,46 @@ pub const B: &str = "textDocument/formatting";
             .iter()
             .any(|d| d.code == "missing-protocol-extension-fields"));
     }
+
+    #[test]
+    fn reports_duplicate_headings() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("crates/nova-lsp/src")).unwrap();
+        fs::write(
+            tmp.path().join("crates/nova-lsp/src/lib.rs"),
+            r#"pub const TEST_METHOD: &str = "nova/test";"#,
+        )
+        .unwrap();
+
+        let doc = r#"
+# Protocol extensions
+
+### `nova/test`
+- **Kind:** request
+- **Stability:** stable
+
+### `nova/test`
+- **Kind:** request
+- **Stability:** stable
+"#;
+
+        let diags =
+            validate_protocol_extensions(doc, tmp.path(), Path::new("docs/protocol-extensions.md"))
+                .unwrap();
+
+        assert!(diags
+            .iter()
+            .any(|d| d.code == "duplicate-protocol-extension"));
+    }
+
+    #[test]
+    fn ignores_bare_nova_prefix_literals() {
+        let text = r#"
+pub const PREFIX: &str = "nova/";
+pub const TEST_METHOD: &str = "nova/test";
+"#;
+
+        let methods = extract_rust_methods_from_text(text);
+        assert_eq!(methods, vec!["nova/test".to_string()]);
+    }
 }
