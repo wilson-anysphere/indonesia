@@ -39,6 +39,9 @@ use super::{
 };
 
 const FIELD_MODIFIER_STATIC: u32 = 0x0008;
+// Capabilities replies are spec-defined fixed-size boolean lists (HotSpot returns 32).
+// Parse only a small bounded prefix to avoid allocating/iterating on a maliciously large reply.
+const MAX_CAPABILITIES_BOOL_COUNT: usize = 256;
 
 #[derive(Debug, Clone)]
 pub struct JdwpClientConfig {
@@ -312,8 +315,9 @@ impl JdwpClient {
     pub async fn refresh_capabilities(&self) -> Result<JdwpCapabilitiesNew> {
         let payload = self.send_command_raw(1, 17, Vec::new()).await?;
         let mut r = JdwpReader::new(&payload);
-        let mut caps = Vec::with_capacity(r.remaining());
-        while r.remaining() > 0 {
+        let count = r.remaining().min(MAX_CAPABILITIES_BOOL_COUNT);
+        let mut caps = Vec::with_capacity(count);
+        for _ in 0..count {
             caps.push(r.read_bool()?);
         }
         let caps = JdwpCapabilitiesNew::from_vec(caps);
@@ -325,8 +329,9 @@ impl JdwpClient {
     pub async fn refresh_capabilities_legacy(&self) -> Result<JdwpCapabilitiesNew> {
         let payload = self.send_command_raw(1, 12, Vec::new()).await?;
         let mut r = JdwpReader::new(&payload);
-        let mut caps = Vec::with_capacity(r.remaining());
-        while r.remaining() > 0 {
+        let count = r.remaining().min(MAX_CAPABILITIES_BOOL_COUNT);
+        let mut caps = Vec::with_capacity(count);
+        for _ in 0..count {
             caps.push(r.read_bool()?);
         }
         let caps = JdwpCapabilitiesNew::from_legacy_vec(caps);
