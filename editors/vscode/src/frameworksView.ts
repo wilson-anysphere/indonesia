@@ -605,7 +605,7 @@ function messageNode(
 }
 
 function unsupportedMethodNode(method: string): MessageNode {
-  return messageNode(`${method} not supported by this server`, undefined, new vscode.ThemeIcon('warning'));
+  return messageNode(NOT_SUPPORTED_MESSAGE, method, new vscode.ThemeIcon('warning'));
 }
 
 function unsupportedCategoryNode(category: FrameworkCategory): MessageNode {
