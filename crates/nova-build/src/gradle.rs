@@ -494,11 +494,36 @@ impl GradleBuild {
         }
 
         let combined = output.combined();
-        let mut config = parse_gradle_annotation_processing_output(&combined)?;
+        let parsed = parse_gradle_annotation_processing_json(&combined)?;
+        let mut config = AnnotationProcessing {
+            main: parsed.main.map(annotation_processing_from_gradle),
+            test: parsed.test.map(annotation_processing_from_gradle),
+        };
 
         // Fill in conventional defaults when the Gradle model doesn't expose a value.
-        let project_dir =
-            gradle_project_dir_cached(project_root, project_path, cache, &fingerprint)?;
+        let needs_fallback = config
+            .main
+            .as_ref()
+            .is_some_and(|m| m.generated_sources_dir.is_none())
+            || config
+                .test
+                .as_ref()
+                .is_some_and(|t| t.generated_sources_dir.is_none());
+
+        let project_dir = if needs_fallback {
+            match parsed
+                .project_dir
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                Some(dir) => PathBuf::from(dir),
+                None => gradle_project_dir_cached(project_root, project_path, cache, &fingerprint)?,
+            }
+        } else {
+            // Dummy value; should not be used when `needs_fallback` is false.
+            PathBuf::new()
+        };
         if let Some(main) = config.main.as_mut() {
             if main.generated_sources_dir.is_none() {
                 main.generated_sources_dir =
@@ -1183,10 +1208,25 @@ pub fn parse_gradle_projects_output(output: &str) -> Result<Vec<GradleProjectInf
     Ok(projects)
 }
 
-fn parse_gradle_all_java_compile_configs_output(output: &str) -> Result<GradleAllJavaCompileConfigsJson> {
-    let json = extract_sentinel_block(output, NOVA_ALL_JSON_BEGIN, NOVA_ALL_JSON_END).ok_or_else(
-        || BuildError::Parse("failed to locate Gradle all-project Java compile config JSON block".into()),
-    )?;
+fn parse_gradle_all_java_compile_configs_output(
+    output: &str,
+) -> Result<GradleAllJavaCompileConfigsJson> {
+    let json =
+        extract_sentinel_block(output, NOVA_ALL_JSON_BEGIN, NOVA_ALL_JSON_END).ok_or_else(|| {
+            BuildError::Parse(
+                "failed to locate Gradle all-project Java compile config JSON block".into(),
+            )
+        })?;
+
+    serde_json::from_str(json.trim()).map_err(|e| BuildError::Parse(e.to_string()))
+}
+
+fn parse_gradle_annotation_processing_json(output: &str) -> Result<GradleAnnotationProcessingJson> {
+    let json = extract_sentinel_block(output, NOVA_APT_BEGIN, NOVA_APT_END)
+        .or_else(|| extract_json_payload(output).map(str::to_string))
+        .ok_or_else(|| {
+            BuildError::Parse("failed to locate Gradle annotation processing JSON".into())
+        })?;
 
     serde_json::from_str(json.trim()).map_err(|e| BuildError::Parse(e.to_string()))
 }
@@ -1194,6 +1234,10 @@ fn parse_gradle_all_java_compile_configs_output(output: &str) -> Result<GradleAl
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GradleAnnotationProcessingJson {
+    #[serde(default)]
+    project_path: Option<String>,
+    #[serde(default)]
+    project_dir: Option<String>,
     #[serde(default)]
     main: Option<GradleJavaCompileAptJson>,
     #[serde(default)]
@@ -1212,14 +1256,7 @@ struct GradleJavaCompileAptJson {
 }
 
 pub fn parse_gradle_annotation_processing_output(output: &str) -> Result<AnnotationProcessing> {
-    let json = extract_sentinel_block(output, NOVA_APT_BEGIN, NOVA_APT_END)
-        .or_else(|| extract_json_payload(output).map(str::to_string))
-        .ok_or_else(|| {
-            BuildError::Parse("failed to locate Gradle annotation processing JSON".into())
-        })?;
-
-    let parsed: GradleAnnotationProcessingJson =
-        serde_json::from_str(json.trim()).map_err(|e| BuildError::Parse(e.to_string()))?;
+    let parsed = parse_gradle_annotation_processing_json(output)?;
 
     Ok(AnnotationProcessing {
         main: parsed.main.map(annotation_processing_from_gradle),
@@ -1856,12 +1893,14 @@ allprojects { proj ->
     }
 
     proj.tasks.register("printNovaAnnotationProcessing") {
-        doLast {
-            def out = [:]
-            def mainTask = proj.tasks.findByName("compileJava")
-            if (mainTask instanceof org.gradle.api.tasks.compile.JavaCompile) {
-                out.main = novaJavaCompileModel(mainTask)
-            }
+         doLast {
+             def out = [:]
+             out.projectPath = proj.path
+             out.projectDir = proj.projectDir.absolutePath
+             def mainTask = proj.tasks.findByName("compileJava")
+             if (mainTask instanceof org.gradle.api.tasks.compile.JavaCompile) {
+                 out.main = novaJavaCompileModel(mainTask)
+             }
             def testTask = proj.tasks.findByName("compileTestJava")
             if (testTask instanceof org.gradle.api.tasks.compile.JavaCompile) {
                 out.test = novaJavaCompileModel(testTask)

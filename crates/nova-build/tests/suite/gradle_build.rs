@@ -150,3 +150,41 @@ Execution failed for task ':app:compileJava'.
     assert_eq!(diag.severity, DiagnosticSeverity::Error);
     assert!(diag.message.contains("cannot find symbol"));
 }
+
+#[test]
+fn annotation_processing_fallback_prefers_project_dir_from_apt_payload() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+    std::fs::write(project_root.join("settings.gradle"), "").unwrap();
+
+    let app_dir = project_root.join("modules").join("app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+
+    let payload = serde_json::json!({
+        "projectPath": ":app",
+        "projectDir": app_dir.to_string_lossy(),
+        "main": {
+            "annotationProcessorPath": [],
+            "compilerArgs": [],
+            "generatedSourcesDir": null,
+        }
+    });
+    let stdout = format!(
+        "NOVA_APT_BEGIN\n{}\nNOVA_APT_END\n",
+        serde_json::to_string(&payload).unwrap()
+    );
+
+    let runner = Arc::new(FakeGradleRunner::new(output(0, &stdout, "")));
+    let gradle = GradleBuild::with_runner(GradleConfig::default(), runner);
+    let cache = BuildCache::new(tmp.path().join("cache"));
+
+    let ap = gradle
+        .annotation_processing(&project_root, Some(":app"), &cache)
+        .unwrap();
+    let main = ap.main.unwrap();
+    assert_eq!(
+        main.generated_sources_dir,
+        Some(app_dir.join("build/generated/sources/annotationProcessor/java/main"))
+    );
+}
