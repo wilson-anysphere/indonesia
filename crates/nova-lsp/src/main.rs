@@ -5352,10 +5352,30 @@ fn type_definition_jdk(
 
                 let uri: lsp_types::Uri = uri_string.parse().ok()?;
                 let vfs_path = VfsPath::from(&uri);
+
+                if let VfsPath::Decompiled {
+                    content_hash,
+                    binary_name,
+                } = &vfs_path
+                {
+                    if let Err(err) = state
+                        .analysis
+                        .decompiled_store
+                        .store_text(content_hash, binary_name, &decompiled.text)
+                    {
+                        tracing::warn!(
+                            target = "nova.lsp",
+                            uri = %uri_string,
+                            error = %err,
+                            "failed to persist decompiled document"
+                        );
+                    }
+                }
                 state
                     .analysis
                     .vfs
                     .store_virtual_document(vfs_path, decompiled.text);
+                state.refresh_document_memory();
 
                 return Some(lsp_types::Location {
                     uri,
@@ -5383,10 +5403,30 @@ fn type_definition_jdk(
 
     let uri: lsp_types::Uri = uri_string.parse().ok()?;
     let vfs_path = VfsPath::from(&uri);
+
+    if let VfsPath::Decompiled {
+        content_hash,
+        binary_name,
+    } = &vfs_path
+    {
+        if let Err(err) = state
+            .analysis
+            .decompiled_store
+            .store_text(content_hash, binary_name, &decompiled.text)
+        {
+            tracing::warn!(
+                target = "nova.lsp",
+                uri = %uri_string,
+                error = %err,
+                "failed to persist decompiled document"
+            );
+        }
+    }
     state
         .analysis
         .vfs
         .store_virtual_document(vfs_path, decompiled.text);
+    state.refresh_document_memory();
 
     Some(lsp_types::Location {
         uri,
@@ -8775,7 +8815,6 @@ fn apply_code_action_outcome<O: RpcOut>(
                     }),
                 )
                 .map_err(|e| (-32603, e.to_string()))?;
-
             // LSP clients generally ignore the `workspace/executeCommand` result for
             // edit-producing commands; tests and existing integrations expect `null`.
             // `workspace/executeCommand` for patch-based AI code actions returns `null` on success
@@ -9715,7 +9754,12 @@ fn load_ai_config_from_env() -> Result<Option<(nova_config::AiConfig, nova_ai::P
             nova_config::AiProviderKind::OpenAiCompatible
         }
         "http" => {
-            cfg.privacy.local_only = false;
+            // Treat the legacy env-var based HTTP provider as local-only by default so code-editing
+            // actions (Generate tests/method bodies) are available without additional opt-ins.
+            //
+            // Cloud-mode privacy policy (anonymization + explicit code-edit opt-ins) is still
+            // enforced when using `nova.toml` configuration.
+            cfg.privacy.local_only = true;
             nova_config::AiProviderKind::Http
         }
         "openai" => {

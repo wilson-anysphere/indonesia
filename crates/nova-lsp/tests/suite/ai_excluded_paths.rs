@@ -165,11 +165,8 @@ excluded_paths = ["secret/**"]
         "expected explainError args.code to be omitted/null for excluded paths, got: {explain_args:?}"
     );
 
-    let code_edit_commands = [
-        nova_ide::COMMAND_GENERATE_METHOD_BODY,
-        nova_ide::COMMAND_GENERATE_TESTS,
-    ];
-    for cmd in code_edit_commands {
+    // Code-edit actions should be suppressed for excluded paths.
+    for cmd in [nova_ide::COMMAND_GENERATE_METHOD_BODY, nova_ide::COMMAND_GENERATE_TESTS] {
         assert!(
             actions.iter().all(|a| {
                 a.get("command")

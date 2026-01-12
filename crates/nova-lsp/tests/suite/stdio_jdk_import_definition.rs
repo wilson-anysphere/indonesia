@@ -214,7 +214,7 @@ fn stdio_definition_into_jdk_resolves_explicit_and_wildcard_imported_type_name()
 
 #[test]
 fn stdio_definition_into_jdk_on_import_line_is_not_shadowed_by_workspace_type() {
-    let _lock = support::stdio_server_lock();
+    let _lock = stdio_server_lock();
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let base_fake_jdk_root = manifest_dir.join("../nova-jdk/testdata/fake-jdk");

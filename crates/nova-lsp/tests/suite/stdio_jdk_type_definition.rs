@@ -34,6 +34,8 @@ fn run_type_definition_test(text: &str, offset: usize, expected_suffix: &str) {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path();
 
+    let cache_dir = TempDir::new().expect("cache dir");
+
     let main_path = root.join("Main.java");
     let main_uri = uri_for_path(&main_path);
     std::fs::write(&main_path, text).expect("write Main.java");
@@ -41,6 +43,7 @@ fn run_type_definition_test(text: &str, offset: usize, expected_suffix: &str) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
         .env("JAVA_HOME", fake_jdk_root())
+        .env("NOVA_CACHE_DIR", cache_dir.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -136,4 +139,247 @@ fn stdio_type_definition_on_imported_list_variable_returns_decompiled_list_uri()
     );
     let offset = text.find("l.toString").expect("usage exists");
     run_type_definition_test(text, offset, "/java.util.List.java");
+}
+
+#[test]
+fn stdio_type_definition_decompiled_uri_is_persisted_and_readable_after_restart() {
+    let _lock = crate::support::stdio_server_lock();
+
+    let fake_jdk_root = fake_jdk_root();
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+
+    let cache_dir = TempDir::new().expect("cache dir");
+
+    let main_path = root.join("Main.java");
+    let main_uri = uri_for_path(&main_path);
+    let text =
+        "class Main { void m(){ String s = \"\"; Custom c = new Custom(); s.toString(); c.toString(); } }\n";
+    std::fs::write(&main_path, text).expect("write Main.java");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .env("JAVA_HOME", &fake_jdk_root)
+        .env("NOVA_CACHE_DIR", cache_dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": main_uri.as_str(),
+                    "languageId": "java",
+                    "version": 1,
+                    "text": text,
+                }
+            }
+        }),
+    );
+
+    // 1) Trigger the "cursor is on a type token" branch (String).
+    let offset = text.find("String").expect("String token exists");
+    let position = utf16_position(text, offset);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/typeDefinition",
+            "params": {
+                "textDocument": { "uri": main_uri.as_str() },
+                "position": { "line": position.line, "character": position.character }
+            }
+        }),
+    );
+    let resp = read_response_with_id(&mut stdout, 2);
+    let location = resp.get("result").expect("typeDefinition result");
+    let Some(string_uri) = location.get("uri").and_then(|v| v.as_str()) else {
+        panic!("expected typeDefinition uri, got: {resp:?}");
+    };
+    let string_uri = string_uri.to_string();
+    assert!(
+        string_uri.starts_with("nova:///decompiled/"),
+        "expected decompiled uri, got: {string_uri}"
+    );
+
+    // 2) Trigger the "infer declared type from variable" branch (Custom).
+    let offset = text.find("c.toString").expect("c.toString exists");
+    let position = utf16_position(text, offset);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "textDocument/typeDefinition",
+            "params": {
+                "textDocument": { "uri": main_uri.as_str() },
+                "position": { "line": position.line, "character": position.character }
+            }
+        }),
+    );
+    let resp = read_response_with_id(&mut stdout, 3);
+    let location = resp.get("result").expect("typeDefinition result");
+    let Some(custom_uri) = location.get("uri").and_then(|v| v.as_str()) else {
+        panic!("expected typeDefinition uri, got: {resp:?}");
+    };
+    let custom_uri = custom_uri.to_string();
+    assert!(
+        custom_uri.starts_with("nova:///decompiled/"),
+        "expected decompiled uri, got: {custom_uri}"
+    );
+
+    // Confirm the virtual documents are readable inside the same server session.
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "textDocument/documentSymbol",
+            "params": { "textDocument": { "uri": string_uri.as_str() } }
+        }),
+    );
+    let resp = read_response_with_id(&mut stdout, 4);
+    let symbols = resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .expect("documentSymbol result array");
+    assert!(
+        !symbols.is_empty(),
+        "expected decompiled document to return symbols, got: {resp:?}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "textDocument/documentSymbol",
+            "params": { "textDocument": { "uri": custom_uri.as_str() } }
+        }),
+    );
+    let resp = read_response_with_id(&mut stdout, 5);
+    let symbols = resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .expect("documentSymbol result array");
+    assert!(
+        !symbols.is_empty(),
+        "expected decompiled document to return symbols, got: {resp:?}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 6, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 6);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+
+    // Spawn a second server pointing at the same cache directory to prove the decompiled documents
+    // persisted, and can be loaded without re-running typeDefinition.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .env("JAVA_HOME", &fake_jdk_root)
+        .env("NOVA_CACHE_DIR", cache_dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp (second instance)");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/documentSymbol",
+            "params": { "textDocument": { "uri": string_uri.as_str() } }
+        }),
+    );
+    let resp = read_response_with_id(&mut stdout, 2);
+    let symbols = resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .expect("documentSymbol result array");
+    assert!(
+        !symbols.is_empty(),
+        "expected persisted decompiled document to return symbols, got: {resp:?}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "textDocument/documentSymbol",
+            "params": { "textDocument": { "uri": custom_uri.as_str() } }
+        }),
+    );
+    let resp = read_response_with_id(&mut stdout, 3);
+    let symbols = resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .expect("documentSymbol result array");
+    assert!(
+        !symbols.is_empty(),
+        "expected persisted decompiled document to return symbols, got: {resp:?}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
 }
