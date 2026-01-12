@@ -784,10 +784,10 @@ impl WorkspaceEngine {
             ClosedFileTextStore::new(&memory, query_db.clone(), open_docs.clone());
 
         let overlay_docs_memory_registration =
-            memory.register_tracker("vfs_documents", MemoryCategory::Other);
+            memory.register_tracker("vfs_overlay_documents", MemoryCategory::Other);
         overlay_docs_memory_registration
             .tracker()
-            .set_bytes(vfs.estimated_bytes() as u64);
+            .set_bytes(vfs.overlay().estimated_bytes() as u64);
         let default_project = ProjectId::from_raw(0);
         // Ensure fundamental project inputs are always initialized so callers can safely
         // start with an empty/in-memory workspace.
@@ -2473,7 +2473,7 @@ impl WorkspaceEngine {
     fn sync_overlay_documents_memory(&self) {
         self.overlay_docs_memory_registration
             .tracker()
-            .set_bytes(self.vfs.estimated_bytes() as u64);
+            .set_bytes(self.vfs.overlay().estimated_bytes() as u64);
     }
     fn memory_report_for_work(&self) -> MemoryReport {
         // Keep eviction and degraded settings reasonably fresh without running the
@@ -4977,7 +4977,7 @@ mod tests {
             let (_report, components) = memory.report_detailed();
             components
                 .iter()
-                .find(|c| c.name == "vfs_documents")
+                .find(|c| c.name == "vfs_overlay_documents")
                 .map(|c| {
                     assert_eq!(c.category, MemoryCategory::Other);
                     c.bytes

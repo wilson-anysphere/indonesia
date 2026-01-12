@@ -45,7 +45,7 @@ Pick the **closest semantic bucket** for a component; avoid “Other” unless t
 | `SyntaxTrees` | Parsed/structural per-file artifacts closely tied to source text; caches that should prefer keeping *open* documents warm. | `nova_syntax::SyntaxTreeStore`, `nova_db::salsa::ItemTreeStore` |
 | `Indexes` | Cross-file/workspace indexes used for search/navigation; may have disk-backed warm-start formats. | `nova_index::WorkspaceSymbolSearcher`, `nova_index::IndexCache`, `jdk_index`/`classpath_index` trackers |
 | `TypeInfo` | Typechecking/type inference caches and expensive semantic models (reserved; not heavily used yet). | (gap: no major registrations today) |
-| `Other` | Everything else (inputs, overlays, glue). This is also where we track memory that we **cannot** currently evict. | `salsa_inputs` tracker, LSP `open_documents` tracker |
+| `Other` | Everything else (inputs, overlays, glue). This is also where we track memory that we **cannot** currently evict. | `salsa_inputs` tracker, LSP `vfs_documents` tracker |
 
 ### Avoiding double-counting (important)
 
@@ -166,7 +166,7 @@ Current call sites in-tree:
 2. Workspace symbol search (`crates/nova-workspace/src/lib.rs`)
    - `Workspace::workspace_symbols_cancelable()` calls `memory.enforce()` after index build/search work.
 3. LSP document memory updates (`crates/nova-lsp/src/main.rs`)
-   - `ServerState::refresh_document_memory()` updates the `open_documents` tracker and then calls `memory.enforce()`.
+   - `ServerState::refresh_document_memory()` updates the `vfs_documents` tracker and then calls `memory.enforce()`.
 4. LSP memory status request (`crates/nova-lsp/src/main.rs`)
    - `nova_lsp::MEMORY_STATUS_METHOD` forces an `enforce()` pass to return up-to-date pressure and trigger eviction before reporting.
 
@@ -314,11 +314,11 @@ This list is meant to be kept accurate as new components integrate.
 - Tracked bytes: sum of file content lengths (plus other small tracked inputs)
 - Eviction: none (trackers only)
 
-#### Tracker: `open_documents` (LSP)
+#### Tracker: `vfs_documents` (LSP)
 
 - Code: `crates/nova-lsp/src/main.rs` (`documents_memory`)
 - Category: `MemoryCategory::Other`
-- Tracked bytes: sum of open document text lengths (from LSP analysis state)
+- Tracked bytes: `Vfs::estimated_bytes()` (overlay documents + cached virtual documents)
 - Eviction: none (trackers only)
 
 #### Tracker: `vfs_overlay_documents` (workspace VFS overlay)
