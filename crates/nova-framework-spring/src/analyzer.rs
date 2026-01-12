@@ -194,14 +194,18 @@ impl FrameworkAnalyzer for SpringAnalyzer {
 
         let project = db.project_of_file(file);
 
-        // Prefer cached project-wide analysis, but fall back to best-effort local analysis.
-        let (analysis, source_idx) = if db.all_files(project).is_empty() {
-            (Arc::new(analyze_java_sources(&[text])), 0usize)
-        } else {
-            let workspace = self.cached_workspace(db, project)?;
-            let analysis = workspace.analysis.as_ref()?.clone();
-            let source_idx = *workspace.file_id_to_source.get(&file)?;
-            (analysis, source_idx)
+        // Prefer cached project-wide analysis (when supported), but fall back to best-effort
+        // local analysis. We intentionally call `cached_workspace` directly to avoid calling
+        // `db.all_files(project)` twice.
+        let (analysis, source_idx) = match self.cached_workspace(db, project) {
+            Some(workspace) => match (
+                workspace.analysis.as_ref(),
+                workspace.file_id_to_source.get(&file).copied(),
+            ) {
+                (Some(analysis), Some(source_idx)) => (Arc::clone(analysis), source_idx),
+                _ => (Arc::new(analyze_java_sources(&[text])), 0usize),
+            },
+            None => (Arc::new(analyze_java_sources(&[text])), 0usize),
         };
 
         let mut beans: Vec<BeanDefinition> = analysis
