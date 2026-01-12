@@ -395,8 +395,39 @@ fn lexer_reports_unterminated_string_templates_and_keeps_them_lossless() {
         "did not expect a `StringTemplateExprEnd` token for unterminated interpolation"
     );
 
+    // EOF immediately after the interpolation start (`\{`).
+    let input = r#"STR."hello \{"#;
+    let (tokens, errors) = lex_with_errors(input);
+    assert_lossless(input, &tokens);
+    assert!(
+        errors.iter().any(|e| e.message.starts_with("unterminated ")),
+        "expected an unterminated error, got: {errors:?}"
+    );
+    assert!(
+        tokens
+            .iter()
+            .any(|t| t.kind == SyntaxKind::StringTemplateExprStart),
+        "expected a `StringTemplateExprStart` token, got: {tokens:?}"
+    );
+
     // EOF while inside a text block template interpolation (`""" ... \{ ...`).
     let input = "STR.\"\"\"\nhello \\{x";
+    let (tokens, errors) = lex_with_errors(input);
+    assert_lossless(input, &tokens);
+    assert!(
+        errors.iter().any(|e| e.message.starts_with("unterminated ")),
+        "expected an unterminated error, got: {errors:?}"
+    );
+    assert!(
+        tokens
+            .iter()
+            .any(|t| t.kind == SyntaxKind::StringTemplateExprStart),
+        "expected a `StringTemplateExprStart` token, got: {tokens:?}"
+    );
+
+    // EOF immediately after the interpolation start (`\{`) in a text block template.
+    let input = r#"STR."""
+hello \{"#;
     let (tokens, errors) = lex_with_errors(input);
     assert_lossless(input, &tokens);
     assert!(
@@ -1054,8 +1085,17 @@ fn parse_java_surfaces_unterminated_string_template_lexer_errors_as_parse_errors
             "unterminated string template interpolation",
         ),
         (
+            r#"class Foo { String s = STR."hello \{"#,
+            "unterminated string template interpolation",
+        ),
+        (
             r#"class Foo { String s = STR."""
 hello \{x"#,
+            "unterminated text block template interpolation",
+        ),
+        (
+            r#"class Foo { String s = STR."""
+hello \{"#,
             "unterminated text block template interpolation",
         ),
         (
