@@ -1981,7 +1981,8 @@ pub fn inline_variable(
         let Some(usage_tok) = root
             .descendants_with_tokens()
             .filter_map(|el| el.into_token())
-            .find(|tok| syntax_token_range(tok) == usage.range)
+            .filter(|tok| !tok.kind().is_trivia())
+            .find(|tok| ranges_overlap(syntax_token_range(tok), usage.range))
         else {
             return Err(RefactorError::InlineNotSupported);
         };
