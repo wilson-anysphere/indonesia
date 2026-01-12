@@ -823,19 +823,15 @@ pub fn extract_variable(
             // Only guard when the selection is inside the rule body (not the labels/guard).
             let body_range = syntax_range(body.syntax());
             if body_range.start <= selection.start && selection.end <= body_range.end {
-                let container = rule
-                    .syntax()
-                    .ancestors()
-                    .skip(1)
-                    .find_map(|node| {
-                        if ast::SwitchExpression::cast(node.clone()).is_some() {
-                            Some(true)
-                        } else if ast::SwitchStatement::cast(node).is_some() {
-                            Some(false)
-                        } else {
-                            None
-                        }
-                    });
+                let container = rule.syntax().ancestors().skip(1).find_map(|node| {
+                    if ast::SwitchExpression::cast(node.clone()).is_some() {
+                        Some(true)
+                    } else if ast::SwitchStatement::cast(node).is_some() {
+                        Some(false)
+                    } else {
+                        None
+                    }
+                });
                 if container == Some(true) {
                     return Err(RefactorError::ExtractNotSupported {
                         reason: "cannot extract from non-block switch rule body",
@@ -1688,32 +1684,32 @@ pub fn inline_variable(
 
         // 3) Reject inlining into short-circuit/conditional expression segments where the variable
         // usage may be evaluated conditionally.
-         for ancestor in usage_tok_parent.ancestors() {
-             if let Some(binary) = ast::BinaryExpression::cast(ancestor.clone()) {
-                 if let Some(op) = binary_short_circuit_operator_kind(&binary) {
-                     if matches!(op, SyntaxKind::AmpAmp | SyntaxKind::PipePipe) {
-                         if let Some(rhs) = binary.rhs() {
-                             if contains_range(syntax_range(rhs.syntax()), usage.range) {
-                                 return Err(RefactorError::InlineSideEffects);
-                             }
-                         }
-                     }
-                 }
-             }
+        for ancestor in usage_tok_parent.ancestors() {
+            if let Some(binary) = ast::BinaryExpression::cast(ancestor.clone()) {
+                if let Some(op) = binary_short_circuit_operator_kind(&binary) {
+                    if matches!(op, SyntaxKind::AmpAmp | SyntaxKind::PipePipe) {
+                        if let Some(rhs) = binary.rhs() {
+                            if contains_range(syntax_range(rhs.syntax()), usage.range) {
+                                return Err(RefactorError::InlineSideEffects);
+                            }
+                        }
+                    }
+                }
+            }
 
-             if let Some(cond_expr) = ast::ConditionalExpression::cast(ancestor.clone()) {
-                 if let Some(then_branch) = cond_expr.then_branch() {
-                     if contains_range(syntax_range(then_branch.syntax()), usage.range) {
-                         return Err(RefactorError::InlineSideEffects);
-                     }
-                 }
-                 if let Some(else_branch) = cond_expr.else_branch() {
-                     if contains_range(syntax_range(else_branch.syntax()), usage.range) {
-                         return Err(RefactorError::InlineSideEffects);
-                     }
-                 }
-             }
-         }
+            if let Some(cond_expr) = ast::ConditionalExpression::cast(ancestor.clone()) {
+                if let Some(then_branch) = cond_expr.then_branch() {
+                    if contains_range(syntax_range(then_branch.syntax()), usage.range) {
+                        return Err(RefactorError::InlineSideEffects);
+                    }
+                }
+                if let Some(else_branch) = cond_expr.else_branch() {
+                    if contains_range(syntax_range(else_branch.syntax()), usage.range) {
+                        return Err(RefactorError::InlineSideEffects);
+                    }
+                }
+            }
+        }
 
         // 4) Prevent side-effect reordering within the usage statement itself.
         //
@@ -4263,16 +4259,16 @@ fn find_local_variable_declaration(
         .descendants_with_tokens()
         .filter_map(|el| el.into_token())
         .find(|tok| {
-            tok.kind() == SyntaxKind::Identifier
-                && {
-                    let range = syntax_token_range(tok);
-                    range.start <= name_range.start && name_range.end <= range.end
-                }
+            tok.kind() == SyntaxKind::Identifier && {
+                let range = syntax_token_range(tok);
+                range.start <= name_range.start && name_range.end <= range.end
+            }
         })?;
 
-    let stmt = tok
-        .parent()
-        .and_then(|node| node.ancestors().find_map(ast::LocalVariableDeclarationStatement::cast))?;
+    let stmt = tok.parent().and_then(|node| {
+        node.ancestors()
+            .find_map(ast::LocalVariableDeclarationStatement::cast)
+    })?;
 
     info_for_statement(db, file, symbol, stmt, name_range)
 }

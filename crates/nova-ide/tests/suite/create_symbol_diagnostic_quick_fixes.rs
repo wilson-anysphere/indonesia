@@ -66,7 +66,9 @@ fn unresolved_method_offers_create_method_quick_fix() {
     assert_eq!(edits[0].range.start, expected_pos);
     assert_eq!(edits[0].range.end, expected_pos);
     assert!(
-        edits[0].new_text.contains("private Object foo(Object... args)"),
+        edits[0]
+            .new_text
+            .contains("private Object foo(Object... args)"),
         "expected method stub; got {:?}",
         edits[0].new_text
     );
@@ -132,4 +134,3 @@ fn unresolved_field_offers_create_field_quick_fix() {
     let final_brace = updated.rfind('}').expect("updated closing brace");
     assert!(stub_idx < final_brace, "expected stub before final brace");
 }
-

@@ -3895,7 +3895,8 @@ fn collect_method_candidates(
                         let current_owner = def;
                         let existing_owner_ty = Type::class(existing_owner, vec![]);
                         let current_owner_ty = Type::class(current_owner, vec![]);
-                        let existing_is_subtype = is_subtype(env, &existing_owner_ty, &current_owner_ty);
+                        let existing_is_subtype =
+                            is_subtype(env, &existing_owner_ty, &current_owner_ty);
 
                         // Preserve override/hiding semantics: if the existing declaration comes
                         // from a more specific type, keep it (even if it is non-generic).
@@ -3939,7 +3940,8 @@ fn collect_method_candidates(
                                 &out[existing].class_subst,
                             );
                             let current_return = substitute(&method.return_type, &subst);
-                            out[existing].method.return_type = glb(env, &existing_return, &current_return);
+                            out[existing].method.return_type =
+                                glb(env, &existing_return, &current_return);
                             continue;
                         }
 

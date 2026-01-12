@@ -2,7 +2,9 @@ use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use nova_index::{CandidateStrategy, IndexSymbolKind, SearchSymbol, SymbolLocation, SymbolSearchIndex};
+use nova_index::{
+    CandidateStrategy, IndexSymbolKind, SearchSymbol, SymbolLocation, SymbolSearchIndex,
+};
 
 const SYMBOL_COUNT: usize = 100_000;
 const LIMIT: usize = 100;
@@ -148,7 +150,8 @@ fn bench_symbol_search(c: &mut Criterion) {
     let symbols_qualified = synthetic_symbols(SYMBOL_COUNT, QualifiedNameMode::WithPackagePrefix);
     let index_qualified = SymbolSearchIndex::build(symbols_qualified);
 
-    let full_scan_equal = synthetic_symbols_full_scan_many(SYMBOL_COUNT, QualifiedNameMode::EqualToName);
+    let full_scan_equal =
+        synthetic_symbols_full_scan_many(SYMBOL_COUNT, QualifiedNameMode::EqualToName);
     let full_scan_index_equal = SymbolSearchIndex::build(full_scan_equal);
 
     let full_scan_qualified =
@@ -284,7 +287,9 @@ fn bench_symbol_search(c: &mut Criterion) {
         full_scan_group.bench_with_input(
             BenchmarkId::new("full_scan_z_many_matches", label),
             index,
-            |b, index| b.iter(|| black_box(index.search_with_stats(black_box("z"), black_box(LIMIT)))),
+            |b, index| {
+                b.iter(|| black_box(index.search_with_stats(black_box("z"), black_box(LIMIT))))
+            },
         );
     }
 

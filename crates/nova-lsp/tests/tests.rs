@@ -27,6 +27,8 @@ mod extract_method;
 mod file_operations;
 #[path = "suite/framework_analyzer_registry_integration.rs"]
 mod framework_analyzer_registry_integration;
+#[path = "suite/framework_analyzer_registry_integration.rs"]
+mod framework_analyzer_registry_integration;
 #[path = "suite/ide_extensions_completion.rs"]
 mod ide_extensions_completion;
 #[path = "suite/ide_extensions_navigation.rs"]
@@ -41,8 +43,6 @@ mod mapstruct_goto_definition;
 mod mapstruct_implementation;
 #[path = "suite/metrics.rs"]
 mod metrics;
-#[path = "suite/framework_analyzer_registry_integration.rs"]
-mod framework_analyzer_registry_integration;
 #[path = "suite/micronaut_extensions.rs"]
 mod micronaut_extensions;
 #[path = "suite/navigation.rs"]
@@ -78,8 +78,6 @@ mod stdio_document_symbol;
 mod stdio_extract_method;
 #[path = "suite/stdio_hierarchy.rs"]
 mod stdio_hierarchy;
-#[path = "suite/stdio_type_hierarchy.rs"]
-mod stdio_type_hierarchy;
 #[path = "suite/stdio_hover_signature_help.rs"]
 mod stdio_hover_signature_help;
 #[path = "suite/stdio_hover_signature_references.rs"]
@@ -118,6 +116,8 @@ mod stdio_safe_mode_enforcement;
 mod stdio_semantic_tokens;
 #[path = "suite/stdio_server.rs"]
 mod stdio_server;
+#[path = "suite/stdio_type_hierarchy.rs"]
+mod stdio_type_hierarchy;
 #[path = "suite/stdio_utf16_refactors.rs"]
 mod stdio_utf16_refactors;
 #[path = "suite/stdio_will_save.rs"]

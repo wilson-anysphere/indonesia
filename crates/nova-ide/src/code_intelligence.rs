@@ -1078,16 +1078,11 @@ pub(crate) fn with_salsa_snapshot_for_single_file<T>(
     // back to a best-effort single-file Salsa DB seeded with `text`.
     if let Some(salsa) = db.salsa_db() {
         let snap = salsa.snapshot();
-        let file_is_known = snap
-            .all_file_ids()
-            .as_ref()
-            .binary_search(&file)
-            .is_ok();
+        let file_is_known = snap.all_file_ids().as_ref().binary_search(&file).is_ok();
         if file_is_known {
-            let exists = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                snap.file_exists(file)
-            }))
-            .ok();
+            let exists =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| snap.file_exists(file)))
+                    .ok();
 
             match exists {
                 Some(true) => {
@@ -10380,7 +10375,10 @@ fn best_effort_binary_name_for_imported_type(jdk: &JdkIndex, source: &str) -> St
         return String::new();
     }
 
-    if jdk.resolve_type(&QualifiedName::from_dotted(source)).is_some() {
+    if jdk
+        .resolve_type(&QualifiedName::from_dotted(source))
+        .is_some()
+    {
         return source.to_string();
     }
 
@@ -11570,7 +11568,11 @@ fn static_import_bonus(item: &CompletionItem) -> i32 {
         return 0;
     };
 
-    if is_static { 5 } else { 0 }
+    if is_static {
+        5
+    } else {
+        0
+    }
 }
 
 // -----------------------------------------------------------------------------

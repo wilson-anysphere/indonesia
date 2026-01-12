@@ -3357,7 +3357,11 @@ interface J extends I {}
 "#
     .to_string();
 
-    let (db, file, pos) = fixture_multi(main_path, main_text, vec![(i_path, i_text), (j_path, j_text)]);
+    let (db, file, pos) = fixture_multi(
+        main_path,
+        main_text,
+        vec![(i_path, i_text), (j_path, j_text)],
+    );
 
     let loc = goto_definition(&db, file, pos).expect("expected definition location");
     assert!(
@@ -3393,7 +3397,11 @@ interface I1 extends I0 {}
 "#
     .to_string();
 
-    let (db, file, pos) = fixture_multi(main_path, main_text, vec![(i0_path, i0_text), (i1_path, i1_text)]);
+    let (db, file, pos) = fixture_multi(
+        main_path,
+        main_text,
+        vec![(i0_path, i0_text), (i1_path, i1_text)],
+    );
 
     let loc = goto_definition(&db, file, pos).expect("expected definition location");
     assert!(
@@ -4961,7 +4969,9 @@ fn diagnostics_include_language_level_feature_gate() {
 
     let diags = file_diagnostics(&db, file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "JAVA_FEATURE_RECORDS"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "JAVA_FEATURE_RECORDS"),
         "expected JAVA_FEATURE_RECORDS diagnostic; got {diags:#?}"
     );
 }

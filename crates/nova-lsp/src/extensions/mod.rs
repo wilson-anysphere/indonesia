@@ -1,8 +1,8 @@
 pub mod apt;
 pub mod build;
 mod config;
-mod gradle;
 pub mod debug;
+mod gradle;
 pub mod java;
 pub mod micronaut;
 pub mod project;

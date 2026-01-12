@@ -1795,8 +1795,7 @@ fn stdio_server_ai_generate_method_body_sends_apply_edit() {
                 .and_then(|p| p.get("edit"))
                 .expect("applyEdit params.edit");
             assert_eq!(
-                result_edit,
-                apply_edit_value,
+                result_edit, apply_edit_value,
                 "expected executeCommand result.edit to match applyEdit edit"
             );
         }
@@ -2016,8 +2015,7 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
                 .and_then(|p| p.get("edit"))
                 .expect("applyEdit params.edit");
             assert_eq!(
-                result_edit,
-                apply_edit_value,
+                result_edit, apply_edit_value,
                 "expected executeCommand result.edit to match applyEdit edit"
             );
         }

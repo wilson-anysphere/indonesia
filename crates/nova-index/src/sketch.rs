@@ -2004,7 +2004,7 @@ pub fn normalize_type_signature(text: &str) -> String {
     // We intentionally do *not* attempt to fully parse Java types here; this is a best-effort
     // lexical normalization.
     fn no_space_around(ch: char) -> bool {
-        matches!(ch, '<' | '>' | ',' | '[' | ']' | '.' )
+        matches!(ch, '<' | '>' | ',' | '[' | ']' | '.')
     }
 
     let mut out = String::with_capacity(collapsed.len());

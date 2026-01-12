@@ -275,7 +275,10 @@ fn stdio_definition_into_jdk_resolves_nested_type_imports() {
     };
     assert_eq!(uri, expected_uri);
 
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "id": 5, "method": "shutdown" }));
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 5, "method": "shutdown" }),
+    );
     let _shutdown_resp = read_response_with_id(&mut stdout, 5);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);

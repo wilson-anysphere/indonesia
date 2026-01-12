@@ -190,10 +190,7 @@ public class ServiceImpl implements p.Service {}
         (impl_file.clone(), src_impl.to_string()),
     ]);
 
-    let offset = src_service
-        .find("interface Service")
-        .unwrap()
-        + "interface ".len();
+    let offset = src_service.find("interface Service").unwrap() + "interface ".len();
     let symbol = db
         .symbol_at(&service_file, offset)
         .expect("service type symbol");

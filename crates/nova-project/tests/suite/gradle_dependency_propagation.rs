@@ -83,4 +83,3 @@ fn gradle_root_subprojects_dependencies_propagate_into_modules() {
         );
     }
 }
-

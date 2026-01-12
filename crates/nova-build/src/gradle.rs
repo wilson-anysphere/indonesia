@@ -1169,10 +1169,10 @@ fn gradle_output_dir(project_root: &Path, project_path: Option<&str>) -> PathBuf
         if path == GRADLE_BUILDSRC_PROJECT_PATH {
             rel.push(GRADLE_BUILDSRC_PROJECT_DIR);
         } else {
-        let trimmed = path.trim_matches(':');
-        for part in trimmed.split(':').filter(|p| !p.is_empty()) {
-            rel.push(part);
-        }
+            let trimmed = path.trim_matches(':');
+            for part in trimmed.split(':').filter(|p| !p.is_empty()) {
+                rel.push(part);
+            }
         }
     }
 

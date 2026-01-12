@@ -9,11 +9,11 @@ use nova_refactor::{
     change_signature as refactor_change_signature, convert_to_record, extract_variable,
     inline_variable, move_method as refactor_move_method,
     move_static_member as refactor_move_static_member, safe_delete, workspace_edit_to_lsp,
-    workspace_edit_to_lsp_with_uri_mapper, ChangeSignature, ConvertToRecordError,
+    workspace_edit_to_lsp_with_uri_mapper, ChangeSignature, Conflict, ConvertToRecordError,
     ConvertToRecordOptions, ExtractVariableParams, FileId, InlineVariableParams, JavaSymbolKind,
     MoveMethodParams as RefactorMoveMethodParams,
     MoveStaticMemberParams as RefactorMoveStaticMemberParams, RefactorDatabase,
-    RefactorJavaDatabase, SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget, Conflict,
+    RefactorJavaDatabase, SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget,
     SemanticRefactorError, TextDatabase, WorkspaceTextRange,
 };
 use schemars::schema::RootSchema;

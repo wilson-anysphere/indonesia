@@ -3451,7 +3451,11 @@ fn retain_dependencies_not_in(deps: &mut Vec<Dependency>, remove: &[Dependency])
     if deps.is_empty() || remove.is_empty() {
         return;
     }
-    deps.retain(|dep| !remove.iter().any(|other| same_dependency_identity(dep, other)));
+    deps.retain(|dep| {
+        !remove
+            .iter()
+            .any(|other| same_dependency_identity(dep, other))
+    });
 }
 
 fn canonicalize_or_fallback(path: &Path) -> PathBuf {
@@ -3940,8 +3944,9 @@ dependencies {
     testImplementation(libs.bundles["test"].get())
  }
 "#;
- 
-        let deps = parse_gradle_dependencies_from_text(build_script, Some(&catalog), &gradle_properties);
+
+        let deps =
+            parse_gradle_dependencies_from_text(build_script, Some(&catalog), &gradle_properties);
         let got: BTreeSet<_> = deps
             .into_iter()
             .map(|d| (d.group_id, d.artifact_id, d.version, d.scope))

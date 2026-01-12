@@ -39,7 +39,10 @@ fn rename_method_allows_expanding_overload_set() {
         after.contains("void m() { bar(1); }"),
         "expected call site to be renamed: {after}"
     );
-    assert!(!after.contains("foo("), "expected no remaining foo() calls: {after}");
+    assert!(
+        !after.contains("foo("),
+        "expected no remaining foo() calls: {after}"
+    );
 }
 
 #[test]

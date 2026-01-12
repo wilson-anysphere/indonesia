@@ -54,4 +54,3 @@ class B {
     let after_third = nova_ide::__nav_resolve_workspace_index_build_count(&db);
     assert_eq!(after_third, after_second + 1);
 }
-

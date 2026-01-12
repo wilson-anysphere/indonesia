@@ -1061,7 +1061,8 @@ class C { void m(){ assert 1; } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter()
+        diags
+            .iter()
             .any(|d| d.code.as_ref() == "assert-condition-not-boolean"),
         "expected assert-condition-not-boolean diagnostic; got {diags:?}"
     );
@@ -1076,7 +1077,8 @@ class C { void m(){ String s = "x"; assert s.isEmpty() : s.length(); } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter()
+        diags
+            .iter()
             .all(|d| d.code.as_ref() != "invalid-statement-expression"),
         "expected no invalid-statement-expression diagnostics; got {diags:?}"
     );
@@ -3298,7 +3300,9 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "unresolved-constructor"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "unresolved-constructor"),
         "expected ArrayList(int) ctor to resolve in minimal JDK; got {diags:?}"
     );
 

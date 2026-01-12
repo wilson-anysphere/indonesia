@@ -520,12 +520,8 @@ impl RefactorJavaDatabase {
             scopes.insert(*file_id, scope_result);
         }
 
-        let (type_supertypes, type_subtypes) = build_type_hierarchy(
-            &file_ids,
-            &item_trees,
-            &scopes,
-            &resolver,
-        );
+        let (type_supertypes, type_subtypes) =
+            build_type_hierarchy(&file_ids, &item_trees, &scopes, &resolver);
 
         candidates.sort_by(|a, b| {
             a.file
@@ -1241,9 +1237,24 @@ fn build_type_hierarchy(
                     .map(|s| s.as_str())
                     .collect()
             }
-            ItemId::Interface(id) => tree.interface(id).extends.iter().map(|s| s.as_str()).collect(),
-            ItemId::Enum(id) => tree.enum_(id).implements.iter().map(|s| s.as_str()).collect(),
-            ItemId::Record(id) => tree.record(id).implements.iter().map(|s| s.as_str()).collect(),
+            ItemId::Interface(id) => tree
+                .interface(id)
+                .extends
+                .iter()
+                .map(|s| s.as_str())
+                .collect(),
+            ItemId::Enum(id) => tree
+                .enum_(id)
+                .implements
+                .iter()
+                .map(|s| s.as_str())
+                .collect(),
+            ItemId::Record(id) => tree
+                .record(id)
+                .implements
+                .iter()
+                .map(|s| s.as_str())
+                .collect(),
             ItemId::Annotation(_) => Vec::new(),
         };
 
@@ -1251,8 +1262,8 @@ fn build_type_hierarchy(
             let Some(path) = parse_type_name_for_hierarchy(super_text) else {
                 continue;
             };
-            let Some(TypeResolution::Source(super_item)) =
-                resolver.resolve_qualified_type_resolution_in_scope(
+            let Some(TypeResolution::Source(super_item)) = resolver
+                .resolve_qualified_type_resolution_in_scope(
                     &scope_result.scopes,
                     decl_scope,
                     &path,
@@ -2395,7 +2406,8 @@ fn record_body_references(
                 let path = qualified_name_for_field_access(body, *receiver, name.as_str())?;
                 let root = path.segments().first()?;
 
-                if let Some(root_resolved) = resolver.resolve_name(&scope_result.scopes, scope, root)
+                if let Some(root_resolved) =
+                    resolver.resolve_name(&scope_result.scopes, scope, root)
                 {
                     // If the root segment is a value, this is an expression (`obj.foo`), not a
                     // type/package qualification (`p.Foo`), so we can't safely treat it as a type.
@@ -3831,11 +3843,13 @@ fn record_qualified_receiver_member_references(
             .and_then(|item| scope_result.class_scopes.get(&item).copied())
             .unwrap_or(scope_result.file_scope);
 
-        let Some(TypeResolution::Source(item)) = resolver.resolve_qualified_type_resolution_in_scope(
-            &scope_result.scopes,
-            start_scope,
-            &qual_path,
-        ) else {
+        let Some(TypeResolution::Source(item)) = resolver
+            .resolve_qualified_type_resolution_in_scope(
+                &scope_result.scopes,
+                start_scope,
+                &qual_path,
+            )
+        else {
             continue;
         };
 
@@ -3883,11 +3897,13 @@ fn record_qualified_receiver_member_references(
             .and_then(|item| scope_result.class_scopes.get(&item).copied())
             .unwrap_or(scope_result.file_scope);
 
-        let Some(TypeResolution::Source(item)) = resolver.resolve_qualified_type_resolution_in_scope(
-            &scope_result.scopes,
-            start_scope,
-            &qual_path,
-        ) else {
+        let Some(TypeResolution::Source(item)) = resolver
+            .resolve_qualified_type_resolution_in_scope(
+                &scope_result.scopes,
+                start_scope,
+                &qual_path,
+            )
+        else {
             continue;
         };
 
@@ -3945,11 +3961,13 @@ fn record_qualified_receiver_member_references(
             .and_then(|item| scope_result.class_scopes.get(&item).copied())
             .unwrap_or(scope_result.file_scope);
 
-        let Some(TypeResolution::Source(item)) = resolver.resolve_qualified_type_resolution_in_scope(
-            &scope_result.scopes,
-            start_scope,
-            &qual_path,
-        ) else {
+        let Some(TypeResolution::Source(item)) = resolver
+            .resolve_qualified_type_resolution_in_scope(
+                &scope_result.scopes,
+                start_scope,
+                &qual_path,
+            )
+        else {
             continue;
         };
 

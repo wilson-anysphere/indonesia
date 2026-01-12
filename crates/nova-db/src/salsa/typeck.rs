@@ -3995,12 +3995,12 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 if !condition_ty.is_errorish() {
                     let env_ro: &dyn TypeEnv = &*loader.store;
                     if assignment_conversion(env_ro, &condition_ty, &Type::boolean()).is_none() {
-                    self.diagnostics.push(Diagnostic::error(
-                        "assert-condition-not-boolean",
-                        "assert condition must be boolean",
-                        Some(self.body.exprs[*condition].range()),
-                    ));
-                }
+                        self.diagnostics.push(Diagnostic::error(
+                            "assert-condition-not-boolean",
+                            "assert condition must be boolean",
+                            Some(self.body.exprs[*condition].range()),
+                        ));
+                    }
                 }
 
                 if let Some(expr) = message {

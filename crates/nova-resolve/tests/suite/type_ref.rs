@@ -977,15 +977,7 @@ fn type_use_annotation_missing_type_is_not_diagnosed_without_base_span() {
     let type_vars = HashMap::new();
 
     let text = "List<@Missing String>";
-    let result = resolve_type_ref_text(
-        &resolver,
-        &scopes,
-        scope,
-        &env,
-        &type_vars,
-        text,
-        None,
-    );
+    let result = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, text, None);
     assert!(
         !result
             .diagnostics

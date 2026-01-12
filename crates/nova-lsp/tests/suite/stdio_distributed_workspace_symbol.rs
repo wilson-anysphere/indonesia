@@ -289,7 +289,14 @@ fn stdio_server_distributed_router_refreshes_on_did_change_watched_files() {
     );
 
     let mut next_id = 2i64;
-    wait_for_symbol(&mut stdin, &mut stdout, &mut next_id, "Foo", "Foo", &file_uri);
+    wait_for_symbol(
+        &mut stdin,
+        &mut stdout,
+        &mut next_id,
+        "Foo",
+        "Foo",
+        &file_uri,
+    );
 
     std::fs::write(
         &file_path,
@@ -313,7 +320,14 @@ fn stdio_server_distributed_router_refreshes_on_did_change_watched_files() {
             "params": { "changes": [{ "uri": file_uri, "type": 2 }] }
         }),
     );
-    wait_for_symbol(&mut stdin, &mut stdout, &mut next_id, "Baz", "Baz", &file_uri);
+    wait_for_symbol(
+        &mut stdin,
+        &mut stdout,
+        &mut next_id,
+        "Baz",
+        "Baz",
+        &file_uri,
+    );
 
     std::fs::remove_file(&file_path).expect("delete java file");
     write_jsonrpc_message(
@@ -325,8 +339,22 @@ fn stdio_server_distributed_router_refreshes_on_did_change_watched_files() {
         }),
     );
 
-    wait_for_symbol_absent(&mut stdin, &mut stdout, &mut next_id, "Foo", "Foo", &file_uri);
-    wait_for_symbol_absent(&mut stdin, &mut stdout, &mut next_id, "Baz", "Baz", &file_uri);
+    wait_for_symbol_absent(
+        &mut stdin,
+        &mut stdout,
+        &mut next_id,
+        "Foo",
+        "Foo",
+        &file_uri,
+    );
+    wait_for_symbol_absent(
+        &mut stdin,
+        &mut stdout,
+        &mut next_id,
+        "Baz",
+        "Baz",
+        &file_uri,
+    );
 
     write_jsonrpc_message(
         &mut stdin,

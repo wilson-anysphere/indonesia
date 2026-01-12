@@ -1,6 +1,4 @@
-use nova_refactor::{
-    apply_workspace_edit, rename, FileId, RefactorJavaDatabase, RenameParams,
-};
+use nova_refactor::{apply_workspace_edit, rename, FileId, RefactorJavaDatabase, RenameParams};
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
 
@@ -42,7 +40,9 @@ fn rename_method_renames_overrides_from_base() {
 
     let base_src = files.get(&base_file).unwrap();
     let offset = base_src.find("process").unwrap() + 1;
-    let symbol = db.symbol_at(&base_file, offset).expect("Base.process symbol");
+    let symbol = db
+        .symbol_at(&base_file, offset)
+        .expect("Base.process symbol");
 
     let edit = rename(
         &db,
@@ -122,4 +122,3 @@ fn rename_method_renames_overrides_from_derived() {
         "expected Derived call site updated:\n{updated_use}"
     );
 }
-

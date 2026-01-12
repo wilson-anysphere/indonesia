@@ -1480,7 +1480,9 @@ impl Lowerer {
             //
             // The Java grammar restricts explicit constructor invocations to constructors, but
             // semantic layers need to handle (and diagnose) misplaced invocations too.
-            SyntaxKind::ExplicitConstructorInvocation => Some(ast::Stmt::Expr(self.lower_expr_stmt(node))),
+            SyntaxKind::ExplicitConstructorInvocation => {
+                Some(ast::Stmt::Expr(self.lower_expr_stmt(node)))
+            }
             SyntaxKind::AssertStatement => Some(ast::Stmt::Assert(self.lower_assert_stmt(node))),
             SyntaxKind::ReturnStatement => Some(ast::Stmt::Return(self.lower_return_stmt(node))),
             SyntaxKind::Block => Some(ast::Stmt::Block(self.lower_block(node))),

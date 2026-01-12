@@ -493,7 +493,8 @@ fn has_gradle_build(dir: &Path) -> bool {
 fn is_included_build_root(settings_root: &Path) -> bool {
     // `load_project*` starts from a canonical path, but keep this best-effort and fall back to the
     // raw path when canonicalization fails (e.g. broken symlinks).
-    let canonical_root = std::fs::canonicalize(settings_root).unwrap_or_else(|_| settings_root.to_path_buf());
+    let canonical_root =
+        std::fs::canonicalize(settings_root).unwrap_or_else(|_| settings_root.to_path_buf());
 
     let mut ancestor = settings_root.parent();
     while let Some(dir) = ancestor {

@@ -668,10 +668,9 @@ fn load_build_metadata(params: &NovaProjectParams) -> BuildMetadata {
         }
         BuildKind::Gradle => {
             if let Some(project_path) = params.project_path.as_deref() {
-                if let Some(root) = super::gradle::resolve_gradle_module_root(
-                    &project.workspace_root,
-                    project_path,
-                ) {
+                if let Some(root) =
+                    super::gradle::resolve_gradle_module_root(&project.workspace_root, project_path)
+                {
                     vec![root]
                 } else {
                     project.modules.iter().map(|m| m.root.clone()).collect()
@@ -2041,11 +2040,7 @@ mod tests {
 
         let metadata = load_build_metadata(&params);
         let expected = src_root.canonicalize().unwrap();
-        let actual: Vec<PathBuf> = metadata
-            .source_roots
-            .iter()
-            .map(PathBuf::from)
-            .collect();
+        let actual: Vec<PathBuf> = metadata.source_roots.iter().map(PathBuf::from).collect();
 
         assert!(
             actual.iter().any(|root| *root == expected),

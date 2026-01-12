@@ -238,7 +238,10 @@ fn java_compile_config_for_buildsrc_uses_project_dir_flag_and_root_task() {
     );
 
     // Nova task should be invoked at the root of the nested build (no `:__buildSrc:` prefix).
-    assert_eq!(args.last().map(String::as_str), Some("printNovaJavaCompileConfig"));
+    assert_eq!(
+        args.last().map(String::as_str),
+        Some("printNovaJavaCompileConfig")
+    );
     assert!(!args
         .iter()
         .any(|arg| arg == ":__buildSrc:printNovaJavaCompileConfig"));

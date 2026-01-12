@@ -119,4 +119,3 @@ fn file_diagnostics_reuse_caller_salsa_db_for_cross_file_imports() {
         "expected cross-file import to resolve when reusing caller salsa db, got: {diagnostics:?}"
     );
 }
-

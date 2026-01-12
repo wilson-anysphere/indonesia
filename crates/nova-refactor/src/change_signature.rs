@@ -688,11 +688,9 @@ fn detect_overload_collisions(
     let old_param_types = method_param_types_for_signature(index, method);
     let new_param_types =
         compute_new_param_types_for_signature(&old_param_types, &change.parameters);
-    let Some(collides_with) = index.method_symbol_id_by_signature(
-        &method.class,
-        &new_name,
-        &new_param_types,
-    ) else {
+    let Some(collides_with) =
+        index.method_symbol_id_by_signature(&method.class, &new_name, &new_param_types)
+    else {
         return;
     };
     let collides_with = MethodId(collides_with.0);

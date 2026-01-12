@@ -4964,11 +4964,7 @@ fn goto_definition_jdk(
                         if !looks_like_type_name(receiver) {
                             return None;
                         }
-                        if !ident
-                            .chars()
-                            .next()
-                            .is_some_and(|c| c.is_ascii_uppercase())
-                        {
+                        if !ident.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
                             return None;
                         }
                         let receiver_stub = receiver_stub.as_ref()?;
@@ -8704,7 +8700,8 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
     let source_file = Some(file.clone());
 
     let mut workspace_files = vec![(file.clone(), source)];
-    if let (Some(project_root), Some(test_file)) = (state.project_root.as_deref(), derived_test_file)
+    if let (Some(project_root), Some(test_file)) =
+        (state.project_root.as_deref(), derived_test_file)
     {
         if test_file != file {
             let test_abs_path = project_root.join(Path::new(&test_file));
@@ -8753,11 +8750,12 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
             (-32603, err.to_string())
         })?;
 
-    let result = apply_code_action_outcome(outcome, "AI: Generate tests", state, rpc_out)
-        .map_err(|err| {
+    let result = apply_code_action_outcome(outcome, "AI: Generate tests", state, rpc_out).map_err(
+        |err| {
             let _ = send_progress_end(rpc_out, work_done_token.as_ref(), "AI request failed");
             err
-        })?;
+        },
+    )?;
     send_progress_end(rpc_out, work_done_token.as_ref(), "Done")?;
     if work_done_token.is_some() {
         Ok(result)
@@ -8786,7 +8784,7 @@ fn apply_code_action_outcome<O: RpcOut>(
                         "edit": edit.clone(),
                     }),
                 )
-            .map_err(|e| (-32603, e.to_string()))?;
+                .map_err(|e| (-32603, e.to_string()))?;
 
             // LSP clients generally ignore the `workspace/executeCommand` result for
             // edit-producing commands; tests and existing integrations expect `null`.

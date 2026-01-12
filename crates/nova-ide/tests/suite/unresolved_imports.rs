@@ -2,7 +2,9 @@ use lsp_types::{CodeActionKind, CodeActionOrCommand, NumberOrString};
 use nova_config::NovaConfig;
 use nova_db::InMemoryFileStore;
 use nova_ext::{ProjectId, Span};
-use nova_ide::{code_action::diagnostic_quick_fixes, extensions::IdeExtensions, file_diagnostics_lsp};
+use nova_ide::{
+    code_action::diagnostic_quick_fixes, extensions::IdeExtensions, file_diagnostics_lsp,
+};
 use nova_refactor::position_to_offset_utf16;
 use nova_scheduler::CancellationToken;
 use std::path::PathBuf;

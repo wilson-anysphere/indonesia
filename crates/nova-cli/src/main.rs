@@ -39,8 +39,9 @@ use nova_workspace::{
 use serde::Serialize;
 use std::{
     collections::BTreeMap,
-    env, fs,
+    env,
     ffi::OsStr,
+    fs,
     path::{Path, PathBuf},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},

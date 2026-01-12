@@ -56,10 +56,16 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("modules/application")).unwrap();
 
         let resolved = resolve_gradle_module_root(dir.path(), ":app").expect("module root");
-        let expected = dir.path().join("modules/application").canonicalize().unwrap();
+        let expected = dir
+            .path()
+            .join("modules/application")
+            .canonicalize()
+            .unwrap();
 
         assert_eq!(resolved, expected);
-        assert_eq!(resolved.file_name().and_then(|s| s.to_str()), Some("application"));
+        assert_eq!(
+            resolved.file_name().and_then(|s| s.to_str()),
+            Some("application")
+        );
     }
 }
-

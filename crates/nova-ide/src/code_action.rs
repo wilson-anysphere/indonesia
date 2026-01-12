@@ -153,8 +153,7 @@ fn create_symbol_quick_fixes(
         None => return Vec::new(),
     };
 
-    let Some(name) =
-        crate::quick_fixes::unresolved_member_name(&diagnostic.message, source, span)
+    let Some(name) = crate::quick_fixes::unresolved_member_name(&diagnostic.message, source, span)
     else {
         return Vec::new();
     };
@@ -223,10 +222,7 @@ fn lsp_range_to_span(source: &str, range: &Range) -> Option<Span> {
     let (start_pos, end_pos) = normalize_range(range);
     let start_offset = crate::text::position_to_offset(source, start_pos)?;
     let end_offset = crate::text::position_to_offset(source, end_pos)?;
-    let (start_offset, end_offset) = (
-        start_offset.min(end_offset),
-        start_offset.max(end_offset),
-    );
+    let (start_offset, end_offset) = (start_offset.min(end_offset), start_offset.max(end_offset));
     Some(Span::new(start_offset, end_offset))
 }
 

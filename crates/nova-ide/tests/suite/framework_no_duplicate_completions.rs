@@ -79,11 +79,13 @@ public interface CarMapper {
     let ide = ide_with_default_registry(Arc::clone(&db));
 
     let items = ide.completions(CancellationToken::new(), mapper_file, caret_offset);
-    let count = items.iter().filter(|item| item.label == "seatCount").count();
+    let count = items
+        .iter()
+        .filter(|item| item.label == "seatCount")
+        .count();
 
     assert_eq!(
         count, 1,
         "expected exactly one seatCount completion item; got {items:#?}"
     );
 }
-

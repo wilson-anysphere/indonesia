@@ -1996,7 +1996,10 @@ fn expand_maven_user_home_placeholder(value: &str) -> Option<PathBuf> {
     }
 
     // Accept both separators so configs remain portable.
-    let rest = rest.strip_prefix('/').or_else(|| rest.strip_prefix('\\')).unwrap_or(rest);
+    let rest = rest
+        .strip_prefix('/')
+        .or_else(|| rest.strip_prefix('\\'))
+        .unwrap_or(rest);
     if rest.contains("${") {
         // If there are any remaining placeholders, bail out rather than guessing.
         return None;

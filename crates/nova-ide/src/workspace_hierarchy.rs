@@ -286,7 +286,9 @@ impl WorkspaceHierarchyIndex {
 
         // Java method lookup prefers the superclass chain over interfaces.
         if let Some(super_name) = type_info.def.super_class.as_deref() {
-            if let Some(found) = self.resolve_method_definition_inner(super_name, method_name, visited) {
+            if let Some(found) =
+                self.resolve_method_definition_inner(super_name, method_name, visited)
+            {
                 return Some(found);
             }
         }

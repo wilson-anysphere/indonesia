@@ -1331,7 +1331,9 @@ fn dedupe_code_actions_by_kind_and_title(actions: &mut Vec<lsp_types::CodeAction
     let mut seen: HashSet<(Option<lsp_types::CodeActionKind>, String)> = HashSet::new();
     actions.retain(|action| {
         let (kind, title) = match action {
-            lsp_types::CodeActionOrCommand::CodeAction(action) => (action.kind.clone(), action.title.clone()),
+            lsp_types::CodeActionOrCommand::CodeAction(action) => {
+                (action.kind.clone(), action.title.clone())
+            }
             lsp_types::CodeActionOrCommand::Command(command) => (None, command.title.clone()),
         };
         seen.insert((kind, title))

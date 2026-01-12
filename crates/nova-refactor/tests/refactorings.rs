@@ -2,8 +2,7 @@ use nova_refactor::{
     apply_text_edits, apply_workspace_edit, extract_variable, inline_variable, materialize, rename,
     Conflict, ExtractVariableParams, FileId, InlineVariableParams, JavaSymbolKind,
     RefactorDatabase, RefactorJavaDatabase, RenameParams, SemanticChange, SemanticRefactorError,
-    TextDatabase,
-    WorkspaceTextRange,
+    TextDatabase, WorkspaceTextRange,
 };
 use nova_test_utils::extract_range;
 use pretty_assertions::assert_eq;
@@ -1431,7 +1430,10 @@ fn extract_variable_use_var_false_errors_when_type_inference_unavailable() {
         matches!(err, SemanticRefactorError::TypeInferenceFailed),
         "expected TypeInferenceFailed error, got: {err:?}"
     );
-    assert_eq!(err.to_string(), "could not infer type for extracted expression");
+    assert_eq!(
+        err.to_string(),
+        "could not infer type for extracted expression"
+    );
 }
 
 #[test]

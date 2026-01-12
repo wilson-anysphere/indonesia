@@ -50,4 +50,3 @@ public interface MyMapper {}
         "expected no MapStruct diagnostics for a non-MapStruct @Mapper; got {diags:#?}"
     );
 }
-

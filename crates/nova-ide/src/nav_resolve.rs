@@ -416,7 +416,8 @@ impl WorkspaceIndex {
 
         // Prefer superclass lookup over interfaces (matches Java method lookup precedence).
         if let Some(super_name) = type_info.def.super_class.as_deref() {
-            if let Some(def) = self.resolve_method_definition_inner(super_name, method_name, visited)
+            if let Some(def) =
+                self.resolve_method_definition_inner(super_name, method_name, visited)
             {
                 return Some(def);
             }
