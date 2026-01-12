@@ -70,6 +70,7 @@ fn gradle_is_build_file_recognizes_expected_paths() {
         ".gradle/deps.versions.toml",
         // Lockfiles under ignored dirs should not be treated as build files.
         ".gradle/gradle.lockfile",
+        ".gradle/dependency-locks/compileClasspath.lockfile",
         // Additional version catalogs must be under `gradle/`.
         "deps.versions.toml",
         "build/deps.versions.toml",
