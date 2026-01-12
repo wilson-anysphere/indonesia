@@ -72,8 +72,9 @@ The current v3 reference implementation (`crates/nova-remote-rpc`) defaults to:
 - Keepalive: there is no application-level heartbeat yet; idle connections rely on TCP / deployment
   infrastructure.
 
-Transport-level timeouts (handshake/TLS accept, plus per-RPC read/write timeouts) are enforced by
-the router/worker and are not currently user-configurable knobs.
+Transport-level timeouts (router handshake/TLS accept, plus per-RPC read/write timeouts) are
+enforced by the router and are not currently user-configurable knobs. `nova-worker` does not apply
+additional timeouts beyond those imposed by the underlying transport.
 
 v3 enforces hard limits to prevent OOM on untrusted inputs (negotiated `max_frame_len` /
 `max_packet_len`, plus additional application-level caps like a max file-text size). If indexing
