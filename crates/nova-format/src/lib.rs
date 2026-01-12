@@ -151,9 +151,11 @@ pub enum FormatStrategy {
     /// AST-aware formatter based on the rowan Java parser (`nova_syntax::parse_java`) with a
     /// token-walk formatter (`format_java_ast`).
     JavaTokenWalkAst,
-    /// Reserved for a future pretty-printer based on the Java AST.
+    /// Experimental doc-based pretty-printer based on the rowan Java AST.
     ///
-    /// For now this behaves the same as [`FormatStrategy::JavaTokenWalkAst`].
+    /// Formatting coverage is intentionally minimal (type brace blocks + verbatim fallback),
+    /// but it provides the extensible architecture needed for IntelliJ/google-java-format
+    /// quality in follow-up work.
     JavaPrettyAst,
 }
 

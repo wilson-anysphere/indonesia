@@ -905,6 +905,22 @@ class Foo {
 }
 
 #[test]
+fn pretty_indents_multiline_block_comments() {
+    let input = "class Foo{/*\n        first\n          second\n        */ int x;}\n";
+    let edits = edits_for_document_formatting_with_strategy(
+        input,
+        &FormatConfig::default(),
+        FormatStrategy::JavaPrettyAst,
+    );
+    let formatted = apply_text_edits(input, &edits).unwrap();
+
+    assert_eq!(
+        formatted,
+        "class Foo {\n    /*\n    first\n      second\n    */ int x;\n}\n"
+    );
+}
+
+#[test]
 fn pretty_preserves_newline_style_and_final_newline() {
     let input = "class Foo{int x;}\r\n";
     let edits = edits_for_document_formatting_with_strategy(

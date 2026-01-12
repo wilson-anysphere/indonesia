@@ -178,7 +178,21 @@ impl<'a> JavaPrettyFormatter<'a> {
                     if let Some(ws) = pending_ws.take() {
                         ws.flush(&mut parts);
                     }
-                    parts.push(fallback::byte_range(self.source, tok_start, tok_end));
+                    let token_doc = match tok.kind() {
+                        SyntaxKind::BlockComment | SyntaxKind::DocComment => {
+                            let text = self
+                                .source
+                                .get(tok_start as usize..tok_end as usize)
+                                .unwrap_or("");
+                            if crate::comment_printer::comment_contains_line_break(text) {
+                                fmt_multiline_comment(text, tok.kind())
+                            } else {
+                                fallback::byte_range(self.source, tok_start, tok_end)
+                            }
+                        }
+                        _ => fallback::byte_range(self.source, tok_start, tok_end),
+                    };
+                    parts.push(token_doc);
                     has_content = true;
                 }
             }
@@ -256,4 +270,72 @@ fn is_synthetic_missing(kind: SyntaxKind) -> bool {
             | SyntaxKind::MissingRBracket
             | SyntaxKind::MissingGreater
     )
+}
+
+fn fmt_multiline_comment<'a>(text: &'a str, kind: SyntaxKind) -> Doc<'a> {
+    match kind {
+        SyntaxKind::DocComment => fmt_multiline_doc_comment(text),
+        _ => fmt_multiline_block_comment(text),
+    }
+}
+
+fn fmt_multiline_block_comment<'a>(text: &'a str) -> Doc<'a> {
+    let lines = crate::comment_printer::split_lines(text);
+    if lines.is_empty() {
+        return Doc::text(text);
+    }
+
+    let common = crate::comment_printer::common_indent(lines.iter().skip(1).map(|l| l.text));
+
+    let mut parts: Vec<Doc<'a>> = Vec::with_capacity(lines.len() * 2);
+    parts.push(Doc::text(lines[0].text));
+
+    for idx in 1..lines.len() {
+        if lines[idx - 1].has_line_break {
+            parts.push(Doc::hardline());
+            let line = crate::comment_printer::trim_indent(lines[idx].text, common);
+            parts.push(Doc::text(line));
+        } else {
+            parts.push(Doc::text(lines[idx].text));
+        }
+    }
+
+    Doc::concat(parts)
+}
+
+fn fmt_multiline_doc_comment<'a>(text: &'a str) -> Doc<'a> {
+    let lines = crate::comment_printer::split_lines(text);
+    if lines.is_empty() {
+        return Doc::text(text);
+    }
+
+    let common = crate::comment_printer::common_indent(lines.iter().skip(1).map(|l| l.text));
+
+    let mut parts: Vec<Doc<'a>> = Vec::with_capacity(lines.len() * 3);
+    parts.push(Doc::text(lines[0].text));
+
+    for idx in 1..lines.len() {
+        if !lines[idx - 1].has_line_break {
+            parts.push(Doc::text(lines[idx].text));
+            continue;
+        }
+
+        parts.push(Doc::hardline());
+
+        let raw = crate::comment_printer::trim_indent(lines[idx].text, common);
+        if raw.trim().is_empty() {
+            continue;
+        }
+
+        let trimmed = raw.trim_start_matches([' ', '\t']);
+        if trimmed.starts_with("*/") {
+            parts.push(Doc::text(trimmed));
+        } else if trimmed.starts_with('*') {
+            parts.push(Doc::concat([Doc::text(" *"), Doc::text(&trimmed[1..])]));
+        } else {
+            parts.push(Doc::text(raw));
+        }
+    }
+
+    Doc::concat(parts)
 }
