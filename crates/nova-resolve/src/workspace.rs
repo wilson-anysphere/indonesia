@@ -63,6 +63,14 @@ impl WorkspaceDefMap {
         self.file_modules.get(&item.file())
     }
 
+    /// Iterate all unique binary type names known to this workspace map.
+    ///
+    /// The iteration order is unspecified; callers that need deterministic
+    /// ordering should sort by `TypeName::as_str()` (or call [`Self::iter_type_names`]).
+    pub fn all_type_names(&self) -> impl Iterator<Item = &TypeName> + '_ {
+        self.items_by_type_name.keys()
+    }
+
     /// Iterate all unique workspace type binary names in deterministic order.
     ///
     /// The returned iterator yields binary names (`java.lang.String`,
@@ -73,7 +81,7 @@ impl WorkspaceDefMap {
     /// workspace types into a project-level type environment without re-parsing
     /// every file.
     pub fn iter_type_names(&self) -> impl Iterator<Item = &TypeName> + '_ {
-        let mut names: Vec<&TypeName> = self.items_by_type_name.keys().collect();
+        let mut names: Vec<&TypeName> = self.all_type_names().collect();
         names.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         names.into_iter()
     }

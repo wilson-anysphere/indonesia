@@ -210,7 +210,7 @@ fn workspace_class_id_map(db: &dyn NovaResolve) -> Arc<WorkspaceClassIdMap> {
         let workspace = db.workspace_def_map(project);
         keys.extend(
             workspace
-                .iter_type_names()
+                .all_type_names()
                 .map(|name| (project, name.as_str().to_owned())),
         );
     }
