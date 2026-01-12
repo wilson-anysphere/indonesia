@@ -3513,10 +3513,19 @@ mod tests {
             panic!("expected expression statement");
         };
 
-        assert!(
-            matches!(expr_stmt.expr, ast::Expr::ArrayAccess(_)),
-            "expected array access expression"
-        );
+        let ast::Expr::ArrayAccess(access) = &expr_stmt.expr else {
+            panic!("expected array access expression");
+        };
+
+        let ast::Expr::Name(array) = access.array.as_ref() else {
+            panic!("expected array access receiver to be a name expression");
+        };
+        assert_eq!(array.name, "a");
+
+        let ast::Expr::IntLiteral(index) = access.index.as_ref() else {
+            panic!("expected array access index to be an int literal");
+        };
+        assert_eq!(index.value, "0");
     }
 
     #[test]
