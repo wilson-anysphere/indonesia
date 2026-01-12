@@ -25,6 +25,9 @@ fn stdio_server_handles_ai_explain_error_code_action() {
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
+        // Ensure a developer's environment doesn't disable AI for this test.
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
         .env("NOVA_AI_PROVIDER", "http")
         .env(
             "NOVA_AI_ENDPOINT",
@@ -211,6 +214,9 @@ fn stdio_server_ai_prompt_includes_project_and_semantic_context_when_root_is_ava
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
+        // Ensure a developer's environment doesn't disable AI for this test.
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
         .env("NOVA_AI_PROVIDER", "http")
         .env(
             "NOVA_AI_ENDPOINT",
@@ -357,6 +363,9 @@ fn stdio_server_chunks_long_ai_explain_error_log_messages() {
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
+        // Ensure a developer's environment doesn't disable AI for this test.
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
         .env("NOVA_AI_PROVIDER", "http")
         .env(
             "NOVA_AI_ENDPOINT",
@@ -563,6 +572,8 @@ completion_ranking = true
         .arg("--stdio")
         .arg("--config")
         .arg(&config_path)
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
         .env_remove("NOVA_AI_PROVIDER")
         .env_remove("NOVA_AI_ENDPOINT")
         .env_remove("NOVA_AI_MODEL")
@@ -663,6 +674,9 @@ fn stdio_server_extracts_utf16_ranges_for_ai_code_actions() {
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
+        // Ensure a developer's environment doesn't disable AI for this test.
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
         .env("NOVA_AI_PROVIDER", "http")
         .env(
             "NOVA_AI_ENDPOINT",
@@ -787,6 +801,9 @@ fn stdio_server_rejects_surrogate_pair_interior_ranges_for_ai_code_actions() {
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
+        // Ensure a developer's environment doesn't disable AI for this test.
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
         .env("NOVA_AI_PROVIDER", "http")
         .env(
             "NOVA_AI_ENDPOINT",

@@ -106,6 +106,9 @@ max_tokens = 64
         .arg("--stdio")
         .arg("--config")
         .arg(&config_path)
+        // Ensure a developer's environment doesn't disable AI for this test.
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
         // Avoid inheriting any legacy AI env config that would override the file.
         .env_remove("NOVA_AI_PROVIDER")
         .env_remove("NOVA_AI_ENDPOINT")
