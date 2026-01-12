@@ -183,7 +183,7 @@
     "viewsWelcome": [
       {
         "view": "novaFrameworks",
-        "contents": "Open a folder to see Nova framework info.\n\n[Open Folder](command:workbench.action.files.openFolder)",
+        "contents": "Open a folder to see the Nova Frameworks dashboard.\n\n[Open Folder](command:workbench.action.files.openFolder)",
         "when": "workspaceFolderCount == 0"
       },
       {
@@ -218,6 +218,11 @@
           "command": "nova.frameworks.refresh",
           "when": "view == novaFrameworks",
           "group": "navigation@1"
+        },
+        {
+          "command": "nova.frameworks.search",
+          "when": "view == novaFrameworks",
+          "group": "navigation@2"
         },
         {
           "command": "nova.refreshProjectExplorer",
