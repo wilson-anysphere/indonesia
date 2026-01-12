@@ -781,21 +781,26 @@ export function registerNovaBuildIntegration(
         .filter((t) => t.trim().length > 0);
 
       if (targets.length > 0) {
-        const picked = await vscode.window.showQuickPick(targets.map((t) => ({ label: t })), {
-          placeHolder: 'Select Bazel target to build',
-        });
+        const picked = await vscode.window.showQuickPick(
+          targets.map((t) => ({ label: t })),
+          { placeHolder: 'Select Bazel target to build' },
+          token,
+        );
         return picked?.label;
       }
     } catch {
       // Best-effort: fall back to manual input below.
     }
 
-    const raw = await vscode.window.showInputBox({
-      title: 'Nova: Build Project (Bazel)',
-      prompt: 'Enter Bazel target label to build',
-      placeHolder: '//java/com/example:lib',
-      ignoreFocusOut: true,
-    });
+    const raw = await vscode.window.showInputBox(
+      {
+        title: 'Nova: Build Project (Bazel)',
+        prompt: 'Enter Bazel target label to build',
+        placeHolder: '//java/com/example:lib',
+        ignoreFocusOut: true,
+      },
+      token,
+    );
     const trimmed = raw?.trim();
     return trimmed ? trimmed : undefined;
   };

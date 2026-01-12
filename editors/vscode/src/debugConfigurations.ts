@@ -137,7 +137,7 @@ async function addDebugConfigurationsFromLsp(request: NovaRequest, token?: vscod
   const folder =
     folders.length === 1
       ? folders[0]
-      : await pickWorkspaceFolder(folders, 'Select the workspace folder to update launch.json');
+      : await pickWorkspaceFolder(folders, 'Select the workspace folder to update launch.json', token);
   if (!folder) {
     return;
   }
@@ -198,6 +198,7 @@ async function addDebugConfigurationsFromLsp(request: NovaRequest, token?: vscod
 async function pickWorkspaceFolder(
   folders: readonly vscode.WorkspaceFolder[],
   placeHolder: string,
+  token?: vscode.CancellationToken,
 ): Promise<vscode.WorkspaceFolder | undefined> {
   const items = folders.map((folder) => ({
     label: folder.name,
@@ -205,6 +206,6 @@ async function pickWorkspaceFolder(
     folder,
   }));
 
-  const picked = await vscode.window.showQuickPick(items, { placeHolder });
+  const picked = await vscode.window.showQuickPick(items, { placeHolder }, token);
   return picked?.folder;
 }
