@@ -6891,6 +6891,81 @@ fn inline_variable_allowed_when_initializer_dependencies_are_not_written() {
 }
 
 #[test]
+fn inline_variable_rejected_when_initializer_dependency_is_written_inside_enclosing_loop() {
+    let file = FileId::new("Test.java");
+    let src = r#"class C {
+  void m(boolean cond) {
+    int x = 0;
+    int a = x;
+    while (cond) {
+      System.out.println(a);
+      x++;
+    }
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, SemanticRefactorError::InlineNotSupported),
+        "expected InlineNotSupported, got: {err:?}"
+    );
+}
+
+#[test]
+fn inline_variable_allowed_when_initializer_dependency_not_written_inside_enclosing_loop() {
+    let file = FileId::new("Test.java");
+    let src = r#"class C {
+  void m(boolean cond) {
+    int x = 0;
+    int a = x;
+    while (cond) {
+      System.out.println(a);
+    }
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class C {
+  void m(boolean cond) {
+    int x = 0;
+    while (cond) {
+      System.out.println(x);
+    }
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn inline_variable_wraps_cast_receiver() {
     let file = FileId::new("Test.java");
     let src = r#"class Foo { void m() {} }

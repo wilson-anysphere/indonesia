@@ -2660,6 +2660,11 @@ fn ensure_inline_variable_value_stable(
     }
 
     for usage in targets {
+        // Inline variables should not have cross-file references.
+        if usage.file != *file {
+            return Err(RefactorError::InlineNotSupported);
+        }
+
         let usage_start = usage.range.start;
         if usage_start <= decl_init_end {
             continue;
@@ -2672,6 +2677,32 @@ fn ensure_inline_variable_value_stable(
                         "`{name}` is written between the variable declaration and the inlined usage"
                     ),
                 });
+            }
+        }
+
+        // If the usage appears within a loop, inlining would re-evaluate the initializer on every
+        // iteration. Reject when any dependency referenced by the initializer is written anywhere
+        // inside the loop statement (including headers and bodies).
+        let name_expr = inline_variable_find_name_expr(parsed, usage.range)?;
+        for anc in name_expr.syntax().ancestors() {
+            let loop_range = if let Some(stmt) = ast::WhileStatement::cast(anc.clone()) {
+                Some(syntax_range(stmt.syntax()))
+            } else if let Some(stmt) = ast::DoWhileStatement::cast(anc.clone()) {
+                Some(syntax_range(stmt.syntax()))
+            } else if let Some(stmt) = ast::ForStatement::cast(anc.clone()) {
+                Some(syntax_range(stmt.syntax()))
+            } else {
+                None
+            };
+
+            let Some(loop_range) = loop_range else {
+                continue;
+            };
+
+            for (sym, _) in &deps {
+                if has_write_to_symbol_between(db, parsed, file, *sym, loop_range.start, loop_range.end)? {
+                    return Err(RefactorError::InlineNotSupported);
+                }
             }
         }
     }

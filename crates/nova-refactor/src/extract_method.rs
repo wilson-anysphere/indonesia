@@ -98,7 +98,8 @@ fn infer_type_at_offsets(
 ) -> Option<String> {
     for offset in offsets {
         let typeck = typeck.get_or_insert_with(|| typecheck_single_file(source));
-        let Some(ty) = type_at_offset_fully_qualified(&typeck.snapshot, typeck.file, offset as u32)
+        let Some(ty) =
+            type_at_offset_fully_qualified(&typeck.snapshot, typeck.file, offset as u32)
         else {
             continue;
         };
@@ -114,7 +115,6 @@ fn infer_type_at_offsets(
         } else {
             ty
         };
-
         if is_valid_signature_type_string(&ty) {
             return Some(ty);
         }
@@ -421,6 +421,14 @@ fn find_best_expr_in_stmt(
             }
             if let Some(finally) = finally {
                 find_best_expr_in_stmt(body, *finally, offset, owner, best);
+            }
+        }
+        HirStmt::Assert {
+            condition, message, ..
+        } => {
+            find_best_expr_in_expr(body, *condition, offset, owner, best);
+            if let Some(message) = message {
+                find_best_expr_in_expr(body, *message, offset, owner, best);
             }
         }
         HirStmt::Throw { expr, .. } => find_best_expr_in_expr(body, *expr, offset, owner, best),
