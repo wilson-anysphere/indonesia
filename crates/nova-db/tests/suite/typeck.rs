@@ -1725,6 +1725,42 @@ class C {
 }
 
 #[test]
+fn this_in_static_method_diagnostic_mentions_static_context() {
+    let src = r#"
+class C {
+  static Object m() {
+    return this;
+  }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.severity == Severity::Error && d.message.contains("static context")),
+        "expected `this` in static context to produce an error mentioning static context; got {diags:?}"
+    );
+}
+
+#[test]
+fn super_in_static_method_diagnostic_mentions_static_context() {
+    let src = r#"
+class C {
+  static Object m() {
+    return super;
+  }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.severity == Severity::Error && d.message.contains("static context")),
+        "expected `super` in static context to produce an error mentioning static context; got {diags:?}"
+    );
+}
+
+#[test]
 fn cross_file_type_reference_resolves_in_same_package() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
