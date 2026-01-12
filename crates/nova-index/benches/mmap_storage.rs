@@ -5,17 +5,37 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use nova_cache::{CacheConfig, CacheDir, ProjectSnapshot};
 use nova_index::{load_index_archives, load_indexes, save_indexes, ProjectIndexes, SymbolLocation};
 
+#[cfg(nova_index_has_indexed_symbol)]
+use nova_index::{IndexedSymbol, SymbolKind};
+
 fn build_symbol_index_entries(indexes: &mut ProjectIndexes, file: &str, count: usize) {
     for i in 0..count {
         let symbol = format!("Symbol{i:08}");
-        indexes.symbols.insert(
-            symbol,
-            SymbolLocation {
-                file: file.to_string(),
-                line: (i as u32) + 1,
-                column: 1,
-            },
-        );
+
+        let location = SymbolLocation {
+            file: file.to_string(),
+            line: (i as u32) + 1,
+            column: 1,
+        };
+
+        #[cfg(nova_index_has_indexed_symbol)]
+        {
+            indexes.symbols.insert(
+                symbol.clone(),
+                IndexedSymbol {
+                    qualified_name: symbol,
+                    kind: SymbolKind::Class,
+                    container_name: None,
+                    ast_id: i as u32,
+                    location,
+                },
+            );
+        }
+
+        #[cfg(not(nova_index_has_indexed_symbol))]
+        {
+            indexes.symbols.insert(symbol, location);
+        }
     }
 }
 
