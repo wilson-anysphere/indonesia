@@ -197,15 +197,22 @@ impl ClasspathEntry {
                 kind: ModuleNameKind::None,
             }),
             ClasspathEntry::Jar(path) => jar_module_meta(path),
-            ClasspathEntry::Jmod(_) => match self.module_info()? {
+            ClasspathEntry::Jmod(path) => match self.module_info()? {
                 Some(info) => Ok(EntryModuleMeta {
                     name: Some(info.name),
                     kind: ModuleNameKind::Explicit,
                 }),
-                None => Ok(EntryModuleMeta {
-                    name: None,
-                    kind: ModuleNameKind::None,
-                }),
+                None => {
+                    // Best-effort: allow missing `.jmod` paths (e.g. user overrides) to still be
+                    // treated as automatic modules, derived from the filename.
+                    let name = derive_automatic_module_name_from_path(path);
+                    let kind = if name.is_some() {
+                        ModuleNameKind::Automatic
+                    } else {
+                        ModuleNameKind::None
+                    };
+                    Ok(EntryModuleMeta { name, kind })
+                }
             },
         }
     }
@@ -242,7 +249,22 @@ impl ClasspathEntry {
 }
 
 fn jar_module_meta(path: &Path) -> Result<EntryModuleMeta, ClasspathError> {
-    let file = std::fs::File::open(path)?;
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            // Best-effort: JPMS tooling can still assign an automatic module name based on the jar
+            // filename even when the archive hasn't been downloaded yet.
+            let name =
+                module_name::derive_automatic_module_name_from_jar_path(path).map(ModuleName::new);
+            let kind = if name.is_some() {
+                ModuleNameKind::Automatic
+            } else {
+                ModuleNameKind::None
+            };
+            return Ok(EntryModuleMeta { name, kind });
+        }
+        Err(err) => return Err(err.into()),
+    };
     let mut archive = zip::ZipArchive::new(file)?;
 
     for candidate in ["module-info.class", "META-INF/versions/9/module-info.class"] {
@@ -1429,7 +1451,11 @@ fn read_module_info_from_zip(
     path: &Path,
     kind: ZipKind,
 ) -> Result<Option<ModuleInfo>, ClasspathError> {
-    let file = std::fs::File::open(path)?;
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
     let mut archive = zip::ZipArchive::new(file)?;
 
     let candidates: &[&str] = match kind {
@@ -1505,7 +1531,11 @@ fn index_zip(
     stats: Option<&IndexingStats>,
     options: IndexOptions,
 ) -> Result<Vec<ClasspathClassStub>, ClasspathError> {
-    let file = std::fs::File::open(path)?;
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err.into()),
+    };
     let mut archive = zip::ZipArchive::new(file)?;
 
     match kind {
@@ -1982,11 +2012,41 @@ mod tests {
     }
 
     #[test]
+    fn module_info_returns_none_for_missing_jar() {
+        let tmp = TempDir::new().unwrap();
+        let missing = tmp.path().join("missing-1.2.3.jar");
+        let entry = ClasspathEntry::Jar(missing);
+        assert!(entry.module_info().unwrap().is_none());
+    }
+
+    #[test]
     fn module_meta_reports_explicit_named_module() {
         let entry = ClasspathEntry::Jar(test_named_module_jar());
         let meta = entry.module_meta().unwrap();
         assert_eq!(meta.kind, ModuleNameKind::Explicit);
         assert_eq!(meta.name.unwrap().as_str(), "example.mod");
+    }
+
+    #[test]
+    fn module_meta_derives_automatic_module_name_for_missing_jar() {
+        let tmp = TempDir::new().unwrap();
+        // Do not create the jar on disk; the module name should still be derivable from the
+        // filename (JPMS automatic module naming).
+        let missing = tmp.path().join("foo-bar-1.2.3.jar");
+        let entry = ClasspathEntry::Jar(missing);
+        let meta = entry.module_meta().unwrap();
+        assert_eq!(meta.kind, ModuleNameKind::Automatic);
+        assert_eq!(meta.name.unwrap().as_str(), "foo.bar");
+    }
+
+    #[test]
+    fn module_meta_derives_automatic_module_name_for_missing_jmod() {
+        let tmp = TempDir::new().unwrap();
+        let missing = tmp.path().join("foo-bar.JMOD");
+        let entry = ClasspathEntry::Jmod(missing);
+        let meta = entry.module_meta_for_module_path().unwrap();
+        assert_eq!(meta.kind, ModuleNameKind::Automatic);
+        assert_eq!(meta.name.unwrap().as_str(), "foo.bar");
     }
 
     #[test]
@@ -2007,6 +2067,24 @@ mod tests {
         let meta = entry.module_meta().unwrap();
         assert_eq!(meta.kind, ModuleNameKind::Automatic);
         assert_eq!(meta.name.unwrap().as_str(), "foo.bar.baz");
+    }
+
+    #[test]
+    fn module_aware_index_skips_missing_jar_entries() {
+        let tmp = TempDir::new().unwrap();
+        let deps_store = DependencyIndexStore::new(tmp.path().join("deps"));
+        let missing = tmp.path().join("missing-1.2.3.jar");
+
+        let index = ModuleAwareClasspathIndex::build_mixed_with_deps_store(
+            &[ClasspathEntry::Jar(missing)],
+            &[ClasspathEntry::Jar(test_jar())],
+            None,
+            Some(&deps_store),
+            None,
+        )
+        .unwrap();
+
+        assert!(index.types.lookup_binary("com.example.dep.Foo").is_some());
     }
 
     #[test]

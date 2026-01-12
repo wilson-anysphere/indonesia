@@ -267,6 +267,40 @@ mod tests {
     }
 
     #[test]
+    fn accepts_missing_module_path_archives() {
+        let tmp = TempDir::new().unwrap();
+        let jdk = JdkIndex::new();
+
+        // Do not create these archives on disk: build loaders can synthesize jar/jmod paths before
+        // downloading them. We should still be able to build a JPMS environment by deriving
+        // automatic module names from the filenames.
+        let missing_jar = tmp.path().join("missing-dep-1.2.3.jar");
+        let missing_jmod = tmp.path().join("missing-jmod.JMOD");
+
+        let module_path = vec![
+            ClasspathEntry::Jar(missing_jar.clone()),
+            ClasspathEntry::Jmod(missing_jmod.clone()),
+        ];
+
+        let env = build_jpms_environment(&jdk, None, &module_path).expect("build env");
+        let jar_mod = ModuleName::new("missing.dep");
+        let jmod_mod = ModuleName::new("missing.jmod");
+        assert!(env
+            .graph
+            .get(&jar_mod)
+            .is_some_and(|m| m.kind == ModuleKind::Automatic));
+        assert!(env
+            .graph
+            .get(&jmod_mod)
+            .is_some_and(|m| m.kind == ModuleKind::Automatic));
+
+        // The compilation environment should also build successfully (classpath indexing should
+        // not fail on missing archives).
+        build_jpms_compilation_environment(&jdk, None, &module_path, &[], None)
+            .expect("build compilation env");
+    }
+
+    #[test]
     fn builds_environment_from_jdk_workspace_and_module_path() {
         let tmp = TempDir::new().unwrap();
 
