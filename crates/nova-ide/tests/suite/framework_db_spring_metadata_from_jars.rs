@@ -15,6 +15,7 @@ fn write_metadata_jar(
     artifact: &str,
     version: &str,
     metadata_json: &str,
+    additional_metadata_json: &str,
 ) -> PathBuf {
     let mut jar_path = repo_root.to_path_buf();
     for seg in group.split('.') {
@@ -33,6 +34,13 @@ fn write_metadata_jar(
     )
     .expect("start metadata file");
     write!(jar, "{metadata_json}").expect("write metadata");
+
+    jar.start_file(
+        "META-INF/additional-spring-configuration-metadata.json",
+        FileOptions::<()>::default(),
+    )
+    .expect("start additional metadata file");
+    write!(jar, "{additional_metadata_json}").expect("write additional metadata");
     jar.finish().expect("finish jar");
 
     jar_path
@@ -71,7 +79,19 @@ fn spring_analyzer_sees_dependency_metadata_via_framework_db_synthetic_files() {
     { "name": "server.port", "type": "java.lang.Integer" }
   ]
 }"#;
-    let _jar_path = write_metadata_jar(&repo_root, group_id, artifact_id, version, metadata_json);
+    let additional_metadata_json = r#"{
+  "properties": [
+    { "name": "server.address", "type": "java.lang.String" }
+  ]
+}"#;
+    let _jar_path = write_metadata_jar(
+        &repo_root,
+        group_id,
+        artifact_id,
+        version,
+        metadata_json,
+        additional_metadata_json,
+    );
 
     // Minimal Maven project that declares the dependency.
     std::fs::write(
@@ -102,10 +122,11 @@ fn spring_analyzer_sees_dependency_metadata_via_framework_db_synthetic_files() {
     let cancel = CancellationToken::new();
     let analyzer = SpringAnalyzer::new();
 
-    // Diagnostics: known key should NOT be flagged as unknown when dependency metadata is present.
+    // Diagnostics: keys present in either metadata file should NOT be flagged as unknown when
+    // dependency metadata is present.
     let mut db = InMemoryFileStore::new();
     let file = db.file_id_for_path(&config_path);
-    db.set_file_text(file, "server.port=8080\n".to_string());
+    db.set_file_text(file, "server.port=8080\nserver.address=127.0.0.1\n".to_string());
     let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
 
     let fw_db =
@@ -121,7 +142,7 @@ fn spring_analyzer_sees_dependency_metadata_via_framework_db_synthetic_files() {
         !diags
             .iter()
             .any(|d| d.code.as_ref() == SPRING_UNKNOWN_CONFIG_KEY),
-        "expected no unknown-key diagnostics for server.port; got {diags:#?}"
+        "expected no unknown-key diagnostics for server.* keys; got {diags:#?}"
     );
 
     // Diagnostics: unknown key should be flagged when metadata from the dependency jar is available.
@@ -160,5 +181,9 @@ fn spring_analyzer_sees_dependency_metadata_via_framework_db_synthetic_files() {
     assert!(
         items.iter().any(|i| i.label == "server.port"),
         "expected completion list to include server.port from dependency metadata; got {items:#?}"
+    );
+    assert!(
+        items.iter().any(|i| i.label == "server.address"),
+        "expected completion list to include server.address from dependency *additional* metadata; got {items:#?}"
     );
 }
