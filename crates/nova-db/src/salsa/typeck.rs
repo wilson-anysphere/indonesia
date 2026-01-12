@@ -11,14 +11,14 @@ use nova_hir::ids::{FieldId, MethodId};
 use nova_hir::item_tree::Modifiers;
 use nova_resolve::expr_scopes::{ExprScopes, ResolvedValue as ResolvedLocal};
 use nova_resolve::ids::{DefWithBodyId, ParamId};
-use nova_resolve::{NameResolution, Resolution, ScopeKind, StaticMemberResolution, TypeResolution};
 use nova_resolve::jpms_env::JpmsCompilationEnvironment;
+use nova_resolve::{NameResolution, Resolution, ScopeKind, StaticMemberResolution, TypeResolution};
 use nova_types::{
     assignment_conversion, assignment_conversion_with_const, binary_numeric_promotion,
     format_resolved_method, format_type, CallKind, ClassDef, ClassId, ClassKind, Diagnostic,
     FieldDef, MethodCall, MethodCandidateFailureReason, MethodDef, MethodNotFound,
     MethodResolution, PrimitiveType, ResolvedMethod, Span, TyContext, Type, TypeEnv, TypeParamDef,
-    TypeProvider, TypeStore, TypeVarId,
+    TypeProvider, TypeStore, TypeVarId, WildcardBound,
 };
 use nova_types_bridge::ExternalTypeLoader;
 
@@ -91,10 +91,7 @@ fn const_value_for_expr(body: &HirBody, expr: HirExprId) -> Option<nova_types::C
             kind: LiteralKind::Int,
             value,
             ..
-        } => value
-            .parse::<i64>()
-            .ok()
-            .map(nova_types::ConstValue::Int),
+        } => value.parse::<i64>().ok().map(nova_types::ConstValue::Int),
         HirExpr::Literal {
             kind: LiteralKind::Bool,
             value,
@@ -1180,8 +1177,14 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         // parameters) can depend on the surrounding context. If we previously inferred a lambda
         // without an expected target type, allow re-inference once a target type becomes known.
         if let Some(info) = self.expr_info[expr.idx()].clone() {
-            let is_lambda = matches!(self.body.exprs[expr], HirExpr::Lambda { .. });
-            if expected.is_none() || !is_lambda || info.ty != Type::Unknown {
+            let is_target_typed = matches!(
+                self.body.exprs[expr],
+                HirExpr::Lambda { .. }
+                    | HirExpr::MethodReference { .. }
+                    | HirExpr::ConstructorReference { .. }
+            );
+            let can_refine = expected.is_some() && is_target_typed && info.ty == Type::Unknown;
+            if !can_refine {
                 return info;
             }
         }
@@ -1218,9 +1221,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 let ty = match self.enclosing_class_type(loader) {
                     Some(Type::Class(class_ty)) => {
                         if let Some(def) = loader.store.class(class_ty.def) {
-                            def.super_class
-                                .clone()
-                                .unwrap_or_else(|| Type::class(loader.store.well_known().object, vec![]))
+                            def.super_class.clone().unwrap_or_else(|| {
+                                Type::class(loader.store.well_known().object, vec![])
+                            })
                         } else {
                             Type::Unknown
                         }
@@ -1237,24 +1240,96 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 self.infer_field_access(loader, *receiver, name.as_str(), expr)
             }
             HirExpr::MethodReference { receiver, .. } => {
+                // Always infer the receiver so IDE hover works.
                 let _ = self.infer_expr(loader, *receiver);
-                ExprInfo {
-                    ty: Type::Unknown,
-                    is_type_ref: false,
+
+                if let Some(expected) = expected {
+                    let env_ro: &dyn TypeEnv = &*loader.store;
+                    if nova_types::infer_lambda_sam_signature(env_ro, expected).is_some() {
+                        ExprInfo {
+                            ty: expected.clone(),
+                            is_type_ref: false,
+                        }
+                    } else {
+                        self.diagnostics.push(Diagnostic::error(
+                            "method-ref-without-target",
+                            "cannot infer method reference type without a target functional interface",
+                            Some(self.body.exprs[expr].range()),
+                        ));
+                        ExprInfo {
+                            ty: Type::Unknown,
+                            is_type_ref: false,
+                        }
+                    }
+                } else {
+                    self.diagnostics.push(Diagnostic::error(
+                        "method-ref-without-target",
+                        "cannot infer method reference type without a target functional interface",
+                        Some(self.body.exprs[expr].range()),
+                    ));
+                    ExprInfo {
+                        ty: Type::Unknown,
+                        is_type_ref: false,
+                    }
                 }
             }
             HirExpr::ConstructorReference { receiver, .. } => {
+                // Always infer the receiver so IDE hover works.
                 let _ = self.infer_expr(loader, *receiver);
-                ExprInfo {
-                    ty: Type::Unknown,
-                    is_type_ref: false,
+
+                if let Some(expected) = expected {
+                    let env_ro: &dyn TypeEnv = &*loader.store;
+                    if nova_types::infer_lambda_sam_signature(env_ro, expected).is_some() {
+                        ExprInfo {
+                            ty: expected.clone(),
+                            is_type_ref: false,
+                        }
+                    } else {
+                        self.diagnostics.push(Diagnostic::error(
+                            "method-ref-without-target",
+                            "cannot infer constructor reference type without a target functional interface",
+                            Some(self.body.exprs[expr].range()),
+                        ));
+                        ExprInfo {
+                            ty: Type::Unknown,
+                            is_type_ref: false,
+                        }
+                    }
+                } else {
+                    self.diagnostics.push(Diagnostic::error(
+                        "method-ref-without-target",
+                        "cannot infer constructor reference type without a target functional interface",
+                        Some(self.body.exprs[expr].range()),
+                    ));
+                    ExprInfo {
+                        ty: Type::Unknown,
+                        is_type_ref: false,
+                    }
                 }
             }
             HirExpr::ClassLiteral { ty, .. } => {
-                let _ = self.infer_expr(loader, *ty);
-                ExprInfo {
-                    ty: Type::Unknown,
-                    is_type_ref: false,
+                let inner = self.infer_expr(loader, *ty).ty;
+
+                let class_id = loader
+                    .store
+                    .class_id("java.lang.Class")
+                    .or_else(|| loader.ensure_class("java.lang.Class"));
+                if let Some(class_id) = class_id {
+                    let arg = if inner.is_reference() {
+                        inner
+                    } else {
+                        Type::Wildcard(WildcardBound::Unbounded)
+                    };
+
+                    ExprInfo {
+                        ty: Type::class(class_id, vec![arg]),
+                        is_type_ref: false,
+                    }
+                } else {
+                    ExprInfo {
+                        ty: Type::Unknown,
+                        is_type_ref: false,
+                    }
                 }
             }
             HirExpr::Call { callee, args, .. } => {
@@ -2076,7 +2151,10 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
 
             if let Some(failure) = cand.failures.first() {
                 message.push_str("\n    ");
-                message.push_str(&format_method_candidate_failure_reason(env, &failure.reason));
+                message.push_str(&format_method_candidate_failure_reason(
+                    env,
+                    &failure.reason,
+                ));
             }
         }
 
@@ -2206,9 +2284,10 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
 
             // Bitwise operators.
             BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor => match (&lhs_ty, &rhs_ty) {
-                (Type::Primitive(PrimitiveType::Boolean), Type::Primitive(PrimitiveType::Boolean)) => {
-                    Type::boolean()
-                }
+                (
+                    Type::Primitive(PrimitiveType::Boolean),
+                    Type::Primitive(PrimitiveType::Boolean),
+                ) => Type::boolean(),
                 (Type::Primitive(a), Type::Primitive(b))
                     if matches!(
                         a,
@@ -2625,7 +2704,9 @@ fn define_source_types<'idx>(
             class_type_params,
             &mut class_vars,
         );
-        source_type_vars.classes.insert(item, class_type_params.clone());
+        source_type_vars
+            .classes
+            .insert(item, class_type_params.clone());
 
         let mut fields = Vec::new();
         let mut methods = Vec::new();
@@ -3082,7 +3163,10 @@ fn type_binary_name(env: &TypeStore, ty: &Type) -> Option<String> {
     }
 }
 
-fn format_method_candidate_signature(env: &dyn TypeEnv, cand: &nova_types::MethodCandidate) -> String {
+fn format_method_candidate_signature(
+    env: &dyn TypeEnv,
+    cand: &nova_types::MethodCandidate,
+) -> String {
     let mut out = String::new();
     out.push_str(&format_type(env, &cand.return_type));
     out.push(' ');
@@ -3137,11 +3221,18 @@ fn format_method_candidate_failure_reason(
             let ub = format_type(env, upper_bound);
             format!("type argument {arg} is not within bounds of {tv}: {ub}")
         }
-        MethodCandidateFailureReason::ArgumentConversion { arg_index, from, to } => {
+        MethodCandidateFailureReason::ArgumentConversion {
+            arg_index,
+            from,
+            to,
+        } => {
             let from = format_type(env, from);
             let to = format_type(env, to);
             // Present as 1-based for user display.
-            format!("argument {}: cannot convert from {from} to {to}", arg_index + 1)
+            format!(
+                "argument {}: cannot convert from {from} to {to}",
+                arg_index + 1
+            )
         }
     }
 }

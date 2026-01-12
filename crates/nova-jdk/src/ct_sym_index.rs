@@ -73,7 +73,8 @@ impl CtSymReleaseIndex {
         };
 
         if let (Some(cache_dir), Some(fingerprint)) = (cache_dir, fingerprint.as_ref()) {
-            if let Some(loaded) = persist::load_ct_sym_index(cache_dir, &ct_sym_path, release, fingerprint)
+            if let Some(loaded) =
+                persist::load_ct_sym_index(cache_dir, &ct_sym_path, release, fingerprint)
             {
                 record_cache_hit(stats);
                 return from_loaded_ct_sym_index(ct_sym_path, release, loaded);
@@ -720,11 +721,13 @@ fn build_release_mapping(
         .map(|name| ModuleName::new(name.clone()))
         .collect();
     // Stable ordering with `java.base` first (mirrors `.jmod` indexing).
-    modules.sort_by(|a, b| match (a.as_str() == JAVA_BASE, b.as_str() == JAVA_BASE) {
-        (true, false) => std::cmp::Ordering::Less,
-        (false, true) => std::cmp::Ordering::Greater,
-        _ => a.as_str().cmp(b.as_str()),
-    });
+    modules.sort_by(
+        |a, b| match (a.as_str() == JAVA_BASE, b.as_str() == JAVA_BASE) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.as_str().cmp(b.as_str()),
+        },
+    );
 
     let mut class_to_module = HashMap::new();
     let mut internal_to_zip_path = HashMap::new();

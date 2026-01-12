@@ -989,6 +989,19 @@ impl TypeStore {
             }],
         });
 
+        // java.lang.Class<T>
+        let class_t = store.add_type_param("T", vec![Type::class(object, vec![])]);
+        let _class = store.add_class(ClassDef {
+            name: "java.lang.Class".to_string(),
+            kind: ClassKind::Class,
+            type_params: vec![class_t],
+            super_class: Some(Type::class(object, vec![])),
+            interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
+            methods: vec![],
+        });
+
         store.well_known = Some(WellKnownTypes {
             object,
             string,
@@ -4124,7 +4137,6 @@ pub fn infer_lambda_sam_signature(env: &dyn TypeEnv, target: &Type) -> Option<La
     let sam = abstract_methods[0];
     let params = sam.params.iter().map(|t| substitute(t, &subst)).collect();
     let return_type = substitute(&sam.return_type, &subst);
-
     Some(LambdaSamSignature {
         params,
         return_type,

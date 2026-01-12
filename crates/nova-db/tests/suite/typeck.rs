@@ -229,6 +229,45 @@ class C {
 }
 
 #[test]
+fn method_reference_is_typed_from_target() {
+    let src = r#"
+import java.util.function.Function;
+class C {
+    void m() {
+        Function<String,Integer> f = String::length;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("String::length")
+        .expect("snippet should contain method reference")
+        + "String::".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Function<String, Integer>");
+}
+
+#[test]
+fn class_literal_is_typed_as_java_lang_class() {
+    let src = r#"
+class C { void m(){ Object x = String.class; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("String.class")
+        .expect("snippet should contain class literal")
+        + "String.".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Class<String>");
+}
+
+#[test]
 fn unqualified_method_call_resolves_against_enclosing_class() {
     let src = r#"
 class C {
