@@ -95,6 +95,69 @@ class C {
 }
 
 #[test]
+fn type_of_expr_is_demand_driven_and_does_not_execute_typeck_body() {
+    let src = r#"
+class C {
+    String m() {
+        var s = "x";
+        return s.substring(1);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+
+    let tree = db.hir_item_tree(file);
+    let method_ast = tree
+        .methods
+        .iter()
+        .find_map(|(ast_id, m)| (m.name == "m" && m.body.is_some()).then_some(*ast_id))
+        .expect("expected method `m` with a body");
+    let method_id = nova_hir::ids::MethodId::new(file, method_ast);
+    let owner = DefWithBodyId::Method(method_id);
+
+    let body = db.hir_body(method_id);
+    let root = &body.stmts[body.root];
+    let return_expr = match root {
+        nova_hir::hir::Stmt::Block { statements, .. } => statements
+            .iter()
+            .find_map(|stmt| match &body.stmts[*stmt] {
+                nova_hir::hir::Stmt::Return {
+                    expr: Some(expr), ..
+                } => Some(*expr),
+                _ => None,
+            })
+            .expect("expected a return expression"),
+        other => panic!("expected a block root statement, got {other:?}"),
+    };
+
+    let project = db.file_project(file);
+    let base_store = db.project_base_type_store(project);
+
+    db.clear_query_stats();
+
+    let ty = db.type_of_expr(
+        file,
+        FileExprId {
+            owner,
+            expr: return_expr,
+        },
+    );
+    assert_eq!(
+        format_type(&*base_store, &ty),
+        "String",
+        "expected type_of_expr to resolve the substring call return type"
+    );
+
+    let stats = db.query_stats();
+    assert!(
+        stats.by_query.get("typeck_body").is_none(),
+        "type_of_expr should not execute typeck_body; stats: {:?}",
+        stats.by_query.get("typeck_body")
+    );
+}
+
+#[test]
 fn demand_reports_unresolved_type_for_catch_var() {
     let src = r#"
 class C {
