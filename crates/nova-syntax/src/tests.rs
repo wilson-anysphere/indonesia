@@ -733,6 +733,28 @@ fn lexer_non_template_strings_still_reject_escape_brace() {
 }
 
 #[test]
+fn lexer_non_template_strings_reject_unicode_escape_translated_escape_brace() {
+    // A `\u005C` escape is translated to `\` before lexing, so this becomes `"hi \{name}"`
+    // and should produce the same invalid-escape diagnostic as the literal form.
+    let input = r#""hi \u005C{name}""#;
+    let (tokens, errors) = lex_with_errors(input);
+
+    let tokens: Vec<_> = tokens
+        .into_iter()
+        .filter(|t| !t.kind.is_trivia())
+        .map(|t| t.kind)
+        .collect();
+
+    assert_eq!(tokens, vec![SyntaxKind::StringLiteral, SyntaxKind::Eof]);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("invalid escape sequence in string literal")),
+        "expected invalid escape error, got: {errors:?}"
+    );
+}
+
+#[test]
 fn lexer_string_templates_do_not_start_interpolation_when_backslash_is_escaped() {
     let input = r#"STR."\\{not_interp}""#;
     let (tokens, errors) = lex_with_errors(input);
