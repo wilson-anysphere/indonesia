@@ -4623,6 +4623,26 @@ fn parse_java_expression_primitive_cast_allows_unary_plus() {
 }
 
 #[test]
+fn parse_java_expression_parameterized_cast_with_lambda_is_cast_expression() {
+    let result = parse_java_expression(
+        "(java.util.function.Function<String, Integer>) (s) -> s.length()",
+    );
+    assert_eq!(result.errors, Vec::new());
+
+    let expr = expression_from_snippet(&result);
+    assert_eq!(expr.kind(), SyntaxKind::CastExpression);
+}
+
+#[test]
+fn parse_java_expression_cast_with_annotation_args_is_cast_expression() {
+    let result = parse_java_expression("(@A(x = 1) String) y");
+    assert_eq!(result.errors, Vec::new());
+
+    let expr = expression_from_snippet(&result);
+    assert_eq!(expr.kind(), SyntaxKind::CastExpression);
+}
+
+#[test]
 fn parse_java_expression_method_call_with_dotted_name() {
     let result = parse_java_expression("foo.bar(1,2)");
     assert_eq!(result.errors, Vec::new());
