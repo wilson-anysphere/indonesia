@@ -1331,12 +1331,17 @@ pub fn core_file_diagnostics(
         diagnostics.extend(unused_import_diagnostics(text));
     }
 
-    // 3) Demand-driven type-checking + flow (control-flow) diagnostics (best-effort, Salsa-backed).
+    // 3) Demand-driven import resolution + type-checking + flow (control-flow) diagnostics
+    // (best-effort, Salsa-backed).
     if is_java {
         if cancel.is_cancelled() {
             return Vec::new();
         }
         with_salsa_snapshot_for_single_file(db, file, text, |snap| {
+            diagnostics.extend(snap.import_diagnostics(file).iter().cloned());
+            if cancel.is_cancelled() {
+                return;
+            }
             diagnostics.extend(snap.type_diagnostics(file));
             if cancel.is_cancelled() {
                 return;
@@ -1346,7 +1351,7 @@ pub fn core_file_diagnostics(
         });
     }
 
-    // 3) Unresolved references (best-effort).
+    // 4) Unresolved references (best-effort).
     if cancel.is_cancelled() {
         return Vec::new();
     }
@@ -1436,13 +1441,18 @@ pub(crate) fn core_file_diagnostics_cancelable(
         diagnostics.extend(unused_import_diagnostics(text));
     }
 
-    // 3) Demand-driven type-checking + flow (control-flow) diagnostics (best-effort, Salsa-backed).
+    // 3) Demand-driven import resolution + type-checking + flow (control-flow) diagnostics
+    // (best-effort, Salsa-backed).
     if is_java {
         // Checkpoint: before starting Salsa work.
         if cancel.is_cancelled() {
             return Vec::new();
         }
         with_salsa_snapshot_for_single_file(db, file, text, |snap| {
+            diagnostics.extend(snap.import_diagnostics(file).iter().cloned());
+            if cancel.is_cancelled() {
+                return;
+            }
             diagnostics.extend(snap.type_diagnostics(file));
             if cancel.is_cancelled() {
                 return;

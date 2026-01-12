@@ -90,6 +90,7 @@ pub fn extract_method_code_action(source: &str, uri: Uri, lsp_range: Range) -> O
 /// - `unresolved-type` → `Create class '<Name>'`
 /// - `FLOW_UNREACHABLE` → `Remove unreachable code`
 /// - `FLOW_UNASSIGNED` → `Initialize '<name>'`
+/// - `unresolved-import` → `Remove unresolved import`
 /// - `unused-import` → `Remove unused import`
 pub fn diagnostic_quick_fixes(
     source: &str,
@@ -114,6 +115,9 @@ pub fn diagnostic_quick_fixes(
                         .into_iter(),
                 )
                 .chain(remove_unused_import_quick_fix(source, &uri, &selection, diag).into_iter())
+                .chain(
+                    remove_unresolved_import_quick_fix(source, &uri, &selection, diag).into_iter(),
+                )
         })
         .collect()
 }
@@ -288,6 +292,44 @@ fn remove_unused_import_quick_fix(
 
     Some(CodeAction {
         title: "Remove unused import".to_string(),
+        kind: Some(CodeActionKind::QUICKFIX),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        }),
+        diagnostics: Some(vec![diagnostic.clone()]),
+        ..CodeAction::default()
+    })
+}
+
+fn remove_unresolved_import_quick_fix(
+    source: &str,
+    uri: &Uri,
+    selection: &Range,
+    diagnostic: &Diagnostic,
+) -> Option<CodeAction> {
+    if diagnostic_code(diagnostic)? != "unresolved-import" {
+        return None;
+    }
+
+    if !ranges_intersect(selection, &diagnostic.range) {
+        return None;
+    }
+
+    let delete_range = full_line_range(source, &diagnostic.range)?;
+
+    let mut changes = HashMap::new();
+    changes.insert(
+        uri.clone(),
+        vec![TextEdit {
+            range: delete_range,
+            new_text: String::new(),
+        }],
+    );
+
+    Some(CodeAction {
+        title: "Remove unresolved import".to_string(),
         kind: Some(CodeActionKind::QUICKFIX),
         edit: Some(WorkspaceEdit {
             changes: Some(changes),

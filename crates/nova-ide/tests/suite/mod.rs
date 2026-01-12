@@ -46,4 +46,5 @@ mod source_types;
 mod spring_config_metadata_intel;
 mod spring_di_intel;
 mod unicode_lsp_positions;
+mod unresolved_imports;
 mod unused_imports;
