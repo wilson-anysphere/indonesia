@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use nova_core::ProjectDatabase;
 use nova_db::{Database, FileId, NovaInputs, SalsaDatabase, Snapshot};
@@ -223,7 +223,6 @@ pub(crate) struct WorkspaceDbView {
     snapshot: Snapshot,
     vfs: Vfs<LocalFs>,
     salsa_file_ids: Arc<Vec<FileId>>,
-    empty_text: Arc<String>,
     file_contents: Mutex<HashMap<FileId, Arc<String>>>,
     file_paths: Mutex<HashMap<FileId, Option<PathBuf>>>,
 }
@@ -235,7 +234,6 @@ impl WorkspaceDbView {
             snapshot,
             vfs,
             salsa_file_ids,
-            empty_text: Arc::new(String::new()),
             file_contents: Mutex::new(HashMap::new()),
             file_paths: Mutex::new(HashMap::new()),
         }
@@ -256,7 +254,7 @@ impl WorkspaceDbView {
         if self.salsa_file_ids.as_ref().binary_search(&file_id).is_ok() {
             nova_db::SourceDatabase::file_content(&self.snapshot, file_id)
         } else {
-            Arc::clone(&self.empty_text)
+            empty_db_view_text()
         }
     }
 
@@ -305,6 +303,11 @@ impl Database for WorkspaceDbView {
     fn file_id(&self, path: &Path) -> Option<FileId> {
         self.vfs.get_id(&VfsPath::local(path.to_path_buf()))
     }
+}
+
+fn empty_db_view_text() -> Arc<String> {
+    static EMPTY: OnceLock<Arc<String>> = OnceLock::new();
+    EMPTY.get_or_init(|| Arc::new(String::new())).clone()
 }
 
 impl Database for WorkspaceSnapshot {
