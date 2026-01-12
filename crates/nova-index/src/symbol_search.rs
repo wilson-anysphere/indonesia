@@ -5,7 +5,8 @@ use nova_fuzzy::{
 };
 use nova_memory::{EvictionRequest, EvictionResult, MemoryCategory, MemoryEvictor, MemoryManager};
 use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// A single symbol definition within the workspace.
@@ -47,10 +48,43 @@ pub struct SearchResult {
     pub score: MatchScore,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct ScoredCandidate {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CandidateKey<'a> {
     id: SymbolId,
     score: MatchScore,
+    name: &'a str,
+    qualified_name: &'a str,
+    location_file: &'a str,
+    location_line: u32,
+    location_column: u32,
+    ast_id: u32,
+}
+
+impl Ord for CandidateKey<'_> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // This ordering is the "best first" ordering used by `search_with_stats`.
+        // `BinaryHeap` is a max-heap, so we store `Reverse<CandidateKey>` and pop
+        // the worst candidate when maintaining a bounded top-K heap.
+        self.score
+            .rank_key()
+            .cmp(&other.score.rank_key())
+            // Shorter names rank higher for the same fuzzy score.
+            .then_with(|| other.name.len().cmp(&self.name.len()))
+            // Stable disambiguators.
+            .then_with(|| other.name.cmp(self.name))
+            .then_with(|| other.qualified_name.cmp(self.qualified_name))
+            .then_with(|| other.location_file.cmp(self.location_file))
+            .then_with(|| other.location_line.cmp(&self.location_line))
+            .then_with(|| other.location_column.cmp(&self.location_column))
+            .then_with(|| other.ast_id.cmp(&self.ast_id))
+            .then_with(|| other.id.cmp(&self.id))
+    }
+}
+
+impl PartialOrd for CandidateKey<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,14 +265,33 @@ impl SymbolSearchIndex {
             );
         }
 
-        let mut scored: Vec<ScoredCandidate> = Vec::new();
+        // Keep at most `limit` matches while scoring candidates, to avoid large
+        // allocations and O(n log n) sorts for short queries.
+        let mut scored: BinaryHeap<Reverse<CandidateKey<'_>>> = BinaryHeap::new();
         let mut matcher = FuzzyMatcher::new(query);
+
+        let mut push_scored = |id: SymbolId, score: MatchScore| {
+            let sym = &self.symbols[id as usize].symbol;
+            scored.push(Reverse(CandidateKey {
+                id,
+                score,
+                name: sym.name.as_str(),
+                qualified_name: sym.qualified_name.as_str(),
+                location_file: sym.location.file.as_str(),
+                location_line: sym.location.line,
+                location_column: sym.location.column,
+                ast_id: sym.ast_id,
+            }));
+            if scored.len() > limit {
+                scored.pop();
+            }
+        };
 
         match candidates {
             CandidateSource::Ids(ids) => {
                 for &id in ids {
                     if let Some(score) = self.score_candidate(id, &mut matcher) {
-                        scored.push(ScoredCandidate { id, score });
+                        push_scored(id, score);
                     }
                 }
             }
@@ -246,20 +299,16 @@ impl SymbolSearchIndex {
                 for id in 0..scan_limit {
                     let id = id as SymbolId;
                     if let Some(score) = self.score_candidate(id, &mut matcher) {
-                        scored.push(ScoredCandidate { id, score });
+                        push_scored(id, score);
                     }
                 }
             }
         }
 
-        // Keep the `limit` best candidates without sorting the entire result set.
-        if scored.len() > limit {
-            scored.select_nth_unstable_by(limit, |a, b| self.cmp_scored_candidate(a, b));
-            scored.truncate(limit);
-        }
-        scored.sort_by(|a, b| self.cmp_scored_candidate(a, b));
+        let mut results: Vec<CandidateKey<'_>> = scored.into_iter().map(|Reverse(key)| key).collect();
+        results.sort_by(|a, b| b.cmp(a));
 
-        let results: Vec<SearchResult> = scored
+        let results: Vec<SearchResult> = results
             .into_iter()
             .map(|res| SearchResult {
                 id: res.id,
@@ -298,24 +347,6 @@ impl SymbolSearchIndex {
         }
 
         best
-    }
-
-    fn cmp_scored_candidate(&self, a: &ScoredCandidate, b: &ScoredCandidate) -> Ordering {
-        let a_sym = &self.symbols[a.id as usize].symbol;
-        let b_sym = &self.symbols[b.id as usize].symbol;
-
-        // Sort by (kind, score), then stable disambiguators.
-        b.score
-            .rank_key()
-            .cmp(&a.score.rank_key())
-            .then_with(|| a_sym.name.len().cmp(&b_sym.name.len()))
-            .then_with(|| a_sym.name.cmp(&b_sym.name))
-            .then_with(|| a_sym.qualified_name.cmp(&b_sym.qualified_name))
-            .then_with(|| a_sym.location.file.cmp(&b_sym.location.file))
-            .then_with(|| a_sym.location.line.cmp(&b_sym.location.line))
-            .then_with(|| a_sym.location.column.cmp(&b_sym.location.column))
-            .then_with(|| a_sym.ast_id.cmp(&b_sym.ast_id))
-            .then_with(|| a.id.cmp(&b.id))
     }
 }
 
