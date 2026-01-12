@@ -22,16 +22,18 @@ class A {
 "#;
 
     let src_b = r#"package p;
-class B {
-  void m() {
-    A obj = new A();
-    int x = obj.foo;
-    obj.bar();
-    int y = A.SFOO;
-    A.sbar();
-  }
-}
-"#;
+ class B {
+   void m() {
+     A obj = new A();
+     int x = obj.foo;
+     obj.bar();
+     int y = A.SFOO;
+     A.sbar();
+     Object raw = obj;
+     A casted = (A) raw;
+   }
+ }
+ "#;
 
     let db = RefactorJavaDatabase::new([
         (file_a.clone(), src_a.to_string()),
@@ -114,4 +116,15 @@ class B {
     let sbar_def = db.symbol_definition(sbar_symbol).unwrap();
     assert_eq!(sbar_def.file, file_a);
     assert_eq!(sbar_def.name, "sbar");
+
+    // Type usage in cast expression (`(A) raw`).
+    let cast_offset = src_b.find("(A) raw").unwrap() + "(".len();
+    let a_type_from_cast = db
+        .symbol_at(&file_b, cast_offset)
+        .expect("symbol_at (A) raw");
+    assert_eq!(
+        db.symbol_kind(a_type_from_cast),
+        Some(JavaSymbolKind::Type)
+    );
+    assert_eq!(a_type_from_cast, a_type_from_new);
 }
