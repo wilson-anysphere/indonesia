@@ -867,14 +867,53 @@ fn parse_gradle_dependencies(module_root: &Path) -> Vec<Dependency> {
 }
 
 fn parse_gradle_dependencies_from_text(contents: &str) -> Vec<Dependency> {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        Regex::new(r#"(?i)\b(?:implementation|api|compileOnly|runtimeOnly|testImplementation)\s*\(?\s*['"]([^:'"]+):([^:'"]+):([^'"]+)['"]"#)
-            .expect("valid regex")
+    let mut deps = Vec::new();
+
+    // `implementation "g:a:v"` and similar.
+    static RE_GAV: OnceLock<Regex> = OnceLock::new();
+    let re_gav = RE_GAV.get_or_init(|| {
+        // Keep this list conservative: only configurations that are commonly used for
+        // Java compilation or annotation processing. This is best-effort dependency extraction,
+        // not a full Gradle parser.
+        let configs = r"(?:implementation|api|compileOnly|runtimeOnly|testImplementation|annotationProcessor)";
+
+        Regex::new(&format!(
+            r#"(?i)\b{configs}\s*\(?\s*['"]([^:'"]+):([^:'"]+):([^'"]+)['"]"#,
+        ))
+        .expect("valid regex")
     });
 
-    let mut deps = Vec::new();
-    for caps in re.captures_iter(contents) {
+    for caps in re_gav.captures_iter(contents) {
+        deps.push(Dependency {
+            group_id: caps[1].to_string(),
+            artifact_id: caps[2].to_string(),
+            version: Some(caps[3].to_string()),
+            scope: None,
+            classifier: None,
+            type_: None,
+        });
+    }
+
+    // `implementation group: 'g', name: 'a', version: 'v'` and similar.
+    //
+    // This is intentionally best-effort (regex-based): it aims to capture the common Groovy
+    // "map notation" used in many real-world builds. It is not intended to be a complete Gradle
+    // language parser.
+    static RE_MAP: OnceLock<Regex> = OnceLock::new();
+    let re_map = RE_MAP.get_or_init(|| {
+        let configs = r"(?:implementation|api|compileOnly|runtimeOnly|testImplementation|annotationProcessor)";
+
+        // Notes:
+        // - `\s` matches newlines in Rust regex, which lets us handle typical multi-line map args.
+        // - We accept both `implementation group: ...` and `implementation(group: ...)` forms.
+        // - We don't try to parse non-literal versions (variables, method calls, etc).
+        Regex::new(&format!(
+            r#"(?is)\b{configs}\s*\(?\s*group\s*:\s*['"]([^'"]+)['"]\s*,\s*name\s*:\s*['"]([^'"]+)['"]\s*,\s*version\s*:\s*['"]([^'"]+)['"]"#,
+        ))
+        .expect("valid regex")
+    });
+
+    for caps in re_map.captures_iter(contents) {
         deps.push(Dependency {
             group_id: caps[1].to_string(),
             artifact_id: caps[2].to_string(),
@@ -1051,4 +1090,66 @@ fn sort_dedup_dependencies(deps: &mut Vec<Dependency>) {
             .then(a.version.cmp(&b.version))
     });
     deps.dedup();
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::{parse_gradle_dependencies_from_text, sort_dedup_dependencies};
+
+    #[test]
+    fn parses_gradle_dependencies_from_text_string_and_map_notation() {
+        let script = r#"
+plugins {
+    id 'java'
+}
+
+dependencies {
+    // String GAV notation.
+    implementation 'org.slf4j:slf4j-api:1.7.36'
+
+    // Groovy map notation (no parens).
+    implementation group: 'org.example', name: 'foo', version: '1.2.3'
+
+    // Map notation with double quotes.
+    testImplementation group: "org.example", name: "bar", version: "4.5.6"
+
+    // Map notation with trailing closure and parens (config covered by Task 72).
+    annotationProcessor(group: 'com.google.auto.service', name: 'auto-service', version: '1.1.1') {
+        // closure content shouldn't matter for extraction
+        transitive = false
+    }
+}
+"#;
+
+        let mut deps = parse_gradle_dependencies_from_text(script);
+        sort_dedup_dependencies(&mut deps);
+
+        let got: BTreeSet<_> = deps
+            .into_iter()
+            .map(|d| (d.group_id, d.artifact_id, d.version))
+            .collect();
+
+        assert!(got.contains(&(
+            "org.slf4j".to_string(),
+            "slf4j-api".to_string(),
+            Some("1.7.36".to_string())
+        )));
+        assert!(got.contains(&(
+            "org.example".to_string(),
+            "foo".to_string(),
+            Some("1.2.3".to_string())
+        )));
+        assert!(got.contains(&(
+            "org.example".to_string(),
+            "bar".to_string(),
+            Some("4.5.6".to_string())
+        )));
+        assert!(got.contains(&(
+            "com.google.auto.service".to_string(),
+            "auto-service".to_string(),
+            Some("1.1.1".to_string())
+        )));
+    }
 }
