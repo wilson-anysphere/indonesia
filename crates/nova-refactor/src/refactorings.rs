@@ -597,18 +597,15 @@ fn check_rename_conflicts(
             }
         }
         Some(JavaSymbolKind::Field) => {
-            // Best-effort: avoid obvious declaration-scope collisions (another field with the same
-            // name in the same type).
-            if let Some(scope) = db.symbol_scope(symbol) {
-                if let Some(existing) = db.resolve_name_in_scope(scope, new_name) {
-                    if existing != symbol && db.symbol_kind(existing) == Some(JavaSymbolKind::Field)
-                    {
-                        conflicts.push(Conflict::NameCollision {
-                            file: def.file.clone(),
-                            name: new_name.to_string(),
-                            existing_symbol: existing,
-                        });
-                    }
+            // Fields live in a separate namespace from methods. Only consider collisions with
+            // other fields declared in the same owning type.
+            if let Some(existing) = db.resolve_field_in_scope(def.scope, new_name) {
+                if existing != symbol {
+                    conflicts.push(Conflict::NameCollision {
+                        file: def.file.clone(),
+                        name: new_name.to_string(),
+                        existing_symbol: existing,
+                    });
                 }
             }
 
@@ -619,21 +616,34 @@ fn check_rename_conflicts(
             //   class C { int foo; void m() { int bar; foo; } }
             // Renaming `foo -> bar` would cause the (renamed) `bar` reference to resolve to the
             // local `bar`, changing semantics.
-            for usage in &refs {
-                let Some(usage_scope) = usage.scope else {
-                    continue;
-                };
-                if usage.kind != ReferenceKind::Name {
-                    // Qualified references like `this.foo` are not affected by local name capture.
-                    continue;
-                }
+             for usage in &refs {
+                 let Some(usage_scope) = usage.scope else {
+                     continue;
+                 };
+                 if usage.kind != ReferenceKind::Name {
+                     // Qualified references like `this.foo` are not affected by local name capture.
+                     continue;
+                 }
 
-                // `resolve_name_in_scope` only checks the current scope; `would_shadow` checks
-                // parents. Together, they approximate name resolution for locals/parameters at
-                // this site.
+                // A renamed field can become *captured* by an existing local/parameter binding at a
+                // particular usage site, changing the meaning of an unqualified `NameExpression`.
+                //
+                // Important: don't treat methods/types as capturing. Java's value namespace is
+                // separate from its method/type namespaces, and a bare identifier expression cannot
+                // resolve to a method.
+                let is_local_or_param = |sym: SymbolId| {
+                    matches!(
+                        db.symbol_kind(sym),
+                        Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter)
+                    )
+                };
                 let existing = db
                     .resolve_name_in_scope(usage_scope, new_name)
-                    .or_else(|| db.would_shadow(usage_scope, new_name));
+                    .filter(|sym| is_local_or_param(*sym))
+                    .or_else(|| {
+                        db.would_shadow(usage_scope, new_name)
+                            .filter(|sym| is_local_or_param(*sym))
+                    });
 
                 if let Some(existing_symbol) = existing {
                     if existing_symbol != symbol {
@@ -669,6 +679,115 @@ fn check_rename_conflicts(
                             if db.file_exists(&to) {
                                 conflicts.push(Conflict::FileAlreadyExists { file: to });
                             }
+                        }
+                    }
+                } else if new_name != def.name {
+                    // Nested types: only collide with other nested types declared in the same
+                    // enclosing type.
+                    let Some(text) = db.file_text(&def.file) else {
+                        return conflicts;
+                    };
+                    let parsed = parse_java(text);
+                    let root = parsed.syntax();
+
+                    // Locate the type declaration node by matching the declaration name token.
+                    let decl_node = root.descendants().find_map(|node| {
+                        fn matches_name(
+                            def: &crate::semantic::SymbolDefinition,
+                            name_tok: &nova_syntax::SyntaxToken,
+                        ) -> bool {
+                            syntax_token_range(name_tok) == def.name_range
+                                && name_tok.text() == def.name
+                        }
+
+                        if let Some(class_decl) = ast::ClassDeclaration::cast(node.clone()) {
+                            if class_decl
+                                .name_token()
+                                .is_some_and(|tok| matches_name(&def, &tok))
+                            {
+                                return Some(class_decl.syntax().clone());
+                            }
+                        }
+                        if let Some(intf_decl) = ast::InterfaceDeclaration::cast(node.clone()) {
+                            if intf_decl
+                                .name_token()
+                                .is_some_and(|tok| matches_name(&def, &tok))
+                            {
+                                return Some(intf_decl.syntax().clone());
+                            }
+                        }
+                        if let Some(enum_decl) = ast::EnumDeclaration::cast(node.clone()) {
+                            if enum_decl
+                                .name_token()
+                                .is_some_and(|tok| matches_name(&def, &tok))
+                            {
+                                return Some(enum_decl.syntax().clone());
+                            }
+                        }
+                        if let Some(record_decl) = ast::RecordDeclaration::cast(node.clone()) {
+                            if record_decl
+                                .name_token()
+                                .is_some_and(|tok| matches_name(&def, &tok))
+                            {
+                                return Some(record_decl.syntax().clone());
+                            }
+                        }
+                        if let Some(annot_decl) =
+                            ast::AnnotationTypeDeclaration::cast(node.clone())
+                        {
+                            if annot_decl
+                                .name_token()
+                                .is_some_and(|tok| matches_name(&def, &tok))
+                            {
+                                return Some(annot_decl.syntax().clone());
+                            }
+                        }
+                        None
+                    });
+
+                    let Some(decl_node) = decl_node else {
+                        return conflicts;
+                    };
+                    let Some(parent) = decl_node.parent() else {
+                        return conflicts;
+                    };
+                    let Some(enclosing_body) = find_enclosing_type_body(&parent) else {
+                        return conflicts;
+                    };
+
+                    for member in enclosing_body
+                        .syntax()
+                        .children()
+                        .filter_map(ast::ClassMember::cast)
+                    {
+                        let name_tok = match member {
+                            ast::ClassMember::ClassDeclaration(decl) => decl.name_token(),
+                            ast::ClassMember::InterfaceDeclaration(decl) => decl.name_token(),
+                            ast::ClassMember::EnumDeclaration(decl) => decl.name_token(),
+                            ast::ClassMember::RecordDeclaration(decl) => decl.name_token(),
+                            ast::ClassMember::AnnotationTypeDeclaration(decl) => decl.name_token(),
+                            _ => None,
+                        };
+                        let Some(name_tok) = name_tok else {
+                            continue;
+                        };
+                        if name_tok.text() != new_name {
+                            continue;
+                        }
+
+                        let name_range = syntax_token_range(&name_tok);
+                        // Best-effort: find the existing type symbol at the declaration site, but
+                        // fall back to a sentinel if resolution fails.
+                        let existing_symbol = db
+                            .symbol_at(&def.file, name_range.start)
+                            .unwrap_or_else(|| SymbolId::new(u32::MAX));
+
+                        if existing_symbol != symbol {
+                            conflicts.push(Conflict::NameCollision {
+                                file: def.file.clone(),
+                                name: new_name.to_string(),
+                                existing_symbol,
+                            });
                         }
                     }
                 }

@@ -6391,31 +6391,6 @@ fn collect_switch_contexts(
                     walk_stmt(body, *stmt, owner, scope_result, resolver, item_trees, out)
                 }
             },
-            hir::Expr::Switch {
-                selector,
-                body: inner,
-                range,
-            } => {
-                let Some(&scope) = scope_result.expr_scopes.get(&(owner, *selector)) else {
-                    walk_stmt(body, *inner, owner, scope_result, resolver, item_trees, out);
-                    return;
-                };
-
-                let selector_enum = infer_switch_selector_enum_type(
-                    body,
-                    selector,
-                    scope,
-                    scope_result,
-                    resolver,
-                    item_trees,
-                );
-
-                out.entry(range.start).or_insert(SwitchContext {
-                    scope,
-                    selector_enum,
-                });
-                walk_stmt(body, *inner, owner, scope_result, resolver, item_trees, out);
-            }
             hir::Expr::Invalid { children, .. } => {
                 for child in children {
                     walk_expr(body, *child, owner, scope_result, resolver, item_trees, out);
@@ -8235,30 +8210,6 @@ fn record_lightweight_expr(
                 file,
                 text,
                 &cond.else_expr,
-                type_scopes,
-                scope_result,
-                resolver,
-                resolution_to_symbol,
-                references,
-                spans,
-            );
-        }
-        Expr::Switch(expr) => {
-            record_lightweight_expr(
-                file,
-                text,
-                expr.selector.as_ref(),
-                type_scopes,
-                scope_result,
-                resolver,
-                resolution_to_symbol,
-                references,
-                spans,
-            );
-            record_lightweight_block(
-                file,
-                text,
-                &expr.body,
                 type_scopes,
                 scope_result,
                 resolver,

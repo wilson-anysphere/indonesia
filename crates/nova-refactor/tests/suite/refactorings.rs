@@ -6493,6 +6493,90 @@ class Use {
 }
 
 #[test]
+fn rename_field_to_method_name_in_same_class_is_allowed() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  int foo = 0;
+
+  void bar() {
+    System.out.println(foo);
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("int foo").unwrap() + "int ".len() + 1;
+    let symbol = db.symbol_at(&file, offset).expect("symbol at field foo");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "bar".into(),
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    assert!(after.contains("int bar = 0;"), "field should be renamed: {after}");
+    assert!(
+        after.contains("void bar()"),
+        "method name should remain unchanged: {after}"
+    );
+    assert!(
+        after.contains("println(bar);"),
+        "field references should be updated: {after}"
+    );
+}
+
+#[test]
+fn rename_method_to_field_name_in_same_class_is_allowed() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  int foo = 0;
+
+  void bar() {
+    System.out.println(foo);
+  }
+
+  void baz() {
+    bar();
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("void bar").unwrap() + "void ".len() + 1;
+    let symbol = db.symbol_at(&file, offset).expect("symbol at method bar");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "foo".into(),
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    assert!(
+        after.contains("int foo = 0;"),
+        "field should remain unchanged: {after}"
+    );
+    assert!(
+        after.contains("void foo()"),
+        "method declaration should be renamed: {after}"
+    );
+    assert!(
+        after.contains("println(foo);"),
+        "field reference should remain (methods are separate namespace): {after}"
+    );
+    assert!(after.contains("foo();"), "call site should be renamed: {after}");
+}
+
+#[test]
 fn inline_variable_all_usages_replaces_and_deletes_declaration() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {

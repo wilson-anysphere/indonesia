@@ -24,7 +24,6 @@ mod rename_non_body_expr_refs;
 mod rename_constructor_symbol_at;
 mod rename_field_accessors;
 mod rename_members;
-mod rename_non_body_expr_refs;
 mod rename_method_interfaces;
 mod rename_method_overload_conflicts;
 mod rename_package;

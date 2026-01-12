@@ -677,13 +677,28 @@ fn expr_scope_for_offset(
                     visit_stmt(body, *stmt, offset, best_expr, best_stmt)
                 }
             },
-            Expr::Switch {
-                selector,
-                body: switch_body,
-                ..
-            } => {
+            Expr::Switch { selector, arms, .. } => {
                 visit_expr(body, *selector, offset, best_expr, best_stmt);
-                visit_stmt(body, *switch_body, offset, best_expr, best_stmt);
+                for arm in arms {
+                    for label in &arm.labels {
+                        match label {
+                            hir::SwitchLabel::Case { values, .. } => {
+                                for value in values {
+                                    visit_expr(body, *value, offset, best_expr, best_stmt);
+                                }
+                            }
+                            hir::SwitchLabel::Default { .. } => {}
+                        }
+                    }
+                    match &arm.body {
+                        hir::SwitchArmBody::Expr(expr) => {
+                            visit_expr(body, *expr, offset, best_expr, best_stmt);
+                        }
+                        hir::SwitchArmBody::Block(stmt) | hir::SwitchArmBody::Stmt(stmt) => {
+                            visit_stmt(body, *stmt, offset, best_expr, best_stmt);
+                        }
+                    }
+                }
             }
             Expr::Invalid { children, .. } => {
                 for child in children {
