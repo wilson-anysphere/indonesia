@@ -20,9 +20,9 @@ This workstream owns the Debug Adapter Protocol implementation and JVM debugging
 - **Default:** wire (JDWP-backed) adapter, serving DAP over **stdio**
 - **`--legacy`:** older synchronous/skeleton adapter (stdio only)
 - **`--listen <addr>`:** serve DAP over **TCP** instead of stdio (wire adapter only)
-  - Example: `--listen 127.0.0.1:4711`
-  - Use port `0` to auto-pick a free port: `--listen 127.0.0.1:0`
-  - Note: `--listen` expects a full `host:port` socket address (`:0` is not supported)
+   - Example: `--listen 127.0.0.1:4711`
+- Use port `0` to auto-pick a free port: `--listen 127.0.0.1:0`
+  - Note: `--listen` expects a full `host:port` socket address (for example `127.0.0.1:0`, not just `:0`)
 - **`--config <path>` / `NOVA_CONFIG=<path>`:** load a `NovaConfig` TOML file (optional)
 
 ---
