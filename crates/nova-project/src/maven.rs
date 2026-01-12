@@ -2165,6 +2165,7 @@ fn home_dir() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
 }
+
 fn exists_as_jar(path: &Path) -> bool {
     // Maven dependency artifacts are typically `.jar` files, but some build systems (and test
     // fixtures) can "explode" jars into directories (often still ending with `.jar`).
@@ -2178,7 +2179,7 @@ fn exists_as_jar(path: &Path) -> bool {
     {
         return false;
     }
-    std::fs::metadata(path).is_ok_and(|meta| meta.is_file() || meta.is_dir())
+    path.is_file() || path.is_dir()
 }
 
 fn maven_dependency_jar_path(

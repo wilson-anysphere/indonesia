@@ -262,8 +262,9 @@ done
 # the agent RLIMIT_AS constraints. These crates consolidate their integration tests into a single
 # root-level harness file, and CI/docs/scripts rely on stable `--test <harness>` entrypoints.
 stable_harness_checks=(
-  # `nova-db` integration tests are intentionally consolidated into a single harness binary.
-  "crates/nova-db/tests:crates/nova-db/tests/harness.rs:move additional files into crates/nova-db/tests/suite/ and add them to crates/nova-db/tests/suite/mod.rs"
+  # `nova-db` integration tests are primarily consolidated into a single harness binary, but we
+  # allow an optional second harness for targeted typeck-focused integration tests.
+  "crates/nova-db/tests:crates/nova-db/tests/harness.rs|crates/nova-db/tests/harness.rs,crates/nova-db/tests/typeck.rs:move additional files into crates/nova-db/tests/suite/ and add them to crates/nova-db/tests/suite/mod.rs"
   # `scripts/run-real-project-tests.sh` + docs invoke these by name.
   "crates/nova-project/tests:crates/nova-project/tests/harness.rs:move additional files into crates/nova-project/tests/suite/ and add them to crates/nova-project/tests/suite/mod.rs"
   "crates/nova-cli/tests:crates/nova-cli/tests/real_projects.rs:move additional files into crates/nova-cli/tests/suite/ and add them to crates/nova-cli/tests/suite/mod.rs"
