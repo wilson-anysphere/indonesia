@@ -1,6 +1,8 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use nova_core::{FileId, ProjectId};
 use nova_framework::{CompletionContext, Database, FrameworkAnalyzer, FrameworkData, JpaData};
@@ -85,7 +87,8 @@ impl JpaAnalyzer {
         for &file in files {
             file.hash(&mut hasher);
 
-            if let Some(path) = db.file_path(file) {
+            let path = db.file_path(file);
+            if let Some(path) = path {
                 path.to_string_lossy().hash(&mut hasher);
             }
 
@@ -94,9 +97,21 @@ impl JpaAnalyzer {
                 // See docs/09-framework-support.md for the motivation.
                 text.len().hash(&mut hasher);
                 text.as_ptr().hash(&mut hasher);
+            } else if let Some(path) = path {
+                // Fall back to on-disk metadata for unopened buffers.
+                match std::fs::metadata(path) {
+                    Ok(meta) => {
+                        meta.len().hash(&mut hasher);
+                        hash_mtime(&mut hasher, meta.modified().ok());
+                    }
+                    Err(_) => {
+                        0u64.hash(&mut hasher);
+                        0u32.hash(&mut hasher);
+                    }
+                }
             } else {
-                0usize.hash(&mut hasher);
-                0usize.hash(&mut hasher);
+                0u64.hash(&mut hasher);
+                0u32.hash(&mut hasher);
             }
         }
 
@@ -124,10 +139,22 @@ impl JpaAnalyzer {
             }
         }
 
-        let sources: Vec<&str> = files
+        let source_texts: Vec<Cow<'_, str>> = files
             .iter()
-            .map(|&file| db.file_text(file).unwrap_or(""))
+            .map(|&file| {
+                if let Some(text) = db.file_text(file) {
+                    return Cow::Borrowed(text);
+                }
+                let Some(path) = db.file_path(file) else {
+                    return Cow::Borrowed("");
+                };
+                match std::fs::read_to_string(path) {
+                    Ok(text) => Cow::Owned(text),
+                    Err(_) => Cow::Borrowed(""),
+                }
+            })
             .collect();
+        let sources: Vec<&str> = source_texts.iter().map(|s| s.as_ref()).collect();
 
         let analysis = analyze_java_sources(&sources);
         let file_to_source: HashMap<FileId, usize> =
@@ -148,6 +175,20 @@ impl JpaAnalyzer {
     fn file_local_analysis(text: &str) -> AnalysisResult {
         analyze_java_sources(&[text])
     }
+}
+
+fn hash_mtime(hasher: &mut impl Hasher, time: Option<SystemTime>) {
+    let Some(time) = time else {
+        0u64.hash(hasher);
+        0u32.hash(hasher);
+        return;
+    };
+
+    let duration = time
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| std::time::Duration::from_secs(0));
+    duration.as_secs().hash(hasher);
+    duration.subsec_nanos().hash(hasher);
 }
 
 impl Default for JpaAnalyzer {
