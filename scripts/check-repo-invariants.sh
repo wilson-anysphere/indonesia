@@ -69,6 +69,31 @@ if [[ ${#nova_dap_root_tests[@]} -ne 1 || "${nova_dap_root_tests[0]}" != "crates
   exit 1
 fi
 
+# Enforce the `nova-types` integration test harness naming.
+#
+# CI and docs rely on the stable entrypoint:
+#   cargo test -p nova-types --test javac_differential
+#
+# So the harness file must remain: `crates/nova-types/tests/javac_differential.rs`.
+nova_types_root_tests=()
+while IFS= read -r file; do
+  nova_types_root_tests+=("$file")
+done < <(find crates/nova-types/tests -maxdepth 1 -name '*.rs' -print)
+
+if [[ ${#nova_types_root_tests[@]} -ne 1 || "${nova_types_root_tests[0]}" != "crates/nova-types/tests/javac_differential.rs" ]]; then
+  echo "repo invariant failed: nova-types integration tests must be consolidated into crates/nova-types/tests/javac_differential.rs" >&2
+  if [[ ${#nova_types_root_tests[@]} -eq 0 ]]; then
+    echo "  found: <none>" >&2
+  else
+    echo "  found:" >&2
+    for file in "${nova_types_root_tests[@]}"; do
+      echo "    - ${file}" >&2
+    done
+  fi
+  echo "  suggestion: move additional files into crates/nova-types/tests/suite/ and add them to crates/nova-types/tests/suite/mod.rs" >&2
+  exit 1
+fi
+
 # Enforce consolidated integration test harness usage in docs/scripts.
 #
 # After folding many per-file integration test binaries into single harnesses, the old `--test=<name>`
