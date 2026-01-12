@@ -3425,3 +3425,44 @@ interface I {
         "unexpected error: {err}"
     );
 }
+
+#[test]
+fn extract_method_inside_interface_generic_method_with_public_visibility_emits_default_before_type_params()
+{
+    let fixture = r#"
+interface I {
+    default <T> void m(T a) {
+        /*start*/System.out.println(a);/*end*/
+        System.out.println("done");
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Public,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+interface I {
+    default <T> void m(T a) {
+        extracted(a);
+        System.out.println("done");
+    }
+
+    public default <T> void extracted(T a) {
+        System.out.println(a);
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}

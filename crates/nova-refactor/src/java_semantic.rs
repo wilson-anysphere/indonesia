@@ -6645,32 +6645,6 @@ fn record_lightweight_stmt(
                 );
             }
         }
-        Stmt::Assert(assert) => {
-            record_lightweight_expr(
-                file,
-                text,
-                &assert.condition,
-                type_scopes,
-                scope_result,
-                resolver,
-                resolution_to_symbol,
-                references,
-                spans,
-            );
-            if let Some(message) = &assert.message {
-                record_lightweight_expr(
-                    file,
-                    text,
-                    message,
-                    type_scopes,
-                    scope_result,
-                    resolver,
-                    resolution_to_symbol,
-                    references,
-                    spans,
-                );
-            }
-        }
         Stmt::Expr(expr) => record_lightweight_expr(
             file,
             text,
