@@ -296,7 +296,9 @@ fn config_property_prefix_at<'a>(source: &'a str, offset: usize) -> Option<(&'a 
         }
         j += 1;
     }
-    let end_quote = end_quote?;
+    // Be tolerant of unterminated strings while the user is typing: treat the end of the file as
+    // the closing quote for completion purposes.
+    let end_quote = end_quote.unwrap_or(bytes.len());
 
     // Ensure the cursor is inside the string literal contents.
     if !(start_quote < offset && offset <= end_quote) {
