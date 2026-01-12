@@ -2751,6 +2751,31 @@ enum Color { RED }
 }
 
 #[test]
+fn goto_definition_resolves_record_type_across_files() {
+    let main_path = PathBuf::from("/workspace/src/main/java/Main.java");
+    let point_path = PathBuf::from("/workspace/src/main/java/Point.java");
+
+    let main_text = r#"
+class Main {
+  Point<|> p;
+}
+"#;
+    let point_text = r#"
+record Point(int x, int y) {}
+"#
+    .to_string();
+
+    let (db, file, pos) = fixture_multi(main_path, main_text, vec![(point_path, point_text)]);
+
+    let loc = goto_definition(&db, file, pos).expect("expected definition location");
+    assert!(
+        loc.uri.as_str().contains("Point.java"),
+        "expected goto-definition to resolve to Point.java; got {:?}",
+        loc.uri
+    );
+}
+
+#[test]
 fn goto_definition_resolves_member_method_call_across_files() {
     let main_path = PathBuf::from("/workspace/src/main/java/Main.java");
     let foo_path = PathBuf::from("/workspace/src/main/java/Foo.java");

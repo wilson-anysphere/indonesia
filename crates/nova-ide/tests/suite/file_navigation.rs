@@ -572,6 +572,30 @@ class Main {
 }
 
 #[test]
+fn go_to_type_definition_on_variable_returns_record() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Point.java
+record $1Point(int x, int y) {}
+//- /Main.java
+class Main {
+    void test() {
+        Point p = new Point(1, 2);
+        $0p.toString();
+    }
+}
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = type_definition(&fixture.db, file, pos).expect("expected type definition location");
+
+    assert_eq!(got.uri, fixture.marker_uri(1));
+    assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
 fn go_to_type_definition_on_dollar_identifier_returns_class() {
     // NOTE: `$<digits>` sequences are reserved for fixture markers; use `$$0` to place a marker
     // after a literal `$` in the source.
