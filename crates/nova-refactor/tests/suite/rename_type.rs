@@ -132,6 +132,47 @@ class Use { int x = CONST; }
 }
 
 #[test]
+fn rename_type_updates_type_import_on_demand_owner() {
+    let outer_file = FileId::new("com/example/Outer.java");
+    let use_file = FileId::new("Use.java");
+
+    let outer_src = r#"package com.example;
+
+class Outer {
+  static class Inner {}
+}
+"#;
+
+    let use_src = r#"import com.example.Outer.*;
+
+class Use { Inner x; }
+"#;
+
+    let mut files = BTreeMap::new();
+    files.insert(outer_file.clone(), outer_src.to_string());
+    files.insert(use_file.clone(), use_src.to_string());
+
+    let offset = outer_src.find("class Outer").unwrap() + "class ".len() + 1;
+    let edit = rename_type(
+        &files,
+        RenameTypeParams {
+            file: outer_file.clone(),
+            offset,
+            new_name: "NewOuter".into(),
+        },
+    )
+    .unwrap();
+
+    let out = apply_workspace_edit(&files, &edit).unwrap();
+    let updated_use = out.get(&use_file).unwrap();
+
+    assert!(
+        updated_use.contains("import com.example.NewOuter.*;"),
+        "expected type-import-on-demand to update: {updated_use}"
+    );
+}
+
+#[test]
 fn rename_type_can_be_invoked_from_enclosing_qualifier_in_nested_type_usage() {
     let outer_file = FileId::new("Outer.java");
     let use_file = FileId::new("Use.java");

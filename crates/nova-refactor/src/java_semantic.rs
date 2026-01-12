@@ -6063,9 +6063,6 @@ fn record_syntax_only_references(
 
     // Static/type import references.
     for import in unit.imports() {
-        if import.is_wildcard() {
-            continue;
-        }
         let Some(name) = import.name() else {
             continue;
         };
@@ -6076,6 +6073,22 @@ fn record_syntax_only_references(
         }
 
         if import.is_static() {
+            if import.is_wildcard() {
+                // `import static p.Type.*;` references the owner type.
+                record_type_prefix_references(
+                    file,
+                    scope_result.file_scope,
+                    &segments,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+                continue;
+            }
+
+            // `import static p.Type.MEMBER;`
             if segments.len() < 2 {
                 continue;
             }
@@ -6115,8 +6128,8 @@ fn record_syntax_only_references(
                 );
             }
         } else {
-            // Record type references for each resolvable prefix so `Outer.Inner` counts as a
-            // reference to both `Outer` and `Inner`.
+            // `import p.Type;` or `import p.Type.*;` — record type references for each prefix so
+            // `Outer.Inner` counts as a reference to both `Outer` and `Inner`.
             record_type_prefix_references(
                 file,
                 scope_result.file_scope,
@@ -7163,11 +7176,11 @@ fn record_lightweight_expr(
     use java_syntax::ast::Expr;
 
     match expr {
-        Expr::Cast(cast) => {
+        Expr::Cast(expr) => {
             record_type_names_in_range(
                 file,
                 text,
-                TextRange::new(cast.ty.range.start, cast.ty.range.end),
+                TextRange::new(expr.ty.range.start, expr.ty.range.end),
                 type_scopes,
                 scope_result,
                 resolver,
@@ -7178,7 +7191,7 @@ fn record_lightweight_expr(
             record_lightweight_expr(
                 file,
                 text,
-                &cast.expr,
+                &expr.expr,
                 type_scopes,
                 scope_result,
                 resolver,
