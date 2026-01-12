@@ -26,9 +26,9 @@ these into a single logical **Moved** operation when possible; when pairing fail
 observe a fallback representation (e.g. delete+create, or just modified).
 
 `Rescan` events can occur under sustained filesystem churn when watcher queues overflow. When a
-consumer receives a rescan signal, it should fall back to walking/relisting the relevant roots and
-rebuilding its view of the filesystem (treat watcher events as a hint, not an authoritative source
-of truth).
+consumer receives a rescan signal, it should fall back to walking/relisting the relevant
+paths/roots and rebuilding its view of the filesystem (treat watcher events as a hint, not an
+authoritative source of truth).
 
 ### Backpressure / overflow
 

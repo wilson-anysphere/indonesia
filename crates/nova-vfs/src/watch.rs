@@ -279,7 +279,7 @@ impl ManualFileWatcher {
         &self.unwatch_calls
     }
 
-    /// Returns the set of currently watched roots (sorted for determinism).
+    /// Returns the set of currently watched roots/paths (sorted for determinism).
     pub fn watched_roots(&self) -> Vec<PathBuf> {
         let mut roots: Vec<PathBuf> = self.watched.keys().cloned().collect();
         roots.sort();
