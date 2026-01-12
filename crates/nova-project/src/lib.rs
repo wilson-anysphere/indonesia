@@ -7,6 +7,7 @@
 //! - JPMS module graph (workspace modules only)
 
 mod bazel;
+mod build_systems;
 mod discover;
 mod generated;
 mod gradle;
@@ -23,6 +24,9 @@ pub use discover::{
     load_project_with_workspace_config, load_workspace_model, load_workspace_model_with_options,
     load_workspace_model_with_workspace_config, reload_project, workspace_root, LoadOptions,
     ProjectError,
+};
+pub use build_systems::{
+    default_build_systems, BazelBuildSystem, GradleBuildSystem, MavenBuildSystem, SimpleBuildSystem,
 };
 pub use model::*;
 

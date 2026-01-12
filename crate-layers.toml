@@ -40,7 +40,6 @@ to = "xtask"
 
 [crates]
 # core (foundation)
-nova-build-model = "core"
 nova-config = "core"
 nova-core = "core"
 nova-ids = "core"
@@ -71,6 +70,7 @@ nova-yaml = "syntax"
 nova-apt = "semantic"
 nova-build = "semantic"
 nova-build-bazel = "semantic"
+nova-build-model = "semantic"
 nova-cache = "semantic"
 nova-classpath = "semantic"
 nova-config-metadata = "semantic"

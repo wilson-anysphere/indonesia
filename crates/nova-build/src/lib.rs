@@ -33,6 +33,9 @@ pub use orchestrator::{
     BuildTaskState, CommandRunnerFactory, DefaultCommandRunnerFactory,
 };
 
+// Build-system abstraction (see `instructions/build-systems.md`).
+pub use nova_build_model::BuildSystemBackend as BuildSystem;
+
 use nova_core::Diagnostic;
 use nova_project::AnnotationProcessing;
 use std::path::{Path, PathBuf};

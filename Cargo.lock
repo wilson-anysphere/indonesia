@@ -3376,6 +3376,7 @@ name = "nova-build"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "nova-build-model",
  "nova-core",
  "nova-process",
  "nova-project",
@@ -3407,7 +3408,9 @@ dependencies = [
 name = "nova-build-model"
 version = "0.1.0"
 dependencies = [
+ "nova-modules",
  "serde",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

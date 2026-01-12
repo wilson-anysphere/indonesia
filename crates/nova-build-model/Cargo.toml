@@ -5,3 +5,5 @@ edition = "2021"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+thiserror.workspace = true
+nova-modules = { path = "../nova-modules" }
