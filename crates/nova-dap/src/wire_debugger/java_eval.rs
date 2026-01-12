@@ -9,7 +9,7 @@ use nova_stream_debug::StreamOperationKind;
 use tokio_util::sync::CancellationToken;
 
 use crate::java_type::signature_to_java_source_type;
-use crate::javac::{compile_java_to_dir, hot_swap_temp_dir, HotSwapJavacConfig};
+use crate::javac::{compile_java_to_dir, stream_eval_temp_dir, HotSwapJavacConfig};
 
 use super::*;
 
@@ -206,7 +206,7 @@ impl Debugger {
         );
 
         // Compile in a throwaway directory.
-        let temp_dir = hot_swap_temp_dir().map_err(|err| {
+        let temp_dir = stream_eval_temp_dir().map_err(|err| {
             DebuggerError::InvalidRequest(format!("failed to create javac output dir: {err}"))
         })?;
         let output_dir = temp_dir.path();
