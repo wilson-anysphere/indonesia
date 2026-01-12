@@ -247,6 +247,24 @@ mod tests {
     }
 
     #[test]
+    fn read_bytes_falls_back_to_base_read_to_string_when_byte_reads_are_unsupported() {
+        let path = VfsPath::decompiled(HASH_64, "com.example.Bytes");
+        // `MockFs` does not implement `read_bytes`, so it will return `Unsupported` and force
+        // `VirtualDocumentsFs::read_bytes` to fall back to `read_to_string`.
+        let base = MockFs::new(path.clone(), "class Bytes {}".to_string());
+        let store = VirtualDocumentStore::new(1024);
+        let fs = VirtualDocumentsFs::new(base.clone(), store.clone());
+
+        assert_eq!(fs.read_bytes(&path).unwrap(), b"class Bytes {}".to_vec());
+        assert!(store.contains(&path));
+        assert_eq!(base.reads(), 1);
+
+        // Follow-up reads should hit the in-memory cache.
+        assert_eq!(fs.read_bytes(&path).unwrap(), b"class Bytes {}".to_vec());
+        assert_eq!(base.reads(), 1);
+    }
+
+    #[test]
     fn maps_base_unsupported_to_not_found_for_decompiled_paths() {
         let path = VfsPath::decompiled(HASH_64, "com.example.Foo");
         let store = VirtualDocumentStore::new(1024);
