@@ -357,6 +357,9 @@ output directories, and a best-effort dependency list.
 Notes:
 
 - `buildSystem` is one of: `"maven" | "gradle" | "bazel" | "simple"`.
+- `java` is a **workspace-level** language level (not per-module). For multi-module workspaces, Nova
+  reports a conservative value by taking the **maximum** `source`/`target` across modules and
+  enabling preview if any module enables it.
 - Most paths are returned as **absolute filesystem paths** (Nova canonicalizes the workspace root).
 - `dependencies` is best-effort and may be empty, especially for Gradle/Bazel projects.
 
