@@ -8,6 +8,7 @@ use nova_classfile::{
     parse_field_signature, BaseType, ClassTypeSignature, TypeArgument, TypeSignature as GenericType,
 };
 use nova_jdwp::wire::types::{MethodId, INVOKE_SINGLE_THREADED};
+use nova_stream_debug::StreamOperationKind;
 use tokio_util::sync::CancellationToken;
 
 use crate::javac::{compile_java_to_dir, hot_swap_temp_dir, HotSwapJavacConfig};
@@ -681,25 +682,65 @@ fn render_eval_source(
 
     let params = params.join(", ");
     for (idx, expr) in stage_exprs.iter().enumerate() {
-        out.push_str("  public static Object stage");
-        out.push_str(&idx.to_string());
-        out.push('(');
-        out.push_str(&params);
-        out.push_str(") { return ");
-        out.push_str(expr);
-        out.push_str("; }\n");
+        if is_known_void_stream_expression(expr) {
+            out.push_str("  public static void stage");
+            out.push_str(&idx.to_string());
+            out.push('(');
+            out.push_str(&params);
+            out.push_str(") { ");
+            out.push_str(expr);
+            out.push_str("; }\n");
+        } else {
+            out.push_str("  public static Object stage");
+            out.push_str(&idx.to_string());
+            out.push('(');
+            out.push_str(&params);
+            out.push_str(") { return ");
+            out.push_str(expr);
+            out.push_str("; }\n");
+        }
     }
 
     if let Some(expr) = terminal_expr {
-        out.push_str("  public static Object terminal(");
-        out.push_str(&params);
-        out.push_str(") { return ");
-        out.push_str(expr);
-        out.push_str("; }\n");
+        if is_known_void_stream_expression(expr) {
+            out.push_str("  public static void terminal(");
+            out.push_str(&params);
+            out.push_str(") { ");
+            out.push_str(expr);
+            out.push_str("; }\n");
+        } else {
+            out.push_str("  public static Object terminal(");
+            out.push_str(&params);
+            out.push_str(") { return ");
+            out.push_str(expr);
+            out.push_str("; }\n");
+        }
     }
 
     out.push_str("}\n");
     out
+}
+
+fn is_known_void_stream_expression(expr: &str) -> bool {
+    // Stream debugging uses `JavaStreamEvaluator` to compile small helper classes where each stage
+    // is exposed as a static method. Historically we emitted `Object`-returning methods containing
+    // `return <expr>;`. This fails to compile for `void` expressions like `Stream.forEach(...)`.
+    //
+    // We determine "known void" by running the stream analyzer over the expression and checking
+    // the resolved terminal operation kind/return type. If analysis fails (not a stream pipeline),
+    // fall back to "not void".
+    let Ok(chain) = nova_stream_debug::analyze_stream_expression(expr) else {
+        return false;
+    };
+    let Some(term) = chain.terminal else {
+        return false;
+    };
+    if term.kind == StreamOperationKind::ForEach {
+        return true;
+    }
+    term.resolved
+        .as_ref()
+        .is_some_and(|resolved| resolved.return_type == "void")
 }
 
 fn extract_import_lines(path: &Path) -> Vec<String> {
@@ -739,4 +780,30 @@ fn dedup_lines(lines: Vec<String>) -> Vec<String> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_eval_source_uses_void_return_type_for_foreach_terminal() {
+        let src = render_eval_source(
+            None,
+            "NovaStreamEval_Test",
+            &[],
+            &["java.util.stream.Stream<Integer> s".to_string()],
+            &[],
+            Some("s.forEach(System.out::println)"),
+        );
+
+        assert!(
+            src.contains("public static void terminal"),
+            "expected void terminal method, got:\n{src}"
+        );
+        assert!(
+            !src.contains("return s.forEach"),
+            "should not emit `return <void expr>;`:\n{src}"
+        );
+    }
 }
