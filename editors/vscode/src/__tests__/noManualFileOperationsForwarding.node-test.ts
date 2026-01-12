@@ -36,6 +36,22 @@ const FILE_OPERATION_NOTIFICATION_TYPES: Readonly<Record<string, string>> = {
   DidRenameFilesNotification: 'workspace/didRenameFiles',
 };
 
+function getCalledMethodName(expr: ts.Expression, env: Map<string, string>): string | undefined {
+  if (ts.isPropertyAccessExpression(expr)) {
+    return expr.name.text;
+  }
+
+  if (ts.isElementAccessExpression(expr)) {
+    const argument = expr.argumentExpression;
+    if (!argument) {
+      return undefined;
+    }
+    return evalConstString(argument, env);
+  }
+
+  return undefined;
+}
+
 function evalConstString(expr: ts.Expression, env: Map<string, string>): string | undefined {
   if (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) {
     return expr.text;
@@ -190,14 +206,12 @@ test('extension does not manually forward workspace file operations (vscode-lang
     const importAliases = buildImportAliasMap(sourceFile);
 
     const scanForBannedSendNotifications = (node: ts.Node, env: Map<string, string>) => {
-      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
-        if (node.expression.name.text === 'sendNotification') {
-          const arg0 = node.arguments[0];
-          const method = arg0 ? resolveNotificationMethod(arg0, env, importAliases) : undefined;
-          if (method && bannedNotificationMethods.has(method)) {
-            const loc = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-            violations.add(`${path.relative(srcRoot, filePath)}:${loc.line + 1}:${loc.character + 1} sendNotification ${method}`);
-          }
+      if (ts.isCallExpression(node) && getCalledMethodName(node.expression, env) === 'sendNotification') {
+        const arg0 = node.arguments[0];
+        const method = arg0 ? resolveNotificationMethod(arg0, env, importAliases) : undefined;
+        if (method && bannedNotificationMethods.has(method)) {
+          const loc = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+          violations.add(`${path.relative(srcRoot, filePath)}:${loc.line + 1}:${loc.character + 1} sendNotification ${method}`);
         }
       }
 
@@ -246,17 +260,15 @@ test('extension does not manually forward workspace file operations (vscode-lang
       const env = new Map<string, string>([...fileEnv, ...handlerEnv]);
 
       const checkHandler = (handlerNode: ts.Node) => {
-        if (ts.isCallExpression(handlerNode) && ts.isPropertyAccessExpression(handlerNode.expression)) {
-          if (handlerNode.expression.name.text === 'sendNotification') {
-            const arg0 = handlerNode.arguments[0];
-            if (arg0) {
-              const resolved = resolveNotificationMethod(arg0, env, importAliases);
-              if (resolved === listener.notificationMethod) {
-                const loc = sourceFile.getLineAndCharacterOfPosition(handlerNode.getStart(sourceFile));
-                violations.add(
-                  `${path.relative(srcRoot, filePath)}:${loc.line + 1}:${loc.character + 1} ${listenerMethod} -> ${listener.notificationMethod}`,
-                );
-              }
+        if (ts.isCallExpression(handlerNode) && getCalledMethodName(handlerNode.expression, env) === 'sendNotification') {
+          const arg0 = handlerNode.arguments[0];
+          if (arg0) {
+            const resolved = resolveNotificationMethod(arg0, env, importAliases);
+            if (resolved === listener.notificationMethod) {
+              const loc = sourceFile.getLineAndCharacterOfPosition(handlerNode.getStart(sourceFile));
+              violations.add(
+                `${path.relative(srcRoot, filePath)}:${loc.line + 1}:${loc.character + 1} ${listenerMethod} -> ${listener.notificationMethod}`,
+              );
             }
           }
         }
