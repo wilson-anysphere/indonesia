@@ -1150,3 +1150,60 @@ class A {
         "expected no null-dereference diagnostic when rhs is unreachable; got {diags:#?}"
     );
 }
+
+#[test]
+fn completion_scope_excludes_locals_declared_after_cursor() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    int before = 1;
+    <|>
+    int after = 2;
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"before"),
+        "expected `before` to be in completion list; got {labels:?}"
+    );
+    assert!(
+        !labels.contains(&"after"),
+        "expected `after` (declared after cursor) to be excluded; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_recency_ranks_recent_locals_first() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    int foo = 1;
+    int bar = 2;
+    System.out.println(foo);
+    System.out.println(bar);
+    <|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let foo_idx = items
+        .iter()
+        .position(|i| i.label == "foo")
+        .expect("expected `foo` completion");
+    let bar_idx = items
+        .iter()
+        .position(|i| i.label == "bar")
+        .expect("expected `bar` completion");
+    assert!(
+        bar_idx < foo_idx,
+        "expected `bar` to rank above `foo` due to recency; got indices bar={bar_idx} foo={foo_idx}"
+    );
+}

@@ -899,7 +899,7 @@ pub(crate) fn core_completions(
         &text_index,
         prefix_start,
         offset,
-        general_completions(db, file, &prefix),
+        general_completions(db, file, offset, prefix_start, &prefix),
     )
 }
 
@@ -1102,7 +1102,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         &text_index,
         prefix_start,
         offset,
-        general_completions(db, file, &prefix),
+        general_completions(db, file, offset, prefix_start, &prefix),
     )
 }
 
@@ -1329,11 +1329,18 @@ fn member_completions(
         }
     }
 
-    rank_completions(prefix, &mut items);
+    let ctx = CompletionRankingContext::default();
+    rank_completions(prefix, &mut items, &ctx);
     items
 }
 
-fn general_completions(db: &dyn Database, file: FileId, prefix: &str) -> Vec<CompletionItem> {
+fn general_completions(
+    db: &dyn Database,
+    file: FileId,
+    offset: usize,
+    prefix_start: usize,
+    prefix: &str,
+) -> Vec<CompletionItem> {
     let text = db.file_content(file);
     let analysis = analyze(text);
     let mut items = Vec::new();
@@ -1347,13 +1354,34 @@ fn general_completions(db: &dyn Database, file: FileId, prefix: &str) -> Vec<Com
         });
     }
 
-    for v in &analysis.vars {
-        items.push(CompletionItem {
-            label: v.name.clone(),
-            kind: Some(CompletionItemKind::VARIABLE),
-            detail: Some(v.ty.clone()),
-            ..Default::default()
-        });
+    let enclosing_method = analysis
+        .methods
+        .iter()
+        .find(|m| span_contains(m.body_span, offset));
+
+    if let Some(method) = enclosing_method {
+        // Method params are always in scope within the body.
+        for p in &method.params {
+            items.push(CompletionItem {
+                label: p.name.clone(),
+                kind: Some(CompletionItemKind::VARIABLE),
+                detail: Some(p.ty.clone()),
+                ..Default::default()
+            });
+        }
+
+        // Best-effort local variable scoping: only include locals declared in
+        // this method and before the cursor.
+        for v in analysis.vars.iter().filter(|v| {
+            span_within(v.name_span, method.body_span) && v.name_span.start < offset
+        }) {
+            items.push(CompletionItem {
+                label: v.name.clone(),
+                kind: Some(CompletionItemKind::VARIABLE),
+                detail: Some(v.ty.clone()),
+                ..Default::default()
+            });
+        }
     }
 
     for f in &analysis.fields {
@@ -1375,7 +1403,16 @@ fn general_completions(db: &dyn Database, file: FileId, prefix: &str) -> Vec<Com
         });
     }
 
-    rank_completions(prefix, &mut items);
+    let last_used_offsets = last_used_offsets(&analysis, offset);
+
+    let in_scope_types = in_scope_types(&analysis, enclosing_method, offset);
+    let expected_type = infer_expected_type(&analysis, offset, prefix_start, &in_scope_types);
+
+    let ctx = CompletionRankingContext {
+        expected_type,
+        last_used_offsets,
+    };
+    rank_completions(prefix, &mut items, &ctx);
     items
 }
 
@@ -1400,28 +1437,175 @@ fn kind_weight(kind: Option<CompletionItemKind>) -> i32 {
     }
 }
 
-fn rank_completions(query: &str, items: &mut Vec<CompletionItem>) {
+fn scope_bonus(kind: Option<CompletionItemKind>) -> i32 {
+    match kind {
+        // Locals/params (in scope) should rank above other items for equal match scores.
+        Some(CompletionItemKind::VARIABLE) => 10,
+        _ => 0,
+    }
+}
+
+#[derive(Debug, Default)]
+struct CompletionRankingContext {
+    expected_type: Option<String>,
+    last_used_offsets: HashMap<String, usize>,
+}
+
+fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &CompletionRankingContext) {
     let mut matcher = FuzzyMatcher::new(query);
 
-    let mut scored: Vec<(lsp_types::CompletionItem, nova_fuzzy::MatchScore, i32)> = items
+    let mut types = ctx
+        .expected_type
+        .as_deref()
+        .map(|_| TypeStore::with_minimal_jdk());
+    let expected_ty = ctx.expected_type.as_deref().and_then(|expected| {
+        let types = types.as_mut()?;
+        Some(parse_source_type(types, expected))
+    });
+
+    let mut scored: Vec<(
+        lsp_types::CompletionItem,
+        nova_fuzzy::MatchScore,
+        i32,
+        i32,
+        Option<usize>,
+        i32,
+    )> = items
         .drain(..)
         .filter_map(|item| {
             let score = matcher.score(&item.label)?;
+
+            let expected_bonus = match (expected_ty.as_ref(), item.detail.as_deref()) {
+                (Some(expected), Some(detail)) => types
+                    .as_mut()
+                    .and_then(|types| {
+                        let item_ty = parse_source_type(types, detail);
+                        nova_types::assignment_conversion(types, &item_ty, expected)
+                            .is_some()
+                            .then_some(10)
+                    })
+                    .unwrap_or(0),
+                _ => 0,
+            };
+
+            let scope = scope_bonus(item.kind);
+            let recency = ctx.last_used_offsets.get(&item.label).copied();
             let weight = kind_weight(item.kind);
-            Some((item, score, weight))
+
+            Some((item, score, expected_bonus, scope, recency, weight))
         })
         .collect();
 
-    scored.sort_by(|(a_item, a_score, a_weight), (b_item, b_score, b_weight)| {
-        b_score
-            .rank_key()
-            .cmp(&a_score.rank_key())
-            .then_with(|| b_weight.cmp(a_weight))
-            .then_with(|| a_item.label.len().cmp(&b_item.label.len()))
-            .then_with(|| a_item.label.cmp(&b_item.label))
-    });
+    scored.sort_by(
+        |(a_item, a_score, a_expected, a_scope, a_recency, a_weight),
+         (b_item, b_score, b_expected, b_scope, b_recency, b_weight)| {
+            b_score
+                .rank_key()
+                .cmp(&a_score.rank_key())
+                .then_with(|| b_expected.cmp(a_expected))
+                .then_with(|| b_scope.cmp(a_scope))
+                .then_with(|| b_recency.cmp(a_recency))
+                .then_with(|| b_weight.cmp(a_weight))
+                .then_with(|| a_item.label.len().cmp(&b_item.label.len()))
+                .then_with(|| a_item.label.cmp(&b_item.label))
+        },
+    );
 
-    items.extend(scored.into_iter().map(|(item, _, _)| item));
+    items.extend(scored.into_iter().map(|(item, _, _, _, _, _)| item));
+}
+
+fn last_used_offsets(analysis: &Analysis, offset: usize) -> HashMap<String, usize> {
+    let mut last = HashMap::new();
+    for tok in analysis
+        .tokens
+        .iter()
+        .filter(|t| t.kind == TokenKind::Ident && t.span.start < offset)
+    {
+        last.insert(tok.text.clone(), tok.span.start);
+    }
+    last
+}
+
+fn in_scope_types(
+    analysis: &Analysis,
+    enclosing_method: Option<&MethodDecl>,
+    offset: usize,
+) -> HashMap<String, String> {
+    let mut out = HashMap::<String, String>::new();
+
+    if let Some(method) = enclosing_method {
+        for p in &method.params {
+            out.insert(p.name.clone(), p.ty.clone());
+        }
+
+        // Preserve latest declaration order so shadowing is best-effort deterministic.
+        let mut vars: Vec<&VarDecl> = analysis
+            .vars
+            .iter()
+            .filter(|v| span_within(v.name_span, method.body_span) && v.name_span.start < offset)
+            .collect();
+        vars.sort_by_key(|v| v.name_span.start);
+        for v in vars {
+            out.insert(v.name.clone(), v.ty.clone());
+        }
+    }
+
+    // Fields are always in scope, but should not override locals/params.
+    for f in &analysis.fields {
+        out.entry(f.name.clone()).or_insert_with(|| f.ty.clone());
+    }
+
+    out
+}
+
+fn infer_expected_type(
+    analysis: &Analysis,
+    offset: usize,
+    prefix_start: usize,
+    in_scope_types: &HashMap<String, String>,
+) -> Option<String> {
+    let _ = offset;
+
+    let token_before = analysis
+        .tokens
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.span.end <= prefix_start)
+        .last();
+
+    // `x = <cursor>` / `T x = <cursor>`: infer expected type from lhs identifier.
+    if let Some((idx, tok)) = token_before {
+        if tok.kind == TokenKind::Symbol('=') {
+            let lhs_ident = analysis.tokens[..idx]
+                .iter()
+                .rev()
+                .find(|t| t.kind == TokenKind::Ident)?;
+            if let Some(ty) = in_scope_types.get(&lhs_ident.text) {
+                return Some(ty.clone());
+            }
+        }
+    }
+
+    // Best-effort: inside call argument list, infer expected type from same-file method params.
+    let call = analysis
+        .calls
+        .iter()
+        .filter(|c| c.name_span.start <= prefix_start && prefix_start <= c.close_paren)
+        .min_by_key(|c| c.close_paren.saturating_sub(c.name_span.start));
+
+    let call = call?;
+    if call.receiver.is_some() {
+        return None;
+    }
+
+    let arg_idx = call
+        .arg_starts
+        .iter()
+        .position(|start| *start == prefix_start)
+        .unwrap_or_else(|| call.arg_starts.iter().filter(|s| **s < prefix_start).count());
+
+    let method = analysis.methods.iter().find(|m| m.name == call.name)?;
+    method.params.get(arg_idx).map(|p| p.ty.clone())
 }
 
 // -----------------------------------------------------------------------------
