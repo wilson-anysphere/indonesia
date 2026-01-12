@@ -435,7 +435,7 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
           });
         }
         if (projectRoot && path.normalize(projectRoot) !== path.normalize(workspace.uri.fsPath)) {
-          const uri = vscode.Uri.file(projectRoot);
+          const uri = uriForWorkspacePath(workspace, projectRoot);
           infoNodes.push({
             type: 'path',
             id: `${element.id}:projectRoot`,
@@ -594,7 +594,7 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
           : workspace.uri.fsPath;
         const configBaseDir = resolvedWorkspaceRoot || workspace.uri.fsPath;
         if (workspaceRootRaw) {
-          const uri = resolvedWorkspaceRoot ? vscode.Uri.file(resolvedWorkspaceRoot) : undefined;
+          const uri = resolvedWorkspaceRoot ? uriForWorkspacePath(workspace, resolvedWorkspaceRoot) : undefined;
           nodes.push({
             type: 'path',
             id: `${element.id}:workspaceRoot`,
@@ -1055,7 +1055,7 @@ function createSourceRootNode(
 ): NovaProjectExplorerNode {
   const baseDir = opts?.projectRoot ?? parent.projectRoot;
   const resolved = resolvePossiblyRelativePath(baseDir, root);
-  const uri = resolved ? vscode.Uri.file(resolved) : undefined;
+  const uri = resolved ? uriForWorkspacePath(parent.workspace, resolved) : undefined;
 
   return {
     type: 'path',
@@ -1075,14 +1075,14 @@ function createSourceRootNode(
 }
 
 function createClasspathEntryNode(
-  parent: { id: string; projectRoot: string },
+  parent: { id: string; workspace: vscode.WorkspaceFolder; projectRoot: string },
   entry: string,
   idx: number,
   _opts?: { sliceLabel?: string },
 ): NovaProjectExplorerNode {
   const label = path.basename(entry) || entry;
   const resolved = resolvePossiblyRelativePath(parent.projectRoot, entry);
-  const uri = resolved ? vscode.Uri.file(resolved) : undefined;
+  const uri = resolved ? uriForWorkspacePath(parent.workspace, resolved) : undefined;
 
   return {
     type: 'path',
@@ -1109,7 +1109,7 @@ function createConfigOutputDirNode(
   const rawPath = typeof entry.path === 'string' ? entry.path : '';
   const baseDir = parent.baseDir ?? parent.workspace.uri.fsPath;
   const resolved = rawPath ? resolvePossiblyRelativePath(baseDir, rawPath) : '';
-  const uri = resolved ? vscode.Uri.file(resolved) : undefined;
+  const uri = resolved ? uriForWorkspacePath(parent.workspace, resolved) : undefined;
 
   const kind = typeof entry.kind === 'string' && entry.kind.trim().length > 0 ? entry.kind.trim() : 'output';
   const baseName = resolved ? path.basename(resolved) : '';
@@ -1141,7 +1141,7 @@ function createConfigModuleNode(
   const rawRoot = typeof entry.root === 'string' ? entry.root : '';
   const baseDir = parent.baseDir ?? parent.workspace.uri.fsPath;
   const resolved = rawRoot ? resolvePossiblyRelativePath(baseDir, rawRoot) : '';
-  const uri = resolved ? vscode.Uri.file(resolved) : undefined;
+  const uri = resolved ? uriForWorkspacePath(parent.workspace, resolved) : undefined;
 
   return {
     type: 'path',
@@ -1168,7 +1168,7 @@ function createConfigSourceRootNode(
   const rawPath = typeof entry.path === 'string' ? entry.path : '';
   const baseDir = parent.baseDir ?? parent.workspace.uri.fsPath;
   const resolved = rawPath ? resolvePossiblyRelativePath(baseDir, rawPath) : '';
-  const uri = resolved ? vscode.Uri.file(resolved) : undefined;
+  const uri = resolved ? uriForWorkspacePath(parent.workspace, resolved) : undefined;
 
   const kind = typeof entry.kind === 'string' && entry.kind.trim().length > 0 ? entry.kind.trim() : undefined;
   const origin = typeof entry.origin === 'string' && entry.origin.trim().length > 0 ? entry.origin.trim() : undefined;
@@ -1215,7 +1215,7 @@ function createConfigClasspathEntryNode(
   const rawPath = typeof entry.path === 'string' ? entry.path : '';
   const baseDir = parent.baseDir ?? parent.workspace.uri.fsPath;
   const resolved = rawPath ? resolvePossiblyRelativePath(baseDir, rawPath) : '';
-  const uri = resolved ? vscode.Uri.file(resolved) : undefined;
+  const uri = resolved ? uriForWorkspacePath(parent.workspace, resolved) : undefined;
 
   const kind = typeof entry.kind === 'string' && entry.kind.trim().length > 0 ? entry.kind.trim() : 'classpath';
   const baseName = resolved ? path.basename(resolved) : rawPath ? path.basename(rawPath) : '';
@@ -1246,7 +1246,7 @@ function createConfigModulePathEntryNode(
   const rawPath = typeof entry.path === 'string' ? entry.path : '';
   const baseDir = parent.baseDir ?? parent.workspace.uri.fsPath;
   const resolved = rawPath ? resolvePossiblyRelativePath(baseDir, rawPath) : '';
-  const uri = resolved ? vscode.Uri.file(resolved) : undefined;
+  const uri = resolved ? uriForWorkspacePath(parent.workspace, resolved) : undefined;
 
   const kind = typeof entry.kind === 'string' && entry.kind.trim().length > 0 ? entry.kind.trim() : 'modulePath';
   const baseName = resolved ? path.basename(resolved) : rawPath ? path.basename(rawPath) : '';
@@ -1382,6 +1382,12 @@ async function copyPath(arg: unknown): Promise<void> {
   void vscode.window.setStatusBarMessage('Nova: copied path to clipboard', 2000);
 }
 
+function uriForWorkspacePath(workspace: vscode.WorkspaceFolder, fsPath: string): vscode.Uri {
+  const uri = vscode.Uri.file(fsPath);
+  // Preserve the workspace scheme/authority for remote workspaces (e.g. vscode-remote://...).
+  return workspace.uri.scheme === 'file' ? uri : uri.with({ scheme: workspace.uri.scheme, authority: workspace.uri.authority });
+}
+
 function extractPathText(arg: unknown): string | undefined {
   const asFolder = asWorkspaceFolder(arg);
   if (asFolder) {
@@ -1396,13 +1402,15 @@ function extractPathText(arg: unknown): string | undefined {
     return undefined;
   }
 
-  const projectRoot = (arg as { projectRoot?: unknown }).projectRoot;
-  if (typeof projectRoot === 'string' && projectRoot.trim().length > 0) {
-    return projectRoot.trim();
-  }
-
   const workspace = (arg as { workspace?: unknown }).workspace;
   const asNestedFolder = asWorkspaceFolder(workspace);
+
+  const projectRoot = (arg as { projectRoot?: unknown }).projectRoot;
+  if (typeof projectRoot === 'string' && projectRoot.trim().length > 0) {
+    const trimmed = projectRoot.trim();
+    return asNestedFolder ? resolvePossiblyRelativePath(asNestedFolder.uri.fsPath, trimmed) : trimmed;
+  }
+
   if (asNestedFolder) {
     return asNestedFolder.uri.fsPath;
   }
@@ -1463,7 +1471,7 @@ function extractUri(arg: unknown): vscode.Uri | undefined {
     // `nova/projectModel` may report a relative projectRoot. When invoked from a unit node we can
     // resolve it relative to the workspace folder.
     const resolved = asNestedFolder ? resolvePossiblyRelativePath(asNestedFolder.uri.fsPath, trimmed) : trimmed;
-    return vscode.Uri.file(resolved);
+    return asNestedFolder ? uriForWorkspacePath(asNestedFolder, resolved) : vscode.Uri.file(resolved);
   }
 
   if (asNestedFolder) {
