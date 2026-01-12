@@ -536,6 +536,30 @@ class A {}
 }
 
 #[test]
+fn completion_inside_line_comment_is_empty() {
+    let (db, file, pos) = fixture("class A { // if<|>\n }");
+    let items = completions(&db, file, pos);
+    assert!(
+        items.is_empty(),
+        "expected no completions inside line comment; got {items:#?}"
+    );
+    assert!(
+        !items.iter().any(|i| i.label == "if"),
+        "expected no keyword completions inside line comment; got {items:#?}"
+    );
+}
+
+#[test]
+fn completion_inside_block_comment_is_empty() {
+    let (db, file, pos) = fixture("class A { /* ret<|> */ }");
+    let items = completions(&db, file, pos);
+    assert!(
+        items.is_empty(),
+        "expected no completions inside block comment; got {items:#?}"
+    );
+}
+
+#[test]
 fn goto_definition_finds_local_method() {
     let (db, file, pos) = fixture(
         r#"

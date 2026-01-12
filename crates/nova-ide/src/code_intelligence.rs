@@ -1398,6 +1398,50 @@ fn package_decl_completions(
     items
 }
 
+fn offset_in_java_comment(text: &str, offset: usize) -> bool {
+    if offset > text.len() {
+        return false;
+    }
+
+    // Best-effort: use the lightweight lexer-backed parser so we don't accidentally treat `//`
+    // inside string literals as comments.
+    let parse = nova_syntax::parse(text);
+    for tok in parse.tokens() {
+        let start = tok.range.start as usize;
+        let end = tok.range.end as usize;
+
+        if start > offset {
+            break;
+        }
+
+        match tok.kind {
+            nova_syntax::SyntaxKind::LineComment => {
+                // The lexer does not include the trailing newline in the comment token, but from an
+                // editor point of view the cursor at the end-of-line still counts as "inside" the
+                // comment.
+                if offset >= start.saturating_add(2) && offset <= end {
+                    return true;
+                }
+            }
+            nova_syntax::SyntaxKind::BlockComment | nova_syntax::SyntaxKind::DocComment => {
+                // Don't treat the cursor inside the `/*` delimiter itself as inside the comment.
+                if offset < start.saturating_add(2) {
+                    continue;
+                }
+
+                // If the comment is unterminated, allow `offset == end` (EOF) to count as inside.
+                let terminated = tok.text(text).ends_with("*/");
+                if offset < end || (!terminated && offset == end) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    false
+}
+
 /// Core (non-framework) completions for a Java source file.
 ///
 /// Framework completions are provided via the unified `nova-ext` framework providers and
@@ -1419,6 +1463,9 @@ pub(crate) fn core_completions(
     let Some(offset) = text_index.position_to_offset(position) else {
         return Vec::new();
     };
+    if offset_in_java_comment(text, offset) {
+        return Vec::new();
+    }
     let (prefix_start, prefix) = identifier_prefix(text, offset);
 
     if let Some(ctx) = package_decl_completion_context(text, offset) {
@@ -1544,6 +1591,14 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
                 spring_completions_to_lsp(items),
             );
         }
+    }
+
+    if db
+        .file_path(file)
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
+        && offset_in_java_comment(text, offset)
+    {
+        return Vec::new();
     }
 
     // Spring DI completions inside Java source.
