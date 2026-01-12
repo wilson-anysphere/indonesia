@@ -218,7 +218,7 @@ pub enum JavaFeature {
     SealedClasses,             // final Java 17 (preview 15/16)
     PatternMatchingSwitch,     // final Java 21 (preview 17-20)
     RecordPatterns,            // final Java 21 (preview earlier)
-    UnnamedVariables,          // Java 22+ (preview in 21)
+    UnnamedVariables,          // Java 22+ (preview in 21) - unnamed patterns and variables (`_`)
     StringTemplates,           // Java 21+ (preview)
 }
 
@@ -250,7 +250,7 @@ impl JavaFeature {
             JavaFeature::SealedClasses => "sealed classes",
             JavaFeature::PatternMatchingSwitch => "pattern matching for switch",
             JavaFeature::RecordPatterns => "record patterns",
-            JavaFeature::UnnamedVariables => "unnamed variables",
+            JavaFeature::UnnamedVariables => "unnamed patterns and variables (`_`)",
             JavaFeature::StringTemplates => "string templates",
         }
     }
