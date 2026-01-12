@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use nova_ai::{DbProjectDatabase, SemanticSearch, TrigramSemanticSearch, VirtualWorkspace};
 use nova_core::{FileId, ProjectDatabase};
-use nova_db::{Database, InMemoryFileStore};
+use nova_db::{Database, InMemoryFileStore, SalsaDatabase};
 
 #[test]
 fn trigram_semantic_search_indexes_virtual_workspace() {
@@ -159,4 +159,21 @@ fn db_project_database_project_files_are_sorted_and_deduped() {
     let db = DbProjectDatabase::new(&db);
     let files = ProjectDatabase::project_files(&db);
     assert_eq!(files, vec![PathBuf::from("a.txt"), PathBuf::from("b.txt")]);
+}
+
+#[test]
+fn source_db_project_database_indexes_salsa_snapshot() {
+    let db = SalsaDatabase::new();
+    let file = FileId::from_raw(0);
+    db.set_file_text(file, "class Main { String hello() { return \"hello\"; } }".to_string());
+    db.set_file_path(file, "src/Main.java");
+
+    let snap = db.snapshot();
+
+    let mut search = TrigramSemanticSearch::new();
+    search.index_source_database(&snap);
+
+    let results = search.search("hello");
+    assert!(!results.is_empty(), "expected at least one search result");
+    assert_eq!(results[0].path, PathBuf::from("src/Main.java"));
 }

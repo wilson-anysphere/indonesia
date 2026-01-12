@@ -56,6 +56,12 @@ pub trait SemanticSearch: Send + Sync {
         self.index_project(&adapter);
     }
 
+    /// Convenience helper to index a `nova_db::SourceDatabase`.
+    fn index_source_database(&mut self, db: &dyn nova_db::SourceDatabase) {
+        let adapter = crate::project_database::SourceDbProjectDatabase::new(db);
+        self.index_project(&adapter);
+    }
+
     fn search(&self, query: &str) -> Vec<SearchResult>;
 }
 

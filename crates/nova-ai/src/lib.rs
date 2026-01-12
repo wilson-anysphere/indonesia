@@ -66,6 +66,7 @@ pub use semantic_search::{Embedder, EmbeddingSemanticSearch, HashEmbedder};
 pub use types::{AiStream, ChatMessage, ChatRequest, ChatRole, CodeSnippet};
 
 pub use project_database::DbProjectDatabase;
+pub use project_database::SourceDbProjectDatabase;
 
 pub use cancel::CancellationToken;
 pub use patch::{parse_structured_patch, Patch, PatchParseError, TextEdit};

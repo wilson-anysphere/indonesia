@@ -323,6 +323,10 @@ impl SemanticContextBuilder {
         self.search.index_database(db);
     }
 
+    pub fn index_source_database(&mut self, db: &dyn nova_db::SourceDatabase) {
+        self.search.index_source_database(db);
+    }
+
     pub fn clear(&mut self) {
         self.search.clear();
     }
