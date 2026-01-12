@@ -528,14 +528,20 @@ fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
                 _ => false,
             }
         }
-        BuildSystem::Gradle => matches!(
-            name,
-            "build.gradle"
-                | "build.gradle.kts"
-                | "settings.gradle"
-                | "settings.gradle.kts"
-                | "gradle.properties"
-        ),
+        BuildSystem::Gradle => {
+            // Gradle project structure is extremely flexible:
+            // - "script plugins" (`apply from: "deps.gradle"`) are often used to share config
+            // - version catalogs (`libs.versions.toml`) can change dependency resolution + plugins
+            // - wrapper changes affect which Gradle distribution is executed
+            //
+            // Treat these as "build files" so `reload_project()` re-loads configuration when they
+            // change.
+            name == "gradle.properties"
+                || name == "libs.versions.toml"
+                || name.ends_with(".gradle")
+                || name.ends_with(".gradle.kts")
+                || path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.properties"))
+        }
         BuildSystem::Bazel => {
             matches!(
                 name,
