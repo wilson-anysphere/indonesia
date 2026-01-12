@@ -1,5 +1,6 @@
+use crate::comment_printer::{fmt_comment, FmtCtx};
 use crate::doc::Doc;
-use crate::TokenKey;
+use crate::{Comment, CommentKind, TokenKey};
 use nova_syntax::{ast, AstNode, SyntaxKind, SyntaxNode};
 
 use super::{fallback, print, JavaPrettyFormatter};
@@ -138,6 +139,8 @@ impl<'a> JavaPrettyFormatter<'a> {
         let mut parts: Vec<Doc<'a>> = Vec::new();
         let mut has_content = false;
         let mut pending_ws: Option<PendingWs> = None;
+        let mut consumes_next_line_break = false;
+        let ctx = FmtCtx::new(0);
 
         for el in node.descendants_with_tokens() {
             let Some(tok) = el.into_token() else {
@@ -156,7 +159,17 @@ impl<'a> JavaPrettyFormatter<'a> {
 
             match tok.kind() {
                 SyntaxKind::Whitespace => {
-                    let breaks = crate::comment_printer::count_line_breaks(tok.text());
+                    let mut breaks = crate::comment_printer::count_line_breaks(tok.text());
+                    if consumes_next_line_break {
+                        consumes_next_line_break = false;
+                        if breaks == 0 {
+                            continue;
+                        }
+                        breaks = breaks.saturating_sub(1);
+                        if breaks == 0 {
+                            continue;
+                        }
+                    }
                     if !has_content {
                         if preserve_leading_line_breaks && breaks > 0 {
                             let new_ws = PendingWs::Hardlines(breaks.min(2) as usize);
@@ -172,7 +185,34 @@ impl<'a> JavaPrettyFormatter<'a> {
                     };
                     pending_ws = Some(pending_ws.map_or(new_ws, |ws| ws.merge(new_ws)));
                 }
+                SyntaxKind::LineComment | SyntaxKind::BlockComment | SyntaxKind::DocComment => {
+                    if let Some(ws) = pending_ws.take() {
+                        ws.flush(&mut parts);
+                    }
+
+                    let kind = match tok.kind() {
+                        SyntaxKind::LineComment => CommentKind::Line,
+                        SyntaxKind::BlockComment => CommentKind::Block,
+                        SyntaxKind::DocComment => CommentKind::Doc,
+                        _ => unreachable!("unexpected comment token kind"),
+                    };
+
+                    let comment = Comment {
+                        kind,
+                        text_range: tok_range,
+                        is_inline_with_prev: false,
+                        is_inline_with_next: false,
+                        blank_line_before: false,
+                        blank_line_after: false,
+                        force_own_line_after: kind == CommentKind::Doc,
+                    };
+
+                    parts.push(fmt_comment(&ctx, &comment, self.source));
+                    has_content = true;
+                    consumes_next_line_break = matches!(kind, CommentKind::Line | CommentKind::Doc);
+                }
                 _ => {
+                    consumes_next_line_break = false;
                     if let Some(ws) = pending_ws.take() {
                         ws.flush(&mut parts);
                     }

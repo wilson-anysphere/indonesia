@@ -968,6 +968,29 @@ class Foo {
 }
 
 #[test]
+fn pretty_normalizes_doc_comment_inside_class_body() {
+    let input = "class Foo{/**\n   * docs\n   */void m() {}}\n";
+    let edits = edits_for_document_formatting_with_strategy(
+        input,
+        &FormatConfig::default(),
+        FormatStrategy::JavaPrettyAst,
+    );
+    let formatted = apply_text_edits(input, &edits).unwrap();
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+class Foo {
+    /**
+     * docs
+    */
+    void m() {}
+}
+"###
+    );
+}
+
+#[test]
 fn pretty_preserves_inline_block_comment_spacing() {
     let input = "/* header */class Foo{int x;}\n";
     let edits = edits_for_document_formatting_with_strategy(
