@@ -1694,6 +1694,38 @@ class C {
 }
 
 #[test]
+fn post_inc_preserves_array_element_type() {
+    let src = r#"
+class C {
+    void m(byte[] a) {
+        byte b = a[0]++;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected `byte b = a[0]++` to type-check (a[0]++ is byte in Java), got {diags:?}"
+    );
+    assert!(
+        !diags.iter().any(|d| d.code.as_ref() == "invalid-inc-dec"),
+        "expected a[0]++ to be accepted for byte array elements, got {diags:?}"
+    );
+    assert!(
+        !diags.iter().any(|d| d.code.as_ref() == "invalid-lvalue"),
+        "expected a[0] to be treated as an lvalue for ++, got {diags:?}"
+    );
+
+    let offset = src.find("++").expect("test source should contain ++");
+    let ty = db
+        .type_at_offset_display(file, (offset + 1) as u32)
+        .expect("expected type at offset");
+    assert_eq!(ty, "byte");
+}
+
+#[test]
 fn post_inc_preserves_typevar_type() {
     let src = r#"
 class C {
