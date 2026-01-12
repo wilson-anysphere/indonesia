@@ -1093,6 +1093,108 @@ impl<'a> FlowBodyLower<'a> {
                 self.builder
                     .expr_with_span(ExprKind::Invalid { children }, span_of_node(cond.syntax()))
             }
+            ast::Expression::SwitchExpression(switch_expr) => {
+                // Best-effort: lower `switch (expr) { ... }` expressions by collecting nested
+                // expressions so downstream analyses (e.g. Extract Method) can still observe local
+                // reads inside arms.
+                //
+                // We intentionally skip nested lambda bodies to avoid treating lazily-executed code
+                // as eagerly evaluated in flow analysis (consistent with `LambdaExpression`).
+                let span = span_of_node(switch_expr.syntax());
+                let mut children = Vec::new();
+
+                let selector = switch_expr
+                    .expression()
+                    .map(|expr| self.lower_expr(expr))
+                    .unwrap_or_else(|| self.alloc_invalid_expr(span));
+                children.push(selector);
+
+                let Some(block) = switch_expr.block() else {
+                    return self
+                        .builder
+                        .expr_with_span(ExprKind::Invalid { children }, span);
+                };
+
+                fn inside_lambda_body(node: &SyntaxNode) -> bool {
+                    let mut cur = node.parent();
+                    while let Some(parent) = cur {
+                        if parent.kind() == SyntaxKind::LambdaExpression {
+                            return true;
+                        }
+                        cur = parent.parent();
+                    }
+                    false
+                }
+
+                for group in block.syntax().children() {
+                    self.check_cancelled();
+
+                    match group.kind() {
+                        SyntaxKind::SwitchGroup | SyntaxKind::SwitchRule => {}
+                        _ => continue,
+                    }
+
+                    // Case label expressions (e.g. `case 0, x -> ...`) and guards (`when ...`).
+                    for label in group.children().filter_map(ast::SwitchLabel::cast) {
+                        for element in label.elements() {
+                            if node_has_token(element.syntax(), SyntaxKind::DefaultKw) {
+                                continue;
+                            }
+                            if let Some(expr) = element.expression() {
+                                children.push(self.lower_expr(expr));
+                            } else if let Some(pattern) = element.pattern() {
+                                // Patterns are not modeled; still walk any nested expressions so we
+                                // can observe local reads (best-effort).
+                                let _ = pattern;
+                                for child in element
+                                    .syntax()
+                                    .children()
+                                    .filter_map(ast::Expression::cast)
+                                {
+                                    children.push(self.lower_expr(child));
+                                }
+                            }
+                            if let Some(guard) = element.guard().and_then(|g| g.expression()) {
+                                children.push(self.lower_expr(guard));
+                            }
+                        }
+                    }
+
+                    // Walk expressions inside the arm body.
+                    if group.kind() == SyntaxKind::SwitchGroup {
+                        for stmt in group.children().filter_map(ast::Statement::cast) {
+                            for expr in stmt
+                                .syntax()
+                                .descendants()
+                                .filter_map(ast::Expression::cast)
+                                .filter(|expr| !inside_lambda_body(expr.syntax()))
+                            {
+                                children.push(self.lower_expr(expr));
+                            }
+                        }
+                    } else if let Some(rule) = ast::SwitchRule::cast(group.clone()) {
+                        if let Some(body) = rule.body() {
+                            // If the body is an expression (`case ... -> <expr>`), include it
+                            // directly (in addition to its descendants).
+                            if let ast::SwitchRuleBody::Expression(expr) = body.clone() {
+                                children.push(self.lower_expr(expr));
+                            }
+
+                            for expr in body
+                                .syntax()
+                                .descendants()
+                                .filter_map(ast::Expression::cast)
+                                .filter(|expr| !inside_lambda_body(expr.syntax()))
+                            {
+                                children.push(self.lower_expr(expr));
+                            }
+                        }
+                    }
+                }
+
+                self.builder
+                    .expr_with_span(ExprKind::Invalid { children }, span)
+            }
             ast::Expression::CastExpression(cast) => {
                 let mut children = Vec::new();
                 if let Some(expr) = cast.expression() {
