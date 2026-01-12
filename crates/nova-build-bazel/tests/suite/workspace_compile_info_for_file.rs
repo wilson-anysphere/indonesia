@@ -249,6 +249,21 @@ fn compile_info_for_file_returns_none_when_file_is_bazelignored() {
 }
 
 #[test]
+fn compile_info_for_file_returns_none_when_file_does_not_exist() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
+    write_file(&dir.path().join("java/BUILD"), "# test\n");
+
+    // Don't create the file on disk.
+    let file = dir.path().join("java/Hello.java");
+
+    // Should not invoke Bazel; this is a cheap best-effort API meant for on-demand IDE lookups.
+    let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), NoopRunner).unwrap();
+    let info = workspace.compile_info_for_file(&file).unwrap();
+    assert_eq!(info, None);
+}
+
+#[test]
 fn compile_info_for_file_resolves_owner_returns_compile_info_and_caches_aquery() {
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();

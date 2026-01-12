@@ -2332,6 +2332,36 @@ mod tests {
     }
 
     #[test]
+    fn file_classpath_requires_file_uri() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("WORKSPACE"), "").unwrap();
+
+        let err = handle_file_classpath(serde_json::json!({
+            "projectRoot": tmp.path().to_string_lossy(),
+            "uri": "http://example.com/Hello.java",
+        }))
+        .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("`uri` must be a file:// URI"));
+    }
+
+    #[test]
+    fn file_classpath_requires_valid_uri() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("WORKSPACE"), "").unwrap();
+
+        let err = handle_file_classpath(serde_json::json!({
+            "projectRoot": tmp.path().to_string_lossy(),
+            "uri": "not a uri",
+        }))
+        .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("invalid uri:"));
+    }
+
+    #[test]
     fn project_model_params_accepts_project_root_aliases() {
         let params: ProjectModelParams = serde_json::from_value(serde_json::json!({
             "root": "/tmp/project",

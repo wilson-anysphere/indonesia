@@ -333,6 +333,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
     ///
     /// Returns `Ok(None)` when:
     /// - `file` is outside the Bazel workspace root, or
+    /// - `file` does not exist on disk, or
     /// - `file` is not contained in any Bazel package under the workspace root (no `BUILD` /
     ///   `BUILD.bazel` file found up to the workspace root), or
     /// - no owning `java_*` targets were found for `file`.
@@ -374,6 +375,21 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         file: &Path,
         run_target: Option<&str>,
     ) -> Result<Option<JavaCompileInfo>> {
+        // `compile_info_for_file*` is primarily intended for IDE-style on-demand lookups. Treat
+        // missing/non-file paths as a non-match rather than attempting Bazel queries that will
+        // fail (and may be expensive).
+        //
+        // For relative paths we interpret them as workspace-root-relative, matching other APIs in
+        // this crate and the existing test suite.
+        let abs_file = if file.is_absolute() {
+            file.to_path_buf()
+        } else {
+            self.root.join(file)
+        };
+        if !abs_file.is_file() {
+            return Ok(None);
+        }
+
         let label_and_package = match self.workspace_file_label_and_package(file) {
             Ok(value) => value,
             Err(err) => {
