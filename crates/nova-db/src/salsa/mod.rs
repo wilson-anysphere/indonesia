@@ -36,9 +36,9 @@ mod flow;
 mod hir;
 mod ide;
 mod indexing;
+mod inputs;
 mod interned_class_key;
 mod item_tree_store;
-mod inputs;
 mod java_parse_cache;
 mod resolve;
 mod semantic;
@@ -73,8 +73,8 @@ use std::time::Duration;
 use parking_lot::Mutex as ParkingMutex;
 use parking_lot::RwLock;
 
-use nova_core::ProjectDatabase;
 use nova_core::ClassId;
+use nova_core::ProjectDatabase;
 use nova_memory::{
     EvictionRequest, EvictionResult, MemoryCategory, MemoryEvictor, MemoryManager, MemoryPressure,
 };
@@ -847,13 +847,9 @@ impl InputIndexTracker {
                         }
                     }
                     None => {
-                        inner.by_ptr.insert(
-                            new_ptr,
-                            TrackedPtrEntry {
-                                bytes,
-                                refs: 1,
-                            },
-                        );
+                        inner
+                            .by_ptr
+                            .insert(new_ptr, TrackedPtrEntry { bytes, refs: 1 });
                         inserted = true;
                     }
                 }
@@ -1617,7 +1613,8 @@ impl Database {
             .get(&file)
             .map(|text| text.len() as u64)
             .unwrap_or(0);
-        self.memo_footprint.record(file, TrackedSalsaMemo::Parse, bytes);
+        self.memo_footprint
+            .record(file, TrackedSalsaMemo::Parse, bytes);
     }
 
     /// Remove any pinned `item_tree` result for `file` from the shared
@@ -1651,7 +1648,8 @@ impl Database {
             .get(&file)
             .map(|text| text.len() as u64)
             .unwrap_or(0);
-        self.memo_footprint.record(file, TrackedSalsaMemo::ItemTree, bytes);
+        self.memo_footprint
+            .record(file, TrackedSalsaMemo::ItemTree, bytes);
     }
 
     pub fn new_with_persistence(
@@ -1852,14 +1850,14 @@ impl Database {
                 inputs.source_root.insert(file, default_root);
             }
 
-            let (set_default_rel_path, rel_path) = if let Some(path) = inputs.file_rel_path.get(&file)
-            {
-                (false, path.clone())
-            } else {
-                let path = Arc::new(format!("file-{}.java", file.to_raw()));
-                inputs.file_rel_path.insert(file, path.clone());
-                (true, path)
-            };
+            let (set_default_rel_path, rel_path) =
+                if let Some(path) = inputs.file_rel_path.get(&file) {
+                    (false, path.clone())
+                } else {
+                    let path = Arc::new(format!("file-{}.java", file.to_raw()));
+                    inputs.file_rel_path.insert(file, path.clone());
+                    (true, path)
+                };
 
             let project = *inputs.file_project.get(&file).unwrap_or(&default_project);
 
@@ -1945,7 +1943,8 @@ impl Database {
 
         // Keep memory tracking in sync for implicit defaults.
         if set_default_classpath_index {
-            self.classpath_index_tracker.set_project_ptr(project, None, 0);
+            self.classpath_index_tracker
+                .set_project_ptr(project, None, 0);
         }
     }
 
@@ -2138,8 +2137,8 @@ impl Database {
         // HashMap metadata; it is only used to make large host-managed inputs visible to the
         // memory manager so eviction of *caches* can react to input-driven pressure.
         let bytes = {
-            let mut total = (mapping.len() as u64)
-                * (std::mem::size_of::<(Arc<str>, ClassId)>() as u64);
+            let mut total =
+                (mapping.len() as u64) * (std::mem::size_of::<(Arc<str>, ClassId)>() as u64);
             for (name, _) in mapping.as_ref() {
                 total = total.saturating_add(name.len() as u64);
             }
@@ -2322,6 +2321,7 @@ impl Database {
         // indexes are visible to the manager.
         self.register_salsa_input_tracker(manager);
         self.register_input_index_trackers(manager);
+        self.register_java_parse_cache_evictor(manager);
 
         if let Some(existing) = self.memo_evictor.get() {
             existing.clone()
@@ -3624,6 +3624,32 @@ class Foo {
     }
 
     #[test]
+    fn java_parse_cache_is_tracked_via_memo_evictor_registration() {
+        let manager = MemoryManager::new(MemoryBudget::from_total(1_000));
+        let db = Database::new();
+
+        // Workspace initialization registers memory tracking/eviction via this hook.
+        db.register_salsa_memo_evictor(&manager);
+
+        let file = FileId::from_raw(1);
+        let text = "class Foo { int x; }";
+        db.set_file_text(file, text);
+        db.with_snapshot(|snap| {
+            let _ = snap.parse_java(file);
+        });
+
+        // The cache registers as an evictor/tracker, but intentionally reports 0 bytes to avoid
+        // double-counting parse allocations that are also tracked by Salsa memo footprint.
+        let (_report, components) = manager.report_detailed();
+        let cache = components
+            .iter()
+            .find(|c| c.name == "java_parse_cache")
+            .expect("expected java_parse_cache to be registered in MemoryManager");
+        assert_eq!(cache.category, MemoryCategory::SyntaxTrees);
+        assert_eq!(cache.bytes, 0);
+    }
+
+    #[test]
     fn salsa_input_jdk_index_is_tracked_in_memory_manager() {
         let manager = MemoryManager::new(MemoryBudget::from_total(10 * 1024 * 1024));
         let db = Database::new_with_memory_manager(&manager);
@@ -3833,9 +3859,12 @@ class Foo {
             "expected salsa memo tracker to report usage after parsing"
         );
 
-        let cache_dir = nova_cache::CacheDir::new(&project_root, CacheConfig {
-            cache_root_override: Some(cache_root),
-        })
+        let cache_dir = nova_cache::CacheDir::new(
+            &project_root,
+            CacheConfig {
+                cache_root_override: Some(cache_root),
+            },
+        )
         .unwrap();
         let expected_shard_artifact = cache_dir
             .indexes_dir()
@@ -3890,7 +3919,10 @@ class Foo {
         // We expect the parse allocation to be accounted once across `query_cache`
         // and `syntax_trees` (not twice). Other categories (like tracked Salsa
         // input text) may legitimately contribute additional bytes.
-        let syntax_and_cache = report.usage.query_cache.saturating_add(report.usage.syntax_trees);
+        let syntax_and_cache = report
+            .usage
+            .query_cache
+            .saturating_add(report.usage.syntax_trees);
         assert!(
             syntax_and_cache <= text_len.saturating_mul(3) / 2,
             "expected (query_cache+syntax_trees) to be ~text_len once (<= 1.5x), got sum={} (query_cache={}, syntax_trees={}) for text_len={text_len}",
@@ -3939,7 +3971,10 @@ class Foo {
             "expected syntax tree + item tree stores to report usage for open document"
         );
 
-        let syntax_and_cache = report.usage.query_cache.saturating_add(report.usage.syntax_trees);
+        let syntax_and_cache = report
+            .usage
+            .query_cache
+            .saturating_add(report.usage.syntax_trees);
         assert!(
             syntax_and_cache <= text_len.saturating_mul(5) / 2,
             "expected (query_cache+syntax_trees) to be ~2x text_len (<= 2.5x) when parse + item_tree are pinned, got sum={} (query_cache={}, syntax_trees={}) for text_len={text_len}",
