@@ -2262,6 +2262,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connect_aborts_on_invalid_packet_length_prefix() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+
+            // JDWP handshake.
+            let mut hs = [0u8; crate::wire::codec::HANDSHAKE.len()];
+            socket.read_exact(&mut hs).await.unwrap();
+            socket
+                .write_all(crate::wire::codec::HANDSHAKE)
+                .await
+                .unwrap();
+
+            // Read the first command packet from the debugger (VirtualMachine.IDSizes).
+            // This ensures the client has a pending request before we inject the malformed
+            // packet that should terminate the read loop.
+            let mut header = [0u8; crate::wire::codec::HEADER_LEN];
+            socket.read_exact(&mut header).await.unwrap();
+            let length = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
+            assert!(
+                (crate::wire::codec::HEADER_LEN..=crate::MAX_JDWP_PACKET_BYTES).contains(&length)
+            );
+            let payload_len = length - crate::wire::codec::HEADER_LEN;
+            if payload_len > 0 {
+                let mut payload = Vec::new();
+                payload.try_reserve_exact(payload_len).unwrap();
+                payload.resize(payload_len, 0);
+                socket.read_exact(&mut payload).await.unwrap();
+            }
+
+            // Inject an invalid JDWP packet header (`length < HEADER_LEN`).
+            let invalid_len = (crate::wire::codec::HEADER_LEN - 1) as u32;
+            let mut header = [0u8; crate::wire::codec::HEADER_LEN];
+            header[0..4].copy_from_slice(&invalid_len.to_be_bytes());
+            socket.write_all(&header).await.unwrap();
+        });
+
+        let config = JdwpClientConfig {
+            // Keep the test fast even if something regresses.
+            reply_timeout: Duration::from_secs(1),
+            ..Default::default()
+        };
+
+        let res = tokio::time::timeout(
+            Duration::from_secs(2),
+            JdwpClient::connect_with_config(addr, config),
+        )
+        .await
+        .expect("connect should not hang");
+
+        let err = match res {
+            Ok(_client) => panic!("expected connect to fail"),
+            Err(err) => err,
+        };
+
+        let expected = format!(
+            "invalid packet length {}",
+            crate::wire::codec::HEADER_LEN - 1
+        );
+        match err {
+            JdwpError::Protocol(msg) => assert_eq!(msg, expected),
+            other => panic!("expected Protocol error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn pending_entries_are_removed_when_request_future_is_dropped() {
         // Delay `VirtualMachine.AllThreads (1, 4)` so the request stays in-flight long enough
         // for us to abort it without racing a reply/timeout path.
