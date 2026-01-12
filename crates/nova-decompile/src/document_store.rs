@@ -4,6 +4,7 @@ use nova_core::{Position, Range};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io;
+use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -510,14 +511,29 @@ fn read_cache_file_bytes(path: &Path) -> Result<Option<Vec<u8>>, CacheError> {
         return Ok(None);
     }
 
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(_) => {
             remove_corrupt_path(path);
             return Ok(None);
         }
     };
+
+    // Use `take` as a defense-in-depth cap against races where a cache file grows
+    // after the `symlink_metadata` length check above.
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    match file
+        .take(MAX_DOC_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+    {
+        Ok(_) => {}
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => {
+            remove_corrupt_path(path);
+            return Ok(None);
+        }
+    }
     if bytes.len() as u64 > MAX_DOC_BYTES {
         remove_corrupt_path(path);
         return Ok(None);
