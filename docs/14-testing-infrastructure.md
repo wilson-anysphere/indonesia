@@ -148,8 +148,8 @@ cargo nextest run --workspace --profile ci
 # one crate
 cargo test -p nova-syntax
 
-# one integration test binary
-cargo test -p nova-lsp --test navigation
+# one integration test harness + filter (e.g. navigation tests)
+cargo test -p nova-lsp --test stdio_server navigation
 
 # filter by test name substring
 cargo test -p nova-refactor move_static_method_updates_call_sites
