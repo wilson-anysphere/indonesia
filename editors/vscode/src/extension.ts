@@ -7,6 +7,7 @@ import { getCompletionContextId, requestMoreCompletions } from './aiCompletionMo
 import { registerNovaDebugAdapter } from './debugAdapter';
 import { registerNovaDebugConfigurations } from './debugConfigurations';
 import { registerFrameworkDashboardCommands } from './frameworkDashboard';
+import { registerNovaFrameworksView, type NovaFrameworksViewController } from './frameworksView';
 import { registerNovaHotSwap } from './hotSwap';
 import { registerNovaMetricsCommands } from './metricsCommands';
 import { registerNovaTestDebugRunProfile } from './testDebug';
@@ -239,6 +240,10 @@ export async function activate(context: vscode.ExtensionContext) {
   registerNovaHotSwap(context, sendNovaRequest);
   registerNovaMetricsCommands(context, sendNovaRequest);
   registerFrameworkDashboardCommands(context);
+  const frameworksView: NovaFrameworksViewController = registerNovaFrameworksView(context, {
+    getClient: () => client,
+    getClientStart: () => clientStart,
+  });
 
   const readServerSettings = (): NovaServerSettings => {
     const cfg = vscode.workspace.getConfiguration('nova');
@@ -596,6 +601,7 @@ export async function activate(context: vscode.ExtensionContext) {
       detachObservability();
       aiRefreshInProgress = false;
       clearAiCompletionCache();
+      frameworksView.refresh();
     }
   }
 
@@ -611,6 +617,7 @@ export async function activate(context: vscode.ExtensionContext) {
     // vscode-languageclient v9+ starts asynchronously.
     clientStart = client.start();
     attachObservability(client, clientStart);
+    frameworksView.refresh();
     clientStart.catch((err) => {
       const message = err instanceof Error ? err.message : String(err);
       void vscode.window.showErrorMessage(`Nova: failed to start nova-lsp: ${message}`);

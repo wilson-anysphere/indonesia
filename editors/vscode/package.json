@@ -17,6 +17,7 @@
   ],
   "activationEvents": [
     "onLanguage:java",
+    "onView:novaFrameworks",
     "onCommand:nova.installOrUpdateServer",
     "onCommand:nova.useLocalServerBinary",
     "onCommand:nova.showServerVersion",
@@ -121,6 +122,31 @@
       {
         "command": "nova.frameworks.revealInExplorer",
         "title": "Nova: Reveal In Explorer"
+      }
+    ],
+    "views": {
+      "explorer": [
+        {
+          "id": "novaFrameworks",
+          "name": "Frameworks"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "novaFrameworks",
+        "contents": "Open a folder to see Nova framework info.\n\n[Open Folder](command:workbench.action.files.openFolder)",
+        "when": "workspaceFolderCount == 0"
+      },
+      {
+        "view": "novaFrameworks",
+        "contents": "Nova's language server is not running.\n\n[Install/Update Server](command:nova.installOrUpdateServer)",
+        "when": "workspaceFolderCount > 0 && !nova.frameworks.serverRunning"
+      },
+      {
+        "view": "novaFrameworks",
+        "contents": "This version of Nova does not support framework endpoint discovery.\n\n- Upgrade Nova / update the server.\n- Check your server version: [Nova: Show Server Version](command:nova.showServerVersion)",
+        "when": "workspaceFolderCount > 0 && nova.frameworks.serverRunning && !nova.frameworks.webEndpointsSupported"
       }
     ],
     "menus": {
