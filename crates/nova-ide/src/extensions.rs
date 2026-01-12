@@ -875,6 +875,7 @@ where
             actions.extend(type_mismatch_quick_fixes(
                 self.db.as_ref().as_dyn_nova_db(),
                 file,
+                &cancel,
                 source,
                 &cancel,
                 &uri,
@@ -969,6 +970,7 @@ where
 fn type_mismatch_quick_fixes(
     db: &dyn nova_db::Database,
     file: nova_ext::FileId,
+    cancel: &CancellationToken,
     source: &str,
     cancel: &CancellationToken,
     uri: &lsp_types::Uri,
