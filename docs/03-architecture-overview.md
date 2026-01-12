@@ -608,7 +608,7 @@ use nova_types::{ClassId, CompletionItem, Diagnostic};
 use nova_vfs::FileId;
 
 /// Extension point for framework analyzers (see `crates/nova-framework/src/lib.rs`).
-pub trait FrameworkAnalyzer: Send + Sync {
+ pub trait FrameworkAnalyzer: Send + Sync {
     fn applies_to(&self, db: &dyn nova_framework::Database, project: ProjectId) -> bool;
 
     fn analyze_file(
@@ -647,15 +647,19 @@ pub trait FrameworkAnalyzer: Send + Sync {
         Vec::new()
     }
 
-    fn inlay_hints(&self, _db: &dyn nova_framework::Database, _file: FileId) -> Vec<InlayHint> {
-        Vec::new()
-    }
-}
-```
+     fn inlay_hints(&self, _db: &dyn nova_framework::Database, _file: FileId) -> Vec<InlayHint> {
+         Vec::new()
+     }
+ }
+ ```
+ 
+ The real `nova-framework` API also provides `*_with_cancel` wrappers on `FrameworkAnalyzer` and
+ corresponding `framework_*_with_cancel` methods on `AnalyzerRegistry`, taking
+ `nova_scheduler::CancellationToken` for request cancellation.
 
----
+ ---
 
-## Memory Management
+ ## Memory Management
 
 ### Strategy
 

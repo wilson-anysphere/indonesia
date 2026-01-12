@@ -105,8 +105,9 @@ available” and skip cross-file scanning or file-text based features.
 ```rust
 use nova_core::ProjectId;
 use nova_framework::{
-    CompletionContext, FrameworkData, InlayHint, NavigationTarget, Symbol, VirtualMember,
+    CompletionContext, Database, FrameworkData, InlayHint, NavigationTarget, Symbol, VirtualMember,
 };
+use nova_scheduler::CancellationToken;
 use nova_types::{ClassId, CompletionItem, Diagnostic};
 use nova_vfs::FileId;
 
@@ -121,12 +122,51 @@ pub trait FrameworkAnalyzer: Send + Sync {
         Vec::new()
     }
 
+    fn diagnostics_with_cancel(
+        &self,
+        db: &dyn Database,
+        file: FileId,
+        cancel: &CancellationToken,
+    ) -> Vec<Diagnostic> {
+        if cancel.is_cancelled() {
+            Vec::new()
+        } else {
+            self.diagnostics(db, file)
+        }
+    }
+
     fn completions(&self, _db: &dyn Database, _ctx: &CompletionContext) -> Vec<CompletionItem> {
         Vec::new()
     }
 
+    fn completions_with_cancel(
+        &self,
+        db: &dyn Database,
+        ctx: &CompletionContext,
+        cancel: &CancellationToken,
+    ) -> Vec<CompletionItem> {
+        if cancel.is_cancelled() {
+            Vec::new()
+        } else {
+            self.completions(db, ctx)
+        }
+    }
+
     fn navigation(&self, _db: &dyn Database, _symbol: &Symbol) -> Vec<NavigationTarget> {
         Vec::new()
+    }
+
+    fn navigation_with_cancel(
+        &self,
+        db: &dyn Database,
+        symbol: &Symbol,
+        cancel: &CancellationToken,
+    ) -> Vec<NavigationTarget> {
+        if cancel.is_cancelled() {
+            Vec::new()
+        } else {
+            self.navigation(db, symbol)
+        }
     }
 
     fn virtual_members(&self, _db: &dyn Database, _class: ClassId) -> Vec<VirtualMember> {
@@ -135,6 +175,19 @@ pub trait FrameworkAnalyzer: Send + Sync {
 
     fn inlay_hints(&self, _db: &dyn Database, _file: FileId) -> Vec<InlayHint> {
         Vec::new()
+    }
+
+    fn inlay_hints_with_cancel(
+        &self,
+        db: &dyn Database,
+        file: FileId,
+        cancel: &CancellationToken,
+    ) -> Vec<InlayHint> {
+        if cancel.is_cancelled() {
+            Vec::new()
+        } else {
+            self.inlay_hints(db, file)
+        }
     }
 }
 ```
@@ -146,25 +199,50 @@ use nova_framework::{
     AnalyzerRegistry, CompletionContext, Database, FrameworkData, InlayHint, NavigationTarget,
     Symbol, VirtualMember,
 };
+use nova_scheduler::CancellationToken;
 use nova_types::{ClassId, CompletionItem, Diagnostic};
 use nova_vfs::FileId;
 
 impl AnalyzerRegistry {
     pub fn framework_data(&self, db: &dyn Database, file: FileId) -> Vec<FrameworkData>;
     pub fn framework_diagnostics(&self, db: &dyn Database, file: FileId) -> Vec<Diagnostic>;
+    pub fn framework_diagnostics_with_cancel(
+        &self,
+        db: &dyn Database,
+        file: FileId,
+        cancel: &CancellationToken,
+    ) -> Vec<Diagnostic>;
     pub fn framework_completions(
         &self,
         db: &dyn Database,
         ctx: &CompletionContext,
+    ) -> Vec<CompletionItem>;
+    pub fn framework_completions_with_cancel(
+        &self,
+        db: &dyn Database,
+        ctx: &CompletionContext,
+        cancel: &CancellationToken,
     ) -> Vec<CompletionItem>;
     pub fn framework_navigation_targets(
         &self,
         db: &dyn Database,
         symbol: &Symbol,
     ) -> Vec<NavigationTarget>;
+    pub fn framework_navigation_targets_with_cancel(
+        &self,
+        db: &dyn Database,
+        symbol: &Symbol,
+        cancel: &CancellationToken,
+    ) -> Vec<NavigationTarget>;
     pub fn framework_virtual_members(&self, db: &dyn Database, class: ClassId) -> Vec<VirtualMember>;
     pub fn virtual_members_for_class(&self, db: &dyn Database, class: ClassId) -> Vec<VirtualMember>;
     pub fn framework_inlay_hints(&self, db: &dyn Database, file: FileId) -> Vec<InlayHint>;
+    pub fn framework_inlay_hints_with_cancel(
+        &self,
+        db: &dyn Database,
+        file: FileId,
+        cancel: &CancellationToken,
+    ) -> Vec<InlayHint>;
 }
 ```
 

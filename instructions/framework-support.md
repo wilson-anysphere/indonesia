@@ -44,6 +44,7 @@ use nova_framework::{
     CompletionContext, FrameworkData, InlayHint, NavigationTarget, Symbol, VirtualMember,
 };
 use nova_hir::framework::ClassData;
+use nova_scheduler::CancellationToken;
 use nova_types::{ClassId, CompletionItem, Diagnostic};
 use nova_vfs::FileId;
 
@@ -86,6 +87,10 @@ pub trait Database {
 ///
 /// All hooks except `applies_to` are optional (default to no-op) so analyzers can
 /// focus on the behavior they care about (e.g. Lombok implements `virtual_members`).
+///
+/// The trait also provides `*_with_cancel` wrappers for long-running hooks so callers can
+/// cooperate with request cancellation. Most analyzers only implement the non-`*_with_cancel`
+/// methods.
 pub trait FrameworkAnalyzer: Send + Sync {
     /// Check if this analyzer applies to `project`.
     fn applies_to(&self, db: &dyn Database, project: ProjectId) -> bool;
@@ -100,14 +105,56 @@ pub trait FrameworkAnalyzer: Send + Sync {
         Vec::new()
     }
 
+    /// Optional: cancellation-aware wrapper around `diagnostics`.
+    fn diagnostics_with_cancel(
+        &self,
+        db: &dyn Database,
+        file: FileId,
+        cancel: &CancellationToken,
+    ) -> Vec<Diagnostic> {
+        if cancel.is_cancelled() {
+            Vec::new()
+        } else {
+            self.diagnostics(db, file)
+        }
+    }
+
     /// Optional: provide completion items at a cursor location.
     fn completions(&self, _db: &dyn Database, _ctx: &CompletionContext) -> Vec<CompletionItem> {
         Vec::new()
     }
 
+    /// Optional: cancellation-aware wrapper around `completions`.
+    fn completions_with_cancel(
+        &self,
+        db: &dyn Database,
+        ctx: &CompletionContext,
+        cancel: &CancellationToken,
+    ) -> Vec<CompletionItem> {
+        if cancel.is_cancelled() {
+            Vec::new()
+        } else {
+            self.completions(db, ctx)
+        }
+    }
+
     /// Optional: provide navigation targets for a coarse symbol handle.
     fn navigation(&self, _db: &dyn Database, _symbol: &Symbol) -> Vec<NavigationTarget> {
         Vec::new()
+    }
+
+    /// Optional: cancellation-aware wrapper around `navigation`.
+    fn navigation_with_cancel(
+        &self,
+        db: &dyn Database,
+        symbol: &Symbol,
+        cancel: &CancellationToken,
+    ) -> Vec<NavigationTarget> {
+        if cancel.is_cancelled() {
+            Vec::new()
+        } else {
+            self.navigation(db, symbol)
+        }
     }
 
     /// Optional: synthesize framework-generated members (e.g., Lombok).
@@ -118,6 +165,20 @@ pub trait FrameworkAnalyzer: Send + Sync {
     /// Optional: provide inlay hints for a file.
     fn inlay_hints(&self, _db: &dyn Database, _file: FileId) -> Vec<InlayHint> {
         Vec::new()
+    }
+
+    /// Optional: cancellation-aware wrapper around `inlay_hints`.
+    fn inlay_hints_with_cancel(
+        &self,
+        db: &dyn Database,
+        file: FileId,
+        cancel: &CancellationToken,
+    ) -> Vec<InlayHint> {
+        if cancel.is_cancelled() {
+            Vec::new()
+        } else {
+            self.inlay_hints(db, file)
+        }
     }
 }
 ```
