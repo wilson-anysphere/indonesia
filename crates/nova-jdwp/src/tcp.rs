@@ -246,6 +246,9 @@ impl TcpJdwpClient {
             let count = cursor.read_u32()? as usize;
 
             let mut methods = HashMap::new();
+            methods.try_reserve(count).map_err(|_| {
+                JdwpError::Protocol(format!("unable to allocate method table ({count} entries)"))
+            })?;
             for _ in 0..count {
                 let method_id = cursor.read_id(self.id_sizes.method_id)?;
                 let name = cursor.read_string()?;
@@ -298,6 +301,9 @@ impl TcpJdwpClient {
             let count = cursor.read_u32()? as usize;
 
             let mut fields = Vec::new();
+            fields.try_reserve_exact(count).map_err(|_| {
+                JdwpError::Protocol(format!("unable to allocate field list ({count} entries)"))
+            })?;
             for _ in 0..count {
                 let field_id = cursor.read_id(self.id_sizes.field_id)?;
                 let name = cursor.read_string()?;
@@ -416,6 +422,11 @@ impl TcpJdwpClient {
         let tag = cursor.read_u8()?;
         let count = cursor.read_u32()? as usize;
         let mut values = Vec::new();
+        values.try_reserve_exact(count).map_err(|_| {
+            JdwpError::Protocol(format!(
+                "unable to allocate array value list ({count} entries)"
+            ))
+        })?;
         for _ in 0..count {
             values.push(self.read_value_with_tag(&mut cursor, tag)?);
         }
@@ -446,6 +457,11 @@ impl TcpJdwpClient {
         let mut cursor = Cursor::new(&reply);
         let count = cursor.read_u32()? as usize;
         let mut values = Vec::new();
+        values.try_reserve_exact(count).map_err(|_| {
+            JdwpError::Protocol(format!(
+                "unable to allocate object value list ({count} entries)"
+            ))
+        })?;
         for _ in 0..count {
             values.push(self.read_tagged_value(&mut cursor)?);
         }
@@ -539,6 +555,9 @@ impl TcpJdwpClient {
             let count = cursor.read_u32()? as usize;
 
             let mut entries = Vec::new();
+            entries.try_reserve_exact(count).map_err(|_| {
+                JdwpError::Protocol(format!("unable to allocate line table ({count} entries)"))
+            })?;
             for _ in 0..count {
                 let code_index = cursor.read_i64()? as u64;
                 let line = cursor.read_u32()?;
@@ -568,6 +587,11 @@ impl TcpJdwpClient {
             let _arg_count = cursor.read_u32()?;
             let count = cursor.read_u32()? as usize;
             let mut vars = Vec::new();
+            vars.try_reserve_exact(count).map_err(|_| {
+                JdwpError::Protocol(format!(
+                    "unable to allocate variable table ({count} entries)"
+                ))
+            })?;
             for _ in 0..count {
                 let code_index = cursor.read_i64()?;
                 let name = cursor.read_string()?;
@@ -614,6 +638,11 @@ impl TcpJdwpClient {
         let mut cursor = Cursor::new(&reply);
         let count = cursor.read_u32()? as usize;
         let mut values = Vec::new();
+        values.try_reserve_exact(count).map_err(|_| {
+            JdwpError::Protocol(format!(
+                "unable to allocate stack frame value list ({count} entries)"
+            ))
+        })?;
         for _ in 0..count {
             values.push(self.read_tagged_value(&mut cursor)?);
         }
@@ -936,6 +965,9 @@ impl JdwpClient for TcpJdwpClient {
         let count = cursor.read_u32()? as usize;
 
         let mut threads = Vec::new();
+        threads.try_reserve_exact(count).map_err(|_| {
+            JdwpError::Protocol(format!("unable to allocate thread list ({count} entries)"))
+        })?;
         for _ in 0..count {
             let id = cursor.read_id(self.id_sizes.object_id)?;
 
@@ -962,6 +994,9 @@ impl JdwpClient for TcpJdwpClient {
         let count = cursor.read_u32()? as usize;
 
         let mut frames = Vec::new();
+        frames.try_reserve_exact(count).map_err(|_| {
+            JdwpError::Protocol(format!("unable to allocate frame list ({count} entries)"))
+        })?;
         for _ in 0..count {
             let frame_id = cursor.read_id(self.id_sizes.frame_id)?;
             let _type_tag = cursor.read_u8()?;

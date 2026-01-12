@@ -365,12 +365,24 @@ impl JdwpClient {
         let base_dir = r.read_string()?;
         let classpath_count = r.read_u32()? as usize;
         let mut classpaths = Vec::new();
+        classpaths.try_reserve_exact(classpath_count).map_err(|_| {
+            JdwpError::Protocol(format!(
+                "unable to allocate classpath list ({classpath_count} entries)"
+            ))
+        })?;
         for _ in 0..classpath_count {
             classpaths.push(r.read_string()?);
         }
 
         let boot_classpath_count = r.read_u32()? as usize;
         let mut boot_classpaths = Vec::new();
+        boot_classpaths
+            .try_reserve_exact(boot_classpath_count)
+            .map_err(|_| {
+                JdwpError::Protocol(format!(
+                    "unable to allocate boot classpath list ({boot_classpath_count} entries)"
+                ))
+            })?;
         for _ in 0..boot_classpath_count {
             boot_classpaths.push(r.read_string()?);
         }
@@ -426,6 +438,11 @@ impl JdwpClient {
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
         let mut threads = Vec::new();
+        threads.try_reserve_exact(count).map_err(|_| {
+            JdwpError::Protocol(format!(
+                "unable to allocate thread id list ({count} entries)"
+            ))
+        })?;
         for _ in 0..count {
             threads.push(r.read_object_id(&sizes)?);
         }
@@ -439,6 +456,11 @@ impl JdwpClient {
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
         let mut groups = Vec::new();
+        groups.try_reserve_exact(count).map_err(|_| {
+            JdwpError::Protocol(format!(
+                "unable to allocate thread group id list ({count} entries)"
+            ))
+        })?;
         for _ in 0..count {
             groups.push(r.read_object_id(&sizes)?);
         }
@@ -513,6 +535,11 @@ impl JdwpClient {
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
         let mut monitors = Vec::new();
+        monitors.try_reserve_exact(count).map_err(|_| {
+            JdwpError::Protocol(format!(
+                "unable to allocate owned monitor list ({count} entries)"
+            ))
+        })?;
         for _ in 0..count {
             monitors.push(r.read_object_id(&sizes)?);
         }
@@ -551,6 +578,11 @@ impl JdwpClient {
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
         let mut monitors = Vec::new();
+        monitors.try_reserve_exact(count).map_err(|_| {
+            JdwpError::Protocol(format!(
+                "unable to allocate owned monitor list ({count} entries)"
+            ))
+        })?;
         for _ in 0..count {
             let monitor = r.read_object_id(&sizes)?;
             let stack_depth = r.read_i32()?;
@@ -573,6 +605,9 @@ impl JdwpClient {
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
         let mut frames = Vec::new();
+        frames.try_reserve_exact(count).map_err(|_| {
+            JdwpError::Protocol(format!("unable to allocate frame list ({count} entries)"))
+        })?;
         for _ in 0..count {
             let frame_id = r.read_id(sizes.frame_id)?;
             let location = r.read_location(&sizes)?;
@@ -617,12 +652,22 @@ impl JdwpClient {
 
         let group_count = r.read_u32()? as usize;
         let mut groups = Vec::new();
+        groups.try_reserve_exact(group_count).map_err(|_| {
+            JdwpError::Protocol(format!(
+                "unable to allocate thread group list ({group_count} entries)"
+            ))
+        })?;
         for _ in 0..group_count {
             groups.push(r.read_object_id(&sizes)?);
         }
 
         let thread_count = r.read_u32()? as usize;
         let mut threads = Vec::new();
+        threads.try_reserve_exact(thread_count).map_err(|_| {
+            JdwpError::Protocol(format!(
+                "unable to allocate thread id list ({thread_count} entries)"
+            ))
+        })?;
         for _ in 0..thread_count {
             threads.push(r.read_object_id(&sizes)?);
         }
@@ -636,6 +681,9 @@ impl JdwpClient {
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
         let mut classes = Vec::new();
+        classes.try_reserve_exact(count).map_err(|_| {
+            JdwpError::Protocol(format!("unable to allocate class list ({count} entries)"))
+        })?;
         for _ in 0..count {
             classes.push(ClassInfo {
                 ref_type_tag: r.read_u8()?,
@@ -658,6 +706,9 @@ impl JdwpClient {
         let count = r.read_u32()? as usize;
         let signature = signature.to_string();
         let mut classes = Vec::new();
+        classes.try_reserve_exact(count).map_err(|_| {
+            JdwpError::Protocol(format!("unable to allocate class list ({count} entries)"))
+        })?;
         for _ in 0..count {
             classes.push(ClassInfo {
                 ref_type_tag: r.read_u8()?,
@@ -841,6 +892,11 @@ impl JdwpClient {
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
         let mut interfaces = Vec::new();
+        interfaces.try_reserve_exact(count).map_err(|_| {
+            JdwpError::Protocol(format!(
+                "unable to allocate interface list ({count} entries)"
+            ))
+        })?;
         for _ in 0..count {
             interfaces.push(r.read_reference_type_id(&sizes)?);
         }
@@ -876,6 +932,9 @@ impl JdwpClient {
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
         let mut methods = Vec::new();
+        methods.try_reserve_exact(count).map_err(|_| {
+            JdwpError::Protocol(format!("unable to allocate method list ({count} entries)"))
+        })?;
         for _ in 0..count {
             methods.push(MethodInfo {
                 method_id: r.read_id(sizes.method_id)?,
@@ -899,6 +958,9 @@ impl JdwpClient {
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
         let mut methods = Vec::new();
+        methods.try_reserve_exact(count).map_err(|_| {
+            JdwpError::Protocol(format!("unable to allocate method list ({count} entries)"))
+        })?;
         for _ in 0..count {
             let method_id = r.read_id(sizes.method_id)?;
             let name = r.read_string()?;
@@ -966,6 +1028,9 @@ impl JdwpClient {
         let end = r.read_u64()?;
         let count = r.read_u32()? as usize;
         let mut lines = Vec::new();
+        lines.try_reserve_exact(count).map_err(|_| {
+            JdwpError::Protocol(format!("unable to allocate line table ({count} entries)"))
+        })?;
         for _ in 0..count {
             lines.push(LineTableEntry {
                 code_index: r.read_u64()?,
@@ -989,6 +1054,11 @@ impl JdwpClient {
         let arg_count = r.read_u32()?;
         let count = r.read_u32()? as usize;
         let mut vars = Vec::new();
+        vars.try_reserve_exact(count).map_err(|_| {
+            JdwpError::Protocol(format!(
+                "unable to allocate variable table ({count} entries)"
+            ))
+        })?;
         for _ in 0..count {
             vars.push(VariableInfo {
                 code_index: r.read_u64()?,
@@ -1016,6 +1086,11 @@ impl JdwpClient {
         let arg_count = r.read_u32()?;
         let count = r.read_u32()? as usize;
         let mut vars = Vec::new();
+        vars.try_reserve_exact(count).map_err(|_| {
+            JdwpError::Protocol(format!(
+                "unable to allocate variable table ({count} entries)"
+            ))
+        })?;
         for _ in 0..count {
             let code_index = r.read_u64()?;
             let name = r.read_string()?;
@@ -1088,6 +1163,11 @@ impl JdwpClient {
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
         let mut values = Vec::new();
+        values.try_reserve_exact(count).map_err(|_| {
+            JdwpError::Protocol(format!(
+                "unable to allocate stack frame value list ({count} entries)"
+            ))
+        })?;
         for _ in 0..count {
             let tag = r.read_u8()?;
             values.push(r.read_value(tag, &sizes)?);
@@ -1327,6 +1407,9 @@ impl JdwpClient {
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
         let mut fields = Vec::new();
+        fields.try_reserve_exact(count).map_err(|_| {
+            JdwpError::Protocol(format!("unable to allocate field list ({count} entries)"))
+        })?;
         for _ in 0..count {
             fields.push(FieldInfo {
                 field_id: r.read_id(sizes.field_id)?,
@@ -1350,6 +1433,9 @@ impl JdwpClient {
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
         let mut fields = Vec::new();
+        fields.try_reserve_exact(count).map_err(|_| {
+            JdwpError::Protocol(format!("unable to allocate field list ({count} entries)"))
+        })?;
         for _ in 0..count {
             let field_id = r.read_id(sizes.field_id)?;
             let name = r.read_string()?;
@@ -1471,6 +1557,11 @@ impl JdwpClient {
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
         let mut values = Vec::new();
+        values.try_reserve_exact(count).map_err(|_| {
+            JdwpError::Protocol(format!(
+                "unable to allocate static field value list ({count} entries)"
+            ))
+        })?;
         for _ in 0..count {
             let tag = r.read_u8()?;
             values.push(r.read_value(tag, &sizes)?);
@@ -1494,6 +1585,11 @@ impl JdwpClient {
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
         let mut values = Vec::new();
+        values.try_reserve_exact(count).map_err(|_| {
+            JdwpError::Protocol(format!(
+                "unable to allocate object field value list ({count} entries)"
+            ))
+        })?;
         for _ in 0..count {
             let tag = r.read_u8()?;
             values.push(r.read_value(tag, &sizes)?);
@@ -1560,6 +1656,11 @@ impl JdwpClient {
         let entry_count = r.read_i32()?;
         let waiter_count = r.read_u32()? as usize;
         let mut waiters = Vec::new();
+        waiters.try_reserve_exact(waiter_count).map_err(|_| {
+            JdwpError::Protocol(format!(
+                "unable to allocate monitor waiter list ({waiter_count} entries)"
+            ))
+        })?;
         for _ in 0..waiter_count {
             waiters.push(r.read_object_id(&sizes)?);
         }
@@ -1600,6 +1701,11 @@ impl JdwpClient {
         let element_tag = r.read_u8()?;
         let count = r.read_u32()? as usize;
         let mut values = Vec::new();
+        values.try_reserve_exact(count).map_err(|_| {
+            JdwpError::Protocol(format!(
+                "unable to allocate array value list ({count} entries)"
+            ))
+        })?;
 
         let is_primitive = matches!(
             element_tag,
