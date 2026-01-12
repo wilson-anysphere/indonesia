@@ -425,7 +425,8 @@ The snapshot handoff has cross-crate tests that exercise both sides of the contr
   defaulting behavior for forward compatibility)
 - writer: `crates/nova-build/tests/suite/gradle_snapshot.rs` (asserts `.nova/queries/gradle.json` is
   created and contains expected fields after Gradle config extraction)
-- reader: `crates/nova-project/tests/cases/gradle_snapshot.rs` (asserts `nova-project` consumes a
+- reader: `crates/nova-project/tests/suite/gradle_snapshot.rs` (asserts `nova-project` consumes a
   valid snapshot and uses it to override module roots/classpaths/source roots)
 
-When evolving the schema, update these tests alongside the schema version constants.
+When evolving the schema, update these tests alongside `GRADLE_SNAPSHOT_SCHEMA_VERSION` (defined in
+`nova-build-model`).
