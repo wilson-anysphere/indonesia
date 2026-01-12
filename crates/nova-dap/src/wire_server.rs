@@ -5229,6 +5229,22 @@ const MAX_DEBUGGEE_OUTPUT_LINE_BYTES: usize = 64 * 1024;
 const DEBUGGEE_OUTPUT_TRUNCATION_MARKER: &str = "<output truncated>";
 const DEBUGGEE_OUTPUT_TRUNCATION_SUFFIX: &str = "<output truncated>\n";
 
+fn bounded_debuggee_output(bytes: &[u8]) -> String {
+    let mut output = String::from_utf8_lossy(bytes).into_owned();
+    if output.len() <= MAX_DEBUGGEE_OUTPUT_LINE_BYTES {
+        return output;
+    }
+
+    // `String::truncate` requires a UTF-8 char boundary. Since the max rune width is 4 bytes,
+    // walking backwards is bounded and deterministic.
+    let mut cut = MAX_DEBUGGEE_OUTPUT_LINE_BYTES;
+    while cut > 0 && !output.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    output.truncate(cut);
+    output
+}
+
 #[cfg(unix)]
 fn ignore_sigpipe() {
     unsafe {
@@ -5270,7 +5286,7 @@ fn spawn_output_task<R>(
             if available.is_empty() {
                 // EOF. Preserve the old behavior of emitting a final (possibly unterminated) line.
                 if !buf.is_empty() || discarding_until_newline {
-                    let mut output = String::from_utf8_lossy(&buf).into_owned();
+                    let mut output = bounded_debuggee_output(&buf);
                     if discarding_until_newline {
                         output.push_str(DEBUGGEE_OUTPUT_TRUNCATION_MARKER);
                     }
@@ -5293,7 +5309,7 @@ fn spawn_output_task<R>(
                     if let Some(pos) = available[consumed..].iter().position(|&b| b == b'\n') {
                         consumed += pos + 1;
 
-                        let mut output = String::from_utf8_lossy(&buf).into_owned();
+                        let mut output = bounded_debuggee_output(&buf);
                         output.push_str(DEBUGGEE_OUTPUT_TRUNCATION_SUFFIX);
                         send_event(
                             &tx,
@@ -5324,7 +5340,7 @@ fn spawn_output_task<R>(
                     consumed += take;
 
                     if newline_pos.is_some() {
-                        let output = String::from_utf8_lossy(&buf).into_owned();
+                        let output = bounded_debuggee_output(&buf);
                         send_event(
                             &tx,
                             &seq,
@@ -5346,7 +5362,7 @@ fn spawn_output_task<R>(
 
                 if newline_pos.is_some() {
                     // Newline is within `take`, so we can emit the truncated line now.
-                    let mut output = String::from_utf8_lossy(&buf).into_owned();
+                    let mut output = bounded_debuggee_output(&buf);
                     output.push_str(DEBUGGEE_OUTPUT_TRUNCATION_SUFFIX);
                     send_event(
                         &tx,
@@ -6477,5 +6493,83 @@ mod tests {
             output.contains(DEBUGGEE_OUTPUT_TRUNCATION_MARKER),
             "expected truncation marker in output, got: {output:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn spawn_output_task_bounds_output_even_with_invalid_utf8() {
+        let (mut writer, reader) = tokio::io::duplex(64 * 1024);
+        let (tx, mut rx) = mpsc::channel::<Value>(8);
+        let seq = Arc::new(AtomicI64::new(1));
+        let shutdown = CancellationToken::new();
+
+        spawn_output_task(reader, tx, Arc::clone(&seq), "stdout", shutdown.clone());
+
+        // 0xFF is invalid as a standalone UTF-8 byte and expands to U+FFFD ("\u{FFFD}") in
+        // `from_utf8_lossy` (3 bytes). This ensures we cap based on the output string, not just the
+        // captured byte prefix.
+        let oversized = vec![0xFFu8; 200 * 1024];
+        writer.write_all(&oversized).await.unwrap();
+        writer.write_all(b"\n").await.unwrap();
+        writer.shutdown().await.unwrap();
+
+        let msg = timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for output event")
+            .expect("output channel closed");
+
+        let output = msg
+            .get("body")
+            .and_then(|v| v.get("output"))
+            .and_then(|v| v.as_str())
+            .expect("output.body.output should be a string");
+
+        assert!(
+            output.contains(DEBUGGEE_OUTPUT_TRUNCATION_MARKER),
+            "expected truncation marker in output, got: {output:?}"
+        );
+        assert!(
+            output.len() <= MAX_DEBUGGEE_OUTPUT_LINE_BYTES + DEBUGGEE_OUTPUT_TRUNCATION_SUFFIX.len(),
+            "expected output length to be bounded (got {}, limit {})",
+            output.len(),
+            MAX_DEBUGGEE_OUTPUT_LINE_BYTES + DEBUGGEE_OUTPUT_TRUNCATION_SUFFIX.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_output_task_discards_overlong_line_and_continues_with_next_line() {
+        let (mut writer, reader) = tokio::io::duplex(64 * 1024);
+        let (tx, mut rx) = mpsc::channel::<Value>(8);
+        let seq = Arc::new(AtomicI64::new(1));
+        let shutdown = CancellationToken::new();
+
+        spawn_output_task(reader, tx, Arc::clone(&seq), "stdout", shutdown.clone());
+
+        let oversized = vec![b'a'; 200 * 1024];
+        writer.write_all(&oversized).await.unwrap();
+        writer.write_all(b"\nnext\n").await.unwrap();
+        writer.shutdown().await.unwrap();
+
+        let first = timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for first output event")
+            .expect("output channel closed");
+        let second = timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for second output event")
+            .expect("output channel closed");
+
+        let first_output = first
+            .get("body")
+            .and_then(|v| v.get("output"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(first_output.contains(DEBUGGEE_OUTPUT_TRUNCATION_MARKER));
+
+        let second_output = second
+            .get("body")
+            .and_then(|v| v.get("output"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert_eq!(second_output, "next\n");
     }
 }
