@@ -426,6 +426,7 @@ fn run_build(
 #[cfg(all(test, feature = "bsp"))]
 mod tests {
     use super::*;
+    use crate::test_support::EnvVarGuard;
     use tempfile::tempdir;
 
     #[derive(Debug, Default)]
@@ -452,31 +453,6 @@ mod tests {
                 status_code: 0,
                 diagnostics: Vec::new(),
             })
-        }
-    }
-
-    struct EnvVarGuard {
-        key: &'static str,
-        previous: Option<String>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: Option<&str>) -> Self {
-            let previous = std::env::var(key).ok();
-            match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
-            }
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            match &self.previous {
-                Some(value) => std::env::set_var(self.key, value),
-                None => std::env::remove_var(self.key),
-            }
         }
     }
 

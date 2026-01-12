@@ -5,9 +5,9 @@ use nova_build_bazel::{
     BazelBuildTaskState, BspCompileOutcome,
 };
 use std::collections::VecDeque;
-use std::ffi::OsString;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use nova_build_bazel::test_support::EnvVarGuard;
 
 #[derive(Debug, Clone)]
 struct Script {
@@ -85,28 +85,6 @@ fn default_bsp_config() -> BazelBspConfig {
     BazelBspConfig {
         program: "bsp4bazel".to_string(),
         args: Vec::new(),
-    }
-}
-
-struct EnvVarGuard {
-    key: &'static str,
-    prev: Option<OsString>,
-}
-
-impl EnvVarGuard {
-    fn remove(key: &'static str) -> Self {
-        let prev = std::env::var_os(key);
-        std::env::remove_var(key);
-        Self { key, prev }
-    }
-}
-
-impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-        match self.prev.take() {
-            Some(value) => std::env::set_var(self.key, value),
-            None => std::env::remove_var(self.key),
-        }
     }
 }
 

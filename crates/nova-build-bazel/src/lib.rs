@@ -66,11 +66,47 @@ pub use crate::bsp::target_compile_info_via_bsp;
 #[cfg(any(test, feature = "bsp"))]
 #[doc(hidden)]
 pub mod test_support {
-    use std::sync::{Mutex, MutexGuard, OnceLock};
+    use std::{
+        ffi::OsString,
+        sync::{Mutex, MutexGuard, OnceLock},
+    };
 
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     pub fn env_lock() -> MutexGuard<'static, ()> {
         ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    /// RAII guard for temporary process environment variable mutations in tests.
+    ///
+    /// Tests run in parallel by default and environment variables are process-global. Always pair
+    /// this with [`env_lock`] when mutating env vars to avoid flaky cross-test interference.
+    pub struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        pub fn set(key: &'static str, value: Option<&str>) -> Self {
+            let previous = std::env::var_os(key);
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+            Self { key, previous }
+        }
+
+        pub fn remove(key: &'static str) -> Self {
+            Self::set(key, None)
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
     }
 }

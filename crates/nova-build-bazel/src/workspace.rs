@@ -1741,7 +1741,7 @@ fn is_bazel_build_definition_file(path: &Path) -> bool {
 mod bsp_config_tests {
     use super::*;
     use crate::command::CommandOutput;
-    use std::ffi::OsString;
+    use crate::test_support::EnvVarGuard;
     use tempfile::tempdir;
 
     #[derive(Clone, Debug, Default)]
@@ -1753,34 +1753,6 @@ mod bsp_config_tests {
                 stdout: String::new(),
                 stderr: String::new(),
             })
-        }
-    }
-
-    struct EnvVarGuard {
-        key: &'static str,
-        prev: Option<OsString>,
-    }
-
-    impl EnvVarGuard {
-        fn remove(key: &'static str) -> Self {
-            let prev = std::env::var_os(key);
-            std::env::remove_var(key);
-            Self { key, prev }
-        }
-
-        fn set(key: &'static str, value: &str) -> Self {
-            let prev = std::env::var_os(key);
-            std::env::set_var(key, value);
-            Self { key, prev }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            match self.prev.take() {
-                Some(value) => std::env::set_var(self.key, value),
-                None => std::env::remove_var(self.key),
-            }
         }
     }
 
@@ -1915,8 +1887,8 @@ mod bsp_config_tests {
         assert_eq!(config.args, vec!["--discovered".to_string()]);
 
         // Env vars still win on top of discovery.
-        let _program_guard = EnvVarGuard::set("NOVA_BSP_PROGRAM", "env-prog");
-        let _args_guard = EnvVarGuard::set("NOVA_BSP_ARGS", r#"["--env"]"#);
+        let _program_guard = EnvVarGuard::set("NOVA_BSP_PROGRAM", Some("env-prog"));
+        let _args_guard = EnvVarGuard::set("NOVA_BSP_ARGS", Some(r#"["--env"]"#));
         let config = workspace.bsp_config_from_env();
         assert_eq!(config.program, "env-prog");
         assert_eq!(config.args, vec!["--env".to_string()]);

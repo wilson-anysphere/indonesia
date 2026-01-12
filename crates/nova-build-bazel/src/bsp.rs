@@ -1350,37 +1350,11 @@ pub fn target_compile_info_via_bsp(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "bsp")]
+    use crate::test_support::EnvVarGuard;
 
     #[cfg(feature = "bsp")]
     use tempfile::tempdir;
-
-    #[cfg(feature = "bsp")]
-    struct EnvVarGuard {
-        key: &'static str,
-        previous: Option<String>,
-    }
-
-    #[cfg(feature = "bsp")]
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: Option<&str>) -> Self {
-            let previous = std::env::var(key).ok();
-            match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
-            }
-            Self { key, previous }
-        }
-    }
-
-    #[cfg(feature = "bsp")]
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            match &self.previous {
-                Some(value) => std::env::set_var(self.key, value),
-                None => std::env::remove_var(self.key),
-            }
-        }
-    }
 
     #[test]
     fn severity_mapping_matches_lsp_conventions() {
