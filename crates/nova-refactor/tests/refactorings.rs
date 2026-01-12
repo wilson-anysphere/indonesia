@@ -4920,6 +4920,41 @@ class Use {
 }
 
 #[test]
+fn rename_type_updates_explicit_generic_invocation_static_receiver_and_type_args() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Foo {
+  static <T> void id() {}
+}
+
+class Use {
+  void f() {
+    Foo.<Foo>id();
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("class Foo").unwrap() + "class ".len() + 1;
+    let symbol = db.symbol_at(&file, offset).expect("symbol at Foo");
+    assert_eq!(db.symbol_kind(symbol), Some(JavaSymbolKind::Type));
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "Bar".into(),
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    assert!(after.contains("class Bar"), "{after}");
+    assert!(after.contains("Bar.<Bar>id();"), "{after}");
+    assert!(!after.contains("Foo.<Foo>id();"), "{after}");
+}
+
+#[test]
 fn inline_variable_all_usages_replaces_and_deletes_declaration() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
