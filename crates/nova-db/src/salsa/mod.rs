@@ -649,6 +649,61 @@ impl SalsaInputs {
     }
 }
 
+/// Snapshot of all Salsa interned tables that Nova needs to preserve across
+/// `Database::evict_salsa_memos`.
+///
+/// We currently evict memoized query results by rebuilding the Salsa storage,
+/// because `ra_ap_salsa` doesn't expose a safe/stable API to clear memo tables.
+/// Rebuilding would ordinarily also drop interned tables (invalidating any
+/// `#[ra_salsa::interned]` IDs). To keep interned IDs stable we copy out all
+/// interned entries we care about and re-intern them into the fresh database in
+/// the original ID order.
+///
+/// Note: If you add new `#[ra_salsa::interned]` queries to Nova, extend this
+/// snapshot so their IDs survive memo eviction as well.
+#[derive(Debug, Default)]
+struct InternedTablesSnapshot {
+    intern_class_keys: Vec<(InternedClassKeyId, InternedClassKey)>,
+}
+
+impl InternedTablesSnapshot {
+    fn capture(db: &RootDatabase) -> Self {
+        use ra_salsa::debug::DebugQueryTable as _;
+        use ra_salsa::InternKey as _;
+
+        let mut intern_class_keys: Vec<_> =
+            ra_salsa::plumbing::get_query_table::<interned_class_key::InternClassKeyQuery>(db)
+                .entries::<Vec<_>>()
+                .into_iter()
+                .filter_map(|entry| entry.value.map(|id| (id, entry.key)))
+                .collect();
+        intern_class_keys.sort_by_key(|(id, _)| id.as_intern_id().as_u32());
+
+        Self { intern_class_keys }
+    }
+
+    /// Restore the interned entries into `db`.
+    ///
+    /// Returns `false` if `ra_salsa` assigned a different intern id than expected
+    /// (meaning we cannot safely preserve stable identities across eviction).
+    fn restore_into(self, db: &RootDatabase) -> bool {
+        use self::interned_class_key::NovaInternedClassKeys as _;
+
+        for (expected_id, key) in self.intern_class_keys {
+            let actual_id = db.intern_class_key(key);
+            if actual_id != expected_id {
+                debug_assert_eq!(
+                    actual_id, expected_id,
+                    "interned ID mismatch while restoring interned tables after memo eviction"
+                );
+                return false;
+            }
+        }
+
+        true
+    }
+}
+
 /// Runs `f` and catches any Salsa cancellation.
 ///
 /// This is a convenience wrapper around `ra_salsa::Cancelled::catch`.
@@ -1091,6 +1146,11 @@ impl MemoryEvictor for SalsaMemoEvictor {
         // least-worst option is to rebuild the database from inputs and swap it
         // behind the mutex. Outstanding snapshots remain valid because they own
         // their storage snapshots.
+        //
+        // Rebuilding would ordinarily also drop `#[ra_salsa::interned]` tables.
+        // To keep interned IDs stable we snapshot+restore the relevant interned
+        // entries (see `InternedTablesSnapshot`).
+        let mut swapped = false;
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             // Avoid cloning potentially large input maps during eviction (file
             // contents, per-project metadata, etc). Instead, hold the inputs
@@ -1102,6 +1162,7 @@ impl MemoryEvictor for SalsaMemoEvictor {
             let stats = db.stats.clone();
             let persistence = db.persistence.clone();
             let file_paths = db.file_paths.clone();
+            let interned = InternedTablesSnapshot::capture(&db);
             let item_tree_store = db.item_tree_store.clone();
             let class_interner = db.class_interner.clone();
             let syntax_tree_store = db.syntax_tree_store.clone();
@@ -1121,12 +1182,18 @@ impl MemoryEvictor for SalsaMemoEvictor {
                 java_parse_store,
             };
             inputs.apply_to(&mut fresh);
+            if !interned.restore_into(&fresh) {
+                return;
+            }
             *db = fresh;
+            swapped = true;
         }));
 
-        // Clear tracked footprint unconditionally; memos will be re-recorded as
-        // queries re-execute.
-        self.footprint.clear();
+        if swapped {
+            // Clear tracked footprint; memos will be re-recorded as queries
+            // re-execute.
+            self.footprint.clear();
+        }
         let after = self.footprint.bytes();
 
         EvictionResult {
@@ -1837,7 +1904,8 @@ impl Database {
 
     /// Best-effort drop of memoized Salsa query results.
     ///
-    /// Input queries are preserved; any outstanding snapshots remain valid.
+    /// Input queries and interned IDs are preserved; any outstanding snapshots
+    /// remain valid.
     pub fn evict_salsa_memos(&self, pressure: MemoryPressure) {
         // Under low pressure, avoid disrupting cache locality.
         if matches!(pressure, MemoryPressure::Low) {
@@ -1847,6 +1915,7 @@ impl Database {
         // NB: This is necessarily coarse (see `SalsaMemoEvictor::evict` for
         // details). We rebuild the underlying Salsa database because `ra_salsa`
         // doesn't currently provide a production-safe per-key memo eviction API.
+        let mut swapped = false;
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             // Avoid cloning potentially large input maps during eviction (file
             // contents, per-project metadata, etc). Instead, hold the inputs
@@ -1858,6 +1927,7 @@ impl Database {
             let stats = db.stats.clone();
             let persistence = db.persistence.clone();
             let file_paths = db.file_paths.clone();
+            let interned = InternedTablesSnapshot::capture(&db);
             let item_tree_store = db.item_tree_store.clone();
             let class_interner = db.class_interner.clone();
             let syntax_tree_store = db.syntax_tree_store.clone();
@@ -1877,9 +1947,15 @@ impl Database {
                 java_parse_store,
             };
             inputs.apply_to(&mut fresh);
+            if !interned.restore_into(&fresh) {
+                return;
+            }
             *db = fresh;
+            swapped = true;
         }));
-        self.memo_footprint.clear();
+        if swapped {
+            self.memo_footprint.clear();
+        }
     }
 
     /// Attach an open-document aware [`ItemTreeStore`] to the database.

@@ -296,6 +296,9 @@ fn jpms_typeck_allows_classpath_types_from_named_modules_via_all_unnamed_readabi
     // In JPMS mode we treat these jars as belonging to the unnamed module. In practice,
     // many build tools also apply `--add-reads <module>=ALL-UNNAMED` so named workspace
     // modules can still access classpath-only dependencies.
+    //
+    // Nova mirrors this behavior for Gradle builds (see `cfg.build_system = BuildSystem::Gradle`
+    // below).
     let classpath = ClasspathIndex::build(&[CpEntry::Jar(test_dep_jar())], None).unwrap();
     db.set_classpath_index(project, Some(ArcEq::new(Arc::new(classpath))));
 
@@ -304,6 +307,9 @@ fn jpms_typeck_allows_classpath_types_from_named_modules_via_all_unnamed_readabi
     let mod_a_info = lower_module_info_source_strict(mod_a_src).unwrap();
 
     let mut cfg = base_project_config(tmp.path().to_path_buf());
+    // Enable the (best-effort) ALL-UNNAMED readability behavior used by Gradle's
+    // `modularity.inferModulePath` integrations.
+    cfg.build_system = BuildSystem::Gradle;
     cfg.jpms_modules = vec![JpmsModuleRoot {
         name: ModuleName::new("workspace.a"),
         root: mod_a_root.clone(),

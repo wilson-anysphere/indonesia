@@ -18,8 +18,8 @@ use crate::ProjectId;
 ///
 /// This file defines a minimal `InternedClassKey` value type plus an
 /// `InternedClassKeyId` handle type, and tests how the resulting ids behave
-/// under snapshots and `Database::evict_salsa_memos` (which rebuilds
-/// `ra_salsa::Storage::default()`).
+/// under snapshots and `Database::evict_salsa_memos` (which rebuilds Salsa
+/// storage but preserves intern tables).
 ///
 /// ## Raw id mapping to `nova_ids::ClassId`
 ///
@@ -99,10 +99,10 @@ impl InternedClassKeyId {
     /// [`InternedClassKeyId::to_nova_class_id`] for the *same* Salsa database
     /// storage, and that the interned entry is still present.
     ///
-    /// In particular, Nova's `Database::evict_salsa_memos` rebuilds
-    /// `ra_salsa::Storage::default()`, which drops intern tables. After an
-    /// eviction, previously persisted ids may no longer refer to the same
-    /// `InternedClassKey` (and lookups may panic).
+    /// In particular, Nova's `Database::evict_salsa_memos` rebuilds Salsa's
+    /// memo storage under memory pressure. Nova snapshots+restores interned
+    /// tables during this process, so `InternId`-backed handles remain stable
+    /// across memo eviction *within the lifetime of a single `Database`*.
     pub unsafe fn from_nova_class_id(id: nova_ids::ClassId) -> Self {
         Self(ra_salsa::InternId::from(id.to_raw()))
     }
@@ -176,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn interned_ids_do_not_survive_salsa_memo_eviction() {
+    fn interned_ids_survive_salsa_memo_eviction() {
         let db = SalsaDatabase::new();
         let project = ProjectId::from_raw(0);
 
@@ -201,11 +201,15 @@ mod tests {
 
         let id_after = db.with_write(|db| db.intern_class_key(key.clone()));
 
-        // Observed behavior (ra_ap_salsa 0.0.269 + Nova's eviction strategy):
-        // `evict_salsa_memos` rebuilds `ra_salsa::Storage::default()`, which
-        // drops the intern tables. Interning the same key again yields a
-        // *different* `InternId`.
-        assert_ne!(id_before.as_intern_id(), id_after.as_intern_id());
+        assert_eq!(
+            id_before.as_intern_id(),
+            id_after.as_intern_id(),
+            "expected interned ids to remain stable across salsa memo eviction"
+        );
+
+        // Previously produced ids remain usable after eviction.
+        let looked_up = db.with_write(|db| db.lookup_intern_class_key(id_before));
+        assert_eq!(looked_up, key);
     }
 
     #[test]
@@ -235,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn looking_up_a_pre_eviction_id_after_eviction_panics() {
+    fn looking_up_a_pre_eviction_id_after_eviction_succeeds() {
         let db = SalsaDatabase::new();
         let project = ProjectId::from_raw(0);
 
@@ -254,14 +258,14 @@ mod tests {
 
         db.evict_salsa_memos(MemoryPressure::Critical);
 
-        // After eviction the Salsa storage is rebuilt. The intern tables are
-        // empty, so `id_before` no longer refers to a valid interned entry in
-        // the fresh storage. The auto-generated lookup query will panic (index
-        // out of bounds).
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            db.with_write(|db| db.lookup_intern_class_key(id_before))
-        }));
-        assert!(result.is_err());
+        // `Database::evict_salsa_memos` rebuilds the Salsa storage, but Nova
+        // snapshots+restores intern tables so previously produced ids remain
+        // valid (and lookups should not panic).
+        let looked_up = db.with_write(|db| db.lookup_intern_class_key(id_before));
+        assert_eq!(
+            looked_up.name, "Foo",
+            "expected lookup to return the pre-eviction interned key"
+        );
     }
 
     #[test]
