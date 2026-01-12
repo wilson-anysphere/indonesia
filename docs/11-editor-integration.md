@@ -447,8 +447,23 @@ as capability gating (older servers) and degrade gracefully.
 // older server builds, and degrade gracefully.
 
 type FrameworkNode =
-  | { kind: 'group'; label: string }
-  | { kind: 'item'; label: string; location?: vscode.Location };
+  | { kind: 'group'; id: 'web' | 'micronautEndpoints' | 'micronautBeans'; label: string; projectRoot: string }
+  // `endpoint` / `bean` are the raw protocol payloads. Keeping them attached makes it easy to implement
+  // context-menu actions like "Copy Endpoint Path" without re-querying the server.
+  | { kind: 'endpoint'; label: string; projectRoot: string; endpoint: any }
+  | { kind: 'bean'; label: string; projectRoot: string; bean: any };
+
+function isAbsolutePath(value: string): boolean {
+  return value.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith('\\\\');
+}
+
+function uriFromProjectFile(projectRoot: string, file: string): vscode.Uri {
+  // `file` may be absolute, a file:// URI, or a relative path.
+  if (file.startsWith('file:')) return vscode.Uri.parse(file);
+  if (isAbsolutePath(file)) return vscode.Uri.file(file);
+  const segments = file.split(/[\\/]+/).filter(Boolean);
+  return vscode.Uri.joinPath(vscode.Uri.file(projectRoot), ...segments);
+}
 
 class FrameworkDashboardTreeDataProvider implements vscode.TreeDataProvider<FrameworkNode> {
   private readonly onDidChangeTreeDataEmitter = new vscode.EventEmitter<FrameworkNode | undefined>();
@@ -462,20 +477,33 @@ class FrameworkDashboardTreeDataProvider implements vscode.TreeDataProvider<Fram
 
   getTreeItem(element: FrameworkNode): vscode.TreeItem {
     const item = new vscode.TreeItem(element.label);
-    item.collapsibleState = element.kind === 'group' ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None;
-    if (element.location) {
-      item.command = {
-        command: 'vscode.open',
-        title: 'Open',
-        arguments: [element.location.uri, { selection: element.location.range }],
-      };
+
+    if (element.kind === 'group') {
+      item.collapsibleState = vscode.TreeItemCollapsibleState.Collapsed;
+      return item;
+    }
+
+    item.collapsibleState = vscode.TreeItemCollapsibleState.None;
+
+    // Match `editors/vscode/package.json` menu contributions:
+    // - endpoints: `viewItem == novaFrameworkEndpoint`
+    // - beans: `viewItem == novaFrameworkBean`
+    item.contextValue = element.kind === 'endpoint' ? 'novaFrameworkEndpoint' : 'novaFrameworkBean';
+
+    const file = element.kind === 'endpoint' ? element.endpoint?.file ?? element.endpoint?.handler?.file : element.bean?.file;
+    const line = element.kind === 'endpoint' && typeof element.endpoint?.line === 'number' ? element.endpoint.line : undefined;
+    if (typeof file === 'string' && file.length > 0) {
+      const uri = uriFromProjectFile(element.projectRoot, file);
+      const range =
+        typeof line === 'number' && line > 0
+          ? new vscode.Range(new vscode.Position(line - 1, 0), new vscode.Position(line - 1, 0))
+          : new vscode.Range(new vscode.Position(0, 0), new vscode.Position(0, 0));
+      item.command = { command: 'vscode.open', title: 'Open', arguments: [uri, { selection: range }] };
     }
     return item;
   }
 
   async getChildren(element?: FrameworkNode): Promise<FrameworkNode[]> {
-    if (element?.kind === 'item') return [];
-
     const projectRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     if (!projectRoot) return [];
 
@@ -485,11 +513,52 @@ class FrameworkDashboardTreeDataProvider implements vscode.TreeDataProvider<Fram
     const micronautEndpoints = await this.sendOptional('nova/micronaut/endpoints', { projectRoot });
     const micronautBeans = await this.sendOptional('nova/micronaut/beans', { projectRoot });
 
-    const children: FrameworkNode[] = [];
-    if (web) children.push({ kind: 'group', label: `Web Endpoints (${web.endpoints?.length ?? 0})` });
-    if (micronautEndpoints) children.push({ kind: 'group', label: `Micronaut Endpoints (${micronautEndpoints.endpoints?.length ?? 0})` });
-    if (micronautBeans) children.push({ kind: 'group', label: `Micronaut Beans (${micronautBeans.beans?.length ?? 0})` });
-    return children;
+    if (!element) {
+      const roots: FrameworkNode[] = [];
+      if (web) roots.push({ kind: 'group', id: 'web', label: `Web Endpoints (${web.endpoints?.length ?? 0})`, projectRoot });
+      if (micronautEndpoints)
+        roots.push({
+          kind: 'group',
+          id: 'micronautEndpoints',
+          label: `Micronaut Endpoints (${micronautEndpoints.endpoints?.length ?? 0})`,
+          projectRoot,
+        });
+      if (micronautBeans)
+        roots.push({ kind: 'group', id: 'micronautBeans', label: `Micronaut Beans (${micronautBeans.beans?.length ?? 0})`, projectRoot });
+      return roots;
+    }
+
+    if (element.kind !== 'group') {
+      return [];
+    }
+
+    if (element.id === 'web') {
+      const endpoints = Array.isArray(web?.endpoints) ? web.endpoints : [];
+      return endpoints.map((endpoint: any) => {
+        const methods = Array.isArray(endpoint.methods) ? endpoint.methods.join(',') : '';
+        const path = typeof endpoint.path === 'string' ? endpoint.path : '<unknown>';
+        const label = methods.length > 0 ? `${methods} ${path}` : path;
+        return { kind: 'endpoint', label, endpoint, projectRoot };
+      });
+    }
+
+    if (element.id === 'micronautEndpoints') {
+      const endpoints = Array.isArray(micronautEndpoints?.endpoints) ? micronautEndpoints.endpoints : [];
+      return endpoints.map((endpoint: any) => {
+        const method = typeof endpoint.method === 'string' ? endpoint.method : '';
+        const path = typeof endpoint.path === 'string' ? endpoint.path : '<unknown>';
+        const label = method.length > 0 ? `${method} ${path}` : path;
+        return { kind: 'endpoint', label, endpoint, projectRoot };
+      });
+    }
+
+    const beans = Array.isArray(micronautBeans?.beans) ? micronautBeans.beans : [];
+    return beans.map((bean: any) => {
+      const name = typeof bean.name === 'string' ? bean.name : typeof bean.id === 'string' ? bean.id : 'bean';
+      const ty = typeof bean.ty === 'string' ? bean.ty : typeof bean.type === 'string' ? bean.type : '';
+      const label = ty.length > 0 ? `${name}: ${ty}` : name;
+      return { kind: 'bean', label, bean, projectRoot };
+    });
   }
 
   private async sendOptional(method: string, params: unknown): Promise<any | undefined> {
