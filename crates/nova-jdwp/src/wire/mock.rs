@@ -2143,7 +2143,7 @@ async fn handle_packet(
                         // compile+inject paths can be tested without a real JVM.
                         (0, _) => JdwpValue::Object {
                             tag: b'L',
-                            id: OBJECT_ID,
+                            id: SAMPLE_ARRAYLIST_OBJECT_ID,
                         },
                         (1, b'I') => JdwpValue::Int(42),
                         (1, _) => JdwpValue::Object {
