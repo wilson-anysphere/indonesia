@@ -568,6 +568,43 @@ impl Index {
         out
     }
 
+    fn class_hierarchy_method_matches(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        target_param_types: Option<&[String]>,
+        target_arity: Option<usize>,
+    ) -> Vec<SymbolId> {
+        let mut cur: Option<&str> = Some(class_name);
+        let mut visited: HashSet<&str> = HashSet::new();
+        while let Some(cls) = cur {
+            if !visited.insert(cls) {
+                break;
+            }
+
+            let mut matches: Vec<SymbolId> = if let Some(param_types) = target_param_types {
+                self.method_overload_by_param_types(cls, method_name, param_types)
+                    .into_iter()
+                    .collect()
+            } else if let Some(arity) = target_arity {
+                self.method_overloads_by_arity(cls, method_name, arity)
+            } else {
+                self.method_overloads(cls, method_name)
+            };
+
+            if !matches.is_empty() {
+                // Keep ordering stable for deterministic tests.
+                matches.sort_by_key(|id| id.0);
+                matches.dedup();
+                return matches;
+            }
+
+            cur = self.class_extends(cls);
+        }
+
+        Vec::new()
+    }
+
     /// Finds overriding/implementing method declarations in transitive subtypes.
     ///
     /// Matching is **overload-safe**: methods are compared by `(name, param_types)`.
@@ -582,16 +619,61 @@ impl Index {
         let Some(container) = sym.container.as_deref() else {
             return Vec::new();
         };
-        let Some(param_types) = sym.param_types.as_ref() else {
-            // Unknown signature: be conservative.
-            return Vec::new();
-        };
+        let target_is_interface = self.is_interface(container);
+        let target_param_types = sym.param_types.as_deref();
+        let target_arity = target_param_types
+            .map(|tys| tys.len())
+            .or_else(|| sym.param_names.as_ref().map(|names| names.len()));
 
-        let mut out = Vec::new();
+        let mut out: Vec<SymbolId> = Vec::new();
+        let mut seen: HashSet<SymbolId> = HashSet::new();
         for subtype in self.all_subtypes(container) {
-            if let Some(id) = self.method_overload_by_param_types(&subtype, &sym.name, param_types)
-            {
-                out.push(id);
+            if target_is_interface {
+                match self.type_kinds.get(&subtype) {
+                    Some(TypeKind::Interface) => {
+                        let ids: Vec<SymbolId> = if let Some(param_types) = target_param_types {
+                            self.method_overload_by_param_types(&subtype, &sym.name, param_types)
+                                .into_iter()
+                                .collect()
+                        } else if let Some(arity) = target_arity {
+                            self.method_overloads_by_arity(&subtype, &sym.name, arity)
+                        } else {
+                            self.method_overloads(&subtype, &sym.name)
+                        };
+                        for id in ids {
+                            if seen.insert(id) {
+                                out.push(id);
+                            }
+                        }
+                    }
+                    Some(TypeKind::Class) | None => {
+                        for id in self.class_hierarchy_method_matches(
+                            &subtype,
+                            &sym.name,
+                            target_param_types,
+                            target_arity,
+                        ) {
+                            if seen.insert(id) {
+                                out.push(id);
+                            }
+                        }
+                    }
+                }
+            } else {
+                let ids: Vec<SymbolId> = if let Some(param_types) = target_param_types {
+                    self.method_overload_by_param_types(&subtype, &sym.name, param_types)
+                        .into_iter()
+                        .collect()
+                } else if let Some(arity) = target_arity {
+                    self.method_overloads_by_arity(&subtype, &sym.name, arity)
+                } else {
+                    self.method_overloads(&subtype, &sym.name)
+                };
+                for id in ids {
+                    if seen.insert(id) {
+                        out.push(id);
+                    }
+                }
             }
         }
         out

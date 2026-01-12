@@ -704,3 +704,50 @@ class A {
     assert_eq!(report.usages[0].file, "A.java");
     assert_eq!(report.usages[0].kind, UsageKind::Call);
 }
+
+#[test]
+fn safe_delete_interface_method_reports_override_usage() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        "I.java".to_string(),
+        r#"
+interface I {
+    void m();
+}
+"#
+        .to_string(),
+    );
+    files.insert(
+        "C.java".to_string(),
+        r#"
+class C implements I {
+    @Override
+    public void m() {
+    }
+}
+"#
+        .to_string(),
+    );
+
+    let index = Index::new(files);
+    let target = index.find_method("I", "m").expect("method exists").id;
+
+    let outcome = safe_delete(
+        &index,
+        SafeDeleteTarget::Symbol(target),
+        SafeDeleteMode::Safe,
+    )
+    .expect("safe delete runs");
+    let report = match outcome {
+        SafeDeleteOutcome::Preview { report } => report,
+        SafeDeleteOutcome::Applied { .. } => panic!("expected preview"),
+    };
+
+    assert!(
+        report
+            .usages
+            .iter()
+            .any(|usage| usage.kind == UsageKind::Override && usage.file == "C.java"),
+        "expected override usage in C.java: {report:?}"
+    );
+}

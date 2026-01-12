@@ -789,3 +789,70 @@ class Outer {
     assert_eq!(inner.decl_range.start, expected_inner_decl_start);
     assert_eq!(nested.decl_range.start, expected_nested_decl_start);
 }
+
+#[test]
+fn find_overrides_finds_interface_implementations() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        "I.java".to_string(),
+        r#"interface I {
+    void m(int x);
+}
+"#
+        .to_string(),
+    );
+    files.insert(
+        "Base.java".to_string(),
+        r#"class Base {
+    public void m(int x) {}
+}
+"#
+        .to_string(),
+    );
+    files.insert(
+        "C.java".to_string(),
+        r#"class C extends Base implements I {
+}
+"#
+        .to_string(),
+    );
+
+    let index = Index::new(files);
+    let target = index
+        .find_method_by_signature("I", "m", &["int"])
+        .expect("I.m(int) exists")
+        .id;
+    let base_m = index
+        .find_method_by_signature("Base", "m", &["int"])
+        .expect("Base.m(int) exists")
+        .id;
+
+    assert_eq!(index.find_overrides(target), vec![base_m]);
+}
+
+#[test]
+fn find_overrides_finds_subinterface_redeclarations() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        "I.java".to_string(),
+        r#"interface I {
+    void m();
+}
+"#
+        .to_string(),
+    );
+    files.insert(
+        "J.java".to_string(),
+        r#"interface J extends I {
+    void m();
+}
+"#
+        .to_string(),
+    );
+
+    let index = Index::new(files);
+    let target = index.find_method("I", "m").expect("I.m exists").id;
+    let j_m = index.find_method("J", "m").expect("J.m exists").id;
+
+    assert_eq!(index.find_overrides(target), vec![j_m]);
+}
