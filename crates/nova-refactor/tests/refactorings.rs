@@ -27,7 +27,10 @@ fn strip_selection_markers(src: &str) -> (String, WorkspaceTextRange) {
     cleaned.push_str(&src[start + start_marker.len()..end]);
     cleaned.push_str(&src[end + end_marker.len()..]);
 
-    (cleaned, WorkspaceTextRange::new(selection_start, selection_end))
+    (
+        cleaned,
+        WorkspaceTextRange::new(selection_start, selection_end),
+    )
 }
 
 #[test]
@@ -1011,6 +1014,41 @@ fn extract_variable_rejected_in_switch_case_label() {
     assert!(
         matches!(err, SemanticRefactorError::ExtractNotSupported { .. }),
         "expected ExtractNotSupported, got: {err:?}"
+    );
+}
+
+#[test]
+fn extract_variable_rejected_in_try_with_resources_resource_initializer() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    try (Foo f = /*select*/makeFoo()/*end*/) {
+      use(f);
+    }
+  }
+}
+"#;
+    let (src, selection) = strip_selection_markers(src);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: selection,
+            name: "tmp".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason == "cannot extract from try-with-resources resource specification"
+        ),
+        "expected ExtractNotSupported for try-with-resources, got: {err:?}"
     );
 }
 

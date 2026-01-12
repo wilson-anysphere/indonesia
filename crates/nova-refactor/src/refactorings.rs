@@ -188,6 +188,20 @@ pub fn extract_variable(
         });
     }
 
+    // Expressions inside `try ( ... )` resource specifications have special semantics: the
+    // AutoCloseable(s) created/used there are closed automatically at the end of the try block.
+    // Naively extracting such expressions to a normal local variable declared before the `try`
+    // can change resource lifetime/closing behavior. Until we implement a semantics-preserving
+    // strategy (e.g. rewriting to `try (var tmp = <expr>)` where legal), refuse extraction here.
+    if expr.syntax().ancestors().any(|node| {
+        ast::ResourceSpecification::cast(node.clone()).is_some()
+            || ast::Resource::cast(node).is_some()
+    }) {
+        return Err(RefactorError::ExtractNotSupported {
+            reason: "cannot extract from try-with-resources resource specification",
+        });
+    }
+
     if let Some(reason) = constant_expression_only_context_reason(&expr) {
         return Err(RefactorError::ExtractNotSupported { reason });
     }
@@ -412,10 +426,7 @@ pub fn inline_variable(
             TextRange::new(stmt_start, end)
         };
 
-        edits.push(TextEdit::delete(
-            def.file.clone(),
-            decl_range,
-        ));
+        edits.push(TextEdit::delete(def.file.clone(), decl_range));
     }
 
     let mut edit = WorkspaceEdit::new(edits);
@@ -608,7 +619,9 @@ fn find_expression(
 fn constant_expression_only_context_reason(expr: &ast::Expression) -> Option<&'static str> {
     for node in expr.syntax().ancestors() {
         if ast::AnnotationElementValue::cast(node.clone()).is_some() {
-            return Some("cannot extract from annotation element values (compile-time constant required)");
+            return Some(
+                "cannot extract from annotation element values (compile-time constant required)",
+            );
         }
 
         if ast::CaseLabelElement::cast(node.clone()).is_some()
@@ -770,7 +783,12 @@ fn expr_contains_string_literal(expr: &ast::Expression) -> bool {
     expr.syntax()
         .descendants_with_tokens()
         .filter_map(|el| el.into_token())
-        .any(|tok| matches!(tok.kind(), SyntaxKind::StringLiteral | SyntaxKind::TextBlock))
+        .any(|tok| {
+            matches!(
+                tok.kind(),
+                SyntaxKind::StringLiteral | SyntaxKind::TextBlock
+            )
+        })
 }
 
 fn render_java_type(node: &nova_syntax::SyntaxNode) -> String {
@@ -1080,7 +1098,11 @@ fn statement_end_including_trailing_newline(text: &str, stmt_end: usize) -> usiz
     let newline = NewlineStyle::detect(text);
     let newline_str = newline.as_str();
 
-    if text.get(offset..).unwrap_or_default().starts_with(newline_str) {
+    if text
+        .get(offset..)
+        .unwrap_or_default()
+        .starts_with(newline_str)
+    {
         return offset + newline_str.len();
     }
 
