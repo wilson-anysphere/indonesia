@@ -10,16 +10,18 @@ and workspace symbol search).
 ```bash
 rm -rf "${CARGO_TARGET_DIR:-target}/criterion"
 
-# Agent / multi-runner environments MUST use the wrapper (see AGENTS.md). This is also safe on
-# workstations; if you prefer, you can replace bash scripts/cargo_agent.sh with cargo.
-bash scripts/cargo_agent.sh bench --locked -p nova-core --bench critical_paths
-bash scripts/cargo_agent.sh bench --locked -p nova-syntax --bench parse_java
-bash scripts/cargo_agent.sh bench --locked -p nova-format --bench format
-bash scripts/cargo_agent.sh bench --locked -p nova-refactor --bench refactor
-bash scripts/cargo_agent.sh bench --locked -p nova-classpath --bench index
-bash scripts/cargo_agent.sh bench --locked -p nova-ide --bench completion
-bash scripts/cargo_agent.sh bench --locked -p nova-fuzzy --bench fuzzy
-bash scripts/cargo_agent.sh bench --locked -p nova-index --bench symbol_search
+# CI runs the suite using `cargo bench` directly:
+cargo bench --locked -p nova-core --bench critical_paths
+cargo bench --locked -p nova-syntax --bench parse_java
+cargo bench --locked -p nova-format --bench format
+cargo bench --locked -p nova-refactor --bench refactor
+cargo bench --locked -p nova-classpath --bench index
+cargo bench --locked -p nova-ide --bench completion
+cargo bench --locked -p nova-fuzzy --bench fuzzy
+cargo bench --locked -p nova-index --bench symbol_search
+
+# In agent / multi-runner environments, prefer the wrapper (see AGENTS.md):
+# bash scripts/cargo_agent.sh bench --locked -p nova-core --bench critical_paths
 ```
 
 Criterion writes results to `$CARGO_TARGET_DIR/criterion` (defaults to `target/criterion`).
