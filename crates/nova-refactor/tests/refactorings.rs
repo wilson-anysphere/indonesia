@@ -4225,6 +4225,82 @@ fn rename_lambda_parameter_block_body_updates_all_occurrences() {
 }
 
 #[test]
+fn rename_lambda_parameter_multi_param_updates_all_occurrences() {
+    let file = FileId::new("Test.java");
+    let src = r#"class C { void m(){ java.util.function.BiFunction<Integer,Integer,Integer> f = (x, y) -> x + y; } }"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let decl_offset = src.find("(x").unwrap() + 1;
+    let usage_offset = src.find("-> x +").unwrap() + "-> ".len();
+
+    let decl_symbol = db
+        .symbol_at(&file, decl_offset)
+        .expect("symbol at lambda parameter x");
+    let usage_symbol = db
+        .symbol_at(&file, usage_offset)
+        .expect("symbol at lambda parameter usage x");
+    assert_eq!(decl_symbol, usage_symbol);
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol: decl_symbol,
+            new_name: "z".into(),
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    assert!(
+        after.contains("f = (z, y) -> z + y"),
+        "expected both occurrences to be renamed: {after}"
+    );
+    assert!(
+        !after.contains("(x, y)") && !after.contains("-> x +"),
+        "expected no remaining x references: {after}"
+    );
+}
+
+#[test]
+fn rename_lambda_parameter_typed_param_updates_all_occurrences() {
+    let file = FileId::new("Test.java");
+    let src = r#"class C { void m(){ java.util.function.IntUnaryOperator f = (int x) -> x + 1; } }"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let decl_offset = src.find("int x").unwrap() + "int ".len();
+    let usage_offset = src.find("-> x + 1").unwrap() + "-> ".len();
+
+    let decl_symbol = db
+        .symbol_at(&file, decl_offset)
+        .expect("symbol at lambda parameter x");
+    let usage_symbol = db
+        .symbol_at(&file, usage_offset)
+        .expect("symbol at lambda parameter usage x");
+    assert_eq!(decl_symbol, usage_symbol);
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol: decl_symbol,
+            new_name: "y".into(),
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    assert!(
+        after.contains("f = (int y) -> y + 1"),
+        "expected both occurrences to be renamed: {after}"
+    );
+    assert!(
+        !after.contains("int x") && !after.contains("-> x + 1"),
+        "expected no remaining x references: {after}"
+    );
+}
+
+#[test]
 fn inline_variable_rejects_shadowed_dependency_in_nested_block() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
