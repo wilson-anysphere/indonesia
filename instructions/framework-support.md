@@ -201,9 +201,12 @@ impl FrameworkAnalyzer for LombokAnalyzer {
 
 ### Configuration File Support
 
-Some frameworks also provide YAML/properties intelligence (e.g. Spring Boot config keys). This is
-not currently part of the `nova_framework::FrameworkAnalyzer` trait; `nova-ide` wires it in
-directly (see `crates/nova-ide/src/framework_cache.rs`).
+Framework analyzers can also provide YAML/properties intelligence (e.g. Spring Boot config keys)
+through the normal `diagnostics`/`completions` hooks by using `db.file_path(file)` and
+`db.file_text(file)` (see `crates/nova-framework-spring/src/analyzer.rs`).
+
+`nova-ide` additionally contains workspace caches and helpers (see
+`crates/nova-ide/src/framework_cache.rs`) to avoid rescanning build roots on every request.
 
 ---
 

@@ -76,15 +76,12 @@ Modern Java development is dominated by frameworks like Spring, Jakarta EE, and 
 
 ### Spring Analyzer Implementation
 
-Spring support is implemented in two layers today:
+Spring support ships as a `nova-framework` analyzer (`nova_framework_spring::SpringAnalyzer`) plus
+supporting helpers (config parsing/indexing, DI analysis).
 
-- `crates/nova-framework-spring`: parsing and analysis helpers for Java sources and
-  `application*.{properties,yml,yaml}`.
-- `crates/nova-ide/src/framework_cache.rs` and `crates/nova-ide/src/spring_di.rs`: IDE wiring,
-  workspace caching, and integration with LSP diagnostics/completions.
-
-This split exists because `nova_framework::Database` expects class/HIR data, while the IDE-facing
-`nova_db::Database` is currently file-text focused. See "Plugin integration constraint" below.
+In the IDE, analyzers are executed via a `nova_db::Database` → `nova_framework::Database` adapter
+(`crates/nova-ide/src/framework_db.rs`) and the default `AnalyzerRegistry` registered by `nova-ide`
+(see `crates/nova-ide/src/extensions.rs`). See "Plugin integration constraint" below.
 
 ---
 
@@ -149,12 +146,9 @@ impl FrameworkAnalyzer for LombokAnalyzer {
 
 ## Jakarta EE / JPA Support
 
-JPA support currently ships as text-based analysis helpers rather than a `FrameworkAnalyzer`
-implementation:
-
-- `crates/nova-framework-jpa`: entity discovery + JPQL parsing/diagnostics/completions over Java source
-  strings.
-- `crates/nova-ide/src/jpa_intel.rs`: workspace indexing + wiring into IDE diagnostics/completions.
+JPA support is implemented in `crates/nova-framework-jpa` and exposed as a `nova-framework` analyzer
+(`nova_framework_jpa::JpaAnalyzer`) for diagnostics and JPQL completions inside query strings. The
+underlying model is best-effort and mostly text-based.
 
 ---
 
@@ -280,7 +274,8 @@ such as `class(ClassId) -> &nova_hir::framework::ClassData`. The IDE-facing `nov
 file-text only.
 
 To use `nova-framework` analyzers in the IDE today, build an adapter (often via
-`nova_framework::MemoryDatabase`). See `crates/nova-ide/src/lombok_intel.rs` for a complete example.
+`crates/nova-ide/src/framework_db.rs` or a purpose-built `nova_framework::MemoryDatabase`). See
+`crates/nova-ide/src/lombok_intel.rs` for a focused example.
 
 ---
 
