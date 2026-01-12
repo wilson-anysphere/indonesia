@@ -212,10 +212,11 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
       }
       case 'micronaut-bean': {
         const bean = element.bean;
-        const item = new vscode.TreeItem(bean.name || '(unnamed bean)', vscode.TreeItemCollapsibleState.None);
+        const label = bean.name || bean.id || '(unnamed bean)';
+        const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
         item.contextValue = NOVA_FRAMEWORK_BEAN_CONTEXT;
         item.description = bean.ty || undefined;
-        item.tooltip = bean.file;
+        item.tooltip = bean.id ? `Bean id: ${bean.id}\n${bean.file}` : bean.file;
 
         const uri = uriFromFileLike(bean.file, { baseUri: element.baseUri, projectRoot: element.projectRoot });
         if (uri) {
