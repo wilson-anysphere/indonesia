@@ -300,7 +300,7 @@ fn main() -> std::io::Result<()> {
     }
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         eprintln!(
-            "nova-lsp {version}\n\nUsage:\n  nova-lsp [--stdio] [--config <path>] [--distributed] [--distributed-worker-command <path>]\n\nFlags:\n  --stdio\n      Use stdio transport (default; only supported transport).\n\n  --config <path>\n      Path to the nova.toml configuration file.\n\n  --distributed\n      Enable local distributed indexing/search via nova-router + nova-worker.\n\n  --distributed-worker-command <path>\n      Path to the nova-worker binary (only used with --distributed).\n      Defaults to a sibling nova-worker next to nova-lsp if present; otherwise falls back to nova-worker on PATH.\n\n  -h, --help\n      Print help.\n\n  -V, --version\n      Print version.\n",
+            "nova-lsp {version}\n\nUsage:\n  nova-lsp [--stdio] [--config <path>] [--distributed] [--distributed-worker-command <path>]\n\nFlags:\n  --stdio\n      Use stdio transport (default; only supported transport).\n\n  --config <path>\n      Path to the nova.toml configuration file.\n      If omitted, uses NOVA_CONFIG/NOVA_CONFIG_PATH or discovers nova.toml/.nova.toml in the workspace.\n\n  --distributed\n      Enable local distributed indexing/search via nova-router + nova-worker.\n\n  --distributed-worker-command <path>\n      Path to the nova-worker binary (only used with --distributed).\n      Defaults to a sibling nova-worker next to nova-lsp if present; otherwise falls back to nova-worker on PATH.\n\n  -h, --help\n      Print help.\n\n  -V, --version\n      Print version.\n",
             version = env!("CARGO_PKG_VERSION")
         );
         return Ok(());
