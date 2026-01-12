@@ -1048,6 +1048,29 @@ impl WorkspaceEngine {
                                         // NOTE: Directory-level watcher events cannot be safely
                                         // mapped into per-file operations in the VFS. Falling back
                                         // to a full rescan keeps the workspace consistent.
+                                        let is_heuristic_directory_change_for_missing_path =
+                                            |local: &Path| {
+                                                // Safety net when `fs::metadata` fails (e.g. the
+                                                // path was deleted before we observed it). We only
+                                                // apply this to extension-less paths outside
+                                                // ignored directories to reduce the risk of
+                                                // triggering full rescans for normal file edits.
+                                                let in_ignored_dir = local.components().any(|c| {
+                                                    c.as_os_str() == std::ffi::OsStr::new(".git")
+                                                        || c.as_os_str()
+                                                            == std::ffi::OsStr::new(".gradle")
+                                                        || c.as_os_str()
+                                                            == std::ffi::OsStr::new("build")
+                                                        || c.as_os_str()
+                                                            == std::ffi::OsStr::new("target")
+                                                        || c.as_os_str()
+                                                            == std::ffi::OsStr::new(".nova")
+                                                        || c.as_os_str()
+                                                            == std::ffi::OsStr::new(".idea")
+                                                });
+
+                                                local.extension().is_none() && !in_ignored_dir
+                                            };
                                         let is_directory_change = match &change {
                                             FileChange::Created { path }
                                             | FileChange::Modified { path } => path
@@ -1069,36 +1092,7 @@ impl WorkspaceEngine {
                                                             // ignored directories as potential
                                                             // directory-level operations and fall
                                                             // back to a rescan.
-                                                            let in_ignored_dir =
-                                                                local.components().any(|c| {
-                                                                    c.as_os_str()
-                                                                        == std::ffi::OsStr::new(
-                                                                            ".git",
-                                                                        )
-                                                                        || c.as_os_str()
-                                                                            == std::ffi::OsStr::new(
-                                                                                ".gradle",
-                                                                            )
-                                                                        || c.as_os_str()
-                                                                            == std::ffi::OsStr::new(
-                                                                                "build",
-                                                                            )
-                                                                        || c.as_os_str()
-                                                                            == std::ffi::OsStr::new(
-                                                                                "target",
-                                                                            )
-                                                                        || c.as_os_str()
-                                                                            == std::ffi::OsStr::new(
-                                                                                ".nova",
-                                                                            )
-                                                                        || c.as_os_str()
-                                                                            == std::ffi::OsStr::new(
-                                                                                ".idea",
-                                                                            )
-                                                                });
-
-                                                            local.extension().is_none()
-                                                                && !in_ignored_dir
+                                                            is_heuristic_directory_change_for_missing_path(local)
                                                         }
                                                         Err(_) => false,
                                                     },
@@ -1106,15 +1100,47 @@ impl WorkspaceEngine {
                                                 }
                                             }
                                             FileChange::Moved { from, to } => {
-                                                let from_is_dir = from
-                                                    .as_local_path()
-                                                    .and_then(|p| fs::metadata(p).ok())
-                                                    .is_some_and(|meta| meta.is_dir());
-                                                let to_is_dir = to
-                                                    .as_local_path()
-                                                    .and_then(|p| fs::metadata(p).ok())
-                                                    .is_some_and(|meta| meta.is_dir());
-                                                from_is_dir || to_is_dir
+                                                let from_local = from.as_local_path();
+                                                let to_local = to.as_local_path();
+                                                let from_meta = from_local.map(fs::metadata);
+                                                let to_meta = to_local.map(fs::metadata);
+
+                                                let from_is_dir = matches!(
+                                                    from_meta.as_ref(),
+                                                    Some(Ok(meta)) if meta.is_dir()
+                                                );
+                                                let to_is_dir = matches!(
+                                                    to_meta.as_ref(),
+                                                    Some(Ok(meta)) if meta.is_dir()
+                                                );
+                                                if from_is_dir || to_is_dir {
+                                                    true
+                                                } else {
+                                                    // If we can't stat either path because both are
+                                                    // already gone, treat it as a directory-level
+                                                    // operation when the paths look like directories.
+                                                    // This prevents silently ignoring directory moves
+                                                    // that are immediately followed by deletion (and
+                                                    // only surface as a move event).
+                                                    let from_missing = matches!(
+                                                        from_meta.as_ref(),
+                                                        Some(Err(err))
+                                                            if err.kind() == std::io::ErrorKind::NotFound
+                                                    );
+                                                    let to_missing = matches!(
+                                                        to_meta.as_ref(),
+                                                        Some(Err(err))
+                                                            if err.kind() == std::io::ErrorKind::NotFound
+                                                    );
+                                                    from_missing
+                                                        && to_missing
+                                                        && from_local.is_some_and(
+                                                            is_heuristic_directory_change_for_missing_path,
+                                                        )
+                                                        && to_local.is_some_and(
+                                                            is_heuristic_directory_change_for_missing_path,
+                                                        )
+                                                }
                                             }
                                         };
 
@@ -6833,6 +6859,70 @@ public class Bar {}"#;
         })
         .await
         .expect("timed out waiting for directory-move-triggered project reload");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn manual_watcher_directory_move_with_missing_metadata_triggers_rescan_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path().join("project");
+        fs::create_dir_all(project_root.join("src")).unwrap();
+        fs::write(project_root.join("src/Main.java"), "class Main {}".as_bytes()).unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let project_root = project_root.canonicalize().unwrap();
+
+        let workspace = crate::Workspace::open(&project_root).unwrap();
+        let engine = workspace.engine.clone();
+
+        let main_path = VfsPath::local(project_root.join("src/Main.java"));
+        let file_id = engine
+            .vfs
+            .get_id(&main_path)
+            .expect("file id allocated for initial project scan");
+
+        let manual = ManualFileWatcher::new();
+        let handle: ManualFileWatcherHandle = manual.handle();
+        let _watcher = engine
+            .start_watching_with_watcher(Box::new(manual), WatchDebounceConfig::ZERO)
+            .unwrap();
+
+        // Rename the directory and delete it before emitting the watcher event. This ensures
+        // `fs::metadata` returns NotFound for both the `from` and `to` paths when the watcher thread
+        // processes the event.
+        let src_dir = project_root.join("src");
+        let src2_dir = project_root.join("src2");
+        fs::rename(&src_dir, &src2_dir).unwrap();
+        fs::remove_dir_all(&src2_dir).unwrap();
+
+        handle
+            .push(WatchEvent::Changes {
+                changes: vec![FileChange::Moved {
+                    from: VfsPath::local(src_dir),
+                    to: VfsPath::local(src2_dir),
+                }],
+            })
+            .unwrap();
+
+        timeout(Duration::from_secs(5), async move {
+            loop {
+                let ready = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    engine.query_db.with_snapshot(|snap| {
+                        !snap.file_exists(file_id)
+                            && !snap
+                                .project_files(ProjectId::from_raw(0))
+                                .contains(&file_id)
+                    })
+                }))
+                .unwrap_or(false);
+
+                if ready {
+                    break;
+                }
+
+                yield_now().await;
+            }
+        })
+        .await
+        .expect("timed out waiting for missing-metadata directory move to trigger rescan");
     }
 
     #[tokio::test(flavor = "current_thread")]
