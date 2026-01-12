@@ -18,8 +18,8 @@ local util = require("lspconfig.util")
 
 -- `nvim-lspconfig` doesn't ship a built-in `nova-lsp` config, so define one if it
 -- doesn't already exist.
-if not configs.nova then
-  configs.nova = {
+if not configs.nova_lsp then
+  configs.nova_lsp = {
     default_config = {
       cmd = { "nova-lsp", "--stdio" },
       filetypes = { "java" },
@@ -33,7 +33,8 @@ if not configs.nova then
         "WORKSPACE",
         "WORKSPACE.bazel",
         "MODULE.bazel",
-        ".git"
+        ".git",
+        ".nova"
       ),
     },
   }
@@ -57,6 +58,6 @@ local function on_attach(_, bufnr)
   })
 end
 
-lspconfig.nova.setup({
+lspconfig.nova_lsp.setup({
   on_attach = on_attach,
 })
