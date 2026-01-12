@@ -68,7 +68,7 @@ fn synthetic_symbols(count: usize, mode: QualifiedNameMode) -> Vec<SearchSymbol>
             name,
             qualified_name,
             kind: IndexSymbolKind::Class,
-            container_name: Default::default(),
+            container_name: None,
             location: Default::default(),
             ast_id: Default::default(),
         });
@@ -101,7 +101,7 @@ fn synthetic_symbols(count: usize, mode: QualifiedNameMode) -> Vec<SearchSymbol>
             name,
             qualified_name,
             kind: IndexSymbolKind::Class,
-            container_name: Default::default(),
+            container_name: None,
             location: Default::default(),
             ast_id: Default::default(),
         });
