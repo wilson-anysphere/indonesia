@@ -519,7 +519,7 @@
         "nova.debug.host": {
           "type": "string",
           "default": "127.0.0.1",
-          "description": "Default JDWP host for Nova debug sessions."
+          "description": "Default JDWP host for Nova debug sessions (IP address or hostname)."
         },
         "nova.debug.port": {
           "type": "number",
@@ -585,7 +585,7 @@
               "host": {
                 "type": "string",
                 "default": "127.0.0.1",
-                "description": "JDWP host to attach to."
+                "description": "JDWP host to attach to (IP address or hostname)."
               },
               "port": {
                 "type": "number",
@@ -614,7 +614,7 @@
               "host": {
                 "type": "string",
                 "default": "127.0.0.1",
-                "description": "JDWP host to connect to."
+                "description": "JDWP host to connect to (IP address or hostname)."
               },
               "port": {
                 "type": "number",

@@ -272,7 +272,8 @@ In `.vscode/launch.json`:
   "type": "nova",
   "request": "attach",
   "name": "Nova: Attach (5005)",
-  "host": "127.0.0.1",
+  // JDWP host: may be an IP address or hostname (for example "localhost").
+  "host": "localhost",
   "port": 5005,
   // Optional but recommended: helps nova-dap map JDWP stack frames to real files.
   "projectRoot": "${workspaceFolder}"
@@ -386,7 +387,7 @@ Alternatively, configure AI in a `nova.toml` file and point the extension at it 
 
 - `nova.dap.path` (string | null): override the `nova-dap` binary path for a workspace folder. Supports `~` and `${workspaceFolder}`; relative paths are resolved against the target workspace folder. If unset, Nova will look on `$PATH` and then fall back to managed downloads (controlled by `nova.download.mode`).
 - `nova.debug.adapterPath` (string | null): deprecated alias for `nova.dap.path`.
-- `nova.debug.host` (string): default JDWP host for Nova debug sessions (default: `127.0.0.1`).
+- `nova.debug.host` (string): default JDWP host for Nova debug sessions (default: `127.0.0.1`; may also be a hostname like `localhost`).
 - `nova.debug.port` (number): default JDWP port for Nova debug sessions (default: `5005`).
 - `nova.debug.legacyAdapter` (boolean): run `nova-dap --legacy` (default: false).
 - `nova.tests.buildTool` ("auto" | "maven" | "gradle" | "prompt"): build tool to use for test runs/debugging for a workspace folder.
