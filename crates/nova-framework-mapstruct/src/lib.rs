@@ -164,22 +164,31 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
     }
 
     fn diagnostics(&self, db: &dyn Database, file: nova_vfs::FileId) -> Vec<Diagnostic> {
+        let Some(text) = db.file_text(file) else {
+            return Vec::new();
+        };
         let Some(path) = db.file_path(file) else {
             return Vec::new();
         };
         if path.extension().and_then(|e| e.to_str()) != Some("java") {
             return Vec::new();
         }
-        let Some(text) = db.file_text(file) else {
-            return Vec::new();
-        };
         if !looks_like_mapstruct_source(text) {
             return Vec::new();
         }
 
+        let Some(root) = nova_project::workspace_root(path) else {
+            return Vec::new();
+        };
+
         let project = db.project_of_file(file);
-        let workspace = self.workspace.workspace(db, project);
-        workspace.diagnostics_for_file(path)
+        let has_mapstruct_dependency = db.has_dependency(project, "org.mapstruct", "mapstruct")
+            || db.has_dependency(project, "org.mapstruct", "mapstruct-processor");
+
+        match crate::diagnostics_for_file(&root, path, text, has_mapstruct_dependency) {
+            Ok(diags) => diags,
+            Err(_) => Vec::new(),
+        }
     }
 
     fn navigation(

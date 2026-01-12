@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use nova_core::ProjectId;
@@ -124,15 +124,6 @@ impl MapStructWorkspace {
         }
 
         builder.finish(db)
-    }
-
-    pub(crate) fn diagnostics_for_file(&self, path: &Path) -> Vec<Diagnostic> {
-        self.analysis
-            .diagnostics
-            .iter()
-            .filter(|d| d.file.as_path() == path)
-            .map(|d| d.diagnostic.clone())
-            .collect()
     }
 
     pub(crate) fn property_types_for_type(
