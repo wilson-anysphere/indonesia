@@ -4,7 +4,7 @@ import { uriFromFileLike } from './frameworkDashboard';
 import { formatWebEndpointDescription, formatWebEndpointLabel, webEndpointNavigationTarget, type WebEndpoint } from './frameworks/webEndpoints';
 import { formatError, isSafeModeError } from './safeMode';
 import { routeWorkspaceFolderUri } from './workspaceRouting';
-import { utf8ByteOffsetToUtf16Offset } from './utf8Offsets';
+import { utf8SpanToUtf16Offsets } from './utf8Offsets';
 
 export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
 
@@ -506,14 +506,10 @@ function clampLineIndex(line: number, lineCount: number): number {
 function utf8SpanToRange(document: vscode.TextDocument, span: MicronautSpan): vscode.Range {
   const text = document.getText();
 
-  const startByte = typeof span.start === 'number' ? span.start : 0;
-  const endByte = typeof span.end === 'number' ? span.end : startByte;
+  const offsets = utf8SpanToUtf16Offsets(text, span);
 
-  const startOffset = utf8ByteOffsetToUtf16Offset(text, startByte);
-  const endOffset = utf8ByteOffsetToUtf16Offset(text, Math.max(endByte, startByte));
-
-  const start = document.positionAt(startOffset);
-  const end = document.positionAt(endOffset);
+  const start = document.positionAt(offsets.start);
+  const end = document.positionAt(offsets.end);
   return new vscode.Range(start, end);
 }
 

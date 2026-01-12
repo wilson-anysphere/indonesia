@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { formatError } from './safeMode';
 
 import type { NovaFrameworksViewController } from './frameworksView';
-import { utf8ByteOffsetToUtf16Offset } from './utf8Offsets';
+import { utf8SpanToUtf16Offsets } from './utf8Offsets';
 
 export type NovaRequest = <R>(
   method: string,
@@ -400,11 +400,9 @@ function utf8SpanToRange(document: vscode.TextDocument, span: { start: number; e
   const text = document.getText();
   const docLen = text.length;
 
-  const startByte = typeof span.start === 'number' && Number.isFinite(span.start) ? span.start : 0;
-  const endByte = typeof span.end === 'number' && Number.isFinite(span.end) ? span.end : startByte;
-
-  let startOffset = utf8ByteOffsetToUtf16Offset(text, startByte);
-  let endOffset = utf8ByteOffsetToUtf16Offset(text, Math.max(endByte, startByte));
+  const offsets = utf8SpanToUtf16Offsets(text, span);
+  let startOffset = offsets.start;
+  let endOffset = offsets.end;
 
   startOffset = Math.min(Math.max(0, startOffset), docLen);
   endOffset = Math.min(Math.max(0, endOffset), docLen);
