@@ -1714,9 +1714,12 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 }
             }
             HirExpr::Name { name, range } => self.infer_name(loader, expr, name.as_str(), *range),
-            HirExpr::FieldAccess { receiver, name, .. } => {
-                self.infer_field_access(loader, *receiver, name.as_str(), expr)
-            }
+            HirExpr::FieldAccess {
+                receiver,
+                name,
+                name_range,
+                ..
+            } => self.infer_field_access(loader, *receiver, name.as_str(), *name_range, expr),
             HirExpr::MethodReference { receiver, .. } => {
                 // Always infer the receiver so IDE hover works.
                 let _ = self.infer_expr(loader, *receiver);
@@ -2394,6 +2397,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         loader: &mut ExternalTypeLoader<'_>,
         receiver: HirExprId,
         name: &str,
+        name_range: Span,
         expr: HirExprId,
     ) -> ExprInfo {
         let recv_info = self.infer_expr(loader, receiver);
@@ -2463,6 +2467,18 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             let env_ro: &dyn TypeEnv = &*loader.store;
             let mut ctx = TyContext::new(env_ro);
             if let Some(field) = ctx.resolve_field(&recv_ty, name, CallKind::Instance) {
+                if field.is_static {
+                    let span = if !name_range.is_empty() {
+                        Some(name_range)
+                    } else {
+                        Some(self.body.exprs[expr].range())
+                    };
+                    self.diagnostics.push(Diagnostic::warning(
+                        "static-access-via-instance",
+                        format!("static field `{name}` accessed via an instance"),
+                        span,
+                    ));
+                }
                 return ExprInfo {
                     ty: field.ty,
                     is_type_ref: false,

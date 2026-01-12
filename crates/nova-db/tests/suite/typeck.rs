@@ -8,7 +8,7 @@ use nova_db::{
 use nova_jdk::JdkIndex;
 use nova_project::{BuildSystem, JavaConfig, Module, ProjectConfig};
 use nova_resolve::ids::DefWithBodyId;
-use nova_types::{PrimitiveType, Type, TypeEnv, TypeStore};
+use nova_types::{PrimitiveType, Severity, Type, TypeEnv, TypeStore};
 use tempfile::TempDir;
 
 #[path = "../typeck/diagnostics.rs"]
@@ -525,6 +525,25 @@ class C {
     assert!(
         diags.iter().any(|d| d.code.as_ref() == "static-context"),
         "expected a static-context diagnostic, got {diags:?}"
+    );
+}
+
+#[test]
+fn warns_on_static_field_access_via_instance() {
+    let src = r#"
+class C {
+    static int X = 1;
+    int m(){ C c = new C(); return c.X; }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| {
+            d.severity == Severity::Warning && d.code.as_ref() == "static-access-via-instance"
+        }),
+        "expected a static-access-via-instance warning; got {diags:?}"
     );
 }
 
