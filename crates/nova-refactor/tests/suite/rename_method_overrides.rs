@@ -36,6 +36,37 @@ fn workspace_files() -> (BTreeMap<FileId, String>, FileId, FileId, FileId) {
     (files, base_file, derived_file, use_file)
 }
 
+fn workspace_files_interface() -> (BTreeMap<FileId, String>, FileId, FileId, FileId) {
+    let iface_file = FileId::new("I.java");
+    let impl_file = FileId::new("C.java");
+    let use_file = FileId::new("Use.java");
+
+    let iface_src = r#"interface I {
+  void process();
+}
+"#;
+
+    let impl_src = r#"class C implements I {
+  @Override public void process(){}
+}
+"#;
+
+    let use_src = r#"class Use {
+  void m(I i, C c){
+    i.process();
+    c.process();
+  }
+}
+"#;
+
+    let mut files = BTreeMap::new();
+    files.insert(iface_file.clone(), iface_src.to_string());
+    files.insert(impl_file.clone(), impl_src.to_string());
+    files.insert(use_file.clone(), use_src.to_string());
+
+    (files, iface_file, impl_file, use_file)
+}
+
 #[test]
 fn rename_method_renames_overrides_from_base() {
     let (files, base_file, derived_file, use_file) = workspace_files();
@@ -174,5 +205,89 @@ fn rename_method_override_chain_detects_collisions_in_overrides() {
                 if file == &derived_file && name == "handle"
         )),
         "expected NameCollision in Derived, got: {conflicts:?}"
+    );
+}
+
+#[test]
+fn rename_method_renames_interface_impl_from_interface_decl() {
+    let (files, iface_file, impl_file, use_file) = workspace_files_interface();
+    let db = RefactorJavaDatabase::new(files.clone().into_iter());
+
+    let iface_src = files.get(&iface_file).unwrap();
+    let offset = iface_src.find("process").unwrap() + 1;
+    let symbol = db.symbol_at(&iface_file, offset).expect("I.process symbol");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "handle".into(),
+        },
+    )
+    .unwrap();
+
+    let updated = apply_workspace_edit(&files, &edit).expect("workspace edit applies");
+
+    let updated_iface = updated.get(&iface_file).unwrap();
+    let updated_impl = updated.get(&impl_file).unwrap();
+    let updated_use = updated.get(&use_file).unwrap();
+
+    assert!(
+        updated_iface.contains("void handle()"),
+        "expected interface method to be renamed:\n{updated_iface}"
+    );
+    assert!(
+        updated_impl.contains("void handle()"),
+        "expected implementing method to be renamed:\n{updated_impl}"
+    );
+    assert!(
+        updated_use.contains("i.handle();"),
+        "expected interface-typed call site updated:\n{updated_use}"
+    );
+    assert!(
+        updated_use.contains("c.handle();"),
+        "expected class-typed call site updated:\n{updated_use}"
+    );
+}
+
+#[test]
+fn rename_method_renames_interface_impl_from_implementation_decl() {
+    let (files, iface_file, impl_file, use_file) = workspace_files_interface();
+    let db = RefactorJavaDatabase::new(files.clone().into_iter());
+
+    let impl_src = files.get(&impl_file).unwrap();
+    let offset = impl_src.find("process").unwrap() + 1;
+    let symbol = db.symbol_at(&impl_file, offset).expect("C.process symbol");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "handle".into(),
+        },
+    )
+    .unwrap();
+
+    let updated = apply_workspace_edit(&files, &edit).expect("workspace edit applies");
+
+    let updated_iface = updated.get(&iface_file).unwrap();
+    let updated_impl = updated.get(&impl_file).unwrap();
+    let updated_use = updated.get(&use_file).unwrap();
+
+    assert!(
+        updated_iface.contains("void handle()"),
+        "expected interface method to be renamed:\n{updated_iface}"
+    );
+    assert!(
+        updated_impl.contains("void handle()"),
+        "expected implementing method to be renamed:\n{updated_impl}"
+    );
+    assert!(
+        updated_use.contains("i.handle();"),
+        "expected interface-typed call site updated:\n{updated_use}"
+    );
+    assert!(
+        updated_use.contains("c.handle();"),
+        "expected class-typed call site updated:\n{updated_use}"
     );
 }
