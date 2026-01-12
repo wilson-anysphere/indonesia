@@ -191,6 +191,23 @@ fn assert_has_diagnostic_code(diags: &[nova_types::Diagnostic], code: &str) {
     );
 }
 
+fn flow_diagnostics_for_constructor(source: &str, wants_params: bool) -> Vec<nova_types::Diagnostic> {
+    let mut db = SalsaRootDatabase::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(file, source);
+
+    let snap = db.snapshot();
+    let tree = snap.hir_item_tree(file);
+    let (&ctor_ast_id, _) = tree
+        .constructors
+        .iter()
+        .find(|(_, ctor)| ctor.params.is_empty() != wants_params)
+        .unwrap_or_else(|| panic!("expected constructor with wants_params={wants_params}"));
+    let ctor_id = nova_hir::ids::ConstructorId::new(file, ctor_ast_id);
+
+    snap.flow_diagnostics_constructor(ctor_id).as_ref().clone()
+}
+
 #[test]
 fn flow_diagnostics_reports_unreachable_code() {
     let source = r#"
@@ -233,5 +250,18 @@ class Foo {
 "#;
 
     let diags = flow_diagnostics_for_method(source, "m");
+    assert_has_diagnostic_code(&diags, "FLOW_NULL_DEREF");
+}
+
+#[test]
+fn flow_diagnostics_constructor_reports_null_deref_in_explicit_constructor_invocation() {
+    let source = r#"
+class C {
+    C(String s) {}
+    C() { this(((String)null).toString()); }
+}
+"#;
+
+    let diags = flow_diagnostics_for_constructor(source, false);
     assert_has_diagnostic_code(&diags, "FLOW_NULL_DEREF");
 }
