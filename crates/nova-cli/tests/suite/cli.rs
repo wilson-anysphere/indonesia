@@ -185,6 +185,31 @@ fn lsp_version_passthrough_matches_nova_lsp() {
 }
 
 #[test]
+fn lsp_forwards_global_config_to_child() {
+    let temp = TempDir::new().expect("tempdir");
+    let config = temp.child("nova.toml");
+    config.write_str("").expect("write config");
+
+    let nova_lsp = lsp_test_server();
+
+    let output = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
+        .arg("--config")
+        .arg(config.path())
+        .arg("lsp")
+        .arg("--nova-lsp")
+        .arg(&nova_lsp)
+        .arg("--version")
+        .env("NOVA_CLI_TEST_EXPECT_CONFIG", config.path())
+        .output()
+        .expect("run nova lsp --config ... --version");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn lsp_stdio_initialize_shutdown_exit_passthrough() {
     let _guard = STDIO_SERVER_LOCK
         .lock()

@@ -40,6 +40,7 @@ use serde::Serialize;
 use std::{
     collections::BTreeMap,
     env, fs,
+    ffi::OsStr,
     path::{Path, PathBuf},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -119,9 +120,12 @@ struct AiModelsArgs {
 
 #[derive(Args)]
 struct LspLauncherArgs {
-    /// Path to the `nova-lsp` binary (defaults to resolving `nova-lsp` on $PATH).
-    #[arg(long)]
-    path: Option<PathBuf>,
+    /// Optional path to the `nova-lsp` binary.
+    ///
+    /// If unset, `nova` will first look for a `nova-lsp` binary adjacent to the running `nova`
+    /// executable, then fall back to resolving `nova-lsp` on $PATH.
+    #[arg(long = "nova-lsp", visible_alias = "path")]
+    nova_lsp: Option<PathBuf>,
 
     /// Arguments to pass through to `nova-lsp`.
     ///
@@ -133,9 +137,12 @@ struct LspLauncherArgs {
 
 #[derive(Args)]
 struct DapLauncherArgs {
-    /// Path to the `nova-dap` binary (defaults to resolving `nova-dap` on $PATH).
-    #[arg(long)]
-    path: Option<PathBuf>,
+    /// Optional path to the `nova-dap` binary.
+    ///
+    /// If unset, `nova` will first look for a `nova-dap` binary adjacent to the running `nova`
+    /// executable, then fall back to resolving `nova-dap` on $PATH.
+    #[arg(long = "nova-dap", visible_alias = "path")]
+    nova_dap: Option<PathBuf>,
 
     /// Arguments to pass through to `nova-dap`.
     ///
@@ -482,6 +489,36 @@ struct RenameArgs {
 fn main() {
     let cli = Cli::parse();
 
+    // `nova lsp` and `nova dap` are thin launchers intended for editors.
+    //
+    // Important: we intentionally do *not* load/validate the global config here. The underlying
+    // servers already support `--config <path>` and have their own config error handling; eagerly
+    // parsing config in the CLI wrapper would change behavior (e.g. failing fast instead of
+    // continuing with defaults).
+    match &cli.command {
+        Command::Lsp(args) => {
+            let exit_code = match run_lsp_launcher(args, cli.config.as_deref()) {
+                Ok(code) => code,
+                Err(err) => {
+                    eprintln!("{:#}", err);
+                    2
+                }
+            };
+            std::process::exit(exit_code);
+        }
+        Command::Dap(args) => {
+            let exit_code = match run_dap_launcher(args, cli.config.as_deref()) {
+                Ok(code) => code,
+                Err(err) => {
+                    eprintln!("{:#}", err);
+                    2
+                }
+            };
+            std::process::exit(exit_code);
+        }
+        _ => {}
+    }
+
     let config = load_config_from_cli(&cli);
 
     let _ = init_tracing_with_config(&config);
@@ -523,17 +560,9 @@ fn load_config_from_cli(cli: &Cli) -> NovaConfig {
 
 fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
     match cli.command {
-        Command::Lsp(args) => {
-            let mut forwarded = args.args;
-            if forwarded.is_empty() {
-                forwarded.push("--stdio".to_string());
-            }
-            spawn_passthrough_command("nova-lsp", args.path, &forwarded)
-        }
-        Command::Dap(args) => {
-            let forwarded = args.args;
-            spawn_passthrough_command("nova-dap", args.path, &forwarded)
-        }
+        Command::Lsp(_) | Command::Dap(_) => anyhow::bail!(
+            "internal error: `nova lsp`/`nova dap` should have been handled before config init"
+        ),
         Command::Index(args) => {
             let ws = Workspace::open_with_config(&args.path, config)?;
             let report = ws.index_and_write_cache()?;
@@ -991,22 +1020,40 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
     }
 }
 
-fn spawn_passthrough_command(
-    command_name: &str,
-    command_path: Option<PathBuf>,
-    args: &[String],
-) -> Result<i32> {
+fn run_lsp_launcher(args: &LspLauncherArgs, config_path: Option<&Path>) -> Result<i32> {
     use std::process::{Command, Stdio};
 
-    let mut cmd = match command_path {
+    let program = args
+        .nova_lsp
+        .as_deref()
+        .map(PathBuf::from)
+        .or_else(|| resolve_adjacent_binary("nova-lsp"));
+
+    let mut cmd = match program {
         Some(path) => Command::new(path),
-        None => Command::new(command_name),
+        None => Command::new("nova-lsp"),
     };
 
-    cmd.args(args)
-        .stdin(Stdio::inherit())
+    // Important: no output on stdout except what the child writes (LSP frames).
+    cmd.stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+
+    // Always force stdio transport unless the caller explicitly opts in to a different mode.
+    // Today `nova-lsp` ignores this flag, but future transports may require it.
+    if !args.args.iter().any(|arg| arg == "--stdio") {
+        cmd.arg("--stdio");
+    }
+
+    // Forward the CLI's global `--config <path>` to `nova-lsp` unless the user is already
+    // explicitly passing `--config` in the passthrough args.
+    if let Some(config_path) = config_path {
+        if !args.args.iter().any(|arg| arg == "--config") {
+            cmd.arg("--config").arg(config_path);
+        }
+    }
+
+    cmd.args(&args.args);
 
     // Prefer an `exec()`-style handoff on Unix so `nova lsp` behaves exactly like
     // running `nova-lsp` directly (signal handling, process identity, etc.).
@@ -1014,18 +1061,83 @@ fn spawn_passthrough_command(
     {
         use std::os::unix::process::CommandExt;
         let err = cmd.exec();
-        return Err(err).with_context(|| format!("failed to exec {command_name}"));
+        return Err(err).with_context(|| "failed to exec nova-lsp");
     }
 
     #[cfg(not(unix))]
     {
-        let status = cmd
-            .status()
-            .with_context(|| format!("failed to spawn {command_name}"))?;
+        let status = cmd.status().with_context(|| "failed to spawn nova-lsp")?;
         Ok(exit_code_from_status(status))
     }
 }
 
+fn run_dap_launcher(args: &DapLauncherArgs, config_path: Option<&Path>) -> Result<i32> {
+    use std::process::{Command, Stdio};
+
+    let program = args
+        .nova_dap
+        .as_deref()
+        .map(PathBuf::from)
+        .or_else(|| resolve_adjacent_binary("nova-dap"));
+
+    let mut cmd = match program {
+        Some(path) => Command::new(path),
+        None => Command::new("nova-dap"),
+    };
+
+    cmd.stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+
+    if let Some(config_path) = config_path {
+        if !args.args.iter().any(|arg| arg == "--config") {
+            cmd.arg("--config").arg(config_path);
+        }
+    }
+
+    cmd.args(&args.args);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = cmd.exec();
+        return Err(err).with_context(|| "failed to exec nova-dap");
+    }
+
+    #[cfg(not(unix))]
+    {
+        let status = cmd.status().with_context(|| "failed to spawn nova-dap")?;
+        Ok(exit_code_from_status(status))
+    }
+}
+
+fn resolve_adjacent_binary(binary_name: &str) -> Option<PathBuf> {
+    let exe_path = std::env::current_exe().ok()?;
+    let exe_dir = exe_path.parent()?;
+
+    fn candidate(dir: &Path, binary_name: &str) -> PathBuf {
+        dir.join(format!("{binary_name}{}", std::env::consts::EXE_SUFFIX))
+    }
+
+    let direct = candidate(exe_dir, binary_name);
+    if direct.is_file() {
+        return Some(direct);
+    }
+
+    // In dev/test builds, `current_exe()` can resolve to `target/{profile}/deps/nova-<hash>`.
+    // Prefer a sibling binary in the parent dir as well, so `cargo test` + launcher subcommands
+    // work without requiring PATH hacks.
+    if exe_dir.file_name() == Some(OsStr::new("deps")) {
+        if let Some(parent) = exe_dir.parent() {
+            let parent_candidate = candidate(parent, binary_name);
+            if parent_candidate.is_file() {
+                return Some(parent_candidate);
+            }
+        }
+    }
+
+    None
+}
 #[cfg(not(unix))]
 fn exit_code_from_status(status: std::process::ExitStatus) -> i32 {
     if let Some(code) = status.code() {

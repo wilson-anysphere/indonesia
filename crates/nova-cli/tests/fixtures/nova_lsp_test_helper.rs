@@ -4,6 +4,19 @@ use std::io::{BufRead, BufReader, Write};
 fn main() -> std::io::Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
 
+    // When requested by tests, validate that the launcher forwarded the global `--config <path>`
+    // argument (without emitting anything on stdout).
+    if let Ok(expected) = std::env::var("NOVA_CLI_TEST_EXPECT_CONFIG") {
+        let actual = args
+            .iter()
+            .position(|arg| arg == "--config")
+            .and_then(|idx| args.get(idx + 1));
+        if actual.map(|value| value.as_str()) != Some(expected.as_str()) {
+            eprintln!("expected --config {expected:?}, got args: {args:?}");
+            std::process::exit(3);
+        }
+    }
+
     if args.iter().any(|arg| arg == "--version" || arg == "-V") {
         println!("nova-cli-test-lsp 0.0.0");
         return Ok(());
