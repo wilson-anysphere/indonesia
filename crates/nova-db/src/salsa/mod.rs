@@ -2067,7 +2067,6 @@ impl MemoryEvictor for SalsaMemoEvictor {
         // global pressure is `Low`. This evictor must therefore honor shrink requests under all
         // pressure levels; otherwise the memory manager may be unable to converge when the
         // QueryCache budget is exceeded.
-
         // Eviction must be best-effort and non-panicking.
         //
         // NOTE(perf): As of `ra_salsa`/`ra_ap_salsa` 0.0.269 we did not find a

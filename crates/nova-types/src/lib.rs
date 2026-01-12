@@ -790,10 +790,14 @@ pub const MINIMAL_JDK_BINARY_NAMES: &[&str] = &[
     "java.lang.Float",
     "java.lang.Double",
     "java.lang.Cloneable",
+    "java.lang.Enum",
+    "java.lang.Record",
     "java.lang.Runnable",
     "java.lang.Iterable",
     "java.lang.Class",
     "java.lang.System",
+    // java.lang.annotation
+    "java.lang.annotation.Annotation",
     // java.io
     "java.io.Serializable",
     "java.io.PrintStream",
@@ -1425,6 +1429,109 @@ impl TypeStore {
                 kind: ClassKind::Interface,
                 type_params: vec![],
                 super_class: Some(Type::class(object, vec![])),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![],
+            },
+        );
+
+        // java.lang.Enum<E>
+        //
+        // Enums implicitly extend `Enum<This>`; include a minimal stub so source/workspace enum
+        // supertypes can be modeled even when no external JDK symbol index is available.
+        let enum_e = store.add_type_param("E", vec![object_ty.clone()]);
+        store.define_class(
+            enum_,
+            ClassDef {
+                name: "java.lang.Enum".to_string(),
+                kind: ClassKind::Class,
+                type_params: vec![enum_e],
+                super_class: Some(object_ty.clone()),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![
+                    MethodDef {
+                        name: "ordinal".to_string(),
+                        type_params: vec![],
+                        params: vec![],
+                        return_type: Type::Primitive(PrimitiveType::Int),
+                        is_static: false,
+                        is_varargs: false,
+                        is_abstract: false,
+                    },
+                    MethodDef {
+                        name: "toString".to_string(),
+                        type_params: vec![],
+                        params: vec![],
+                        return_type: string_ty.clone(),
+                        is_static: false,
+                        is_varargs: false,
+                        is_abstract: false,
+                    },
+                ],
+            },
+        );
+
+        // java.lang.Record
+        //
+        // Records implicitly extend `java.lang.Record`. The real JDK defines abstract `equals`,
+        // `hashCode`, and `toString` that are implemented by the compiler in each record class.
+        store.define_class(
+            record,
+            ClassDef {
+                name: "java.lang.Record".to_string(),
+                kind: ClassKind::Class,
+                type_params: vec![],
+                super_class: Some(object_ty.clone()),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![
+                    MethodDef {
+                        name: "equals".to_string(),
+                        type_params: vec![],
+                        params: vec![object_ty.clone()],
+                        return_type: Type::Primitive(PrimitiveType::Boolean),
+                        is_static: false,
+                        is_varargs: false,
+                        is_abstract: true,
+                    },
+                    MethodDef {
+                        name: "hashCode".to_string(),
+                        type_params: vec![],
+                        params: vec![],
+                        return_type: Type::Primitive(PrimitiveType::Int),
+                        is_static: false,
+                        is_varargs: false,
+                        is_abstract: true,
+                    },
+                    MethodDef {
+                        name: "toString".to_string(),
+                        type_params: vec![],
+                        params: vec![],
+                        return_type: string_ty.clone(),
+                        is_static: false,
+                        is_varargs: false,
+                        is_abstract: true,
+                    },
+                ],
+            },
+        );
+
+        // java.lang.annotation.Annotation
+        //
+        // Annotation type declarations (`@interface`) implicitly extend this interface. Include a
+        // minimal stub so source/workspace annotation supertypes can be modeled in environments
+        // without a full JDK symbol index.
+        store.define_class(
+            annotation,
+            ClassDef {
+                name: "java.lang.annotation.Annotation".to_string(),
+                kind: ClassKind::Interface,
+                type_params: vec![],
+                super_class: Some(object_ty.clone()),
                 interfaces: vec![],
                 fields: vec![],
                 constructors: vec![],

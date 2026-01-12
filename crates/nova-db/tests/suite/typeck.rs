@@ -3520,6 +3520,67 @@ class C {
 }
 
 #[test]
+fn enum_inherits_object_methods_via_enum_supertype() {
+    let src = r#"
+enum E {
+    A;
+    void m() {
+        this.toString();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected enum to inherit Object methods via java.lang.Enum, got {diags:?}"
+    );
+}
+
+#[test]
+fn record_inherits_object_methods_via_record_supertype() {
+    let src = r#"
+record R() {
+    void m() {
+        this.toString();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected record to inherit Object methods via java.lang.Record, got {diags:?}"
+    );
+}
+
+#[test]
+fn annotation_is_subtype_of_java_lang_annotation_annotation() {
+    let src = r#"
+@interface A {}
+class C {
+    void takes(java.lang.annotation.Annotation a) {}
+    void m(A a) {
+        takes(a);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected annotation type to be assignable to java.lang.annotation.Annotation, got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-type"),
+        "expected no unresolved-type diagnostics for annotation supertypes, got {diags:?}"
+    );
+}
+
+#[test]
 fn object_constructor_is_available() {
     let src = r#"
 class C {

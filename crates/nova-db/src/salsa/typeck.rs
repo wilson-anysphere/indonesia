@@ -10035,6 +10035,14 @@ fn source_item_supertypes<'idx>(
     self_class_id: ClassId,
 ) -> (ClassKind, Option<Type>, Vec<Type>) {
     let object_ty = Type::class(loader.store.well_known().object, vec![]);
+    fn ensure_non_placeholder(
+        loader: &mut ExternalTypeLoader<'_>,
+        binary_name: &str,
+    ) -> Option<ClassId> {
+        let id = loader.ensure_class(binary_name)?;
+        let def = loader.store.class(id)?;
+        (!is_placeholder_class_def(def)).then_some(id)
+    }
 
     let mut kind = match item {
         nova_hir::ids::ItemId::Interface(_) | nova_hir::ids::ItemId::Annotation(_) => {
@@ -10121,18 +10129,19 @@ fn source_item_supertypes<'idx>(
             super_class = None;
 
             // Best-effort: annotation types implicitly extend `java.lang.annotation.Annotation`.
-            let ann_id = loader
-                .store
-                .intern_class_id("java.lang.annotation.Annotation");
-            interfaces.push(Type::class(ann_id, vec![]));
+            if let Some(ann_id) = ensure_non_placeholder(loader, "java.lang.annotation.Annotation")
+            {
+                interfaces.push(Type::class(ann_id, vec![]));
+            }
         }
         nova_hir::ids::ItemId::Enum(id) => {
             kind = ClassKind::Class;
 
             // Best-effort: enums implicitly extend `java.lang.Enum<Self>`.
-            let enum_id = loader.store.intern_class_id("java.lang.Enum");
-            let self_ty = Type::class(self_class_id, vec![]);
-            super_class = Some(Type::class(enum_id, vec![self_ty]));
+            if let Some(enum_id) = ensure_non_placeholder(loader, "java.lang.Enum") {
+                let self_ty = Type::class(self_class_id, vec![]);
+                super_class = Some(Type::class(enum_id, vec![self_ty]));
+            }
 
             let enm = tree.enum_(id);
             for (idx, imp) in enm.implements.iter().enumerate() {
@@ -10149,8 +10158,9 @@ fn source_item_supertypes<'idx>(
             kind = ClassKind::Class;
 
             // Best-effort: records implicitly extend `java.lang.Record`.
-            let record_id = loader.store.intern_class_id("java.lang.Record");
-            super_class = Some(Type::class(record_id, vec![]));
+            if let Some(record_id) = ensure_non_placeholder(loader, "java.lang.Record") {
+                super_class = Some(Type::class(record_id, vec![]));
+            }
 
             let record = tree.record(id);
             for (idx, imp) in record.implements.iter().enumerate() {
