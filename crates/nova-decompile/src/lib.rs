@@ -682,7 +682,7 @@ pub fn class_internal_name_from_uri(uri: &str) -> Option<String> {
     }
 
     let last = segments.last()?;
-    let stem = last.strip_suffix(".class").unwrap_or(last);
+    let stem = last.strip_suffix(".class")?;
     if stem.is_empty() {
         return None;
     }
