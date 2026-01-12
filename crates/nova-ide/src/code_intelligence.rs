@@ -4867,6 +4867,7 @@ fn completion_in_switch_case_label(text: &str, offset: usize, prefix_start: usiz
 enum SwitchSelectorExpr {
     Ident(String),
     FieldAccess { qualifier: String, field: String },
+    Call { close_paren_end: usize },
 }
 
 fn switch_selector_expr(tokens: &[Token], offset: usize) -> Option<SwitchSelectorExpr> {
@@ -4899,6 +4900,36 @@ fn switch_selector_expr(tokens: &[Token], offset: usize) -> Option<SwitchSelecto
                 qualifier: inner[0].text.clone(),
                 field: inner[2].text.clone(),
             })
+        } else if inner.len() >= 3
+            && inner[0].kind == TokenKind::Ident
+            && inner[1].kind == TokenKind::Symbol('(')
+        {
+            // `switch (foo(...))` / `switch (foo())`
+            let call_open_idx = open_idx + 2;
+            let (call_close_idx, _close_offset) = find_matching_paren(tokens, call_open_idx)?;
+            if call_close_idx + 1 == close_idx {
+                Some(SwitchSelectorExpr::Call {
+                    close_paren_end: tokens[call_close_idx].span.end,
+                })
+            } else {
+                None
+            }
+        } else if inner.len() >= 5
+            && inner[0].kind == TokenKind::Ident
+            && inner[1].kind == TokenKind::Symbol('.')
+            && inner[2].kind == TokenKind::Ident
+            && inner[3].kind == TokenKind::Symbol('(')
+        {
+            // `switch (recv.foo(...))` / `switch (recv.foo())`
+            let call_open_idx = open_idx + 4;
+            let (call_close_idx, _close_offset) = find_matching_paren(tokens, call_open_idx)?;
+            if call_close_idx + 1 == close_idx {
+                Some(SwitchSelectorExpr::Call {
+                    close_paren_end: tokens[call_close_idx].span.end,
+                })
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -5094,6 +5125,9 @@ fn type_class_id(types: &TypeStore, ty: &Type) -> Option<ClassId> {
 }
 
 fn infer_switch_selector_type_id(
+    db: &dyn Database,
+    file: FileId,
+    text: &str,
     analysis: &Analysis,
     selector: &SwitchSelectorExpr,
     offset: usize,
@@ -5179,6 +5213,11 @@ fn infer_switch_selector_type_id(
                 }
             })
         }
+        SwitchSelectorExpr::Call { close_paren_end } => {
+            let call = scan_call_expr_ending_at(text, analysis, *close_paren_end)?;
+            let ret = infer_call_return_type(db, file, text, analysis, &call)?;
+            resolve_type_name_in_completion_env(types, workspace_index, package, imports, &ret)
+        }
     }
 }
 
@@ -5201,6 +5240,9 @@ fn enum_case_label_completions(
 
     let selector = switch_selector_expr(&analysis.tokens, prefix_start)?;
     let enum_id = infer_switch_selector_type_id(
+        db,
+        file,
+        text,
         &analysis,
         &selector,
         prefix_start,
