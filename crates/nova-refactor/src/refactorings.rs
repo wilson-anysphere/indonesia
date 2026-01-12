@@ -6871,3 +6871,99 @@ fn _apply_edit_to_file(
             .collect::<Vec<_>>(),
     )?)
 }
+
+#[cfg(test)]
+mod inline_variable_try_with_resources_tests {
+    use super::{inline_variable, InlineVariableParams, RefactorError};
+    use crate::edit::{FileId, TextRange};
+    use crate::java::{JavaSymbolKind, RefactorJavaDatabase, SymbolId};
+    use crate::semantic::{RefactorDatabase, Reference, ReferenceKind, SymbolDefinition};
+
+    #[test]
+    fn inline_variable_rejects_try_with_resources_resource_specification_inline_one() {
+        let file = FileId::new("Test.java");
+        let src = r#"class C {
+  java.io.InputStream make() { return null; }
+  void m() throws Exception {
+    java.io.InputStream r = make();
+    try (r) {
+      r.read();
+    }
+  }
+}
+"#;
+
+        let inner = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+        let offset = src.find("InputStream r =").unwrap() + "InputStream ".len();
+        let symbol = inner.symbol_at(&file, offset).expect("symbol at r");
+
+        let try_offset = src.find("try (r)").expect("try-with-resources") + "try (".len();
+        let try_range = TextRange::new(try_offset, try_offset + "r".len());
+
+        struct Db {
+            inner: RefactorJavaDatabase,
+            symbol: SymbolId,
+            injected: Reference,
+        }
+
+        impl RefactorDatabase for Db {
+            fn file_text(&self, file: &FileId) -> Option<&str> {
+                self.inner.file_text(file)
+            }
+
+            fn symbol_at(&self, file: &FileId, offset: usize) -> Option<SymbolId> {
+                self.inner.symbol_at(file, offset)
+            }
+
+            fn symbol_definition(&self, symbol: SymbolId) -> Option<SymbolDefinition> {
+                self.inner.symbol_definition(symbol)
+            }
+
+            fn symbol_scope(&self, symbol: SymbolId) -> Option<u32> {
+                self.inner.symbol_scope(symbol)
+            }
+
+            fn symbol_kind(&self, symbol: SymbolId) -> Option<JavaSymbolKind> {
+                self.inner.symbol_kind(symbol)
+            }
+
+            fn resolve_name_in_scope(&self, scope: u32, name: &str) -> Option<SymbolId> {
+                self.inner.resolve_name_in_scope(scope, name)
+            }
+
+            fn would_shadow(&self, scope: u32, name: &str) -> Option<SymbolId> {
+                self.inner.would_shadow(scope, name)
+            }
+
+            fn find_references(&self, symbol: SymbolId) -> Vec<Reference> {
+                let mut refs = self.inner.find_references(symbol);
+                if symbol == self.symbol {
+                    refs.push(self.injected.clone());
+                }
+                refs
+            }
+        }
+
+        let db = Db {
+            inner,
+            symbol,
+            injected: Reference {
+                file: file.clone(),
+                range: try_range,
+                scope: None,
+                kind: ReferenceKind::Name,
+            },
+        };
+
+        let err = inline_variable(
+            &db,
+            InlineVariableParams {
+                symbol,
+                inline_all: false,
+                usage_range: Some(try_range),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, RefactorError::InlineNotSupported));
+    }
+}
