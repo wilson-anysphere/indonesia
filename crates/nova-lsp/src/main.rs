@@ -2155,11 +2155,28 @@ fn handle_request_json(
             state.shutdown_distributed_router(Duration::from_secs(2));
             Ok(json!({ "jsonrpc": "2.0", "id": id, "result": serde_json::Value::Null }))
         }
-        nova_lsp::SEMANTIC_SEARCH_INDEX_STATUS_METHOD => Ok(json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": state.semantic_search_workspace_index_status_json(),
-        })),
+        nova_lsp::SEMANTIC_SEARCH_INDEX_STATUS_METHOD => {
+            nova_lsp::hardening::record_request();
+            if let Err(err) =
+                nova_lsp::hardening::guard_method(nova_lsp::SEMANTIC_SEARCH_INDEX_STATUS_METHOD)
+            {
+                let (code, message) = match err {
+                    nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
+                    nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
+                };
+                return Ok(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": code, "message": message }
+                }));
+            }
+
+            Ok(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": state.semantic_search_workspace_index_status_json(),
+            }))
+        }
         nova_lsp::MEMORY_STATUS_METHOD => {
             nova_lsp::hardening::record_request();
             if let Err(err) = nova_lsp::hardening::guard_method(nova_lsp::MEMORY_STATUS_METHOD) {
