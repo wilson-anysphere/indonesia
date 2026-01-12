@@ -81,6 +81,8 @@ mod stdio_document_symbol;
 mod stdio_extract_method;
 #[path = "suite/stdio_hierarchy.rs"]
 mod stdio_hierarchy;
+#[path = "suite/stdio_type_hierarchy.rs"]
+mod stdio_type_hierarchy;
 #[path = "suite/stdio_hover_signature_help.rs"]
 mod stdio_hover_signature_help;
 #[path = "suite/stdio_hover_signature_references.rs"]
