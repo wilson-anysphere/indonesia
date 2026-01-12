@@ -5434,6 +5434,12 @@ mod tests {
             .expect("output channel closed");
 
         assert_eq!(msg.get("event").and_then(|v| v.as_str()), Some("output"));
+        assert_eq!(
+            msg.get("body")
+                .and_then(|v| v.get("category"))
+                .and_then(|v| v.as_str()),
+            Some("stdout")
+        );
 
         let output = msg
             .get("body")
@@ -5457,6 +5463,83 @@ mod tests {
         assert_eq!(
             msg.get("seq").and_then(|v| v.as_i64()),
             Some(seq.load(Ordering::Relaxed) - 1)
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_output_task_truncates_overlong_lines_without_newline() {
+        let (mut writer, reader) = tokio::io::duplex(64 * 1024);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let seq = Arc::new(AtomicI64::new(1));
+        let shutdown = CancellationToken::new();
+
+        spawn_output_task(reader, tx, Arc::clone(&seq), "stdout", shutdown.clone());
+
+        let oversized = vec![b'a'; 200 * 1024];
+        writer.write_all(&oversized).await.unwrap();
+        writer.shutdown().await.unwrap();
+
+        let msg = timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for output event")
+            .expect("output channel closed");
+
+        assert_eq!(msg.get("event").and_then(|v| v.as_str()), Some("output"));
+
+        let output = msg
+            .get("body")
+            .and_then(|v| v.get("output"))
+            .and_then(|v| v.as_str())
+            .expect("output.body.output should be a string");
+
+        assert!(
+            output.contains(DEBUGGEE_OUTPUT_TRUNCATION_MARKER),
+            "expected truncation marker in output, got: {output:?}"
+        );
+        assert!(
+            output.len() <= MAX_DEBUGGEE_OUTPUT_LINE_BYTES + DEBUGGEE_OUTPUT_TRUNCATION_MARKER.len(),
+            "expected output length to be bounded (got {}, limit {})",
+            output.len(),
+            MAX_DEBUGGEE_OUTPUT_LINE_BYTES + DEBUGGEE_OUTPUT_TRUNCATION_MARKER.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_output_task_truncates_overlong_lines_on_stderr() {
+        let (mut writer, reader) = tokio::io::duplex(64 * 1024);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let seq = Arc::new(AtomicI64::new(1));
+        let shutdown = CancellationToken::new();
+
+        spawn_output_task(reader, tx, Arc::clone(&seq), "stderr", shutdown.clone());
+
+        let oversized = vec![b'a'; 200 * 1024];
+        writer.write_all(&oversized).await.unwrap();
+        writer.write_all(b"\n").await.unwrap();
+        writer.shutdown().await.unwrap();
+
+        let msg = timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for output event")
+            .expect("output channel closed");
+
+        assert_eq!(msg.get("event").and_then(|v| v.as_str()), Some("output"));
+        assert_eq!(
+            msg.get("body")
+                .and_then(|v| v.get("category"))
+                .and_then(|v| v.as_str()),
+            Some("stderr")
+        );
+
+        let output = msg
+            .get("body")
+            .and_then(|v| v.get("output"))
+            .and_then(|v| v.as_str())
+            .expect("output.body.output should be a string");
+
+        assert!(
+            output.contains(DEBUGGEE_OUTPUT_TRUNCATION_MARKER),
+            "expected truncation marker in output, got: {output:?}"
         );
     }
 }
