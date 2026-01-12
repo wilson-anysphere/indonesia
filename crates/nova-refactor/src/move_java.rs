@@ -646,7 +646,7 @@ mod java_text {
         }
 
         fn starts_with(&self, s: &str) -> bool {
-            self.src[self.offset..].starts_with(s)
+            self.src.as_bytes()[self.offset..].starts_with(s.as_bytes())
         }
 
         fn skip_whitespace(&mut self) {
@@ -1133,6 +1133,30 @@ public class C { A a; }
         let c = &applied[Path::new("src/main/java/com/other/C.java")];
         assert!(c.contains("import com.bar.A;"));
         assert!(!c.contains("import com.foo.A;"));
+    }
+
+    #[test]
+    fn move_class_does_not_panic_on_unicode_in_block_comment() {
+        let input = files(vec![(
+            "src/main/java/com/foo/A.java",
+            "/* 😀 */\npackage com.foo;\n\npublic class A {}\n",
+        )]);
+
+        let edit = move_class(
+            &input,
+            MoveClassParams {
+                source_path: PathBuf::from("src/main/java/com/foo/A.java"),
+                class_name: "A".into(),
+                target_package: "com.bar".into(),
+            },
+        )
+        .unwrap();
+
+        let applied = apply_edit(&input, &edit);
+
+        let moved = &applied[Path::new("src/main/java/com/bar/A.java")];
+        assert!(moved.contains("/* 😀 */"));
+        assert!(moved.contains("package com.bar;"));
     }
 
     #[test]
