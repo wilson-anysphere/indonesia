@@ -1144,6 +1144,7 @@ where
             // client (`CodeActionContext.diagnostics`) so we don't need to recompute diagnostics
             // for the whole file.
             actions.extend(type_mismatch_quick_fixes_from_context(
+                &cancel,
                 source,
                 &uri,
                 &cancel,
@@ -1322,9 +1323,9 @@ fn type_mismatch_quick_fixes(
 }
 
 fn type_mismatch_quick_fixes_from_context(
+    cancel: &CancellationToken,
     source: &str,
     uri: &lsp_types::Uri,
-    cancel: &CancellationToken,
     selection: Span,
     context_diagnostics: &[lsp_types::Diagnostic],
 ) -> Vec<lsp_types::CodeActionOrCommand> {
