@@ -15,9 +15,10 @@ use crate::persistence::HasPersistence;
 use super::cancellation as cancel;
 use super::hir::NovaHir;
 use super::stats::HasQueryStats;
+use super::{HasSalsaMemoStats, TrackedSalsaMemo};
 
 #[ra_salsa::query_group(NovaIndexingStorage)]
-pub trait NovaIndexing: NovaHir + HasQueryStats + HasPersistence {
+pub trait NovaIndexing: NovaHir + HasQueryStats + HasPersistence + HasSalsaMemoStats {
     /// Stable SHA-256 fingerprint of a file's current contents.
     fn file_fingerprint(&self, file: FileId) -> Arc<Fingerprint>;
 
@@ -129,6 +130,8 @@ fn file_index_delta(db: &dyn NovaIndexing, file: FileId) -> Arc<ProjectIndexes> 
     } else {
         ProjectIndexes::default()
     };
+
+    db.record_salsa_memo_bytes(file, TrackedSalsaMemo::FileIndexDelta, out.estimated_bytes());
 
     let result = Arc::new(out);
     db.record_query_stat("file_index_delta", start.elapsed());

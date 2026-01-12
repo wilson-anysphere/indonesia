@@ -1,7 +1,11 @@
 use std::sync::Arc;
 
 use nova_cache::{CacheConfig, CacheDir};
-use nova_db::{FileId, NovaIndexing, PersistenceConfig, PersistenceMode, ProjectId, SalsaDatabase};
+use nova_db::{
+    FileId, NovaHir, NovaIndexing, NovaSyntax, PersistenceConfig, PersistenceMode, ProjectId,
+    SalsaDatabase,
+};
+use nova_memory::MemoryPressure;
 
 fn executions(db: &SalsaDatabase, query_name: &str) -> u64 {
     db.query_stats()
@@ -362,5 +366,49 @@ fn project_indexes_early_cutoff_on_whitespace_edit() {
         executions(&db, "file_index_delta"),
         1,
         "file delta should not recompute when symbol summary is unchanged"
+    );
+}
+
+#[test]
+fn file_index_delta_is_accounted_in_salsa_memo_bytes() {
+    let file = FileId::from_raw(1);
+
+    let db = SalsaDatabase::new();
+    db.set_file_text(
+        file,
+        "class Foo { int x; void bar() {} class Inner {} } class Baz { String s; }".to_string(),
+    );
+    db.set_file_rel_path(file, Arc::new("Foo.java".to_string()));
+
+    // Precompute dependencies so `bytes_before` is stable and does not include
+    // the index delta.
+    db.with_snapshot(|snap| {
+        let _ = snap.parse_java(file);
+        let _ = snap.hir_item_tree(file);
+    });
+    let bytes_before = db.salsa_memo_bytes();
+
+    let delta = db.with_snapshot(|snap| snap.file_index_delta(file).clone());
+    let delta_bytes = delta.estimated_bytes();
+    assert!(delta_bytes > 0, "expected non-zero index delta footprint");
+
+    let bytes_after = db.salsa_memo_bytes();
+    assert!(
+        bytes_after >= bytes_before.saturating_add(delta_bytes),
+        "expected memo bytes to include file_index_delta estimate (before={bytes_before}, after={bytes_after}, delta={delta_bytes})"
+    );
+
+    db.evict_salsa_memos(MemoryPressure::Critical);
+    assert_eq!(
+        db.salsa_memo_bytes(),
+        0,
+        "expected memo footprint to be cleared after eviction"
+    );
+
+    // Queries should still recompute successfully after eviction.
+    let delta2 = db.with_snapshot(|snap| snap.file_index_delta(file).clone());
+    assert!(
+        delta2.estimated_bytes() > 0,
+        "expected index delta to recompute after eviction"
     );
 }

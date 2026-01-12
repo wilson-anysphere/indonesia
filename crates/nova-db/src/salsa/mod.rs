@@ -232,6 +232,11 @@ pub enum TrackedSalsaMemo {
     /// to avoid double-counting; the bytes are instead accounted under
     /// [`MemoryCategory::SyntaxTrees`].
     ItemTree,
+    /// Per-file `ProjectIndexes` fragment produced by [`NovaIndexing::file_index_delta`].
+    ///
+    /// This can be large in projects with many symbols and references, so we
+    /// track it separately from parse and item tree memos.
+    FileIndexDelta,
 }
 
 /// Database functionality needed by query implementations to record memo sizes.
@@ -272,11 +277,12 @@ struct FileMemoBytes {
     parse: u64,
     parse_java: u64,
     item_tree: u64,
+    file_index_delta: u64,
 }
 
 impl FileMemoBytes {
     fn total(self) -> u64 {
-        self.parse + self.parse_java + self.item_tree
+        self.parse + self.parse_java + self.item_tree + self.file_index_delta
     }
 }
 
@@ -322,6 +328,7 @@ impl SalsaMemoFootprint {
             TrackedSalsaMemo::Parse => entry.parse = bytes,
             TrackedSalsaMemo::ParseJava => entry.parse_java = bytes,
             TrackedSalsaMemo::ItemTree => entry.item_tree = bytes,
+            TrackedSalsaMemo::FileIndexDelta => entry.file_index_delta = bytes,
         }
 
         let next_total = entry.total();
