@@ -18,6 +18,76 @@ fn compute_gradle_fingerprint(workspace_root: &Path) -> String {
 }
 
 #[test]
+fn gradle_snapshot_populates_root_project_classpath_for_single_project_workspaces() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let workspace_root = tmp.path();
+
+    // Single-project Gradle workspaces commonly only have the root project.
+    std::fs::write(
+        workspace_root.join("settings.gradle"),
+        "rootProject.name = 'demo'\n",
+    )
+    .unwrap();
+    std::fs::write(workspace_root.join("build.gradle"), "").unwrap();
+
+    let jar = workspace_root.join("deps/dep.jar");
+    std::fs::create_dir_all(jar.parent().unwrap()).unwrap();
+    std::fs::write(&jar, b"not a real jar").unwrap();
+    let jar = std::fs::canonicalize(&jar).unwrap_or(jar);
+
+    let fingerprint = compute_gradle_fingerprint(workspace_root);
+    let snapshot_path = workspace_root.join(GRADLE_SNAPSHOT_REL_PATH);
+    std::fs::create_dir_all(snapshot_path.parent().unwrap()).unwrap();
+
+    let snapshot_json = serde_json::json!({
+        "schemaVersion": GRADLE_SNAPSHOT_SCHEMA_VERSION,
+        "buildFingerprint": fingerprint,
+        "projects": [
+            { "path": ":", "projectDir": workspace_root.to_string_lossy() },
+        ],
+        "javaCompileConfigs": {
+            ":": {
+                "projectDir": workspace_root.to_string_lossy(),
+                "compileClasspath": [ jar.to_string_lossy() ],
+            }
+        }
+    });
+    std::fs::write(
+        &snapshot_path,
+        serde_json::to_vec_pretty(&snapshot_json).unwrap(),
+    )
+    .unwrap();
+
+    let gradle_home = tempfile::tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+
+    let project = load_project_with_options(workspace_root, &options).expect("load gradle project");
+    assert_eq!(project.build_system, BuildSystem::Gradle);
+    assert!(
+        project
+            .classpath
+            .iter()
+            .any(|cp| cp.kind == ClasspathEntryKind::Jar && cp.path == jar),
+        "expected snapshot jar to be used for the root project classpath"
+    );
+
+    let model =
+        load_workspace_model_with_options(workspace_root, &options).expect("load gradle model");
+    let root = model
+        .module_by_id("gradle::")
+        .expect("root module config");
+    assert!(
+        root.classpath
+            .iter()
+            .any(|cp| cp.kind == ClasspathEntryKind::Jar && cp.path == jar),
+        "expected snapshot jar in root workspace module classpath"
+    );
+}
+
+#[test]
 fn gradle_snapshot_overrides_project_dir_and_populates_module_config() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let workspace_root = tmp.path().canonicalize().expect("canonicalize tempdir");
