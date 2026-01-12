@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+use anyhow::Context;
 use nova_project::{
     load_project_with_options, load_workspace_model_with_options, BuildSystem, ClasspathEntryKind,
     LoadOptions,
@@ -142,4 +143,61 @@ fn gradle_allprojects_dependencies_apply_to_root_module() {
             "expected {id} to include guava from root allprojects block"
         );
     }
+}
+
+#[test]
+fn gradle_root_subprojects_dependencies_interpolate_from_module_gradle_properties(
+) -> anyhow::Result<()> {
+    let dir = tempdir().context("tempdir")?;
+
+    std::fs::write(dir.path().join("settings.gradle"), "include ':app'\n")
+        .context("write settings.gradle")?;
+    std::fs::write(
+        dir.path().join("build.gradle"),
+        r#"
+subprojects {
+  dependencies {
+    implementation "com.google.guava:guava:$guavaVersion"
+  }
+}
+"#,
+    )
+    .context("write build.gradle")?;
+
+    std::fs::create_dir_all(dir.path().join("app")).context("mkdir app/")?;
+    std::fs::write(
+        dir.path().join("app/gradle.properties"),
+        "guavaVersion=33.0.0-jre\n",
+    )
+    .context("write app/gradle.properties")?;
+    std::fs::write(
+        dir.path().join("app/build.gradle"),
+        r#"
+plugins {
+  id 'java'
+}
+"#,
+    )
+    .context("write app/build.gradle")?;
+
+    let gradle_home = tempdir().context("tempdir (gradle home)")?;
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let model = load_workspace_model_with_options(dir.path(), &options)
+        .context("load gradle workspace model")?;
+    assert_eq!(model.build_system, BuildSystem::Gradle);
+
+    let app = model.module_by_id("gradle::app").context("app module")?;
+    assert!(
+        app.dependencies.iter().any(|d| {
+            d.group_id == "com.google.guava"
+                && d.artifact_id == "guava"
+                && d.version.as_deref() == Some("33.0.0-jre")
+        }),
+        "expected gradle::app to include guava with interpolated version from app/gradle.properties"
+    );
+
+    Ok(())
 }

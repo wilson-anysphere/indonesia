@@ -664,6 +664,7 @@ pub(crate) fn load_gradle_workspace_model(
 
     struct IncludedBuildDepsContext {
         project_path_prefix: String,
+        build_root: PathBuf,
         gradle_properties: GradleProperties,
         version_catalog: Option<GradleVersionCatalog>,
         root_common_deps: Vec<Dependency>,
@@ -688,6 +689,7 @@ pub(crate) fn load_gradle_workspace_model(
             sort_dedup_dependencies(&mut common);
             IncludedBuildDepsContext {
                 project_path_prefix: included.project_path.clone(),
+                build_root: build_root.clone(),
                 gradle_properties: props,
                 version_catalog: catalog,
                 root_common_deps: common,
@@ -920,6 +922,7 @@ pub(crate) fn load_gradle_workspace_model(
         }
         let project_path = module_ref.project_path.as_str();
         let mut ctx_root_project_path = ":";
+        let mut ctx_build_root: &Path = root;
         let mut ctx_props = &gradle_properties;
         let mut ctx_catalog = version_catalog.as_ref();
         let mut ctx_root_common_deps = &root_common_deps;
@@ -928,6 +931,7 @@ pub(crate) fn load_gradle_workspace_model(
         for ctx in &included_build_contexts {
             if project_path.starts_with(&ctx.project_path_prefix) {
                 ctx_root_project_path = &ctx.project_path_prefix;
+                ctx_build_root = &ctx.build_root;
                 ctx_props = &ctx.gradle_properties;
                 ctx_catalog = ctx.version_catalog.as_ref();
                 ctx_root_common_deps = &ctx.root_common_deps;
@@ -937,7 +941,33 @@ pub(crate) fn load_gradle_workspace_model(
             }
         }
 
-        let mut dependencies = parse_gradle_dependencies(&module_root, ctx_catalog, ctx_props);
+        let module_gradle_properties = merged_gradle_properties_for_module(&module_root, ctx_props);
+        let (root_common_deps, root_subprojects_deps, root_allprojects_deps) =
+            if matches!(&module_gradle_properties, Cow::Borrowed(_)) {
+                (
+                    Cow::Borrowed(ctx_root_common_deps),
+                    Cow::Borrowed(ctx_root_subprojects_deps),
+                    Cow::Borrowed(ctx_root_allprojects_deps),
+                )
+            } else {
+                let (subprojects, allprojects) = parse_gradle_root_subprojects_allprojects_dependencies(
+                    ctx_build_root,
+                    ctx_catalog,
+                    module_gradle_properties.as_ref(),
+                );
+                let mut common = parse_gradle_root_dependencies(
+                    ctx_build_root,
+                    ctx_catalog,
+                    module_gradle_properties.as_ref(),
+                );
+                retain_dependencies_not_in(&mut common, &subprojects);
+                retain_dependencies_not_in(&mut common, &allprojects);
+                sort_dedup_dependencies(&mut common);
+                (Cow::Owned(common), Cow::Owned(subprojects), Cow::Owned(allprojects))
+            };
+
+        let mut dependencies =
+            parse_gradle_dependencies(&module_root, ctx_catalog, module_gradle_properties.as_ref());
         // The root build script often declares dependency blocks under `subprojects { ... }`.
         // Those dependencies should apply to subprojects, not to the root project itself.
         //
@@ -945,13 +975,13 @@ pub(crate) fn load_gradle_workspace_model(
         // semantics), best-effort filter those `subprojects` dependencies out of the root module
         // for each build context (main build, included builds, buildSrc).
         if project_path == ctx_root_project_path {
-            retain_dependencies_not_in(&mut dependencies, ctx_root_subprojects_deps);
+            retain_dependencies_not_in(&mut dependencies, root_subprojects_deps.as_ref());
         }
-        dependencies.extend(ctx_root_common_deps.iter().cloned());
+        dependencies.extend(root_common_deps.iter().cloned());
         if project_path != ctx_root_project_path {
-            dependencies.extend(ctx_root_subprojects_deps.iter().cloned());
+            dependencies.extend(root_subprojects_deps.iter().cloned());
         }
-        dependencies.extend(ctx_root_allprojects_deps.iter().cloned());
+        dependencies.extend(root_allprojects_deps.iter().cloned());
 
         // Sort/dedup before resolving jars so we don't scan the cache repeatedly
         // for the same coordinates.
