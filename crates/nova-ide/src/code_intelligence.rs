@@ -1735,6 +1735,37 @@ fn module_info_statement_start(text: &str, body_start: usize, offset: usize) -> 
     body_start + rel.map(|idx| idx + 1).unwrap_or(0)
 }
 
+fn module_info_header_snippets(prefix: &str) -> Vec<CompletionItem> {
+    let items = [
+        (
+            "module",
+            "module ${1:name} {\n    $0\n}",
+            "JPMS module declaration",
+        ),
+        (
+            "open module",
+            "open module ${1:name} {\n    $0\n}",
+            "JPMS open module declaration",
+        ),
+    ];
+
+    let mut out = Vec::new();
+    for (label, snippet, detail) in items {
+        out.push(CompletionItem {
+            label: label.to_string(),
+            kind: Some(CompletionItemKind::SNIPPET),
+            detail: Some(detail.to_string()),
+            insert_text: Some(snippet.to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..Default::default()
+        });
+    }
+
+    let ranking_ctx = CompletionRankingContext::default();
+    rank_completions(prefix, &mut out, &ranking_ctx);
+    out
+}
+
 fn module_info_directive_snippets(prefix: &str) -> Vec<CompletionItem> {
     let items = [
         (
@@ -2072,9 +2103,32 @@ fn module_info_completion_items(
     prefix: &str,
 ) -> Vec<CompletionItem> {
     let Some((body_start, body_end)) = module_info_body_range(text) else {
-        return Vec::new();
+        // In an incomplete module descriptor (missing `{`), offer top-level module declaration
+        // snippets. Avoid interfering with `@Annotation` completion.
+        if prefix_start > 0
+            && text
+                .as_bytes()
+                .get(prefix_start - 1)
+                .is_some_and(|b| *b == b'@')
+        {
+            return Vec::new();
+        }
+        return module_info_header_snippets(prefix);
     };
-    if offset < body_start || offset > body_end {
+
+    // Cursor in module header (before `{`): offer module declaration snippets.
+    if offset < body_start {
+        if prefix_start > 0
+            && text
+                .as_bytes()
+                .get(prefix_start - 1)
+                .is_some_and(|b| *b == b'@')
+        {
+            return Vec::new();
+        }
+        return module_info_header_snippets(prefix);
+    }
+    if offset > body_end {
         return Vec::new();
     }
 

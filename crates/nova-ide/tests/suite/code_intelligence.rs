@@ -1246,6 +1246,30 @@ fn completion_in_module_info_requires_suggests_java_base() {
 }
 
 #[test]
+fn completion_in_empty_module_info_suggests_module_declaration_snippet() {
+    let module_path = PathBuf::from("/workspace/module-info.java");
+    let (db, file, pos) = fixture_multi(module_path, "<|>", vec![]);
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "module")
+        .expect("expected module snippet completion");
+
+    assert_eq!(
+        item.insert_text_format,
+        Some(InsertTextFormat::SNIPPET),
+        "expected module completion to be a snippet; got {item:#?}"
+    );
+    assert!(
+        item.insert_text
+            .as_deref()
+            .is_some_and(|t| t.contains("module ${1:name}")),
+        "expected module snippet to contain placeholder text; got {item:#?}"
+    );
+}
+
+#[test]
 fn completion_in_module_info_exports_suggests_workspace_package_segment() {
     let module_path = PathBuf::from("/workspace/module-info.java");
     let java_path = PathBuf::from("/workspace/src/main/java/com/example/api/A.java");
