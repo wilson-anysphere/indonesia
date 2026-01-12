@@ -1232,6 +1232,83 @@ fn heuristic_dir_rel_for_project_path(project_path: &str) -> String {
     }
 }
 
+fn is_word_byte(b: u8) -> bool {
+    // Keep semantics aligned with Regex `\b` for ASCII: alphanumeric + underscore.
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+fn find_keyword_outside_strings(contents: &str, keyword: &str) -> Vec<usize> {
+    let bytes = contents.as_bytes();
+    let kw = keyword.as_bytes();
+    if kw.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+
+        if in_single {
+            if b == b'\\' {
+                i = (i + 2).min(bytes.len());
+                continue;
+            }
+            if b == b'\'' {
+                in_single = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_double {
+            if b == b'\\' {
+                i = (i + 2).min(bytes.len());
+                continue;
+            }
+            if b == b'"' {
+                in_double = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if b == b'\'' {
+            in_single = true;
+            i += 1;
+            continue;
+        }
+
+        if b == b'"' {
+            in_double = true;
+            i += 1;
+            continue;
+        }
+
+        if bytes[i..].starts_with(kw) {
+            let prev_is_word = i
+                .checked_sub(1)
+                .and_then(|idx| bytes.get(idx))
+                .is_some_and(|b| is_word_byte(*b));
+            let next_is_word = bytes
+                .get(i + kw.len())
+                .is_some_and(|b| is_word_byte(*b));
+            if !prev_is_word && !next_is_word {
+                out.push(i);
+                i += kw.len();
+                continue;
+            }
+        }
+
+        i += 1;
+    }
+
+    out
+}
+
 fn normalize_dir_rel(dir_rel: &str) -> Option<String> {
     let mut dir_rel = dir_rel.trim().replace('\\', "/");
     while let Some(stripped) = dir_rel.strip_prefix("./") {
@@ -1260,13 +1337,9 @@ fn normalize_dir_rel(dir_rel: &str) -> Option<String> {
 }
 
 fn parse_gradle_settings_included_projects(contents: &str) -> Vec<String> {
-    static INCLUDE_RE: OnceLock<Regex> = OnceLock::new();
-    let re = INCLUDE_RE.get_or_init(|| Regex::new(r"\binclude\b").expect("valid regex"));
-
     let mut projects = Vec::new();
-
-    for m in re.find_iter(contents) {
-        let mut idx = m.end();
+    for start in find_keyword_outside_strings(contents, "include") {
+        let mut idx = start + "include".len();
         let bytes = contents.as_bytes();
         while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
             idx += 1;
@@ -1294,13 +1367,10 @@ fn parse_gradle_settings_included_projects(contents: &str) -> Vec<String> {
 }
 
 fn parse_gradle_settings_include_flat_project_dirs(contents: &str) -> BTreeMap<String, String> {
-    static INCLUDE_FLAT_RE: OnceLock<Regex> = OnceLock::new();
-    let re = INCLUDE_FLAT_RE.get_or_init(|| Regex::new(r"\bincludeFlat\b").expect("valid regex"));
-
     let mut out = BTreeMap::new();
 
-    for m in re.find_iter(contents) {
-        let mut idx = m.end();
+    for start in find_keyword_outside_strings(contents, "includeFlat") {
+        let mut idx = start + "includeFlat".len();
         let bytes = contents.as_bytes();
         while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
             idx += 1;
@@ -2450,8 +2520,26 @@ mod tests {
 
     use super::{
         parse_gradle_dependencies_from_text, parse_gradle_project_dependencies_from_text,
-        sort_dedup_dependencies, strip_gradle_comments,
+        parse_gradle_settings_projects, sort_dedup_dependencies, strip_gradle_comments,
     };
+
+    #[test]
+    fn parse_gradle_settings_projects_ignores_include_keywords_inside_strings() {
+        // `include` / `includeFlat` are parsed via keyword matching. Ensure we don't treat
+        // occurrences inside string literals as settings directives.
+        let settings = r#"
+rootProject.name = "includeFlat-root"
+
+// Kotlin-style var assignment + concatenation.
+val ignoredFlat = "includeFlat" + "app"
+val ignoredInclude = "include" + ":lib"
+"#;
+
+        let modules = parse_gradle_settings_projects(settings);
+        assert_eq!(modules.len(), 1);
+        assert_eq!(modules[0].project_path, ":");
+        assert_eq!(modules[0].dir_rel, ".");
+    }
 
     #[test]
     fn parses_gradle_dependencies_from_text_string_and_map_notation() {
