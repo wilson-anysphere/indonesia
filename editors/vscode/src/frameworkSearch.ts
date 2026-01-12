@@ -8,6 +8,8 @@ export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | u
 
 type FrameworkSearchKind = 'web-endpoints' | 'micronaut-endpoints' | 'micronaut-beans';
 
+const NOT_SUPPORTED_MESSAGE = 'Not supported by this Nova version';
+
 interface WebEndpoint {
   path: string;
   methods: string[];
@@ -103,11 +105,14 @@ export function registerNovaFrameworkSearch(context: vscode.ExtensionContext, re
         return;
       }
 
-      const workspaceKey = workspaceFolder.uri.toString();
       const projectRoot = workspaceFolder.uri.fsPath;
+      if (isFrameworkSearchKindUnsupported(kind)) {
+        void vscode.window.showInformationMessage(`Nova: ${NOT_SUPPORTED_MESSAGE}.`);
+        return;
+      }
 
       try {
-        const items = await fetchItemsForKind(kind, request, { workspaceKey, projectRoot });
+        const items = await fetchItemsForKind(kind, request, { projectRoot });
         if (!items) {
           // Unsupported request methods (or already-reported errors) return `undefined` so
           // we don't stack extra error messages on top of `sendNovaRequest`'s built-in UX.
@@ -157,13 +162,30 @@ async function pickWorkspaceFolder(
 }
 
 async function pickFrameworkSearchKind(): Promise<FrameworkSearchKind | undefined> {
+  const webSupported = isWebEndpointsSupported();
+  const micronautEndpointsSupported = isNovaRequestSupported('nova/micronaut/endpoints');
+  const micronautBeansSupported = isNovaRequestSupported('nova/micronaut/beans');
+
   const picked = await vscode.window.showQuickPick(
     [
-      { label: 'Web endpoints', description: 'nova/web/endpoints', value: 'web-endpoints' as const },
-      { label: 'Micronaut endpoints', description: 'nova/micronaut/endpoints', value: 'micronaut-endpoints' as const },
-      { label: 'Micronaut beans', description: 'nova/micronaut/beans', value: 'micronaut-beans' as const },
+      {
+        label: 'Web endpoints',
+        description: webSupported === false ? NOT_SUPPORTED_MESSAGE : 'nova/web/endpoints',
+        detail: webSupported === false ? 'nova/web/endpoints (or nova/quarkus/endpoints)' : undefined,
+        value: 'web-endpoints' as const,
+      },
+      {
+        label: 'Micronaut endpoints',
+        description: micronautEndpointsSupported === false ? NOT_SUPPORTED_MESSAGE : 'nova/micronaut/endpoints',
+        value: 'micronaut-endpoints' as const,
+      },
+      {
+        label: 'Micronaut beans',
+        description: micronautBeansSupported === false ? NOT_SUPPORTED_MESSAGE : 'nova/micronaut/beans',
+        value: 'micronaut-beans' as const,
+      },
     ],
-    { placeHolder: 'Select framework items to search', matchOnDescription: true },
+    { placeHolder: 'Select framework items to search', matchOnDescription: true, matchOnDetail: true },
   );
   return picked?.value;
 }
@@ -171,12 +193,12 @@ async function pickFrameworkSearchKind(): Promise<FrameworkSearchKind | undefine
 async function fetchItemsForKind(
   kind: FrameworkSearchKind,
   request: NovaRequest,
-  opts: { workspaceKey: string; projectRoot: string },
+  opts: { projectRoot: string },
 ): Promise<FrameworkPickItem[] | undefined> {
-  const { workspaceKey, projectRoot } = opts;
+  const { projectRoot } = opts;
   switch (kind) {
     case 'web-endpoints': {
-      const response = await fetchWebEndpoints(request, workspaceKey, projectRoot);
+      const response = await fetchWebEndpoints(request, projectRoot);
       if (!response) {
         return undefined;
       }
@@ -215,8 +237,8 @@ async function fetchItemsForKind(
     }
     case 'micronaut-endpoints': {
       const method = 'nova/micronaut/endpoints';
-      if (isNovaRequestSupported(workspaceKey, method) === false) {
-        void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
+      if (isNovaRequestSupported(method) === false) {
+        void vscode.window.showInformationMessage(`Nova: ${NOT_SUPPORTED_MESSAGE}.`);
         return undefined;
       }
 
@@ -277,8 +299,8 @@ async function fetchItemsForKind(
     }
     case 'micronaut-beans': {
       const method = 'nova/micronaut/beans';
-      if (isNovaRequestSupported(workspaceKey, method) === false) {
-        void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
+      if (isNovaRequestSupported(method) === false) {
+        void vscode.window.showInformationMessage(`Nova: ${NOT_SUPPORTED_MESSAGE}.`);
         return undefined;
       }
 
@@ -334,14 +356,13 @@ async function fetchItemsForKind(
 
 async function fetchWebEndpoints(
   request: NovaRequest,
-  workspaceKey: string,
   projectRoot: string,
 ): Promise<WebEndpointsResponse | undefined> {
   const method = 'nova/web/endpoints';
   const alias = 'nova/quarkus/endpoints';
 
-  const supportedWeb = isNovaRequestSupported(workspaceKey, method);
-  const supportedAlias = isNovaRequestSupported(workspaceKey, alias);
+  const supportedWeb = isNovaRequestSupported(method);
+  const supportedAlias = isNovaRequestSupported(alias);
 
   // Try the canonical method first, falling back to the older Quarkus alias on method-not-found.
   // When capability lists are available we can skip known-unsupported methods to avoid noisy errors.
@@ -353,7 +374,7 @@ async function fetchWebEndpoints(
   const ordered = candidates.filter((entry) => (seen.has(entry) ? false : (seen.add(entry), true)));
 
   if (ordered.length === 0) {
-    void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
+    void vscode.window.showInformationMessage(`Nova: ${NOT_SUPPORTED_MESSAGE}.`);
     return undefined;
   }
 
@@ -383,6 +404,34 @@ async function fetchWebEndpoints(
   }
 
   return undefined;
+}
+
+function isWebEndpointsSupported(): boolean | 'unknown' {
+  const method = isNovaRequestSupported('nova/web/endpoints');
+  const alias = isNovaRequestSupported('nova/quarkus/endpoints');
+
+  if (method === true || alias === true) {
+    return true;
+  }
+  if (method === false && alias === false) {
+    return false;
+  }
+  return 'unknown';
+}
+
+function isFrameworkSearchKindUnsupported(kind: FrameworkSearchKind): boolean {
+  switch (kind) {
+    case 'web-endpoints':
+      return isWebEndpointsSupported() === false;
+    case 'micronaut-endpoints':
+      return isNovaRequestSupported('nova/micronaut/endpoints') === false;
+    case 'micronaut-beans':
+      return isNovaRequestSupported('nova/micronaut/beans') === false;
+    default: {
+      const exhaustive: never = kind;
+      return false;
+    }
+  }
 }
 
 function validateMicronautSchemaVersion(schemaVersion: unknown, method: string): asserts schemaVersion is 1 {
