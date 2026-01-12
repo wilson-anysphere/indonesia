@@ -1,6 +1,10 @@
 import * as vscode from 'vscode';
 
-export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
+export type NovaRequestOptions = {
+  allowMethodFallback?: boolean;
+};
+
+export type NovaRequest = <R>(method: string, params?: unknown, opts?: NovaRequestOptions) => Promise<R | undefined>;
 
 type FormatError = (err: unknown) => string;
 type IsMethodNotFoundError = (err: unknown) => boolean;
@@ -103,18 +107,7 @@ export function registerNovaBuildFileWatchers(
     const projectRoot = workspaceFolder.uri.fsPath;
 
     try {
-      const resp = await request('nova/reloadProject', { projectRoot, buildTool: 'auto' });
-      if (typeof resp === 'undefined') {
-        // Capability gating: treat the missing endpoint as "unsupported" and disable the feature.
-        reloadProjectSupported = false;
-        if (!reloadProjectUnsupportedWarningLogged) {
-          reloadProjectUnsupportedWarningLogged = true;
-          opts.output.appendLine(
-            'Nova: nova/reloadProject is not supported by the connected server; auto-reload on build file changes is disabled for this session.',
-          );
-        }
-        return;
-      }
+      await request('nova/reloadProject', { projectRoot, buildTool: 'auto' }, { allowMethodFallback: true });
     } catch (err) {
       if (opts.isMethodNotFoundError(err)) {
         reloadProjectSupported = false;
@@ -132,7 +125,7 @@ export function registerNovaBuildFileWatchers(
 
     // Best-effort refresh hooks. These may not exist in older servers / builds.
     try {
-      await request('nova/build/diagnostics', { projectRoot, target: null });
+      await request('nova/build/diagnostics', { projectRoot, target: null }, { allowMethodFallback: true });
     } catch (err) {
       if (!opts.isMethodNotFoundError(err)) {
         opts.output.appendLine(`Nova: failed to refresh build diagnostics for ${projectRoot}: ${opts.formatError(err)}`);

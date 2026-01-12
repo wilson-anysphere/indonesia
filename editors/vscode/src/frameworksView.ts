@@ -93,6 +93,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Endpoint
 
     const uri = uriFromFileLike(endpoint.file, { baseUri: element.baseUri, projectRoot: element.projectRoot });
     if (uri) {
+      item.resourceUri = uri;
       item.command = {
         command: OPEN_ENDPOINT_COMMAND,
         title: 'Open Endpoint',
