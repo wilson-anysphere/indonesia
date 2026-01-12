@@ -878,6 +878,7 @@ where
                 &cancel,
                 source,
                 &uri,
+                &cancel,
                 span,
             ));
         }
@@ -972,6 +973,7 @@ fn type_mismatch_quick_fixes(
     cancel: &CancellationToken,
     source: &str,
     uri: &lsp_types::Uri,
+    cancel: &CancellationToken,
     selection: Span,
 ) -> Vec<lsp_types::CodeActionOrCommand> {
     fn spans_overlap(a: Span, b: Span) -> bool {
