@@ -147,6 +147,40 @@ fn gradle_includes_buildsrc_as_module() {
 }
 
 #[test]
+fn gradle_buildsrc_dependencies_resolve_from_buildsrc_version_catalog() {
+    let root = testdata_path("gradle-buildsrc-version-catalog");
+    let gradle_home = tempfile::tempdir().expect("tempdir (gradle home)");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+
+    let config = load_project_with_options(&root, &options).expect("load gradle project");
+    assert_eq!(config.build_system, BuildSystem::Gradle);
+    assert!(
+        config.dependencies.iter().any(|d| {
+            d.group_id == "com.google.guava"
+                && d.artifact_id == "guava"
+                && d.version.as_deref() == Some("33.0.0-jre")
+        }),
+        "expected buildSrc dependency list to include guava from buildSrc version catalog"
+    );
+
+    let model = load_workspace_model_with_options(&root, &options).expect("load gradle model");
+    let buildsrc = model
+        .module_by_id("gradle::__buildSrc")
+        .expect("buildSrc module");
+    assert!(
+        buildsrc.dependencies.iter().any(|d| {
+            d.group_id == "com.google.guava"
+                && d.artifact_id == "guava"
+                && d.version.as_deref() == Some("33.0.0-jre")
+        }),
+        "expected buildSrc workspace module dependencies to include guava from buildSrc version catalog"
+    );
+}
+
+#[test]
 fn gradle_orders_buildsrc_after_root_before_subprojects() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
