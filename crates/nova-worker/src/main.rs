@@ -17,7 +17,7 @@ use nova_remote_proto::v3::{
     SupportedVersions,
 };
 use nova_remote_proto::{FileText, ShardId, ShardIndex, WorkerStats};
-use nova_remote_rpc::{RequestContext, RpcConnection, WorkerConfig};
+use nova_remote_rpc::{CancellationToken, RequestContext, RpcConnection, WorkerConfig};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::{watch, Mutex};
@@ -250,7 +250,7 @@ async fn handle_request(
             if ctx.cancellation().is_cancelled() {
                 return Err(cancelled_error());
             }
-            let index = state.build_index().await.map_err(internal_error)?;
+            let index = state.build_index(Some(ctx.cancellation())).await?;
             if ctx.cancellation().is_cancelled() {
                 return Err(cancelled_error());
             }
@@ -264,7 +264,7 @@ async fn handle_request(
             if ctx.cancellation().is_cancelled() {
                 return Err(cancelled_error());
             }
-            let index = state.build_index().await.map_err(internal_error)?;
+            let index = state.build_index(Some(ctx.cancellation())).await?;
             if ctx.cancellation().is_cancelled() {
                 return Err(cancelled_error());
             }
@@ -736,11 +736,14 @@ impl WorkerState {
         file_id
     }
 
-    async fn build_index(&mut self) -> Result<ShardIndex> {
-        self.index_generation += 1;
+    async fn build_index(
+        &mut self,
+        cancel: Option<CancellationToken>,
+    ) -> std::result::Result<ShardIndex, ProtoRpcError> {
+        let next_index_generation = self.index_generation.saturating_add(1);
         let shard_id = self.shard_id;
         let revision = self.revision;
-        let index_generation = self.index_generation;
+        let index_generation = next_index_generation;
         let cache_dir = self.cache_dir.clone();
         let db = self.db.clone();
         let files: Vec<(String, FileId)> = self
@@ -749,29 +752,48 @@ impl WorkerState {
             .map(|(path, file_id)| (path.clone(), *file_id))
             .collect();
 
-        let index = tokio::task::spawn_blocking(move || {
-            let symbols = build_symbols(&db, &files);
+        let index = tokio::task::spawn_blocking(move || -> std::result::Result<ShardIndex, ProtoRpcError> {
+            if cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+                return Err(cancelled_error());
+            }
+            let symbols = build_symbols(&db, &files, cancel.as_ref())?;
+            if cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+                return Err(cancelled_error());
+            }
             let index = ShardIndex {
                 shard_id,
                 revision,
                 index_generation,
                 symbols,
             };
-            nova_cache::save_shard_index(&cache_dir, &index).context("write shard cache")?;
-            Ok::<_, anyhow::Error>(index)
+            if cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+                return Err(cancelled_error());
+            }
+            nova_cache::save_shard_index(&cache_dir, &index)
+                .map_err(|err| internal_error(anyhow!(err).context("write shard cache")))?;
+            Ok(index)
         })
         .await
-        .context("join shard index task")??;
+        .map_err(|err| internal_error(anyhow!(err).context("join shard index task")))??;
+
+        // Only advance the generation if we produced a complete index.
+        self.index_generation = next_index_generation;
 
         Ok(index)
     }
 }
 
-fn build_symbols(db: &SalsaDatabase, files: &[(String, FileId)]) -> Vec<nova_remote_proto::Symbol> {
-    let snap = db.snapshot();
+fn build_symbols(
+    db: &SalsaDatabase,
+    files: &[(String, FileId)],
+    cancel: Option<&CancellationToken>,
+) -> std::result::Result<Vec<nova_remote_proto::Symbol>, ProtoRpcError> {
     let mut symbols = Vec::new();
     for (path, file_id) in files {
-        let names = snap.hir_symbol_names(*file_id);
+        if cancel.is_some_and(|c| c.is_cancelled()) {
+            return Err(cancelled_error());
+        }
+        let names = db.with_snapshot(|snap| snap.hir_symbol_names(*file_id));
         for name in names.iter() {
             symbols.push(nova_remote_proto::Symbol {
                 name: name.clone(),
@@ -781,7 +803,7 @@ fn build_symbols(db: &SalsaDatabase, files: &[(String, FileId)]) -> Vec<nova_rem
     }
     symbols.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.path.cmp(&b.path)));
     symbols.dedup();
-    symbols
+    Ok(symbols)
 }
 
 type BoxedStream = Box<dyn AsyncReadWrite>;
@@ -866,7 +888,10 @@ mod tests {
             },
         ]);
 
-        let _ = state.build_index().await?;
+        let _ = state
+            .build_index(None)
+            .await
+            .map_err(|err| anyhow!(err.message))?;
         let first_parse = parse_executions(&state.db);
         assert_eq!(
             first_parse, 2,
@@ -878,7 +903,10 @@ mod tests {
             path: "A.java".into(),
             text: "class Alpha { int x; }".into(),
         });
-        let _ = state.build_index().await?;
+        let _ = state
+            .build_index(None)
+            .await
+            .map_err(|err| anyhow!(err.message))?;
 
         let second_parse = parse_executions(&state.db);
         assert_eq!(
