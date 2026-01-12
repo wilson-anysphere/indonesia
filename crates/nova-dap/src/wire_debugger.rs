@@ -2695,6 +2695,71 @@ impl Debugger {
             Ok(values.pop())
         }
 
+        async fn resolve_field_in_frame(
+            jdwp: &JdwpClient,
+            cancel: &CancellationToken,
+            thread: ThreadId,
+            frame_id: u64,
+            name: &str,
+        ) -> Result<Option<JdwpValue>> {
+            check_cancel(cancel)?;
+
+            let this_id = match cancellable_jdwp(cancel, jdwp.stack_frame_this_object(thread, frame_id))
+                .await
+            {
+                Ok(id) => id,
+                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                Err(_err) => return Ok(None),
+            };
+            if this_id == 0 {
+                return Ok(None);
+            }
+
+            const MODIFIER_STATIC: u32 = 0x0008;
+
+            let (_ref_type_tag, mut type_id) =
+                match cancellable_jdwp(cancel, jdwp.object_reference_reference_type(this_id)).await
+                {
+                    Ok(res) => res,
+                    Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                    Err(_err) => return Ok(None),
+                };
+
+            let mut seen_types = std::collections::HashSet::new();
+            while type_id != 0 && seen_types.insert(type_id) {
+                let fields = match cancellable_jdwp(cancel, jdwp.reference_type_fields(type_id)).await {
+                    Ok(fields) => fields,
+                    Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                    Err(_err) => return Ok(None),
+                };
+
+                if let Some(field) = fields
+                    .into_iter()
+                    .find(|f| f.name == name && (f.mod_bits & MODIFIER_STATIC == 0))
+                {
+                    let mut values = match cancellable_jdwp(
+                        cancel,
+                        jdwp.object_reference_get_values(this_id, &[field.field_id]),
+                    )
+                    .await
+                    {
+                        Ok(values) => values,
+                        Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                        Err(_err) => return Ok(None),
+                    };
+                    return Ok(values.pop());
+                }
+
+                type_id = match cancellable_jdwp(cancel, jdwp.class_type_superclass(type_id)).await {
+                    Ok(id) => id,
+                    Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                    Err(_err) => break,
+                };
+            }
+
+            Ok(None)
+        }
+
         let started = Instant::now();
         let mut inspector = Inspector::new(jdwp.clone());
 
@@ -2846,6 +2911,11 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
             .await?;
 
             if value.is_none() {
+                value = resolve_field_in_frame(&jdwp, cancel, frame.thread, frame.frame_id, name)
+                    .await?;
+            }
+
+            if value.is_none() {
                 let frames = cancellable_jdwp(cancel, jdwp.frames(frame.thread, 0, -1)).await?;
                 for frame_info in frames {
                     if frame_info.frame_id == frame.frame_id {
@@ -2860,6 +2930,13 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                         name,
                     )
                     .await?;
+                    if value.is_some() {
+                        break;
+                    }
+
+                    value =
+                        resolve_field_in_frame(&jdwp, cancel, frame.thread, frame_info.frame_id, name)
+                            .await?;
                     if value.is_some() {
                         break;
                     }
@@ -5635,6 +5712,9 @@ fn render_log_message(template: &str, locals: Option<&HashMap<String, JdwpValue>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    use nova_jdwp::wire::mock::{MockJdwpServer, THREAD_ID};
 
     #[test]
     fn handle_table_intern_is_stable_and_refreshes_value() {
@@ -5753,6 +5833,122 @@ mod tests {
         assert_eq!(
             render_log_message("missing {y}", Some(&locals)),
             "missing {y}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_debug_resolves_instance_field_sources() {
+        let server = MockJdwpServer::spawn().await.unwrap();
+        let addr = server.addr();
+        let mut dbg = Debugger::attach(AttachArgs {
+            host: addr.ip(),
+            port: addr.port(),
+            source_roots: Vec::new(),
+        })
+        .await
+        .unwrap();
+
+        let cancel = CancellationToken::new();
+
+        let (frames, _total) = dbg
+            .stack_trace(&cancel, THREAD_ID as i64, None, None)
+            .await
+            .unwrap();
+        let frame_id = frames
+            .first()
+            .and_then(|frame| frame.get("id"))
+            .and_then(|id| id.as_i64())
+            .expect("expected a stack frame id");
+
+        // Create a new `int[]` with values [1,2,3] and attach it to the instance field `field`
+        // on the frame's `this` object so stream-debug must resolve the source identifier as a
+        // field (not a local variable).
+        let frame = dbg.frame_handles.get(frame_id).copied().unwrap();
+        let this_id = dbg
+            .jdwp
+            .stack_frame_this_object(frame.thread, frame.frame_id)
+            .await
+            .unwrap();
+
+        let sample_array_id = server.sample_int_array_id();
+        let (_tag, array_type_id) = dbg
+            .jdwp
+            .object_reference_reference_type(sample_array_id)
+            .await
+            .unwrap();
+        let array_id = dbg.jdwp.array_type_new_instance(array_type_id, 3).await.unwrap();
+        dbg.jdwp
+            .array_reference_set_values(
+                array_id,
+                0,
+                &[JdwpValue::Int(1), JdwpValue::Int(2), JdwpValue::Int(3)],
+            )
+            .await
+            .unwrap();
+
+        let (_tag, this_type_id) = dbg
+            .jdwp
+            .object_reference_reference_type(this_id)
+            .await
+            .unwrap();
+        let fields = dbg.jdwp.reference_type_fields(this_type_id).await.unwrap();
+        let field_id = fields
+            .iter()
+            .find(|f| f.name == "field")
+            .map(|f| f.field_id)
+            .expect("expected mock this object to have a `field` instance field");
+
+        dbg.jdwp
+            .object_reference_set_values(
+                this_id,
+                &[(field_id, JdwpValue::Object { tag: b'[', id: array_id })],
+            )
+            .await
+            .unwrap();
+
+        let cfg = nova_stream_debug::StreamDebugConfig {
+            max_sample_size: 3,
+            max_total_time: Duration::from_secs(1),
+            allow_side_effects: false,
+            allow_terminal_ops: true,
+        };
+
+        let expr = "field.stream().filter(x -> x > 1).map(x -> x * 2).count()";
+        let fut = dbg
+            .stream_debug(cancel, frame_id, expr.to_string(), cfg)
+            .unwrap();
+        let body = fut.await.unwrap();
+
+        assert_eq!(
+            body.runtime.source_sample.elements,
+            vec!["1".to_string(), "2".to_string(), "3".to_string()]
+        );
+
+        let filter_step = body
+            .runtime
+            .steps
+            .iter()
+            .find(|step| step.operation == "filter")
+            .expect("expected filter step");
+        assert_eq!(
+            filter_step.output.elements,
+            vec!["2".to_string(), "3".to_string()]
+        );
+
+        let map_step = body
+            .runtime
+            .steps
+            .iter()
+            .find(|step| step.operation == "map")
+            .expect("expected map step");
+        assert_eq!(map_step.output.elements, vec!["4".to_string(), "6".to_string()]);
+
+        assert_eq!(
+            body.runtime
+                .terminal
+                .as_ref()
+                .and_then(|t| t.value.as_deref()),
+            Some("2")
         );
     }
 }
