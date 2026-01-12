@@ -17,7 +17,8 @@ use nova_db::{salsa, Database, NovaIndexing, NovaInputs, ProjectId, SourceRootId
 use nova_ide::{DebugConfiguration, Project};
 use nova_index::ProjectIndexes;
 use nova_memory::{
-    BackgroundIndexingMode, MemoryCategory, MemoryManager, MemoryPressure, MemoryRegistration,
+    BackgroundIndexingMode, EvictionRequest, EvictionResult, MemoryCategory, MemoryEvictor,
+    MemoryManager, MemoryPressure, MemoryRegistration,
 };
 use nova_project::{
     BuildSystem, JavaConfig, LoadOptions, ProjectConfig, ProjectError, SourceRootOrigin,
@@ -112,6 +113,106 @@ pub(crate) struct WorkspaceEngineConfig {
     pub memory: MemoryManager,
 }
 
+#[derive(Debug)]
+struct WorkspaceProjectIndexesEvictor {
+    name: String,
+    indexes: Arc<Mutex<ProjectIndexes>>,
+    tracker: OnceLock<nova_memory::MemoryTracker>,
+    registration: OnceLock<nova_memory::MemoryRegistration>,
+}
+
+impl WorkspaceProjectIndexesEvictor {
+    fn new(manager: &MemoryManager, indexes: Arc<Mutex<ProjectIndexes>>) -> Arc<Self> {
+        let evictor = Arc::new(Self {
+            name: "workspace_project_indexes".to_string(),
+            indexes,
+            tracker: OnceLock::new(),
+            registration: OnceLock::new(),
+        });
+
+        let registration = manager.register_evictor(
+            evictor.name.clone(),
+            MemoryCategory::Indexes,
+            evictor.clone(),
+        );
+        evictor
+            .tracker
+            .set(registration.tracker())
+            .expect("tracker only set once");
+        evictor
+            .registration
+            .set(registration)
+            .expect("registration only set once");
+
+        evictor
+    }
+
+    fn replace_indexes(&self, new_indexes: ProjectIndexes) {
+        let bytes = new_indexes.estimated_bytes();
+        *self
+            .indexes
+            .lock()
+            .expect("workspace indexes lock poisoned") = new_indexes;
+
+        if let Some(tracker) = self.tracker.get() {
+            tracker.set_bytes(bytes);
+        }
+    }
+
+    fn clear_indexes(&self) {
+        *self
+            .indexes
+            .lock()
+            .expect("workspace indexes lock poisoned") = ProjectIndexes::default();
+        if let Some(tracker) = self.tracker.get() {
+            tracker.set_bytes(0);
+        }
+    }
+}
+
+impl MemoryEvictor for WorkspaceProjectIndexesEvictor {
+    fn name(&self) -> &str {
+        self.registration
+            .get()
+            .map(|registration| registration.name())
+            .unwrap_or(&self.name)
+    }
+
+    fn category(&self) -> MemoryCategory {
+        self.registration
+            .get()
+            .map(|registration| registration.category())
+            .unwrap_or(MemoryCategory::Indexes)
+    }
+
+    fn evict(&self, request: EvictionRequest) -> EvictionResult {
+        let before = self.tracker.get().map(|t| t.bytes()).unwrap_or(0);
+        if before == 0 {
+            return EvictionResult {
+                before_bytes: 0,
+                after_bytes: 0,
+            };
+        }
+
+        // First iteration: treat any eviction request that asks us to shrink as a signal to drop
+        // the in-memory indexes entirely. This is intentionally coarse-grained but ensures we can
+        // shed potentially large allocations under pressure.
+        let should_drop = request.target_bytes == 0
+            || request.target_bytes < before
+            || matches!(request.pressure, nova_memory::MemoryPressure::Critical);
+
+        if should_drop {
+            self.clear_indexes();
+        }
+
+        let after = self.tracker.get().map(|t| t.bytes()).unwrap_or(0);
+        EvictionResult {
+            before_bytes: before,
+            after_bytes: after,
+        }
+    }
+}
+
 pub struct WatcherHandle {
     watcher_stop: channel::Sender<()>,
     watcher_thread: Option<thread::JoinHandle<()>>,
@@ -144,6 +245,7 @@ pub(crate) struct WorkspaceEngine {
     overlay_docs_memory_registration: MemoryRegistration,
     pub(crate) query_db: salsa::Database,
     indexes: Arc<Mutex<ProjectIndexes>>,
+    indexes_evictor: Arc<WorkspaceProjectIndexesEvictor>,
 
     config: RwLock<EffectiveConfig>,
     scheduler: Scheduler,
@@ -254,11 +356,16 @@ impl WorkspaceEngine {
             PoolKind::Background,
             Duration::from_millis(1200),
         );
+
+        let indexes = Arc::new(Mutex::new(ProjectIndexes::default()));
+        let indexes_evictor = WorkspaceProjectIndexesEvictor::new(&memory, Arc::clone(&indexes));
+
         Self {
             vfs,
             overlay_docs_memory_registration,
             query_db,
-            indexes: Arc::new(Mutex::new(ProjectIndexes::default())),
+            indexes,
+            indexes_evictor,
             config: RwLock::new(EffectiveConfig::default()),
             scheduler,
             memory,
@@ -844,7 +951,7 @@ impl WorkspaceEngine {
         // Coalesce rapid edit bursts (e.g. didChange storms) and cancel in-flight indexing when
         // superseded by a newer request.
         let query_db = self.query_db.clone();
-        let indexes_arc = Arc::clone(&self.indexes);
+        let indexes_evictor = Arc::clone(&self.indexes_evictor);
         let subscribers = Arc::clone(&self.subscribers);
         let scheduler = self.scheduler.clone();
         let memory = self.memory.clone();
@@ -1014,7 +1121,7 @@ impl WorkspaceEngine {
 
                 Cancelled::check(ctx.token())?;
 
-                *indexes_arc.lock().expect("workspace indexes lock poisoned") = indexes;
+                indexes_evictor.replace_indexes(indexes);
 
                 progress.report(
                     Some(format!("{}/{}", total, total)),
@@ -1819,6 +1926,7 @@ mod tests {
     use nova_db::persistence::{PersistenceConfig, PersistenceMode};
     use nova_db::NovaInputs;
     use nova_memory::{MemoryBudget, MemoryCategory};
+    use nova_index::{AnnotationLocation, InheritanceEdge, ReferenceLocation, SymbolLocation};
     use nova_project::BuildSystem;
     use std::fs;
     use std::time::Duration;
@@ -2094,6 +2202,86 @@ mod tests {
     }
 
     #[test]
+    fn project_indexes_are_tracked_and_evictable() {
+        let mut indexes = ProjectIndexes::default();
+
+        // Populate enough entries so `estimated_bytes()` is non-zero and large enough to exceed
+        // the small test budget.
+        for idx in 0..64u32 {
+            indexes.symbols.insert(
+                format!("Symbol{idx}"),
+                SymbolLocation {
+                    file: "src/Main.java".to_string(),
+                    line: idx,
+                    column: 0,
+                },
+            );
+            indexes.references.insert(
+                format!("Symbol{idx}"),
+                ReferenceLocation {
+                    file: "src/Main.java".to_string(),
+                    line: idx,
+                    column: 1,
+                },
+            );
+            indexes.annotations.insert(
+                format!("Annotation{idx}"),
+                AnnotationLocation {
+                    file: "src/Main.java".to_string(),
+                    line: idx,
+                    column: 2,
+                },
+            );
+            indexes.inheritance.insert(InheritanceEdge {
+                file: "src/Main.java".to_string(),
+                subtype: format!("Sub{idx}"),
+                supertype: format!("Super{idx}"),
+            });
+        }
+
+        let estimated_bytes = indexes.estimated_bytes();
+        assert!(estimated_bytes > 0, "expected non-zero index size estimate");
+
+        // Give the MemoryManager a smaller budget than our tracked usage so eviction triggers.
+        let budget_total = estimated_bytes.saturating_sub(1).max(1);
+        let memory = MemoryManager::new(MemoryBudget::from_total(budget_total));
+
+        let engine = WorkspaceEngine::new(WorkspaceEngineConfig {
+            workspace_root: PathBuf::new(),
+            persistence: PersistenceConfig::from_env(),
+            memory: memory.clone(),
+        });
+
+        engine.indexes_evictor.replace_indexes(indexes);
+
+        let (_report, components) = memory.report_detailed();
+        let component = components
+            .iter()
+            .find(|c| c.name == "workspace_project_indexes")
+            .expect("workspace_project_indexes registered");
+        assert!(
+            component.bytes > 0,
+            "expected workspace_project_indexes tracker > 0"
+        );
+
+        memory.enforce();
+
+        let cleared = engine.indexes.lock().unwrap();
+        assert!(cleared.symbols.symbols.is_empty());
+        assert!(cleared.references.references.is_empty());
+        assert!(cleared.annotations.annotations.is_empty());
+        assert!(cleared.inheritance.subtypes.is_empty());
+        assert!(cleared.inheritance.supertypes.is_empty());
+
+        let (_report, components) = memory.report_detailed();
+        let component = components
+            .iter()
+            .find(|c| c.name == "workspace_project_indexes")
+            .expect("workspace_project_indexes registered");
+        assert_eq!(component.bytes, 0);
+    }
+
+    #[test]
     fn file_id_mapping_is_stable_and_drives_salsa_inputs() {
         let workspace = crate::Workspace::new_in_memory();
         let tmp = tempfile::tempdir().unwrap();
@@ -2170,7 +2358,16 @@ mod tests {
             memory: memory.clone(),
         });
 
-        let baseline = memory.report().usage.other;
+        fn overlay_bytes(memory: &MemoryManager) -> u64 {
+            let (_report, components) = memory.report_detailed();
+            components
+                .iter()
+                .find(|c| c.name == "vfs_overlay_documents")
+                .map(|c| c.bytes)
+                .unwrap_or(0)
+        }
+
+        let baseline = overlay_bytes(&memory);
 
         let dir = tempfile::tempdir().unwrap();
         let a_path = dir.path().join("a.java");
@@ -2179,18 +2376,18 @@ mod tests {
         let b = VfsPath::local(b_path.clone());
 
         engine.open_document(a.clone(), "aaaa".to_string(), 1);
-        assert_eq!(memory.report().usage.other, baseline + 4);
+        assert_eq!(overlay_bytes(&memory), baseline + 4);
 
         engine.open_document(b.clone(), "bb".to_string(), 1);
-        assert_eq!(memory.report().usage.other, baseline + 6);
+        assert_eq!(overlay_bytes(&memory), baseline + 6);
 
         engine
             .apply_changes(&a, 2, &[ContentChange::full("aaaaa")])
             .unwrap();
-        assert_eq!(memory.report().usage.other, baseline + 7);
+        assert_eq!(overlay_bytes(&memory), baseline + 7);
 
         engine.close_document(&b);
-        assert_eq!(memory.report().usage.other, baseline + 5);
+        assert_eq!(overlay_bytes(&memory), baseline + 5);
 
         // Rename handling: renaming an open document onto an already-open destination drops the
         // source document in the overlay, and the tracker should update accordingly.
@@ -2201,7 +2398,7 @@ mod tests {
 
         engine.open_document(src.clone(), "src".to_string(), 1); // 3 bytes
         engine.open_document(dst.clone(), "dstt".to_string(), 1); // 4 bytes
-        assert_eq!(memory.report().usage.other, baseline + 12);
+        assert_eq!(overlay_bytes(&memory), baseline + 12);
 
         engine.apply_filesystem_events(vec![NormalizedEvent::Moved {
             from: src_path,
@@ -2209,7 +2406,7 @@ mod tests {
         }]);
 
         // Only `a` (5) + `dst` (4) remain in the overlay.
-        assert_eq!(memory.report().usage.other, baseline + 9);
+        assert_eq!(overlay_bytes(&memory), baseline + 9);
     }
 
     #[test]
