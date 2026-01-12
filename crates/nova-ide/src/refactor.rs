@@ -4,9 +4,10 @@
 //! (code actions, workspace edits, and resolution).
 
 use lsp_types::{CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, Uri};
+use nova_core::{LineIndex, Position as CorePosition};
 use nova_refactor::{
-    extract_constant, extract_field, inline_method, position_to_offset_utf16, workspace_edit_to_lsp,
-    ExtractError, ExtractOptions, FileId, InlineMethodOptions, TextDatabase, TextRange,
+    extract_constant, extract_field, inline_method, workspace_edit_to_lsp, ExtractError,
+    ExtractOptions, FileId, InlineMethodOptions, TextDatabase, TextRange,
 };
 use serde::{Deserialize, Serialize};
 
@@ -38,9 +39,7 @@ pub fn extract_member_code_actions(
     source: &str,
     selection: Range,
 ) -> Vec<CodeActionOrCommand> {
-    let Some(selection) = lsp_range_to_text_range(source, selection) else {
-        return Vec::new();
-    };
+    let selection = lsp_range_to_text_range(source, selection);
     let file = uri.to_string();
 
     let mut actions = Vec::new();
@@ -98,9 +97,8 @@ pub fn inline_method_code_actions(
     source: &str,
     position: Position,
 ) -> Vec<CodeActionOrCommand> {
-    let Some(offset) = position_to_offset_utf16(source, position) else {
-        return Vec::new();
-    };
+    let line_index = LineIndex::new(source);
+    let offset = position_to_offset_utf16(&line_index, source, position);
     let file = uri.to_string();
 
     let mut actions = Vec::new();
@@ -175,10 +173,57 @@ pub fn resolve_extract_member_code_action(
     Ok(())
 }
 
-fn lsp_range_to_text_range(source: &str, range: Range) -> Option<TextRange> {
-    let start = position_to_offset_utf16(source, range.start)?;
-    let end = position_to_offset_utf16(source, range.end)?;
-    Some(TextRange::new(start, end))
+fn lsp_range_to_text_range(source: &str, range: Range) -> TextRange {
+    let line_index = LineIndex::new(source);
+    TextRange::new(
+        position_to_offset_utf16(&line_index, source, range.start),
+        position_to_offset_utf16(&line_index, source, range.end),
+    )
+}
+
+fn position_to_offset_utf16(line_index: &LineIndex, text: &str, position: Position) -> usize {
+    // Fast path: correct UTF-16 conversion (returns None for invalid positions).
+    if let Some(offset) =
+        line_index.offset_of_position(text, CorePosition::new(position.line, position.character))
+    {
+        return u32::from(offset) as usize;
+    }
+
+    // Best-effort fallback: match the previous permissive behavior by clamping.
+    // - unknown line   -> EOF
+    // - character past -> EOL
+    // - inside surrogate pair -> next character boundary
+    let Some(line_start) = line_index.line_start(position.line) else {
+        return text.len();
+    };
+    let Some(line_end) = line_index.line_end(position.line) else {
+        return text.len();
+    };
+
+    let line_start = u32::from(line_start) as usize;
+    let line_end = u32::from(line_end) as usize;
+
+    // NB: `line_end` is the offset excluding the line terminator (`\n` / `\r\n`).
+    let line_text = &text[line_start..line_end];
+
+    let mut col_utf16 = 0u32;
+    let mut last = line_start;
+    for (rel_idx, ch) in line_text.char_indices() {
+        let abs = line_start + rel_idx;
+        if col_utf16 == position.character {
+            return abs;
+        }
+        let len16 = ch.len_utf16() as u32;
+        if col_utf16 + len16 > position.character {
+            // Clamp to the next boundary.
+            return abs + ch.len_utf8();
+        }
+        col_utf16 += len16;
+        last = abs + ch.len_utf8();
+    }
+
+    // If the character offset is past EOL, clamp to EOL.
+    last.min(text.len())
 }
 
 #[cfg(test)]
@@ -186,102 +231,101 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lsp_range_to_text_range_handles_non_bmp_chars() {
+    fn position_to_offset_utf16_handles_astral_chars() {
         // 😀 is a surrogate pair in UTF-16 (2 code units, 4 bytes in UTF-8).
-        let source = "a😀b";
-
-        // Select `b` (after the emoji).
-        let range = Range {
-            start: Position {
-                line: 0,
-                character: 3,
-            },
-            end: Position {
-                line: 0,
-                character: 4,
-            },
-        };
+        let text = "a😀b";
+        let index = LineIndex::new(text);
 
         assert_eq!(
-            lsp_range_to_text_range(source, range),
-            Some(TextRange::new(5, 6))
+            position_to_offset_utf16(
+                &index,
+                text,
+                Position {
+                    line: 0,
+                    character: 0
+                }
+            ),
+            0
+        );
+        assert_eq!(
+            position_to_offset_utf16(
+                &index,
+                text,
+                Position {
+                    line: 0,
+                    character: 1
+                }
+            ),
+            1
+        );
+        // After 😀: UTF-16 offset 3 => byte offset 5.
+        assert_eq!(
+            position_to_offset_utf16(
+                &index,
+                text,
+                Position {
+                    line: 0,
+                    character: 3
+                }
+            ),
+            5
+        );
+        assert_eq!(
+            position_to_offset_utf16(
+                &index,
+                text,
+                Position {
+                    line: 0,
+                    character: 4
+                }
+            ),
+            text.len()
+        );
+
+        // Inside the surrogate pair should clamp to the next boundary (end of 😀).
+        assert_eq!(
+            position_to_offset_utf16(
+                &index,
+                text,
+                Position {
+                    line: 0,
+                    character: 2
+                }
+            ),
+            5
         );
     }
 
     #[test]
-    fn out_of_bounds_positions_are_handled_deterministically() {
-        let uri: Uri = "file:///Test.java".parse().unwrap();
-        let source = "class Test { int x = 1; }\n";
+    fn position_to_offset_utf16_clamps_out_of_range_positions() {
+        let text = "a😀b\nc";
+        let index = LineIndex::new(text);
 
-        // Out-of-bounds line.
-        let actions = extract_member_code_actions(
-            &uri,
-            source,
-            Range {
-                start: Position {
-                    line: 10,
-                    character: 0,
-                },
-                end: Position {
-                    line: 10,
-                    character: 5,
-                },
-            },
-        );
-        assert!(actions.is_empty());
-
-        let actions = inline_method_code_actions(
-            &uri,
-            source,
-            Position {
-                line: 10,
-                character: 0,
-            },
-        );
-        assert!(actions.is_empty());
-
-        // Out-of-bounds UTF-16 column.
+        // Line too large -> EOF.
         assert_eq!(
-            lsp_range_to_text_range(
-                source,
-                Range {
-                    start: Position {
-                        line: 0,
-                        character: 0,
-                    },
-                    end: Position {
-                        line: 0,
-                        character: 10_000,
-                    },
+            position_to_offset_utf16(
+                &index,
+                text,
+                Position {
+                    line: 99,
+                    character: 0
                 }
             ),
-            None
+            text.len()
         );
 
-        let actions = extract_member_code_actions(
-            &uri,
-            source,
-            Range {
-                start: Position {
+        // Character too large -> EOL (excluding '\n').
+        assert_eq!(
+            position_to_offset_utf16(
+                &index,
+                text,
+                Position {
                     line: 0,
-                    character: 0,
-                },
-                end: Position {
-                    line: 0,
-                    character: 10_000,
-                },
-            },
+                    character: 999
+                }
+            ),
+            // "a😀b" is 6 bytes.
+            6
         );
-        assert!(actions.is_empty());
-
-        let actions = inline_method_code_actions(
-            &uri,
-            source,
-            Position {
-                line: 0,
-                character: 10_000,
-            },
-        );
-        assert!(actions.is_empty());
     }
 }
