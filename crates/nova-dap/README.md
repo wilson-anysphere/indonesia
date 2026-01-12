@@ -244,6 +244,8 @@ Once attached:
 - `continue`, `next`, `stepIn`, `stepOut`, `pause` map to the equivalent JDWP
   resume/suspend/step requests.
 - `threads`, `stackTrace`, `scopes`, `variables` read data via JDWP.
+  - `stackTrace` supports paging via `startFrame`/`levels` (DAP
+    `supportsDelayedStackTraceLoading`) and reports `totalFrames` when available.
 - `evaluate` is best-effort and currently focuses on simple local-variable reads.
 
 ## Custom requests (`nova/*`)
