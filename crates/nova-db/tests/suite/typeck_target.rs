@@ -1612,3 +1612,221 @@ class C { Class<String[]> m(){ return String[].class; } }
         .expect("expected a type at offset");
     assert_eq!(ty, "Class<String[]>");
 }
+
+#[test]
+fn primitive_array_class_literal_has_array_type() {
+    let src = r#"
+class C { Class<int[]> m(){ return int[].class; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src
+        .find(".class")
+        .expect("snippet should contain primitive array class literal");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Class<int[]>");
+}
+
+#[test]
+fn void_class_literal_has_class_of_wildcard_type() {
+    let src = r#"
+class C { Class<?> m(){ return void.class; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src
+        .find(".class")
+        .expect("snippet should contain void class literal");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Class<?>");
+}
+
+#[test]
+fn cast_expression_types_as_target_type() {
+    let src = r#"
+class C {
+    String m(Object o) {
+        return (String) o;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src
+        .find("(String)")
+        .expect("snippet should contain cast expression")
+        + 1;
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+}
+
+#[test]
+fn invalid_cast_emits_invalid_cast_diagnostic() {
+    let src = r#"
+class C {
+    void m() {
+        String s = (String) 1;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-cast"),
+        "expected invalid-cast diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn static_method_reference_is_typed_as_target_interface() {
+    let src = r#"
+interface F { int get(); }
+
+class C {
+    static int foo() { return 1; }
+
+    void m() {
+        F f = C::foo;
+        f.get();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "method-ref-mismatch"),
+        "did not expect method-ref-mismatch diagnostic; got {diags:?}"
+    );
+
+    let offset = src.find("::").expect("snippet should contain method reference");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "F");
+}
+
+#[test]
+fn unbound_instance_method_reference_is_typed_as_target_interface() {
+    let src = r#"
+interface Len { int len(String s); }
+
+class C {
+    void m() {
+        Len l = String::length;
+        l.len("hi");
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "method-ref-mismatch"),
+        "did not expect method-ref-mismatch diagnostic; got {diags:?}"
+    );
+
+    let offset = src.find("::").expect("snippet should contain method reference");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Len");
+}
+
+#[test]
+fn bound_instance_method_reference_is_typed_as_target_interface() {
+    let src = r#"
+interface Int0 { int get(); }
+
+class C {
+    void m() {
+        String s = "hi";
+        Int0 f = s::length;
+        f.get();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "method-ref-mismatch"),
+        "did not expect method-ref-mismatch diagnostic; got {diags:?}"
+    );
+
+    let offset = src.find("::").expect("snippet should contain method reference");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Int0");
+}
+
+#[test]
+fn constructor_reference_is_typed_as_target_interface() {
+    let src = r#"
+interface Maker { String make(); }
+
+class C {
+    void m() {
+        Maker m = String::new;
+        m.make().length();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "method-ref-mismatch"),
+        "did not expect method-ref-mismatch diagnostic; got {diags:?}"
+    );
+
+    let offset = src
+        .find("::")
+        .expect("snippet should contain constructor reference");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Maker");
+}
