@@ -20,7 +20,7 @@ Nova supports VS Code multi-root workspaces by running one `nova-lsp` instance p
 
 - Settings that accept paths (like `nova.server.path`, `nova.dap.path`, and `nova.lsp.configPath`) support `~`, `${workspaceFolder}`, and relative paths. `${workspaceFolder}` and relative paths are resolved against the **target workspace folder** (the workspace folder the command/request is routed to).
 - Requests tied to a file (for example, commands that operate on the active editor) target the workspace folder that contains that file.
-- Commands without an obvious target may prompt you to select a workspace folder (for example, **Nova: Generate Bug Report**).
+- Commands without an obvious target may prompt you to select a workspace folder (for example, **Nova: Build Project**, **Nova: Reload Project**, **Nova: Search Framework Items…**, or **Nova: Generate Bug Report**).
 - `untitled:` Java documents don’t belong to any workspace folder; in multi-root workspaces you may be prompted to pick which workspace folder to use.
 
 ## Frameworks Dashboard
@@ -137,6 +137,12 @@ npm run compile
     - copies the bundle **archive path** (if available) or folder path to your clipboard
     - prints both paths to the **Nova Bug Report** output channel
 
+- **Nova: Build Project** (`nova.buildProject`)
+  - Runs `nova/buildProject` for the selected workspace folder.
+
+- **Nova: Reload Project** (`nova.reloadProject`)
+  - Runs `nova/reloadProject` for the selected workspace folder.
+
 - **Nova: Show Request Metrics** (`nova.showRequestMetrics`)
   - Fetches request metrics via `nova/metrics` (available in safe mode).
   - Pretty-prints the JSON payload to the **Nova Metrics** output channel, with an action to copy the JSON to your clipboard.
@@ -178,6 +184,9 @@ npm run compile
 
 - **Nova: Hot Swap Changed Files** (`nova.hotSwapChangedFiles`)
   - Runs `nova/debug/hotSwap` for recently saved Java files (requires an active Nova debug session).
+
+- **Nova: Search Framework Items…** (`nova.frameworks.search`)
+  - Prompts for a workspace folder and framework kind, then searches endpoints/beans and navigates to the selected result.
 
 ## Bug report bundles
 
