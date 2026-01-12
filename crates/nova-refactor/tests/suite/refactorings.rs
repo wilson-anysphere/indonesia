@@ -7728,7 +7728,7 @@ fn inline_variable_rejects_assert_when_initializer_is_order_sensitive() {
         },
     )
     .unwrap_err();
-    assert!(matches!(err, SemanticRefactorError::InlineNotSupported));
+    assert!(matches!(err, SemanticRefactorError::InlineNotSupportedInAssert));
 }
 
 #[test]
@@ -7760,6 +7760,79 @@ fn inline_variable_rejects_switch_expression_rule_expression_body_when_initializ
     )
     .unwrap_err();
     assert!(matches!(err, SemanticRefactorError::InlineNotSupported));
+}
+
+#[test]
+fn inline_variable_all_usages_rejected_when_only_usage_is_in_assert() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  int foo() { return 1; }
+  void m() {
+    int x = foo();
+    assert x > 0;
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int x").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at x");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(
+        err,
+        SemanticRefactorError::InlineNotSupportedInAssert
+    ));
+}
+
+#[test]
+fn inline_variable_inline_one_rejected_when_selected_usage_is_in_assert() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int x = 1 + 2;
+    assert x > 0;
+    System.out.println(x);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int x").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at x");
+
+    let mut refs = db.find_references(symbol);
+    refs.sort_by_key(|r| r.range.start);
+    assert_eq!(refs.len(), 2, "expected two references");
+
+    let assert_start = src.find("assert x").unwrap() + "assert ".len();
+    let assert_usage = refs
+        .iter()
+        .find(|r| r.range.start == assert_start)
+        .expect("assert usage")
+        .range;
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: false,
+            usage_range: Some(assert_usage),
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(
+        err,
+        SemanticRefactorError::InlineNotSupportedInAssert
+    ));
 }
 
 #[test]

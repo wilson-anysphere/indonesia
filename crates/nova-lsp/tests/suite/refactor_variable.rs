@@ -1274,6 +1274,39 @@ class C {
 }
 
 #[test]
+fn inline_variable_actions_disabled_inside_assert_statement() {
+    let source = r#"
+class C {
+    int foo() { return 1; }
+    void m() {
+        int x = foo();
+        assert x > 0;
+    }
+}
+"#;
+    let uri = Uri::from_str("file:///Test.java").unwrap();
+
+    let offset = source.find("assert x").unwrap() + "assert ".len();
+    let position = offset_to_position(source, offset);
+
+    let actions = inline_variable_code_actions(&uri, source, position);
+    assert_eq!(actions.len(), 2);
+
+    for action in actions {
+        let lsp_types::CodeActionOrCommand::CodeAction(action) = action else {
+            panic!("expected code action");
+        };
+        assert!(action.edit.is_none(), "expected disabled action without edit");
+        let disabled = action.disabled.expect("expected disabled action");
+        assert!(
+            disabled.reason.contains("assert"),
+            "expected reason to mention assert, got: {}",
+            disabled.reason
+        );
+    }
+}
+
+#[test]
 fn extract_variable_not_offered_inside_assert_statement() {
     let fixture = r#"
 class C {

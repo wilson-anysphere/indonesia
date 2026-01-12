@@ -33,6 +33,8 @@ pub enum RefactorError {
     InvalidIdentifier { name: String, reason: &'static str },
     #[error("expected a variable with initializer for inline")]
     InlineNotSupported,
+    #[error("inline variable is not supported inside assert statements")]
+    InlineNotSupportedInAssert,
     #[error("no variable usage at the given cursor/usage range")]
     InlineNoUsageAtCursor,
     #[error("variable initializer has side effects and cannot be inlined safely")]
@@ -1841,6 +1843,60 @@ pub fn inline_variable(
     ensure_inline_variable_dependencies_not_shadowed(
         db, &parsed, &def.file, text, init_range, &init_expr, &targets,
     )?;
+
+    // Reject inlining inside `assert` statements: Java assertions may be disabled at runtime.
+    //
+    // Inlining a local into an `assert` expression can change semantics by making the initializer:
+    // - conditional on assertions being enabled (when the declaration is removed), and/or
+    // - evaluated multiple times (when the declaration remains).
+    {
+        fn usage_is_within_assert_statement(
+            db: &dyn RefactorDatabase,
+            cache: &mut HashMap<FileId, nova_syntax::SyntaxNode>,
+            file: &FileId,
+            token_range: TextRange,
+        ) -> Result<bool, RefactorError> {
+            let root = if let Some(root) = cache.get(file) {
+                root.clone()
+            } else {
+                let text = db
+                    .file_text(file)
+                    .ok_or_else(|| RefactorError::UnknownFile(file.clone()))?;
+                let parsed = parse_java(text);
+                let root = parsed.syntax();
+                cache.insert(file.clone(), root.clone());
+                root
+            };
+
+            let Some(tok) = root
+                .descendants_with_tokens()
+                .filter_map(|el| el.into_token())
+                .filter(|tok| !tok.kind().is_trivia())
+                .find(|tok| {
+                    let range = syntax_token_range(tok);
+                    range.start <= token_range.start && token_range.start < range.end
+                })
+            else {
+                return Err(RefactorError::InlineNotSupported);
+            };
+
+            let Some(parent) = tok.parent() else {
+                return Err(RefactorError::InlineNotSupported);
+            };
+
+            Ok(parent
+                .ancestors()
+                .any(|node| ast::AssertStatement::cast(node).is_some()))
+        }
+
+        let mut cache: HashMap<FileId, nova_syntax::SyntaxNode> = HashMap::new();
+        cache.insert(def.file.clone(), root.clone());
+        for usage in &targets {
+            if usage_is_within_assert_statement(db, &mut cache, &usage.file, usage.range)? {
+                return Err(RefactorError::InlineNotSupportedInAssert);
+            }
+        }
+    }
 
     // Reject inlining across lambda execution-context boundaries. Inlining a local into a lambda
     // body (or out of it) can change evaluation timing and captured-variable semantics.
