@@ -1,17 +1,20 @@
 use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use lsp_types::Position;
 use once_cell::sync::Lazy;
 
-use nova_core::{CompletionItem, CompletionItemKind};
+use nova_core::{CompletionItem, CompletionItemKind, LineIndex, TextSize};
+use nova_db::InMemoryFileStore;
 use nova_hir::ast_id::AstId;
-use nova_ide::filter_and_rank_completions;
+use nova_ide::{code_intelligence, filter_and_rank_completions};
 use nova_index::{ReferenceIndex, ReferenceLocation, SearchSymbol, SymbolLocation, SymbolSearchIndex};
 
 static SMALL_JAVA: &str = include_str!("fixtures/small.java");
 static MEDIUM_JAVA: &str = include_str!("fixtures/medium.java");
 static DIAGNOSTICS_MEDIUM_JAVA: &str = include_str!("fixtures/diagnostics_medium.java");
 static COMPLETION_JAVA: &str = include_str!("fixtures/completion.java");
+static MEMBER_COMPLETION_JAVA: &str = include_str!("fixtures/member_completion.java");
 
 static LARGE_JAVA: Lazy<String> = Lazy::new(|| {
     let mut out = String::from("package bench;\n\npublic class Large {\n");
@@ -50,6 +53,16 @@ static COMPLETION_ITEMS: Lazy<Vec<CompletionItem>> = Lazy::new(|| {
         .into_iter()
         .map(|label| CompletionItem::new(label, CompletionItemKind::Other))
         .collect()
+});
+
+static MEMBER_COMPLETION_FIXTURE: Lazy<(String, usize)> = Lazy::new(|| {
+    let marker = "/*caret*/";
+    let pos = MEMBER_COMPLETION_JAVA
+        .find(marker)
+        .expect("member completion fixture must contain caret marker");
+    let mut src = MEMBER_COMPLETION_JAVA.to_string();
+    src.replace_range(pos..pos + marker.len(), "");
+    (src, pos)
 });
 
 static SYMBOL_SEARCH_INDEX: Lazy<SymbolSearchIndex> = Lazy::new(|| {
@@ -115,6 +128,88 @@ fn bench_diagnostics(c: &mut Criterion) {
 
     group.bench_function("medium", |b| {
         b.iter(|| diagnostics_for(black_box(DIAGNOSTICS_MEDIUM_JAVA)))
+    });
+
+    group.finish();
+}
+
+fn bench_ide_completion(c: &mut Criterion) {
+    let mut group = c.benchmark_group("ide_completion");
+    group.measurement_time(Duration::from_secs(2));
+    group.warm_up_time(Duration::from_secs(1));
+    group.sample_size(20);
+
+    group.bench_function("member_access", |b| {
+        let (src, caret_offset) = &*MEMBER_COMPLETION_FIXTURE;
+        let position = lsp_position(src, *caret_offset);
+
+        let mut db = InMemoryFileStore::new();
+        let file_id = db.file_id_for_path("/virtual/MemberCompletion.java");
+        db.set_file_text(file_id, src.clone());
+        let db: &dyn nova_db::Database = &db;
+
+        // Warm up one-time initialization (e.g. lazy statics).
+        black_box(code_intelligence::completions(db, file_id, position).len());
+
+        b.iter(|| {
+            let items = code_intelligence::completions(black_box(db), file_id, black_box(position));
+            black_box(items.len())
+        })
+    });
+
+    group.bench_function("type_prefix", |b| {
+        let (src, caret_offset) = &*COMPLETION_FIXTURE;
+        let position = lsp_position(src, *caret_offset);
+
+        let mut db = InMemoryFileStore::new();
+        let file_id = db.file_id_for_path("/virtual/TypePrefixCompletion.java");
+        db.set_file_text(file_id, src.clone());
+        let db: &dyn nova_db::Database = &db;
+
+        // Warm up one-time initialization (e.g. lazy statics).
+        black_box(code_intelligence::completions(db, file_id, position).len());
+
+        b.iter(|| {
+            let items = code_intelligence::completions(black_box(db), file_id, black_box(position));
+            black_box(items.len())
+        })
+    });
+
+    group.finish();
+}
+
+fn bench_ide_semantic_tokens(c: &mut Criterion) {
+    let mut group = c.benchmark_group("ide_semantic_tokens");
+    group.measurement_time(Duration::from_secs(2));
+    group.warm_up_time(Duration::from_secs(1));
+    group.sample_size(20);
+
+    group.bench_function("medium", |b| {
+        let mut db = InMemoryFileStore::new();
+        let file_id = db.file_id_for_path("/virtual/SemanticTokensMedium.java");
+        db.set_file_text(file_id, MEDIUM_JAVA.to_string());
+        let db: &dyn nova_db::Database = &db;
+
+        black_box(code_intelligence::semantic_tokens(db, file_id).len());
+
+        b.iter(|| {
+            let tokens = code_intelligence::semantic_tokens(black_box(db), file_id);
+            black_box(tokens.len())
+        })
+    });
+
+    group.bench_function("large", |b| {
+        let mut db = InMemoryFileStore::new();
+        let file_id = db.file_id_for_path("/virtual/SemanticTokensLarge.java");
+        db.set_file_text(file_id, LARGE_JAVA.to_string());
+        let db: &dyn nova_db::Database = &db;
+
+        black_box(code_intelligence::semantic_tokens(db, file_id).len());
+
+        b.iter(|| {
+            let tokens = code_intelligence::semantic_tokens(black_box(db), file_id);
+            black_box(tokens.len())
+        })
     });
 
     group.finish();
@@ -269,6 +364,15 @@ fn is_ident_continue(b: u8) -> bool {
     is_ident_start(b) || (b as char).is_ascii_digit()
 }
 
+fn lsp_position(text: &str, byte_offset: usize) -> Position {
+    let index = LineIndex::new(text);
+    let pos = index.position(text, TextSize::from(byte_offset as u32));
+    Position {
+        line: pos.line,
+        character: pos.character,
+    }
+}
+
 const JAVA_KEYWORDS: &[&str] = &[
     "abstract",
     "assert",
@@ -328,6 +432,8 @@ criterion_group!(
     bench_parsing,
     bench_completion,
     bench_diagnostics,
+    bench_ide_completion,
+    bench_ide_semantic_tokens,
     bench_workspace_symbol_search,
     bench_find_references,
     bench_index_build
