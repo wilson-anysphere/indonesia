@@ -109,8 +109,9 @@ Diagnostics include:
 For editor/CI tooling, `nova-config` also exposes a JSON Schema (`nova_config::json_schema()`).
 The schema encodes a subset of Nova’s semantic rules (for example: cloud AI providers require
 `ai.api_key` and explicitly setting `ai.privacy.local_only = false`, Azure requires
-`ai.provider.azure_deployment`, `in_process_llama` requires `ai.provider.in_process_llama`, and
-when `ai.privacy.local_only = true`, HTTP-backed providers must point at a loopback URL),
+`ai.provider.azure_deployment`, `in_process_llama` requires `ai.provider.in_process_llama`,
+enabling the AI audit log requires `ai.enabled = true`, and when `ai.privacy.local_only = true`,
+HTTP-backed providers must point at a loopback URL),
 but runtime validation should still be treated as the source of truth.
 
 ### Environment variables
