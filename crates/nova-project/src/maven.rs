@@ -2045,6 +2045,11 @@ fn resolve_maven_repo_path(value: &str, base: &Path) -> Option<PathBuf> {
         return Some(path);
     }
 
+    // Best-effort: expand Maven settings `${env.VAR}` placeholders.
+    if let Some(path) = expand_maven_env_placeholder(value) {
+        return Some(path);
+    }
+
     // Best-effort: support Maven's common `${user.home}` placeholder for local repository paths.
     //
     // This appears in both `~/.m2/settings.xml` and `.mvn/maven.config`. If we treat it as a normal
@@ -2082,6 +2087,33 @@ fn expand_maven_tilde_home(value: &str) -> Option<PathBuf> {
     }
 
     Some(home.join(rest))
+}
+
+fn expand_maven_env_placeholder(value: &str) -> Option<PathBuf> {
+    const PREFIX: &str = "${env.";
+    let rest = value.strip_prefix(PREFIX)?;
+    let (raw_key, rest) = rest.split_once('}')?;
+    let key = raw_key.trim();
+    if key.is_empty() {
+        return None;
+    }
+
+    let base = PathBuf::from(std::env::var_os(key)?);
+    if rest.is_empty() {
+        return Some(base);
+    }
+
+    // Accept both separators so configs remain portable.
+    let rest = rest
+        .strip_prefix('/')
+        .or_else(|| rest.strip_prefix('\\'))
+        .unwrap_or(rest);
+    if rest.contains("${") {
+        // If there are any remaining placeholders, bail out rather than guessing.
+        return None;
+    }
+
+    Some(base.join(rest))
 }
 
 fn expand_maven_user_home_placeholder(value: &str) -> Option<PathBuf> {
@@ -2642,6 +2674,28 @@ mod tests {
         // Set both to behave deterministically on Windows/Linux.
         let _home = EnvVarGuard::set("HOME", &home);
         let _userprofile = EnvVarGuard::set("USERPROFILE", &home);
+
+        let repo = maven_repo_from_maven_config(dir.path()).expect("repo");
+        assert_eq!(repo, home.join(".m2/repository"));
+    }
+
+    #[test]
+    fn env_repo_local_expands_env_var() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_maven_config(
+            dir.path(),
+            "-Dmaven.repo.local=${env.NOVA_TEST_MAVEN_REPO_HOME}/.m2/repository",
+        );
+
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).expect("create home");
+
+        let _guard = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock poisoned");
+
+        let _env = EnvVarGuard::set("NOVA_TEST_MAVEN_REPO_HOME", &home);
 
         let repo = maven_repo_from_maven_config(dir.path()).expect("repo");
         assert_eq!(repo, home.join(".m2/repository"));

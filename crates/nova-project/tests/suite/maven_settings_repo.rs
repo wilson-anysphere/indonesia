@@ -198,6 +198,41 @@ fn settings_xml_tilde_local_repository_expands_user_home() {
 }
 
 #[test]
+fn settings_xml_env_local_repository_expands_env_home() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("home");
+    let workspace_root = temp.path().join("workspace");
+
+    std::fs::create_dir_all(&home).expect("create home");
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+
+    // Maven settings.xml supports `${env.*}` placeholders.
+    write_settings_xml(&home, Path::new("${env.HOME}/.m2/custom-repo"));
+
+    let expanded_repo = home.join(".m2").join("custom-repo");
+    write_pom_xml(&workspace_root);
+    touch_expected_jar(&expanded_repo);
+
+    with_home_dir(&home, || {
+        let options = LoadOptions::default();
+        let cfg = load_project_with_options(&workspace_root, &options).expect("load project");
+
+        let jar_entries = cfg
+            .classpath
+            .iter()
+            .filter(|e| e.kind == ClasspathEntryKind::Jar)
+            .map(|e| e.path.clone())
+            .collect::<Vec<_>>();
+
+        let expected = expected_guava_jar(&expanded_repo);
+        assert!(
+            jar_entries.contains(&expected),
+            "expected expanded jar path {expected:?} in classpath entries: {jar_entries:?}"
+        );
+    });
+}
+
+#[test]
 fn maven_config_repo_local_overrides_settings_xml() {
     let temp = tempfile::tempdir().expect("tempdir");
     let home = temp.path().join("home");
