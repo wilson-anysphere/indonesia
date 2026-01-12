@@ -2,7 +2,8 @@
 
 Nova treats performance as a feature. This directory contains the configuration used by CI to
 detect benchmark regressions across editor-critical paths (core critical paths, syntax parsing,
-completion, formatting, refactors, and classpath indexing).
+completion, formatting, refactors, classpath indexing, fuzzy scoring/trigram candidate generation,
+and workspace symbol search).
 
 ## Running benchmarks locally
 
@@ -14,6 +15,8 @@ cargo bench --locked -p nova-format --bench format
 cargo bench --locked -p nova-refactor --bench refactor
 cargo bench --locked -p nova-classpath --bench index
 cargo bench --locked -p nova-ide --bench completion
+cargo bench --locked -p nova-fuzzy --bench fuzzy
+cargo bench --locked -p nova-index --bench symbol_search
 ```
 
 Criterion writes results to `$CARGO_TARGET_DIR/criterion` (defaults to `target/criterion`).
@@ -47,6 +50,8 @@ requests and on pushes to `main`:
 - `nova-refactor/refactor`: `organize_imports` + semantic `rename`.
 - `nova-classpath/index`: JAR/JMOD indexing over committed testdata fixtures.
 - `nova-ide/completion`: representative Java completion latency microbenchmarks.
+- `nova-fuzzy/fuzzy`: fuzzy scoring hot-path + trigram candidate generation.
+- `nova-index/symbol_search`: in-memory workspace symbol search with different candidate strategies.
 
 ## Capturing a run
 

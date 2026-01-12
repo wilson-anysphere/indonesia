@@ -119,6 +119,16 @@ jobs:
           else
             echo "Skipping nova-ide completion benchmark (not present in baseline revision)."
           fi
+          if [ -f crates/nova-fuzzy/benches/fuzzy.rs ]; then
+            cargo bench --locked -p nova-fuzzy --bench fuzzy
+          else
+            echo "Skipping nova-fuzzy benchmark (not present in baseline revision)."
+          fi
+          if [ -f crates/nova-index/benches/symbol_search.rs ]; then
+            cargo bench --locked -p nova-index --bench symbol_search
+          else
+            echo "Skipping nova-index symbol_search benchmark (not present in baseline revision)."
+          fi
           cargo run --locked -p nova-cli --release -- perf capture \
             --criterion-dir "${CARGO_TARGET_DIR}/criterion" \
             --out "${GITHUB_WORKSPACE}/perf-base.json"
@@ -137,6 +147,8 @@ jobs:
           cargo bench --locked -p nova-refactor --bench refactor
           cargo bench --locked -p nova-classpath --bench index
           cargo bench --locked -p nova-ide --bench completion
+          cargo bench --locked -p nova-fuzzy --bench fuzzy
+          cargo bench --locked -p nova-index --bench symbol_search
           cargo run --locked -p nova-cli --release -- perf capture \
             --criterion-dir "${CARGO_TARGET_DIR}/criterion" \
             --out perf-current.json
