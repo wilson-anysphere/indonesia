@@ -706,16 +706,65 @@ fn ensure_dir_safe(path: &Path) -> Result<(), CacheError> {
 fn open_cache_file_read(path: &Path) -> io::Result<std::fs::File> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt as _;
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt as _;
+        use std::os::unix::io::{AsRawFd as _, FromRawFd as _};
 
-        let mut opts = std::fs::OpenOptions::new();
-        opts.read(true);
-        // Refuse to follow symlinks at open time (mitigates TOCTOU races).
-        //
-        // Also open with O_NONBLOCK so a hostile cache entry swapped to a FIFO
-        // cannot hang the reader in `open(2)`.
-        opts.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-        opts.open(path)
+        let parent = path
+            .parent()
+            .ok_or_else(|| io::Error::other("cache path has no parent"))?;
+        let root = parent
+            .parent()
+            .ok_or_else(|| io::Error::other("cache path has no store root"))?;
+
+        let root_c = CString::new(root.as_os_str().as_bytes())
+            .map_err(|_| io::Error::other("cache root path contains NUL"))?;
+        let root_fd = unsafe {
+            libc::open(
+                root_c.as_ptr(),
+                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+            )
+        };
+        if root_fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let root_dir = unsafe { std::fs::File::from_raw_fd(root_fd) };
+
+        let parent_name = parent
+            .file_name()
+            .ok_or_else(|| io::Error::other("cache directory has no basename"))?;
+        let parent_c = CString::new(parent_name.as_bytes())
+            .map_err(|_| io::Error::other("cache directory basename contains NUL"))?;
+        let parent_fd = unsafe {
+            libc::openat(
+                root_dir.as_raw_fd(),
+                parent_c.as_ptr(),
+                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+            )
+        };
+        if parent_fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let parent_dir = unsafe { std::fs::File::from_raw_fd(parent_fd) };
+
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| io::Error::other("cache file has no filename"))?;
+        let file_c =
+            CString::new(file_name.as_bytes()).map_err(|_| io::Error::other("filename contains NUL"))?;
+
+        let fd = unsafe {
+            libc::openat(
+                parent_dir.as_raw_fd(),
+                file_c.as_ptr(),
+                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        Ok(unsafe { std::fs::File::from_raw_fd(fd) })
     }
 
     #[cfg(not(unix))]
