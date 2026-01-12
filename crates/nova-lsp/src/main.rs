@@ -3824,11 +3824,15 @@ fn handle_notification(
                 .map(|path| path.canonicalize().unwrap_or(path));
             let mut config_changed = false;
             let legacy_config_suffix = Path::new(".nova").join("config.toml");
+            let mut changed_local_paths: Vec<PathBuf> = Vec::new();
 
             for change in params.changes {
                 let uri = change.uri;
                 let vfs_path = VfsPath::from(&uri);
                 let local_path = vfs_path.as_local_path().map(|p| p.to_path_buf());
+                if let Some(path) = &local_path {
+                    changed_local_paths.push(path.clone());
+                }
 
                 if !config_changed {
                     let is_standard_config_name = local_path
@@ -3922,6 +3926,10 @@ fn handle_notification(
                         }
                     }
                 }
+            }
+
+            if !changed_local_paths.is_empty() {
+                nova_lsp::extensions::build::invalidate_bazel_workspaces(&changed_local_paths);
             }
 
             if config_changed {

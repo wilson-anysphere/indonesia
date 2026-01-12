@@ -35,6 +35,90 @@ fn bazel_build_orchestrators() -> &'static Mutex<HashMap<PathBuf, BazelBuildOrch
     ORCHESTRATORS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+type CachedBazelWorkspace = Arc<
+    Mutex<nova_build_bazel::BazelWorkspace<nova_build_bazel::DefaultCommandRunner>>,
+>;
+
+fn cached_bazel_workspaces() -> &'static Mutex<HashMap<PathBuf, CachedBazelWorkspace>> {
+    static WORKSPACES: OnceLock<Mutex<HashMap<PathBuf, CachedBazelWorkspace>>> = OnceLock::new();
+    WORKSPACES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cached_bazel_workspace_for_root(workspace_root: &Path) -> Result<CachedBazelWorkspace> {
+    let canonical = workspace_root
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_root.to_path_buf());
+
+    {
+        let map = cached_bazel_workspaces()
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        if let Some(existing) = map.get(&canonical) {
+            return Ok(Arc::clone(existing));
+        }
+    }
+
+    let cache_path = CacheDir::new(&canonical, CacheConfig::from_env())
+        .map(|dir| dir.queries_dir().join("bazel.json"))
+        .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+    let runner = nova_build_bazel::DefaultCommandRunner::default();
+    let workspace = nova_build_bazel::BazelWorkspace::new(canonical.clone(), runner)
+        .and_then(|ws| ws.with_cache_path(cache_path))
+        .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+    let workspace = Arc::new(Mutex::new(workspace));
+
+    let mut map = cached_bazel_workspaces()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    let entry = map.entry(canonical).or_insert_with(|| Arc::clone(&workspace));
+    Ok(Arc::clone(entry))
+}
+
+fn reset_cached_bazel_workspace(workspace_root: &Path) {
+    let canonical = workspace_root
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_root.to_path_buf());
+    let mut map = cached_bazel_workspaces()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    map.remove(&canonical);
+}
+
+pub fn invalidate_bazel_workspaces(changed: &[PathBuf]) {
+    // Most `workspace/didChangeWatchedFiles` notifications are for Java sources, which do not
+    // influence Bazel query/aquery evaluation or owning-target resolution. Avoid invalidating Bazel
+    // caches for `.java` edits to reduce churn and unnecessary disk writes.
+    let mut changed_filtered = Vec::with_capacity(changed.len());
+    for path in changed {
+        let is_java = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("java"));
+        if is_java {
+            continue;
+        }
+        changed_filtered.push(path.clone());
+    }
+    if changed_filtered.is_empty() {
+        return;
+    }
+
+    let workspaces: Vec<CachedBazelWorkspace> = {
+        let map = cached_bazel_workspaces()
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        map.values().cloned().collect()
+    };
+
+    for workspace in workspaces {
+        let mut guard = workspace
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        // Best-effort: cache invalidation should never crash the server.
+        let _ = guard.invalidate_changed_files(&changed_filtered);
+    }
+}
+
 fn build_orchestrator_if_present(project_root: &Path) -> Option<BuildOrchestrator> {
     let canonical = project_root
         .canonicalize()
@@ -481,6 +565,7 @@ pub fn handle_reload_project(params: serde_json::Value) -> Result<serde_json::Va
     reset_build_orchestrator(&project_root);
     if let Some(workspace_root) = nova_project::bazel_workspace_root(&project_root) {
         reset_bazel_build_orchestrator(&workspace_root);
+        reset_cached_bazel_workspace(&workspace_root);
 
         if let Ok(cache_dir) = CacheDir::new(&workspace_root, CacheConfig::from_env()) {
             let cache_path = cache_dir.queries_dir().join("bazel.json");
@@ -832,14 +917,10 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
         };
         let mut status_guard = BuildStatusGuard::new(&workspace_root);
         let value_result: Result<serde_json::Value> = (|| {
-            let cache_path = CacheDir::new(&workspace_root, CacheConfig::from_env())
-                .map(|dir| dir.queries_dir().join("bazel.json"))
-                .map_err(|err| NovaLspError::Internal(err.to_string()))?;
-            let runner = nova_build_bazel::DefaultCommandRunner::default();
-            let mut workspace =
-                nova_build_bazel::BazelWorkspace::new(workspace_root.clone(), runner)
-                    .and_then(|ws| ws.with_cache_path(cache_path))
-                    .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+            let workspace = cached_bazel_workspace_for_root(&workspace_root)?;
+            let mut workspace = workspace
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
 
             let info = workspace
                 .target_compile_info(&target)
@@ -1108,13 +1189,10 @@ pub fn handle_file_classpath(params: serde_json::Value) -> Result<serde_json::Va
 
     let mut status_guard = BuildStatusGuard::new(&workspace_root);
     let value_result: Result<serde_json::Value> = (|| {
-        let cache_path = CacheDir::new(&workspace_root, CacheConfig::from_env())
-            .map(|dir| dir.queries_dir().join("bazel.json"))
-            .map_err(|err| NovaLspError::Internal(err.to_string()))?;
-        let runner = nova_build_bazel::DefaultCommandRunner::default();
-        let mut workspace = nova_build_bazel::BazelWorkspace::new(workspace_root.clone(), runner)
-            .and_then(|ws| ws.with_cache_path(cache_path))
-            .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+        let workspace = cached_bazel_workspace_for_root(&workspace_root)?;
+        let mut workspace = workspace
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
 
         let info = match req
             .run_target
