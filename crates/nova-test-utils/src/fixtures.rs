@@ -8,6 +8,53 @@ use lsp_types::{Position, Uri};
 use nova_ide::Database;
 use nova_index::TextRange;
 
+fn file_uri_for_fixture_path(path: &str) -> Uri {
+    let path = path.trim();
+
+    // Fixtures typically use Rust Analyzer-style absolute paths like `/Main.java`.
+    // Be lenient and treat relative paths as workspace-absolute as well.
+    let mut normalized = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    };
+
+    // Fixtures might use Windows-style separators even when tests run on Unix.
+    normalized = normalized.replace('\\', "/");
+
+    // Percent-encode the path so it can always be parsed as a `file:` URI.
+    // (E.g. spaces and `#` must be encoded to avoid being treated as URL syntax.)
+    let encoded = encode_uri_path(&normalized);
+    Uri::from_str(&format!("file://{encoded}")).expect("fixture path should form a valid file URI")
+}
+
+fn encode_uri_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for b in path.as_bytes() {
+        let b = *b;
+        if is_uri_unreserved(b) || b == b'/' || b == b':' {
+            out.push(b as char);
+        } else {
+            push_pct_encoded(&mut out, b);
+        }
+    }
+    out
+}
+
+fn is_uri_unreserved(b: u8) -> bool {
+    matches!(
+        b,
+        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~'
+    )
+}
+
+fn push_pct_encoded(out: &mut String, b: u8) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    out.push('%');
+    out.push(HEX[(b >> 4) as usize] as char);
+    out.push(HEX[(b & 0x0F) as usize] as char);
+}
+
 /// Extracts a byte range selection from a fixture containing `/*start*/` and
 /// `/*end*/` markers.
 ///
@@ -150,7 +197,7 @@ impl Fixture {
         for line in fixture.lines() {
             if let Some(rest) = line.strip_prefix("//-") {
                 if let Some(path) = current_path.take() {
-                    let uri = Uri::from_str(&format!("file://{}", path)).unwrap();
+                    let uri = file_uri_for_fixture_path(&path);
                     files.push((uri, current_text));
                     current_text = String::new();
                 }
@@ -166,7 +213,7 @@ impl Fixture {
         }
 
         if let Some(path) = current_path.take() {
-            let uri = Uri::from_str(&format!("file://{}", path)).unwrap();
+            let uri = file_uri_for_fixture_path(&path);
             files.push((uri, current_text));
         }
 
@@ -425,5 +472,14 @@ mod tests {
     #[should_panic(expected = "duplicate fixture marker $0")]
     fn duplicate_marker_ids_panic() {
         let _ = Fixture::parse("//- /a.txt\n$0\n//- /b.txt\n$0");
+    }
+
+    #[test]
+    fn fixture_paths_are_percent_encoded_in_file_uris() {
+        let fixture = Fixture::parse("//- /a b#c.java\nclass $0C {}");
+        assert_eq!(
+            fixture.marker_uri(0),
+            Uri::from_str("file:///a%20b%23c.java").unwrap()
+        );
     }
 }
