@@ -534,6 +534,27 @@ export function registerNovaBuildIntegration(
     return await pickWorkspaceFolder(placeHolder);
   };
 
+  async function getBuildBuildTool(workspace: vscode.WorkspaceFolder): Promise<BuildTool> {
+    const config = vscode.workspace.getConfiguration('nova', workspace.uri);
+    const setting = config.get<string>('build.buildTool', 'auto');
+    if (setting === 'auto' || setting === 'maven' || setting === 'gradle') {
+      return setting;
+    }
+    if (setting !== 'prompt') {
+      return 'auto';
+    }
+
+    const picked = await vscode.window.showQuickPick(
+      [
+        { label: 'Auto', value: 'auto' as const },
+        { label: 'Maven', value: 'maven' as const },
+        { label: 'Gradle', value: 'gradle' as const },
+      ],
+      { placeHolder: 'Select build tool' },
+    );
+    return picked?.value ?? 'auto';
+  }
+
   const isBazelWorkspace = async (folder: vscode.WorkspaceFolder): Promise<boolean> => {
     const candidates = ['WORKSPACE', 'WORKSPACE.bazel', 'MODULE.bazel'];
     for (const name of candidates) {
@@ -619,6 +640,7 @@ export function registerNovaBuildIntegration(
       }
 
       const projectRoot = selector?.projectRoot ?? folder.uri.fsPath;
+      const buildTool = await getBuildBuildTool(folder);
 
       await vscode.window.withProgress(
         {
@@ -649,7 +671,7 @@ export function registerNovaBuildIntegration(
             try {
               const response = await request('nova/buildProject', {
                 projectRoot,
-                buildTool: 'auto' satisfies BuildTool,
+                buildTool,
                 ...(module ? { module } : {}),
                 ...(projectPath ? { projectPath } : {}),
                 ...(target ? { target } : {}),
@@ -672,7 +694,7 @@ export function registerNovaBuildIntegration(
 
                 const response = await request('nova/buildProject', {
                   projectRoot,
-                  buildTool: 'auto' satisfies BuildTool,
+                  buildTool,
                   ...(module ? { module } : {}),
                   ...(projectPath ? { projectPath } : {}),
                   target,
@@ -730,11 +752,12 @@ export function registerNovaBuildIntegration(
       const module = selector?.module;
       const projectPath = selector?.projectPath;
       const target = selector?.target;
+      const buildTool = await getBuildBuildTool(folder);
 
       try {
         const response = await request('nova/reloadProject', {
           projectRoot,
-          buildTool: 'auto' satisfies BuildTool,
+          buildTool,
           ...(module ? { module } : {}),
           ...(projectPath ? { projectPath } : {}),
           ...(target ? { target } : {}),

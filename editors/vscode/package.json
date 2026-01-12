@@ -454,6 +454,18 @@
           ],
           "default": "auto",
           "description": "Build tool to use for test runs/debugging. Use 'prompt' to choose each time."
+        },
+        "nova.build.buildTool": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "maven",
+            "gradle",
+            "prompt"
+          ],
+          "default": "auto",
+          "scope": "resource",
+          "description": "Build tool to use for project builds/reloads. Use 'prompt' to choose each time."
         }
       }
     },
