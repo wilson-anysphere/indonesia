@@ -296,6 +296,8 @@ fn load_project_from_workspace_root(
     workspace_root: &Path,
     options: &LoadOptions,
 ) -> Result<ProjectConfig, ProjectError> {
+    // TODO: Switch `ProjectConfig` loading to use `BuildSystemBackend` once the backend
+    // abstraction can produce it directly (or we provide a conversion layer).
     let build_system = detect_build_system(workspace_root)?;
 
     match build_system {
@@ -310,13 +312,36 @@ fn load_workspace_model_from_workspace_root(
     workspace_root: &Path,
     options: &LoadOptions,
 ) -> Result<WorkspaceProjectModel, ProjectError> {
-    let build_system = detect_build_system(workspace_root)?;
+    let backends = crate::default_build_systems(options.clone());
+    let Some(backend) = backends.into_iter().find(|b| b.detect(workspace_root)) else {
+        return Err(ProjectError::UnknownProjectType {
+            root: workspace_root.to_path_buf(),
+        });
+    };
 
-    match build_system {
-        BuildSystem::Maven => maven::load_maven_workspace_model(workspace_root, options),
-        BuildSystem::Gradle => gradle::load_gradle_workspace_model(workspace_root, options),
-        BuildSystem::Bazel => bazel::load_bazel_workspace_model(workspace_root, options),
-        BuildSystem::Simple => simple::load_simple_workspace_model(workspace_root, options),
+    backend
+        .parse_project(workspace_root)
+        .map_err(|err| build_system_error_to_project_error(workspace_root, err))
+}
+
+fn build_system_error_to_project_error(
+    workspace_root: &Path,
+    err: nova_build_model::BuildSystemError,
+) -> ProjectError {
+    use nova_build_model::BuildSystemError;
+
+    match err {
+        BuildSystemError::Other(err) => match err.downcast::<ProjectError>() {
+            Ok(err) => *err,
+            Err(err) => ProjectError::Bazel {
+                message: err.to_string(),
+            },
+        },
+        BuildSystemError::Io(source) => ProjectError::Io {
+            path: workspace_root.to_path_buf(),
+            source,
+        },
+        BuildSystemError::Message(message) => ProjectError::Bazel { message },
     }
 }
 
@@ -1132,6 +1157,34 @@ mod tests {
     }
 
     #[test]
+    fn workspace_model_loader_prefers_bazel_over_maven_over_gradle_over_simple() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+
+        let options = LoadOptions::default();
+
+        // Simple project: `src/` only.
+        let model = load_workspace_model_with_options(root, &options).expect("load simple model");
+        assert_eq!(model.build_system, BuildSystem::Simple);
+
+        // Gradle should win over Simple when a Gradle marker is present.
+        std::fs::write(root.join("build.gradle"), "").expect("write build.gradle");
+        let model = load_workspace_model_with_options(root, &options).expect("load gradle model");
+        assert_eq!(model.build_system, BuildSystem::Gradle);
+
+        // Maven should win over Gradle when `pom.xml` is present.
+        std::fs::write(root.join("pom.xml"), minimal_pom_xml()).expect("write pom.xml");
+        let model = load_workspace_model_with_options(root, &options).expect("load maven model");
+        assert_eq!(model.build_system, BuildSystem::Maven);
+
+        // Bazel should win over Maven when a workspace marker is present.
+        std::fs::write(root.join("WORKSPACE"), "").expect("write WORKSPACE");
+        let model = load_workspace_model_with_options(root, &options).expect("load bazel model");
+        assert_eq!(model.build_system, BuildSystem::Bazel);
+    }
+
+    #[test]
     fn reload_project_reclassifies_dependencies_when_module_info_changes() {
         let tmp = tempdir().expect("tempdir");
         let root = tmp.path();
@@ -1336,5 +1389,15 @@ mod tests {
         assert!(info.exports_package_to("com.example.b.api", &ModuleName::new("mod.a")));
 
         out
+    }
+
+    fn minimal_pom_xml() -> &'static str {
+        r#"<project>
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>app</artifactId>
+  <version>1.0.0</version>
+</project>
+"#
     }
 }
