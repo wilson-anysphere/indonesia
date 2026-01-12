@@ -73,6 +73,13 @@ fn watch_files_contains_canonical_markers() {
     assert!(gradle
         .watch_files()
         .contains(&PathPattern::Glob("**/gradle/*.versions.toml")));
+    assert!(
+        !gradle
+            .watch_files()
+            .contains(&PathPattern::Glob("**/*.versions.toml")),
+        "Gradle backends should only watch `libs.versions.toml` and direct children of `gradle/` \
+         to match build-file fingerprinting semantics"
+    );
     assert!(gradle
         .watch_files()
         .contains(&PathPattern::Glob("**/*.gradle")));
