@@ -2309,6 +2309,236 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
 }
 
 #[test]
+fn stdio_server_ai_generate_tests_custom_request_sends_apply_edit() {
+    let _lock = crate::support::stdio_server_lock();
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+
+    let src_dir = root.join("src/main/java/com/example");
+    std::fs::create_dir_all(&src_dir).expect("create src dir");
+    let file_path = src_dir.join("Example.java");
+    let file_uri = uri_for_path(&file_path);
+
+    // `run_ai_generate_tests_apply` prefers generating a new test file under `src/test/java/...`
+    // when the source file is in `src/main/java/...`.
+    let test_dir = root.join("src/test/java/com/example");
+    std::fs::create_dir_all(&test_dir).expect("create test dir");
+    let test_file_path = test_dir.join("ExampleTest.java");
+
+    let text =
+        "package com.example;\n\npublic class Example {\n    public int answer() { return 1; }\n}\n";
+    std::fs::write(&file_path, text).expect("write file");
+
+    // Selection range over the method name is enough for the AI prompt (the patch can still create
+    // a separate test file).
+    let method_offset = text.find("answer").expect("method present");
+    let pos = TextPos::new(text);
+    let start = pos.lsp_position(method_offset).expect("start pos");
+    let end = pos
+        .lsp_position(method_offset + "answer".len())
+        .expect("end pos");
+    let range = Range::new(start, end);
+
+    let patch = json!({
+      "edits": [
+        {
+          "file": "src/test/java/com/example/ExampleTest.java",
+          "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } },
+          "text": "package com.example;\n\npublic class ExampleTest {}\n"
+        }
+      ]
+    })
+    .to_string();
+    let ai_server = crate::support::TestAiServer::start(json!({ "completion": patch }));
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env("NOVA_AI_PROVIDER", "http")
+        .env(
+            "NOVA_AI_ENDPOINT",
+            format!("{}/complete", ai_server.base_url()),
+        )
+        .env("NOVA_AI_MODEL", "default")
+        .env("NOVA_AI_ANONYMIZE_IDENTIFIERS", "0")
+        .env("NOVA_AI_ALLOW_CLOUD_CODE_EDITS", "1")
+        .env("NOVA_AI_ALLOW_CODE_EDITS_WITHOUT_ANONYMIZATION", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": uri_for_path(root), "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    // Open the source document so the server can load document text from the overlay.
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": text
+                }
+            }
+        }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/generateTests",
+            "params": {
+                "target": "public int answer()",
+                "context": null,
+                "uri": file_uri,
+                "range": range
+            }
+        }),
+    );
+
+    let (messages, resp) = drain_notifications_until_id(&mut stdout, 2);
+    assert!(
+        resp.get("error").is_none(),
+        "expected nova/ai/generateTests success, got: {resp:#?}"
+    );
+    assert_eq!(resp.get("result"), Some(&serde_json::Value::Null));
+
+    let apply_edit = find_apply_edit_request(&messages);
+    assert_eq!(
+        apply_edit
+            .get("params")
+            .and_then(|p| p.get("label"))
+            .and_then(|v| v.as_str()),
+        Some("AI: Generate tests")
+    );
+    let edit = apply_edit
+        .get("params")
+        .and_then(|p| p.get("edit"))
+        .expect("applyEdit params.edit");
+    let edit: WorkspaceEdit = serde_json::from_value(edit.clone()).expect("workspace edit");
+
+    let expected_test_uri: Uri = uri_for_path(&test_file_path).parse().expect("test uri");
+    let mut all_new_texts = Vec::new();
+    let mut saw_create = false;
+
+    if let Some(changes) = &edit.changes {
+        if let Some(edits) = changes.get(&expected_test_uri) {
+            all_new_texts.extend(edits.iter().map(|e| e.new_text.clone()));
+        }
+    }
+    if let Some(doc_changes) = &edit.document_changes {
+        match doc_changes {
+            lsp_types::DocumentChanges::Edits(edits) => {
+                for doc_edit in edits {
+                    if doc_edit.text_document.uri != expected_test_uri {
+                        continue;
+                    }
+                    for edit in &doc_edit.edits {
+                        match edit {
+                            lsp_types::OneOf::Left(edit) => all_new_texts.push(edit.new_text.clone()),
+                            lsp_types::OneOf::Right(edit) => {
+                                all_new_texts.push(edit.text_edit.new_text.clone())
+                            }
+                        }
+                    }
+                }
+            }
+            lsp_types::DocumentChanges::Operations(ops) => {
+                for op in ops {
+                    match op {
+                        lsp_types::DocumentChangeOperation::Op(lsp_types::ResourceOp::Create(
+                            create,
+                        )) if create.uri == expected_test_uri => {
+                            saw_create = true;
+                        }
+                        lsp_types::DocumentChangeOperation::Edit(doc_edit) => {
+                            if doc_edit.text_document.uri != expected_test_uri {
+                                continue;
+                            }
+                            for edit in &doc_edit.edits {
+                                match edit {
+                                    lsp_types::OneOf::Left(edit) => {
+                                        all_new_texts.push(edit.new_text.clone())
+                                    }
+                                    lsp_types::OneOf::Right(edit) => {
+                                        all_new_texts.push(edit.text_edit.new_text.clone())
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    if matches!(
+        &edit.document_changes,
+        Some(lsp_types::DocumentChanges::Operations(_))
+    ) {
+        assert!(
+            saw_create,
+            "expected CreateFile for test file, got: {edit:#?}"
+        );
+    }
+
+    assert!(
+        all_new_texts
+            .iter()
+            .any(|text| text.contains("ExampleTest")),
+        "expected edits to contain ExampleTest, got: {edit:#?}"
+    );
+
+    let apply_edit_id = apply_edit.get("id").cloned().expect("applyEdit id");
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": apply_edit_id,
+            "result": { "applied": true }
+        }),
+    );
+
+    ai_server.assert_hits(1);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
 fn stdio_server_chunks_long_ai_explain_error_log_messages() {
     let _lock = crate::support::stdio_server_lock();
     let mock_server = MockServer::start();
