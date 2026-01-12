@@ -85,29 +85,28 @@ where
             .copied()
     }
 
-    fn ensure_applicability(
-        &self,
-        db: &dyn FrameworkDatabase,
-        project: ProjectId,
-        cancel: &CancellationToken,
-    ) -> bool {
-        if let Some(value) = self.cached_applicability(project) {
+    fn ensure_applicability<DB>(&self, ctx: &ExtensionContext<DB>) -> bool
+    where
+        DB: ?Sized + Send + Sync + FrameworkDatabase,
+    {
+        if let Some(value) = self.cached_applicability(ctx.project) {
             return value;
         }
 
-        if cancel.is_cancelled() {
+        if ctx.cancel.is_cancelled() {
             return false;
         }
 
+        let db = FrameworkDatabaseView(ctx.db.as_ref());
         let applicable = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.analyzer.applies_to(db, project)
+            self.analyzer.applies_to(&db, ctx.project)
         }))
         .unwrap_or(false);
 
         self.applicability_cache
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(project, applicable);
+            .insert(ctx.project, applicable);
 
         applicable
     }
@@ -137,42 +136,66 @@ impl<A> FrameworkAnalyzerOnTextDbAdapter<A> {
     }
 }
 
-impl<A> DiagnosticProvider<dyn FrameworkDatabase + Send + Sync> for FrameworkAnalyzerAdapter<A>
-where
-    A: FrameworkAnalyzer + Send + Sync + 'static,
-{
-    fn id(&self) -> &str {
-        &self.id
+/// A thin wrapper that lets us pass a `&DB` to `FrameworkAnalyzer` APIs as a `&dyn Database`.
+///
+/// `FrameworkAnalyzer` is defined in terms of `&dyn nova_framework::Database`. Converting a `&DB`
+/// into that trait object requires `DB: Sized`, which breaks when `DB` itself is a trait object
+/// (e.g. `dyn nova_framework::Database + Send + Sync`, or a multi-trait object).
+///
+/// By wrapping the reference in a sized type that implements `nova_framework::Database` via
+/// delegation, we can support both concrete database types and trait-object databases.
+struct FrameworkDatabaseView<'a, DB: ?Sized + FrameworkDatabase>(&'a DB);
+
+impl<DB: ?Sized + FrameworkDatabase> FrameworkDatabase for FrameworkDatabaseView<'_, DB> {
+    fn class(&self, class: nova_types::ClassId) -> &nova_hir::framework::ClassData {
+        FrameworkDatabase::class(self.0, class)
     }
 
-    fn is_applicable(&self, ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>) -> bool {
-        if ctx.cancel.is_cancelled() {
-            return false;
-        }
-
-        self.cached_applicability(ctx.project).unwrap_or(true)
+    fn project_of_class(&self, class: nova_types::ClassId) -> nova_core::ProjectId {
+        FrameworkDatabase::project_of_class(self.0, class)
     }
 
-    fn provide_diagnostics(
-        &self,
-        ctx: ExtensionContext<dyn FrameworkDatabase + Send + Sync>,
-        params: DiagnosticParams,
-    ) -> Vec<Diagnostic> {
-        if !self.ensure_applicability(ctx.db.as_ref(), ctx.project, &ctx.cancel) {
-            return Vec::new();
-        }
-        if ctx.cancel.is_cancelled() {
-            return Vec::new();
-        }
-        self.analyzer
-            .diagnostics_with_cancel(ctx.db.as_ref(), params.file, &ctx.cancel)
+    fn project_of_file(&self, file: nova_core::FileId) -> nova_core::ProjectId {
+        FrameworkDatabase::project_of_file(self.0, file)
+    }
+
+    fn file_text(&self, file: nova_core::FileId) -> Option<&str> {
+        FrameworkDatabase::file_text(self.0, file)
+    }
+
+    fn file_path(&self, file: nova_core::FileId) -> Option<&std::path::Path> {
+        FrameworkDatabase::file_path(self.0, file)
+    }
+
+    fn file_id(&self, path: &std::path::Path) -> Option<nova_core::FileId> {
+        FrameworkDatabase::file_id(self.0, path)
+    }
+
+    fn all_files(&self, project: nova_core::ProjectId) -> Vec<nova_core::FileId> {
+        FrameworkDatabase::all_files(self.0, project)
+    }
+
+    fn all_classes(&self, project: nova_core::ProjectId) -> Vec<nova_types::ClassId> {
+        FrameworkDatabase::all_classes(self.0, project)
+    }
+
+    fn has_dependency(&self, project: nova_core::ProjectId, group: &str, artifact: &str) -> bool {
+        FrameworkDatabase::has_dependency(self.0, project, group, artifact)
+    }
+
+    fn has_class_on_classpath(&self, project: nova_core::ProjectId, binary_name: &str) -> bool {
+        FrameworkDatabase::has_class_on_classpath(self.0, project, binary_name)
+    }
+
+    fn has_class_on_classpath_prefix(&self, project: nova_core::ProjectId, prefix: &str) -> bool {
+        FrameworkDatabase::has_class_on_classpath_prefix(self.0, project, prefix)
     }
 }
 
 impl<A, DB> DiagnosticProvider<DB> for FrameworkAnalyzerAdapter<A>
 where
     A: FrameworkAnalyzer + Send + Sync + 'static,
-    DB: FrameworkDatabase + Send + Sync + 'static,
+    DB: ?Sized + Send + Sync + FrameworkDatabase,
 {
     fn id(&self) -> &str {
         &self.id
@@ -191,58 +214,26 @@ where
         ctx: ExtensionContext<DB>,
         params: DiagnosticParams,
     ) -> Vec<Diagnostic> {
-        if !self.ensure_applicability(ctx.db.as_ref(), ctx.project, &ctx.cancel) {
+        if ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
+        if !self.ensure_applicability(&ctx) {
             return Vec::new();
         }
         if ctx.cancel.is_cancelled() {
             return Vec::new();
         }
+
+        let db = FrameworkDatabaseView(ctx.db.as_ref());
         self.analyzer
-            .diagnostics_with_cancel(ctx.db.as_ref(), params.file, &ctx.cancel)
-    }
-}
-
-impl<A> CompletionProvider<dyn FrameworkDatabase + Send + Sync> for FrameworkAnalyzerAdapter<A>
-where
-    A: FrameworkAnalyzer + Send + Sync + 'static,
-{
-    fn id(&self) -> &str {
-        &self.id
-    }
-
-    fn is_applicable(&self, ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>) -> bool {
-        if ctx.cancel.is_cancelled() {
-            return false;
-        }
-
-        self.cached_applicability(ctx.project).unwrap_or(true)
-    }
-
-    fn provide_completions(
-        &self,
-        ctx: ExtensionContext<dyn FrameworkDatabase + Send + Sync>,
-        params: CompletionParams,
-    ) -> Vec<CompletionItem> {
-        if !self.ensure_applicability(ctx.db.as_ref(), ctx.project, &ctx.cancel) {
-            return Vec::new();
-        }
-        if ctx.cancel.is_cancelled() {
-            return Vec::new();
-        }
-        let completion_ctx = FrameworkCompletionContext {
-            project: ctx.project,
-            file: params.file,
-            offset: params.offset,
-        };
-        self.analyzer
-            .completions_with_cancel(ctx.db.as_ref(), &completion_ctx, &ctx.cancel)
+            .diagnostics_with_cancel(&db, params.file, &ctx.cancel)
     }
 }
 
 impl<A, DB> CompletionProvider<DB> for FrameworkAnalyzerAdapter<A>
 where
     A: FrameworkAnalyzer + Send + Sync + 'static,
-    DB: FrameworkDatabase + Send + Sync + 'static,
+    DB: ?Sized + Send + Sync + FrameworkDatabase,
 {
     fn id(&self) -> &str {
         &self.id
@@ -261,70 +252,31 @@ where
         ctx: ExtensionContext<DB>,
         params: CompletionParams,
     ) -> Vec<CompletionItem> {
-        if !self.ensure_applicability(ctx.db.as_ref(), ctx.project, &ctx.cancel) {
+        if ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
+        if !self.ensure_applicability(&ctx) {
             return Vec::new();
         }
         if ctx.cancel.is_cancelled() {
             return Vec::new();
         }
+
+        let db = FrameworkDatabaseView(ctx.db.as_ref());
         let completion_ctx = FrameworkCompletionContext {
             project: ctx.project,
             file: params.file,
             offset: params.offset,
         };
         self.analyzer
-            .completions_with_cancel(ctx.db.as_ref(), &completion_ctx, &ctx.cancel)
-    }
-}
-
-impl<A> NavigationProvider<dyn FrameworkDatabase + Send + Sync> for FrameworkAnalyzerAdapter<A>
-where
-    A: FrameworkAnalyzer + Send + Sync + 'static,
-{
-    fn id(&self) -> &str {
-        &self.id
-    }
-
-    fn is_applicable(&self, ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>) -> bool {
-        if ctx.cancel.is_cancelled() {
-            return false;
-        }
-
-        self.cached_applicability(ctx.project).unwrap_or(true)
-    }
-
-    fn provide_navigation(
-        &self,
-        ctx: ExtensionContext<dyn FrameworkDatabase + Send + Sync>,
-        params: NavigationParams,
-    ) -> Vec<NavigationTarget> {
-        if !self.ensure_applicability(ctx.db.as_ref(), ctx.project, &ctx.cancel) {
-            return Vec::new();
-        }
-        if ctx.cancel.is_cancelled() {
-            return Vec::new();
-        }
-        let symbol = match params.symbol {
-            Symbol::File(file) => FrameworkSymbol::File(file),
-            Symbol::Class(class) => FrameworkSymbol::Class(class),
-        };
-
-        self.analyzer
-            .navigation_with_cancel(ctx.db.as_ref(), &symbol, &ctx.cancel)
-            .into_iter()
-            .map(|target| NavigationTarget {
-                file: target.file,
-                span: target.span,
-                label: target.label,
-            })
-            .collect()
+            .completions_with_cancel(&db, &completion_ctx, &ctx.cancel)
     }
 }
 
 impl<A, DB> NavigationProvider<DB> for FrameworkAnalyzerAdapter<A>
 where
     A: FrameworkAnalyzer + Send + Sync + 'static,
-    DB: FrameworkDatabase + Send + Sync + 'static,
+    DB: ?Sized + Send + Sync + FrameworkDatabase,
 {
     fn id(&self) -> &str {
         &self.id
@@ -343,62 +295,29 @@ where
         ctx: ExtensionContext<DB>,
         params: NavigationParams,
     ) -> Vec<NavigationTarget> {
-        if !self.ensure_applicability(ctx.db.as_ref(), ctx.project, &ctx.cancel) {
+        if ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
+        if !self.ensure_applicability(&ctx) {
             return Vec::new();
         }
         if ctx.cancel.is_cancelled() {
             return Vec::new();
         }
+
+        let db = FrameworkDatabaseView(ctx.db.as_ref());
         let symbol = match params.symbol {
             Symbol::File(file) => FrameworkSymbol::File(file),
             Symbol::Class(class) => FrameworkSymbol::Class(class),
         };
 
         self.analyzer
-            .navigation_with_cancel(ctx.db.as_ref(), &symbol, &ctx.cancel)
+            .navigation_with_cancel(&db, &symbol, &ctx.cancel)
             .into_iter()
             .map(|target| NavigationTarget {
                 file: target.file,
                 span: target.span,
                 label: target.label,
-            })
-            .collect()
-    }
-}
-
-impl<A> InlayHintProvider<dyn FrameworkDatabase + Send + Sync> for FrameworkAnalyzerAdapter<A>
-where
-    A: FrameworkAnalyzer + Send + Sync + 'static,
-{
-    fn id(&self) -> &str {
-        &self.id
-    }
-
-    fn is_applicable(&self, ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>) -> bool {
-        if ctx.cancel.is_cancelled() {
-            return false;
-        }
-
-        self.cached_applicability(ctx.project).unwrap_or(true)
-    }
-
-    fn provide_inlay_hints(
-        &self,
-        ctx: ExtensionContext<dyn FrameworkDatabase + Send + Sync>,
-        params: InlayHintParams,
-    ) -> Vec<InlayHint> {
-        if !self.ensure_applicability(ctx.db.as_ref(), ctx.project, &ctx.cancel) {
-            return Vec::new();
-        }
-        if ctx.cancel.is_cancelled() {
-            return Vec::new();
-        }
-        self.analyzer
-            .inlay_hints_with_cancel(ctx.db.as_ref(), params.file, &ctx.cancel)
-            .into_iter()
-            .map(|hint| InlayHint {
-                span: hint.span,
-                label: hint.label,
             })
             .collect()
     }
@@ -407,7 +326,7 @@ where
 impl<A, DB> InlayHintProvider<DB> for FrameworkAnalyzerAdapter<A>
 where
     A: FrameworkAnalyzer + Send + Sync + 'static,
-    DB: FrameworkDatabase + Send + Sync + 'static,
+    DB: ?Sized + Send + Sync + FrameworkDatabase,
 {
     fn id(&self) -> &str {
         &self.id
@@ -426,14 +345,19 @@ where
         ctx: ExtensionContext<DB>,
         params: InlayHintParams,
     ) -> Vec<InlayHint> {
-        if !self.ensure_applicability(ctx.db.as_ref(), ctx.project, &ctx.cancel) {
+        if ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
+        if !self.ensure_applicability(&ctx) {
             return Vec::new();
         }
         if ctx.cancel.is_cancelled() {
             return Vec::new();
         }
+
+        let db = FrameworkDatabaseView(ctx.db.as_ref());
         self.analyzer
-            .inlay_hints_with_cancel(ctx.db.as_ref(), params.file, &ctx.cancel)
+            .inlay_hints_with_cancel(&db, params.file, &ctx.cancel)
             .into_iter()
             .map(|hint| InlayHint {
                 span: hint.span,
@@ -1939,6 +1863,33 @@ mod tests {
         cancel.cancel();
         let diags = ide.diagnostics(cancel, file);
         assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn framework_analyzer_adapter_supports_concrete_database_types() {
+        let mut db = MemoryDatabase::new();
+        let project = db.add_project();
+        let file = db.add_file(project);
+
+        let db = Arc::new(db);
+        let mut ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), project);
+
+        let analyzer =
+            FrameworkAnalyzerAdapter::new("framework.test", FrameworkTestAnalyzer).into_arc();
+        ide.registry_mut()
+            .register_diagnostic_provider(analyzer.clone())
+            .unwrap();
+        ide.registry_mut()
+            .register_completion_provider(analyzer.clone())
+            .unwrap();
+
+        let diags = ide.diagnostics(CancellationToken::new(), file);
+        assert_eq!(diags.len(), 1);
+        assert!(diags.iter().any(|d| d.message == "framework"));
+
+        let completions = ide.completions(CancellationToken::new(), file, 0);
+        assert_eq!(completions.len(), 1);
+        assert!(completions.iter().any(|c| c.label == "frameworkCompletion"));
     }
 
     #[test]
