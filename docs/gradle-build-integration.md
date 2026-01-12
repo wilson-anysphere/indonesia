@@ -46,6 +46,8 @@ build tool (`nova-build`) and persisting the results for later reloads.
 - `GradleBuild::projects(...)` populates `projects` (Gradle project path → `projectDir`)
 - `GradleBuild::java_compile_config(..., project_path=Some(":app"), ...)` populates
   `javaCompileConfigs[":app"]` with resolved compilation inputs
+- `GradleBuild::java_compile_configs_all(...)` populates `projects` *and* `javaCompileConfigs` for
+  all subprojects in a **single** Gradle invocation (via `printNovaAllJavaCompileConfigs`)
 
 Under the hood, `nova-build`:
 
@@ -97,6 +99,8 @@ and **skipping** these directories:
 - `.git/`
 - `.gradle/`
 - `build/`
+- `bazel-*/` (only when a top-level entry under the workspace root, e.g. `bazel-out/`)
+- `node_modules/`
 - `target/`
 - `.nova/`
 - `.idea/`
@@ -107,7 +111,8 @@ Included inputs (current `nova-build` implementation):
 - `settings.gradle*` (e.g. `settings.gradle`, `settings.gradle.kts`)
 - any `*.gradle` / `*.gradle.kts` file (script plugins like `apply from: "deps.gradle"`)
 - `gradle.properties`
-- `libs.versions.toml` (Gradle version catalogs)
+- Gradle version catalogs under `gradle/*.versions.toml` (e.g. `gradle/libs.versions.toml`,
+  `gradle/foo.versions.toml`)
 - `gradlew` / `gradlew.bat` (only when located at the workspace root)
 - `gradle/wrapper/gradle-wrapper.properties`
 - `gradle/wrapper/gradle-wrapper.jar`
