@@ -403,3 +403,4 @@ fn qualifier_completions_include_explicit_qualifiers() {
         "expected qualifier completion; got {labels:?}"
     );
 }
+
