@@ -16,6 +16,7 @@ pub const BUILTIN_JDK_BINARY_NAMES: &[&str] = &[
     "java.lang.Class",
     "java.lang.Cloneable",
     "java.lang.Double",
+    "java.lang.Exception",
     "java.lang.Float",
     "java.lang.Integer",
     "java.lang.Iterable",
