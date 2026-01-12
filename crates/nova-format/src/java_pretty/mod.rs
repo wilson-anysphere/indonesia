@@ -3,7 +3,7 @@ use crate::{
     ends_with_line_break, split_lines_inclusive, FormatConfig, IndentStyle, JavaComments,
     NewlineStyle, TokenKey,
 };
-use nova_syntax::{ast, AstNode, JavaParseResult, SyntaxKind, SyntaxNode, SyntaxToken};
+use nova_syntax::{ast, lex, AstNode, JavaParseResult, SyntaxKind, SyntaxNode, SyntaxToken};
 
 mod decl;
 mod expr;
@@ -315,9 +315,29 @@ fn tabs_for_indentation(text: &str, indent_width: usize) -> String {
         return text.to_string();
     }
 
+    // `IndentStyle::Tabs` is implemented as a post-processing step because the Doc printer only
+    // knows how to emit indentation in spaces.
+    //
+    // This MUST be semantics-preserving: leading whitespace inside multi-line literals (notably
+    // text blocks) is part of the program and must not be rewritten.
+    //
+    // We conservatively skip indentation conversion for any line whose start offset falls inside a
+    // token that can legally contain newlines + leading whitespace as part of its payload.
+    let protected = protected_indent_ranges(text);
+    let mut protected_idx = 0usize;
+
     let mut out = String::with_capacity(text.len());
+    let mut offset = 0usize;
     for line in split_lines_inclusive(text) {
         let (content, suffix) = strip_line_ending(line);
+
+        let in_protected = is_offset_in_range_list(offset, &protected, &mut protected_idx);
+        offset = offset.saturating_add(line.len());
+        if in_protected {
+            out.push_str(content);
+            out.push_str(suffix);
+            continue;
+        }
 
         let space_count = content
             .as_bytes()
@@ -338,6 +358,48 @@ fn tabs_for_indentation(text: &str, indent_width: usize) -> String {
     }
 
     out
+}
+
+fn protected_indent_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
+    lex(text)
+        .into_iter()
+        .filter(|tok| matches_protected_indent_token(tok.kind))
+        .map(|tok| {
+            let start = tok.range.start as usize;
+            let end = tok.range.end as usize;
+            start..end
+        })
+        .collect()
+}
+
+fn matches_protected_indent_token(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        // Multi-line literals: leading whitespace after embedded newlines is semantically
+        // meaningful.
+        SyntaxKind::TextBlock
+            // The lexer represents unterminated text blocks as `Error` tokens that may span
+            // multiple lines; preserve verbatim.
+            | SyntaxKind::Error
+            // Java string/char literals cannot contain newlines in valid code, but malformed input
+            // can still surface `Error` tokens and we want to be robust.
+            | SyntaxKind::StringLiteral
+            | SyntaxKind::CharLiteral
+    )
+}
+
+fn is_offset_in_range_list(
+    offset: usize,
+    ranges: &[std::ops::Range<usize>],
+    idx: &mut usize,
+) -> bool {
+    while *idx < ranges.len() && ranges[*idx].end <= offset {
+        *idx += 1;
+    }
+
+    ranges
+        .get(*idx)
+        .is_some_and(|range| range.start < offset && offset < range.end)
 }
 
 fn strip_line_ending(line: &str) -> (&str, &str) {
