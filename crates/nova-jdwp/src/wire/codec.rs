@@ -150,7 +150,15 @@ impl<'a> JdwpReader<'a> {
     }
 
     fn require(&self, n: usize) -> Result<()> {
-        if self.pos + n > self.buf.len() {
+        let end = self.pos.checked_add(n).ok_or_else(|| {
+            JdwpError::Protocol(format!(
+                "buffer underflow: need {n} bytes at {}, have {}",
+                self.pos,
+                self.buf.len()
+            ))
+        })?;
+
+        if end > self.buf.len() {
             return Err(JdwpError::Protocol(format!(
                 "buffer underflow: need {n} bytes at {}, have {}",
                 self.pos,

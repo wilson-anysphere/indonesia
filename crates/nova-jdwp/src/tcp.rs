@@ -1648,10 +1648,13 @@ impl<'a> Cursor<'a> {
     }
 
     fn read_exact(&mut self, len: usize) -> Result<&'a [u8], JdwpError> {
-        if self.pos + len > self.buf.len() {
+        let end = self.pos.checked_add(len).ok_or_else(|| {
+            JdwpError::Protocol("unexpected end of packet".to_string())
+        })?;
+        if end > self.buf.len() {
             return Err(JdwpError::Protocol("unexpected end of packet".to_string()));
         }
-        let slice = &self.buf[self.pos..self.pos + len];
+        let slice = &self.buf[self.pos..end];
         self.pos += len;
         Ok(slice)
     }
