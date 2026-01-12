@@ -257,6 +257,89 @@ fn parse_var_decl(
     Some((ty, ty_span, name, name_span, i))
 }
 
+fn find_statement_terminator(tokens: &[Token], start: usize, end: usize) -> Option<usize> {
+    // Find the next `;` token, ignoring nested constructs like
+    // - method calls: `foo(a, b)`
+    // - array indexing: `xs[a, b]` (syntactically invalid, but best-effort)
+    // - array/anonymous-class initializers: `{ ... ; ... }`
+    // - generics: `<T, U>`
+    //
+    // `start` can be inside an outer construct (e.g. `for (...)`); we only track
+    // nesting relative to `start`, so the semicolon that ends the declaration is
+    // still observed at depth 0.
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut angle_depth = 0usize;
+    for idx in start..end {
+        match tokens.get(idx).and_then(|t| t.symbol()) {
+            Some('(') => paren_depth += 1,
+            Some(')') => paren_depth = paren_depth.saturating_sub(1),
+            Some('[') => bracket_depth += 1,
+            Some(']') => bracket_depth = bracket_depth.saturating_sub(1),
+            Some('{') => brace_depth += 1,
+            Some('}') => brace_depth = brace_depth.saturating_sub(1),
+            Some('<') => angle_depth += 1,
+            Some('>') => angle_depth = angle_depth.saturating_sub(1),
+            Some(';')
+                if paren_depth == 0
+                    && bracket_depth == 0
+                    && brace_depth == 0
+                    && angle_depth == 0 =>
+            {
+                return Some(idx);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn scan_comma_separated_decl_names(
+    tokens: &[Token],
+    start: usize,
+    end: usize,
+) -> Vec<(String, Span)> {
+    // Scan `, <ident>` sequences in a variable/field declaration, ignoring
+    // commas inside nested expressions.
+    let mut out = Vec::new();
+
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut angle_depth = 0usize;
+
+    let mut i = start;
+    while i < end {
+        match tokens.get(i).and_then(|t| t.symbol()) {
+            Some('(') => paren_depth += 1,
+            Some(')') => paren_depth = paren_depth.saturating_sub(1),
+            Some('[') => bracket_depth += 1,
+            Some(']') => bracket_depth = bracket_depth.saturating_sub(1),
+            Some('{') => brace_depth += 1,
+            Some('}') => brace_depth = brace_depth.saturating_sub(1),
+            Some('<') => angle_depth += 1,
+            Some('>') => angle_depth = angle_depth.saturating_sub(1),
+            Some(',')
+                if paren_depth == 0
+                    && bracket_depth == 0
+                    && brace_depth == 0
+                    && angle_depth == 0 =>
+            {
+                if let Some(name_tok) = tokens.get(i + 1) {
+                    if let Some(name) = name_tok.ident() {
+                        out.push((name.to_string(), name_tok.span));
+                    }
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    out
+}
+
 fn is_receiverless_call_keyword(name: &str) -> bool {
     // Keywords/constructs that are commonly followed by `(` but are not method calls.
     //
@@ -557,16 +640,15 @@ fn parse_method_body(
             parse_var_decl(tokens, decl_start, body_end)
         {
             let next_sym = tokens.get(after_name).and_then(|t| t.symbol());
-            if matches!(next_sym, Some('=') | Some(';')) {
+            if matches!(next_sym, Some('=') | Some(';') | Some(',')) {
+                let stmt_end =
+                    find_statement_terminator(tokens, after_name, body_end).unwrap_or(body_end);
                 let mut resolved_ty = ty.clone();
 
                 if ty == "var" {
                     // Best-effort: infer from `new Foo(` in the same statement.
                     let mut j = after_name;
-                    while j < body_end {
-                        if tokens.get(j).and_then(|t| t.symbol()) == Some(';') {
-                            break;
-                        }
+                    while j < stmt_end {
                         if tokens.get(j).and_then(|t| t.ident()) == Some("new") {
                             if let Some(inferred) = tokens.get(j + 1).and_then(|t| t.ident()) {
                                 resolved_ty = inferred.to_string();
@@ -578,11 +660,21 @@ fn parse_method_body(
                 }
 
                 locals.push(VarDef {
-                    ty: resolved_ty,
+                    ty: resolved_ty.clone(),
                     ty_span,
                     name,
                     name_span,
                 });
+
+                for (name, name_span) in scan_comma_separated_decl_names(tokens, after_name, stmt_end)
+                {
+                    locals.push(VarDef {
+                        ty: resolved_ty.clone(),
+                        ty_span,
+                        name,
+                        name_span,
+                    });
+                }
             }
         }
 
@@ -705,21 +797,37 @@ fn parse_type_body(
         {
             if tokens.get(after_name).and_then(|t| t.symbol()) != Some('(') {
                 fields.push(FieldDef {
-                    ty,
+                    ty: ty.clone(),
                     ty_span,
                     name,
                     name_span,
                 });
 
                 // Skip to ';' to avoid re-parsing parts of the declaration.
-                let mut j = after_name;
-                while j < body_end {
-                    if tokens.get(j).and_then(|t| t.symbol()) == Some(';') {
-                        i = j + 1;
-                        break;
-                    }
-                    j += 1;
+                let stmt_end = find_statement_terminator(tokens, after_name, body_end)
+                    .unwrap_or_else(|| {
+                        // Fall back to the first `;` (even if nested).
+                        let mut j = after_name;
+                        while j < body_end {
+                            if tokens.get(j).and_then(|t| t.symbol()) == Some(';') {
+                                return j;
+                            }
+                            j += 1;
+                        }
+                        body_end
+                    });
+
+                for (name, name_span) in scan_comma_separated_decl_names(tokens, after_name, stmt_end)
+                {
+                    fields.push(FieldDef {
+                        ty: ty.clone(),
+                        ty_span,
+                        name,
+                        name_span,
+                    });
                 }
+
+                i = stmt_end + 1;
                 continue;
             }
         }
