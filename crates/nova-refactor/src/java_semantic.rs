@@ -681,6 +681,21 @@ impl RefactorJavaDatabase {
                 &mut references,
                 &mut spans,
             );
+
+            // Stable HIR currently drops/omits types in a handful of expression-level type
+            // positions (casts/instanceof/array creation/explicit generic invocation type args).
+            // Traverse the full-fidelity syntax tree and record type references in these
+            // positions so `rename` on a type updates them.
+            record_syntax_type_references(
+                file,
+                text,
+                tree.as_ref(),
+                scope_result,
+                &resolver,
+                &resolution_to_symbol,
+                &mut references,
+                &mut spans,
+            );
         }
 
         // Method references in field initializers (e.g. `Supplier<?> s = super::m;`) are not part
@@ -2459,6 +2474,123 @@ fn record_body_references(
     });
 }
 
+fn record_syntax_type_references(
+    file: &FileId,
+    file_text: &str,
+    tree: &nova_hir::item_tree::ItemTree,
+    scope_result: &ScopeBuildResult,
+    resolver: &Resolver<'_>,
+    resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+    references: &mut [Vec<Reference>],
+    spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+) {
+    if file_text.is_empty() {
+        return;
+    }
+
+    let parse = nova_syntax::parse_java(file_text);
+    let root = parse.syntax();
+
+    let mut type_bodies: Vec<(ItemId, nova_types::Span)> = Vec::new();
+    for item in &tree.items {
+        collect_type_body_ranges_in_item(tree, item_to_item_id(*item), &mut type_bodies);
+    }
+
+    for node in root.descendants() {
+        if let Some(ty) = ast::Type::cast(node.clone()) {
+            let range = syntax_node_text_range(ty.syntax());
+            let scope = scope_for_syntax_offset(range.start, &type_bodies, scope_result);
+            record_type_references_in_range(
+                file,
+                file_text,
+                range,
+                scope,
+                &scope_result.scopes,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
+
+        if let Some(type_args) = ast::TypeArguments::cast(node) {
+            let range = syntax_node_text_range(type_args.syntax());
+            let scope = scope_for_syntax_offset(range.start, &type_bodies, scope_result);
+            record_type_references_in_range(
+                file,
+                file_text,
+                range,
+                scope,
+                &scope_result.scopes,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
+    }
+}
+
+fn syntax_node_text_range(node: &nova_syntax::SyntaxNode) -> TextRange {
+    let range = node.text_range();
+    TextRange::new(
+        u32::from(range.start()) as usize,
+        u32::from(range.end()) as usize,
+    )
+}
+
+fn scope_for_syntax_offset(
+    offset: usize,
+    type_bodies: &[(ItemId, nova_types::Span)],
+    scope_result: &ScopeBuildResult,
+) -> nova_resolve::ScopeId {
+    let mut best: Option<(ItemId, usize)> = None;
+    for (item, body_range) in type_bodies {
+        if body_range.start <= offset && offset < body_range.end {
+            let len = body_range.end.saturating_sub(body_range.start);
+            match best {
+                None => best = Some((*item, len)),
+                Some((_, best_len)) if len < best_len => best = Some((*item, len)),
+                _ => {}
+            }
+        }
+    }
+
+    match best {
+        Some((item, _)) => scope_result
+            .class_scopes
+            .get(&item)
+            .copied()
+            .unwrap_or(scope_result.file_scope),
+        None => scope_result.file_scope,
+    }
+}
+
+fn collect_type_body_ranges_in_item(
+    tree: &nova_hir::item_tree::ItemTree,
+    item: ItemId,
+    out: &mut Vec<(ItemId, nova_types::Span)>,
+) {
+    out.push((item, item_body_range(tree, item)));
+
+    for member in item_members(tree, item) {
+        let Member::Type(child) = member else {
+            continue;
+        };
+        collect_type_body_ranges_in_item(tree, item_to_item_id(*child), out);
+    }
+}
+
+fn item_body_range(tree: &nova_hir::item_tree::ItemTree, item: ItemId) -> nova_types::Span {
+    match item {
+        ItemId::Class(id) => tree.class(id).body_range,
+        ItemId::Interface(id) => tree.interface(id).body_range,
+        ItemId::Enum(id) => tree.enum_(id).body_range,
+        ItemId::Record(id) => tree.record(id).body_range,
+        ItemId::Annotation(id) => tree.annotation(id).body_range,
+    }
+}
+
 fn record_type_references_in_range(
     file: &FileId,
     file_text: &str,
@@ -3146,17 +3278,6 @@ fn walk_hir_body(body: &hir::Body, mut f: impl FnMut(hir::ExprId)) {
     walk_stmt(body, body.root, &mut f);
 }
 
-fn item_body_range(tree: &nova_hir::item_tree::ItemTree, item: ItemId) -> Option<TextRange> {
-    let range = match item {
-        ItemId::Class(id) => tree.class(id).body_range,
-        ItemId::Interface(id) => tree.interface(id).body_range,
-        ItemId::Enum(id) => tree.enum_(id).body_range,
-        ItemId::Record(id) => tree.record(id).body_range,
-        ItemId::Annotation(id) => tree.annotation(id).body_range,
-    };
-    Some(TextRange::new(range.start, range.end))
-}
-
 fn syntax_token_range(token: &nova_syntax::SyntaxToken) -> TextRange {
     let range = token.text_range();
     TextRange::new(
@@ -3670,9 +3791,11 @@ fn record_syntax_only_references(
     // for annotations and enum constant arguments.
     let mut type_scopes: Vec<(TextRange, nova_resolve::ScopeId)> = Vec::new();
     for (&item, &class_scope) in &scope_result.class_scopes {
-        if let Some(body_range) = item_body_range(tree, item) {
-            type_scopes.push((body_range, class_scope));
+        let body_span = item_body_range(tree, item);
+        if body_span.start >= body_span.end {
+            continue;
         }
+        type_scopes.push((TextRange::new(body_span.start, body_span.end), class_scope));
     }
 
     // Type references across the full syntax tree.

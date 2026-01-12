@@ -3057,6 +3057,61 @@ class Derived extends Base { java.util.function.Supplier<?> s = super::m; }
 }
 
 #[test]
+fn rename_type_updates_expression_level_type_positions() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Foo {}
+
+class Test {
+  <T> void m() {}
+
+  void use(Object x) {
+    Object y = (Foo) x;
+    boolean b = x instanceof Foo;
+    Foo[] a = new Foo[1];
+    this.<Foo>m();
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("class Foo").unwrap() + "class ".len() + 1;
+    let symbol = db.symbol_at(&file, offset).expect("symbol at Foo");
+    assert_eq!(db.symbol_kind(symbol), Some(nova_refactor::JavaSymbolKind::Type));
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "Bar".into(),
+        },
+    )
+    .unwrap();
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    assert!(
+        after.contains("class Bar"),
+        "type declaration should be renamed: {after}"
+    );
+    assert!(
+        after.contains("Object y = (Bar) x;"),
+        "cast type should be renamed: {after}"
+    );
+    assert!(
+        after.contains("x instanceof Bar"),
+        "instanceof type should be renamed: {after}"
+    );
+    assert!(
+        after.contains("Bar[] a = new Bar[1];"),
+        "array creation type should be renamed: {after}"
+    );
+    assert!(
+        after.contains("this.<Bar>m();"),
+        "explicit generic invocation type args should be renamed: {after}"
+    );
+}
+
+#[test]
 fn inline_variable_all_usages_replaces_and_deletes_declaration() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
