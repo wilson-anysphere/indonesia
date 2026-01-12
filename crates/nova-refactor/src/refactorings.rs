@@ -170,7 +170,10 @@ pub fn extract_variable(
 
     // Extracting a side-effectful expression into a new statement can change evaluation order or
     // conditionality (e.g. when the expression appears under `?:`, `&&`, etc). Be conservative.
-    if has_side_effects(expr.syntax()) {
+    //
+    // For explicit-typed extraction we allow side-effectful expressions as a best-effort fallback,
+    // since many common selections (`new Foo()`) would otherwise be rejected entirely.
+    if params.use_var && has_side_effects(expr.syntax()) {
         return Err(RefactorError::ExtractNotSupported {
             reason: "expression has side effects and cannot be extracted safely",
         });
@@ -236,9 +239,7 @@ pub fn extract_variable(
     let ty = if params.use_var {
         "var".to_string()
     } else {
-        infer_expr_type(text, &expr)
-            .map(|s| s.to_string())
-            .ok_or(RefactorError::TypeInferenceFailed)?
+        infer_expr_type(&expr)
     };
 
     let newline = NewlineStyle::detect(text).as_str();
@@ -584,33 +585,137 @@ fn constant_expression_only_context_reason(expr: &ast::Expression) -> Option<&'s
     None
 }
 
-fn infer_expr_type(source: &str, expr: &ast::Expression) -> Option<&'static str> {
+fn infer_expr_type(expr: &ast::Expression) -> String {
     match expr {
-        ast::Expression::LiteralExpression(lit) => {
-            let tok = lit
-                .syntax()
-                .descendants_with_tokens()
-                .filter_map(|el| el.into_token())
-                .find(|tok| !tok.kind().is_trivia() && tok.kind() != SyntaxKind::Eof)?;
-            match tok.kind() {
-                SyntaxKind::IntLiteral => Some("int"),
-                SyntaxKind::StringLiteral => Some("String"),
-                SyntaxKind::CharLiteral => Some("char"),
-                _ => None,
+        ast::Expression::LiteralExpression(lit) => infer_type_from_literal(lit),
+        ast::Expression::NewExpression(new_expr) => new_expr
+            .ty()
+            .map(|ty| render_java_type(ty.syntax()))
+            .unwrap_or_else(|| "Object".to_string()),
+        ast::Expression::ArrayCreationExpression(array_expr) => {
+            let Some(base_ty) = array_expr.ty() else {
+                return "Object".to_string();
+            };
+            let base = render_java_type(base_ty.syntax());
+
+            let mut dims = 0usize;
+            if let Some(dim_exprs) = array_expr.dim_exprs() {
+                dims += dim_exprs.dims().count();
             }
-        }
-        ast::Expression::BinaryExpression(_)
-        | ast::Expression::UnaryExpression(_)
-        | ast::Expression::ParenthesizedExpression(_) => {
-            let range = syntax_range(expr.syntax());
-            let text = source.get(range.start..range.end)?.trim();
-            if text.contains('"') {
-                Some("String")
+            if let Some(dims_node) = array_expr.dims() {
+                dims += dims_node.dims().count();
+            }
+
+            if dims == 0 {
+                base
             } else {
-                Some("int")
+                format!("{base}{}", "[]".repeat(dims))
             }
         }
-        _ => None,
+        ast::Expression::CastExpression(cast) => cast
+            .ty()
+            .map(|ty| render_java_type(ty.syntax()))
+            .unwrap_or_else(|| "Object".to_string()),
+        ast::Expression::ConditionalExpression(cond) => {
+            let Some(then_branch) = cond.then_branch() else {
+                return "Object".to_string();
+            };
+            let Some(else_branch) = cond.else_branch() else {
+                return "Object".to_string();
+            };
+
+            let then_ty = infer_expr_type(&then_branch);
+            let else_ty = infer_expr_type(&else_branch);
+            if then_ty == else_ty {
+                then_ty
+            } else {
+                "Object".to_string()
+            }
+        }
+        ast::Expression::ParenthesizedExpression(expr) => expr
+            .expression()
+            .map(|inner| infer_expr_type(&inner))
+            .unwrap_or_else(|| "Object".to_string()),
+        ast::Expression::ThisExpression(_)
+        | ast::Expression::SuperExpression(_)
+        | ast::Expression::NameExpression(_)
+        | ast::Expression::ArrayInitializer(_) => "Object".to_string(),
+        ast::Expression::BinaryExpression(_) | ast::Expression::UnaryExpression(_) => {
+            if expr_contains_string_literal(expr) {
+                "String".to_string()
+            } else {
+                "int".to_string()
+            }
+        }
+        _ => "Object".to_string(),
+    }
+}
+
+fn infer_type_from_literal(lit: &ast::LiteralExpression) -> String {
+    let tok = lit
+        .syntax()
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .find(|tok| !tok.kind().is_trivia() && tok.kind() != SyntaxKind::Eof);
+    let Some(tok) = tok else {
+        return "Object".to_string();
+    };
+
+    match tok.kind() {
+        SyntaxKind::IntLiteral => "int".to_string(),
+        SyntaxKind::LongLiteral => "long".to_string(),
+        SyntaxKind::FloatLiteral => "float".to_string(),
+        SyntaxKind::DoubleLiteral => "double".to_string(),
+        SyntaxKind::CharLiteral => "char".to_string(),
+        SyntaxKind::StringLiteral | SyntaxKind::TextBlock => "String".to_string(),
+        SyntaxKind::TrueKw | SyntaxKind::FalseKw => "boolean".to_string(),
+        SyntaxKind::NullKw => "Object".to_string(),
+        _ => "Object".to_string(),
+    }
+}
+
+fn expr_contains_string_literal(expr: &ast::Expression) -> bool {
+    expr.syntax()
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .any(|tok| matches!(tok.kind(), SyntaxKind::StringLiteral | SyntaxKind::TextBlock))
+}
+
+fn render_java_type(node: &nova_syntax::SyntaxNode) -> String {
+    // We want Java-source-like but stable output. We therefore drop trivia and insert spaces only
+    // when necessary for the token stream to remain readable/valid.
+    let mut out = String::new();
+    let mut prev_kind: Option<SyntaxKind> = None;
+    let mut prev_was_word = false;
+
+    for tok in node
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+    {
+        let kind = tok.kind();
+        if kind.is_trivia() || kind == SyntaxKind::Eof {
+            continue;
+        }
+
+        let is_word = kind.is_keyword() || kind.is_identifier_like();
+        let needs_space = !out.is_empty()
+            && ((prev_was_word && is_word)
+                || (prev_kind == Some(SyntaxKind::Question) && is_word)
+                || (kind == SyntaxKind::At
+                    && (prev_was_word || prev_kind == Some(SyntaxKind::RBracket))));
+
+        if needs_space {
+            out.push(' ');
+        }
+        out.push_str(tok.text());
+        prev_kind = Some(kind);
+        prev_was_word = is_word;
+    }
+
+    if out.is_empty() {
+        "Object".to_string()
+    } else {
+        out
     }
 }
 

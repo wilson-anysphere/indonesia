@@ -1083,7 +1083,7 @@ fn record_body_references(
                     return;
                 };
 
-                let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Field(field.id)) else {
+                let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Field(field)) else {
                     return;
                 };
                 let range = TextRange::new(name_range.start, name_range.end);
@@ -1095,7 +1095,7 @@ fn record_body_references(
                     else {
                         return;
                     };
-                    let Some(resolved) = resolver.resolve_name(
+                    let Some(resolved) = resolver.resolve_method_name(
                         &scope_result.scopes,
                         callee_scope,
                         &Name::from(name.as_str()),
@@ -1148,8 +1148,7 @@ fn record_body_references(
                     let Some(method) = methods.first().map(|m| m.id) else {
                         return;
                     };
-                    let Some(&symbol) =
-                        resolution_to_symbol.get(&ResolutionKey::Method(method.id))
+                    let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Method(method))
                     else {
                         return;
                     };
@@ -1181,7 +1180,7 @@ fn record_body_references(
                 let Some(method) = methods.first().map(|m| m.id) else {
                     return;
                 };
-                let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Method(method.id)) else {
+                let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Method(method)) else {
                     return;
                 };
                 let range = TextRange::new(name_range.start, name_range.end);

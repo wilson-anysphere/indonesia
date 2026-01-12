@@ -8,6 +8,28 @@ use pretty_assertions::assert_eq;
 
 mod suite;
 
+fn strip_selection_markers(src: &str) -> (String, WorkspaceTextRange) {
+    let start_marker = "/*select*/";
+    let end_marker = "/*end*/";
+    let start = src.find(start_marker).expect("start marker");
+    let end = src.find(end_marker).expect("end marker");
+    assert!(
+        start < end,
+        "expected start marker to come before end marker"
+    );
+
+    let selection_start = start;
+    let selection_len = end - (start + start_marker.len());
+    let selection_end = selection_start + selection_len;
+
+    let mut cleaned = String::new();
+    cleaned.push_str(&src[..start]);
+    cleaned.push_str(&src[start + start_marker.len()..end]);
+    cleaned.push_str(&src[end + end_marker.len()..]);
+
+    (cleaned, WorkspaceTextRange::new(selection_start, selection_end))
+}
+
 #[test]
 fn rename_updates_all_occurrences_not_strings() {
     let file = FileId::new("Test.java");
@@ -187,6 +209,112 @@ fn extract_variable_use_var_false_emits_explicit_type() {
 }
 "#;
     assert_eq!(after, expected);
+}
+
+#[test]
+fn extract_variable_explicit_types_are_inferred_for_common_expressions() {
+    let file = FileId::new("Test.java");
+
+    let cases = [
+        (
+            r#"class Test {
+  void m() {
+    boolean x = /*select*/true/*end*/;
+  }
+}
+"#,
+            r#"class Test {
+  void m() {
+    boolean value = true;
+    boolean x = value;
+  }
+}
+"#,
+        ),
+        (
+            r#"class Test {
+  void m() {
+    char x = /*select*/'x'/*end*/;
+  }
+}
+"#,
+            r#"class Test {
+  void m() {
+    char value = 'x';
+    char x = value;
+  }
+}
+"#,
+        ),
+        (
+            r#"class Test {
+  void m() {
+    String x = /*select*/"hi"/*end*/;
+  }
+}
+"#,
+            r#"class Test {
+  void m() {
+    String value = "hi";
+    String x = value;
+  }
+}
+"#,
+        ),
+        (
+            r#"class Foo {}
+
+class Test {
+  void m() {
+    Foo x = /*select*/new Foo()/*end*/;
+  }
+}
+"#,
+            r#"class Foo {}
+
+class Test {
+  void m() {
+    Foo value = new Foo();
+    Foo x = value;
+  }
+}
+"#,
+        ),
+        (
+            r#"class Test {
+  void m(Object x) {
+    String y = /*select*/(String) x/*end*/;
+  }
+}
+"#,
+            r#"class Test {
+  void m(Object x) {
+    String value = (String) x;
+    String y = value;
+  }
+}
+"#,
+        ),
+    ];
+
+    for (src, expected) in cases {
+        let (src, range) = strip_selection_markers(src);
+        let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+        let edit = extract_variable(
+            &db,
+            ExtractVariableParams {
+                file: file.clone(),
+                expr_range: range,
+                name: "value".into(),
+                use_var: false,
+            },
+        )
+        .unwrap();
+
+        let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+        assert_eq!(after, expected);
+    }
 }
 
 #[test]
