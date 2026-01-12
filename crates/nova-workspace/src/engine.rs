@@ -38,7 +38,7 @@ use walkdir::WalkDir;
 use nova_build::{BuildManager, CommandRunner};
 
 use crate::snapshot::WorkspaceDbView;
-use crate::watch::{categorize_event, ChangeCategory, NormalizedEvent, WatchConfig};
+use crate::watch::{categorize_event, ChangeCategory, WatchConfig};
 use crate::watch_roots::{WatchRootError, WatchRootManager};
 
 fn compute_watch_roots(
@@ -533,7 +533,7 @@ const OVERFLOW_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum WatcherMessage {
-    Batch(ChangeCategory, Vec<NormalizedEvent>),
+    Batch(ChangeCategory, Vec<FileChange>),
     Rescan,
 }
 
@@ -567,7 +567,7 @@ pub(crate) struct WorkspaceEngine {
 
 #[derive(Debug, Clone)]
 enum WatchCommand {
-    Watch(PathBuf),
+    Refresh,
 }
 
 #[derive(Debug)]
@@ -921,10 +921,6 @@ impl WorkspaceEngine {
         };
 
         let watch_config = Arc::clone(&self.watch_config);
-        let initial_config = watch_config
-            .read()
-            .expect("workspace watch config lock poisoned")
-            .clone();
 
         let engine = Arc::clone(self);
         let (batch_tx, batch_rx) = channel::bounded::<WatcherMessage>(BATCH_QUEUE_CAPACITY);
@@ -973,8 +969,12 @@ impl WorkspaceEngine {
             };
 
             let now = Instant::now();
+            let cfg = watch_config
+                .read()
+                .expect("workspace watch config lock poisoned")
+                .clone();
             for err in watch_root_manager.set_desired_roots(
-                desired_roots(&watch_root, &initial_config),
+                desired_roots(&watch_root, &cfg),
                 now,
                 &mut watcher,
             ) {
@@ -1014,7 +1014,7 @@ impl WorkspaceEngine {
                     recv(command_rx) -> msg => {
                         let Ok(cmd) = msg else { break };
                         match cmd {
-                            WatchCommand::Watch(_root) => {
+                            WatchCommand::Refresh => {
                                 let now = Instant::now();
                                 let cfg = watch_config
                                     .read()
@@ -1149,13 +1149,8 @@ impl WorkspaceEngine {
                                             break;
                                         }
 
-                                        let Some(norm) =
-                                            NormalizedEvent::from_file_change(&change)
-                                        else {
-                                            continue;
-                                        };
-                                        if let Some(cat) = categorize_event(&config, &norm) {
-                                            debouncer.push(&cat, norm, now);
+                                        if let Some(cat) = categorize_event(&config, &change) {
+                                            debouncer.push(&cat, change, now);
                                         }
                                     }
                                 }
@@ -1269,19 +1264,17 @@ impl WorkspaceEngine {
                                     let mut changed = Vec::new();
                                     for ev in events {
                                         let is_java = ev.paths().any(|path| {
-                                            path.extension().and_then(|ext| ext.to_str()) == Some("java")
+                                            path.as_local_path().is_some_and(|path| {
+                                                path.extension().and_then(|ext| ext.to_str()) == Some("java")
+                                            })
                                         });
                                         if is_java {
                                             java_events.push(ev.clone());
                                         }
 
-                                        match ev {
-                                            NormalizedEvent::Created(p)
-                                            | NormalizedEvent::Modified(p)
-                                            | NormalizedEvent::Deleted(p) => changed.push(p),
-                                            NormalizedEvent::Moved { from, to } => {
-                                                changed.push(from);
-                                                changed.push(to);
+                                        for path in ev.paths() {
+                                            if let Some(path) = path.as_local_path() {
+                                                changed.push(path.to_path_buf());
                                             }
                                         }
                                     }
@@ -1328,7 +1321,7 @@ impl WorkspaceEngine {
         })
     }
 
-    pub fn apply_filesystem_events(&self, events: Vec<NormalizedEvent>) {
+    pub fn apply_filesystem_events(&self, events: Vec<FileChange>) {
         if events.is_empty() {
             return;
         }
@@ -1383,10 +1376,14 @@ impl WorkspaceEngine {
 
         for event in events {
             match event {
-                NormalizedEvent::Moved { from, to } => {
-                    let from = normalize_local_path(from);
-                    let to = normalize_local_path(to);
-
+                FileChange::Moved { from, to } => {
+                    let (Some(from), Some(to)) =
+                        (from.as_local_path(), to.as_local_path())
+                    else {
+                        continue;
+                    };
+                    let from = normalize_local_path(from.to_path_buf());
+                    let to = normalize_local_path(to.to_path_buf());
                     if is_module_info_java(&from) {
                         module_info_changes.insert(from.clone());
                     }
@@ -1439,8 +1436,11 @@ impl WorkspaceEngine {
                         }
                     }
                 }
-                NormalizedEvent::Created(path) | NormalizedEvent::Modified(path) => {
-                    let path = normalize_local_path(path);
+                FileChange::Created { path } | FileChange::Modified { path } => {
+                    let Some(path) = path.as_local_path() else {
+                        continue;
+                    };
+                    let path = normalize_local_path(path.to_path_buf());
                     if is_module_info_java(&path) {
                         module_info_changes.insert(path.clone());
                     }
@@ -1459,8 +1459,11 @@ impl WorkspaceEngine {
                         other_paths.insert(path);
                     }
                 }
-                NormalizedEvent::Deleted(path) => {
-                    let path = normalize_local_path(path);
+                FileChange::Deleted { path } => {
+                    let Some(path) = path.as_local_path() else {
+                        continue;
+                    };
+                    let path = normalize_local_path(path.to_path_buf());
                     if is_module_info_java(&path) {
                         module_info_changes.insert(path.clone());
                     }
@@ -3322,7 +3325,7 @@ fn reload_project_and_sync(
         // Never block the calling thread (this can run inside debounced background tasks).
         // If the queue is full, a watch update is already pending and will pick up the latest
         // `watch_config` state when it runs.
-        let _ = tx.try_send(WatchCommand::Watch(workspace_root.to_path_buf()));
+        let _ = tx.try_send(WatchCommand::Refresh);
     }
 
     let project = ProjectId::from_raw(0);
@@ -3555,12 +3558,12 @@ fn reload_project_and_sync(
 #[cfg(test)]
 mod tests {
     // NOTE(file-watching tests):
-    // Avoid tests that rely on real OS watcher timing (starting `notify`, touching the filesystem,
+    // Avoid tests that rely on real OS watcher timing (starting an OS-backed watcher, touching the filesystem,
     // then sleeping and hoping an event arrives). They are flaky across platforms/CI.
     //
     // Prefer deterministic tests that either:
     // - inject a manual watcher (e.g. `nova_vfs::ManualFileWatcher`) into the workspace, or
-    // - bypass the watcher entirely and call `apply_filesystem_events` with normalized events.
+    // - bypass the watcher entirely and call `apply_filesystem_events` with `FileChange` events.
     //
     // See `docs/file-watching.md` for more background.
 
@@ -4771,7 +4774,9 @@ mod tests {
 
         // Simulate saving the open document to disk: update the file and inject a watcher event.
         fs::write(&file_path, "class A { int x; }").unwrap();
-        engine.apply_filesystem_events(vec![NormalizedEvent::Modified(file_path)]);
+        engine.apply_filesystem_events(vec![FileChange::Modified {
+            path: VfsPath::local(file_path),
+        }]);
 
         engine
             .query_db
@@ -4837,9 +4842,9 @@ mod tests {
         engine.open_document(dst.clone(), "dstt".to_string(), 1); // 4 bytes
         assert_eq!(overlay_bytes(&memory), baseline + 12);
 
-        engine.apply_filesystem_events(vec![NormalizedEvent::Moved {
-            from: src_path,
-            to: dst_path,
+        engine.apply_filesystem_events(vec![FileChange::Moved {
+            from: VfsPath::local(src_path),
+            to: VfsPath::local(dst_path),
         }]);
 
         // Only `a` (5) + `dst` (4) remain in the overlay.
@@ -4930,8 +4935,12 @@ mod tests {
         let workspace = crate::Workspace::open(&root).unwrap();
         let engine = workspace.engine_for_tests();
         engine.apply_filesystem_events(vec![
-            NormalizedEvent::Created(file_a.clone()),
-            NormalizedEvent::Created(file_b.clone()),
+            FileChange::Created {
+                path: VfsPath::local(file_a.clone()),
+            },
+            FileChange::Created {
+                path: VfsPath::local(file_b.clone()),
+            },
         ]);
 
         let vfs_a = VfsPath::local(file_a.clone());
@@ -4965,9 +4974,9 @@ mod tests {
         // Move the open document onto an already-known destination id. This will orphan `id_a`.
         fs::remove_file(&file_b).unwrap();
         fs::rename(&file_a, &file_b).unwrap();
-        workspace.apply_filesystem_events(vec![NormalizedEvent::Moved {
-            from: file_a.clone(),
-            to: file_b.clone(),
+        workspace.apply_filesystem_events(vec![FileChange::Moved {
+            from: VfsPath::local(file_a.clone()),
+            to: VfsPath::local(file_b.clone()),
         }]);
 
         assert!(
@@ -5046,7 +5055,9 @@ mod tests {
         let file_a = root.join("src/A.java");
         fs::write(&file_a, "class A {}".as_bytes()).unwrap();
 
-        engine.apply_filesystem_events(vec![NormalizedEvent::Created(file_a.clone())]);
+        engine.apply_filesystem_events(vec![FileChange::Created {
+            path: VfsPath::local(file_a.clone()),
+        }]);
 
         let vfs_a = VfsPath::local(file_a.clone());
         let file_id = engine.vfs.get_id(&vfs_a).expect("file id allocated");
@@ -5060,9 +5071,9 @@ mod tests {
 
         let file_b = root.join("src/B.java");
         fs::rename(&file_a, &file_b).unwrap();
-        engine.apply_filesystem_events(vec![NormalizedEvent::Moved {
-            from: file_a.clone(),
-            to: file_b.clone(),
+        engine.apply_filesystem_events(vec![FileChange::Moved {
+            from: VfsPath::local(file_a.clone()),
+            to: VfsPath::local(file_b.clone()),
         }]);
 
         let vfs_b = VfsPath::local(file_b.clone());
@@ -5075,13 +5086,17 @@ mod tests {
         });
 
         fs::write(&file_b, "class B {}".as_bytes()).unwrap();
-        engine.apply_filesystem_events(vec![NormalizedEvent::Modified(file_b.clone())]);
+        engine.apply_filesystem_events(vec![FileChange::Modified {
+            path: VfsPath::local(file_b.clone()),
+        }]);
         engine.query_db.with_snapshot(|snap| {
             assert_eq!(snap.file_content(file_id).as_str(), "class B {}");
         });
 
         fs::remove_file(&file_b).unwrap();
-        engine.apply_filesystem_events(vec![NormalizedEvent::Deleted(file_b.clone())]);
+        engine.apply_filesystem_events(vec![FileChange::Deleted {
+            path: VfsPath::local(file_b.clone()),
+        }]);
         engine.query_db.with_snapshot(|snap| {
             assert!(!snap.file_exists(file_id));
             assert_eq!(snap.file_content(file_id).as_str(), "");
@@ -5105,8 +5120,12 @@ mod tests {
         let engine = workspace.engine_for_tests();
 
         engine.apply_filesystem_events(vec![
-            NormalizedEvent::Created(a.clone()),
-            NormalizedEvent::Created(b.clone()),
+            FileChange::Created {
+                path: VfsPath::local(a.clone()),
+            },
+            FileChange::Created {
+                path: VfsPath::local(b.clone()),
+            },
         ]);
 
         let id_a = engine.vfs.get_id(&VfsPath::local(a.clone())).unwrap();
@@ -5120,13 +5139,13 @@ mod tests {
         // Feed watcher events in an order that would break stable ids if we naively processed moves
         // in sorted order (A -> B before B -> C).
         engine.apply_filesystem_events(vec![
-            NormalizedEvent::Moved {
-                from: a.clone(),
-                to: b.clone(),
+            FileChange::Moved {
+                from: VfsPath::local(a.clone()),
+                to: VfsPath::local(b.clone()),
             },
-            NormalizedEvent::Moved {
-                from: b.clone(),
-                to: c.clone(),
+            FileChange::Moved {
+                from: VfsPath::local(b.clone()),
+                to: VfsPath::local(c.clone()),
             },
         ]);
 
@@ -5172,7 +5191,9 @@ mod tests {
 
         let java_path = root.join("src/A.java");
         fs::write(&java_path, "class A {}".as_bytes()).unwrap();
-        engine.apply_filesystem_events(vec![NormalizedEvent::Created(java_path.clone())]);
+        engine.apply_filesystem_events(vec![FileChange::Created {
+            path: VfsPath::local(java_path.clone()),
+        }]);
 
         let vfs_java = VfsPath::local(java_path.clone());
         let file_id = engine.vfs.get_id(&vfs_java).expect("file id allocated");
@@ -5183,9 +5204,9 @@ mod tests {
 
         let txt_path = root.join("src/A.txt");
         fs::rename(&java_path, &txt_path).unwrap();
-        engine.apply_filesystem_events(vec![NormalizedEvent::Moved {
-            from: java_path.clone(),
-            to: txt_path.clone(),
+        engine.apply_filesystem_events(vec![FileChange::Moved {
+            from: VfsPath::local(java_path.clone()),
+            to: VfsPath::local(txt_path.clone()),
         }]);
 
         let vfs_txt = VfsPath::local(txt_path.clone());
@@ -5212,7 +5233,9 @@ mod tests {
 
         // Disk edits should be ignored while the document is open.
         fs::write(&file, "class Main { disk }".as_bytes()).unwrap();
-        workspace.apply_filesystem_events(vec![NormalizedEvent::Modified(file.clone())]);
+        workspace.apply_filesystem_events(vec![FileChange::Modified {
+            path: VfsPath::local(file.clone()),
+        }]);
 
         let engine = workspace.engine_for_tests();
         let file_id = engine.vfs.get_id(&vfs_path).unwrap();
@@ -5238,7 +5261,9 @@ mod tests {
             workspace.open_document(vfs_path.clone(), "class Main { overlay }".to_string(), 1);
 
         fs::remove_file(&file).unwrap();
-        workspace.apply_filesystem_events(vec![NormalizedEvent::Deleted(file.clone())]);
+        workspace.apply_filesystem_events(vec![FileChange::Deleted {
+            path: VfsPath::local(file.clone()),
+        }]);
 
         let engine = workspace.engine_for_tests();
         engine.query_db.with_snapshot(|snap| {
@@ -5268,9 +5293,9 @@ mod tests {
 
         let file_b = root.join("src/B.java");
         fs::rename(&file_a, &file_b).unwrap();
-        workspace.apply_filesystem_events(vec![NormalizedEvent::Moved {
-            from: file_a.clone(),
-            to: file_b.clone(),
+        workspace.apply_filesystem_events(vec![FileChange::Moved {
+            from: VfsPath::local(file_a.clone()),
+            to: VfsPath::local(file_b.clone()),
         }]);
 
         let vfs_b = VfsPath::local(file_b.clone());
@@ -5322,9 +5347,11 @@ mod tests {
 
         let from_event = from_dir.join("..").join("foo");
         let to_event = to_dir.join("..").join("bar");
-        workspace.apply_filesystem_events(vec![NormalizedEvent::Moved {
-            from: from_event,
-            to: to_event,
+        workspace.apply_filesystem_events(vec![FileChange::Moved {
+            // Intentionally construct an un-normalized `VfsPath` (with `..` segments) so the
+            // workspace's event normalization logic is exercised.
+            from: VfsPath::Local(from_event),
+            to: VfsPath::Local(to_event),
         }]);
 
         let a_to = to_dir.join("A.java");
@@ -5392,7 +5419,10 @@ mod tests {
 
         fs::remove_dir_all(&src_dir).unwrap();
         let delete_event = src_dir.join("..").join("example");
-        workspace.apply_filesystem_events(vec![NormalizedEvent::Deleted(delete_event)]);
+        workspace.apply_filesystem_events(vec![FileChange::Deleted {
+            // Intentionally preserve `..` segments to ensure watcher path normalization is applied.
+            path: VfsPath::Local(delete_event),
+        }]);
 
         // Directory deletes should not allocate ids for the directory path itself.
         assert_eq!(engine.vfs.get_id(&VfsPath::local(src_dir.clone())), None);
@@ -5421,8 +5451,12 @@ mod tests {
         let engine = workspace.engine_for_tests();
 
         engine.apply_filesystem_events(vec![
-            NormalizedEvent::Created(file_a.clone()),
-            NormalizedEvent::Created(file_b.clone()),
+            FileChange::Created {
+                path: VfsPath::local(file_a.clone()),
+            },
+            FileChange::Created {
+                path: VfsPath::local(file_b.clone()),
+            },
         ]);
 
         let id_a = engine.vfs.get_id(&VfsPath::local(file_a.clone())).unwrap();
@@ -5437,9 +5471,9 @@ mod tests {
         fs::remove_file(&file_b).unwrap();
         fs::rename(&file_a, &file_b).unwrap();
 
-        engine.apply_filesystem_events(vec![NormalizedEvent::Moved {
-            from: file_a.clone(),
-            to: file_b.clone(),
+        engine.apply_filesystem_events(vec![FileChange::Moved {
+            from: VfsPath::local(file_a.clone()),
+            to: VfsPath::local(file_b.clone()),
         }]);
 
         let vfs_a = VfsPath::local(file_a.clone());
@@ -5473,8 +5507,12 @@ mod tests {
         let workspace = crate::Workspace::open(&root).unwrap();
         let engine = workspace.engine_for_tests();
         engine.apply_filesystem_events(vec![
-            NormalizedEvent::Created(file_a.clone()),
-            NormalizedEvent::Created(file_b.clone()),
+            FileChange::Created {
+                path: VfsPath::local(file_a.clone()),
+            },
+            FileChange::Created {
+                path: VfsPath::local(file_b.clone()),
+            },
         ]);
 
         let vfs_a = VfsPath::local(file_a.clone());
@@ -5493,9 +5531,9 @@ mod tests {
         fs::remove_file(&file_b).unwrap();
         fs::rename(&file_a, &file_b).unwrap();
 
-        workspace.apply_filesystem_events(vec![NormalizedEvent::Moved {
-            from: file_a.clone(),
-            to: file_b.clone(),
+        workspace.apply_filesystem_events(vec![FileChange::Moved {
+            from: VfsPath::local(file_a.clone()),
+            to: VfsPath::local(file_b.clone()),
         }]);
 
         assert_eq!(engine.vfs.get_id(&vfs_a), None);
@@ -5551,7 +5589,9 @@ mod tests {
         // A Java file under the workspace root but outside Maven source roots should not be added.
         let scratch = root.join("Scratch.java");
         fs::write(&scratch, "class Scratch {}".as_bytes()).unwrap();
-        workspace.apply_filesystem_events(vec![NormalizedEvent::Created(scratch.clone())]);
+        workspace.apply_filesystem_events(vec![FileChange::Created {
+            path: VfsPath::local(scratch.clone()),
+        }]);
 
         let scratch_id = engine.vfs.get_id(&VfsPath::local(scratch.clone())).unwrap();
         engine.query_db.with_snapshot(|snap| {
@@ -6320,7 +6360,9 @@ enabled = false
         // source-root membership checks.
         let generated_root_non_canonical = root.join("module").join("..").join("custom-generated");
         let generated_file = generated_root.join("Gen.java");
-        let event = NormalizedEvent::Created(generated_file.clone());
+        let event = FileChange::Created {
+            path: VfsPath::local(generated_file.clone()),
+        };
 
         let stale_config = engine
             .watch_config
@@ -6385,7 +6427,9 @@ enabled = false
 
         fs::create_dir_all(&generated_root).unwrap();
         fs::write(&generated_file, "class Gen {}".as_bytes()).unwrap();
-        engine.apply_filesystem_events(vec![NormalizedEvent::Created(generated_file.clone())]);
+        engine.apply_filesystem_events(vec![FileChange::Created {
+            path: VfsPath::local(generated_file.clone()),
+        }]);
 
         let file_id = engine
             .vfs
@@ -6434,7 +6478,9 @@ enabled = false
         // source file) so JPMS metadata stays fresh.
         let module_info = root.join("src/main/java/module-info.java");
         fs::write(&module_info, "module com.example { }".as_bytes()).unwrap();
-        workspace.apply_filesystem_events(vec![NormalizedEvent::Created(module_info.clone())]);
+        workspace.apply_filesystem_events(vec![FileChange::Created {
+            path: VfsPath::local(module_info.clone()),
+        }]);
 
         assert!(
             engine.project_reload_debouncer.cancel(&"workspace-reload"),
@@ -6702,8 +6748,12 @@ public class Foo {}"#;
 
         // Ensure both files are registered in the VFS and have Salsa inputs initialized.
         engine.apply_filesystem_events(vec![
-            NormalizedEvent::Created(main_path.clone()),
-            NormalizedEvent::Created(foo_path.clone()),
+            FileChange::Created {
+                path: VfsPath::local(main_path.clone()),
+            },
+            FileChange::Created {
+                path: VfsPath::local(foo_path.clone()),
+            },
         ]);
 
         let vfs_foo = VfsPath::local(foo_path.clone());
@@ -7405,5 +7455,98 @@ public class Bar {}"#;
         })
         .await
         .expect("timed out waiting for rescan to refresh file_content");
+
+    }
+
+    #[test]
+    fn watch_roots_update_after_project_reload_adds_external_generated_root() {
+        fn escape_toml_string(value: &str) -> String {
+            value.replace('\\', "\\\\")
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        fs::create_dir_all(root.join("src")).unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = root.canonicalize().unwrap();
+        fs::write(root.join("src/Main.java"), "class Main {}".as_bytes()).unwrap();
+
+        let workspace = crate::Workspace::open(&root).unwrap();
+        let engine = workspace.engine_for_tests();
+
+        let mut watcher = ManualFileWatcher::new();
+        let mut watch_root_manager = WatchRootManager::new(Duration::from_secs(2));
+
+        let t0 = Instant::now();
+
+        // Establish initial roots (workspace root only).
+        let _ = watch_root_manager.set_desired_roots(
+            compute_watch_roots(
+                &root,
+                &engine
+                    .watch_config
+                    .read()
+                    .expect("workspace watch config lock poisoned"),
+            )
+            .into_iter()
+            .collect(),
+            t0,
+            &mut watcher,
+        );
+        assert_eq!(
+            watcher.watch_calls(),
+            &[(root.clone(), WatchMode::Recursive)],
+            "expected initial watch to include only the workspace root"
+        );
+
+        // Update config to add an external generated-sources root.
+        let external = dir.path().join("external-generated");
+        fs::create_dir_all(&external).unwrap();
+        let external = external.canonicalize().unwrap();
+
+        let config_path = root.join("nova.toml");
+        let escaped_external = escape_toml_string(external.to_string_lossy().as_ref());
+        fs::write(
+            &config_path,
+            format!("[generated_sources]\noverride_roots = [\"{escaped_external}\"]\n"),
+        )
+        .unwrap();
+
+        engine.reload_project_now(&[config_path]).unwrap();
+
+        {
+            let cfg = engine
+                .watch_config
+                .read()
+                .expect("workspace watch config lock poisoned");
+            assert!(
+                cfg.generated_source_roots.contains(&external),
+                "expected reload to update watcher config with external root"
+            );
+        }
+
+        // One "watch loop" step should reconcile roots against the updated config.
+        let _ = watch_root_manager.set_desired_roots(
+            compute_watch_roots(
+                &root,
+                &engine
+                    .watch_config
+                    .read()
+                    .expect("workspace watch config lock poisoned"),
+            )
+            .into_iter()
+            .collect(),
+            t0,
+            &mut watcher,
+        );
+
+        assert_eq!(
+            watcher.watch_calls(),
+            &[
+                (root.clone(), WatchMode::Recursive),
+                (external.clone(), WatchMode::Recursive),
+            ],
+            "expected watcher to begin watching newly configured external root"
+        );
     }
 }

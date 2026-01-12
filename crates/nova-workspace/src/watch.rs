@@ -16,45 +16,6 @@ pub enum ChangeCategory {
     Build,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NormalizedEvent {
-    Created(PathBuf),
-    Modified(PathBuf),
-    Deleted(PathBuf),
-    Moved { from: PathBuf, to: PathBuf },
-}
-
-impl NormalizedEvent {
-    pub fn from_file_change(change: &FileChange) -> Option<Self> {
-        match change {
-            FileChange::Created { path } => Some(NormalizedEvent::Created(
-                path.as_local_path()?.to_path_buf(),
-            )),
-            FileChange::Modified { path } => Some(NormalizedEvent::Modified(
-                path.as_local_path()?.to_path_buf(),
-            )),
-            FileChange::Deleted { path } => Some(NormalizedEvent::Deleted(
-                path.as_local_path()?.to_path_buf(),
-            )),
-            FileChange::Moved { from, to } => Some(NormalizedEvent::Moved {
-                from: from.as_local_path()?.to_path_buf(),
-                to: to.as_local_path()?.to_path_buf(),
-            }),
-        }
-    }
-
-    pub fn paths(&self) -> impl Iterator<Item = &Path> {
-        let (first, second) = match self {
-            NormalizedEvent::Created(p)
-            | NormalizedEvent::Modified(p)
-            | NormalizedEvent::Deleted(p) => (p.as_path(), None),
-            NormalizedEvent::Moved { from, to } => (from.as_path(), Some(to.as_path())),
-        };
-
-        std::iter::once(first).chain(second.into_iter())
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct WatchConfig {
     /// Workspace root (used to classify `.java` files).
@@ -88,11 +49,11 @@ impl WatchConfig {
             workspace_root: normalize_watch_path(workspace_root),
             source_roots: source_roots
                 .into_iter()
-                .map(|root| normalize_watch_path(root))
+                .map(normalize_watch_path)
                 .collect(),
             generated_source_roots: generated_source_roots
                 .into_iter()
-                .map(|root| normalize_watch_path(root))
+                .map(normalize_watch_path)
                 .collect(),
             module_roots: Vec::new(),
             nova_config_path: None,
@@ -100,13 +61,14 @@ impl WatchConfig {
     }
 }
 
-pub fn categorize_event(config: &WatchConfig, event: &NormalizedEvent) -> Option<ChangeCategory> {
+pub fn categorize_event(config: &WatchConfig, change: &FileChange) -> Option<ChangeCategory> {
     // Normalize event paths before categorization so drive-letter case (`c:` vs `C:` on Windows)
     // and dot segments (`a/../b`) don't affect source-root/build-file matching.
     //
     // This does **not** resolve symlinks; it is purely lexical normalization via `nova-vfs`.
-    let paths: Vec<PathBuf> = event
+    let paths: Vec<PathBuf> = change
         .paths()
+        .filter_map(|path| path.as_local_path())
         .map(|path| normalize_watch_path(path.to_path_buf()))
         .collect();
 
@@ -118,10 +80,29 @@ pub fn categorize_event(config: &WatchConfig, event: &NormalizedEvent) -> Option
         {
             return Some(ChangeCategory::Build);
         }
+
+        // `module-info.java` updates the JPMS module graph embedded in `ProjectConfig`. Treat it
+        // like a build change so we reload the project config instead of only updating file
+        // contents.
+        if path
+            .file_name()
+            .is_some_and(|name| name == "module-info.java")
+        {
+            return Some(ChangeCategory::Build);
+        }
+
         // Many build files are detected based on path components (e.g. ignoring `build/` output
         // directories). Use paths relative to the workspace root so absolute parent directories
         // (like `/home/user/build/...`) don't accidentally trip ignore heuristics.
-        let rel = path.strip_prefix(&config.workspace_root).unwrap_or(path);
+        let rel = path.strip_prefix(&config.workspace_root).unwrap_or_else(|_| {
+            config
+                .module_roots
+                .iter()
+                .chain(config.source_roots.iter())
+                .chain(config.generated_source_roots.iter())
+                .find_map(|root| path.strip_prefix(root).ok())
+                .unwrap_or(path.as_path())
+        });
         if is_build_file(rel) {
             return Some(ChangeCategory::Build);
         }
@@ -160,14 +141,20 @@ pub fn categorize_event(config: &WatchConfig, event: &NormalizedEvent) -> Option
     // Deleted directories no longer exist, so `is_dir()` can't detect them. Heuristic: if the
     // deleted/moved path has no extension and lives under the source tree, pass it through so the
     // workspace engine can decide whether it corresponds to a tracked directory.
-    match event {
-        NormalizedEvent::Deleted(path) => {
+    match change {
+        FileChange::Deleted { path } => {
+            let Some(path) = path.as_local_path() else {
+                return None;
+            };
             let path = normalize_watch_path(path.to_path_buf());
             if path.extension().is_none() && is_in_source_tree(&path) {
                 return Some(ChangeCategory::Source);
             }
         }
-        NormalizedEvent::Moved { from, to } => {
+        FileChange::Moved { from, to } => {
+            let (Some(from), Some(to)) = (from.as_local_path(), to.as_local_path()) else {
+                return None;
+            };
             let from = normalize_watch_path(from.to_path_buf());
             let to = normalize_watch_path(to.to_path_buf());
             if (from.extension().is_none() && is_in_source_tree(&from))
@@ -213,6 +200,8 @@ fn is_in_noisy_dir(path: &Path) -> bool {
 }
 
 pub fn is_build_file(path: &Path) -> bool {
+    // Some Nova build integrations write snapshot state under `.nova/queries`. These affect
+    // generated root discovery and/or classpath resolution, so treat them like build files.
     if path.ends_with(nova_build_model::GRADLE_SNAPSHOT_REL_PATH) {
         return true;
     }
@@ -336,6 +325,7 @@ pub fn is_build_file(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nova_vfs::VfsPath;
 
     #[test]
     fn build_file_changes_are_categorized_as_build() {
@@ -393,9 +383,6 @@ mod tests {
             root.join("some").join("pkg").join("BUILD"),
             root.join("some").join("pkg").join("BUILD.bazel"),
             root.join("tools").join("defs.bzl"),
-            root.join(".nova")
-                .join("apt-cache")
-                .join("generated-roots.json"),
             root.join("libs.versions.toml"),
             root.join("deps.versions.toml"),
             root.join("dependencies.gradle"),
@@ -418,7 +405,9 @@ mod tests {
                 "expected {} to be treated as a build file",
                 path.display()
             );
-            let event = NormalizedEvent::Modified(path.clone());
+            let event = FileChange::Modified {
+                path: VfsPath::local(path.clone()),
+            };
             assert_eq!(
                 categorize_event(&config, &event),
                 Some(ChangeCategory::Build),
@@ -474,7 +463,9 @@ mod tests {
                 "expected {} not to be treated as a build file",
                 path.display()
             );
-            let event = NormalizedEvent::Modified(path.clone());
+            let event = FileChange::Modified {
+                path: VfsPath::local(path.clone()),
+            };
             assert_ne!(
                 categorize_event(&config, &event),
                 Some(ChangeCategory::Build),
@@ -500,7 +491,9 @@ mod tests {
             path.display()
         );
 
-        let event = NormalizedEvent::Modified(path.clone());
+        let event = FileChange::Modified {
+            path: VfsPath::local(path.clone()),
+        };
         assert_eq!(
             categorize_event(&config, &event),
             Some(ChangeCategory::Build),
@@ -509,13 +502,23 @@ mod tests {
         );
 
         assert_eq!(
-            categorize_event(&config, &NormalizedEvent::Created(path.clone())),
+            categorize_event(
+                &config,
+                &FileChange::Created {
+                    path: VfsPath::local(path.clone())
+                }
+            ),
             Some(ChangeCategory::Build),
             "expected {} to be categorized as Build on create",
             path.display()
         );
         assert_eq!(
-            categorize_event(&config, &NormalizedEvent::Deleted(path.clone())),
+            categorize_event(
+                &config,
+                &FileChange::Deleted {
+                    path: VfsPath::local(path.clone())
+                }
+            ),
             Some(ChangeCategory::Build),
             "expected {} to be categorized as Build on delete",
             path.display()
@@ -525,9 +528,9 @@ mod tests {
         assert_eq!(
             categorize_event(
                 &config,
-                &NormalizedEvent::Moved {
-                    from: path.clone(),
-                    to: other.clone(),
+                &FileChange::Moved {
+                    from: VfsPath::local(path.clone()),
+                    to: VfsPath::local(other.clone())
                 }
             ),
             Some(ChangeCategory::Build),
@@ -537,9 +540,9 @@ mod tests {
         assert_eq!(
             categorize_event(
                 &config,
-                &NormalizedEvent::Moved {
-                    from: other,
-                    to: path.clone(),
+                &FileChange::Moved {
+                    from: VfsPath::local(other),
+                    to: VfsPath::local(path.clone())
                 }
             ),
             Some(ChangeCategory::Build),
@@ -574,9 +577,9 @@ mod tests {
     #[test]
     fn gradle_snapshot_file_change_is_categorized_as_build() {
         let config = WatchConfig::new(PathBuf::from("/x"));
-        let event = NormalizedEvent::Modified(
-            PathBuf::from("/x").join(nova_build_model::GRADLE_SNAPSHOT_REL_PATH),
-        );
+        let event = FileChange::Modified {
+            path: VfsPath::local(PathBuf::from("/x").join(nova_build_model::GRADLE_SNAPSHOT_REL_PATH)),
+        };
         assert_eq!(
             categorize_event(&config, &event),
             Some(ChangeCategory::Build)
@@ -595,7 +598,9 @@ mod tests {
         let root = PathBuf::from("/tmp/workspace");
         let config = WatchConfig::new(root.clone());
         let module_info = root.join("src/main/java/module-info.java");
-        let event = NormalizedEvent::Modified(module_info);
+        let event = FileChange::Modified {
+            path: VfsPath::local(module_info),
+        };
         assert_eq!(
             categorize_event(&config, &event),
             Some(ChangeCategory::Build)
@@ -608,7 +613,9 @@ mod tests {
         let config = WatchConfig::new(root.clone());
         let path = root.join("Example.java");
         assert!(!is_build_file(&path));
-        let event = NormalizedEvent::Modified(path);
+        let event = FileChange::Modified {
+            path: VfsPath::local(path),
+        };
         assert_eq!(
             categorize_event(&config, &event),
             Some(ChangeCategory::Source)
@@ -634,7 +641,9 @@ mod tests {
             path.display()
         );
 
-        let event = NormalizedEvent::Modified(path);
+        let event = FileChange::Modified {
+            path: VfsPath::local(path),
+        };
         assert_eq!(
             categorize_event(&config, &event),
             Some(ChangeCategory::Source)
@@ -648,11 +657,15 @@ mod tests {
         config.source_roots = vec![root.join("src/main/java")];
 
         let path = root.join("Scratch.java");
-        let event = NormalizedEvent::Modified(path);
+        let event = FileChange::Modified {
+            path: VfsPath::local(path),
+        };
         assert_eq!(categorize_event(&config, &event), None);
 
         let in_root = root.join("src/main/java/Example.java");
-        let event = NormalizedEvent::Modified(in_root);
+        let event = FileChange::Modified {
+            path: VfsPath::local(in_root),
+        };
         assert_eq!(
             categorize_event(&config, &event),
             Some(ChangeCategory::Source)
@@ -666,15 +679,30 @@ mod tests {
         let module_info = root.join("src/module-info.java");
 
         assert_eq!(
-            categorize_event(&config, &NormalizedEvent::Modified(module_info.clone())),
+            categorize_event(
+                &config,
+                &FileChange::Modified {
+                    path: VfsPath::local(module_info.clone())
+                }
+            ),
             Some(ChangeCategory::Build)
         );
         assert_eq!(
-            categorize_event(&config, &NormalizedEvent::Created(module_info.clone())),
+            categorize_event(
+                &config,
+                &FileChange::Created {
+                    path: VfsPath::local(module_info.clone())
+                }
+            ),
             Some(ChangeCategory::Build)
         );
         assert_eq!(
-            categorize_event(&config, &NormalizedEvent::Deleted(module_info.clone())),
+            categorize_event(
+                &config,
+                &FileChange::Deleted {
+                    path: VfsPath::local(module_info.clone())
+                }
+            ),
             Some(ChangeCategory::Build)
         );
     }
@@ -689,9 +717,9 @@ mod tests {
         assert_eq!(
             categorize_event(
                 &config,
-                &NormalizedEvent::Moved {
-                    from: module_info.clone(),
-                    to: other.clone(),
+                &FileChange::Moved {
+                    from: VfsPath::local(module_info.clone()),
+                    to: VfsPath::local(other.clone())
                 }
             ),
             Some(ChangeCategory::Build)
@@ -699,9 +727,9 @@ mod tests {
         assert_eq!(
             categorize_event(
                 &config,
-                &NormalizedEvent::Moved {
-                    from: other,
-                    to: module_info,
+                &FileChange::Moved {
+                    from: VfsPath::local(other),
+                    to: VfsPath::local(module_info)
                 }
             ),
             Some(ChangeCategory::Build)
@@ -716,11 +744,10 @@ mod tests {
             vec![PathBuf::from("/tmp/ws/module/../gen")],
         );
 
-        let event = NormalizedEvent::Modified(PathBuf::from("/tmp/ws/gen/A.java"));
-        assert_eq!(
-            categorize_event(&config, &event),
-            Some(ChangeCategory::Source)
-        );
+        let event = FileChange::Modified {
+            path: VfsPath::local(PathBuf::from("/tmp/ws/gen/A.java")),
+        };
+        assert_eq!(categorize_event(&config, &event), Some(ChangeCategory::Source));
     }
 
     #[test]
@@ -731,21 +758,21 @@ mod tests {
             vec![PathBuf::from("/tmp/ws/gen")],
         );
 
-        let event = NormalizedEvent::Modified(PathBuf::from("/tmp/ws/module/../gen/A.java"));
-        assert_eq!(
-            categorize_event(&config, &event),
-            Some(ChangeCategory::Source)
-        );
+        let event = FileChange::Modified {
+            // Intentionally preserve `..` segments to ensure the categorizer's lexical
+            // normalization logic is exercised.
+            path: VfsPath::Local(PathBuf::from("/tmp/ws/module/../gen/A.java")),
+        };
+        assert_eq!(categorize_event(&config, &event), Some(ChangeCategory::Source));
     }
 
     #[test]
     fn workspace_root_with_dotdot_segments_matches_event_path_when_no_configured_roots() {
         let config = WatchConfig::new(PathBuf::from("/tmp/ws/module/.."));
-        let event = NormalizedEvent::Modified(PathBuf::from("/tmp/ws/A.java"));
-        assert_eq!(
-            categorize_event(&config, &event),
-            Some(ChangeCategory::Source)
-        );
+        let event = FileChange::Modified {
+            path: VfsPath::local(PathBuf::from("/tmp/ws/A.java")),
+        };
+        assert_eq!(categorize_event(&config, &event), Some(ChangeCategory::Source));
     }
 
     #[cfg(windows)]
@@ -758,11 +785,10 @@ mod tests {
         );
 
         // Intentionally use the opposite drive-letter case from the configured root.
-        let event = NormalizedEvent::Modified(PathBuf::from(r"C:\ws\src\A.java"));
-        assert_eq!(
-            categorize_event(&config, &event),
-            Some(ChangeCategory::Source)
-        );
+        let event = FileChange::Modified {
+            path: VfsPath::local(PathBuf::from(r"C:\ws\src\A.java")),
+        };
+        assert_eq!(categorize_event(&config, &event), Some(ChangeCategory::Source));
     }
 
     #[test]
@@ -777,7 +803,9 @@ mod tests {
         assert_eq!(
             categorize_event(
                 &config,
-                &NormalizedEvent::Modified(root.join("dependencies.gradle"))
+                &FileChange::Modified {
+                    path: VfsPath::local(root.join("dependencies.gradle"))
+                }
             ),
             Some(ChangeCategory::Build),
             "root-level Gradle script plugins should be treated as build changes"
@@ -785,7 +813,9 @@ mod tests {
         assert_eq!(
             categorize_event(
                 &config,
-                &NormalizedEvent::Modified(root.join("libs.versions.toml"))
+                &FileChange::Modified {
+                    path: VfsPath::local(root.join("libs.versions.toml"))
+                }
             ),
             Some(ChangeCategory::Build),
             "root-level version catalogs should be treated as build changes"
@@ -795,7 +825,9 @@ mod tests {
         assert_ne!(
             categorize_event(
                 &config,
-                &NormalizedEvent::Modified(root.join("build/dependencies.gradle"))
+                &FileChange::Modified {
+                    path: VfsPath::local(root.join("build/dependencies.gradle"))
+                }
             ),
             Some(ChangeCategory::Build),
             "files under workspace build/ should not be treated as build changes"
@@ -819,7 +851,9 @@ mod tests {
             let mut config = WatchConfig::new(workspace_root.clone());
             config.nova_config_path = Some(config_path.clone());
 
-            let event = NormalizedEvent::Modified(config_path);
+            let event = FileChange::Modified {
+                path: VfsPath::local(config_path),
+            };
             assert_eq!(
                 categorize_event(&config, &event),
                 Some(ChangeCategory::Build)

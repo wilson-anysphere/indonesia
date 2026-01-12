@@ -28,7 +28,7 @@ mod watch_roots;
 pub use engine::{IndexProgress, WatcherHandle, WorkspaceEvent, WorkspaceStatus};
 pub use nova_index::SearchSymbol as WorkspaceSymbol;
 pub use snapshot::WorkspaceSnapshot;
-pub use watch::{ChangeCategory, NormalizedEvent, WatchConfig};
+pub use watch::{ChangeCategory, WatchConfig};
 
 /// A minimal, library-first backend for the `nova` CLI.
 ///
@@ -233,7 +233,7 @@ impl Workspace {
         self.engine.debug_configurations(&self.root)
     }
 
-    pub fn apply_filesystem_events(&self, events: Vec<NormalizedEvent>) {
+    pub fn apply_filesystem_events(&self, events: Vec<nova_vfs::FileChange>) {
         self.engine.apply_filesystem_events(events);
     }
 
@@ -1326,12 +1326,16 @@ mod fuzzy_symbol_tests {
     use super::*;
     use nova_index::SymbolLocation;
 
-    fn indexed(name: &str, location: SymbolLocation) -> nova_index::IndexedSymbol {
-        nova_index::IndexedSymbol {
+    fn indexed_symbol(name: &str, file: &str) -> IndexedSymbol {
+        IndexedSymbol {
             qualified_name: name.to_string(),
             kind: nova_index::IndexSymbolKind::Class,
             container_name: None,
-            location,
+            location: SymbolLocation {
+                file: file.to_string(),
+                line: 1,
+                column: 1,
+            },
             ast_id: 0,
         }
     }
@@ -1355,39 +1359,9 @@ mod fuzzy_symbol_tests {
         let memory = MemoryManager::new(MemoryBudget::from_total(256 * nova_memory::MB));
         let searcher = WorkspaceSymbolSearcher::new(&memory);
         let mut symbols = nova_index::SymbolIndex::default();
-        symbols.insert(
-            "HashMap",
-            indexed(
-                "HashMap",
-                SymbolLocation {
-                    file: "A.java".into(),
-                    line: 1,
-                    column: 1,
-                },
-            ),
-        );
-        symbols.insert(
-            "HashSet",
-            indexed(
-                "HashSet",
-                SymbolLocation {
-                    file: "B.java".into(),
-                    line: 1,
-                    column: 1,
-                },
-            ),
-        );
-        symbols.insert(
-            "FooBar",
-            indexed(
-                "FooBar",
-                SymbolLocation {
-                    file: "C.java".into(),
-                    line: 1,
-                    column: 1,
-                },
-            ),
-        );
+        symbols.insert("HashMap", indexed_symbol("HashMap", "A.java"));
+        symbols.insert("HashSet", indexed_symbol("HashSet", "B.java"));
+        symbols.insert("FooBar", indexed_symbol("FooBar", "C.java"));
 
         let (_results, stats) =
             fuzzy_rank_workspace_symbols(searcher.as_ref(), &symbols, "Hash", 10, true);
@@ -1400,17 +1374,7 @@ mod fuzzy_symbol_tests {
         let memory = MemoryManager::new(MemoryBudget::from_total(256 * nova_memory::MB));
         let searcher = WorkspaceSymbolSearcher::new(&memory);
         let mut symbols = nova_index::SymbolIndex::default();
-        symbols.insert(
-            "FooBar",
-            indexed(
-                "FooBar",
-                SymbolLocation {
-                    file: "A.java".into(),
-                    line: 1,
-                    column: 1,
-                },
-            ),
-        );
+        symbols.insert("FooBar", indexed_symbol("FooBar", "A.java"));
 
         let (results, _stats) =
             fuzzy_rank_workspace_symbols(searcher.as_ref(), &symbols, "fb", 10, true);
@@ -1547,54 +1511,22 @@ mod fuzzy_symbol_tests {
         let searcher = WorkspaceSymbolSearcher::new(&memory);
 
         let mut shard0 = ProjectIndexes::default();
-        shard0.symbols.insert(
-            "Alpha",
-            indexed(
-                "Alpha",
-                SymbolLocation {
-                    file: "pkg/Alpha.java".into(),
-                    line: 1,
-                    column: 1,
-                },
-            ),
-        );
-        shard0.symbols.insert(
-            "Dup",
-            indexed(
-                "Dup",
-                SymbolLocation {
-                    file: "com/foo/Dup.java".into(),
-                    line: 1,
-                    column: 1,
-                },
-            ),
-        );
+        shard0
+            .symbols
+            .insert("Alpha", indexed_symbol("Alpha", "pkg/Alpha.java"));
+        shard0
+            .symbols
+            .insert("Dup", indexed_symbol("Dup", "com/foo/Dup.java"));
 
         let shard1 = ProjectIndexes::default(); // empty shard should not panic
 
         let mut shard2 = ProjectIndexes::default();
-        shard2.symbols.insert(
-            "Dup",
-            indexed(
-                "Dup",
-                SymbolLocation {
-                    file: "com/bar/Dup.java".into(),
-                    line: 1,
-                    column: 1,
-                },
-            ),
-        );
-        shard2.symbols.insert(
-            "Zulu",
-            indexed(
-                "Zulu",
-                SymbolLocation {
-                    file: "pkg/Zulu.java".into(),
-                    line: 1,
-                    column: 1,
-                },
-            ),
-        );
+        shard2
+            .symbols
+            .insert("Dup", indexed_symbol("Dup", "com/bar/Dup.java"));
+        shard2
+            .symbols
+            .insert("Zulu", indexed_symbol("Zulu", "pkg/Zulu.java"));
 
         let shards = vec![shard0, shard1, shard2];
 
