@@ -120,6 +120,12 @@ fn gradle_snapshot_overrides_project_dir_and_populates_module_config() {
     // mismatch and the snapshot handoff would be ignored.
     std::fs::write(workspace_root.join("deps.gradle"), "").unwrap();
     std::fs::write(workspace_root.join("deps.gradle.kts"), "").unwrap();
+
+    // Nested applied script plugin (ensures fingerprinting includes `.gradle` script plugins that
+    // are not at the workspace root).
+    let script_plugin = workspace_root.join("gradle/custom.gradle");
+    std::fs::create_dir_all(script_plugin.parent().unwrap()).unwrap();
+    std::fs::write(&script_plugin, "// custom script plugin").unwrap();
     let version_catalog = workspace_root.join("gradle").join("libs.versions.toml");
     std::fs::create_dir_all(version_catalog.parent().unwrap()).unwrap();
     std::fs::write(&version_catalog, "[versions]\nexample = \"1.0\"\n").unwrap();

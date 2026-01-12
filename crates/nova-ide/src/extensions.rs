@@ -1067,7 +1067,6 @@ where
                 source,
                 &cancel,
                 &uri,
-                &cancel,
                 span,
                 &diagnostics,
             ));
