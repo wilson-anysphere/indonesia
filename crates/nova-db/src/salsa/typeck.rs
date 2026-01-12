@@ -15,7 +15,7 @@ use nova_resolve::{NameResolution, Resolution, ScopeKind, StaticMemberResolution
 use nova_resolve::jpms_env::JpmsCompilationEnvironment;
 use nova_types::{
     assignment_conversion, binary_numeric_promotion, format_resolved_method, format_type, CallKind,
-    ClassDef, ClassKind, Diagnostic, FieldDef, MethodCall, MethodCandidateFailureReason,
+    ClassDef, ClassId, ClassKind, Diagnostic, FieldDef, MethodCall, MethodCandidateFailureReason,
     MethodDef, MethodNotFound, MethodResolution, PrimitiveType,
     ResolvedMethod, Span, TyContext, Type, TypeEnv, TypeProvider, TypeStore, TypeVarId,
 };
@@ -275,11 +275,9 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
     };
 
     let resolver = if let Some(index) = jpms_index.as_ref() {
-        nova_resolve::Resolver::new(index).with_workspace(&workspace)
+        nova_resolve::Resolver::new(index)
     } else {
-        nova_resolve::Resolver::new(&*jdk)
-            .with_classpath(&workspace_index)
-            .with_workspace(&workspace)
+        nova_resolve::Resolver::new(&*jdk).with_classpath(&workspace_index)
     };
 
     let scopes = db.scope_graph(file);
@@ -615,6 +613,215 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
 
     fn check_body(&mut self, loader: &mut ExternalTypeLoader<'_>) {
         self.check_stmt(loader, self.body.root);
+    }
+
+    fn ensure_workspace_class(
+        &mut self,
+        loader: &mut ExternalTypeLoader<'_>,
+        binary_name: &str,
+    ) -> Option<ClassId> {
+        if let Some(id) = loader.store.lookup_class(binary_name) {
+            return Some(id);
+        }
+
+        let file = def_file(self.owner);
+        let project = self.db.file_project(file);
+        let workspace = self.db.workspace_def_map(project);
+        let item = workspace.item_by_type_name(&TypeName::new(binary_name.to_string()))?;
+
+        let item_file = item.file();
+        let tree = self.db.hir_item_tree(item_file);
+        let scopes = self.db.scope_graph(item_file);
+
+        // Reserve the id early so self-referential members (e.g. `A next;`) can resolve to a stable
+        // `Type::Class` instead of forcing `Type::Named`.
+        let class_id = loader.store.intern_class_id(binary_name);
+
+        let kind = match item {
+            nova_hir::ids::ItemId::Interface(_) => ClassKind::Interface,
+            _ => ClassKind::Class,
+        };
+
+        let super_class = match kind {
+            ClassKind::Interface => None,
+            ClassKind::Class => {
+                if binary_name == "java.lang.Object" {
+                    None
+                } else {
+                    Some(Type::class(loader.store.well_known().object, vec![]))
+                }
+            }
+        };
+
+        let class_scope = scopes
+            .class_scopes
+            .get(&item)
+            .copied()
+            .unwrap_or(scopes.file_scope);
+
+        let members = match item {
+            nova_hir::ids::ItemId::Class(id) => tree
+                .classes
+                .get(&id.ast_id)
+                .map(|data| data.members.as_slice()),
+            nova_hir::ids::ItemId::Interface(id) => tree
+                .interfaces
+                .get(&id.ast_id)
+                .map(|data| data.members.as_slice()),
+            nova_hir::ids::ItemId::Enum(id) => tree
+                .enums
+                .get(&id.ast_id)
+                .map(|data| data.members.as_slice()),
+            nova_hir::ids::ItemId::Record(id) => tree
+                .records
+                .get(&id.ast_id)
+                .map(|data| data.members.as_slice()),
+            nova_hir::ids::ItemId::Annotation(id) => tree
+                .annotations
+                .get(&id.ast_id)
+                .map(|data| data.members.as_slice()),
+        };
+
+        let mut fields = Vec::new();
+        let mut methods = Vec::new();
+
+        if let Some(members) = members {
+            for member in members {
+                match *member {
+                    nova_hir::item_tree::Member::Field(fid) => {
+                        let Some(field) = tree.fields.get(&fid.ast_id) else {
+                            continue;
+                        };
+
+                        preload_type_names(
+                            self.resolver,
+                            &scopes.scopes,
+                            class_scope,
+                            loader,
+                            &field.ty,
+                        );
+                        let vars: HashMap<String, TypeVarId> = HashMap::new();
+                        let ty = nova_resolve::type_ref::resolve_type_ref_text(
+                            self.resolver,
+                            &scopes.scopes,
+                            class_scope,
+                            &*loader.store,
+                            &vars,
+                            &field.ty,
+                            None,
+                        )
+                        .ty;
+
+                        let is_static = field.modifiers.raw & Modifiers::STATIC != 0;
+                        let is_final = field.modifiers.raw & Modifiers::FINAL != 0;
+                        fields.push(FieldDef {
+                            name: field.name.clone(),
+                            ty,
+                            is_static,
+                            is_final,
+                        });
+                    }
+                    nova_hir::item_tree::Member::Method(mid) => {
+                        let Some(method) = tree.methods.get(&mid.ast_id) else {
+                            continue;
+                        };
+
+                        let scope = scopes
+                            .method_scopes
+                            .get(&mid)
+                            .copied()
+                            .unwrap_or(class_scope);
+                        let vars: HashMap<String, TypeVarId> = HashMap::new();
+
+                        let params = method
+                            .params
+                            .iter()
+                            .map(|p| {
+                                preload_type_names(
+                                    self.resolver,
+                                    &scopes.scopes,
+                                    scope,
+                                    loader,
+                                    &p.ty,
+                                );
+                                nova_resolve::type_ref::resolve_type_ref_text(
+                                    self.resolver,
+                                    &scopes.scopes,
+                                    scope,
+                                    &*loader.store,
+                                    &vars,
+                                    &p.ty,
+                                    None,
+                                )
+                                .ty
+                            })
+                            .collect::<Vec<_>>();
+
+                        preload_type_names(
+                            self.resolver,
+                            &scopes.scopes,
+                            scope,
+                            loader,
+                            &method.return_ty,
+                        );
+                        let return_type = nova_resolve::type_ref::resolve_type_ref_text(
+                            self.resolver,
+                            &scopes.scopes,
+                            scope,
+                            &*loader.store,
+                            &vars,
+                            &method.return_ty,
+                            None,
+                        )
+                        .ty;
+
+                        let is_static = method.modifiers.raw & Modifiers::STATIC != 0;
+                        methods.push(MethodDef {
+                            name: method.name.clone(),
+                            type_params: Vec::new(),
+                            params,
+                            return_type,
+                            is_static,
+                            is_varargs: false,
+                            is_abstract: method.body.is_none(),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        loader.store.define_class(
+            class_id,
+            ClassDef {
+                name: binary_name.to_string(),
+                kind,
+                type_params: Vec::new(),
+                super_class,
+                interfaces: Vec::new(),
+                fields,
+                constructors: Vec::new(),
+                methods,
+            },
+        );
+
+        Some(class_id)
+    }
+
+    fn ensure_type_loaded(&mut self, loader: &mut ExternalTypeLoader<'_>, ty: &Type) {
+        match ty {
+            Type::Class(nova_types::ClassType { def, .. }) => {
+                let Some(name) = loader.store.class(*def).map(|def| def.name.clone()) else {
+                    return;
+                };
+                let _ = loader.ensure_class(&name);
+            }
+            Type::Named(name) => {
+                let _ = self.ensure_workspace_class(loader, name);
+                let _ = loader.ensure_class(name);
+            }
+            _ => {}
+        }
     }
 
     fn check_stmt(&mut self, loader: &mut ExternalTypeLoader<'_>, stmt: nova_hir::hir::StmtId) {
@@ -1246,6 +1453,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             .ensure_class(owner)
             .map(|id| Type::class(id, vec![]))
             .unwrap_or_else(|| Type::Named(owner.to_string()));
+        self.ensure_type_loaded(loader, &receiver);
 
         {
             let env_ro: &dyn TypeEnv = &*loader.store;
@@ -1287,7 +1495,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             };
         }
 
-        ensure_type_loaded(loader, &recv_ty);
+        self.ensure_type_loaded(loader, &recv_ty);
 
         if recv_info.is_type_ref {
             // Static access: field or nested type.
@@ -1303,7 +1511,10 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             // Nested class (binary `$` form).
             if let Some(binary) = type_binary_name(loader.store, &recv_ty) {
                 let nested = format!("{binary}${name}");
-                if let Some(id) = loader.ensure_class(&nested) {
+                let id = self
+                    .ensure_workspace_class(loader, &nested)
+                    .or_else(|| loader.ensure_class(&nested));
+                if let Some(id) = id {
                     return ExprInfo {
                         ty: Type::class(id, vec![]),
                         is_type_ref: true,
@@ -1350,7 +1561,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     CallKind::Instance
                 };
                 let recv_ty = recv_info.ty.clone();
-                ensure_type_loaded(loader, &recv_ty);
+                self.ensure_type_loaded(loader, &recv_ty);
 
                 let arg_types = args
                     .iter()
@@ -1420,7 +1631,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 // call kind for the current static/instance context), then fall back to
                 // static-imported methods.
                 if let Some(receiver_ty) = self.enclosing_class_type(loader) {
-                    ensure_type_loaded(loader, &receiver_ty);
+                    self.ensure_type_loaded(loader, &receiver_ty);
 
                     let is_static_context = self.is_static_context();
                     let call_kind = if is_static_context {
@@ -1533,7 +1744,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     .ensure_class(owner)
                     .map(|id| Type::class(id, vec![]))
                     .unwrap_or_else(|| Type::Named(owner.to_string()));
-                ensure_type_loaded(loader, &recv_ty);
+                self.ensure_type_loaded(loader, &recv_ty);
 
                 let call = MethodCall {
                     receiver: recv_ty,
@@ -2371,21 +2582,6 @@ fn is_primitive_or_keyword(word: &str) -> bool {
             | "super"
             | "var"
     )
-}
-
-fn ensure_type_loaded(loader: &mut ExternalTypeLoader<'_>, ty: &Type) {
-    match ty {
-        Type::Class(nova_types::ClassType { def, .. }) => {
-            let Some(name) = loader.store.class(*def).map(|def| def.name.clone()) else {
-                return;
-            };
-            let _ = loader.ensure_class(&name);
-        }
-        Type::Named(name) => {
-            let _ = loader.ensure_class(name);
-        }
-        _ => {}
-    }
 }
 
 fn type_binary_name(env: &TypeStore, ty: &Type) -> Option<String> {
