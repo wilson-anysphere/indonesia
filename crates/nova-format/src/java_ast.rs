@@ -716,7 +716,7 @@ impl<'a> TokenFormatState<'a> {
             }
             SyntaxKind::LBrace => {
                 self.write_indent(out);
-                if needs_space_before(self.last_sig.as_ref(), "{") {
+                if needs_space_before(self.last_sig.as_ref(), kind) {
                     self.ensure_space(out);
                 }
                 out.push('{');
@@ -829,7 +829,7 @@ impl<'a> TokenFormatState<'a> {
             }
             SyntaxKind::LParen => {
                 self.write_indent(out);
-                if needs_space_before(self.last_sig.as_ref(), text) {
+                if needs_space_before(self.last_sig.as_ref(), kind) {
                     self.ensure_space(out);
                 }
                 out.push('(');
@@ -948,29 +948,61 @@ fn is_word_token(kind: SyntaxKind, text: &str) -> bool {
         .is_some_and(|ch| ch.is_alphanumeric() || ch == '_' || ch == '$')
 }
 
-fn needs_space_before(last: Option<&SigToken>, next_text: &str) -> bool {
+fn needs_space_before(last: Option<&SigToken>, next_kind: SyntaxKind) -> bool {
     let Some(last) = last else {
         return false;
     };
 
-    if matches!(next_text, ")" | "]" | "}" | ";" | "," | "." | "::") {
+    if matches!(
+        next_kind,
+        SyntaxKind::RParen
+            | SyntaxKind::RBracket
+            | SyntaxKind::RBrace
+            | SyntaxKind::Semicolon
+            | SyntaxKind::Comma
+            | SyntaxKind::Dot
+            | SyntaxKind::DoubleColon
+    ) {
         return false;
     }
 
-    if matches!(last.text(), "(" | "[" | "<" | "." | "@" | "::") {
+    if matches!(
+        last.kind(),
+        Some(
+            SyntaxKind::LParen
+                | SyntaxKind::LBracket
+                | SyntaxKind::Less
+                | SyntaxKind::Dot
+                | SyntaxKind::At
+                | SyntaxKind::DoubleColon
+        )
+    ) {
         return false;
     }
 
-    if is_control_keyword(last.text()) && next_text == "(" {
+    if last
+        .kind()
+        .is_some_and(|kind| is_control_keyword_kind(kind))
+        && next_kind == SyntaxKind::LParen
+    {
         return true;
     }
 
-    if next_text == "{" {
-        return !matches!(last.text(), "(" | "[" | "." | "@" | "::");
+    if next_kind == SyntaxKind::LBrace {
+        return !matches!(
+            last.kind(),
+            Some(
+                SyntaxKind::LParen
+                    | SyntaxKind::LBracket
+                    | SyntaxKind::Dot
+                    | SyntaxKind::At
+                    | SyntaxKind::DoubleColon
+            )
+        );
     }
 
     match last {
-        SigToken::Token { kind, text } => is_word_token(*kind, text) && !matches!(next_text, "("),
+        SigToken::Token { kind, text } => is_word_token(*kind, text) && next_kind != SyntaxKind::LParen,
         SigToken::GenericClose { .. } => false,
     }
 }
@@ -988,26 +1020,47 @@ fn needs_space_between(last: Option<&SigToken>, next_kind: SyntaxKind, next_text
         return true;
     }
 
-    if matches!(next_text, ")" | "]" | "}" | ";" | "," | "." | "::") {
+    if matches!(
+        next_kind,
+        SyntaxKind::RParen
+            | SyntaxKind::RBracket
+            | SyntaxKind::RBrace
+            | SyntaxKind::Semicolon
+            | SyntaxKind::Comma
+            | SyntaxKind::Dot
+            | SyntaxKind::DoubleColon
+    ) {
         return false;
     }
-    if matches!(last.text(), "(" | "[" | "<" | "." | "@" | "::") {
+    if matches!(
+        last.kind(),
+        Some(
+            SyntaxKind::LParen
+                | SyntaxKind::LBracket
+                | SyntaxKind::Less
+                | SyntaxKind::Dot
+                | SyntaxKind::At
+                | SyntaxKind::DoubleColon
+        )
+    ) {
         return false;
     }
-    if is_assignment_operator(next_text) || is_assignment_operator(last.text()) {
+
+    let last_kind = last.kind().unwrap_or(SyntaxKind::Error);
+    if is_assignment_operator_kind(next_kind) || is_assignment_operator_kind(last_kind) {
         return true;
     }
-    if next_text == "@" {
+    if next_kind == SyntaxKind::At {
         return true;
     }
-    if is_control_keyword(last.text()) && next_text == "(" {
+    if is_control_keyword_kind(last_kind) && next_kind == SyntaxKind::LParen {
         return true;
     }
-    if last.text() == "," {
+    if last_kind == SyntaxKind::Comma {
         return true;
     }
 
-    if last.text() == "]" && is_word_token(next_kind, next_text) {
+    if last_kind == SyntaxKind::RBracket && is_word_token(next_kind, next_text) {
         return true;
     }
     match last {
@@ -1016,7 +1069,7 @@ fn needs_space_between(last: Option<&SigToken>, next_kind: SyntaxKind, next_text
                 return false;
             }
             // `List<String> foo` but not `List<String>()` / `List<String>[]` / `foo.<T>bar`.
-            if matches!(next_text, "(" | "[") {
+            if matches!(next_kind, SyntaxKind::LParen | SyntaxKind::LBracket) {
                 return false;
             }
             is_word_token(next_kind, next_text)
@@ -1027,17 +1080,33 @@ fn needs_space_between(last: Option<&SigToken>, next_kind: SyntaxKind, next_text
     }
 }
 
-fn is_assignment_operator(text: &str) -> bool {
+fn is_assignment_operator_kind(kind: SyntaxKind) -> bool {
     matches!(
-        text,
-        "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=" | ">>>="
+        kind,
+        SyntaxKind::Eq
+            | SyntaxKind::PlusEq
+            | SyntaxKind::MinusEq
+            | SyntaxKind::StarEq
+            | SyntaxKind::SlashEq
+            | SyntaxKind::PercentEq
+            | SyntaxKind::AmpEq
+            | SyntaxKind::PipeEq
+            | SyntaxKind::CaretEq
+            | SyntaxKind::LeftShiftEq
+            | SyntaxKind::RightShiftEq
+            | SyntaxKind::UnsignedRightShiftEq
     )
 }
 
-fn is_control_keyword(text: &str) -> bool {
+fn is_control_keyword_kind(kind: SyntaxKind) -> bool {
     matches!(
-        text,
-        "if" | "for" | "while" | "switch" | "catch" | "synchronized"
+        kind,
+        SyntaxKind::IfKw
+            | SyntaxKind::ForKw
+            | SyntaxKind::WhileKw
+            | SyntaxKind::SwitchKw
+            | SyntaxKind::CatchKw
+            | SyntaxKind::SynchronizedKw
     )
 }
 

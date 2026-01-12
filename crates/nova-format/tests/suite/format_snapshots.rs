@@ -722,6 +722,35 @@ class Foo {
 }
 
 #[test]
+fn ast_formatting_does_not_rewrite_string_template_text() {
+    let input = r#"
+class Foo {
+    void m(int x, int y, int limit) {
+        String commaOnly = STR.",";
+        String ops = STR."\{x}=\{y},\{x}(\{y})";
+        for (int i = 0; i < limit && STR.")".length() > 0; i++) {
+        }
+    }
+}
+"#;
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
+
+    assert!(
+        formatted.contains(r#"STR.",""#),
+        "expected formatter to preserve comma template text: {formatted}"
+    );
+    assert!(
+        formatted.contains(r#"STR."\{x}=\{y},\{x}(\{y})""#),
+        "expected formatter to preserve operator/punctuation template text: {formatted}"
+    );
+    assert!(
+        formatted.contains(r#"STR.")""#),
+        "expected formatter to preserve paren template text: {formatted}"
+    );
+}
+
+#[test]
 fn ast_formatting_is_idempotent_on_selected_fixtures() {
     // These fixtures exercise generics-heavy real-world patterns. The AST formatter is still
     // best-effort, but it must be stable across repeated passes.

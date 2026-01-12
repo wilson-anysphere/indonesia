@@ -10,10 +10,11 @@ String c=STR."\\{not_interp}";
 String semi=STR.";";String rbrace=STR."}";String lbrace=STR."{";
 int x=1;int y=2;
 String between=STR."\{x}}\{y}";
+String betweenOps=STR."\{x}=\{y},\{x}(\{y})";
 String keyword=STR."for";
 String d=STR."Lambda: \{() -> { return 1; }} done";
 String e=STR."Nested: \{STR."Inner \{name}"}";
-System.out.println(a+between+keyword+d+e);
+System.out.println(a+between+betweenOps+keyword+d+e);
 }
 }
 }
