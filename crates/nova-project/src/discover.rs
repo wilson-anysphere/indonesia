@@ -193,11 +193,10 @@ pub fn reload_project(
 
     let discovered_path = nova_config::discover_config_path(workspace_root);
     let reload_config = changed_files.iter().any(|changed| {
-        changed.ends_with(Path::new(".nova/apt-cache/generated-roots.json"))
-            || options
-                .nova_config_path
-                .as_ref()
-                .is_some_and(|p| p == changed)
+        options
+            .nova_config_path
+            .as_ref()
+            .is_some_and(|p| p == changed)
             || discovered_path.as_ref().is_some_and(|p| p == changed)
     });
 
@@ -219,7 +218,7 @@ pub fn reload_project(
     if changed_files.is_empty()
         || changed_files
             .iter()
-            .any(|path| is_build_file(config.build_system, path))
+            .any(|path| is_build_file(config.build_system, path) || is_apt_generated_roots_snapshot(path))
     {
         // Build files changed (or unknown change set): rescan the workspace root.
         return load_project_from_workspace_root(workspace_root, options);
@@ -240,6 +239,14 @@ pub fn reload_project(
 
     // Source-only changes: keep the config stable.
     Ok(config.clone())
+}
+
+fn is_apt_generated_roots_snapshot(path: &Path) -> bool {
+    // Nova uses `.nova/apt-cache/generated-roots.json` as a snapshot file for inferred generated
+    // source roots from annotation processing. This file is read on project load, but may change
+    // independently of build files or `nova.toml`, so treat it as a configuration-triggering file
+    // for reloads.
+    path.ends_with(Path::new(".nova").join("apt-cache").join("generated-roots.json"))
 }
 
 fn load_project_from_workspace_root(
