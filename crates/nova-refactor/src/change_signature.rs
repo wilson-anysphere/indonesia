@@ -5,6 +5,8 @@ use crate::edit::{
     WorkspaceEdit,
 };
 use nova_index::{Index, ReferenceKind, SymbolId, SymbolKind, TextRange};
+use nova_syntax::ast::{self, AstNode};
+use nova_syntax::parse_java;
 use nova_types::MethodId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -140,6 +142,12 @@ struct ParsedMethod {
     header_range: TextRange,
     body_range: Option<TextRange>,
     brace: char,
+}
+
+#[derive(Debug, Clone)]
+struct AnnotationValueRename {
+    annotation_name: String,
+    new_element_name: String,
 }
 
 pub fn change_signature(
@@ -876,8 +884,188 @@ fn collect_call_site_updates(
         ));
     }
 
+    // Special-case: Renaming the `value()` element of an annotation type breaks shorthand usages
+    // like `@Anno(expr)`. Java desugars those to `@Anno(value = expr)`, so after a rename the
+    // shorthand must be rewritten to an explicit element-value pair.
+    if let Some(rename) = annotation_value_rename_context(index, target, change) {
+        updates.extend(collect_annotation_value_rename_updates(
+            index,
+            &rename.annotation_name,
+            &rename.new_element_name,
+        ));
+    }
+
     updates.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.start.cmp(&b.1.start)));
     updates
+}
+
+fn annotation_value_rename_context(
+    index: &Index,
+    target: &ParsedMethod,
+    change: &ChangeSignature,
+) -> Option<AnnotationValueRename> {
+    let new_name = change.new_name.as_deref()?;
+    if new_name == "value" {
+        return None;
+    }
+    if target.name != "value" {
+        return None;
+    }
+    if !target.params.is_empty() {
+        return None;
+    }
+
+    let sym = index.find_symbol(SymbolId(target.method_id.0))?;
+    let text = index.file_text(&sym.file)?;
+    let parsed = parse_java(text);
+    let root = parsed.syntax();
+
+    // Locate the method declaration node corresponding to the target symbol (range match) and
+    // check whether it is declared inside an `@interface` (annotation type).
+    for method in root.descendants().filter_map(ast::MethodDeclaration::cast) {
+        let Some(name_tok) = method.name_token() else {
+            continue;
+        };
+        if syntax_token_range(&name_tok) != sym.name_range {
+            continue;
+        }
+
+        let param_count = method
+            .parameter_list()
+            .map(|list| list.parameters().count())
+            .unwrap_or(0);
+        if param_count != 0 {
+            return None;
+        }
+
+        let Some(annotation_ty) = method
+            .syntax()
+            .ancestors()
+            .find_map(ast::AnnotationTypeDeclaration::cast)
+        else {
+            return None;
+        };
+        let annotation_name = annotation_ty.name_token()?.text().to_string();
+
+        return Some(AnnotationValueRename {
+            annotation_name,
+            new_element_name: new_name.to_string(),
+        });
+    }
+
+    None
+}
+
+fn collect_annotation_value_rename_updates(
+    index: &Index,
+    annotation_name: &str,
+    new_element_name: &str,
+) -> Vec<(String, TextRange, String)> {
+    let mut updates = Vec::new();
+
+    for (file, text) in index.files() {
+        let parsed = parse_java(text);
+        let root = parsed.syntax();
+
+        for ann in root.descendants().filter_map(ast::Annotation::cast) {
+            let Some(name) = ann.name() else {
+                continue;
+            };
+            let name_text = name.text();
+            let simple = name_text.rsplit('.').next().unwrap_or(name_text.as_str());
+            if simple != annotation_name {
+                continue;
+            }
+
+            let Some(args) = ann.arguments() else {
+                continue;
+            };
+
+            let has_pairs = args.pairs().next().is_some();
+            let value = args.value();
+
+            // Conflicts: if the parse produced both a shorthand value and named pairs, skip.
+            if value.is_some() && has_pairs {
+                continue;
+            }
+
+            if let Some(value) = value {
+                // Shorthand `@Anno(expr)` form.
+                if has_pairs {
+                    continue;
+                }
+                let Some(inner_range) = annotation_args_inner_range(text, &args) else {
+                    continue;
+                };
+                let value_range = syntax_node_range(value.syntax());
+                let value_text = text
+                    .get(value_range.start..value_range.end)
+                    .unwrap_or_default()
+                    .trim();
+                if value_text.is_empty() {
+                    continue;
+                }
+                updates.push((
+                    file.clone(),
+                    inner_range,
+                    format!("{new_element_name} = {value_text}"),
+                ));
+            } else if has_pairs {
+                // Named pair `@Anno(value = expr)` form.
+                for pair in args.pairs() {
+                    let Some(name_tok) = pair.name_token() else {
+                        continue;
+                    };
+                    if name_tok.text() != "value" {
+                        continue;
+                    }
+                    updates.push((
+                        file.clone(),
+                        syntax_token_range(&name_tok),
+                        new_element_name.to_string(),
+                    ));
+                }
+            }
+        }
+    }
+
+    updates
+}
+
+fn annotation_args_inner_range(
+    source: &str,
+    args: &ast::AnnotationElementValuePairList,
+) -> Option<TextRange> {
+    let range = syntax_node_range(args.syntax());
+    if range.len() < 2 {
+        return None;
+    }
+
+    let bytes = source.as_bytes();
+    if bytes.get(range.start) != Some(&b'(') {
+        return None;
+    }
+    if bytes.get(range.end.saturating_sub(1)) != Some(&b')') {
+        return None;
+    }
+
+    Some(TextRange::new(range.start + 1, range.end - 1))
+}
+
+fn syntax_node_range(node: &nova_syntax::SyntaxNode) -> TextRange {
+    let range = node.text_range();
+    TextRange::new(
+        u32::from(range.start()) as usize,
+        u32::from(range.end()) as usize,
+    )
+}
+
+fn syntax_token_range(token: &nova_syntax::SyntaxToken) -> TextRange {
+    let range = token.text_range();
+    TextRange::new(
+        u32::from(range.start()) as usize,
+        u32::from(range.end()) as usize,
+    )
 }
 
 fn overload_candidates_after_change(

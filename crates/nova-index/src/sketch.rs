@@ -947,6 +947,8 @@ impl<'a> JavaSketchParser<'a> {
     fn parse_types(&mut self) -> Vec<ParsedClass> {
         let mut classes = Vec::new();
         while let Some((token, token_range)) = self.scan_identifier() {
+            // Best-effort: treat both `class` and `interface` (including annotation types
+            // declared via `@interface`) as top-level type containers for symbol discovery.
             let kind = match token.as_str() {
                 "class" => TypeKind::Class,
                 "interface" => TypeKind::Interface,

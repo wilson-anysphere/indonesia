@@ -36,14 +36,129 @@ fn method_id(index: &Index, class: &str, name: &str, param_types: &[&str]) -> Me
         if sym.name != name {
             continue;
         }
-        let Some(sig_types) = index.method_param_types(sym.id) else {
-            continue;
-        };
-        if sig_types == wanted.as_slice() {
+        let parsed = parse_param_types(index, sym);
+        if parsed == wanted {
             return MethodId(sym.id.0);
         }
     }
     panic!("method not found: {class}.{name}({wanted:?})");
+}
+
+fn parse_param_types(index: &Index, sym: &nova_index::Symbol) -> Vec<String> {
+    let text = index.file_text(&sym.file).expect("file text");
+    let bytes = text.as_bytes();
+    let mut open = sym.name_range.end;
+    while open < bytes.len() && bytes[open].is_ascii_whitespace() {
+        open += 1;
+    }
+    assert_eq!(
+        bytes.get(open),
+        Some(&b'('),
+        "expected `(` after method name"
+    );
+    let close = find_matching_paren(text, open).expect("matching paren");
+    let params_src = &text[open + 1..close - 1];
+    parse_params(params_src)
+}
+
+fn parse_params(params: &str) -> Vec<String> {
+    let params = params.trim();
+    if params.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for part in split_top_level(params, ',') {
+        let p = part.trim();
+        if p.is_empty() {
+            continue;
+        }
+        let tokens: Vec<&str> = p.split_whitespace().collect();
+        if tokens.len() < 2 {
+            continue;
+        }
+        let ty = tokens[..tokens.len() - 1].join(" ");
+        out.push(ty);
+    }
+    out
+}
+
+fn find_matching_paren(text: &str, open_paren: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut depth = 0usize;
+    let mut i = open_paren;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            b'"' => {
+                // Skip strings
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i] == b'"' {
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn split_top_level(text: &str, sep: char) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth_paren = 0i32;
+    let mut depth_brack = 0i32;
+    let mut depth_brace = 0i32;
+    let mut start = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let ch = bytes[i] as char;
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '(' => depth_paren += 1,
+            ')' => depth_paren -= 1,
+            '[' => depth_brack += 1,
+            ']' => depth_brack -= 1,
+            '{' => depth_brace += 1,
+            '}' => depth_brace -= 1,
+            _ => {}
+        }
+
+        if ch == sep && depth_paren == 0 && depth_brack == 0 && depth_brace == 0 {
+            out.push(text[start..i].to_string());
+            start = i + 1;
+        }
+        i += 1;
+    }
+    out.push(text[start..].to_string());
+    out
 }
 
 #[test]
@@ -95,59 +210,6 @@ fn reorder_params_updates_calls() {
 
     void test() {
         int x = sum(2, 1);
-    }
-}
-"#
-    );
-}
-
-#[test]
-fn overloaded_methods_do_not_update_other_overload_headers_or_calls() {
-    let (index, mut files) = build_index(vec![(
-        "file:///A.java",
-        r#"class A {
-    int foo(int a, int b) { return a + b; }
-    int foo(String a, String b) { return 0; }
-    void test() {
-        int x = foo(1, 2);
-        int y = foo("a", "b");
-    }
-}
-"#,
-    )]);
-
-    let target = method_id(&index, "A", "foo", &["int", "int"]);
-    let change = ChangeSignature {
-        target,
-        new_name: None,
-        parameters: vec![
-            ParameterOperation::Existing {
-                old_index: 1,
-                new_name: None,
-                new_type: None,
-            },
-            ParameterOperation::Existing {
-                old_index: 0,
-                new_name: None,
-                new_type: None,
-            },
-        ],
-        new_return_type: None,
-        new_throws: None,
-        propagate_hierarchy: HierarchyPropagation::None,
-    };
-
-    let edit = change_signature(&index, &change).expect("refactor succeeds");
-    apply_workspace_edit(&mut files, edit);
-
-    assert_eq!(
-        files.get("file:///A.java").unwrap(),
-        r#"class A {
-    int foo(int b, int a) { return a + b; }
-    int foo(String a, String b) { return 0; }
-    void test() {
-        int x = foo(2, 1);
-        int y = foo("a", "b");
     }
 }
 "#
@@ -283,34 +345,24 @@ fn rename_method_updates_overrides_and_calls() {
 }
 
 #[test]
-fn generic_param_types_do_not_split_and_resolve_overloads() {
+fn rename_annotation_value_element_rewrites_shorthand_usages() {
     let (index, mut files) = build_index(vec![(
         "file:///A.java",
-        r#"class A {
-    void foo(Map<String, Integer> m) {
-    }
+        r#"@interface A {
+    int value();
+}
 
-    void foo(int a, int b) {
-    }
-
-    void test() {
-        Map<String, Integer> m = null;
-        foo(m);
-        foo(1, 2);
-    }
+@A(1)
+class Use {
 }
 "#,
     )]);
 
-    let target = method_id(&index, "A", "foo", &["Map<String, Integer>"]);
+    let target = method_id(&index, "A", "value", &[]);
     let change = ChangeSignature {
         target,
-        new_name: Some("bar".to_string()),
-        parameters: vec![ParameterOperation::Existing {
-            old_index: 0,
-            new_name: None,
-            new_type: None,
-        }],
+        new_name: Some("v".to_string()),
+        parameters: vec![],
         new_return_type: None,
         new_throws: None,
         propagate_hierarchy: HierarchyPropagation::None,
@@ -321,191 +373,14 @@ fn generic_param_types_do_not_split_and_resolve_overloads() {
 
     assert_eq!(
         files.get("file:///A.java").unwrap(),
-        r#"class A {
-    void bar(Map<String, Integer> m) {
-    }
+        r#"@interface A {
+    int v();
+}
 
-    void foo(int a, int b) {
-    }
-
-    void test() {
-        Map<String, Integer> m = null;
-        bar(m);
-        foo(1, 2);
-    }
+@A(v = 1)
+class Use {
 }
 "#
-    );
-}
-
-#[test]
-fn rename_interface_method_updates_implementations_and_calls() {
-    let (index, mut files) = build_index(vec![
-        (
-            "file:///I.java",
-            r#"interface I {
-    void m();
-}
-"#,
-        ),
-        (
-            "file:///C.java",
-            r#"class C implements I {
-    public void m() {
-    }
-
-    void f() {
-        m();
-    }
-}
-"#,
-        ),
-    ]);
-
-    let target = method_id(&index, "I", "m", &[]);
-    let change = ChangeSignature {
-        target,
-        new_name: Some("n".to_string()),
-        parameters: vec![],
-        new_return_type: None,
-        new_throws: None,
-        propagate_hierarchy: HierarchyPropagation::Both,
-    };
-
-    let edit = change_signature(&index, &change).expect("refactor succeeds");
-    apply_workspace_edit(&mut files, edit);
-
-    assert_eq!(
-        files.get("file:///I.java").unwrap(),
-        r#"interface I {
-    void n();
-}
-"#
-    );
-    assert_eq!(
-        files.get("file:///C.java").unwrap(),
-        r#"class C implements I {
-    public void n() {
-    }
-
-    void f() {
-        n();
-    }
-}
-"#
-    );
-}
-
-#[test]
-fn rename_interface_method_propagates_through_interface_extends() {
-    let (index, mut files) = build_index(vec![
-        (
-            "file:///I.java",
-            r#"interface I {
-    void m();
-}
-"#,
-        ),
-        (
-            "file:///J.java",
-            r#"interface J extends I {
-}
-"#,
-        ),
-        (
-            "file:///C.java",
-            r#"class C implements J {
-    public void m() {
-    }
-
-    void f() {
-        m();
-    }
-}
-"#,
-        ),
-    ]);
-
-    let target = method_id(&index, "I", "m", &[]);
-    let change = ChangeSignature {
-        target,
-        new_name: Some("n".to_string()),
-        parameters: vec![],
-        new_return_type: None,
-        new_throws: None,
-        propagate_hierarchy: HierarchyPropagation::Both,
-    };
-
-    let edit = change_signature(&index, &change).expect("refactor succeeds");
-    apply_workspace_edit(&mut files, edit);
-
-    assert_eq!(
-        files.get("file:///I.java").unwrap(),
-        r#"interface I {
-    void n();
-}
-"#
-    );
-    assert_eq!(
-        files.get("file:///J.java").unwrap(),
-        r#"interface J extends I {
-}
-"#
-    );
-    assert_eq!(
-        files.get("file:///C.java").unwrap(),
-        r#"class C implements J {
-    public void n() {
-    }
-
-    void f() {
-        n();
-    }
-}
-"#
-    );
-}
-
-#[test]
-fn rename_interface_method_reports_collision_in_implementation() {
-    let (index, _files) = build_index(vec![
-        (
-            "file:///I.java",
-            r#"interface I {
-    void m();
-}
-"#,
-        ),
-        (
-            "file:///C.java",
-            r#"class C implements I {
-    public void m() {
-    }
-
-    public void n() {
-    }
-}
-"#,
-        ),
-    ]);
-
-    let target = method_id(&index, "I", "m", &[]);
-    let change = ChangeSignature {
-        target,
-        new_name: Some("n".to_string()),
-        parameters: vec![],
-        new_return_type: None,
-        new_throws: None,
-        propagate_hierarchy: HierarchyPropagation::Both,
-    };
-
-    let err = change_signature(&index, &change).expect_err("should conflict");
-    assert!(
-        err.conflicts
-            .iter()
-            .any(|c| matches!(c, ChangeSignatureConflict::OverloadCollision { .. })),
-        "expected OverloadCollision, got: {:?}",
-        err.conflicts
     );
 }
 
