@@ -106,6 +106,52 @@ describe('build integration polling', () => {
     expect(foundGuard).toBe(true);
   });
 
+  it('tracks lastReportedStatus per workspace to detect status transitions', async () => {
+    const sourceFile = await loadBuildIntegrationSourceFile();
+    const pollBuildStatusOnce = findArrowFunctionVariable(sourceFile, 'pollBuildStatusOnce');
+    expect(pollBuildStatusOnce).toBeDefined();
+
+    let foundPrevStatusRead = false;
+    let foundLastReportedStatusSet = false;
+
+    const visit = (node: ts.Node) => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === 'prevStatus' && node.initializer) {
+        const init = unwrapExpression(node.initializer);
+        if (
+          ts.isPropertyAccessExpression(init) &&
+          init.name.text === 'lastReportedStatus' &&
+          ts.isIdentifier(unwrapExpression(init.expression)) &&
+          (unwrapExpression(init.expression) as ts.Identifier).text === 'state'
+        ) {
+          foundPrevStatusRead = true;
+        }
+      }
+
+      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+        const left = unwrapExpression(node.left);
+        const right = unwrapExpression(node.right);
+        if (
+          ts.isPropertyAccessExpression(left) &&
+          left.name.text === 'lastReportedStatus' &&
+          ts.isIdentifier(unwrapExpression(left.expression)) &&
+          (unwrapExpression(left.expression) as ts.Identifier).text === 'state' &&
+          ts.isPropertyAccessExpression(right) &&
+          right.name.text === 'status' &&
+          ts.isIdentifier(unwrapExpression(right.expression)) &&
+          (unwrapExpression(right.expression) as ts.Identifier).text === 'result'
+        ) {
+          foundLastReportedStatusSet = true;
+        }
+      }
+
+      ts.forEachChild(node, visit);
+    };
+    visit(pollBuildStatusOnce!);
+
+    expect(foundPrevStatusRead).toBe(true);
+    expect(foundLastReportedStatusSet).toBe(true);
+  });
+
   it('queues a diagnostics refresh when a manual build command is in flight', async () => {
     const sourceFile = await loadBuildIntegrationSourceFile();
 
