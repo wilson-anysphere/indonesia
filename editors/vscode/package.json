@@ -15,7 +15,7 @@
   "categories": [
     "Programming Languages"
   ],
-  "activationEvents": [
+    "activationEvents": [
     "onLanguage:java",
     "onView:novaFrameworks",
     "onView:novaProjectExplorer",
@@ -51,11 +51,12 @@
     "onCommand:nova.frameworks.copyBeanType",
     "onCommand:nova.frameworks.revealInExplorer",
     "onCommand:nova.refreshProjectExplorer",
-    "onCommand:nova.showProjectModel",
-    "onCommand:nova.showProjectConfiguration",
-    "onCommand:nova.projectExplorer.revealPath",
-    "onDebug"
-  ],
+      "onCommand:nova.showProjectModel",
+      "onCommand:nova.showProjectConfiguration",
+      "onCommand:nova.projectExplorer.revealPath",
+      "onCommand:nova.projectExplorer.copyPath",
+      "onDebug"
+    ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
@@ -210,6 +211,10 @@
       {
         "command": "nova.projectExplorer.revealPath",
         "title": "Nova: Reveal Path"
+      },
+      {
+        "command": "nova.projectExplorer.copyPath",
+        "title": "Nova: Copy Path"
       }
     ],
     "views": {
@@ -374,6 +379,11 @@
           "command": "nova.reloadProject",
           "when": "view == novaProjectExplorer && viewItem == novaProjectExplorerUnit",
           "group": "inline"
+        },
+        {
+          "command": "nova.projectExplorer.copyPath",
+          "when": "view == novaProjectExplorer && viewItem == novaProjectExplorerPath",
+          "group": "clipboard@0"
         }
       ]
     },

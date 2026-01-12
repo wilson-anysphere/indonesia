@@ -141,11 +141,13 @@ type NovaProjectExplorerNode =
 const VIEW_ID = 'novaProjectExplorer';
 const CONTEXT_WORKSPACE = 'novaProjectExplorerWorkspace';
 const CONTEXT_UNIT = 'novaProjectExplorerUnit';
+const CONTEXT_PATH = 'novaProjectExplorerPath';
 
 const COMMAND_REFRESH = 'nova.refreshProjectExplorer';
 const COMMAND_SHOW_MODEL = 'nova.showProjectModel';
 const COMMAND_SHOW_CONFIG = 'nova.showProjectConfiguration';
 const COMMAND_REVEAL_PATH = 'nova.projectExplorer.revealPath';
+const COMMAND_COPY_PATH = 'nova.projectExplorer.copyPath';
 
 const CLASS_PATH_PAGE_SIZE = 200;
 const CONFIG_LIST_PAGE_SIZE = 200;
@@ -188,6 +190,12 @@ export function registerNovaProjectExplorer(
   context.subscriptions.push(
     vscode.commands.registerCommand(COMMAND_REVEAL_PATH, async (uri: vscode.Uri) => {
       await revealPath(uri);
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(COMMAND_COPY_PATH, async (arg?: unknown) => {
+      await copyPath(arg);
     }),
   );
 
@@ -947,6 +955,8 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
         }
         if (element.contextValue) {
           item.contextValue = element.contextValue;
+        } else if (element.uri) {
+          item.contextValue = CONTEXT_PATH;
         }
         item.iconPath = element.icon ?? item.iconPath;
         return item;
@@ -1336,6 +1346,48 @@ async function revealPath(uri: vscode.Uri): Promise<void> {
       // ignore
     }
   }
+}
+
+async function copyPath(arg: unknown): Promise<void> {
+  const text = extractPathText(arg);
+  if (!text) {
+    void vscode.window.showErrorMessage('Nova: no path selected.');
+    return;
+  }
+  await vscode.env.clipboard.writeText(text);
+  void vscode.window.setStatusBarMessage('Nova: copied path to clipboard', 2000);
+}
+
+function extractPathText(arg: unknown): string | undefined {
+  if (arg instanceof vscode.Uri) {
+    return arg.fsPath || arg.toString();
+  }
+
+  if (!arg || typeof arg !== 'object') {
+    return undefined;
+  }
+
+  const uri = (arg as { uri?: unknown }).uri;
+  if (uri instanceof vscode.Uri) {
+    return uri.fsPath || uri.toString();
+  }
+
+  const resourceUri = (arg as { resourceUri?: unknown }).resourceUri;
+  if (resourceUri instanceof vscode.Uri) {
+    return resourceUri.fsPath || resourceUri.toString();
+  }
+
+  const description = (arg as { description?: unknown }).description;
+  if (typeof description === 'string' && description.trim().length > 0) {
+    return description.trim();
+  }
+
+  const label = (arg as { label?: unknown }).label;
+  if (typeof label === 'string' && label.trim().length > 0) {
+    return label.trim();
+  }
+
+  return undefined;
 }
 
 async function showProjectModel(cache: ProjectModelCache, arg?: unknown): Promise<void> {
