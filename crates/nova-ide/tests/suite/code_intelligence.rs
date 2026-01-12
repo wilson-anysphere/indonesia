@@ -1616,6 +1616,23 @@ fn completion_in_import_includes_jdk_type() {
 }
 
 #[test]
+fn completion_in_import_after_type_prefix_includes_star() {
+    let (db, file, pos) = fixture(
+        r#"
+import java.util.Map.<|>;
+class A {}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"*"),
+        "expected completion list to contain `*` after type prefix; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_in_import_nested_type_segment_includes_entry() {
     let text_with_caret = r#"
 import java.util.Map.E<|>;

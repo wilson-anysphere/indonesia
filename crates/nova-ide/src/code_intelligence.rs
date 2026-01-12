@@ -2803,7 +2803,6 @@ fn import_completions(
     // segment (e.g. after a dot).
     if items.len() < MAX_ITEMS
         && !ctx.is_static
-        && nested_type_owner.is_none()
         && ctx.segment_prefix.is_empty()
         && !ctx.base_prefix.is_empty()
         && ctx.base_prefix.ends_with('.')
