@@ -121,6 +121,12 @@ npm run compile
 - **Nova: Reset Request Metrics** (`nova.resetRequestMetrics`)
   - Resets request metrics via `nova/resetMetrics` (available in safe mode).
 
+- **Nova: Search Framework Items…** (`nova.frameworks.search`)
+  - Search framework-derived navigation targets (web endpoints, Micronaut endpoints, Micronaut beans) and jump to the source location.
+
+- **Nova: Refresh Frameworks** (`nova.frameworks.refresh`)
+  - Refreshes the **Nova Frameworks** Explorer view.
+
 - **Nova: Discover Tests** (`nova.discoverTests`)
   - Sends `nova/test/discover` and prints discovered test IDs.
   - Also refreshes the VS Code Test Explorer tree.
