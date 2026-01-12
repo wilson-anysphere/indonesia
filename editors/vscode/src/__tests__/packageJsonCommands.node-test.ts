@@ -70,3 +70,24 @@ test('package.json contributes Nova Frameworks view context-menu commands', asyn
     assert.ok(menuCommands.has(id));
   }
 });
+
+test('package.json contributes Nova framework search command', async () => {
+  const pkgPath = path.resolve(__dirname, '../../package.json');
+  const raw = await fs.readFile(pkgPath, 'utf8');
+  const pkg = JSON.parse(raw) as {
+    activationEvents?: unknown;
+    contributes?: { commands?: unknown };
+  };
+
+  const activationEvents = Array.isArray(pkg.activationEvents) ? pkg.activationEvents : [];
+  const commands = Array.isArray(pkg.contributes?.commands) ? pkg.contributes.commands : [];
+
+  const commandIds = new Set(
+    commands
+      .map((entry) => (entry && typeof entry === 'object' ? (entry as { command?: unknown }).command : undefined))
+      .filter((id): id is string => typeof id === 'string'),
+  );
+
+  assert.ok(commandIds.has('nova.frameworks.search'));
+  assert.ok(activationEvents.includes('onCommand:nova.frameworks.search'));
+});

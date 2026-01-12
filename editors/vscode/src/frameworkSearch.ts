@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'node:path';
+import { formatUnsupportedNovaMethodMessage, isNovaMethodNotFoundError, isNovaRequestSupported } from './novaCapabilities';
 
 export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R>;
 
@@ -103,6 +104,11 @@ export function registerNovaFrameworkSearch(context: vscode.ExtensionContext, re
 
       try {
         const items = await fetchItemsForKind(kind, request, projectRoot);
+        if (!items) {
+          // Unsupported request methods (or already-reported errors) return `undefined` so
+          // we don't stack extra error messages on top of `sendNovaRequest`'s built-in UX.
+          return;
+        }
         if (items.length === 0) {
           void vscode.window.showInformationMessage('Nova: No framework items found.');
           return;
@@ -121,11 +127,6 @@ export function registerNovaFrameworkSearch(context: vscode.ExtensionContext, re
       } catch (err) {
         if (isSafeModeError(err)) {
           await showSafeModeError();
-          return;
-        }
-
-        if (isMethodNotFoundError(err)) {
-          void vscode.window.showErrorMessage('Nova: This Nova server does not support the requested framework search.');
           return;
         }
 
@@ -167,10 +168,13 @@ async function fetchItemsForKind(
   kind: FrameworkSearchKind,
   request: NovaRequest,
   projectRoot: string,
-): Promise<FrameworkPickItem[]> {
+): Promise<FrameworkPickItem[] | undefined> {
   switch (kind) {
     case 'web-endpoints': {
       const response = await fetchWebEndpoints(request, projectRoot);
+      if (!response) {
+        return undefined;
+      }
       const endpoints = response.endpoints;
       if (!Array.isArray(endpoints)) {
         throw new Error('Invalid response from nova/web/endpoints: expected endpoints array.');
@@ -205,7 +209,26 @@ async function fetchItemsForKind(
       return items;
     }
     case 'micronaut-endpoints': {
-      const response = await request<MicronautEndpointsResponse>('nova/micronaut/endpoints', { projectRoot });
+      const method = 'nova/micronaut/endpoints';
+      if (isNovaRequestSupported(method) === false) {
+        void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
+        return undefined;
+      }
+
+      let response: MicronautEndpointsResponse | undefined;
+      try {
+        response = await request<MicronautEndpointsResponse | undefined>(method, { projectRoot });
+      } catch (err) {
+        if (isNovaMethodNotFoundError(err)) {
+          void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
+          return undefined;
+        }
+        throw err;
+      }
+
+      if (!response) {
+        return undefined;
+      }
       validateMicronautSchemaVersion(response?.schemaVersion, 'nova/micronaut/endpoints');
 
       const endpoints = (response as MicronautEndpointsResponse).endpoints;
@@ -248,7 +271,26 @@ async function fetchItemsForKind(
       return items;
     }
     case 'micronaut-beans': {
-      const response = await request<MicronautBeansResponse>('nova/micronaut/beans', { projectRoot });
+      const method = 'nova/micronaut/beans';
+      if (isNovaRequestSupported(method) === false) {
+        void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
+        return undefined;
+      }
+
+      let response: MicronautBeansResponse | undefined;
+      try {
+        response = await request<MicronautBeansResponse | undefined>(method, { projectRoot });
+      } catch (err) {
+        if (isNovaMethodNotFoundError(err)) {
+          void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
+          return undefined;
+        }
+        throw err;
+      }
+
+      if (!response) {
+        return undefined;
+      }
       validateMicronautSchemaVersion(response?.schemaVersion, 'nova/micronaut/beans');
 
       const beans = (response as MicronautBeansResponse).beans;
@@ -285,16 +327,67 @@ async function fetchItemsForKind(
   }
 }
 
-async function fetchWebEndpoints(request: NovaRequest, projectRoot: string): Promise<WebEndpointsResponse> {
-  try {
-    return await request<WebEndpointsResponse>('nova/web/endpoints', { projectRoot });
-  } catch (err) {
-    if (isMethodNotFoundError(err)) {
-      // Older Nova builds exposed these endpoints under a Quarkus-specific method.
-      return await request<WebEndpointsResponse>('nova/quarkus/endpoints', { projectRoot });
+async function fetchWebEndpoints(request: NovaRequest, projectRoot: string): Promise<WebEndpointsResponse | undefined> {
+  const method = 'nova/web/endpoints';
+  const alias = 'nova/quarkus/endpoints';
+
+  const supportedWeb = isNovaRequestSupported(method);
+  const supportedAlias = isNovaRequestSupported(alias);
+
+  const candidates: string[] = [];
+  if (supportedWeb === true) {
+    candidates.push(method, alias);
+  } else if (supportedAlias === true) {
+    candidates.push(alias);
+    if (supportedWeb === 'unknown') {
+      candidates.push(method);
     }
-    throw err;
+  } else if (supportedWeb === false) {
+    if (supportedAlias !== false) {
+      candidates.push(alias);
+    }
+  } else if (supportedAlias === false) {
+    candidates.push(method);
+  } else {
+    // Prefer the alias when we don't have capability lists (older Nova builds).
+    candidates.push(alias, method);
   }
+
+  // De-dup candidates while preserving order.
+  const seen = new Set<string>();
+  const ordered = candidates.filter((entry) => (seen.has(entry) ? false : (seen.add(entry), true)));
+
+  if (ordered.length === 0) {
+    void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
+    return undefined;
+  }
+
+  let sawHandledUnsupported = false;
+  for (const candidate of ordered) {
+    try {
+      const resp = await request<WebEndpointsResponse | undefined>(candidate, { projectRoot });
+      if (!resp) {
+        // `sendNovaRequest` returns `undefined` for unsupported methods (after showing a message).
+        sawHandledUnsupported = true;
+        continue;
+      }
+      return resp;
+    } catch (err) {
+      if (isNovaMethodNotFoundError(err)) {
+        // Try the next candidate before surfacing an error.
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  // If the request layer didn't already surface an unsupported-method message (e.g. because it threw),
+  // show a single, consistent error.
+  if (!sawHandledUnsupported) {
+    void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
+  }
+
+  return undefined;
 }
 
 function validateMicronautSchemaVersion(schemaVersion: unknown, method: string): asserts schemaVersion is 1 {
@@ -416,30 +509,6 @@ function formatError(err: unknown): string {
   } catch {
     return String(err);
   }
-}
-
-function isMethodNotFoundError(err: unknown): boolean {
-  if (!err || typeof err !== 'object') {
-    return false;
-  }
-
-  const code = (err as { code?: unknown }).code;
-  if (code === -32601) {
-    return true;
-  }
-
-  const message = (err as { message?: unknown }).message;
-  // `nova-lsp` currently reports unknown `nova/*` custom methods as `-32602` with an
-  // "unknown (stateless) method" message (because everything is routed through a single dispatcher).
-  if (
-    code === -32602 &&
-    typeof message === 'string' &&
-    message.toLowerCase().includes('unknown (stateless) method')
-  ) {
-    return true;
-  }
-
-  return typeof message === 'string' && message.toLowerCase().includes('method not found');
 }
 
 function isSafeModeError(err: unknown): boolean {
