@@ -2549,26 +2549,23 @@ fn index_for_files(
 
     let db = SalsaDatabase::new();
     let root = SourceRootId::from_raw(shard_id);
-    let mut file_ids = Vec::with_capacity(files.len());
+    // Use a single `FileId` and overwrite inputs as we iterate to keep peak Salsa memo usage
+    // bounded. This avoids accumulating a full per-file parse + HIR cache when indexing many
+    // files for workspace symbol search.
+    let file_id = FileId::from_raw(0);
+    db.set_source_root(file_id, root);
 
-    for (idx, file) in files.into_iter().enumerate() {
-        Cancelled::check(cancel)?;
-        let file_id = FileId::from_raw(idx as u32);
-        db.set_file_exists(file_id, true);
-        db.set_source_root(file_id, root);
-        db.set_file_content(file_id, Arc::new(file.text));
-        file_ids.push((file_id, file.path));
-    }
-
-    let snap = db.snapshot();
     let mut symbols = Vec::new();
-    for (file_id, path) in file_ids {
+    for file in files {
         Cancelled::check(cancel)?;
-        let names = snap.hir_symbol_names(file_id);
+        db.set_file_exists(file_id, true);
+        db.set_file_content(file_id, Arc::new(file.text));
+
+        let names = db.with_snapshot(|snap| snap.hir_symbol_names(file_id));
         for name in names.iter() {
             symbols.push(Symbol {
                 name: name.clone(),
-                path: path.clone(),
+                path: file.path.clone(),
             });
         }
     }
