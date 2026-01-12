@@ -203,7 +203,10 @@ fn autowired_method_param_injection_resolves() {
         .iter()
         .position(|i| i.owner_class == "Bar" && i.ty == "Foo")
         .expect("missing Foo injection");
-    assert_eq!(analysis.model.injections[inj_idx].kind, InjectionKind::MethodParam);
+    assert_eq!(
+        analysis.model.injections[inj_idx].kind,
+        InjectionKind::MethodParam
+    );
     assert_eq!(analysis.model.injection_candidates[inj_idx].len(), 1);
 }
 

@@ -612,11 +612,7 @@ fn parse_class_body(
 
                 if collect_injections {
                     parse_autowired_method_param_injections(
-                        child,
-                        source_idx,
-                        source,
-                        class_name,
-                        injections,
+                        child, source_idx, source, class_name, injections,
                     );
                 }
             }

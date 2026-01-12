@@ -21,9 +21,8 @@ fn schema_fixture_path(name: impl AsRef<Path>) -> PathBuf {
 }
 
 fn assert_matches_schema_fixture<T: Serialize>(value: &T, fixture_name: &str) {
-    let actual = serde_json::to_string_pretty(value)
-        .expect("schema payload should serialize")
-        + "\n";
+    let actual =
+        serde_json::to_string_pretty(value).expect("schema payload should serialize") + "\n";
 
     let path = schema_fixture_path(fixture_name);
 

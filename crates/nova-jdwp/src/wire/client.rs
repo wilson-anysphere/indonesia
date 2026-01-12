@@ -2019,7 +2019,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connect_falls_back_to_legacy_capabilities_when_capabilities_new_is_unsupported_version() {
+    async fn connect_falls_back_to_legacy_capabilities_when_capabilities_new_is_unsupported_version(
+    ) {
         let mut capabilities = vec![false; 32];
         capabilities[1] = true; // canWatchFieldAccess
         capabilities[5] = true; // canGetCurrentContendedMonitor
