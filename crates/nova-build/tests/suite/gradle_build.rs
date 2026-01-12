@@ -412,6 +412,281 @@ fn build_for_buildsrc_uses_project_dir_flag_and_unprefixed_compile_task() {
 }
 
 #[test]
+fn java_compile_config_for_buildsrc_subproject_uses_project_dir_flag_and_translated_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+    std::fs::write(project_root.join("settings.gradle"), "").unwrap();
+
+    let plugins_dir = project_root.join("buildSrc").join("plugins");
+    std::fs::create_dir_all(&plugins_dir).unwrap();
+
+    let dep_jar = plugins_dir.join("deps.jar");
+    std::fs::write(&dep_jar, b"not a real jar").unwrap();
+
+    // When running Gradle against the nested `buildSrc/` build, the `projectPath` in the payload is
+    // relative to that build (so `:plugins`, not `:__buildSrc:plugins`).
+    let payload = serde_json::json!({
+        "projectPath": ":plugins",
+        "projectDir": plugins_dir.to_string_lossy(),
+        "compileClasspath": [dep_jar.to_string_lossy()],
+    });
+    let stdout = format!(
+        "NOVA_JSON_BEGIN\n{}\nNOVA_JSON_END\n",
+        serde_json::to_string(&payload).unwrap()
+    );
+
+    let runner = Arc::new(FakeGradleRunner::new(output(0, &stdout, "")));
+    let gradle = GradleBuild::with_runner(GradleConfig::default(), runner.clone());
+    let cache = BuildCache::new(tmp.path().join("cache"));
+
+    let _cfg = gradle
+        .java_compile_config(&project_root, Some(":__buildSrc:plugins"), &cache)
+        .unwrap();
+
+    let invocations = runner.invocations();
+    assert_eq!(invocations.len(), 1);
+    let args = &invocations[0].args;
+
+    let mut has_project_dir_flag = false;
+    for window in args.windows(2) {
+        if window[0] == "--project-dir" || window[0] == "-p" {
+            assert_eq!(window[1], "buildSrc");
+            has_project_dir_flag = true;
+        }
+    }
+    assert!(
+        has_project_dir_flag,
+        "expected `--project-dir buildSrc` (or `-p buildSrc`) in args, got {args:?}"
+    );
+
+    assert_eq!(
+        args.last().map(String::as_str),
+        Some(":plugins:printNovaJavaCompileConfig")
+    );
+    assert!(!args
+        .iter()
+        .any(|arg| arg == ":__buildSrc:plugins:printNovaJavaCompileConfig"));
+
+    // Snapshot should store this config under the *synthetic* path.
+    let snapshot_path = project_root.join(GRADLE_SNAPSHOT_REL_PATH);
+    let bytes = std::fs::read(snapshot_path).unwrap();
+    let snapshot: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let java_configs = snapshot
+        .get("javaCompileConfigs")
+        .and_then(|v| v.as_object())
+        .expect("expected javaCompileConfigs mapping in snapshot");
+    assert!(
+        java_configs.contains_key(":__buildSrc:plugins"),
+        "expected snapshot to include config for :__buildSrc:plugins, got keys {:?}",
+        java_configs.keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn annotation_processing_for_buildsrc_subproject_uses_project_dir_flag_and_translated_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+    std::fs::write(project_root.join("settings.gradle"), "").unwrap();
+
+    let plugins_dir = project_root.join("buildSrc").join("plugins");
+    std::fs::create_dir_all(&plugins_dir).unwrap();
+
+    let payload = serde_json::json!({
+        "projectPath": ":plugins",
+        "projectDir": plugins_dir.to_string_lossy(),
+        "main": {
+            "annotationProcessorPath": [],
+            "compilerArgs": [],
+            "generatedSourcesDir": null,
+        }
+    });
+    let stdout = format!(
+        "NOVA_APT_BEGIN\n{}\nNOVA_APT_END\n",
+        serde_json::to_string(&payload).unwrap()
+    );
+
+    let runner = Arc::new(FakeGradleRunner::new(output(0, &stdout, "")));
+    let gradle = GradleBuild::with_runner(GradleConfig::default(), runner.clone());
+    let cache = BuildCache::new(tmp.path().join("cache"));
+
+    let ap = gradle
+        .annotation_processing(&project_root, Some(":__buildSrc:plugins"), &cache)
+        .unwrap();
+    let main = ap.main.expect("expected main annotation processing config");
+    assert_eq!(
+        main.generated_sources_dir,
+        Some(
+            plugins_dir.join("build/generated/sources/annotationProcessor/java/main")
+        )
+    );
+
+    let invocations = runner.invocations();
+    assert_eq!(invocations.len(), 1);
+    let args = &invocations[0].args;
+
+    let mut has_project_dir_flag = false;
+    for window in args.windows(2) {
+        if window[0] == "--project-dir" || window[0] == "-p" {
+            assert_eq!(window[1], "buildSrc");
+            has_project_dir_flag = true;
+        }
+    }
+    assert!(
+        has_project_dir_flag,
+        "expected `--project-dir buildSrc` (or `-p buildSrc`) in args, got {args:?}"
+    );
+    assert_eq!(
+        args.last().map(String::as_str),
+        Some(":plugins:printNovaAnnotationProcessing")
+    );
+    assert!(!args
+        .iter()
+        .any(|arg| arg == ":__buildSrc:plugins:printNovaAnnotationProcessing"));
+}
+
+#[test]
+fn build_for_buildsrc_subproject_uses_project_dir_flag_and_translated_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+    std::fs::write(project_root.join("settings.gradle"), "").unwrap();
+
+    let plugins_dir = project_root.join("buildSrc").join("plugins");
+    std::fs::create_dir_all(&plugins_dir).unwrap();
+
+    let runner = Arc::new(FakeGradleRunner::new(output(0, "", "")));
+    let gradle = GradleBuild::with_runner(GradleConfig::default(), runner.clone());
+    let cache = BuildCache::new(tmp.path().join("cache"));
+
+    let result = gradle
+        .build(&project_root, Some(":__buildSrc:plugins"), &cache)
+        .unwrap();
+    assert!(result.diagnostics.is_empty());
+
+    let invocations = runner.invocations();
+    assert_eq!(invocations.len(), 1);
+    let args = &invocations[0].args;
+
+    let mut has_project_dir_flag = false;
+    for window in args.windows(2) {
+        if window[0] == "--project-dir" || window[0] == "-p" {
+            assert_eq!(window[1], "buildSrc");
+            has_project_dir_flag = true;
+        }
+    }
+    assert!(
+        has_project_dir_flag,
+        "expected `--project-dir buildSrc` (or `-p buildSrc`) in args, got {args:?}"
+    );
+
+    assert_eq!(args.last().map(String::as_str), Some(":plugins:compileJava"));
+    assert!(!args.iter().any(|arg| arg == ":__buildSrc:plugins:compileJava"));
+}
+
+#[test]
+fn java_compile_config_for_buildsrc_subproject_skips_all_configs_batch_query() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    // Make the workspace look multi-project so `gradle_settings_suggest_multi_project` returns
+    // true. Ensure buildSrc subproject queries don't waste time running the root build's
+    // `printNovaAllJavaCompileConfigs` task (it can never include buildSrc).
+    std::fs::write(project_root.join("settings.gradle"), "include(':app')\n").unwrap();
+    std::fs::create_dir_all(project_root.join("app")).unwrap();
+
+    let plugins_dir = project_root.join("buildSrc").join("plugins");
+    std::fs::create_dir_all(&plugins_dir).unwrap();
+
+    let dep_jar = plugins_dir.join("deps.jar");
+    std::fs::write(&dep_jar, b"not a real jar").unwrap();
+
+    let payload_all = serde_json::json!({
+        "projects": [
+            {
+                "path": ":",
+                "projectDir": project_root.to_string_lossy(),
+                "config": {
+                    "projectPath": ":",
+                    "projectDir": project_root.to_string_lossy(),
+                    "compileClasspath": [],
+                    "testCompileClasspath": [],
+                    "mainSourceRoots": [],
+                    "testSourceRoots": [],
+                    "mainOutputDirs": [],
+                    "testOutputDirs": [],
+                    "compileCompilerArgs": [],
+                    "testCompilerArgs": [],
+                    "inferModulePath": false
+                }
+            },
+            {
+                "path": ":app",
+                "projectDir": project_root.join("app").to_string_lossy(),
+                "config": {
+                    "projectPath": ":app",
+                    "projectDir": project_root.join("app").to_string_lossy(),
+                    "compileClasspath": [],
+                    "testCompileClasspath": [],
+                    "mainSourceRoots": [],
+                    "testSourceRoots": [],
+                    "mainOutputDirs": [],
+                    "testOutputDirs": [],
+                    "compileCompilerArgs": [],
+                    "testCompilerArgs": [],
+                    "inferModulePath": false
+                }
+            }
+        ]
+    });
+    let stdout_all = format!(
+        "NOVA_ALL_JSON_BEGIN\n{}\nNOVA_ALL_JSON_END\n",
+        serde_json::to_string(&payload_all).unwrap()
+    );
+
+    let payload_buildsrc = serde_json::json!({
+        "projectPath": ":plugins",
+        "projectDir": plugins_dir.to_string_lossy(),
+        "compileClasspath": [dep_jar.to_string_lossy()],
+    });
+    let stdout_buildsrc = format!(
+        "NOVA_JSON_BEGIN\n{}\nNOVA_JSON_END\n",
+        serde_json::to_string(&payload_buildsrc).unwrap()
+    );
+
+    let runner = Arc::new(MultiOutputGradleRunner::new(
+        output(0, &stdout_all, ""),
+        output(0, &stdout_buildsrc, ""),
+    ));
+    let gradle = GradleBuild::with_runner(GradleConfig::default(), runner.clone());
+    let cache = BuildCache::new(tmp.path().join("cache"));
+
+    let _cfg = gradle
+        .java_compile_config(&project_root, Some(":__buildSrc:plugins"), &cache)
+        .unwrap();
+
+    let invocations = runner.invocations();
+    assert_eq!(
+        invocations.len(),
+        1,
+        "expected only a single Gradle invocation for buildSrc subproject, got invocations: {invocations:#?}"
+    );
+    let args = &invocations[0].args;
+    assert!(
+        !args
+            .iter()
+            .any(|arg| arg.as_str() == "printNovaAllJavaCompileConfigs"),
+        "did not expect batch all-configs task when querying buildSrc subproject, got args {args:?}"
+    );
+    assert_eq!(
+        args.last().map(String::as_str),
+        Some(":plugins:printNovaJavaCompileConfig")
+    );
+}
+
+#[test]
 fn java_compile_config_for_buildsrc_skips_all_configs_batch_query() {
     let tmp = tempfile::tempdir().unwrap();
     let project_root = tmp.path().join("project");
