@@ -127,5 +127,48 @@ mod tests {
         let after = db.with_snapshot(|snap| snap.intern_class_id(project, "java.lang.String"));
         assert_eq!(before, after);
     }
-}
 
+    #[test]
+    fn interner_is_project_scoped() {
+        let mut interner = ClassIdInterner::default();
+        let name = "java.lang.String";
+
+        let p0 = ProjectId::from_raw(0);
+        let p1 = ProjectId::from_raw(1);
+
+        let id0 = interner.intern(ClassKey::new(p0, name));
+        let id1 = interner.intern(ClassKey::new(p1, name));
+
+        assert_ne!(
+            id0, id1,
+            "expected different projects to allocate different ClassIds for the same binary name"
+        );
+        assert_eq!(
+            interner.lookup_key(id0),
+            Some(&ClassKey::new(p0, name)),
+            "lookup_key should return the original project+name pair"
+        );
+        assert_eq!(
+            interner.lookup_key(id1),
+            Some(&ClassKey::new(p1, name)),
+            "lookup_key should return the original project+name pair"
+        );
+    }
+
+    #[test]
+    fn interner_is_thread_safe_across_snapshots() {
+        let db = RootDatabase::default();
+        let project = ProjectId::from_raw(0);
+
+        let snap1 = db.snapshot();
+        let snap2 = db.snapshot();
+
+        let h1 = std::thread::spawn(move || snap1.intern_class_id(project, "java.lang.String"));
+        let h2 = std::thread::spawn(move || snap2.intern_class_id(project, "java.lang.String"));
+
+        let id1 = h1.join().expect("thread 1 panicked");
+        let id2 = h2.join().expect("thread 2 panicked");
+
+        assert_eq!(id1, id2, "expected concurrent interning to be stable");
+    }
+}
