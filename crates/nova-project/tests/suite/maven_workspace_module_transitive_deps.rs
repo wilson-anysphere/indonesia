@@ -10,6 +10,32 @@ fn write_file(path: &Path, contents: &str) {
     fs::write(path, contents).expect("write file");
 }
 
+fn repo_pom_path(
+    repo: &Path,
+    group_id: &str,
+    artifact_id: &str,
+    version: &str,
+) -> std::path::PathBuf {
+    let group_path = group_id.replace('.', "/");
+    repo.join(group_path)
+        .join(artifact_id)
+        .join(version)
+        .join(format!("{artifact_id}-{version}.pom"))
+}
+
+fn repo_jar_path(
+    repo: &Path,
+    group_id: &str,
+    artifact_id: &str,
+    version: &str,
+) -> std::path::PathBuf {
+    let group_path = group_id.replace('.', "/");
+    repo.join(group_path)
+        .join(artifact_id)
+        .join(version)
+        .join(format!("{artifact_id}-{version}.jar"))
+}
+
 #[test]
 fn maven_workspace_model_includes_transitive_external_deps_of_workspace_module_deps() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -120,6 +146,156 @@ fn maven_workspace_model_includes_transitive_external_deps_of_workspace_module_d
     );
 
     // Ensure deterministic output (no dependence on host ~/.m2).
+    let model2 = load_workspace_model_with_options(root, &options).expect("reload workspace model");
+    assert_eq!(model.modules, model2.modules);
+    assert_eq!(model.jpms_modules, model2.jpms_modules);
+}
+
+#[test]
+fn maven_workspace_model_includes_transitive_external_closure_of_workspace_module_deps() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+
+    let maven_repo = root.join("m2");
+    fs::create_dir_all(&maven_repo).expect("mkdir m2");
+
+    // External dep graph:
+    // dep-a:1.0.0 -> dep-b:2.0.0
+    let dep_b_pom = repo_pom_path(&maven_repo, "com.dep", "dep-b", "2.0.0");
+    write_file(
+        &dep_b_pom,
+        r#"<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.dep</groupId>
+  <artifactId>dep-b</artifactId>
+  <version>2.0.0</version>
+</project>
+"#,
+    );
+    let dep_b_jar = repo_jar_path(&maven_repo, "com.dep", "dep-b", "2.0.0");
+    fs::create_dir_all(dep_b_jar.parent().expect("dep-b jar parent")).expect("mkdir dep-b parent");
+    fs::write(&dep_b_jar, b"").expect("write dep-b jar placeholder");
+
+    let dep_a_pom = repo_pom_path(&maven_repo, "com.dep", "dep-a", "1.0.0");
+    write_file(
+        &dep_a_pom,
+        r#"<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.dep</groupId>
+  <artifactId>dep-a</artifactId>
+  <version>1.0.0</version>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.dep</groupId>
+      <artifactId>dep-b</artifactId>
+      <version>2.0.0</version>
+    </dependency>
+  </dependencies>
+</project>
+"#,
+    );
+    let dep_a_jar = repo_jar_path(&maven_repo, "com.dep", "dep-a", "1.0.0");
+    fs::create_dir_all(dep_a_jar.parent().expect("dep-a jar parent")).expect("mkdir dep-a parent");
+    fs::write(&dep_a_jar, b"").expect("write dep-a jar placeholder");
+
+    // Root aggregator with two workspace modules.
+    write_file(
+        &root.join("pom.xml"),
+        r#"<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>root</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+
+  <modules>
+    <module>lib</module>
+    <module>app</module>
+  </modules>
+</project>
+"#,
+    );
+
+    // `lib` depends on dep-a (which depends on dep-b); `app` depends only on `lib`.
+    write_file(
+        &root.join("lib/pom.xml"),
+        r#"<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>root</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>lib</artifactId>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.dep</groupId>
+      <artifactId>dep-a</artifactId>
+      <version>1.0.0</version>
+    </dependency>
+  </dependencies>
+</project>
+"#,
+    );
+
+    write_file(
+        &root.join("app/pom.xml"),
+        r#"<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>root</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>app</artifactId>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>lib</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+  </dependencies>
+ </project>
+"#,
+    );
+
+    let options = LoadOptions {
+        maven_repo: Some(maven_repo),
+        ..LoadOptions::default()
+    };
+    let model = load_workspace_model_with_options(root, &options).expect("load workspace model");
+
+    let app_module = model
+        .modules
+        .iter()
+        .find(|m| m.name == "app")
+        .expect("app module");
+
+    let jar_entries: Vec<String> = app_module
+        .module_path
+        .iter()
+        .chain(app_module.classpath.iter())
+        .filter(|e| e.kind == ClasspathEntryKind::Jar)
+        .map(|e| e.path.to_string_lossy().replace('\\', "/"))
+        .collect();
+
+    assert!(
+        jar_entries
+            .iter()
+            .any(|p| p.contains("com/dep/dep-a/1.0.0/dep-a-1.0.0.jar")),
+        "expected dep-a jar to be present on app classpath/module-path; got: {jar_entries:?}"
+    );
+    assert!(
+        jar_entries
+            .iter()
+            .any(|p| p.contains("com/dep/dep-b/2.0.0/dep-b-2.0.0.jar")),
+        "expected dep-b jar (transitive via dep-a) to be present on app classpath/module-path; got: {jar_entries:?}"
+    );
+
+    // Determinism.
     let model2 = load_workspace_model_with_options(root, &options).expect("reload workspace model");
     assert_eq!(model.modules, model2.modules);
     assert_eq!(model.jpms_modules, model2.jpms_modules);
