@@ -554,7 +554,7 @@ pub trait ClasspathTypes {
 
 impl ClasspathTypes for () {}
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct TypeStore {
     classes: Vec<ClassDef>,
     class_by_name: HashMap<String, ClassId>,

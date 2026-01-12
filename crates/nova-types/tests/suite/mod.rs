@@ -12,4 +12,6 @@ mod overload_resolution;
 mod type_loader;
 mod type_loader_nested_class_generics;
 mod type_loader_type_parameter_bounds;
+mod type_store_clone;
 mod type_store_upsert;
+mod unchecked_varargs;

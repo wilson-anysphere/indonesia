@@ -111,3 +111,4 @@ fn no_warning_for_reifiable_varargs_parameter_in_variable_arity_form() {
         "expected no unchecked-varargs warning for reifiable `String[]` parameter"
     );
 }
+
