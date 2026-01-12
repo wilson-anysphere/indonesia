@@ -1252,62 +1252,14 @@ impl WorkspaceEngine {
         self.sync_overlay_documents_memory();
         self.ensure_file_inputs(file_id, &path);
 
-        // Track whether this open document is "dirty" (differs from on-disk contents).
+        // Newly opened documents are assumed clean until modified.
         //
-        // This is used by Salsa warm-start indexing to ensure we don't reuse persisted index
-        // shards when editor overlays have unsaved changes.
-        let dirty = match path.as_local_path() {
-            Some(local_path) => {
-                if !local_path.exists() {
-                    // New, unsaved file.
-                    true
-                } else {
-                    // Prefer any existing Salsa `file_content` (which should reflect disk state for
-                    // non-open files) to avoid redundant disk I/O.
-                    //
-                    // This is best-effort: avoid panicking if the host/database invariants are
-                    // violated and `file_content` hasn't been initialized yet.
-                    let existing_content = self.query_db.with_snapshot(|snap| {
-                        let has_content = snap
-                            .all_file_ids()
-                            .iter()
-                            .any(|&existing_id| existing_id == file_id);
-                        if !has_content {
-                            return None;
-                        }
-
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            snap.file_content(file_id)
-                        }))
-                        .ok()
-                    });
-
-                    let disk_text = if let Some(existing) = existing_content {
-                        Some(existing)
-                    } else {
-                        match fs::read_to_string(local_path) {
-                            Ok(text) => Some(Arc::new(text)),
-                            Err(_) => None,
-                        }
-                    };
-
-                    match disk_text {
-                        Some(disk_text) => disk_text.as_str() != text_for_db.as_str(),
-                        None => true,
-                    }
-                }
-            }
-            None => {
-                // Non-local paths (archives, virtual/decompiled docs, opaque URIs, etc) are
-                // conservatively treated as dirty since we can't reliably compare with a stable
-                // on-disk snapshot.
-                true
-            }
-        };
+        // `apply_changes` will mark the file dirty after in-memory edits, ensuring warm-start
+        // indexing doesn't reuse persisted index shards for unsaved editor overlays.
+        self.query_db.set_file_is_dirty(file_id, false);
 
         self.query_db.set_file_exists(file_id, true);
         self.query_db.set_file_content(file_id, text_for_db);
-        self.query_db.set_file_is_dirty(file_id, dirty);
         self.update_project_files_membership(&path, file_id, true);
 
         self.publish(WorkspaceEvent::FileChanged { file: path.clone() });
@@ -1399,8 +1351,9 @@ impl WorkspaceEngine {
                     }
                 }
             }
-            self.query_db.set_file_is_dirty(file_id, true);
         }
+        // Any in-memory edit makes the file "dirty" relative to disk for warm-start indexing.
+        self.query_db.set_file_is_dirty(file_id, true);
 
         self.publish(WorkspaceEvent::FileChanged { file: path.clone() });
         self.publish_diagnostics(path.clone());
@@ -1811,6 +1764,9 @@ impl WorkspaceEngine {
         self.ensure_file_inputs(file_id, &to_vfs);
         let exists = self.vfs.exists(&to_vfs);
         self.query_db.set_file_exists(file_id, exists);
+        if !exists && !open_docs.is_open(file_id) {
+            self.query_db.set_file_is_dirty(file_id, false);
+        }
 
         if exists {
             if open_docs.is_open(file_id) {
@@ -1836,7 +1792,7 @@ impl WorkspaceEngine {
                     Err(_) if is_new_id => {
                         self.query_db
                             .set_file_content(file_id, Arc::new(String::new()));
-                        self.query_db.set_file_is_dirty(file_id, true);
+                        self.query_db.set_file_is_dirty(file_id, false);
                     }
                     Err(_) => {}
                 }
@@ -3270,6 +3226,7 @@ mod tests {
         .unwrap();
         // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
         let project_root = project_root.canonicalize().unwrap();
+        let main_path = project_root.join("src/Main.java");
 
         let cache_root = dir.path().join("cache-root");
         let persistence = PersistenceConfig {
@@ -3279,22 +3236,21 @@ mod tests {
             },
         };
 
-        // First engine: index + persist.
+        // Engine #1: index from scratch and persist shards to disk.
         let memory = MemoryManager::new(MemoryBudget::default_for_system_with_env_overrides());
-        let engine = WorkspaceEngine::new(WorkspaceEngineConfig {
+        let engine1 = WorkspaceEngine::new(WorkspaceEngineConfig {
             workspace_root: project_root.clone(),
             persistence: persistence.clone(),
             memory,
             build_runner: None,
         });
-        engine.set_workspace_root(&project_root).unwrap();
+        engine1.set_workspace_root(&project_root).unwrap();
 
-        let rx = engine.subscribe();
-        engine.trigger_indexing();
-        timeout(Duration::from_secs(20), wait_for_indexing_ready(&rx))
+        let rx1 = engine1.subscribe();
+        engine1.trigger_indexing();
+        timeout(Duration::from_secs(20), wait_for_indexing_ready(&rx1))
             .await
             .expect("timed out waiting for initial indexing");
-
         let cache_dir = CacheDir::new(
             &project_root,
             CacheConfig {
@@ -3309,28 +3265,47 @@ mod tests {
             shards_root.join("manifest.txt").display()
         );
 
-        // Second engine: warm-start, then open a dirty overlay without touching disk.
+        drop(engine1);
+
+        // Engine #2: warm-start from persisted shards, then edit Main.java in-memory only.
         let memory = MemoryManager::new(MemoryBudget::default_for_system_with_env_overrides());
-        let engine = WorkspaceEngine::new(WorkspaceEngineConfig {
+        let engine2 = WorkspaceEngine::new(WorkspaceEngineConfig {
             workspace_root: project_root.clone(),
             persistence,
             memory,
             build_runner: None,
         });
-        engine.set_workspace_root(&project_root).unwrap();
+        engine2.set_workspace_root(&project_root).unwrap();
 
-        let main_path = project_root.join("src/Main.java");
-        engine.open_document(VfsPath::local(main_path), "class Dirty {}".to_string(), 1);
+        let vfs_path = VfsPath::local(main_path.clone());
+        let disk_text = fs::read_to_string(&main_path).unwrap();
+        let file_id = engine2.open_document(vfs_path.clone(), disk_text, 1);
+        engine2.query_db.with_snapshot(|snap| {
+            assert!(
+                !snap.file_is_dirty(file_id),
+                "expected freshly opened overlay to be clean when it matches disk"
+            );
+        });
 
-        engine.query_db.clear_query_stats();
+        engine2
+            .apply_changes(&vfs_path, 2, &[ContentChange::full("class Dirty {}".to_string())])
+            .unwrap();
+        engine2.query_db.with_snapshot(|snap| {
+            assert!(
+                snap.file_is_dirty(file_id),
+                "expected didChange to mark overlay dirty"
+            );
+        });
 
-        let rx = engine.subscribe();
-        engine.trigger_indexing();
-        timeout(Duration::from_secs(20), wait_for_indexing_ready(&rx))
+        engine2.query_db.clear_query_stats();
+
+        let rx2 = engine2.subscribe();
+        engine2.trigger_indexing();
+        timeout(Duration::from_secs(20), wait_for_indexing_ready(&rx2))
             .await
             .expect("timed out waiting for indexing with dirty overlay");
 
-        let stats = engine.query_db.query_stats();
+        let stats = engine2.query_db.query_stats();
         let delta_exec = stats
             .by_query
             .get("file_index_delta")
@@ -3351,7 +3326,7 @@ mod tests {
             "expected warm-start to reuse persisted shards for unchanged files; stats={stats:?}"
         );
 
-        let indexes = engine
+        let indexes = engine2
             .indexes
             .lock()
             .expect("workspace indexes lock poisoned")
