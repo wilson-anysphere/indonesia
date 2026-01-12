@@ -1631,7 +1631,13 @@ fn best_type_at_range_display(
             continue;
         };
         let ty = ty.trim();
-        if ty.is_empty() || ty == "<?>" || ty == "<error>" {
+        // Filter out non-types that can show up in best-effort typeck display strings.
+        // These are not valid Java types for variable declarations.
+        if ty.is_empty()
+            || ty == "<?>"
+            || ty == "<error>"
+            || ty.eq_ignore_ascii_case("null")
+        {
             continue;
         }
         return Some(ty.to_string());
