@@ -138,6 +138,7 @@ pub struct BazelWorkspace<R: CommandRunner> {
     compile_info_expr_version_hex: String,
     supports_same_pkg_direct_rdeps: Option<bool>,
     java_owning_targets_cache: HashMap<String, Vec<String>>,
+    preferred_java_compile_info_targets: HashMap<String, String>,
     #[cfg(feature = "bsp")]
     bsp: BspConnection,
     #[cfg(feature = "bsp")]
@@ -157,6 +158,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             compile_info_expr_version_hex: compile_info_expr_version_hex(),
             supports_same_pkg_direct_rdeps: None,
             java_owning_targets_cache: HashMap::new(),
+            preferred_java_compile_info_targets: HashMap::new(),
             #[cfg(feature = "bsp")]
             bsp: BspConnection::NotTried,
             #[cfg(feature = "bsp")]
@@ -335,6 +337,15 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         file: &Path,
         run_target: Option<&str>,
     ) -> Result<Option<JavaCompileInfo>> {
+        let Some(file_label) = self.workspace_file_label(file)? else {
+            return Ok(None);
+        };
+        let cache_key = if let Some(run_target) = run_target {
+            format!("{run_target}::{file_label}")
+        } else {
+            file_label
+        };
+
         let mut owners = if let Some(run_target) = run_target {
             self.java_owning_targets_for_file_in_run_target_closure(file, run_target)?
         } else {
@@ -352,9 +363,34 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         owners.dedup();
 
         let mut errors: Vec<String> = Vec::new();
+
+        // If we previously found a working owner for this file, try it first to avoid repeatedly
+        // running expensive `aquery` calls for targets that don't produce Javac actions.
+        let preferred = self
+            .preferred_java_compile_info_targets
+            .get(&cache_key)
+            .cloned();
+        if let Some(preferred) = preferred {
+            if owners.contains(&preferred) {
+                match self.target_compile_info(&preferred) {
+                    Ok(info) => return Ok(Some(info)),
+                    Err(err) => {
+                        errors.push(format!("{preferred}: {err}"));
+                        self.preferred_java_compile_info_targets.remove(&cache_key);
+                    }
+                }
+            } else {
+                self.preferred_java_compile_info_targets.remove(&cache_key);
+            }
+        }
+
         for target in owners {
             match self.target_compile_info(&target) {
-                Ok(info) => return Ok(Some(info)),
+                Ok(info) => {
+                    self.preferred_java_compile_info_targets
+                        .insert(cache_key.clone(), target);
+                    return Ok(Some(info));
+                }
                 Err(err) => errors.push(format!("{target}: {err}")),
             }
         }
@@ -1029,6 +1065,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         // build definition changes for correctness.
         if changed.iter().any(|path| is_bazel_build_definition_file(path)) {
             self.java_owning_targets_cache.clear();
+            self.preferred_java_compile_info_targets.clear();
             // BSP-based compile info is invalidated conservatively because we do not track the full
             // transitive BUILD/.bzl closure without invoking `bazel query`.
             self.cache.invalidate_provider(CompileInfoProvider::Bsp);

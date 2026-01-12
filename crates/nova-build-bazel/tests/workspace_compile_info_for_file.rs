@@ -307,8 +307,13 @@ fn compile_info_for_file_falls_back_to_second_owner_when_first_owner_has_no_java
     let runner = FallbackRunner::default();
     let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), runner.clone()).unwrap();
 
-    let info = workspace.compile_info_for_file(&file).unwrap().unwrap();
-    assert_eq!(info.classpath, vec!["b.jar".to_string()]);
+    let info1 = workspace.compile_info_for_file(&file).unwrap().unwrap();
+    assert_eq!(info1.classpath, vec!["b.jar".to_string()]);
+
+    // Second call should re-use the preferred (working) owner and avoid re-running `aquery` for the
+    // failing first owner.
+    let info2 = workspace.compile_info_for_file(&file).unwrap().unwrap();
+    assert_eq!(info2, info1);
 
     let calls = runner.calls();
     let aquery_exprs: Vec<String> = calls
