@@ -1,3 +1,5 @@
+import type { LanguageClient } from 'vscode-languageclient/node';
+
 export type NovaExperimentalCapabilities = {
   requests: Set<string>;
   notifications: Set<string>;
@@ -43,6 +45,19 @@ export function parseNovaExperimentalCapabilities(initializeResult: unknown): No
   }
 
   return { requests: new Set(requests), notifications: new Set(notifications) };
+}
+
+/**
+ * Returns the set of supported `nova/*` request methods as advertised by the server.
+ *
+ * This is sourced from `initializeResult.capabilities.experimental.nova.requests`.
+ *
+ * Note: Older Nova builds may omit these lists. In that case, `undefined` is returned so callers
+ * can fall back to optimistic requests + graceful method-not-found handling.
+ */
+export function getSupportedNovaRequests(client: LanguageClient): Set<string> | undefined {
+  const parsed = parseNovaExperimentalCapabilities(client.initializeResult);
+  return parsed?.requests;
 }
 
 export function setNovaExperimentalCapabilities(initializeResult: unknown): void {
@@ -103,4 +118,3 @@ export function isNovaMethodNotFoundError(err: unknown): boolean {
 
   return typeof message === 'string' && message.toLowerCase().includes('method not found');
 }
-
