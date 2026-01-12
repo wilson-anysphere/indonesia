@@ -1,0 +1,4 @@
+rootProject.name = "gradle-includebuild-version-catalog-gradle-properties"
+
+includeBuild("build-logic")
+

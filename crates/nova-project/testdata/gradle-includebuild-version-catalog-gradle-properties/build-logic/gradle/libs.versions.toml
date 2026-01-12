@@ -1,0 +1,6 @@
+[versions]
+guava = "$guavaVersion"
+
+[libraries]
+guava = { module = "com.google.guava:guava", version.ref = "guava" }
+
