@@ -53,11 +53,17 @@ cargo test -p nova-remote-proto
 This crate includes a `cargo fuzz` harness in `crates/nova-remote-proto/fuzz/`.
 
 ```bash
-cargo install cargo-fuzz
+# cargo-fuzz requires nightly Rust + LLVM tools for libFuzzer integration.
+rustup toolchain install nightly --component llvm-tools-preview --component rust-src
+
+# Recommended (fast): install the prebuilt cargo-fuzz binary via cargo-binstall.
+cargo install cargo-binstall --locked
+cargo +nightly binstall cargo-fuzz --version 0.13.1 --no-confirm --locked --disable-strategies compile
+
 cd crates/nova-remote-proto
-cargo fuzz run decode_framed_message
-cargo fuzz run decode_v3_wire_frame
-cargo fuzz run decode_v3_rpc_payload
+cargo +nightly fuzz run decode_framed_message
+cargo +nightly fuzz run decode_v3_wire_frame
+cargo +nightly fuzz run decode_v3_rpc_payload
 ```
 
 Targets:

@@ -183,7 +183,9 @@ proptest! {
 rustup toolchain install nightly --component llvm-tools-preview --component rust-src
 
 # Install cargo-fuzz
-bash scripts/cargo_agent.sh +nightly install cargo-fuzz --locked
+# Recommended (fast): install the prebuilt cargo-fuzz binary via cargo-binstall.
+bash scripts/cargo_agent.sh install cargo-binstall --locked
+bash scripts/cargo_agent.sh +nightly binstall cargo-fuzz --version 0.13.1 --no-confirm --locked --disable-strategies compile
 
 # List available fuzz targets in the main harness (`./fuzz/`).
 bash scripts/cargo_agent.sh +nightly fuzz list
