@@ -850,6 +850,11 @@ fn find_enclosing_method(
         let Some(body) = ctor.body() else {
             continue;
         };
+        let type_params_text = ctor
+            .type_parameters()
+            .and_then(|tp| slice_syntax(source, tp.syntax()))
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty());
         let body_range = syntax_range(body.syntax());
         if body_range.start <= selection.start && selection.end <= body_range.end {
             let span = body_range.len();
@@ -857,7 +862,12 @@ fn find_enclosing_method(
                 .as_ref()
                 .is_none_or(|(best_span, _, _, _)| span < *best_span)
             {
-                best = Some((span, EnclosingMethod::CompactConstructor(ctor), body, None));
+                best = Some((
+                    span,
+                    EnclosingMethod::CompactConstructor(ctor),
+                    body,
+                    type_params_text,
+                ));
             }
         }
     }
