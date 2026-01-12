@@ -8723,6 +8723,7 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
                     workspace.insert(test_file.clone(), existing);
                 }
             }
+
             (test_file, insert_range, workspace)
         } else {
             (

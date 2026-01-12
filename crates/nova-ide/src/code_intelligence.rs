@@ -16415,8 +16415,10 @@ fn method_reference_double_colon_offset(text: &str, prefix_start: usize) -> Opti
 
     // Note: `bool::then_some` eagerly evaluates its argument, so we must not write
     // `cond.then_some(before - 2)` here or we'll underflow when `before < 2`.
-    (before >= 2 && bytes.get(before - 1) == Some(&b':') && bytes.get(before - 2) == Some(&b':'))
-        .then(|| before - 2)
+    (before >= 2
+        && bytes.get(before - 1) == Some(&b':')
+        && bytes.get(before - 2) == Some(&b':'))
+    .then(|| before - 2)
 }
 
 pub(crate) fn receiver_before_dot(text: &str, dot_offset: usize) -> String {
