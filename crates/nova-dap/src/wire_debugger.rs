@@ -91,6 +91,23 @@ pub enum StepDepth {
     Out,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SmartStepPhase {
+    Into,
+    Out,
+}
+
+#[derive(Debug, Clone)]
+struct SmartStepIntoState {
+    thread: ThreadId,
+    origin_class_id: ReferenceTypeId,
+    origin_method_id: u64,
+    origin_line: i32,
+    target_id: i64,
+    seen: i64,
+    phase: SmartStepPhase,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ActiveStepRequest {
     request_id: i32,
@@ -226,6 +243,7 @@ pub struct Debugger {
     active_step_requests: HashMap<ThreadId, ActiveStepRequest>,
     active_method_exit_requests: HashMap<ThreadId, i32>,
     pending_return_values: HashMap<ThreadId, JdwpValue>,
+    smart_step_into: Option<SmartStepIntoState>,
     last_stop_reason: HashMap<ThreadId, StopReason>,
     exception_stop_context: HashMap<ThreadId, ExceptionStopContext>,
     throwable_detail_message_field: Option<Option<u64>>,
@@ -301,6 +319,7 @@ impl Debugger {
             active_step_requests: HashMap::new(),
             active_method_exit_requests: HashMap::new(),
             pending_return_values: HashMap::new(),
+            smart_step_into: None,
             last_stop_reason: HashMap::new(),
             exception_stop_context: HashMap::new(),
             throwable_detail_message_field: None,
@@ -522,6 +541,168 @@ impl Debugger {
             target.end_line = Some(line);
         }
         Ok(targets.into_iter().map(|t| json!(t)).collect())
+    }
+
+    pub async fn step_in_target(
+        &mut self,
+        cancel: &CancellationToken,
+        dap_thread_id: i64,
+        target_id: i64,
+    ) -> Result<()> {
+        self.invalidate_handles();
+        check_cancel(cancel)?;
+
+        if target_id < 0 {
+            return self.step(cancel, dap_thread_id, StepDepth::Into).await;
+        }
+
+        let thread: ThreadId = dap_thread_id as ThreadId;
+        let frame = cancellable_jdwp(cancel, self.jdwp.frames(thread, 0, 1))
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| DebuggerError::InvalidRequest("thread has no frames".to_string()))?;
+
+        let origin_line = match self
+            .line_number(
+                cancel,
+                frame.location.class_id,
+                frame.location.method_id,
+                frame.location.index,
+            )
+            .await
+        {
+            Ok(line) => line,
+            Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+            Err(_) => 1,
+        };
+
+        let frame_handle = self.alloc_frame_handle(thread, &frame);
+        let targets = self.step_in_targets(cancel, frame_handle).await?;
+        if targets.is_empty() || (target_id as usize) >= targets.len() {
+            return self.step(cancel, dap_thread_id, StepDepth::Into).await;
+        }
+
+        self.smart_step_into = Some(SmartStepIntoState {
+            thread,
+            origin_class_id: frame.location.class_id,
+            origin_method_id: frame.location.method_id,
+            origin_line,
+            target_id,
+            seen: 0,
+            phase: SmartStepPhase::Into,
+        });
+
+        self.step(cancel, dap_thread_id, StepDepth::Into).await
+    }
+
+    pub async fn maybe_continue_smart_step(
+        &mut self,
+        cancel: &CancellationToken,
+        event: &JdwpEvent,
+    ) -> bool {
+        let Some(mut state) = self.smart_step_into.take() else {
+            return false;
+        };
+
+        let mut keep_state = true;
+        let mut suppress_stopped_event = false;
+
+        match event {
+            JdwpEvent::Breakpoint { thread, .. } | JdwpEvent::Exception { thread, .. }
+                if *thread == state.thread =>
+            {
+                keep_state = false;
+            }
+            JdwpEvent::SingleStep {
+                thread, location, ..
+            } if *thread == state.thread => {
+                let in_origin = location.class_id == state.origin_class_id
+                    && location.method_id == state.origin_method_id;
+
+                match state.phase {
+                    SmartStepPhase::Into => {
+                        if !in_origin {
+                            if state.seen == state.target_id {
+                                keep_state = false;
+                            } else {
+                                state.seen = state.seen.saturating_add(1);
+                                state.phase = SmartStepPhase::Out;
+                                match self.step(cancel, *thread as i64, StepDepth::Out).await {
+                                    Ok(()) => suppress_stopped_event = true,
+                                    Err(_) => keep_state = false,
+                                }
+                            }
+                        } else {
+                            let line = match self
+                                .line_number(
+                                    cancel,
+                                    location.class_id,
+                                    location.method_id,
+                                    location.index,
+                                )
+                                .await
+                            {
+                                Ok(line) => line,
+                                Err(JdwpError::Cancelled) => {
+                                    keep_state = false;
+                                    1
+                                }
+                                Err(_) => 1,
+                            };
+
+                            if line != state.origin_line {
+                                keep_state = false;
+                            } else {
+                                match self.step(cancel, *thread as i64, StepDepth::Into).await {
+                                    Ok(()) => suppress_stopped_event = true,
+                                    Err(_) => keep_state = false,
+                                }
+                            }
+                        }
+                    }
+                    SmartStepPhase::Out => {
+                        if !in_origin {
+                            keep_state = false;
+                        } else {
+                            let line = match self
+                                .line_number(
+                                    cancel,
+                                    location.class_id,
+                                    location.method_id,
+                                    location.index,
+                                )
+                                .await
+                            {
+                                Ok(line) => line,
+                                Err(JdwpError::Cancelled) => {
+                                    keep_state = false;
+                                    1
+                                }
+                                Err(_) => 1,
+                            };
+
+                            if line != state.origin_line {
+                                keep_state = false;
+                            } else {
+                                state.phase = SmartStepPhase::Into;
+                                match self.step(cancel, *thread as i64, StepDepth::Into).await {
+                                    Ok(()) => suppress_stopped_event = true,
+                                    Err(_) => keep_state = false,
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        if keep_state {
+            self.smart_step_into = Some(state);
+        }
+
+        suppress_stopped_event
     }
 
     pub fn scopes(&mut self, frame_id: i64) -> Result<Vec<serde_json::Value>> {
@@ -1046,6 +1227,7 @@ impl Debugger {
         dap_thread_id: Option<i64>,
     ) -> Result<()> {
         self.invalidate_handles();
+        self.smart_step_into = None;
         if let Some(dap_thread_id) = dap_thread_id {
             let thread: ThreadId = dap_thread_id as ThreadId;
             cancellable_jdwp(cancel, self.jdwp.thread_resume(thread)).await?;
@@ -1061,6 +1243,7 @@ impl Debugger {
         dap_thread_id: Option<i64>,
     ) -> Result<()> {
         self.invalidate_handles();
+        self.smart_step_into = None;
         if let Some(dap_thread_id) = dap_thread_id {
             let thread: ThreadId = dap_thread_id as ThreadId;
             cancellable_jdwp(cancel, self.jdwp.thread_suspend(thread)).await?;

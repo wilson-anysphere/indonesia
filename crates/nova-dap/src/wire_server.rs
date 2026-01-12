@@ -2068,6 +2068,9 @@ async fn handle_request_inner(
                 "stepIn" => StepDepth::Into,
                 _ => StepDepth::Out,
             };
+            let target_id = (request.command == "stepIn")
+                .then(|| request.arguments.get("targetId").and_then(|v| v.as_i64()))
+                .flatten();
 
             let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
                 Some(guard) => guard,
@@ -2095,7 +2098,12 @@ async fn handle_request_inner(
                 return;
             };
 
-            match dbg.step(cancel, thread_id, depth).await {
+            let step_result = match target_id {
+                Some(target_id) => dbg.step_in_target(cancel, thread_id, target_id).await,
+                None => dbg.step(cancel, thread_id, depth).await,
+            };
+
+            match step_result {
                 Ok(()) => send_response(out_tx, seq, request, true, None, None),
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
@@ -3519,6 +3527,7 @@ fn spawn_event_task(
             // Best-effort exception label for DAP's stopped `text` field.
             let mut exception_context: Option<(JdwpClient, ObjectId)> = None;
             let mut step_value: Option<VmStoppedValue> = None;
+            let mut suppress_stopped_event = false;
 
             {
                 let mut guard = debugger.lock().await;
@@ -3566,10 +3575,22 @@ fn spawn_event_task(
                         step_value = dbg.take_step_output_value(&server_shutdown, *thread).await;
                     }
 
+                    if dbg
+                        .maybe_continue_smart_step(&server_shutdown, &event)
+                        .await
+                    {
+                        suppress_stopped_event = true;
+                        step_value = None;
+                    }
+
                     if let nova_jdwp::wire::JdwpEvent::Exception { exception, .. } = &event {
                         exception_context = Some((dbg.jdwp_client(), *exception));
                     }
                 }
+            }
+
+            if suppress_stopped_event {
+                continue;
             }
 
             let exception_text = if let Some((jdwp, exception)) = exception_context {

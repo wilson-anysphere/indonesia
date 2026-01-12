@@ -468,6 +468,79 @@ async fn dap_step_in_targets_lists_calls_on_current_line() {
 }
 
 #[tokio::test]
+async fn dap_step_in_target_honors_target_id() {
+    let jdwp = MockJdwpServer::spawn().await.unwrap();
+    let (client, server_task) = spawn_wire_server();
+
+    let temp = tempfile::tempdir().unwrap();
+    let main_path = temp.path().join("Main.java");
+    std::fs::write(
+        &main_path,
+        "class Main {\n  void main() {\n    foo(bar(), baz(qux()), corge()).trim();\n  }\n}\n",
+    )
+    .unwrap();
+
+    client.initialize_handshake().await;
+    client.attach("127.0.0.1", jdwp.addr().port()).await;
+    client
+        .set_breakpoints(main_path.to_str().unwrap(), &[3])
+        .await;
+
+    let thread_id = client.first_thread_id().await;
+    client.continue_with_thread_id(Some(thread_id)).await;
+    let _ = client.wait_for_stopped_reason("breakpoint").await;
+
+    let frame_id = client.first_frame_id(thread_id).await;
+    let targets_resp = client
+        .request("stepInTargets", json!({ "frameId": frame_id }))
+        .await;
+    assert_eq!(
+        targets_resp.get("success").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+
+    let targets = targets_resp
+        .pointer("/body/targets")
+        .and_then(|v| v.as_array())
+        .unwrap();
+    let baz_id = targets
+        .iter()
+        .find(|t| t.get("label").and_then(|v| v.as_str()) == Some("baz()"))
+        .and_then(|t| t.get("id"))
+        .and_then(|v| v.as_i64())
+        .unwrap();
+
+    let resumes_before = jdwp.thread_resume_calls();
+    let step_resp = client
+        .request(
+            "stepIn",
+            json!({ "threadId": thread_id, "targetId": baz_id }),
+        )
+        .await;
+    assert_eq!(
+        step_resp.get("success").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+
+    let stopped = client.wait_for_stopped_reason("step").await;
+    assert_eq!(stopped.thread_id, Some(thread_id));
+
+    let resumes_after = jdwp.thread_resume_calls();
+    assert_eq!(resumes_after - resumes_before, 5);
+
+    let stack = client
+        .request("stackTrace", json!({ "threadId": thread_id }))
+        .await;
+    let top_name = stack
+        .pointer("/body/stackFrames/0/name")
+        .and_then(|v| v.as_str());
+    assert_eq!(top_name, Some("baz"));
+
+    client.disconnect().await;
+    server_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn dap_can_hot_swap_a_class() {
     let mut caps = vec![false; 32];
     caps[7] = true; // canRedefineClasses

@@ -3,7 +3,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{
         atomic::{AtomicI32, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering},
-        Arc,
+        Arc, Mutex as StdMutex,
     },
     time::Duration,
 };
@@ -431,6 +431,7 @@ struct State {
     breakpoint_request: tokio::sync::Mutex<Option<i32>>,
     breakpoint_count_modifier: tokio::sync::Mutex<Option<u32>>,
     step_request: tokio::sync::Mutex<Option<i32>>,
+    step_depth: AtomicU32,
     method_exit_request: tokio::sync::Mutex<Option<i32>>,
     thread_start_request: tokio::sync::Mutex<Option<i32>>,
     thread_death_request: tokio::sync::Mutex<Option<i32>>,
@@ -464,6 +465,8 @@ struct State {
     last_default_stratum: tokio::sync::Mutex<Option<String>>,
     delayed_replies: HashMap<(u8, u8), Duration>,
     capabilities: Vec<bool>,
+    smart_step_stack: StdMutex<Vec<MockFrame>>,
+    smart_step_next_call: AtomicUsize,
     breakpoint_events_remaining: AtomicUsize,
     step_events_remaining: AtomicUsize,
     field_access_events_remaining: AtomicUsize,
@@ -516,6 +519,7 @@ impl State {
             breakpoint_request: tokio::sync::Mutex::new(None),
             breakpoint_count_modifier: tokio::sync::Mutex::new(None),
             step_request: tokio::sync::Mutex::new(None),
+            step_depth: AtomicU32::new(0),
             method_exit_request: tokio::sync::Mutex::new(None),
             thread_start_request: tokio::sync::Mutex::new(None),
             thread_death_request: tokio::sync::Mutex::new(None),
@@ -549,6 +553,11 @@ impl State {
             last_default_stratum: tokio::sync::Mutex::new(None),
             delayed_replies,
             capabilities,
+            smart_step_stack: StdMutex::new(vec![MockFrame {
+                frame_id: FRAME_ID,
+                location: default_location(),
+            }]),
+            smart_step_next_call: AtomicUsize::new(0),
             breakpoint_events_remaining: AtomicUsize::new(breakpoint_events),
             step_events_remaining: AtomicUsize::new(step_events),
             field_access_events_remaining: AtomicUsize::new(field_access_events),
@@ -708,6 +717,20 @@ const CLASS_ID: u64 = 0x3001;
 const FOO_CLASS_ID: u64 = 0x3002;
 const METHOD_ID: u64 = 0x4001;
 const GENERIC_METHOD_ID: u64 = 0x4002;
+const SMART_STEP_BAR_METHOD_ID: u64 = 0x4003;
+const SMART_STEP_QUX_METHOD_ID: u64 = 0x4004;
+const SMART_STEP_BAZ_METHOD_ID: u64 = 0x4005;
+const SMART_STEP_CORGE_METHOD_ID: u64 = 0x4006;
+const SMART_STEP_FOO_METHOD_ID: u64 = 0x4007;
+const SMART_STEP_TRIM_METHOD_ID: u64 = 0x4008;
+const SMART_STEP_METHOD_IDS: [u64; 6] = [
+    SMART_STEP_BAR_METHOD_ID,
+    SMART_STEP_QUX_METHOD_ID,
+    SMART_STEP_BAZ_METHOD_ID,
+    SMART_STEP_CORGE_METHOD_ID,
+    SMART_STEP_FOO_METHOD_ID,
+    SMART_STEP_TRIM_METHOD_ID,
+];
 const OBJECT_ID: u64 = 0x5001;
 pub const EXCEPTION_ID: u64 = 0x5002;
 const STRING_OBJECT_ID: u64 = 0x5003;
@@ -772,6 +795,12 @@ pub struct MockExceptionRequest {
 
 const CLASS_LOADER_ID: u64 = 0x8001;
 const DEFINED_CLASS_ID: u64 = 0x9001;
+
+#[derive(Debug, Clone, Copy)]
+struct MockFrame {
+    frame_id: FrameId,
+    location: Location,
+}
 
 fn default_location() -> Location {
     Location {
@@ -1135,12 +1164,27 @@ async fn handle_packet(
                 (ERROR_THREAD_NOT_SUSPENDED, Vec::new())
             } else {
                 let _thread_id = r.read_object_id(sizes).unwrap_or(0);
-                let _start = r.read_i32().unwrap_or(0);
-                let _length = r.read_i32().unwrap_or(0);
+                let start = r.read_i32().unwrap_or(0).max(0) as usize;
+                let length = r.read_i32().unwrap_or(0);
                 let mut w = JdwpWriter::new();
-                w.write_u32(1);
-                w.write_id(FRAME_ID, sizes.frame_id);
-                w.write_location(&default_location(), sizes);
+
+                let frames = state
+                    .smart_step_stack
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                let available = frames.len().saturating_sub(start);
+                let take = if length < 0 {
+                    available
+                } else {
+                    available.min(length as usize)
+                };
+
+                w.write_u32(take as u32);
+                for frame in frames.iter().rev().skip(start).take(take) {
+                    w.write_id(frame.frame_id, sizes.frame_id);
+                    w.write_location(&frame.location, sizes);
+                }
                 (0, w.into_vec())
             }
         }
@@ -1148,7 +1192,12 @@ async fn handle_packet(
         (11, 7) => {
             let _thread_id = r.read_object_id(sizes).unwrap_or(0);
             let mut w = JdwpWriter::new();
-            w.write_u32(1);
+            let count = state
+                .smart_step_stack
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len() as u32;
+            w.write_u32(count);
             (0, w.into_vec())
         }
         // ThreadReference.OwnedMonitors
@@ -1322,13 +1371,49 @@ async fn handle_packet(
         }
         // ReferenceType.Methods
         (2, 5) => {
-            let _class_id = r.read_reference_type_id(sizes).unwrap_or(0);
+            let class_id = r.read_reference_type_id(sizes).unwrap_or(0);
             let mut w = JdwpWriter::new();
-            w.write_u32(1);
-            w.write_id(METHOD_ID, sizes.method_id);
-            w.write_string("main");
-            w.write_string("()V");
-            w.write_u32(1);
+            match class_id {
+                CLASS_ID => {
+                    w.write_u32(7);
+
+                    w.write_id(METHOD_ID, sizes.method_id);
+                    w.write_string("main");
+                    w.write_string("()V");
+                    w.write_u32(1);
+
+                    w.write_id(SMART_STEP_BAR_METHOD_ID, sizes.method_id);
+                    w.write_string("bar");
+                    w.write_string("()V");
+                    w.write_u32(1);
+
+                    w.write_id(SMART_STEP_QUX_METHOD_ID, sizes.method_id);
+                    w.write_string("qux");
+                    w.write_string("()V");
+                    w.write_u32(1);
+
+                    w.write_id(SMART_STEP_BAZ_METHOD_ID, sizes.method_id);
+                    w.write_string("baz");
+                    w.write_string("()V");
+                    w.write_u32(1);
+
+                    w.write_id(SMART_STEP_CORGE_METHOD_ID, sizes.method_id);
+                    w.write_string("corge");
+                    w.write_string("()V");
+                    w.write_u32(1);
+
+                    w.write_id(SMART_STEP_FOO_METHOD_ID, sizes.method_id);
+                    w.write_string("foo");
+                    w.write_string("()V");
+                    w.write_u32(1);
+
+                    w.write_id(SMART_STEP_TRIM_METHOD_ID, sizes.method_id);
+                    w.write_string("trim");
+                    w.write_string("()V");
+                    w.write_u32(1);
+                }
+                _ => w.write_u32(0),
+            }
             (0, w.into_vec())
         }
         // ReferenceType.Fields (for object inspection)
@@ -1457,13 +1542,14 @@ async fn handle_packet(
         // Method.LineTable
         (6, 1) => {
             let _class_id = r.read_reference_type_id(sizes).unwrap_or(0);
-            let _method_id = r.read_id(sizes.method_id).unwrap_or(0);
+            let method_id = r.read_id(sizes.method_id).unwrap_or(0);
             let mut w = JdwpWriter::new();
             w.write_u64(0);
             w.write_u64(10);
             w.write_u32(1);
             w.write_u64(0);
-            w.write_i32(3);
+            let line = if method_id == METHOD_ID { 3 } else { 1 };
+            w.write_i32(line);
             (0, w.into_vec())
         }
         // Method.VariableTable
@@ -2220,6 +2306,7 @@ async fn handle_packet(
             let suspend_policy = r.read_u8().unwrap_or(0);
             let modifier_count = r.read_u32().unwrap_or(0) as usize;
             let mut count_modifier: Option<u32> = None;
+            let mut step_depth: Option<u32> = None;
             let mut exception_caught = false;
             let mut exception_uncaught = false;
             let mut field_only: Option<(ReferenceTypeId, FieldId)> = None;
@@ -2275,6 +2362,7 @@ async fn handle_packet(
                         let thread = r.read_object_id(sizes).unwrap_or(0);
                         let size = r.read_u32().unwrap_or(0);
                         let depth = r.read_u32().unwrap_or(0);
+                        step_depth = Some(depth);
                         modifiers.push(MockEventRequestModifier::Step {
                             thread,
                             size,
@@ -2304,6 +2392,9 @@ async fn handle_packet(
                 1 => {
                     *state.step_request.lock().await = Some(request_id);
                     *state.step_suspend_policy.lock().await = Some(suspend_policy);
+                    state
+                        .step_depth
+                        .store(step_depth.unwrap_or(0), Ordering::Relaxed);
                 }
                 2 => {
                     *state.breakpoint_request.lock().await = Some(request_id);
@@ -2739,6 +2830,47 @@ fn make_vm_disconnect_event_packet(
     encode_command(packet_id, 64, 100, &payload)
 }
 
+fn smart_step_location(state: &State) -> Location {
+    let depth = state.step_depth.load(Ordering::Relaxed);
+    let mut stack = state
+        .smart_step_stack
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+
+    match depth {
+        // StepDepth::Into
+        0 => {
+            if stack.len() == 1 {
+                let idx = state.smart_step_next_call.fetch_add(1, Ordering::Relaxed);
+                let method_id = SMART_STEP_METHOD_IDS[idx % SMART_STEP_METHOD_IDS.len()];
+                let frame_id = FRAME_ID + stack.len() as u64;
+                stack.push(MockFrame {
+                    frame_id,
+                    location: Location {
+                        type_tag: 1,
+                        class_id: CLASS_ID,
+                        method_id,
+                        index: 0,
+                    },
+                });
+            }
+        }
+        // StepDepth::Out
+        2 => {
+            if stack.len() > 1 {
+                stack.pop();
+            }
+        }
+        // StepDepth::Over
+        _ => {}
+    }
+
+    stack
+        .last()
+        .map(|frame| frame.location)
+        .unwrap_or_else(default_location)
+}
+
 fn make_stop_event_packet(
     state: &State,
     id_sizes: &JdwpIdSizes,
@@ -2762,7 +2894,7 @@ fn make_stop_event_packet(
         w.write_u8(1); // SingleStep
         w.write_i32(step_request);
         w.write_object_id(THREAD_ID, id_sizes);
-        w.write_location(&default_location(), id_sizes);
+        w.write_location(&smart_step_location(state), id_sizes);
 
         // MethodExitWithReturnValue event after the stop event to validate that
         // the client reorders events before broadcasting.
@@ -2872,7 +3004,12 @@ fn make_stop_event_packet(
     w.write_u8(kind);
     w.write_i32(request_id);
     w.write_object_id(THREAD_ID, id_sizes);
-    w.write_location(&default_location(), id_sizes);
+    let location = if kind == 1 {
+        smart_step_location(state)
+    } else {
+        default_location()
+    };
+    w.write_location(&location, id_sizes);
     if kind == 4 {
         w.write_object_id(EXCEPTION_ID, id_sizes);
         let catch_location = if exception_request.map(|r| r.caught).unwrap_or(false) {
