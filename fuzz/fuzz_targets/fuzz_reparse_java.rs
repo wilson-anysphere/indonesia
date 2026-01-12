@@ -10,6 +10,12 @@ use libfuzzer_sys::fuzz_target;
 mod utils;
 
 const TIMEOUT: Duration = Duration::from_secs(2);
+/// Reserve up to this many bytes from the end of the fuzzer input for encoding a single edit.
+///
+/// Keeping the edit stream reasonably small makes it more likely that `*.java` seeds remain mostly
+/// intact while still allowing a meaningful edit to be described.
+const MAX_OP_BYTES: usize = 256;
+const MAX_REPLACEMENT_BYTES: usize = 8 * 1024;
 
 #[derive(Debug)]
 struct Input {
@@ -33,8 +39,12 @@ fn runner() -> &'static Runner {
             for input in input_rx {
                 let old_parse = nova_syntax::parse_java(&input.old_text);
                 let full_new = nova_syntax::parse_java(&input.new_text);
-                let incr_new =
-                    nova_syntax::reparse_java(&old_parse, &input.old_text, input.edit, &input.new_text);
+                let incr_new = nova_syntax::reparse_java(
+                    &old_parse,
+                    &input.old_text,
+                    input.edit,
+                    &input.new_text,
+                );
 
                 // Reparsing must remain lossless.
                 assert_eq!(incr_new.syntax().text().to_string(), input.new_text);
@@ -69,6 +79,14 @@ fn clamp_to_char_boundary(text: &str, mut offset: usize) -> usize {
     offset
 }
 
+fn truncate_str_to_boundary(s: &str, max_len: usize) -> &str {
+    let mut end = max_len.min(s.len());
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 fn apply_edit(old_text: &str, start: usize, end: usize, replacement: &str) -> String {
     debug_assert!(start <= end);
     debug_assert!(old_text.is_char_boundary(start));
@@ -82,28 +100,33 @@ fn apply_edit(old_text: &str, start: usize, end: usize, replacement: &str) -> St
 }
 
 fuzz_target!(|data: &[u8]| {
-    // Split the input into:
-    // - a UTF-8 prefix for the "old" Java file text
-    // - a suffix used to describe a single edit (start, delete-len, replacement)
-    //
-    // `\0` is used as a delimiter so existing `*.java` corpus seeds can be used directly:
-    // without a delimiter there are no extra edit bytes (a no-op edit).
     let cap = data.len().min(utils::MAX_INPUT_SIZE);
-    let delimiter = data[..cap].iter().position(|b| *b == 0);
+    let data = &data[..cap];
+    if data.is_empty() {
+        return;
+    }
 
-    let (old_bytes, edit_bytes) = match delimiter {
-        Some(pos) => (&data[..pos], &data[pos.saturating_add(1)..]),
-        None => (&data[..cap], &data[cap..]),
-    };
+    // Split the input into an initial UTF-8 buffer and a small "edit op" stream at the end.
+    //
+    // We bound `op_len` to at most half of the input so that even small `.java` seeds still
+    // contribute some Java-ish `old_text`.
+    let op_len_limit = data.len() / 2;
+    let op_len = (data[0] as usize % (MAX_OP_BYTES + 1))
+        .min(op_len_limit)
+        .min(data.len());
+    let split = data.len().saturating_sub(op_len);
+    let (text_bytes, op_bytes) = data.split_at(split);
 
-    let Some(old_text) = utils::truncate_utf8(old_bytes) else {
+    let Some(old_text) = utils::truncate_utf8(text_bytes) else {
         return;
     };
 
-    let start_raw = read_u32_le(edit_bytes);
-    let delete_raw = read_u32_le(edit_bytes.get(4..).unwrap_or(&[]));
-    let replacement_bytes = edit_bytes.get(8..).unwrap_or(&[]);
-    let replacement = utils::truncate_utf8(replacement_bytes).unwrap_or("");
+    let start_raw = read_u32_le(op_bytes);
+    let delete_raw = read_u32_le(op_bytes.get(4..).unwrap_or(&[]));
+    let replacement_bytes = op_bytes.get(8..).unwrap_or(&[]);
+    let replacement_bytes =
+        &replacement_bytes[..replacement_bytes.len().min(MAX_REPLACEMENT_BYTES)];
+    let mut replacement = String::from_utf8_lossy(replacement_bytes).into_owned();
 
     let mut start = (start_raw as usize) % (old_text.len() + 1);
     start = clamp_to_char_boundary(old_text, start);
@@ -119,11 +142,19 @@ fuzz_target!(|data: &[u8]| {
         end = start;
     }
 
-    let edit = nova_syntax::TextEdit::new(
-        nova_syntax::TextRange::new(start, end),
-        replacement.to_owned(),
-    );
-    let new_text = apply_edit(old_text, start, end, replacement);
+    // Ensure the post-edit text doesn't exceed the global input size cap by truncating the
+    // replacement if needed. Truncate the replacement (not the result) so the `TextEdit` remains
+    // consistent with `new_text`.
+    let deleted_len = end.saturating_sub(start);
+    let base_len = old_text.len().saturating_sub(deleted_len);
+    let allowed_insert_len = utils::MAX_INPUT_SIZE.saturating_sub(base_len);
+    if replacement.len() > allowed_insert_len {
+        replacement = truncate_str_to_boundary(&replacement, allowed_insert_len).to_owned();
+    }
+
+    let edit =
+        nova_syntax::TextEdit::new(nova_syntax::TextRange::new(start, end), replacement.clone());
+    let new_text = apply_edit(old_text, start, end, &replacement);
 
     let runner = runner();
     runner
@@ -148,4 +179,3 @@ fuzz_target!(|data: &[u8]| {
         }
     }
 });
-
