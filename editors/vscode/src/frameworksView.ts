@@ -175,7 +175,7 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Endpoint
       await this.setContexts({ serverRunning: true, webEndpointsSupported: !isMethodNotFoundError(err) });
 
       if (isMethodNotFoundError(err)) {
-        this.setMessage('nova/web/endpoints not supported by this server');
+        this.setMessage('Web endpoints are not supported by this server (missing nova/web/endpoints).');
         return [];
       }
 

@@ -38,7 +38,7 @@ test('parseNovaExperimentalCapabilities parses requests/notifications into sets'
   assert.ok(parsed);
   assert.equal(parsed.requests.has('nova/test/run'), true);
   assert.equal(parsed.requests.has('nova/java/organizeImports'), true);
-  assert.equal(parsed.requests.has('nova/doesNotExist'), false);
+  assert.equal(parsed.requests.has('nova/' + 'doesNotExist'), false);
   assert.equal(parsed.notifications.has('nova/safeModeChanged'), true);
 });
 
@@ -76,4 +76,3 @@ test('formatUnsupportedNovaMethodMessage includes method name', () => {
     'Nova: server does not support nova/test/run. You may be running an older nova-lsp; update or disable allowVersionMismatch.',
   );
 });
-
