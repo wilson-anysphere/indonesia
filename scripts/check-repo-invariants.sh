@@ -109,6 +109,20 @@ for manifest in "${model_only_crates[@]}"; do
   fi
 done
 
+# Guard the test-architecture cleanup that removed the `nova-project -> nova-workspace`
+# dev-dependency edge.
+#
+# `nova-project` lives in the semantic layer, while `nova-workspace` is a protocol-layer
+# integration crate that pulls in `nova-ide` and many other crates. Keeping `nova-project`
+# test/dev dependencies free of `nova-workspace` ensures `cargo test -p nova-project --lib`
+# remains fast and isolated from higher-stack build churn.
+nova_workspace_dep_pattern='^[[:space:]]*nova-workspace[[:space:]]*='
+if git grep -n -E -- "${nova_workspace_dep_pattern}" -- crates/nova-project/Cargo.toml >/dev/null; then
+  echo "repo invariant failed: nova-project must not depend on nova-workspace (move integration tests to nova-workspace instead)" >&2
+  git grep -n -E -- "${nova_workspace_dep_pattern}" -- crates/nova-project/Cargo.toml >&2
+  exit 1
+fi
+
 # Enforce the AGENTS.md integration test harness pattern for `nova-dap`.
 #
 # Each `tests/*.rs` file becomes a separate Cargo integration test binary, which is expensive
