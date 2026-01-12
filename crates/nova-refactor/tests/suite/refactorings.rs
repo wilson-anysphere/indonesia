@@ -1447,6 +1447,55 @@ fn extract_variable_rejects_name_conflict_with_switch_pattern_variable() {
 }
 
 #[test]
+fn extract_variable_allows_name_reuse_in_other_switch_rule_than_pattern_variable() {
+    let fixture = r#"class C {
+  void m(Object o) {
+    switch (o) {
+      case String s -> {
+        System.out.println(s);
+      }
+      default -> {
+        System.out.println(/*start*/1 + 2/*end*/);
+      }
+    }
+  }
+}
+"#;
+    let (src, expr_range) = extract_range(fixture);
+    let file = FileId::new("Test.java");
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "s".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class C {
+  void m(Object o) {
+    switch (o) {
+      case String s -> {
+        System.out.println(s);
+      }
+      default -> {
+        var s = 1 + 2;
+        System.out.println(s);
+      }
+    }
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn extract_variable_rejects_name_conflict_with_try_with_resources_resource_variable() {
     let fixture = r#"class C {
   void m(java.io.InputStream src) throws Exception {
@@ -3189,6 +3238,88 @@ fn extract_variable_rejects_name_conflict_with_pattern_variable_flow_scope_else_
             .any(|c| matches!(c, Conflict::NameCollision { name, .. } if name == "s")),
         "expected NameCollision conflict: {conflicts:?}"
     );
+}
+
+#[test]
+fn extract_variable_allows_name_reuse_in_else_branch_when_pattern_in_then_branch() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C {
+  void m(Object obj) {
+    if (obj instanceof String s) {
+      System.out.println(s);
+    } else {
+      System.out.println(/*start*/1 + 2/*end*/);
+    }
+  }
+}
+"#;
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
+            name: "s".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class C {
+  void m(Object obj) {
+    if (obj instanceof String s) {
+      System.out.println(s);
+    } else {
+      var s = 1 + 2;
+      System.out.println(s);
+    }
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn extract_variable_allows_name_reuse_in_do_while_body_when_pattern_in_condition() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C {
+  void m(Object obj) {
+    do {
+      System.out.println(/*start*/1 + 2/*end*/);
+    } while (obj instanceof String s);
+  }
+}
+"#;
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
+            name: "s".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class C {
+  void m(Object obj) {
+    do {
+      var s = 1 + 2;
+      System.out.println(s);
+    } while (obj instanceof String s);
+  }
+}
+"#;
+    assert_eq!(after, expected);
 }
 
 #[test]

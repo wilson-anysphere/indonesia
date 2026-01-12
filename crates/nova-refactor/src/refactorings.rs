@@ -1174,42 +1174,20 @@ pub fn extract_variable(
         return Err(RefactorError::VarNotAllowedForInitializer);
     }
 
+    // Extracting a side-effectful expression into a new statement can change evaluation order or
+    // conditionality (e.g. when the expression appears under `?:`, `&&`, etc).
+    //
+    // When extracting to `var`, be conservative and reject side-effectful initializers to avoid
+    // producing surprising code (and to avoid `void`-typed method invocations that `var` cannot
+    // represent).
+    if params.use_var && has_side_effects(expr.syntax()) {
+        return Err(RefactorError::ExtractSideEffects);
+    }
     let stmt = expr
         .syntax()
         .ancestors()
         .find_map(ast::Statement::cast)
         .ok_or(RefactorError::InvalidSelection)?;
-
-    // Extracting a side-effectful expression into a new statement can change evaluation order or
-    // conditionality (e.g. when the expression appears under `?:`, `&&`, etc). Be conservative.
-    //
-    // The only side-effectful extraction we currently support is extracting the *entire* expression
-    // of an expression statement (e.g. `new Foo();`). In that case, we rewrite the statement
-    // in-place to a local declaration (`Foo tmp = new Foo();`) rather than inserting a new
-    // statement before it.
-    if has_side_effects(expr.syntax()) {
-        let selection_is_whole_expression_statement = match &stmt {
-            ast::Statement::ExpressionStatement(expr_stmt) => {
-                if params.use_var {
-                    false
-                } else if let Some(stmt_expr) = expr_stmt.expression() {
-                    let stmt_expr_range = trimmed_syntax_range(stmt_expr.syntax());
-                    let stmt_expr_range_ws = trim_range(text, syntax_range(stmt_expr.syntax()));
-                    (stmt_expr_range.start == selection.start
-                        && stmt_expr_range.end == selection.end)
-                        || (stmt_expr_range_ws.start == selection.start
-                            && stmt_expr_range_ws.end == selection.end)
-                } else {
-                    false
-                }
-            }
-            _ => false,
-        };
-
-        if !selection_is_whole_expression_statement {
-            return Err(RefactorError::ExtractSideEffects);
-        }
-    }
 
     // Java requires an explicit constructor invocation (`this(...)` / `super(...)`) to be the
     // first statement in a constructor body. Extracting a variable would insert a new statement
@@ -3630,10 +3608,10 @@ fn check_extract_variable_name_conflicts(
 
     // Pattern variables (`instanceof` / record patterns / switch patterns).
     //
-    // Pattern matching introduces bindings whose scope is typically not block-based (it depends on
-    // control flow and on the shape of the pattern). We use a conservative approximation of scope
-    // based on the nearest enclosing statement, and reject extraction when the new binding's scope
-    // would overlap and collide.
+    // Pattern matching introduces bindings whose scope is not purely block-based (it depends on
+    // control flow and the surrounding construct). We use a conservative approximation of scope
+    // based on the enclosing control structure / statement list, and reject extraction when the new
+    // binding's scope would overlap and collide.
     for pat in enclosing
         .body()
         .syntax()
@@ -3649,10 +3627,10 @@ fn check_extract_variable_name_conflicts(
         if tok.text() != name {
             continue;
         }
-        let Some(scope) = pattern_binding_scope_range(&pat) else {
+        let Some(scopes) = pattern_binding_scope_ranges(&pat) else {
             continue;
         };
-        if ranges_overlap(new_scope, scope) {
+        if scopes.iter().any(|scope| ranges_overlap(new_scope, *scope)) {
             return Err(name_collision());
         }
     }
@@ -3765,163 +3743,6 @@ fn check_extract_variable_name_conflicts(
         }
     }
 
-    // Pattern variables introduced by pattern matching in conditional expressions. Be conservative:
-    // treat any `TypePattern` bindings in the condition as in-scope throughout the corresponding
-    // body statement.
-    for if_stmt in enclosing
-        .body()
-        .syntax()
-        .descendants()
-        .filter_map(ast::IfStatement::cast)
-    {
-        if is_within_nested_type(if_stmt.syntax(), enclosing.body().syntax()) {
-            continue;
-        }
-        let Some(condition) = if_stmt.condition() else {
-            continue;
-        };
-        let Some(then_branch) = if_stmt.then_branch() else {
-            continue;
-        };
-        let scope = syntax_range(then_branch.syntax());
-        if !ranges_overlap(new_scope, scope) {
-            continue;
-        }
-        if condition
-            .syntax()
-            .descendants()
-            .filter_map(ast::TypePattern::cast)
-            .filter_map(|pat| pat.name_token())
-            .any(|tok| tok.text() == name)
-        {
-            return Err(name_collision());
-        }
-    }
-
-    for while_stmt in enclosing
-        .body()
-        .syntax()
-        .descendants()
-        .filter_map(ast::WhileStatement::cast)
-    {
-        if is_within_nested_type(while_stmt.syntax(), enclosing.body().syntax()) {
-            continue;
-        }
-        let Some(condition) = while_stmt.condition() else {
-            continue;
-        };
-        let Some(body) = while_stmt.body() else {
-            continue;
-        };
-        let scope = syntax_range(body.syntax());
-        if !ranges_overlap(new_scope, scope) {
-            continue;
-        }
-        if condition
-            .syntax()
-            .descendants()
-            .filter_map(ast::TypePattern::cast)
-            .filter_map(|pat| pat.name_token())
-            .any(|tok| tok.text() == name)
-        {
-            return Err(name_collision());
-        }
-    }
-
-    for do_stmt in enclosing
-        .body()
-        .syntax()
-        .descendants()
-        .filter_map(ast::DoWhileStatement::cast)
-    {
-        if is_within_nested_type(do_stmt.syntax(), enclosing.body().syntax()) {
-            continue;
-        }
-        let Some(condition) = do_stmt.condition() else {
-            continue;
-        };
-        let Some(body) = do_stmt.body() else {
-            continue;
-        };
-        let scope = syntax_range(body.syntax());
-        if !ranges_overlap(new_scope, scope) {
-            continue;
-        }
-        if condition
-            .syntax()
-            .descendants()
-            .filter_map(ast::TypePattern::cast)
-            .filter_map(|pat| pat.name_token())
-            .any(|tok| tok.text() == name)
-        {
-            return Err(name_collision());
-        }
-    }
-
-    // Switch pattern variables (`case Type name -> ...` / `case Type name:` / record patterns).
-    for group in enclosing
-        .body()
-        .syntax()
-        .descendants()
-        .filter_map(ast::SwitchGroup::cast)
-    {
-        if is_within_nested_type(group.syntax(), enclosing.body().syntax()) {
-            continue;
-        }
-        let scope = syntax_range(group.syntax());
-        if !ranges_overlap(new_scope, scope) {
-            continue;
-        }
-        let mut has_conflict = false;
-        for label in group.labels() {
-            has_conflict |= label
-                .syntax()
-                .descendants()
-                .filter_map(ast::TypePattern::cast)
-                .filter_map(|pat| pat.name_token())
-                .any(|tok| tok.text() == name);
-            if has_conflict {
-                break;
-            }
-        }
-        if has_conflict {
-            return Err(name_collision());
-        }
-    }
-
-    for rule in enclosing
-        .body()
-        .syntax()
-        .descendants()
-        .filter_map(ast::SwitchRule::cast)
-    {
-        if is_within_nested_type(rule.syntax(), enclosing.body().syntax()) {
-            continue;
-        }
-        let scope = rule
-            .body()
-            .map(|body| syntax_range(body.syntax()))
-            .unwrap_or_else(|| syntax_range(rule.syntax()));
-        if !ranges_overlap(new_scope, scope) {
-            continue;
-        }
-        let mut has_conflict = false;
-        for label in rule.labels() {
-            has_conflict |= label
-                .syntax()
-                .descendants()
-                .filter_map(ast::TypePattern::cast)
-                .filter_map(|pat| pat.name_token())
-                .any(|tok| tok.text() == name);
-            if has_conflict {
-                break;
-            }
-        }
-        if has_conflict {
-            return Err(name_collision());
-        }
-    }
-
     Ok(())
 }
 
@@ -3929,50 +3750,204 @@ fn ranges_overlap(a: TextRange, b: TextRange) -> bool {
     a.start < b.end && b.start < a.end
 }
 
-fn pattern_binding_scope_range(pat: &ast::TypePattern) -> Option<TextRange> {
-    // Switch pattern variables are scoped to the enclosing switch arm/group (not the entire switch
-    // statement/expression). For example, Java allows:
+fn pattern_binding_scope_ranges(pat: &ast::TypePattern) -> Option<Vec<TextRange>> {
+    // Switch label patterns (`case Type name -> ...` / `case Type name:` / record patterns).
     //
-    // ```
-    // switch (o) {
-    //   case String s -> ...
-    //   case Integer i -> { int s = 0; }
-    // }
-    // ```
-    //
-    // So we must not treat `s` as being in scope across other arms/groups when doing extract-variable
-    // name collision checks.
-    if let Some(rule) = pat.syntax().ancestors().find_map(ast::SwitchRule::cast) {
-        if let Some(body) = rule.body() {
-            return Some(syntax_range(body.syntax()));
+    // Pattern variables introduced in a switch label are only in scope for the corresponding case
+    // group/rule body (not across the entire switch).
+    if pat.syntax().ancestors().any(|n| {
+        ast::SwitchLabel::cast(n.clone()).is_some() || ast::CaseLabelElement::cast(n).is_some()
+    }) {
+        if let Some(rule) = pat.syntax().ancestors().find_map(ast::SwitchRule::cast) {
+            let scope = rule
+                .body()
+                .map(|body| syntax_range(body.syntax()))
+                .unwrap_or_else(|| syntax_range(rule.syntax()));
+            return Some(vec![scope]);
         }
-        return Some(syntax_range(rule.syntax()));
-    }
-    if let Some(group) = pat.syntax().ancestors().find_map(ast::SwitchGroup::cast) {
-        return Some(syntax_range(group.syntax()));
+        if let Some(group) = pat.syntax().ancestors().find_map(ast::SwitchGroup::cast) {
+            return Some(vec![syntax_range(group.syntax())]);
+        }
     }
 
-    let stmt = pat.syntax().ancestors().find_map(ast::Statement::cast)?;
-    let stmt_range = syntax_range(stmt.syntax());
+    // Patterns introduced in conditional expressions (`if` / `while` / `for` / `do-while`).
+    //
+    // For simple `if`/`while` conditions that are just an `instanceof <pattern>` (possibly wrapped
+    // in parentheses and `!` negations), we can approximate the binding scope as:
+    // - always: the condition expression itself (the declaration site)
+    // - plus: the body branch where the pattern is definitely matched (then/else/loop body)
+    //
+    // For more complex boolean expressions, fall back to a conservative statement-level scope.
+    if let Some(inst) = pat
+        .syntax()
+        .ancestors()
+        .find_map(ast::InstanceofExpression::cast)
+    {
+        let inst_range = syntax_range(inst.syntax());
 
-    // Java pattern variables can be "flow-scoped" and may be in scope *after* the statement that
-    // contains the pattern, e.g.:
-    //
-    // `if (!(obj instanceof String s)) return;`
-    // `System.out.println(s); // s is in scope here`
-    //
-    // For extract-variable we only need a conservative scope approximation for conflict checking.
-    // Expand the scope to the end of the enclosing statement list when we can detect a simple
-    // guard-style `if` that guarantees the pattern is matched for the subsequent control flow.
-    if let ast::Statement::IfStatement(if_stmt) = &stmt {
-        if pattern_in_scope_after_if_statement(pat, if_stmt) {
-            if let Some(container) = nearest_statement_list_container_range(if_stmt.syntax()) {
-                return Some(TextRange::new(stmt_range.start, container.end));
+        // `if (cond) ...`
+        if let Some(if_stmt) = pat
+            .syntax()
+            .ancestors()
+            .filter_map(ast::IfStatement::cast)
+            .find(|if_stmt| {
+                if_stmt
+                    .condition()
+                    .is_some_and(|cond| contains_range(syntax_range(cond.syntax()), inst_range))
+            })
+        {
+            let stmt_range = syntax_range(if_stmt.syntax());
+            let Some(condition) = if_stmt.condition() else {
+                return Some(vec![stmt_range]);
+            };
+
+            if let Some(matches_when_true) = pattern_matches_when_condition_true(pat, &condition) {
+                let mut scopes = vec![syntax_range(condition.syntax())];
+                if matches_when_true {
+                    if let Some(then_branch) = if_stmt.then_branch() {
+                        scopes.push(syntax_range(then_branch.syntax()));
+                    }
+                } else if let Some(else_branch) = if_stmt.else_branch() {
+                    scopes.push(syntax_range(else_branch.syntax()));
+                }
+
+                // Guard-style flow scoping: the pattern can be in scope *after* the if-statement
+                // when all paths that reach the following statements imply a successful match.
+                if pattern_in_scope_after_if_statement(pat, &if_stmt) {
+                    if let Some(container) = nearest_flow_scope_container_range(if_stmt.syntax()) {
+                        let after_if = TextRange::new(stmt_range.end, container.end);
+                        if after_if.start < after_if.end {
+                            scopes.push(after_if);
+                        }
+                    }
+                }
+
+                scopes.sort_by_key(|r| (r.start, r.end));
+                scopes.dedup();
+                return Some(scopes);
             }
+
+            // Complex condition: conservatively treat as statement-scoped.
+            return Some(vec![stmt_range]);
+        }
+
+        // `while (cond) ...`
+        if let Some(while_stmt) = pat
+            .syntax()
+            .ancestors()
+            .filter_map(ast::WhileStatement::cast)
+            .find(|while_stmt| {
+                while_stmt
+                    .condition()
+                    .is_some_and(|cond| contains_range(syntax_range(cond.syntax()), inst_range))
+            })
+        {
+            let stmt_range = syntax_range(while_stmt.syntax());
+            let Some(condition) = while_stmt.condition() else {
+                return Some(vec![stmt_range]);
+            };
+
+            if let Some(matches_when_true) = pattern_matches_when_condition_true(pat, &condition) {
+                let mut scopes = vec![syntax_range(condition.syntax())];
+                if matches_when_true {
+                    if let Some(body) = while_stmt.body() {
+                        scopes.push(syntax_range(body.syntax()));
+                    }
+                }
+                scopes.sort_by_key(|r| (r.start, r.end));
+                scopes.dedup();
+                return Some(scopes);
+            }
+
+            return Some(vec![stmt_range]);
+        }
+
+        // Classic `for (...; cond; ...) ...`
+        if let Some(for_stmt) = pat
+            .syntax()
+            .ancestors()
+            .filter_map(ast::ForStatement::cast)
+            .find(|for_stmt| {
+                for_stmt.header().is_some_and(|header| {
+                    for_header_condition_segment_range(&header)
+                        .is_some_and(|segment| contains_range(segment, inst_range))
+                })
+            })
+        {
+            let stmt_range = syntax_range(for_stmt.syntax());
+            let Some(header) = for_stmt.header() else {
+                return Some(vec![stmt_range]);
+            };
+            let Some(segment) = for_header_condition_segment_range(&header) else {
+                return Some(vec![stmt_range]);
+            };
+
+            // Try to recover the condition expression node so we can detect simple negation.
+            let mut condition_expr: Option<ast::Expression> = None;
+            let mut best_len: usize = 0;
+            for expr in header
+                .syntax()
+                .descendants()
+                .filter_map(ast::Expression::cast)
+            {
+                let expr_range = syntax_range(expr.syntax());
+                if !contains_range(segment, expr_range) {
+                    continue;
+                }
+                if !contains_range(expr_range, inst_range) {
+                    continue;
+                }
+                let len = expr_range.len();
+                if len >= best_len {
+                    best_len = len;
+                    condition_expr = Some(expr);
+                }
+            }
+
+            let Some(condition) = condition_expr else {
+                return Some(vec![stmt_range]);
+            };
+
+            if let Some(matches_when_true) = pattern_matches_when_condition_true(pat, &condition) {
+                let mut scopes = vec![syntax_range(condition.syntax())];
+                if matches_when_true {
+                    if let Some(body) = for_stmt.body() {
+                        scopes.push(syntax_range(body.syntax()));
+                    }
+                }
+                scopes.sort_by_key(|r| (r.start, r.end));
+                scopes.dedup();
+                return Some(scopes);
+            }
+
+            return Some(vec![stmt_range]);
+        }
+
+        // `do { ... } while (cond);`
+        //
+        // Pattern variables in the do-while condition are *not* in scope in the body (the body runs
+        // before the condition is evaluated).
+        if let Some(do_stmt) = pat
+            .syntax()
+            .ancestors()
+            .filter_map(ast::DoWhileStatement::cast)
+            .find(|do_stmt| {
+                do_stmt
+                    .condition()
+                    .is_some_and(|cond| contains_range(syntax_range(cond.syntax()), inst_range))
+            })
+        {
+            let stmt_range = syntax_range(do_stmt.syntax());
+            let Some(condition) = do_stmt.condition() else {
+                return Some(vec![stmt_range]);
+            };
+            return Some(vec![syntax_range(condition.syntax())]);
         }
     }
 
-    Some(stmt_range)
+    // Default: treat as statement-scoped.
+    let stmt = pat.syntax().ancestors().find_map(ast::Statement::cast)?;
+    Some(vec![syntax_range(stmt.syntax())])
 }
 
 fn pattern_in_scope_after_if_statement(pat: &ast::TypePattern, if_stmt: &ast::IfStatement) -> bool {
@@ -4059,7 +4034,7 @@ fn pattern_matches_when_condition_true(
 
         // We only handle simple conditions that are a (possibly parenthesized) instanceof pattern,
         // optionally wrapped in `!` negations. For more complex boolean expressions, fall back to a
-        // statement-local scope approximation.
+        // conservative statement-local scope approximation.
         return None;
     }
 
@@ -4093,14 +4068,58 @@ fn statement_always_exits(stmt: &ast::Statement) -> bool {
     }
 }
 
-fn nearest_statement_list_container_range(node: &nova_syntax::SyntaxNode) -> Option<TextRange> {
+fn nearest_flow_scope_container_range(node: &nova_syntax::SyntaxNode) -> Option<TextRange> {
     node.ancestors().find_map(|node| {
         if let Some(block) = ast::Block::cast(node.clone()) {
             Some(syntax_range(block.syntax()))
+        } else if let Some(group) = ast::SwitchGroup::cast(node.clone()) {
+            Some(syntax_range(group.syntax()))
+        } else if let Some(rule) = ast::SwitchRule::cast(node.clone()) {
+            Some(
+                rule.body()
+                    .map(|body| syntax_range(body.syntax()))
+                    .unwrap_or_else(|| syntax_range(rule.syntax())),
+            )
         } else {
             ast::SwitchBlock::cast(node).map(|b| syntax_range(b.syntax()))
         }
     })
+}
+
+fn for_header_condition_segment_range(header: &ast::ForHeader) -> Option<TextRange> {
+    // Classic for-loop header shape:
+    // `for (<init> ; <condition> ; <update>)`
+    let mut semicolons = Vec::new();
+    let mut r_paren = None;
+
+    for el in header.syntax().children_with_tokens() {
+        let Some(tok) = el.into_token() else {
+            continue;
+        };
+        match tok.kind() {
+            SyntaxKind::Semicolon => semicolons.push(tok),
+            SyntaxKind::RParen => r_paren = Some(tok),
+            _ => {}
+        }
+    }
+
+    if semicolons.len() < 2 {
+        return None;
+    }
+    let Some(r_paren) = r_paren else {
+        return None;
+    };
+
+    let first_semi = syntax_token_range(&semicolons[0]);
+    let second_semi = syntax_token_range(&semicolons[1]);
+    let r_paren = syntax_token_range(&r_paren);
+
+    let condition_segment = TextRange::new(first_semi.end, second_semi.start);
+    let condition_segment = TextRange::new(
+        condition_segment.start,
+        condition_segment.end.min(r_paren.start),
+    );
+    Some(condition_segment)
 }
 
 #[derive(Clone, Debug)]
