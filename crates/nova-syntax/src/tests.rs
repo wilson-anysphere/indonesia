@@ -517,7 +517,7 @@ fn lexer_unicode_escape_line_terminator_ends_line_comment() {
 
 #[test]
 fn lexer_token_is_underscore_identifier_respects_unicode_escape_translation() {
-    let input = "\\u005F _ _x \\u005Fx";
+    let input = "\\u005F _ _x \\u005Fx \\u005Cu005F \\uu005F";
     let tokens = lex(input);
 
     let non_trivia: Vec<_> = tokens
@@ -525,11 +525,13 @@ fn lexer_token_is_underscore_identifier_respects_unicode_escape_translation() {
         .filter(|t| !t.kind.is_trivia() && t.kind != SyntaxKind::Eof)
         .collect();
 
-    assert_eq!(non_trivia.len(), 4);
+    assert_eq!(non_trivia.len(), 6);
     assert!(non_trivia[0].is_underscore_identifier(input));
     assert!(non_trivia[1].is_underscore_identifier(input));
     assert!(!non_trivia[2].is_underscore_identifier(input));
     assert!(!non_trivia[3].is_underscore_identifier(input));
+    assert!(non_trivia[4].is_underscore_identifier(input));
+    assert!(non_trivia[5].is_underscore_identifier(input));
 }
 
 #[test]
