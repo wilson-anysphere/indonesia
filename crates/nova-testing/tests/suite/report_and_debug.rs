@@ -211,6 +211,27 @@ fn creates_module_scoped_debug_configuration_for_maven() {
 }
 
 #[test]
+fn creates_workspace_root_debug_configuration_for_maven() {
+    let root = fixture_root("maven-multi-module");
+    let cfg = debug_configuration_for_test(
+        &root,
+        BuildTool::Auto,
+        ".::com.example.DuplicateTest#ok",
+    )
+    .unwrap();
+
+    assert_eq!(cfg.command, "mvn");
+    assert_eq!(
+        cfg.args,
+        vec![
+            "-Dmaven.surefire.debug",
+            "-Dtest=com.example.DuplicateTest#ok",
+            "test"
+        ]
+    );
+}
+
+#[test]
 fn creates_module_scoped_debug_configuration_for_gradle() {
     let root = fixture_root("gradle-multi-module");
     let cfg = debug_configuration_for_test(

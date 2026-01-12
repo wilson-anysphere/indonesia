@@ -177,8 +177,10 @@ fn command_for_tests(
             cmd.current_dir(project_root);
 
             if let Some(module_rel_path) = module_rel_path {
-                cmd.arg("-pl").arg(module_rel_path);
+                // `"."` is the canonical encoding for the workspace root module. Avoid passing it
+                // to `-pl` because Maven does not guarantee that `-pl .` is valid syntax.
                 if module_rel_path != "." {
+                    cmd.arg("-pl").arg(module_rel_path);
                     cmd.arg("-am");
                 }
             }
@@ -943,6 +945,27 @@ mod tests {
                 "test"
             ]
         );
+    }
+
+    #[test]
+    fn constructs_workspace_root_maven_command_for_qualified_ids() {
+        let root = fixture_root("maven-multi-module");
+        let runs = build_runs(
+            &root,
+            BuildTool::Maven,
+            &vec![".::com.example.DuplicateTest#ok".to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].module_rel_path.as_deref(), Some("."));
+
+        let args = runs[0]
+            .command
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(args, vec!["-Dtest=com.example.DuplicateTest#ok", "test"]);
     }
 
     #[test]

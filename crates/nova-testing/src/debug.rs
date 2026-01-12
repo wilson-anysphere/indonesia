@@ -30,9 +30,11 @@ pub fn debug_configuration_for_test(
 
             let mut args = vec!["-Dmaven.surefire.debug".to_string()];
             if let Some(module_rel_path) = module_rel_path {
-                args.push("-pl".to_string());
-                args.push(module_rel_path.to_string());
+                // `"."` is the canonical encoding for the workspace root module. Avoid passing it
+                // to `-pl` because Maven does not guarantee that `-pl .` is valid syntax.
                 if module_rel_path != "." {
+                    args.push("-pl".to_string());
+                    args.push(module_rel_path.to_string());
                     args.push("-am".to_string());
                 }
             }
