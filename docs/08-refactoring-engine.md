@@ -204,18 +204,26 @@ Current implementation policy:
 
 API shape (refactoring-engine entrypoint):
 
-```rust
-use nova_refactor::{inline_variable, InlineVariableParams, SymbolId, WorkspaceTextRange};
+- `symbol`: the local variable to inline
+- `inline_all`: whether to inline all usages (`true`) or only the usage at the cursor (`false`)
+- when `inline_all == false`, the API must also carry *which usage* to inline (for example a `usage_range`
+  byte range, or a cursor position that resolves to a single reference)
 
-let edit = inline_variable(
-    db,
-    InlineVariableParams {
-        symbol: my_local_symbol_id,
-        inline_all: false,
-        // Selects the usage at the cursor when `inline_all == false`.
-        usage_range: WorkspaceTextRange::new(use_start, use_end),
-    },
-)?;
+Example payloads (field names are illustrative):
+
+```text
+inlineVariable({
+  symbol: <SymbolId>,
+  inlineAll: false,
+  usageRange: { start: <byteOffset>, end: <byteOffset> }
+})
+```
+
+```text
+inlineVariable({
+  symbol: <SymbolId>,
+  inlineAll: true
+})
 ```
 
 ### Move
