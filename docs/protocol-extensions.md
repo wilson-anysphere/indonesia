@@ -1781,20 +1781,18 @@ The server advertises these command IDs via the standard LSP capability:
 `initializeResult.capabilities.executeCommandProvider.commands`.
 
 These commands are intended to support **patch-based code edits**. When patch edits are allowed by
-privacy policy, the server returns a `WorkspaceEdit` and also asks the client to apply it via
-`workspace/applyEdit` (similar to Safe Delete / Organize Imports).
+privacy policy, the server **sends** a `workspace/applyEdit` request containing a `WorkspaceEdit`
+(similar to Safe Delete / Organize Imports).
 
 Like other AI endpoints, these commands accept an optional `workDoneToken` (standard LSP work-done
 progress token). When present, the server emits `$/progress` notifications for user-visible progress.
 
-Clients should support both:
+Clients must support `workspace/applyEdit` to use these commands reliably: the `workspace/executeCommand`
+response does **not** return the edit payload.
 
-1) the returned JSON-RPC response object, and
-2) the `workspace/applyEdit` side-effect when `applied=true`.
-
-Compatibility note: older Nova builds (and some privacy-gated scenarios) may return a JSON string
-result (a generated snippet) instead of a patch-based `{applied,edit}` response. Clients should
-gracefully handle both response shapes.
+Compatibility note: older Nova builds may return a JSON string result (a generated snippet) instead
+of applying an edit via `workspace/applyEdit`. Clients should gracefully handle both behaviors when
+targeting multiple Nova versions.
 
 #### `nova.ai.generateMethodBody`
 
@@ -1827,42 +1825,27 @@ type does not use `rename_all = "camelCase"`.
 
 - `method_signature` (string, required) — method signature including modifiers/return type/name.
 - `context` (string, optional) — best-effort surrounding context (class/members/etc).
-- `uri` (string, optional) — document URI (typically a `file://` URI).
-- `range` (object, optional) — best-effort range covering the selected snippet (0-based line and
+- `uri` (string, required) — document URI (typically a `file://` URI).
+- `range` (object, required) — best-effort range covering the selected snippet (0-based line and
   UTF-16 `character` offsets), matching LSP conventions:
   `{ start: { line, character }, end: { line, character } }`.
 
 ##### Response
 
-When the edit is applied:
-
-```json
-{
-  "applied": true,
-  "edit": { /* standard LSP WorkspaceEdit */ }
-}
-```
-
-If the server does not apply an edit (e.g. because patch edits are blocked by privacy policy), it
-returns:
-
-```json
-{ "applied": false }
-```
-
-If patch edits are blocked by privacy policy (or unsupported by the server), the command may instead
-return a JSON string result (the generated snippet) so clients can still present it to the user.
+`null` (JSON-RPC result `null`). The server applies the edit via `workspace/applyEdit` as a side
+effect (see below).
 
 ##### Side effects
 
-When `applied` is `true`, the server also sends a `workspace/applyEdit` request containing the same
-`WorkspaceEdit`.
+The server sends a `workspace/applyEdit` request (label: `"AI: Generate method body"`) containing a
+standard LSP `WorkspaceEdit`.
 
 ##### Errors
 
-- `-32600` if AI is not configured, or if the operation is blocked by privacy policy / excluded
-  paths.
-- `-32603` for internal failures (model/provider errors, patch parsing/validation failures, etc).
+- `-32600` if AI is not configured, or if the target file is blocked by `ai.privacy.excluded_paths`.
+- `-32602` for invalid params (e.g. missing `uri`/`range`).
+- `-32603` for internal failures (model/provider errors, patch parsing/validation failures) **or**
+  when blocked by privacy policy (cloud code-edit policy enforcement).
 - `-32800` if the request is cancelled.
 
 ##### Privacy gating (code edits)
@@ -1907,32 +1890,21 @@ The first (and only) entry in `arguments` is a `GenerateTestsArgs` object:
 
 - `target` (string, required) — description of the test target (method or class signature).
 - `context` (string, optional) — best-effort surrounding context.
-- `uri` (string, optional) — document URI (typically a `file://` URI).
-- `range` (object, optional) — best-effort range covering the selected snippet (0-based line and
+- `uri` (string, required) — document URI (typically a `file://` URI).
+- `range` (object, required) — best-effort range covering the selected snippet (0-based line and
   UTF-16 `character` offsets), matching LSP conventions:
   `{ start: { line, character }, end: { line, character } }`.
 
 ##### Response
 
-Same shape as `nova.ai.generateMethodBody`:
-
-```json
-{
-  "applied": true,
-  "edit": { /* standard LSP WorkspaceEdit */ }
-}
-```
-
-```json
-{ "applied": false }
-```
-
-If patch edits are blocked by privacy policy (or unsupported by the server), the command may instead
-return a JSON string result (the generated snippet).
+`null` (JSON-RPC result `null`). The server applies the edit via `workspace/applyEdit` as a side
+effect (see below).
 
 ##### Side effects
 
-When `applied` is `true`, the server also sends `workspace/applyEdit`.
+The server sends a `workspace/applyEdit` request (label: `"AI: Generate tests"`) containing a
+standard LSP `WorkspaceEdit`. This edit may include creating or updating a test file (best-effort:
+under `src/test/java/`).
 
 ##### Errors
 
