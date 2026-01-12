@@ -243,7 +243,7 @@ pub fn resolve_import(
     db: &dyn Database,
     file: FileId,
     name: Name,
-) -> Option<TypeId> {
+) -> Option<ClassId> {
     let item_tree = db.item_tree(file);
     
     // Check single-type imports first (they shadow star imports)
