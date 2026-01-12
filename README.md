@@ -235,7 +235,7 @@ NOVA_REAL_PROJECT=guava ./scripts/run-real-project-tests.sh
 
 # (Advanced) Run the test binaries directly (still using the agent wrapper):
 bash scripts/cargo_agent.sh test -p nova-project --test harness -- --ignored real_projects::
-bash scripts/cargo_agent.sh test -p nova-cli --test cli -- --ignored suite::real_projects::
+bash scripts/cargo_agent.sh test -p nova-cli --test harness -- --ignored suite::real_projects::
 ```
 
 ### (Optional) Run `javac`/build validation

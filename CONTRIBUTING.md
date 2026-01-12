@@ -145,11 +145,11 @@ bash scripts/cargo_agent.sh test -p nova-types --test javac_differential -- --ig
 # or run directly after cloning fixtures:
 # Local dev
 cargo test -p nova-project --test harness -- --ignored real_projects::
-cargo test -p nova-cli --test cli -- --ignored suite::real_projects::
+cargo test -p nova-cli --test harness -- --ignored suite::real_projects::
 
 # Agent / multi-runner
 bash scripts/cargo_agent.sh test -p nova-project --test harness -- --ignored real_projects::
-bash scripts/cargo_agent.sh test -p nova-cli --test cli -- --ignored suite::real_projects::
+bash scripts/cargo_agent.sh test -p nova-cli --test harness -- --ignored suite::real_projects::
 ```
 
 ### Format & lint

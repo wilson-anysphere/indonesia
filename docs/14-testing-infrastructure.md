@@ -504,7 +504,7 @@ CI runs these suites in `.github/workflows/real-projects.yml` (scheduled + manua
   - note: `test-projects/**` is gitignored (only `README.md` + `pins.toml` are checked in)
 - Tests:
   - `crates/nova-project/tests/cases/real_projects.rs`
-  - `crates/nova-cli/tests/suite/real_projects.rs` (run via `crates/nova-cli/tests/cli.rs`)
+  - `crates/nova-cli/tests/suite/real_projects.rs` (run via `crates/nova-cli/tests/harness.rs`)
 
 **Run locally:**
 
@@ -514,7 +514,7 @@ CI runs these suites in `.github/workflows/real-projects.yml` (scheduled + manua
 
 # or, run the suites directly (after cloning)
 cargo test --locked -p nova-project --test harness -- --ignored real_projects::
-cargo test --locked -p nova-cli --test cli -- --ignored suite::real_projects::
+cargo test --locked -p nova-cli --test harness -- --ignored suite::real_projects::
 ```
 
 For CI-like behavior (and to reduce peak memory), consider running with a single test thread:

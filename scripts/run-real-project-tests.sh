@@ -114,12 +114,12 @@ run_test() {
 
 if [[ ${#ONLY_PROJECTS[@]} -eq 0 ]]; then
   run_test bash ./scripts/cargo_agent.sh test --locked -p nova-project --test harness -- --ignored real_projects::
-  run_test bash ./scripts/cargo_agent.sh test --locked -p nova-cli --test cli -- --ignored suite::real_projects::
+  run_test bash ./scripts/cargo_agent.sh test --locked -p nova-cli --test harness -- --ignored suite::real_projects::
 else
   for project in "${ONLY_PROJECTS[@]}"; do
     filter="${project//-/_}"
     run_test bash ./scripts/cargo_agent.sh test --locked -p nova-project --test harness -- --ignored "real_projects::${filter}"
-    run_test bash ./scripts/cargo_agent.sh test --locked -p nova-cli --test cli -- --ignored "suite::real_projects::${filter}"
+    run_test bash ./scripts/cargo_agent.sh test --locked -p nova-cli --test harness -- --ignored "suite::real_projects::${filter}"
   done
 fi
 

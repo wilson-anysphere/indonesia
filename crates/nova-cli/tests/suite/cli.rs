@@ -1,5 +1,3 @@
-mod suite;
-
 use assert_cmd::Command;
 use assert_fs::prelude::*;
 use assert_fs::TempDir;
@@ -12,6 +10,26 @@ use std::sync::Mutex;
 // Serialize passthrough tests that spawn an LSP stdio server to keep timings and resource usage
 // predictable under parallel `cargo test` execution.
 static STDIO_SERVER_LOCK: Mutex<()> = Mutex::new(());
+
+fn command_output_with_retry(
+    mut make_command: impl FnMut() -> ProcessCommand,
+    context: &str,
+) -> std::process::Output {
+    let mut backoff_ms = 5_u64;
+    for attempt in 0..7 {
+        match make_command().output() {
+            Ok(output) => return output,
+            Err(err)
+                if err.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 6 =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
+                backoff_ms *= 2;
+            }
+            Err(err) => panic!("{context}: {err}"),
+        }
+    }
+    unreachable!("retry loop should have returned or panicked");
+}
 
 fn nova() -> Command {
     Command::new(assert_cmd::cargo::cargo_bin!("nova"))
@@ -116,10 +134,14 @@ fn help_mentions_core_commands() {
 fn lsp_version_passthrough_matches_nova_lsp() {
     let nova_lsp = lsp_test_server();
 
-    let direct = ProcessCommand::new(&nova_lsp)
-        .arg("--version")
-        .output()
-        .expect("run nova-lsp --version");
+    let direct = command_output_with_retry(
+        || {
+            let mut cmd = ProcessCommand::new(&nova_lsp);
+            cmd.arg("--version");
+            cmd
+        },
+        "run nova-lsp --version",
+    );
     assert!(
         direct.status.success(),
         "direct stderr: {}",
@@ -216,10 +238,18 @@ fn dap_version_passthrough_matches_nova_dap() {
     let (_temp, path_with_nova_dap) = path_with_test_nova_dap();
 
     let stub = lsp_test_server();
-    let direct = ProcessCommand::new(&stub)
-        .arg("--version")
-        .output()
-        .expect("run test server --version");
+    let nova_dap_path = _temp
+        .path()
+        .join(format!("nova-dap{}", std::env::consts::EXE_SUFFIX));
+
+    let direct = command_output_with_retry(
+        || {
+            let mut cmd = ProcessCommand::new(&nova_dap_path);
+            cmd.arg("--version");
+            cmd
+        },
+        "run nova-dap --version",
+    );
     assert!(
         direct.status.success(),
         "direct stderr: {}",

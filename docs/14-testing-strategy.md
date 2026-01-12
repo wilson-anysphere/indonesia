@@ -560,7 +560,7 @@ fuzz_target!(|edits: Vec<FuzzEdit>| {
 local-only clones under `test-projects/`:
 
 - `crates/nova-project/tests/cases/real_projects.rs`
-- `crates/nova-cli/tests/suite/real_projects.rs` (run via `crates/nova-cli/tests/cli.rs`)
+- `crates/nova-cli/tests/suite/real_projects.rs` (run via `crates/nova-cli/tests/harness.rs`)
 
 Run them with `./scripts/run-real-project-tests.sh` (see [`test-projects/README.md`](../test-projects/README.md))
 or the “Real-project validation” section of [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
