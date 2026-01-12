@@ -825,6 +825,7 @@ class C { void m(){ int[][] a = new int[1][2]; } }
 #[test]
 fn array_creation_with_annotated_type_has_array_type() {
     let src = r#"
+@interface A {}
 class C { void m(){ int[][] a = new int @A [1][]; } }
 "#;
 
