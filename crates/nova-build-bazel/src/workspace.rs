@@ -1426,7 +1426,7 @@ fn bazelrc_imported_files(workspace_root: &Path) -> Vec<PathBuf> {
                 continue;
             }
 
-            let mut parts = trimmed.split_whitespace();
+            let mut parts = trimmed.splitn(2, char::is_whitespace);
             let Some(directive) = parts.next() else {
                 continue;
             };
@@ -1435,7 +1435,8 @@ fn bazelrc_imported_files(workspace_root: &Path) -> Vec<PathBuf> {
                 continue;
             }
 
-            let Some(raw_path) = parts.next() else {
+            let rest = parts.next().unwrap_or("").trim_start();
+            let Some(raw_path) = bazelrc_import_path_from_directive_rest(rest) else {
                 continue;
             };
 
@@ -1450,6 +1451,27 @@ fn bazelrc_imported_files(workspace_root: &Path) -> Vec<PathBuf> {
     }
 
     out.into_iter().collect()
+}
+
+fn bazelrc_import_path_from_directive_rest(rest: &str) -> Option<&str> {
+    let rest = rest.trim_start();
+    if rest.is_empty() {
+        return None;
+    }
+
+    if let Some(quoted) = rest.strip_prefix('"') {
+        let end = quoted.find('"').unwrap_or(quoted.len());
+        let raw = &quoted[..end];
+        return (!raw.is_empty()).then_some(raw);
+    }
+
+    if let Some(quoted) = rest.strip_prefix('\'') {
+        let end = quoted.find('\'').unwrap_or(quoted.len());
+        let raw = &quoted[..end];
+        return (!raw.is_empty()).then_some(raw);
+    }
+
+    rest.split_whitespace().next().filter(|s| !s.is_empty())
 }
 
 fn resolve_bazelrc_import_path(workspace_root: &Path, raw: &str) -> Option<PathBuf> {
