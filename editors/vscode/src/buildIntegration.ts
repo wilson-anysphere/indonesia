@@ -213,27 +213,37 @@ export function registerNovaBuildIntegration(
     }, delayMs);
   };
 
-  const pollBuildStatusOnce = async (folder: vscode.WorkspaceFolder): Promise<NovaBuildStatusResult | undefined> => {
+  const pollBuildStatusOnce = async (
+    folder: vscode.WorkspaceFolder,
+    token?: vscode.CancellationToken,
+  ): Promise<NovaBuildStatusResult | undefined> => {
+    if (token?.isCancellationRequested) {
+      return undefined;
+    }
     const state = getWorkspaceState(folder);
     if (state.statusSupported === false) {
       return undefined;
     }
 
     if (state.statusRequestInFlight) {
+      if (token?.isCancellationRequested) {
+        return undefined;
+      }
       return await state.statusRequestInFlight;
     }
 
     state.statusRequestInFlight = (async () => {
       const prevStatus = state.lastReportedStatus;
       try {
-        const result = await request<NovaBuildStatusResult>('nova/build/status', { projectRoot: folder.uri.fsPath });
+        const result = await request<NovaBuildStatusResult>(
+          'nova/build/status',
+          { projectRoot: folder.uri.fsPath },
+          token ? { token } : undefined,
+        );
         if (!result) {
-          // Treat an undefined response as "unsupported" (sendNovaRequest returns `undefined` when
-          // the server reports method-not-found and fallback is disabled).
-          state.statusSupported = false;
-          state.status = undefined;
-          state.lastReportedStatus = undefined;
-          state.lastError = undefined;
+          // `sendNovaRequest` can return `undefined` on cancellation. The build integration always
+          // uses the allowMethodFallback request wrapper (which throws on unsupported methods), so
+          // treat undefined as "no update" rather than disabling build status support.
           return undefined;
         }
         state.statusSupported = true;
@@ -262,6 +272,10 @@ export function registerNovaBuildIntegration(
 
         return result;
       } catch (err) {
+        if (token?.isCancellationRequested || isRequestCancelledError(err)) {
+          return undefined;
+        }
+
         if (isMethodNotFoundError(err)) {
           state.statusSupported = false;
           state.status = undefined;
@@ -283,8 +297,11 @@ export function registerNovaBuildIntegration(
     return await state.statusRequestInFlight;
   };
 
-  const pollBuildStatusAndSchedule = async (folder: vscode.WorkspaceFolder): Promise<NovaBuildStatusResult | undefined> => {
-    const result = await pollBuildStatusOnce(folder);
+  const pollBuildStatusAndSchedule = async (
+    folder: vscode.WorkspaceFolder,
+    token?: vscode.CancellationToken,
+  ): Promise<NovaBuildStatusResult | undefined> => {
+    const result = await pollBuildStatusOnce(folder, token);
 
     const state = getWorkspaceState(folder);
     if (state.statusSupported === false) {
@@ -822,7 +839,7 @@ export function registerNovaBuildIntegration(
           },
           async (progress, token) => {
             token.onCancellationRequested(() => {
-              buildOutput.appendLine('Client cancelled build polling (server build is not cancelled).');
+              buildOutput.appendLine('Client cancelled build polling (server request cancellation sent).');
             });
 
             progress.report({ message: 'Building' });
@@ -890,7 +907,7 @@ export function registerNovaBuildIntegration(
               let lastStatusResult: NovaBuildStatusResult | undefined;
 
               while (!token.isCancellationRequested && Date.now() - start < BUILD_POLL_TIMEOUT_MS) {
-                const status = await pollBuildStatusAndSchedule(folder);
+                const status = await pollBuildStatusAndSchedule(folder, token);
                 if (!status) {
                   break;
                 }
