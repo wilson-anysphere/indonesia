@@ -1501,6 +1501,45 @@ record R(int x) {
 }
 
 #[test]
+fn extract_method_inside_record_compact_constructor_when_selection_mutates_component() {
+    let fixture = r#"
+record R(int x) {
+    R {
+        /*start*/x = x + 1;/*end*/
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+record R(int x) {
+    R {
+        x = extracted(x);
+    }
+
+    private int extracted(int x) {
+        x = x + 1;
+        return x;
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn extract_method_expression_inside_record_compact_constructor() {
     let fixture = r#"
 record R(int x) {

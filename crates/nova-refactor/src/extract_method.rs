@@ -966,8 +966,30 @@ impl ExtractMethod {
             let mut seen: HashSet<Span> = HashSet::new();
             read_candidates.retain(|(decl_span, _, _, _)| seen.insert(*decl_span));
 
-            let live_after_selection =
-                live_locals_after_selection(&flow_body, flow_selection, &selection_info);
+            // In record *compact* constructors, record components are implicitly read after the
+            // user-written body (the compiler inserts `this.x = x;` for each component). This means
+            // writes to a component inside the selection must be treated as "live after selection"
+            // even when the component is not referenced again in the explicit constructor body.
+            //
+            // Seed CFG liveness with the subset of written locals that correspond to record
+            // components (modeled as `LocalKind::Param` locals during lowering). This preserves
+            // semantics for extractions like:
+            // `/*start*/x = x + 1;/*end*/` inside `R { ... }`.
+            let exit_live_seed: HashSet<LocalId> = match method {
+                EnclosingMethod::CompactConstructor(_) => writes_in_selection
+                    .iter()
+                    .copied()
+                    .filter(|local| flow_body.locals()[local.index()].kind == LocalKind::Param)
+                    .collect(),
+                _ => HashSet::new(),
+            };
+
+            let live_after_selection = live_locals_after_selection(
+                &flow_body,
+                flow_selection,
+                &selection_info,
+                &exit_live_seed,
+            );
             let capture_reads_after_selection =
                 collect_capture_reads_after_offset(&method_body, flow_selection.end, &flow_body);
 
@@ -3815,16 +3837,17 @@ fn live_locals_after_selection(
     body: &Body,
     selection: TextRange,
     selection_info: &StatementSelection,
+    exit_live_seed: &HashSet<LocalId>,
 ) -> HashSet<LocalId> {
     let cfg = build_cfg_with(body, &mut || {});
-    let (_live_in, live_out) = compute_cfg_liveness(body, &cfg);
+    let (_live_in, live_out) = compute_cfg_liveness(body, &cfg, exit_live_seed);
     let stmt_locations = collect_stmt_locations(&cfg);
 
     let fallback =
         || live_locals_after_last_selected_stmt(body, selection, &cfg, &live_out, &stmt_locations);
 
     match selection_exit_point(selection_info) {
-        SelectionExitPoint::EndOfBody => HashSet::new(),
+        SelectionExitPoint::EndOfBody => exit_live_seed.clone(),
         SelectionExitPoint::LoopContinuation | SelectionExitPoint::CfgFallback => fallback(),
         SelectionExitPoint::NextStatement(stmt) => {
             let Some(stmt_range) = non_trivia_range(stmt.syntax()) else {
@@ -4027,6 +4050,7 @@ fn first_stmt_in_range(
 fn compute_cfg_liveness(
     body: &Body,
     cfg: &nova_flow::ControlFlowGraph,
+    exit_live_seed: &HashSet<LocalId>,
 ) -> (Vec<HashSet<LocalId>>, Vec<HashSet<LocalId>>) {
     let n = cfg.blocks.len();
     let mut live_in: Vec<HashSet<LocalId>> = vec![HashSet::new(); n];
@@ -4043,6 +4067,9 @@ fn compute_cfg_liveness(
             let mut out = HashSet::new();
             for succ in cfg.successors(bb_id) {
                 out.extend(live_in[succ.index()].iter().copied());
+            }
+            if matches!(cfg.block(bb_id).terminator, nova_flow::Terminator::Exit) {
+                out.extend(exit_live_seed.iter().copied());
             }
 
             // in[bb] = transfer(bb, out)
