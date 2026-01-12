@@ -3655,6 +3655,46 @@ class Foo {
     }
 
     #[test]
+    fn java_parse_cache_is_not_double_counted_between_query_cache_and_syntax_trees() {
+        let manager = MemoryManager::new(MemoryBudget::from_total(10 * 1024 * 1024));
+        let db = Database::new_with_memory_manager(&manager);
+
+        let file = FileId::from_raw(99);
+        let text = "class Foo { int x; int y; int z; }\n".repeat(128);
+        let text_len = text.len() as u64;
+        db.set_file_text(file, text);
+
+        db.with_snapshot(|snap| {
+            let parse = snap.parse_java(file);
+            assert!(
+                parse.errors.is_empty(),
+                "expected Java parse errors to be empty, got: {:?}",
+                parse.errors
+            );
+        });
+
+        let report = manager.report();
+        let syntax_and_cache = report.usage.query_cache.saturating_add(report.usage.syntax_trees);
+        assert!(
+            syntax_and_cache <= text_len.saturating_mul(3) / 2,
+            "expected (query_cache+syntax_trees) to be ~text_len once (<= 1.5x), got sum={} (query_cache={}, syntax_trees={}) for text_len={text_len}",
+            syntax_and_cache,
+            report.usage.query_cache,
+            report.usage.syntax_trees
+        );
+        assert!(
+            report.usage.query_cache >= text_len / 2,
+            "expected query cache usage to include parse_java memo bytes (query_cache={}, text_len={text_len})",
+            report.usage.query_cache
+        );
+        assert!(
+            report.usage.syntax_trees < text_len / 4,
+            "expected java_parse_cache to not double-count parse_java bytes under syntax_trees (syntax_trees={}, text_len={text_len})",
+            report.usage.syntax_trees
+        );
+    }
+
+    #[test]
     fn salsa_memo_eviction_preserves_snapshot_results() {
         let manager = MemoryManager::new(MemoryBudget::from_total(1_000));
         let db = Database::new_with_memory_manager(&manager);

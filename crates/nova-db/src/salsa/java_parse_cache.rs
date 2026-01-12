@@ -18,8 +18,6 @@ pub struct JavaParseCacheValue {
 struct JavaParseCacheEntry {
     text: Arc<String>,
     parse: Arc<JavaParseResult>,
-    /// Best-effort accounting (approximate).
-    approx_bytes: u64,
 }
 
 #[derive(Debug, Default)]
@@ -27,13 +25,19 @@ struct JavaParseCacheInner {
     map: HashMap<FileId, JavaParseCacheEntry>,
     /// LRU order: front = least-recent, back = most-recent.
     order: VecDeque<FileId>,
-    approx_bytes: u64,
 }
 
 /// Side cache for incremental Java reparsing.
 ///
 /// This cache is intentionally *not* part of Salsa memo tables; it is used as an optimization
 /// when recomputing `parse_java` after a file content change.
+///
+/// ## Memory accounting
+///
+/// The cache stores `Arc<JavaParseResult>` values that are typically also memoized by Salsa.
+/// To avoid double-counting shared allocations, this cache reports **0 bytes** to the memory
+/// manager. The underlying parse allocations are accounted via Nova's Salsa memo footprint
+/// tracking (`MemoryCategory::QueryCache`).
 ///
 /// Memory safety / eviction:
 /// - Values are stored behind `Arc` so outstanding Salsa snapshots remain valid.
@@ -92,14 +96,16 @@ impl JavaParseCache {
         let Some(tracker) = self.tracker.get() else {
             return;
         };
-        tracker.set_bytes(inner.approx_bytes);
+        // Avoid double-counting with Salsa memo footprint tracking: the allocations cached here
+        // are shared `Arc` values that Salsa typically memoizes as well.
+        let _ = inner;
+        tracker.set_bytes(0);
     }
 
     pub fn clear(&self) {
         let mut inner = self.lock_inner();
         inner.map.clear();
         inner.order.clear();
-        inner.approx_bytes = 0;
         self.update_tracker_locked(&inner);
     }
 
@@ -120,7 +126,6 @@ impl JavaParseCache {
     }
 
     pub fn insert(&self, file: FileId, text: Arc<String>, parse: Arc<JavaParseResult>) {
-        let approx_bytes = text.len() as u64;
         let mut inner = self.lock_inner();
 
         if let Some(prev) = inner.map.insert(
@@ -128,12 +133,10 @@ impl JavaParseCache {
             JavaParseCacheEntry {
                 text,
                 parse,
-                approx_bytes,
             },
         ) {
-            inner.approx_bytes = inner.approx_bytes.saturating_sub(prev.approx_bytes);
+            let _ = prev;
         }
-        inner.approx_bytes = inner.approx_bytes.saturating_add(approx_bytes);
 
         if let Some(pos) = inner.order.iter().position(|f| *f == file) {
             inner.order.remove(pos);
@@ -147,23 +150,19 @@ impl JavaParseCache {
             let Some(evicted) = inner.map.remove(&oldest) else {
                 continue;
             };
-            inner.approx_bytes = inner.approx_bytes.saturating_sub(evicted.approx_bytes);
+            let _ = evicted;
         }
 
         self.update_tracker_locked(&inner);
     }
 
     fn evict_to(&self, target_bytes: u64) {
-        let mut inner = self.lock_inner();
-        while inner.approx_bytes > target_bytes {
-            let Some(oldest) = inner.order.pop_front() else {
-                break;
-            };
-            let Some(evicted) = inner.map.remove(&oldest) else {
-                continue;
-            };
-            inner.approx_bytes = inner.approx_bytes.saturating_sub(evicted.approx_bytes);
-        }
+        // This cache intentionally reports 0 bytes (see memory accounting docs), so eviction via
+        // target bytes is a no-op. We keep the method so `MemoryEvictor::evict` can still call
+        // `clear()` under critical pressure.
+        let _ = target_bytes;
+
+        let inner = self.lock_inner();
         self.update_tracker_locked(&inner);
     }
 
