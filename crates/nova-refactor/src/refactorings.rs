@@ -1910,9 +1910,10 @@ pub fn inline_variable(
 
         // Even if the declaration is adjacent to the usage statement, deleting it can reorder the
         // initializer relative to other side-effectful expressions in the usage statement (e.g.
-        // `int a = foo(); bar() + a` -> `bar() + foo()` changes evaluation order). Enforce a
-        // conservative ordering check before proceeding.
-        check_order_sensitive_inline_order(&root, &decl_stmt, &targets, &def.file)?;
+        // `int a = foo(); bar() + a` -> `bar() + foo()` changes evaluation order).
+        //
+        // The conservative ordering check is enforced later once we've located the usage
+        // statement and can reason about evaluation order within that statement.
 
         let usage = targets
             .first()
