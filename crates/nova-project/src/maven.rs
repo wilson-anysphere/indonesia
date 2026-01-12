@@ -2025,6 +2025,17 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
     exists_as_jar(&path).then_some(path)
 }
 
+fn exists_as_jar(path: &Path) -> bool {
+    match std::fs::metadata(path) {
+        Ok(meta) => meta.is_file() || meta.is_dir(),
+        // Missing jars are still returned so callers can synthesize placeholders for single-module
+        // projects (see `tests/cases/maven_missing_jars.rs`). Multi-module workspaces filter
+        // non-existent artifacts later to keep classpaths lean.
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+        Err(_) => false,
+    }
+}
+
 fn resolve_snapshot_jar_file_name(
     version_dir: &Path,
     artifact_id: &str,
