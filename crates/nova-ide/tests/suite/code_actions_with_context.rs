@@ -7,30 +7,7 @@ use nova_db::InMemoryFileStore;
 use nova_ext::{ProjectId, Span};
 use nova_ide::extensions::IdeExtensions;
 use nova_scheduler::CancellationToken;
-
-fn offset_to_position_utf16(text: &str, offset: usize) -> Position {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
-    let mut cur: usize = 0;
-
-    for ch in text.chars() {
-        if cur >= offset {
-            break;
-        }
-        cur += ch.len_utf8();
-        if ch == '\n' {
-            line += 1;
-            col_utf16 = 0;
-        } else {
-            col_utf16 += ch.len_utf16() as u32;
-        }
-    }
-
-    Position {
-        line,
-        character: col_utf16,
-    }
-}
+use crate::text_fixture::offset_to_position;
 
 #[test]
 fn code_actions_with_context_includes_type_mismatch_quickfix() {
@@ -49,8 +26,8 @@ fn code_actions_with_context_includes_type_mismatch_quickfix() {
     let expr_end = expr_start + "obj".len();
 
     let range = Range::new(
-        offset_to_position_utf16(source, expr_start),
-        offset_to_position_utf16(source, expr_end),
+        offset_to_position(source, expr_start),
+        offset_to_position(source, expr_end),
     );
 
     let diag = lsp_types::Diagnostic {

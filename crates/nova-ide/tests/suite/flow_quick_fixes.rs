@@ -4,6 +4,8 @@ use nova_ide::{code_action::diagnostic_quick_fixes, file_diagnostics, file_diagn
 use nova_types::{Severity, Span};
 use std::path::PathBuf;
 
+use crate::text_fixture::{offset_to_position as offset_to_lsp_position, position_to_offset};
+
 fn fixture_file(text: &str) -> (InMemoryFileStore, nova_db::FileId) {
     let mut db = InMemoryFileStore::new();
     let path = PathBuf::from("/test.java");
@@ -13,49 +15,7 @@ fn fixture_file(text: &str) -> (InMemoryFileStore, nova_db::FileId) {
 }
 
 fn lsp_position_to_offset(text: &str, pos: lsp_types::Position) -> usize {
-    let mut line = 0u32;
-    let mut col_utf16 = 0u32;
-    let mut offset = 0usize;
-
-    for ch in text.chars() {
-        if line == pos.line && col_utf16 == pos.character {
-            return offset;
-        }
-        offset += ch.len_utf8();
-        if ch == '\n' {
-            line += 1;
-            col_utf16 = 0;
-        } else {
-            col_utf16 += ch.len_utf16() as u32;
-        }
-    }
-
-    if line == pos.line && col_utf16 == pos.character {
-        offset
-    } else {
-        text.len()
-    }
-}
-
-fn offset_to_lsp_position(text: &str, offset: usize) -> Position {
-    let mut line = 0u32;
-    let mut col_utf16 = 0u32;
-    let mut cur = 0usize;
-
-    for ch in text.chars() {
-        if cur >= offset {
-            break;
-        }
-        cur += ch.len_utf8();
-        if ch == '\n' {
-            line += 1;
-            col_utf16 = 0;
-        } else {
-            col_utf16 += ch.len_utf16() as u32;
-        }
-    }
-
-    Position::new(line, col_utf16)
+    position_to_offset(text, pos).unwrap_or(text.len())
 }
 
 fn apply_lsp_text_edits(text: &str, edits: &[TextEdit]) -> String {

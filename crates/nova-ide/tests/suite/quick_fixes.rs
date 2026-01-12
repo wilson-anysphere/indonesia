@@ -8,31 +8,7 @@ use nova_ext::{ProjectId, Span};
 use nova_ide::extensions::IdeExtensions;
 use nova_scheduler::CancellationToken;
 
-fn position_to_offset(text: &str, position: Position) -> Option<usize> {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
-    let mut offset: usize = 0;
-
-    for ch in text.chars() {
-        if line == position.line && col_utf16 == position.character {
-            return Some(offset);
-        }
-
-        offset += ch.len_utf8();
-        if ch == '\n' {
-            line += 1;
-            col_utf16 = 0;
-        } else {
-            col_utf16 += ch.len_utf16() as u32;
-        }
-    }
-
-    if line == position.line && col_utf16 == position.character {
-        Some(offset)
-    } else {
-        None
-    }
-}
+use crate::text_fixture::position_to_offset;
 
 fn apply_single_text_edit(text: &str, edit: &TextEdit) -> String {
     let start = position_to_offset(text, edit.range.start).expect("start offset");

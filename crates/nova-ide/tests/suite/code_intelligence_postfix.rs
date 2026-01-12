@@ -3,28 +3,7 @@ use nova_db::InMemoryFileStore;
 use nova_ide::completions;
 use std::path::PathBuf;
 
-const CARET: &str = "<|>";
-
-fn offset_to_position(text: &str, offset: usize) -> lsp_types::Position {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
-    let mut cur: usize = 0;
-
-    for ch in text.chars() {
-        if cur >= offset {
-            break;
-        }
-        cur += ch.len_utf8();
-        if ch == '\n' {
-            line += 1;
-            col_utf16 = 0;
-        } else {
-            col_utf16 += ch.len_utf16() as u32;
-        }
-    }
-
-    lsp_types::Position::new(line, col_utf16)
-}
+use crate::text_fixture::{offset_to_position, CARET};
 
 fn fixture(
     text_with_caret: &str,

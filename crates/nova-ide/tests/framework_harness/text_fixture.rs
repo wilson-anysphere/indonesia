@@ -3,8 +3,9 @@
 //! LSP `Position.character` is defined in terms of UTF-16 code units. Many tests work with byte
 //! offsets (e.g. `<|>` caret markers) and need a correct conversion.
 
-use nova_core::{LineIndex, TextSize};
+use nova_core::{LineIndex, Position as CorePosition, TextSize};
 
+#[allow(dead_code)]
 pub const CARET: &str = "<|>";
 
 /// Convert a UTF-8 byte offset into an LSP [`lsp_types::Position`] using UTF-16 `character`
@@ -16,4 +17,12 @@ pub fn offset_to_position(text: &str, offset: usize) -> lsp_types::Position {
     let index = LineIndex::new(text);
     let pos = index.position(text, TextSize::from(offset_u32));
     lsp_types::Position::new(pos.line, pos.character)
+}
+
+/// Convert an LSP [`lsp_types::Position`] (UTF-16 code units) into a UTF-8 byte offset.
+pub fn position_to_offset(text: &str, position: lsp_types::Position) -> Option<usize> {
+    let index = LineIndex::new(text);
+    index
+        .offset_of_position(text, CorePosition::new(position.line, position.character))
+        .map(|o| u32::from(o) as usize)
 }
