@@ -2175,17 +2175,34 @@ fn resolve_version_catalog_dependencies(
     contents: &str,
     version_catalog: &GradleVersionCatalog,
 ) -> Vec<Dependency> {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
+    static RE_DOT: OnceLock<Regex> = OnceLock::new();
+    static RE_BRACKET: OnceLock<Regex> = OnceLock::new();
+    static RE_BUNDLE_BRACKET: OnceLock<Regex> = OnceLock::new();
+
+    let re_dot = RE_DOT.get_or_init(|| {
         let configs = GRADLE_DEPENDENCY_CONFIGS;
         Regex::new(&format!(
             r#"(?i)\b(?P<config>{configs})\s*\(?\s*libs\.(?P<ref>[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)(?:\.get\(\))?\s*(?:\)|\s|$)"#,
         ))
         .expect("valid regex")
     });
+    let re_bracket = RE_BRACKET.get_or_init(|| {
+        let configs = GRADLE_DEPENDENCY_CONFIGS;
+        Regex::new(&format!(
+            r#"(?i)\b(?P<config>{configs})\s*\(?\s*libs\s*\[\s*['"](?P<ref>[^'"]+)['"]\s*\](?:\.get\(\))?\s*(?:\)|\s|$)"#,
+        ))
+        .expect("valid regex")
+    });
+    let re_bundle_bracket = RE_BUNDLE_BRACKET.get_or_init(|| {
+        let configs = GRADLE_DEPENDENCY_CONFIGS;
+        Regex::new(&format!(
+            r#"(?i)\b(?P<config>{configs})\s*\(?\s*libs\.bundles\s*\[\s*['"](?P<bundle>[^'"]+)['"]\s*\](?:\.get\(\))?\s*(?:\)|\s|$)"#,
+        ))
+        .expect("valid regex")
+    });
 
     let mut deps = Vec::new();
-    for caps in re.captures_iter(contents) {
+    for caps in re_dot.captures_iter(contents) {
         let Some(reference) = caps.name("ref").map(|m| m.as_str()) else {
             continue;
         };
@@ -2201,6 +2218,42 @@ fn resolve_version_catalog_dependencies(
         }
         deps.extend(resolved);
     }
+
+    for caps in re_bracket.captures_iter(contents) {
+        let Some(reference) = caps.name("ref").map(|m| m.as_str()) else {
+            continue;
+        };
+        let scope = caps
+            .name("config")
+            .and_then(|m| gradle_scope_from_configuration(m.as_str()))
+            .map(str::to_string);
+        let mut resolved = resolve_version_catalog_reference(version_catalog, reference);
+        if let Some(scope) = scope {
+            for dep in &mut resolved {
+                dep.scope = Some(scope.clone());
+            }
+        }
+        deps.extend(resolved);
+    }
+
+    for caps in re_bundle_bracket.captures_iter(contents) {
+        let Some(bundle) = caps.name("bundle").map(|m| m.as_str()) else {
+            continue;
+        };
+        let scope = caps
+            .name("config")
+            .and_then(|m| gradle_scope_from_configuration(m.as_str()))
+            .map(str::to_string);
+        let reference = format!("bundles.{bundle}");
+        let mut resolved = resolve_version_catalog_reference(version_catalog, &reference);
+        if let Some(scope) = scope {
+            for dep in &mut resolved {
+                dep.scope = Some(scope.clone());
+            }
+        }
+        deps.extend(resolved);
+    }
+
     deps
 }
 
@@ -2585,7 +2638,8 @@ mod tests {
 
     use super::{
         parse_gradle_dependencies_from_text, parse_gradle_project_dependencies_from_text,
-        parse_gradle_settings_projects, sort_dedup_dependencies, strip_gradle_comments,
+        parse_gradle_settings_projects, parse_gradle_version_catalog_from_toml,
+        sort_dedup_dependencies, strip_gradle_comments,
     };
 
     #[test]
@@ -2884,5 +2938,55 @@ dependencies {
                 .collect();
 
         assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn parses_gradle_dependencies_from_text_version_catalog_bracket_notation() {
+        let catalog_toml = r#"
+[versions]
+guava = "32.0.0"
+junit = "4.13.2"
+
+[libraries]
+foo-bar = { module = "com.example:foo-bar", version = "1.0.0" }
+guava = { module = "com.google.guava:guava", version = { ref = "guava" } }
+junit = { module = "junit:junit", version = { ref = "junit" } }
+
+[bundles]
+test = ["junit", "guava"]
+"#;
+        let catalog = parse_gradle_version_catalog_from_toml(catalog_toml).expect("parse catalog");
+
+        let build_script = r#"
+dependencies {
+    implementation(libs["foo-bar"].get())
+    testImplementation(libs.bundles["test"].get())
+}
+"#;
+
+        let deps = parse_gradle_dependencies_from_text(build_script, Some(&catalog));
+        let got: BTreeSet<_> = deps
+            .into_iter()
+            .map(|d| (d.group_id, d.artifact_id, d.version, d.scope))
+            .collect();
+
+        assert!(got.contains(&(
+            "com.example".to_string(),
+            "foo-bar".to_string(),
+            Some("1.0.0".to_string()),
+            Some("compile".to_string())
+        )));
+        assert!(got.contains(&(
+            "junit".to_string(),
+            "junit".to_string(),
+            Some("4.13.2".to_string()),
+            Some("test".to_string())
+        )));
+        assert!(got.contains(&(
+            "com.google.guava".to_string(),
+            "guava".to_string(),
+            Some("32.0.0".to_string()),
+            Some("test".to_string())
+        )));
     }
 }

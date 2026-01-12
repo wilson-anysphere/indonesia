@@ -1250,8 +1250,9 @@ pub fn parse_maven_classpath_output(output: &str) -> Vec<PathBuf> {
     // evaluated value.
     for line in output.lines() {
         let line = line.trim();
+        let line = line.trim_matches(|c| matches!(c, '"' | '\'')).trim();
         if let Some(mut acc) = bracket_accumulator.take() {
-            if !line.is_empty() && !is_maven_noise_line(line) {
+            if !line.is_empty() && !is_maven_noise_line(line) && !is_maven_null_value(line) {
                 acc.push_str(line);
             }
             if line.ends_with(']') {
@@ -1300,7 +1301,9 @@ pub fn parse_maven_evaluate_scalar_output(output: &str) -> Option<String> {
         if line.is_empty() || is_maven_noise_line(line) || is_maven_null_value(line) {
             continue;
         }
-        let candidate = line.trim_matches('"');
+        let candidate = line
+            .trim_matches(|c| matches!(c, '"' | '\''))
+            .trim();
         // `help:evaluate` may print a bracketed list when the expression resolves to a list.
         // Treat that as invalid for scalar extraction so callers can fall back to defaults.
         if candidate.starts_with('[') {
@@ -1320,8 +1323,9 @@ fn parse_maven_string_list_output(output: &str) -> Vec<String> {
     // evaluated value.
     for line in output.lines() {
         let line = line.trim();
+        let line = line.trim_matches(|c| matches!(c, '"' | '\'')).trim();
         if let Some(mut acc) = bracket_accumulator.take() {
-            if !line.is_empty() && !is_maven_noise_line(line) {
+            if !line.is_empty() && !is_maven_noise_line(line) && !is_maven_null_value(line) {
                 acc.push_str(line);
             }
             if line.ends_with(']') {
@@ -1409,7 +1413,10 @@ fn parse_maven_bracket_list(line: &str) -> Vec<PathBuf> {
     let mut entries = Vec::new();
     let inner = &trimmed[1..trimmed.len() - 1];
     for part in inner.split(',') {
-        let s = part.trim().trim_matches('"');
+        let s = part
+            .trim()
+            .trim_matches(|c| matches!(c, '"' | '\''))
+            .trim();
         if s.is_empty() || is_maven_null_value(s) {
             continue;
         }
@@ -1576,6 +1583,43 @@ mod tests {
     use std::collections::HashMap;
     use std::process::ExitStatus;
     use std::sync::Mutex;
+
+    #[test]
+    fn parse_maven_classpath_output_strips_quotes_from_bracket_list_entries() {
+        let output = "['a.jar', 'b.jar']\n";
+        let parsed = parse_maven_classpath_output(output);
+        assert_eq!(parsed, vec![PathBuf::from("a.jar"), PathBuf::from("b.jar")]);
+    }
+
+    #[test]
+    fn parse_maven_classpath_output_strips_quotes_from_path_separated_list() {
+        let expected = vec![PathBuf::from("a.jar"), PathBuf::from("b.jar")];
+        let joined = std::env::join_paths(&expected)
+            .expect("join paths")
+            .to_string_lossy()
+            .to_string();
+        let output = format!("\"{}\"\n", joined);
+        let parsed = parse_maven_classpath_output(&output);
+        assert_eq!(parsed, expected);
+    }
+
+    #[test]
+    fn parse_maven_evaluate_scalar_output_strips_single_quotes() {
+        let output = "[INFO] noise\n'/tmp/repo'\n";
+        assert_eq!(
+            parse_maven_evaluate_scalar_output(output),
+            Some("/tmp/repo".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_maven_string_list_output_accepts_quoted_bracket_list() {
+        let output = "\"[--enable-preview, -Xlint:all]\"\n";
+        assert_eq!(
+            parse_maven_string_list_output(output),
+            vec!["--enable-preview".to_string(), "-Xlint:all".to_string()]
+        );
+    }
 
     #[test]
     fn collects_poms_for_multi_module_fixture() {
