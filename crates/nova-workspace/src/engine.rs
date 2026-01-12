@@ -401,17 +401,34 @@ impl WorkspaceEngine {
                     match category {
                         ChangeCategory::Source => engine.apply_filesystem_events(events),
                         ChangeCategory::Build => {
+                            // Build/config changes normally don't need to flow through the VFS.
+                            //
+                            // However, we currently treat `module-info.java` as a build file so we
+                            // can trigger a project reload to refresh the JPMS graph. We still want
+                            // the VFS + Salsa inputs to see the updated file contents promptly for
+                            // diagnostics and open-document behavior.
+                            let mut java_events = Vec::new();
                             let mut changed = Vec::new();
-                            for ev in &events {
+                            for ev in events {
+                                let is_java = ev.paths().iter().any(|path| {
+                                    path.extension().and_then(|ext| ext.to_str()) == Some("java")
+                                });
+                                if is_java {
+                                    java_events.push(ev.clone());
+                                }
+
                                 match ev {
                                     NormalizedEvent::Created(p)
                                     | NormalizedEvent::Modified(p)
-                                    | NormalizedEvent::Deleted(p) => changed.push(p.clone()),
+                                    | NormalizedEvent::Deleted(p) => changed.push(p),
                                     NormalizedEvent::Moved { from, to } => {
-                                        changed.push(from.clone());
-                                        changed.push(to.clone());
+                                        changed.push(from);
+                                        changed.push(to);
                                     }
                                 }
+                            }
+                            if !java_events.is_empty() {
+                                engine.apply_filesystem_events(java_events);
                             }
                             engine.request_project_reload(changed);
                         }
