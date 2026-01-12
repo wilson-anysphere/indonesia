@@ -176,7 +176,11 @@ pub(crate) fn load_maven_project(
 
             if let Some(jar_path) = maven_dependency_jar_path(&maven_repo, dep) {
                 dependency_entries.push(ClasspathEntry {
-                    kind: ClasspathEntryKind::Jar,
+                    kind: if jar_path.is_file() {
+                        ClasspathEntryKind::Jar
+                    } else {
+                        ClasspathEntryKind::Directory
+                    },
                     path: jar_path,
                 });
             }
@@ -478,7 +482,11 @@ pub(crate) fn load_maven_workspace_model(
 
             if let Some(jar_path) = maven_dependency_jar_path(&maven_repo, dep) {
                 classpath.push(ClasspathEntry {
-                    kind: ClasspathEntryKind::Jar,
+                    kind: if jar_path.is_file() {
+                        ClasspathEntryKind::Jar
+                    } else {
+                        ClasspathEntryKind::Directory
+                    },
                     path: jar_path,
                 });
             }
@@ -526,9 +534,18 @@ pub(crate) fn load_maven_workspace_model(
             let mut classpath = Vec::new();
 
             for entry in std::mem::take(&mut module.classpath) {
-                match entry.kind {
-                    ClasspathEntryKind::Jar => module_path.push(entry),
-                    ClasspathEntryKind::Directory => classpath.push(entry),
+                let is_archive = entry
+                    .path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| {
+                        ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("jmod")
+                    });
+
+                if entry.kind == ClasspathEntryKind::Jar || is_archive {
+                    module_path.push(entry)
+                } else {
+                    classpath.push(entry)
                 }
             }
 
