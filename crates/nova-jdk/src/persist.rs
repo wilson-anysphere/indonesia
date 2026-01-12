@@ -146,9 +146,7 @@ pub(crate) fn store_symbol_index(
 fn cache_file_path(cache_dir: &Path, jmods_dir: &Path) -> PathBuf {
     let canonical = jmods_dir.to_string_lossy().replace('\\', "/");
     let fingerprint = Fingerprint::from_bytes(canonical.as_bytes());
-    cache_dir
-        .join(fingerprint.as_str())
-        .join(CACHE_FILE_NAME)
+    cache_dir.join(fingerprint.as_str()).join(CACHE_FILE_NAME)
 }
 
 fn system_time_parts(time: SystemTime) -> (u64, u32) {

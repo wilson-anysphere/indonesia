@@ -99,8 +99,7 @@ fn json_schema_requires_local_only_false_for_non_loopback_urls() {
         .and_then(|v| v.as_array())
         .expect("root schema should include allOf semantic constraints");
 
-    let loopback_pattern =
-        "^https?://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:[0-9]+)?(/|\\?|#|$)";
+    let loopback_pattern = "^https?://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:[0-9]+)?(/|\\?|#|$)";
 
     let rule = all_of
         .iter()

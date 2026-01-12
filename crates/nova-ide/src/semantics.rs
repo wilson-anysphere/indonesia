@@ -570,4 +570,4 @@ class Outer {
             "expected lambda parameter line to be attributed to enclosing method: {sites:?}"
         );
     }
-} 
+}

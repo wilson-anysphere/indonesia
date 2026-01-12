@@ -1,10 +1,10 @@
+use lsp_types::CompletionTextEdit;
 use nova_db::InMemoryFileStore;
 use nova_ide::{
     call_hierarchy_outgoing_calls, completions, document_symbols, file_diagnostics,
     find_references, goto_definition, hover, inlay_hints, prepare_call_hierarchy,
     prepare_type_hierarchy, signature_help, type_hierarchy_subtypes, type_hierarchy_supertypes,
 };
-use lsp_types::CompletionTextEdit;
 use nova_types::Severity;
 use std::path::PathBuf;
 
@@ -170,11 +170,7 @@ class C {
 }
 "#;
 
-    let (db, file, pos) = fixture_multi(
-        java_path,
-        java_text,
-        vec![(config_path, config_text)],
-    );
+    let (db, file, pos) = fixture_multi(java_path, java_text, vec![(config_path, config_text)]);
 
     let java_without_caret = java_text.replace("<|>", "");
     let key_start = java_without_caret
@@ -192,7 +188,10 @@ class C {
         other => panic!("unexpected text_edit variant: {other:?}"),
     };
 
-    assert_eq!(edit.range.start, offset_to_position(&java_without_caret, key_start));
+    assert_eq!(
+        edit.range.start,
+        offset_to_position(&java_without_caret, key_start)
+    );
     assert_eq!(edit.range.end, pos);
 }
 

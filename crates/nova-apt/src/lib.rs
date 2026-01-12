@@ -47,7 +47,9 @@ pub fn discover_generated_source_roots(project_root: &Path) -> Vec<PathBuf> {
 /// The result respects `nova_config.generated_sources` (enabled/additional/override) and
 /// reports stale/missing outputs based on simple mtime comparisons between source roots
 /// and generated roots.
-pub fn discover_generated_sources_status(project_root: &Path) -> io::Result<GeneratedSourcesStatus> {
+pub fn discover_generated_sources_status(
+    project_root: &Path,
+) -> io::Result<GeneratedSourcesStatus> {
     let workspace_root = project_root
         .canonicalize()
         .unwrap_or_else(|_| project_root.to_path_buf());
@@ -793,7 +795,8 @@ impl AptRunCache {
         if self.entries.len() <= MAX_ENTRIES {
             return;
         }
-        self.entries.sort_by(|a, b| b.updated_at_nanos.cmp(&a.updated_at_nanos));
+        self.entries
+            .sort_by(|a, b| b.updated_at_nanos.cmp(&a.updated_at_nanos));
         self.entries.truncate(MAX_ENTRIES);
         // Keep output stable for deterministic diffs.
         self.entries.sort_by(|a, b| a.key.cmp(&b.key));
@@ -1238,11 +1241,15 @@ impl AptManager {
 
         let build_files_fingerprint = match self.project.build_system {
             BuildSystem::Maven => collect_maven_build_files(&self.project.workspace_root)
-                .and_then(|files| BuildFileFingerprint::from_files(&self.project.workspace_root, files))
+                .and_then(|files| {
+                    BuildFileFingerprint::from_files(&self.project.workspace_root, files)
+                })
                 .map(|fp| fp.digest)
                 .unwrap_or_else(|_| "<maven-fingerprint-error>".to_string()),
             BuildSystem::Gradle => collect_gradle_build_files(&self.project.workspace_root)
-                .and_then(|files| BuildFileFingerprint::from_files(&self.project.workspace_root, files))
+                .and_then(|files| {
+                    BuildFileFingerprint::from_files(&self.project.workspace_root, files)
+                })
                 .map(|fp| fp.digest)
                 .unwrap_or_else(|_| "<gradle-fingerprint-error>".to_string()),
             _ => "<no-build-fingerprint>".to_string(),
@@ -1419,7 +1426,9 @@ impl AptManager {
                     });
                 }
 
-                if let Some(plan) = self.plan_module_annotation_processing(module, &mut freshness)? {
+                if let Some(plan) =
+                    self.plan_module_annotation_processing(module, &mut freshness)?
+                {
                     planned.push(plan);
                 }
             }

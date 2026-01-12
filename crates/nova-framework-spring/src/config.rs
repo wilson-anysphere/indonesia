@@ -441,7 +441,8 @@ fn placeholder_context_at(text: &str, offset: usize) -> Option<PlaceholderContex
             return None;
         };
         let mut key_start_rel = open_rel + 2;
-        while key_start_rel < content.len() && content.as_bytes()[key_start_rel].is_ascii_whitespace()
+        while key_start_rel < content.len()
+            && content.as_bytes()[key_start_rel].is_ascii_whitespace()
         {
             key_start_rel += 1;
         }

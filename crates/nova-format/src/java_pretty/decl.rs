@@ -57,7 +57,11 @@ impl<'a> JavaPrettyFormatter<'a> {
         let first_sig = decl
             .descendants_with_tokens()
             .filter_map(|el| el.into_token())
-            .find(|tok| tok.kind() != SyntaxKind::Eof && !tok.kind().is_trivia() && !is_synthetic_missing(tok.kind()));
+            .find(|tok| {
+                tok.kind() != SyntaxKind::Eof
+                    && !tok.kind().is_trivia()
+                    && !is_synthetic_missing(tok.kind())
+            });
 
         let header_start = first_sig
             .as_ref()

@@ -838,9 +838,7 @@ impl Database {
 
     pub fn set_file_rel_path(&self, file: FileId, rel_path: Arc<String>) {
         let mut inputs = self.inputs.lock();
-        inputs
-            .file_rel_path
-            .insert(file, Arc::clone(&rel_path));
+        inputs.file_rel_path.insert(file, Arc::clone(&rel_path));
         if inputs.file_ids.insert(file) {
             inputs.file_ids_dirty = true;
         }

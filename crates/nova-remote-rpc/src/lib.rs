@@ -30,7 +30,10 @@ pub type RequestId = u64;
 /// Result of a router-side handshake admission hook.
 #[derive(Debug, Clone)]
 pub enum RouterAdmission {
-    Accept { worker_id: WorkerId, revision: Revision },
+    Accept {
+        worker_id: WorkerId,
+        revision: Revision,
+    },
     Reject(HandshakeReject),
 }
 
@@ -306,17 +309,17 @@ impl RpcConnection {
     {
         let worker_id = cfg.worker_id;
         let revision = cfg.revision;
-        let (conn, welcome, _hello) = Self::handshake_as_router_with_config_and_admission(
-            stream,
-            cfg,
-            move |hello| {
+        let (conn, welcome, _hello) =
+            Self::handshake_as_router_with_config_and_admission(stream, cfg, move |hello| {
                 std::future::ready(match admit_fn(hello) {
-                    Ok(()) => RouterAdmission::Accept { worker_id, revision },
+                    Ok(()) => RouterAdmission::Accept {
+                        worker_id,
+                        revision,
+                    },
                     Err(reject) => RouterAdmission::Reject(reject),
                 })
-            },
-        )
-        .await?;
+            })
+            .await?;
         Ok((conn, welcome))
     }
 
@@ -332,12 +335,16 @@ impl RpcConnection {
     {
         sanitize_capabilities(&mut cfg.capabilities);
 
-        let hello_frame_bytes = read_frame_payload(&mut stream, cfg.pre_handshake_max_frame_len).await?;
+        let hello_frame_bytes =
+            read_frame_payload(&mut stream, cfg.pre_handshake_max_frame_len).await?;
         let frame = match v3::decode_wire_frame(&hello_frame_bytes) {
             Ok(frame) => frame,
             Err(v3_err) => {
                 if let Ok(msg) = nova_remote_proto::decode_message(&hello_frame_bytes) {
-                    if matches!(msg, nova_remote_proto::legacy_v2::RpcMessage::WorkerHello { .. }) {
+                    if matches!(
+                        msg,
+                        nova_remote_proto::legacy_v2::RpcMessage::WorkerHello { .. }
+                    ) {
                         let legacy_err = nova_remote_proto::legacy_v2::RpcMessage::Error {
                             message: "router only supports v3".into(),
                         };
@@ -425,18 +432,18 @@ impl RpcConnection {
             };
 
         match admission(&hello).await {
-            RouterAdmission::Accept { worker_id, revision } => {
+            RouterAdmission::Accept {
+                worker_id,
+                revision,
+            } => {
                 cfg.worker_id = worker_id;
                 cfg.revision = revision;
             }
             RouterAdmission::Reject(reject) => {
                 let reject_frame = WireFrame::Reject(reject.clone());
-                let _ = write_wire_frame(
-                    &mut stream,
-                    cfg.pre_handshake_max_frame_len,
-                    &reject_frame,
-                )
-                .await;
+                let _ =
+                    write_wire_frame(&mut stream, cfg.pre_handshake_max_frame_len, &reject_frame)
+                        .await;
                 return Err(RpcTransportError::HandshakeFailed {
                     message: format!(
                         "handshake rejected (code={:?}): {}",

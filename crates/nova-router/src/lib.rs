@@ -11,7 +11,9 @@ use nova_config::{init_tracing_with_config, NovaConfig};
 use nova_fuzzy::{FuzzyMatcher, MatchScore, TrigramIndex, TrigramIndexBuilder};
 use nova_remote_proto::v3::{HandshakeReject, Notification, RejectCode, Request, Response};
 use nova_remote_proto::{FileText, ShardId, ShardIndex, Symbol, WorkerId, WorkerStats};
-use nova_remote_rpc::{PendingCall, RpcConnection, RouterAdmission, RouterConfig as RpcRouterConfig};
+use nova_remote_rpc::{
+    PendingCall, RouterAdmission, RouterConfig as RpcRouterConfig, RpcConnection,
+};
 use nova_scheduler::{CancellationToken, Cancelled, Scheduler, SchedulerConfig, TaskError};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
 use tokio::net::TcpListener;
@@ -777,8 +779,7 @@ impl DistributedRouter {
         }
 
         for (shard_id, worker, files) in results {
-            let resp =
-                worker_call(&worker, Request::IndexShard { revision, files }).await?;
+            let resp = worker_call(&worker, Request::IndexShard { revision, files }).await?;
             match resp {
                 Response::ShardIndex(index) => {
                     if index.shard_id != shard_id {
@@ -979,25 +980,26 @@ async fn apply_shard_index(state: Arc<RouterState>, index: ShardIndex) {
 }
 
 async fn worker_call(worker: &WorkerHandle, request: Request) -> Result<Response> {
-    let pending: PendingCall = match timeout(WORKER_RPC_WRITE_TIMEOUT, worker.conn.start_call(request)).await {
-        Ok(Ok(pending)) => pending,
-        Ok(Err(err)) => {
-            return Err(anyhow!(err)).with_context(|| {
-                format!(
-                    "send request to worker {} (shard {})",
-                    worker.worker_id, worker.shard_id
-                )
-            })
-        }
-        Err(_) => {
-            let _ = worker.conn.shutdown().await;
-            return Err(anyhow!(
-                "timed out writing request to worker {} (shard {})",
-                worker.worker_id,
-                worker.shard_id
-            ));
-        }
-    };
+    let pending: PendingCall =
+        match timeout(WORKER_RPC_WRITE_TIMEOUT, worker.conn.start_call(request)).await {
+            Ok(Ok(pending)) => pending,
+            Ok(Err(err)) => {
+                return Err(anyhow!(err)).with_context(|| {
+                    format!(
+                        "send request to worker {} (shard {})",
+                        worker.worker_id, worker.shard_id
+                    )
+                })
+            }
+            Err(_) => {
+                let _ = worker.conn.shutdown().await;
+                return Err(anyhow!(
+                    "timed out writing request to worker {} (shard {})",
+                    worker.worker_id,
+                    worker.shard_id
+                ));
+            }
+        };
 
     match timeout(WORKER_RPC_READ_TIMEOUT, pending.wait()).await {
         Ok(Ok(resp)) => Ok(resp),
@@ -1331,78 +1333,77 @@ async fn handle_new_connection(
 
     let handshake = timeout(
         WORKER_HANDSHAKE_TIMEOUT,
-        RpcConnection::handshake_as_router_with_config_and_admission(
-            stream,
-            cfg,
-            move |hello| {
-                let shard_id = hello.shard_id;
-                let reservation_hook = reservation_hook.clone();
-                let admission_state = admission_state.clone();
-                let admission_identity = admission_identity.clone();
-                #[cfg(not(feature = "tls"))]
-                let _ = &admission_identity;
-                async move {
-                    #[cfg(feature = "tls")]
-                    {
-                        let allowlist = &admission_state.config.tls_client_cert_fingerprint_allowlist;
-                        let shard_allowlist = allowlist.shards.get(&shard_id);
-                        let enforce_allowlist =
-                            !allowlist.global.is_empty() || shard_allowlist.is_some();
+        RpcConnection::handshake_as_router_with_config_and_admission(stream, cfg, move |hello| {
+            let shard_id = hello.shard_id;
+            let reservation_hook = reservation_hook.clone();
+            let admission_state = admission_state.clone();
+            let admission_identity = admission_identity.clone();
+            #[cfg(not(feature = "tls"))]
+            let _ = &admission_identity;
+            async move {
+                #[cfg(feature = "tls")]
+                {
+                    let allowlist = &admission_state.config.tls_client_cert_fingerprint_allowlist;
+                    let shard_allowlist = allowlist.shards.get(&shard_id);
+                    let enforce_allowlist =
+                        !allowlist.global.is_empty() || shard_allowlist.is_some();
 
-                        if enforce_allowlist {
-                            let Some(fingerprint) =
-                                admission_identity.tls_client_cert_fingerprint()
-                            else {
-                                return RouterAdmission::Reject(HandshakeReject {
-                                    code: RejectCode::Unauthorized,
-                                    message: "shard authorization failed".into(),
-                                });
-                            };
+                    if enforce_allowlist {
+                        let Some(fingerprint) = admission_identity.tls_client_cert_fingerprint()
+                        else {
+                            return RouterAdmission::Reject(HandshakeReject {
+                                code: RejectCode::Unauthorized,
+                                message: "shard authorization failed".into(),
+                            });
+                        };
 
-                            let is_allowed = allowlist
-                                .global
-                                .iter()
-                                .any(|allowed| allowed.eq_ignore_ascii_case(fingerprint))
-                                || shard_allowlist.is_some_and(|entries| {
-                                    entries.iter().any(|allowed| {
-                                        allowed.eq_ignore_ascii_case(fingerprint)
-                                    })
-                                });
+                        let is_allowed = allowlist
+                            .global
+                            .iter()
+                            .any(|allowed| allowed.eq_ignore_ascii_case(fingerprint))
+                            || shard_allowlist.is_some_and(|entries| {
+                                entries
+                                    .iter()
+                                    .any(|allowed| allowed.eq_ignore_ascii_case(fingerprint))
+                            });
 
-                            if !is_allowed {
-                                return RouterAdmission::Reject(HandshakeReject {
-                                    code: RejectCode::Unauthorized,
-                                    message: "shard authorization failed".into(),
-                                });
-                            }
+                        if !is_allowed {
+                            return RouterAdmission::Reject(HandshakeReject {
+                                code: RejectCode::Unauthorized,
+                                message: "shard authorization failed".into(),
+                            });
                         }
                     }
-
-                    let mut guard = admission_state.shards.lock().await;
-                    let Some(shard) = guard.get_mut(&shard_id) else {
-                        return RouterAdmission::Reject(HandshakeReject {
-                            code: RejectCode::InvalidRequest,
-                            message: format!("unknown shard {shard_id}"),
-                        });
-                    };
-
-                    if shard.worker.is_some() || shard.pending_worker.is_some() {
-                        return RouterAdmission::Reject(HandshakeReject {
-                            code: RejectCode::InvalidRequest,
-                            message: format!("shard {shard_id} already has a connected worker"),
-                        });
-                    }
-
-                    let worker_id: WorkerId =
-                        admission_state.next_worker_id.fetch_add(1, Ordering::SeqCst);
-                    shard.pending_worker = Some(worker_id);
-                    *reservation_hook.lock().await = Some((shard_id, worker_id));
-
-                    let revision = admission_state.global_revision.load(Ordering::SeqCst);
-                    RouterAdmission::Accept { worker_id, revision }
                 }
-            },
-        ),
+
+                let mut guard = admission_state.shards.lock().await;
+                let Some(shard) = guard.get_mut(&shard_id) else {
+                    return RouterAdmission::Reject(HandshakeReject {
+                        code: RejectCode::InvalidRequest,
+                        message: format!("unknown shard {shard_id}"),
+                    });
+                };
+
+                if shard.worker.is_some() || shard.pending_worker.is_some() {
+                    return RouterAdmission::Reject(HandshakeReject {
+                        code: RejectCode::InvalidRequest,
+                        message: format!("shard {shard_id} already has a connected worker"),
+                    });
+                }
+
+                let worker_id: WorkerId = admission_state
+                    .next_worker_id
+                    .fetch_add(1, Ordering::SeqCst);
+                shard.pending_worker = Some(worker_id);
+                *reservation_hook.lock().await = Some((shard_id, worker_id));
+
+                let revision = admission_state.global_revision.load(Ordering::SeqCst);
+                RouterAdmission::Accept {
+                    worker_id,
+                    revision,
+                }
+            }
+        }),
     )
     .await;
 
@@ -1475,7 +1476,9 @@ async fn handle_new_connection(
     {
         let mut guard = state.shards.lock().await;
         let Some(shard) = guard.get_mut(&shard_id) else {
-            return Err(anyhow!("BUG: shard {shard_id} disappeared during handshake"));
+            return Err(anyhow!(
+                "BUG: shard {shard_id} disappeared during handshake"
+            ));
         };
 
         if shard.pending_worker != Some(worker_id) {

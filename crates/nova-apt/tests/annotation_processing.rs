@@ -1,6 +1,8 @@
 use filetime::{set_file_mtime, FileTime};
 use nova_apt::{AptBuildExecutor, AptManager, AptRunTarget, NoopProgressReporter};
-use nova_build::{BuildManager, BuildResult, DefaultCommandRunner, GradleBuildTask, MavenBuildGoal};
+use nova_build::{
+    BuildManager, BuildResult, DefaultCommandRunner, GradleBuildTask, MavenBuildGoal,
+};
 use nova_config::NovaConfig;
 use nova_index::ClassIndex;
 use nova_project::{
@@ -8,8 +10,8 @@ use nova_project::{
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 use std::sync::Mutex;
+use std::time::Duration;
 use tempfile::TempDir;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

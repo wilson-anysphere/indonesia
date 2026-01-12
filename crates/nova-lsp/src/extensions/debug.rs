@@ -216,7 +216,10 @@ impl ProjectHotSwapBuild {
                 None => file_stem.to_string(),
             };
 
-            compiled.push(CompiledClass { class_name, bytecode });
+            compiled.push(CompiledClass {
+                class_name,
+                bytecode,
+            });
         }
 
         if compiled.is_empty() {

@@ -250,7 +250,9 @@ pub fn run_with_watchdog_cancelable_with_token(
                 "{method} panicked; entering safe-mode"
             )))
         }
-        Err(WatchdogError::Cancelled) => Err(NovaLspError::Internal(format!("{method} was cancelled"))),
+        Err(WatchdogError::Cancelled) => {
+            Err(NovaLspError::Internal(format!("{method} was cancelled")))
+        }
     }
 }
 

@@ -134,7 +134,10 @@ struct GeneratedRootsSnapshotFile {
     modules: Vec<GeneratedRootsSnapshotModule>,
 }
 
-fn read_snapshot_roots(workspace_root: &Path, module_root: &Path) -> Vec<(SourceRootKind, PathBuf)> {
+fn read_snapshot_roots(
+    workspace_root: &Path,
+    module_root: &Path,
+) -> Vec<(SourceRootKind, PathBuf)> {
     let snapshot_path = workspace_root
         .join(".nova")
         .join("apt-cache")
