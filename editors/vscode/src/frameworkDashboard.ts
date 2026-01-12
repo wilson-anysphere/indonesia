@@ -8,7 +8,7 @@ import { utf8SpanToUtf16Offsets } from './utf8Offsets';
 export type NovaRequest = <R>(
   method: string,
   params?: unknown,
-  opts?: { allowMethodFallback?: boolean },
+  opts?: { allowMethodFallback?: boolean; token?: vscode.CancellationToken },
 ) => Promise<R | undefined>;
 
 export const NOVA_FRAMEWORK_ENDPOINT_CONTEXT = 'novaFrameworkEndpoint';
@@ -486,7 +486,9 @@ export function registerNovaFrameworkDashboard(
   const { registerNovaFrameworksView } = require('./frameworksView') as typeof import('./frameworksView');
   const { registerNovaFrameworkSearch } = require('./frameworkSearch') as typeof import('./frameworkSearch');
 
-  registerNovaFrameworkSearch(context, (method: string, params?: unknown) => request(method, params, { allowMethodFallback: true }));
+  registerNovaFrameworkSearch(context, (method: string, params?: unknown, opts?: { token?: vscode.CancellationToken }) =>
+    request(method, params, { allowMethodFallback: true, token: opts?.token }),
+  );
 
   const controller: NovaFrameworksViewController = registerNovaFrameworksView(context, request, opts);
 

@@ -5,8 +5,13 @@ import { formatWebEndpointDescription, formatWebEndpointLabel, webEndpointNaviga
 import { formatError, isSafeModeError } from './safeMode';
 import { routeWorkspaceFolderUri } from './workspaceRouting';
 import { utf8SpanToUtf16Offsets } from './utf8Offsets';
+import { isRequestCancelledError } from './novaRequest';
 
-export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
+export type NovaRequest = <R>(
+  method: string,
+  params?: unknown,
+  opts?: { token?: vscode.CancellationToken },
+) => Promise<R | undefined>;
 
 type FrameworkSearchKind = 'web-endpoints' | 'micronaut-endpoints' | 'micronaut-beans';
 
@@ -130,9 +135,10 @@ export function registerNovaFrameworkSearch(context: vscode.ExtensionContext, re
           {
             location: vscode.ProgressLocation.Window,
             title: `Nova: Loading ${kindLabel}…`,
+            cancellable: true,
           },
-          async () => {
-            return await fetchItemsForKind(kind, request, { workspaceKey, projectRoot });
+          async (_progress, token) => {
+            return await fetchItemsForKind(kind, request, { workspaceKey, projectRoot, token });
           },
         );
         if (!items) {
@@ -156,6 +162,9 @@ export function registerNovaFrameworkSearch(context: vscode.ExtensionContext, re
 
         await navigateToFrameworkItem(picked, workspaceFolder.uri);
       } catch (err) {
+        if (isRequestCancelledError(err)) {
+          return;
+        }
         if (isSafeModeError(err)) {
           await showSafeModeError();
           return;
@@ -230,12 +239,15 @@ function frameworkSearchKindLabel(kind: FrameworkSearchKind): string {
 async function fetchItemsForKind(
   kind: FrameworkSearchKind,
   request: NovaRequest,
-  opts: { workspaceKey: string; projectRoot: string },
+  opts: { workspaceKey: string; projectRoot: string; token?: vscode.CancellationToken },
 ): Promise<FrameworkPickItem[] | undefined> {
-  const { workspaceKey, projectRoot } = opts;
+  const { workspaceKey, projectRoot, token } = opts;
+  if (token?.isCancellationRequested) {
+    return undefined;
+  }
   switch (kind) {
     case 'web-endpoints': {
-      const response = await fetchWebEndpoints(request, workspaceKey, projectRoot);
+      const response = await fetchWebEndpoints(request, workspaceKey, projectRoot, token);
       if (!response) {
         return undefined;
       }
@@ -280,7 +292,7 @@ async function fetchItemsForKind(
 
       let response: MicronautEndpointsResponse | undefined;
       try {
-        response = await request<MicronautEndpointsResponse | undefined>(method, { projectRoot });
+        response = await request<MicronautEndpointsResponse | undefined>(method, { projectRoot }, token ? { token } : undefined);
       } catch (err) {
         if (isNovaMethodNotFoundError(err)) {
           void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
@@ -343,7 +355,7 @@ async function fetchItemsForKind(
 
       let response: MicronautBeansResponse | undefined;
       try {
-        response = await request<MicronautBeansResponse | undefined>(method, { projectRoot });
+        response = await request<MicronautBeansResponse | undefined>(method, { projectRoot }, token ? { token } : undefined);
       } catch (err) {
         if (isNovaMethodNotFoundError(err)) {
           void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
@@ -396,6 +408,7 @@ async function fetchWebEndpoints(
   request: NovaRequest,
   workspaceKey: string,
   projectRoot: string,
+  token?: vscode.CancellationToken,
 ): Promise<WebEndpointsResponse | undefined> {
   const method = 'nova/web/endpoints';
   const alias = 'nova/quarkus/endpoints';
@@ -420,7 +433,7 @@ async function fetchWebEndpoints(
   let sawHandledUnsupported = false;
   for (const candidate of ordered) {
     try {
-      const resp = await request<WebEndpointsResponse | undefined>(candidate, { projectRoot });
+      const resp = await request<WebEndpointsResponse | undefined>(candidate, { projectRoot }, token ? { token } : undefined);
       if (!resp) {
         // `sendNovaRequest` returns `undefined` for unsupported methods (after showing a message).
         sawHandledUnsupported = true;
