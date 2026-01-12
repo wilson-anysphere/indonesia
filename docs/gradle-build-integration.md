@@ -104,6 +104,11 @@ The snapshot is versioned by a top-level `schemaVersion` field.
 When the schema changes, bump **both** constants in the same change and update the (de)serializer
 structs on both sides.
 
+Compatibility policy is intentionally simple:
+
+- if the schema version doesn’t match, treat the snapshot as **absent** (no migration/upgrade).
+- `nova-build` will also reset/overwrite the snapshot when it detects a schema mismatch.
+
 ### Validation: `buildFingerprint`
 
 The snapshot includes a `buildFingerprint` (hex SHA-256) so `nova-project` can reject stale output.
@@ -114,6 +119,9 @@ The snapshot includes a `buildFingerprint` (hex SHA-256) so `nova-project` can r
 - `buildFingerprint` matches the current fingerprint computed from Gradle build inputs.
 
 If validation fails, the snapshot is ignored and Nova falls back to heuristics.
+
+`nova-build` also treats a fingerprint mismatch as “stale snapshot”: it will reset the in-memory
+snapshot object and write a fresh file for the new fingerprint the next time it updates any fields.
 
 ### Build fingerprint inputs (must stay in sync)
 
