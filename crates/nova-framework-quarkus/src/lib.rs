@@ -19,14 +19,13 @@ pub use config::{collect_config_property_names, config_property_completions};
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use nova_core::{FileId, ProjectId};
 use nova_framework::{CompletionContext, Database, FrameworkAnalyzer, VirtualMember};
 use nova_types::ClassId;
 
 pub use nova_types::{CompletionItem, Diagnostic, Severity, Span};
-use regex::Regex;
 
 /// Framework analyzer hook used by Nova's resolver for "virtual member" generation.
 ///
@@ -270,22 +269,85 @@ fn fingerprint_project_sources(db: &dyn Database, files: &[FileId]) -> u64 {
 }
 
 fn config_property_prefix_at<'a>(source: &'a str, offset: usize) -> Option<(&'a str, Span)> {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        Regex::new(r#"@(?:[\w$]+\.)*ConfigProperty\s*\([^)]*\bname\s*=\s*"([^"]*)""#)
-            .expect("config property regex must compile")
-    });
-
-    for caps in re.captures_iter(source) {
-        let m = caps.get(1)?;
-        let start = m.start();
-        let end = m.end();
-        if offset < start || offset > end {
-            continue;
-        }
-        return Some((&source[start..offset], Span::new(start, offset)));
+    let bytes = source.as_bytes();
+    if offset > bytes.len() {
+        return None;
     }
-    None
+
+    // Find the opening quote for the string literal containing the cursor.
+    let mut start_quote = None;
+    let mut i = offset;
+    while i > 0 {
+        i -= 1;
+        if bytes[i] == b'"' && !is_escaped_quote(bytes, i) {
+            start_quote = Some(i);
+            break;
+        }
+    }
+    let start_quote = start_quote?;
+
+    // Find the closing quote.
+    let mut end_quote = None;
+    let mut j = start_quote + 1;
+    while j < bytes.len() {
+        if bytes[j] == b'"' && !is_escaped_quote(bytes, j) {
+            end_quote = Some(j);
+            break;
+        }
+        j += 1;
+    }
+    let end_quote = end_quote?;
+
+    // Ensure the cursor is inside the string literal contents.
+    if !(start_quote < offset && offset <= end_quote) {
+        return None;
+    }
+
+    // Ensure we're completing the `name = "..."` argument.
+    let mut k = start_quote;
+    while k > 0 && (bytes[k - 1] as char).is_ascii_whitespace() {
+        k -= 1;
+    }
+    if k == 0 || bytes[k - 1] != b'=' {
+        return None;
+    }
+    k -= 1;
+    while k > 0 && (bytes[k - 1] as char).is_ascii_whitespace() {
+        k -= 1;
+    }
+    let mut ident_start = k;
+    while ident_start > 0 && is_ident_continue(bytes[ident_start - 1] as char) {
+        ident_start -= 1;
+    }
+    let ident = source.get(ident_start..k)?;
+    if ident != "name" {
+        return None;
+    }
+
+    // Ensure the nearest preceding annotation is `@ConfigProperty` (qualified or not).
+    let before_ident = &source[..ident_start];
+    let at_idx = before_ident.rfind('@')?;
+    let after_at = &before_ident[at_idx + 1..];
+
+    let mut ann_end = 0usize;
+    for (idx, ch) in after_at.char_indices() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.' {
+            ann_end = idx + ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    if ann_end == 0 {
+        return None;
+    }
+    let ann = &after_at[..ann_end];
+    let simple = ann.rsplit('.').next().unwrap_or(ann);
+    if simple != "ConfigProperty" {
+        return None;
+    }
+
+    let start = start_quote + 1;
+    Some((&source[start..offset], Span::new(start, offset)))
 }
 
 fn collect_application_properties<'a>(db: &'a dyn Database, project: ProjectId) -> Vec<&'a str> {
@@ -310,6 +372,24 @@ fn collect_application_properties<'a>(db: &'a dyn Database, project: ProjectId) 
         }
     }
     out
+}
+
+fn is_escaped_quote(bytes: &[u8], idx: usize) -> bool {
+    let mut backslashes = 0usize;
+    let mut i = idx;
+    while i > 0 {
+        i -= 1;
+        if bytes[i] == b'\\' {
+            backslashes += 1;
+        } else {
+            break;
+        }
+    }
+    backslashes % 2 == 1
+}
+
+fn is_ident_continue(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'
 }
 
 #[derive(Debug, Clone)]
