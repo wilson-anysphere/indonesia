@@ -38,6 +38,70 @@ fn lazy_sharded_index_view_is_send_sync() {
 }
 
 #[test]
+fn lazy_sharded_load_is_cache_miss_when_symbols_idx_schema_mismatches() {
+    use std::io::{Seek, SeekFrom, Write};
+
+    let shard_count = 16;
+
+    let temp = tempfile::tempdir().unwrap();
+    let project_root = temp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    let a = project_root.join("A.java");
+    std::fs::write(&a, "class A {}").unwrap();
+
+    let snapshot = ProjectSnapshot::new(&project_root, vec![PathBuf::from("A.java")]).unwrap();
+
+    let cache_dir = CacheDir::new(
+        &project_root,
+        CacheConfig {
+            cache_root_override: Some(temp.path().join("cache-root")),
+        },
+    )
+    .unwrap();
+
+    let mut shards = empty_shards(shard_count);
+    let shard_a = shard_id_for_path("A.java", shard_count) as usize;
+    shards[shard_a]
+        .symbols
+        .insert("A", sym("A", "A.java", 1, 1));
+
+    save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards).unwrap();
+
+    let loaded = load_sharded_index_view_lazy(&cache_dir, &snapshot, shard_count)
+        .unwrap()
+        .expect("expected lazy shard cache hit");
+    assert!(
+        loaded.invalidated_files.is_empty(),
+        "expected no invalidated files after save"
+    );
+
+    // Corrupt the persisted schema version in shard 0's symbols index header.
+    let symbols_idx = cache_dir
+        .indexes_dir()
+        .join("shards")
+        .join("0")
+        .join("symbols.idx");
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&symbols_idx)
+        .expect("open symbols.idx");
+    // Layout: MAGIC(8) + header_version(u16) + kind(u16) + schema_version(u32).
+    file.seek(SeekFrom::Start(12)).expect("seek schema_version");
+    file.write_all(&(nova_index::INDEX_SCHEMA_VERSION + 1).to_le_bytes())
+        .expect("overwrite schema_version");
+
+    // `load_sharded_index_view_lazy` is allowed to avoid touching shard payloads on a cache hit,
+    // but it should still treat schema mismatches as a cache miss.
+    let loaded = load_sharded_index_view_lazy(&cache_dir, &snapshot, shard_count).unwrap();
+    assert!(
+        loaded.is_none(),
+        "expected schema mismatch to force a cache miss"
+    );
+}
+
+#[test]
 fn sharded_roundtrip_loads_all_shards() {
     let shard_count = 16;
 
