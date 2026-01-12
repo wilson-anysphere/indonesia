@@ -46,7 +46,8 @@ pub struct LoadOptions {
     ///
     /// Runtime knobs (read by `nova-build-bazel` when BSP support is compiled in):
     /// - `NOVA_BAZEL_USE_BSP`: set to `0`/`false` to force `bazel query`/`aquery`
-    /// - `NOVA_BSP_PROGRAM`: BSP launcher executable (defaults to `bsp4bazel`)
+    /// - `NOVA_BSP_PROGRAM`: BSP launcher executable (defaults to `bsp4bazel` when no `.bsp/*.json`
+    ///   config is discovered)
     /// - `NOVA_BSP_ARGS`: launcher args (JSON array or whitespace-separated string)
     ///
     /// Nova also supports standard BSP `.bsp/*.json` config discovery (when BSP support is
