@@ -21,6 +21,11 @@ pub struct ScopeGraph {
 
 impl ScopeGraph {
     #[must_use]
+    pub fn len(&self) -> usize {
+        self.scopes.len()
+    }
+
+    #[must_use]
     pub fn scope(&self, id: ScopeId) -> &ScopeData {
         &self.scopes[id]
     }

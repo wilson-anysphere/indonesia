@@ -64,6 +64,7 @@ impl OverrideMethodSignature {
 struct SymbolData {
     def: SymbolDefinition,
     kind: JavaSymbolKind,
+    decl_scope: u32,
     type_info: Option<TypeInfo>,
     method_signature: Option<SemanticMethodSignature>,
 }
@@ -105,6 +106,7 @@ struct SymbolCandidate {
     name: String,
     name_range: TextRange,
     scope: u32,
+    decl_scope: u32,
     kind: JavaSymbolKind,
     type_info: Option<TypeInfo>,
     method_signature: Option<SemanticMethodSignature>,
@@ -294,6 +296,7 @@ impl RefactorJavaDatabase {
                             name: pkg.name.clone(),
                             name_range,
                             scope,
+                            decl_scope: scope,
                             kind: JavaSymbolKind::Package,
                             type_info: None,
                             method_signature: None,
@@ -366,6 +369,7 @@ impl RefactorJavaDatabase {
                         name: param.name.clone(),
                         name_range: TextRange::new(param.name_range.start, param.name_range.end),
                         scope,
+                        decl_scope: scope,
                         kind: JavaSymbolKind::Parameter,
                         type_info: None,
                         method_signature: None,
@@ -408,6 +412,7 @@ impl RefactorJavaDatabase {
                         name: param.name.clone(),
                         name_range: TextRange::new(param.name_range.start, param.name_range.end),
                         scope,
+                        decl_scope: scope,
                         kind: JavaSymbolKind::Parameter,
                         type_info: None,
                         method_signature: None,
@@ -447,6 +452,7 @@ impl RefactorJavaDatabase {
                     // later locals in-scope via the parent chain and/or its own entries.
                     let scope_id = refactor_local_scope(&scope_result, body.as_ref(), block_scope);
                     let scope = scope_interner.intern(*file_id, scope_id);
+                    let decl_scope = scope_interner.intern(*file_id, block_scope);
 
                     candidates.push(SymbolCandidate {
                         key: ResolutionKey::Local(*local_ref),
@@ -454,6 +460,7 @@ impl RefactorJavaDatabase {
                         name: local.name.clone(),
                         name_range: TextRange::new(local.name_range.start, local.name_range.end),
                         scope,
+                        decl_scope,
                         kind: JavaSymbolKind::Local,
                         type_info: None,
                         method_signature: None,
@@ -508,6 +515,20 @@ impl RefactorJavaDatabase {
                         return;
                     };
                     let scope = scope_interner.intern(*file_id, scope_id);
+                    let decl_scope_id = {
+                        let mut current = Some(scope_id);
+                        let mut found = None;
+                        while let Some(id) = current {
+                            let data = scope_result.scopes.scope(id);
+                            if matches!(data.kind(), ScopeKind::Lambda { .. }) {
+                                found = Some(id);
+                                break;
+                            }
+                            current = data.parent();
+                        }
+                        found.unwrap_or(scope_id)
+                    };
+                    let decl_scope = scope_interner.intern(*file_id, decl_scope_id);
 
                     for param in params {
                         let local_id = param.local;
@@ -524,6 +545,7 @@ impl RefactorJavaDatabase {
                                 local.name_range.end,
                             ),
                             scope,
+                            decl_scope,
                             kind: JavaSymbolKind::Local,
                             type_info: None,
                             method_signature: None,
@@ -600,6 +622,7 @@ impl RefactorJavaDatabase {
                     scope: candidate.scope,
                 },
                 kind: candidate.kind,
+                decl_scope: candidate.decl_scope,
                 type_info: candidate.type_info.clone(),
                 method_signature: candidate.method_signature.clone(),
             });
@@ -1126,6 +1149,7 @@ fn collect_type_candidates(
         name,
         name_range,
         scope,
+        decl_scope: scope,
         kind: JavaSymbolKind::Type,
         type_info: Some(TypeInfo {
             package: package.map(|p| p.to_string()),
@@ -1176,6 +1200,7 @@ fn collect_type_candidates(
                     name: field.name.clone(),
                     name_range: TextRange::new(field.name_range.start, field.name_range.end),
                     scope: class_scope_interned,
+                    decl_scope: class_scope_interned,
                     kind: JavaSymbolKind::Field,
                     type_info: None,
                     method_signature: None,
@@ -1251,6 +1276,7 @@ fn collect_type_candidates(
             name: name.clone(),
             name_range: rep_range,
             scope: class_scope_interned,
+            decl_scope: class_scope_interned,
             kind: JavaSymbolKind::Method,
             type_info: None,
             method_signature: Some(SemanticMethodSignature {
@@ -1730,6 +1756,56 @@ impl RefactorDatabase for RefactorJavaDatabase {
             }
 
             current = data.parent();
+        }
+
+        None
+    }
+
+    fn would_be_shadowed(&self, symbol: SymbolId, name: &str) -> Option<SymbolId> {
+        match self.symbol_kind(symbol) {
+            Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter) => {}
+            _ => return None,
+        }
+
+        let decl_scope = self.symbols.get(symbol.as_usize())?.decl_scope;
+        let (file, decl_scope_id) = self.decode_scope(decl_scope)?;
+        let scope_result = self.scopes.get(&file)?;
+
+        let name = Name::from(name);
+
+        for scope_id in 0..scope_result.scopes.len() {
+            if scope_id == decl_scope_id {
+                continue;
+            }
+
+            // Check whether `scope_id` is a descendant of `decl_scope_id` by walking the parent
+            // chain (the scope graph does not store child edges).
+            let mut current = Some(scope_id);
+            let mut is_descendant = false;
+            while let Some(id) = current {
+                if id == decl_scope_id {
+                    is_descendant = true;
+                    break;
+                }
+                current = scope_result.scopes.scope(id).parent();
+            }
+            if !is_descendant {
+                continue;
+            }
+
+            let data = scope_result.scopes.scope(scope_id);
+            let Some(resolution) = data.values().get(&name) else {
+                continue;
+            };
+            let key = match resolution {
+                Resolution::Local(local) => ResolutionKey::Local(*local),
+                Resolution::Parameter(param) => ResolutionKey::Param(*param),
+                _ => continue,
+            };
+            let existing = self.resolution_to_symbol.get(&key).copied()?;
+            if existing != symbol {
+                return Some(existing);
+            }
         }
 
         None

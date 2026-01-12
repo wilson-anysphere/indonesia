@@ -525,6 +525,27 @@ fn check_rename_conflicts(
                     });
                 }
             }
+
+            if let Some(existing) = db.would_be_shadowed(symbol, new_name) {
+                if existing != symbol
+                    && !conflicts.iter().any(|c| {
+                        matches!(
+                            c,
+                            Conflict::NameCollision {
+                                name,
+                                existing_symbol,
+                                ..
+                            } if name == new_name && *existing_symbol == existing
+                        )
+                    })
+                {
+                    conflicts.push(Conflict::NameCollision {
+                        file: def.file.clone(),
+                        name: new_name.to_string(),
+                        existing_symbol: existing,
+                    });
+                }
+            }
         }
         Some(JavaSymbolKind::Field) => {
             // Best-effort: avoid obvious declaration-scope collisions (another field with the same

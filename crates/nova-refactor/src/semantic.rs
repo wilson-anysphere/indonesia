@@ -212,6 +212,18 @@ pub trait RefactorDatabase {
         None
     }
     fn would_shadow(&self, scope: u32, name: &str) -> Option<SymbolId>;
+    /// Check whether renaming a local/parameter to `name` would conflict with an existing
+    /// local/parameter declared in a nested scope.
+    ///
+    /// Java forbids shadowing of local variables and parameters by locals/parameters in nested
+    /// blocks/lambdas. This helper allows semantic database implementations to report such
+    /// collisions.
+    ///
+    /// The default implementation returns `None` for lightweight databases that do not model
+    /// lexical scopes.
+    fn would_be_shadowed(&self, _symbol: SymbolId, _name: &str) -> Option<SymbolId> {
+        None
+    }
 
     fn find_references(&self, symbol: SymbolId) -> Vec<Reference>;
 

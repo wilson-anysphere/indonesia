@@ -5212,6 +5212,44 @@ fn rename_shadowing_conflict_detected_in_nested_block_scope() {
 }
 
 #[test]
+fn rename_outer_local_conflict_with_inner_block_local_is_rejected() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int outer = 1;
+    {
+      int inner = 2;
+    }
+    System.out.println(outer);
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("int outer").unwrap() + "int ".len() + 1;
+    let symbol = db.symbol_at(&file, offset).expect("symbol at outer");
+
+    let err = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "inner".into(),
+        },
+    )
+    .unwrap_err();
+    let SemanticRefactorError::Conflicts(conflicts) = err else {
+        panic!("expected conflicts, got: {err:?}");
+    };
+
+    assert!(
+        conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::NameCollision { name, .. } if name == "inner")),
+        "expected NameCollision conflict: {conflicts:?}"
+    );
+}
+
+#[test]
 fn rename_type_from_constructor_declaration_renames_constructors() {
     let file = FileId::new("Test.java");
     let src = r#"class Foo {
@@ -8890,6 +8928,37 @@ fn rename_lambda_parameter_typed_param_updates_all_occurrences() {
 fn rename_lambda_parameter_conflict_with_local_in_body_is_rejected() {
     let file = FileId::new("Test.java");
     let src = r#"class C { void m(){ java.util.function.IntUnaryOperator f = (x) -> { int y = 1; return x + y; }; } }"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("(x)").unwrap() + 1;
+    let symbol = db
+        .symbol_at(&file, offset)
+        .expect("symbol at lambda parameter x");
+
+    let err = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "y".into(),
+        },
+    )
+    .unwrap_err();
+    let SemanticRefactorError::Conflicts(conflicts) = err else {
+        panic!("expected conflicts, got: {err:?}");
+    };
+
+    assert!(
+        conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::NameCollision { name, .. } if name == "y")),
+        "expected NameCollision conflict: {conflicts:?}"
+    );
+}
+
+#[test]
+fn rename_lambda_parameter_conflict_with_local_in_nested_block_is_rejected() {
+    let file = FileId::new("Test.java");
+    let src = r#"class C { void m(){ java.util.function.IntUnaryOperator f = (x) -> { { int y = 1; } return x + 1; }; } }"#;
 
     let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
     let offset = src.find("(x)").unwrap() + 1;
