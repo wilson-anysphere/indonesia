@@ -47,4 +47,19 @@ describe('extension wiring', () => {
       /executeCommand\(\s*['"]setContext['"]\s*,\s*['"]nova\.projectExplorer\.projectModelSupported['"]\s*,\s*true\s*\)/,
     );
   });
+
+  it('makes nova.discoverTests cancellable and forwards the progress token to nova/test/discover', async () => {
+    const srcRoot = path.dirname(fileURLToPath(import.meta.url));
+    const extensionPath = path.join(srcRoot, 'extension.ts');
+    const contents = await fs.readFile(extensionPath, 'utf8');
+
+    const discoverRegistrationIdx = contents.search(/registerCommand\(\s*['"]nova\.discoverTests['"]/);
+    expect(discoverRegistrationIdx).toBeGreaterThanOrEqual(0);
+
+    const afterDiscoverRegistration = contents.slice(discoverRegistrationIdx);
+
+    expect(afterDiscoverRegistration).toMatch(/withProgress\(\s*\{[\s\S]*cancellable:\s*true/s);
+    expect(afterDiscoverRegistration).toMatch(/discoverTestsForWorkspaces\(\s*workspaces\s*,\s*\{\s*token\s*\}\s*\)/);
+    expect(afterDiscoverRegistration).toMatch(/refreshTests\(\s*discovered\s*,\s*\{\s*token\s*\}\s*\)/);
+  });
 });
