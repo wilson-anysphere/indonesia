@@ -538,8 +538,8 @@ fn type_of_expr_demand_result(
     }
     let file = def_file(owner);
     let java_level = db.java_language_level(file);
-    let file_text = db.file_content(file);
-    let file_text = file_text.as_str();
+    let file_text_arc = db.file_content(file);
+    let file_text = file_text_arc.as_str();
     let file_tokens = lex(file_text);
     let project = db.file_project(file);
     let jdk = db.jdk_index(project);
@@ -683,17 +683,11 @@ fn type_of_expr_demand_result(
         &mut loader,
     );
 
-    let file_text_arc = db.file_content(file);
-    let file_text = file_text_arc.as_str();
-    let file_tokens = lex(file_text);
-
     let mut checker = BodyChecker::new(
         db,
         file_text,
         &file_tokens,
         owner,
-        file_text,
-        &file_tokens,
         &resolver,
         &scopes.scopes,
         body_scope,
@@ -1434,8 +1428,8 @@ fn resolve_method_call_demand(
     }
     let file = def_file(owner);
     let java_level = db.java_language_level(file);
-    let file_text = db.file_content(file);
-    let file_text = file_text.as_str();
+    let file_text_arc = db.file_content(file);
+    let file_text = file_text_arc.as_str();
     let file_tokens = lex(file_text);
     let project = db.file_project(file);
     let jdk = db.jdk_index(project);
@@ -1585,17 +1579,11 @@ fn resolve_method_call_demand(
         &mut loader,
     );
 
-    let file_text_arc = db.file_content(file);
-    let file_text = file_text_arc.as_str();
-    let file_tokens = lex(file_text);
-
     let mut checker = BodyChecker::new(
         db,
         file_text,
         &file_tokens,
         owner,
-        file_text,
-        &file_tokens,
         &resolver,
         &scopes.scopes,
         body_scope,
@@ -3493,8 +3481,8 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
 
     let file = def_file(owner);
     let java_level = db.java_language_level(file);
-    let file_text = db.file_content(file);
-    let file_text = file_text.as_str();
+    let file_text_arc = db.file_content(file);
+    let file_text = file_text_arc.as_str();
     let file_tokens = lex(file_text);
     let project = db.file_project(file);
     let jdk = db.jdk_index(project);
@@ -3655,17 +3643,11 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
         &mut loader,
     );
 
-    let file_text_arc = db.file_content(file);
-    let file_text = file_text_arc.as_str();
-    let file_tokens = lex(file_text);
-
     let mut checker = BodyChecker::new(
         db,
         file_text,
         &file_tokens,
         owner,
-        file_text,
-        &file_tokens,
         &resolver,
         &scopes.scopes,
         body_scope,
@@ -3781,8 +3763,6 @@ struct BodyChecker<'a, 'idx> {
     file_text: &'a str,
     file_tokens: &'a [Token],
     owner: DefWithBodyId,
-    file_text: &'a str,
-    file_tokens: &'a [Token],
     resolver: &'a nova_resolve::Resolver<'idx>,
     scopes: &'a nova_resolve::ScopeGraph,
     scope_id: nova_resolve::ScopeId,
@@ -3853,8 +3833,6 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         file_text: &'a str,
         file_tokens: &'a [Token],
         owner: DefWithBodyId,
-        file_text: &'a str,
-        file_tokens: &'a [Token],
         resolver: &'a nova_resolve::Resolver<'idx>,
         scopes: &'a nova_resolve::ScopeGraph,
         scope_id: nova_resolve::ScopeId,
@@ -3922,8 +3900,6 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             file_text,
             file_tokens,
             owner,
-            file_text,
-            file_tokens,
             resolver,
             scopes,
             scope_id,
