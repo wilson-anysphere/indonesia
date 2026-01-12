@@ -944,8 +944,12 @@ pub fn extract_variable(
     // In this case, replace the entire expression statement with a local variable declaration.
     if let ast::Statement::ExpressionStatement(expr_stmt) = &stmt {
         if let Some(stmt_expr) = expr_stmt.expression() {
-            let stmt_expr_range = trim_range(text, syntax_range(stmt_expr.syntax()));
-            if stmt_expr_range.start == selection.start && stmt_expr_range.end == selection.end {
+            let stmt_expr_range = trimmed_syntax_range(stmt_expr.syntax());
+            let stmt_expr_range_ws = trim_range(text, syntax_range(stmt_expr.syntax()));
+            if (stmt_expr_range.start == selection.start && stmt_expr_range.end == selection.end)
+                || (stmt_expr_range_ws.start == selection.start
+                    && stmt_expr_range_ws.end == selection.end)
+            {
                 let stmt_range = syntax_range(expr_stmt.syntax());
                 let prefix = &text[stmt_range.start..selection.start];
                 let suffix = &text[selection.end..stmt_range.end];
@@ -3143,9 +3147,17 @@ fn find_expression(
     selection: TextRange,
 ) -> Option<ast::Expression> {
     for expr in root.descendants().filter_map(ast::Expression::cast) {
-        // The Java AST may include trivia (whitespace/comments) in node ranges,
-        // so compare against a trimmed version to keep selection matching stable
-        // even when the user includes incidental whitespace.
+        // The Java AST can include trivia (whitespace/comments) in node ranges. Prefer comparing
+        // against a trivia-trimmed range so selections still match when the user does *not*
+        // include trailing inline comments (e.g. `new Foo() /* comment */;`).
+        //
+        // Fall back to a simple whitespace-trimmed range for compatibility with selections that
+        // *do* include comments but not surrounding whitespace.
+        let range = trimmed_syntax_range(expr.syntax());
+        if range.start == selection.start && range.end == selection.end {
+            return Some(expr);
+        }
+
         let range = trim_range(source, syntax_range(expr.syntax()));
         if range.start == selection.start && range.end == selection.end {
             return Some(expr);
