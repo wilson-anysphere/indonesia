@@ -8,9 +8,10 @@ use nova_project::{
 #[test]
 fn resolves_gradle_dependency_jars_from_local_cache() {
     let tmp = tempfile::tempdir().expect("tempdir");
+    let tmp_root = tmp.path().canonicalize().expect("canonicalize tempdir");
 
     // Fake Gradle user home with a minimal `modules-2` cache layout.
-    let gradle_home = tmp.path().join("gradle-home");
+    let gradle_home = tmp_root.join("gradle-home");
     let cache_dir =
         gradle_home.join("caches/modules-2/files-2.1/com.example/foo/1.2.3/abcdef1234567890");
     fs::create_dir_all(&cache_dir).expect("mkdir gradle cache dir");
@@ -22,7 +23,7 @@ fn resolves_gradle_dependency_jars_from_local_cache() {
     let sources_path = cache_dir.join("foo-1.2.3-sources.jar");
     fs::write(&sources_path, b"").expect("write sources jar");
 
-    let workspace = tmp.path().join("workspace");
+    let workspace = tmp_root.join("workspace");
     fs::create_dir_all(workspace.join("src/main/java")).expect("mkdir src");
     fs::write(
         workspace.join("build.gradle"),
@@ -56,9 +57,10 @@ fn resolves_gradle_dependency_jars_from_local_cache() {
 #[test]
 fn resolves_gradle_dependency_jars_onto_module_path_for_jpms_workspace_model() {
     let tmp = tempfile::tempdir().expect("tempdir");
+    let tmp_root = tmp.path().canonicalize().expect("canonicalize tempdir");
 
     // Fake Gradle user home with a minimal `modules-2` cache layout.
-    let gradle_home = tmp.path().join("gradle-home");
+    let gradle_home = tmp_root.join("gradle-home");
     let cache_dir =
         gradle_home.join("caches/modules-2/files-2.1/com.example/foo/1.2.3/abcdef1234567890");
     fs::create_dir_all(&cache_dir).expect("mkdir gradle cache dir");
@@ -66,7 +68,7 @@ fn resolves_gradle_dependency_jars_onto_module_path_for_jpms_workspace_model() {
     let jar_path = cache_dir.join("foo-1.2.3.jar");
     fs::write(&jar_path, b"").expect("write jar");
 
-    let workspace = tmp.path().join("workspace");
+    let workspace = tmp_root.join("workspace");
     let src_dir = workspace.join("src/main/java");
     fs::create_dir_all(&src_dir).expect("mkdir src");
     fs::write(
@@ -117,9 +119,10 @@ fn resolves_gradle_dependency_jars_onto_module_path_for_jpms_workspace_model() {
 #[test]
 fn resolves_gradle_dependency_jars_from_local_cache_with_map_notation() {
     let tmp = tempfile::tempdir().expect("tempdir");
+    let tmp_root = tmp.path().canonicalize().expect("canonicalize tempdir");
 
     // Fake Gradle user home with a minimal `modules-2` cache layout.
-    let gradle_home = tmp.path().join("gradle-home");
+    let gradle_home = tmp_root.join("gradle-home");
     let cache_dir =
         gradle_home.join("caches/modules-2/files-2.1/com.example/foo/1.2.3/abcdef1234567890");
     fs::create_dir_all(&cache_dir).expect("mkdir gradle cache dir");
@@ -127,7 +130,7 @@ fn resolves_gradle_dependency_jars_from_local_cache_with_map_notation() {
     let jar_path = cache_dir.join("foo-1.2.3.jar");
     fs::write(&jar_path, b"").expect("write jar");
 
-    let workspace = tmp.path().join("workspace");
+    let workspace = tmp_root.join("workspace");
     fs::create_dir_all(workspace.join("src/main/java")).expect("mkdir src");
     fs::write(
         workspace.join("build.gradle"),
@@ -154,9 +157,10 @@ fn resolves_gradle_dependency_jars_from_local_cache_with_map_notation() {
 #[test]
 fn resolves_gradle_dependency_jars_from_local_cache_with_kotlin_named_args() {
     let tmp = tempfile::tempdir().expect("tempdir");
+    let tmp_root = tmp.path().canonicalize().expect("canonicalize tempdir");
 
     // Fake Gradle user home with a minimal `modules-2` cache layout.
-    let gradle_home = tmp.path().join("gradle-home");
+    let gradle_home = tmp_root.join("gradle-home");
     let cache_dir =
         gradle_home.join("caches/modules-2/files-2.1/com.example/foo/1.2.3/abcdef1234567890");
     fs::create_dir_all(&cache_dir).expect("mkdir gradle cache dir");
@@ -164,7 +168,7 @@ fn resolves_gradle_dependency_jars_from_local_cache_with_kotlin_named_args() {
     let jar_path = cache_dir.join("foo-1.2.3.jar");
     fs::write(&jar_path, b"").expect("write jar");
 
-    let workspace = tmp.path().join("workspace");
+    let workspace = tmp_root.join("workspace");
     fs::create_dir_all(workspace.join("src/main/java")).expect("mkdir src");
     fs::write(
         workspace.join("build.gradle.kts"),
@@ -191,9 +195,10 @@ fn resolves_gradle_dependency_jars_from_local_cache_with_kotlin_named_args() {
 #[test]
 fn resolves_gradle_dependency_jars_from_local_cache_with_version_catalog() {
     let tmp = tempfile::tempdir().expect("tempdir");
+    let tmp_root = tmp.path().canonicalize().expect("canonicalize tempdir");
 
     // Fake Gradle user home with a minimal `modules-2` cache layout.
-    let gradle_home = tmp.path().join("gradle-home");
+    let gradle_home = tmp_root.join("gradle-home");
     let cache_dir =
         gradle_home.join("caches/modules-2/files-2.1/com.example/foo/1.2.3/abcdef1234567890");
     fs::create_dir_all(&cache_dir).expect("mkdir gradle cache dir");
@@ -201,7 +206,7 @@ fn resolves_gradle_dependency_jars_from_local_cache_with_version_catalog() {
     let jar_path = cache_dir.join("foo-1.2.3.jar");
     fs::write(&jar_path, b"").expect("write jar");
 
-    let workspace = tmp.path().join("workspace");
+    let workspace = tmp_root.join("workspace");
     fs::create_dir_all(workspace.join("src/main/java")).expect("mkdir src");
     fs::create_dir_all(workspace.join("gradle")).expect("mkdir gradle dir");
     fs::write(
@@ -240,9 +245,10 @@ foo = { module = "com.example:foo", version.ref = "foo" }
 #[test]
 fn resolves_gradle_dependency_jars_from_local_cache_with_version_catalog_get() {
     let tmp = tempfile::tempdir().expect("tempdir");
+    let tmp_root = tmp.path().canonicalize().expect("canonicalize tempdir");
 
     // Fake Gradle user home with a minimal `modules-2` cache layout.
-    let gradle_home = tmp.path().join("gradle-home");
+    let gradle_home = tmp_root.join("gradle-home");
     let cache_dir =
         gradle_home.join("caches/modules-2/files-2.1/org.slf4j/slf4j-api/2.0.12/abcdef1234567890");
     fs::create_dir_all(&cache_dir).expect("mkdir gradle cache dir");
@@ -250,7 +256,7 @@ fn resolves_gradle_dependency_jars_from_local_cache_with_version_catalog_get() {
     let jar_path = cache_dir.join("slf4j-api-2.0.12.jar");
     fs::write(&jar_path, b"").expect("write jar");
 
-    let workspace = tmp.path().join("workspace");
+    let workspace = tmp_root.join("workspace");
     fs::create_dir_all(workspace.join("src/main/java")).expect("mkdir src");
     fs::create_dir_all(workspace.join("gradle")).expect("mkdir gradle dir");
     fs::write(
@@ -289,9 +295,10 @@ slf4j-api = { group = "org.slf4j", name = "slf4j-api", version.ref = "slf4j" }
 #[test]
 fn resolves_gradle_dependency_jars_from_local_cache_with_version_catalog_bundle() {
     let tmp = tempfile::tempdir().expect("tempdir");
+    let tmp_root = tmp.path().canonicalize().expect("canonicalize tempdir");
 
     // Fake Gradle user home with a minimal `modules-2` cache layout.
-    let gradle_home = tmp.path().join("gradle-home");
+    let gradle_home = tmp_root.join("gradle-home");
     let cache_dir = gradle_home.join(
         "caches/modules-2/files-2.1/org.junit.jupiter/junit-jupiter-api/5.10.0/abcdef1234567890",
     );
@@ -300,7 +307,7 @@ fn resolves_gradle_dependency_jars_from_local_cache_with_version_catalog_bundle(
     let jar_path = cache_dir.join("junit-jupiter-api-5.10.0.jar");
     fs::write(&jar_path, b"").expect("write jar");
 
-    let workspace = tmp.path().join("workspace");
+    let workspace = tmp_root.join("workspace");
     fs::create_dir_all(workspace.join("src/main/java")).expect("mkdir src");
     fs::create_dir_all(workspace.join("gradle")).expect("mkdir gradle dir");
     fs::write(

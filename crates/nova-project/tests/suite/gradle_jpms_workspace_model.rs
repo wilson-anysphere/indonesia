@@ -7,7 +7,7 @@ use nova_project::{
 #[test]
 fn gradle_workspace_model_puts_cached_jars_on_module_path_for_jpms_projects() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let root = tmp.path();
+    let root = tmp.path().canonicalize().expect("canonicalize tempdir");
 
     // Fake Gradle user home with a minimal `modules-2` cache layout.
     let gradle_home = root.join("gradle-home");
