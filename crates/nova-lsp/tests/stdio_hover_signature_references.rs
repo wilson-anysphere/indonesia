@@ -29,6 +29,8 @@ fn stdio_server_supports_hover_signature_help_and_references() {
 
     let file_path = root.join("Main.java");
     let file_uri = uri_for_path(&file_path);
+    let disk_file_path = root.join("OnDisk.java");
+    let disk_file_uri = uri_for_path(&disk_file_path);
     let root_uri = uri_for_path(root);
 
     let source = concat!(
@@ -41,6 +43,18 @@ fn stdio_server_supports_hover_signature_help_and_references() {
         "    }\n",
         "}\n",
     );
+    let disk_source = concat!(
+        "class OnDisk {\n",
+        "    void foo(int x, String y) {}\n",
+        "\n",
+        "    void test() {\n",
+        "        foo(1, \"a\");\n",
+        "        foo(2, \"b\");\n",
+        "    }\n",
+        "}\n",
+    );
+
+    std::fs::write(&disk_file_path, disk_source).expect("write on-disk java file");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -64,7 +78,15 @@ fn stdio_server_supports_hover_signature_help_and_references() {
             "params": { "rootUri": root_uri, "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    let initialize_resp = read_response_with_id(&mut stdout, 1);
+    let caps = initialize_resp
+        .get("result")
+        .and_then(|v| v.get("capabilities"))
+        .expect("initialize capabilities");
+    assert_eq!(
+        caps.get("referencesProvider").and_then(|v| v.as_bool()),
+        Some(true)
+    );
     write_jsonrpc_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
@@ -171,12 +193,103 @@ fn stdio_server_supports_hover_signature_help_and_references() {
         "expected at least 2 reference locations (including declaration)"
     );
 
+    // ---------------------------------------------------------------------
+    // Disk-backed (non-overlay) requests
+    // ---------------------------------------------------------------------
+
+    // hover on method identifier in declaration
+    let hover_offset = disk_source
+        .find("foo(int")
+        .expect("foo(int in method declaration");
+    let hover_pos = utf16_position(disk_source, hover_offset);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "textDocument/hover",
+            "params": {
+                "textDocument": { "uri": disk_file_uri.as_str() },
+                "position": { "line": hover_pos.line, "character": hover_pos.character }
+            }
+        }),
+    );
+    let resp = read_response_with_id(&mut stdout, 5);
+    let hover_contents = resp
+        .pointer("/result/contents/value")
+        .and_then(|v| v.as_str())
+        .expect("hover contents");
+    assert!(
+        hover_contents.contains("```java"),
+        "expected java code block"
+    );
+    assert!(
+        hover_contents.contains("foo"),
+        "expected method name in hover"
+    );
+
+    // signature help inside argument list
+    let call_offset = disk_source
+        .find("foo(1")
+        .expect("foo(1 call")
+        + "foo(".len();
+    let call_pos = utf16_position(disk_source, call_offset);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "textDocument/signatureHelp",
+            "params": {
+                "textDocument": { "uri": disk_file_uri.as_str() },
+                "position": { "line": call_pos.line, "character": call_pos.character }
+            }
+        }),
+    );
+    let resp = read_response_with_id(&mut stdout, 6);
+    let signatures = resp
+        .pointer("/result/signatures")
+        .and_then(|v| v.as_array())
+        .expect("signatureHelp signatures array");
+    assert!(!signatures.is_empty(), "expected non-empty signatures");
+    let label = signatures[0]
+        .get("label")
+        .and_then(|v| v.as_str())
+        .expect("signature label");
+    assert!(label.contains("foo"), "expected foo in signature label");
+
+    // references on call-site identifier
+    let ref_offset = disk_source.find("foo(1").expect("foo(1 call");
+    let ref_pos = utf16_position(disk_source, ref_offset);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "textDocument/references",
+            "params": {
+                "textDocument": { "uri": disk_file_uri.as_str() },
+                "position": { "line": ref_pos.line, "character": ref_pos.character },
+                "context": { "includeDeclaration": true }
+            }
+        }),
+    );
+    let resp = read_response_with_id(&mut stdout, 7);
+    let locations = resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .expect("references result array");
+    assert!(
+        locations.len() >= 2,
+        "expected at least 2 reference locations (including declaration)"
+    );
+
     // shutdown + exit
     write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 5, "method": "shutdown" }),
+        &json!({ "jsonrpc": "2.0", "id": 8, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_response_with_id(&mut stdout, 5);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 8);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 

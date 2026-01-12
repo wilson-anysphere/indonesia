@@ -984,11 +984,22 @@ excluded_paths = ["secret/**"]
         .and_then(|v| v.as_array())
         .expect("code actions array");
 
+    let explain = actions
+        .iter()
+        .find(|a| a.get("title").and_then(|t| t.as_str()) == Some("Explain this error"))
+        .expect("expected explain-error action to remain available");
+
+    // Ensure we don't include a code snippet for excluded files.
+    let explain_args = explain
+        .get("command")
+        .and_then(|c| c.get("arguments"))
+        .and_then(|v| v.as_array())
+        .and_then(|v| v.first())
+        .and_then(|v| v.as_object())
+        .expect("ExplainErrorArgs payload");
     assert!(
-        actions
-            .iter()
-            .all(|a| a.get("title").and_then(|t| t.as_str()) != Some("Explain this error")),
-        "explain-error action should be hidden for excluded paths"
+        explain_args.get("code").is_none() || explain_args.get("code").is_some_and(|v| v.is_null()),
+        "expected explainError args.code to be omitted/null for excluded paths, got: {explain_args:?}"
     );
 
     assert!(
