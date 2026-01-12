@@ -56,6 +56,14 @@ fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Some environments (including multi-agent sandboxes) ship with a global Cargo config that enables
+# `sccache` as a `rustc` wrapper. When the daemon isn't available this causes all builds/tests to
+# fail at `sccache rustc -vV`.
+#
+# Prefer correctness/reliability here: allow callers to opt back in by explicitly setting
+# `RUSTC_WRAPPER` in their environment, but default to no wrapper.
+export RUSTC_WRAPPER="${RUSTC_WRAPPER:-}"
+
 # Get CPU count
 nproc="${NOVA_CARGO_NPROC:-}"
 if [[ -z "${nproc}" ]]; then

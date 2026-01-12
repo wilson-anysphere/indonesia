@@ -29,6 +29,8 @@ pub use nova_types::{ClassId, CompletionItem, Diagnostic, Severity, Span};
 
 #[cfg(feature = "extension-bundles")]
 pub use loader::{ExtensionManager, ExtensionMetadata, LoadError, LoadedExtension};
+#[cfg(feature = "wasm-extensions")]
+pub use loader::{RegisterFailure, RegisterReport};
 #[cfg(feature = "extension-bundles")]
 pub use manifest::{
     ExtensionCapability, ExtensionManifest, MANIFEST_FILE_NAME, SUPPORTED_ABI_VERSION,

@@ -561,6 +561,3 @@ impl AnalyzerRegistry {
 
 /// New name for the analyzer registry (kept as a type alias for existing call sites).
 pub type FrameworkRegistry = AnalyzerRegistry;
-
-pub mod ext;
-pub use ext::FrameworkAnalyzerAdapter;

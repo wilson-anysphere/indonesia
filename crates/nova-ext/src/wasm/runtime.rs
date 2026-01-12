@@ -45,17 +45,14 @@ fn engine() -> &'static Engine {
     ENGINE.get_or_init(|| {
         let mut config = wasmtime::Config::new();
         config.epoch_interruption(true);
-        // Wasmtime's default memory configuration attempts to reserve the full 4GiB `wasm32`
-        // address space (plus a guard region) for each module memory. This is fast, but it also
-        // requires a large virtual address-space reservation (often 8GiB) which can exceed the
-        // address-space limits used by Nova's multi-agent test harnesses.
-        //
-        // Nova extensions already have explicit per-plugin memory limits enforced via
-        // `StoreLimits`, so prefer dynamic memories with smaller guard regions.
+        // The default Wasmtime guard regions reserve multiple GiB of virtual address space per
+        // instance. Nova runs under a relatively small RLIMIT_AS during CI/agent execution, so we
+        // configure the engine to use smaller dynamic memory reservations. Memory usage is still
+        // enforced per-plugin via `StoreLimits`.
         config.static_memory_maximum_size(0);
         config.static_memory_guard_size(0);
         config.dynamic_memory_guard_size(0);
-        config.dynamic_memory_reserved_for_growth(0);
+        config.dynamic_memory_reserved_for_growth(DEFAULT_MAX_MEMORY_BYTES);
 
         let engine = Engine::new(&config).expect("wasmtime Engine construction should not fail");
 
@@ -143,6 +140,16 @@ pub trait WasmHostDb {
 
     fn file_path(&self, _file: FileId) -> Option<&Path> {
         None
+    }
+}
+
+impl WasmHostDb for dyn nova_db::Database + Send + Sync {
+    fn file_text(&self, file: FileId) -> &str {
+        nova_db::Database::file_content(self, file)
+    }
+
+    fn file_path(&self, file: FileId) -> Option<&Path> {
+        nova_db::Database::file_path(self, file)
     }
 }
 

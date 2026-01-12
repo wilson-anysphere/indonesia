@@ -3,10 +3,161 @@ use nova_ext::{
     CodeAction, CodeActionParams, CompletionItem, CompletionParams, CompletionProvider, Diagnostic,
     DiagnosticParams, DiagnosticProvider, ExtensionContext, ExtensionRegistry, InlayHint,
     InlayHintParams, NavigationParams, NavigationTarget, ProjectId, Span, Symbol,
+    InlayHintParams, InlayHintProvider, NavigationParams, NavigationProvider, NavigationTarget,
+    ProjectId, Span, Symbol,
+};
+use nova_framework::{
+    CompletionContext as FrameworkCompletionContext, Database as FrameworkDatabase, FrameworkAnalyzer,
+    InlayHint as FrameworkInlayHint, NavigationTarget as FrameworkNavigationTarget,
+    Symbol as FrameworkSymbol,
 };
 use nova_scheduler::CancellationToken;
 use std::collections::HashSet;
 use std::sync::Arc;
+
+/// Adapter that exposes a `nova-framework` [`FrameworkAnalyzer`] via the unified `nova-ext` traits.
+///
+/// This allows framework analyzers (Lombok, Spring, etc.) to coexist with third-party `nova-ext`
+/// providers without forcing an all-at-once migration.
+pub struct FrameworkAnalyzerAdapter<A> {
+    id: String,
+    analyzer: A,
+}
+
+impl<A> FrameworkAnalyzerAdapter<A> {
+    pub fn new(id: impl Into<String>, analyzer: A) -> Self {
+        Self {
+            id: id.into(),
+            analyzer,
+        }
+    }
+
+    pub fn into_arc(self) -> Arc<Self> {
+        Arc::new(self)
+    }
+}
+
+impl<A> DiagnosticProvider<dyn FrameworkDatabase + Send + Sync> for FrameworkAnalyzerAdapter<A>
+where
+    A: FrameworkAnalyzer + Send + Sync + 'static,
+{
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn is_applicable(&self, ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>) -> bool {
+        self.analyzer.applies_to(ctx.db.as_ref(), ctx.project)
+    }
+
+    fn provide_diagnostics(
+        &self,
+        ctx: ExtensionContext<dyn FrameworkDatabase + Send + Sync>,
+        params: DiagnosticParams,
+    ) -> Vec<Diagnostic> {
+        self.analyzer.diagnostics(ctx.db.as_ref(), params.file)
+    }
+}
+
+impl<A> CompletionProvider<dyn FrameworkDatabase + Send + Sync> for FrameworkAnalyzerAdapter<A>
+where
+    A: FrameworkAnalyzer + Send + Sync + 'static,
+{
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn is_applicable(&self, ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>) -> bool {
+        self.analyzer.applies_to(ctx.db.as_ref(), ctx.project)
+    }
+
+    fn provide_completions(
+        &self,
+        ctx: ExtensionContext<dyn FrameworkDatabase + Send + Sync>,
+        params: CompletionParams,
+    ) -> Vec<CompletionItem> {
+        let completion_ctx = FrameworkCompletionContext {
+            project: ctx.project,
+            file: params.file,
+            offset: params.offset,
+        };
+        self.analyzer
+            .completions(ctx.db.as_ref(), &completion_ctx)
+    }
+}
+
+impl<A> NavigationProvider<dyn FrameworkDatabase + Send + Sync> for FrameworkAnalyzerAdapter<A>
+where
+    A: FrameworkAnalyzer + Send + Sync + 'static,
+{
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn is_applicable(&self, ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>) -> bool {
+        self.analyzer.applies_to(ctx.db.as_ref(), ctx.project)
+    }
+
+    fn provide_navigation(
+        &self,
+        ctx: ExtensionContext<dyn FrameworkDatabase + Send + Sync>,
+        params: NavigationParams,
+    ) -> Vec<NavigationTarget> {
+        let symbol = match params.symbol {
+            Symbol::File(file) => FrameworkSymbol::File(file),
+            Symbol::Class(class) => FrameworkSymbol::Class(class),
+        };
+
+        self.analyzer
+            .navigation(ctx.db.as_ref(), &symbol)
+            .into_iter()
+            .map(FrameworkNavigationTarget::into)
+            .collect()
+    }
+}
+
+impl<A> InlayHintProvider<dyn FrameworkDatabase + Send + Sync> for FrameworkAnalyzerAdapter<A>
+where
+    A: FrameworkAnalyzer + Send + Sync + 'static,
+{
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn is_applicable(&self, ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>) -> bool {
+        self.analyzer.applies_to(ctx.db.as_ref(), ctx.project)
+    }
+
+    fn provide_inlay_hints(
+        &self,
+        ctx: ExtensionContext<dyn FrameworkDatabase + Send + Sync>,
+        params: InlayHintParams,
+    ) -> Vec<InlayHint> {
+        self.analyzer
+            .inlay_hints(ctx.db.as_ref(), params.file)
+            .into_iter()
+            .map(FrameworkInlayHint::into)
+            .collect()
+    }
+}
+
+impl From<FrameworkNavigationTarget> for NavigationTarget {
+    fn from(value: FrameworkNavigationTarget) -> Self {
+        Self {
+            file: value.file,
+            span: value.span,
+            label: value.label,
+        }
+    }
+}
+
+impl From<FrameworkInlayHint> for InlayHint {
+    fn from(value: FrameworkInlayHint) -> Self {
+        Self {
+            span: value.span,
+            label: value.label,
+        }
+    }
+}
 
 pub struct IdeExtensions<DB: ?Sized + Send + Sync + 'static> {
     db: Arc<DB>,
@@ -548,7 +699,7 @@ impl CompletionProvider<dyn nova_db::Database + Send + Sync> for FrameworkComple
 mod tests {
     use super::*;
     use nova_ext::{CodeActionProvider, CompletionProvider, DiagnosticProvider, InlayHintProvider};
-    use nova_framework::{Database, FrameworkAnalyzer, FrameworkAnalyzerAdapter, MemoryDatabase};
+    use nova_framework::{Database, FrameworkAnalyzer, MemoryDatabase};
     use std::path::PathBuf;
 
     struct FrameworkTestAnalyzer;

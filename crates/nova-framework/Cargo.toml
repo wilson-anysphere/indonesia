@@ -8,4 +8,3 @@ nova-core = { path = "../nova-core" }
 nova-hir = { path = "../nova-hir" }
 nova-types = { path = "../nova-types" }
 nova-vfs = { path = "../nova-vfs" }
-nova-ext = { path = "../nova-ext" }
