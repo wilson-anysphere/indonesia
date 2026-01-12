@@ -575,7 +575,6 @@ from `main`, otherwise benching the base commit in a git worktree). For full ope
   - `crates/nova-format/benches/format.rs`
   - `crates/nova-refactor/benches/refactor.rs`
   - `crates/nova-classpath/benches/index.rs`
-  - `crates/nova-ide/benches/completion.rs`
 - Threshold configs:
   - `perf/thresholds.toml` (bench comparisons; enforced by CI)
   - `perf/runtime-thresholds.toml` (runtime snapshot comparisons via `nova perf compare-runtime`; not currently a CI gate)
@@ -590,7 +589,6 @@ cargo bench --locked -p nova-syntax --bench parse_java
 cargo bench --locked -p nova-format --bench format
 cargo bench --locked -p nova-refactor --bench refactor
 cargo bench --locked -p nova-classpath --bench index
-cargo bench --locked -p nova-ide --bench completion
 ```
 
 **Capture + compare locally (same tooling CI uses):**
