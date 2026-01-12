@@ -13,6 +13,10 @@
 //! cargo test -p nova-types --test integration javac_differential -- --ignored
 //! ```
 
+pub mod env;
+
+pub use env::{env_lock, EnvVarGuard};
+
 #[cfg(feature = "fixtures")]
 mod fixtures;
 
