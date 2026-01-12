@@ -739,6 +739,7 @@ pub(crate) fn load_gradle_workspace_model(
         sort_dedup_dependencies(&mut common);
         included_build_contexts.push(IncludedBuildDepsContext {
             project_path_prefix: GRADLE_BUILDSRC_PROJECT_PATH.to_string(),
+            build_root,
             gradle_properties: props,
             version_catalog: catalog,
             root_common_deps: common,

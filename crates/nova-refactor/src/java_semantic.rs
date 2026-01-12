@@ -7617,21 +7617,6 @@ fn record_lightweight_expr(
                 );
             }
         }
-        Expr::ArrayInitializer(expr) => {
-            for item in &expr.items {
-                record_lightweight_expr(
-                    file,
-                    text,
-                    item,
-                    type_scopes,
-                    scope_result,
-                    resolver,
-                    resolution_to_symbol,
-                    references,
-                    spans,
-                );
-            }
-        }
         Expr::Call(call) => {
             record_lightweight_expr(
                 file,
