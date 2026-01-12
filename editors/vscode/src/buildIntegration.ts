@@ -1,5 +1,11 @@
 import * as vscode from 'vscode';
-import { combineBuildStatuses, groupByFilePath, isBazelTargetRequiredMessage, type NovaBuildStatus } from './buildIntegrationUtils';
+import {
+  combineBuildStatuses,
+  groupByFilePath,
+  isBazelTargetRequiredMessage,
+  shouldRefreshBuildDiagnosticsOnStatusTransition,
+  type NovaBuildStatus,
+} from './buildIntegrationUtils';
 import { resolvePossiblyRelativePath } from './pathUtils';
 import { formatUnsupportedNovaMethodMessage } from './novaCapabilities';
 import type { ProjectModelCache } from './projectModelCache';
@@ -65,6 +71,7 @@ type BuildStatusLabel = 'Idle' | 'Building' | 'Failed' | 'Unsupported' | 'Unavai
 
 type WorkspaceBuildState = {
   status?: NovaBuildStatus;
+  lastReportedStatus?: NovaBuildStatus;
   lastError?: string;
   statusSupported: boolean | 'unknown';
   statusRequestInFlight?: Promise<NovaBuildStatusResult | undefined>;
@@ -196,6 +203,7 @@ export function registerNovaBuildIntegration(
     }
 
     state.statusRequestInFlight = (async () => {
+      const prevStatus = state.lastReportedStatus;
       try {
         const result = await request<NovaBuildStatusResult>('nova/build/status', { projectRoot: folder.uri.fsPath });
         if (!result) {
@@ -203,17 +211,32 @@ export function registerNovaBuildIntegration(
           // the server reports method-not-found and fallback is disabled).
           state.statusSupported = false;
           state.status = undefined;
+          state.lastReportedStatus = undefined;
           state.lastError = undefined;
           return undefined;
         }
         state.statusSupported = true;
         state.status = result.status;
+        state.lastReportedStatus = result.status;
         state.lastError = result.lastError ?? undefined;
+
+        if (
+          shouldRefreshBuildDiagnosticsOnStatusTransition({
+            prev: prevStatus,
+            next: result.status,
+          })
+        ) {
+          // Refresh build diagnostics automatically (no popups) so that the Problems panel stays in
+          // sync even when builds are triggered outside of `nova.buildProject`.
+          void refreshBuildDiagnostics(folder, { silent: true });
+        }
+
         return result;
       } catch (err) {
         if (isMethodNotFoundError(err)) {
           state.statusSupported = false;
           state.status = undefined;
+          state.lastReportedStatus = undefined;
           state.lastError = undefined;
           return undefined;
         }
@@ -265,8 +288,6 @@ export function registerNovaBuildIntegration(
       startPolling();
     }
   };
-
-  maybeStartPolling();
 
   context.subscriptions.push(
     vscode.workspace.onDidOpenTextDocument((doc) => {
@@ -335,12 +356,13 @@ export function registerNovaBuildIntegration(
     return resolvePossiblyRelativePath(projectRoot, file);
   };
 
-  const refreshBuildDiagnostics = async (
+  async function refreshBuildDiagnostics(
     folder: vscode.WorkspaceFolder,
     opts?: { target?: string; silent?: boolean },
-  ): Promise<NovaBuildDiagnosticsResult | undefined> => {
+  ): Promise<NovaBuildDiagnosticsResult | undefined> {
     const state = getWorkspaceState(folder);
     const projectRoot = folder.uri.fsPath;
+    const silent = opts?.silent ?? false;
 
     try {
       const response = await request<NovaBuildDiagnosticsResult>('nova/build/diagnostics', {
@@ -383,7 +405,7 @@ export function registerNovaBuildIntegration(
     } catch (err) {
       if (isMethodNotFoundError(err)) {
         const msg = formatUnsupportedNovaMethodMessage('nova/build/diagnostics');
-        if (opts?.silent) {
+        if (silent) {
           output.appendLine(msg);
         } else {
           void vscode.window.showErrorMessage(msg);
@@ -392,14 +414,18 @@ export function registerNovaBuildIntegration(
       }
 
       const message = formatError(err);
-      if (opts?.silent) {
+      if (silent) {
         output.appendLine(`Nova: failed to fetch build diagnostics for ${projectRoot}: ${message}`);
       } else {
         void vscode.window.showErrorMessage(`Nova: failed to fetch build diagnostics: ${message}`);
       }
       return undefined;
     }
-  };
+  }
+
+  // The polling loop can trigger automatic diagnostics refreshes. Ensure the helper functions used
+  // by `refreshBuildDiagnostics` are initialized before starting polling.
+  maybeStartPolling();
 
   context.subscriptions.push(
     vscode.commands.registerCommand('nova.build.refreshDiagnostics', async (args?: unknown) => {

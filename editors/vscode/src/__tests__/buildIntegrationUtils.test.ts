@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { combineBuildStatuses, groupByFilePath, isBazelTargetRequiredMessage } from '../buildIntegrationUtils';
+import {
+  combineBuildStatuses,
+  groupByFilePath,
+  isBazelTargetRequiredMessage,
+  shouldRefreshBuildDiagnosticsOnStatusTransition,
+} from '../buildIntegrationUtils';
 
 describe('buildIntegrationUtils', () => {
   it('detects Bazel target-required errors', () => {
@@ -27,5 +32,17 @@ describe('buildIntegrationUtils', () => {
     expect(grouped.get('/a/Foo.java')?.map((d) => d.message)).toEqual(['a', 'c']);
     expect(grouped.get('/b/Bar.java')?.map((d) => d.message)).toEqual(['b']);
   });
-});
 
+  it('refreshes build diagnostics when polling observes a build finishing', () => {
+    expect(shouldRefreshBuildDiagnosticsOnStatusTransition({ prev: 'building', next: 'idle' })).toBe(true);
+    expect(shouldRefreshBuildDiagnosticsOnStatusTransition({ prev: 'building', next: 'failed' })).toBe(true);
+
+    expect(shouldRefreshBuildDiagnosticsOnStatusTransition({ prev: 'building', next: 'building' })).toBe(false);
+    expect(shouldRefreshBuildDiagnosticsOnStatusTransition({ prev: 'idle', next: 'idle' })).toBe(false);
+    expect(shouldRefreshBuildDiagnosticsOnStatusTransition({ prev: 'idle', next: 'failed' })).toBe(false);
+
+    // Best-effort: if we missed earlier polling state, refresh once when we first see a failure.
+    expect(shouldRefreshBuildDiagnosticsOnStatusTransition({ prev: undefined, next: 'failed' })).toBe(true);
+    expect(shouldRefreshBuildDiagnosticsOnStatusTransition({ prev: undefined, next: 'idle' })).toBe(false);
+  });
+});
