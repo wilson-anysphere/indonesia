@@ -125,11 +125,7 @@ pub fn normalize_text_edits(text: &str, edits: &mut Vec<TextEdit>) -> Result<(),
     for pair in edits.windows(2) {
         let first = &pair[0];
         let second = &pair[1];
-        if first.range.end() > second.range.start()
-            || (first.range.start() == first.range.end()
-                && second.range.start() == second.range.end()
-                && first.range.start() == second.range.start())
-        {
+        if first.range.end() > second.range.start() {
             return Err(EditError::OverlappingEdits {
                 first: first.range,
                 second: second.range,
@@ -191,5 +187,17 @@ mod tests {
             apply_text_edits(text, &edits),
             Err(EditError::OverlappingEdits { .. })
         ));
+    }
+
+    #[test]
+    fn allow_multiple_inserts_at_same_offset() {
+        let text = "abc";
+        let edits = vec![
+            TextEdit::insert(TextSize::from(1), "X"),
+            TextEdit::insert(TextSize::from(1), "Y"),
+        ];
+
+        let out = apply_text_edits(text, &edits).unwrap();
+        assert_eq!(out, "aXYbc");
     }
 }

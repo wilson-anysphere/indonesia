@@ -154,9 +154,6 @@ fn has_no_overlaps(edits: &[TextEdit]) -> bool {
         let first = &w[0].range;
         let second = &w[1].range;
         first.end() <= second.start()
-            && !(first.start() == first.end()
-                && second.start() == second.end()
-                && first.start() == second.start())
     })
 }
 

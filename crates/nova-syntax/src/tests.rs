@@ -3831,6 +3831,26 @@ fn incremental_edit_crossing_brace_widens_reparse_root() {
 }
 
 #[test]
+fn incremental_reparse_falls_back_when_fragment_parse_is_not_lossless() {
+    // This is a regression test for a case found by `fuzz_reparse_java` where the incremental
+    // reparser attempted to reparse a fragment, but the fragment parser stopped early and dropped
+    // trailing tokens. In that scenario we should fall back to a full reparse (rather than
+    // returning a syntax tree whose text no longer matches the edited document).
+    let old_text = "class Switches{\nint m(int x){\nreturn switch(x){\ncase";
+    let insert = "case 2,3->{\nyield 99;\n}\ndefault->0;\n};\n}\n}\n\n";
+
+    let edit = TextEdit::insert(14, insert);
+    let mut new_text = old_text.to_string();
+    new_text.insert_str(14, insert);
+
+    let old = parse_java(old_text);
+    let new_parse = reparse_java(&old, old_text, edit, &new_text);
+
+    assert_eq!(new_parse.syntax().text().to_string(), new_text);
+    assert_eq!(new_parse, parse_java(&new_text));
+}
+
+#[test]
 fn incremental_edit_inside_string_literal_falls_back_to_full_reparse() {
     let old_text = "class Foo { String s = \"hello\"; }\nclass Bar {}\n";
     let old = parse_java(old_text);
