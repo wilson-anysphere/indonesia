@@ -2293,7 +2293,7 @@ pub(crate) fn core_completions(
                 .map(|ty| member_completions_for_receiver_type(db, file, &ty, &prefix))
                 .unwrap_or_default()
         } else {
-            member_completions(db, file, &receiver, &prefix)
+            member_completions(db, file, &receiver, &prefix, ctx.dot_offset)
         };
         if let Some(receiver) = ctx.receiver {
             items.extend(postfix_completions(
@@ -2596,7 +2596,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
                 .map(|ty| member_completions_for_receiver_type(db, file, &ty, &prefix))
                 .unwrap_or_default()
         } else {
-            member_completions(db, file, &receiver, &prefix)
+            member_completions(db, file, &receiver, &prefix, ctx.dot_offset)
         };
         if let Some(receiver) = ctx.receiver {
             items.extend(postfix_completions(
@@ -3333,95 +3333,303 @@ fn java_package_and_top_level_types(text: &str) -> (Option<String>, Vec<String>)
     (package, types)
 }
 
+// -----------------------------------------------------------------------------
+// Type environment + lightweight name resolution for semantic completions
+// -----------------------------------------------------------------------------
+
+#[derive(Debug, Default)]
+struct JavaFileTypeContext {
+    package: Option<String>,
+    single_type_imports: HashMap<String, String>,
+    star_imports: Vec<String>,
+}
+
+impl JavaFileTypeContext {
+    fn from_tokens(tokens: &[Token]) -> Self {
+        let mut ctx = JavaFileTypeContext::default();
+
+        let mut i = 0usize;
+        while i < tokens.len() {
+            let tok = &tokens[i];
+            if tok.kind == TokenKind::Ident && tok.text == "package" {
+                let mut parts = Vec::<String>::new();
+                let mut j = i + 1;
+                while j < tokens.len() {
+                    match tokens[j].kind {
+                        TokenKind::Ident => parts.push(tokens[j].text.clone()),
+                        TokenKind::Symbol('.') => {}
+                        TokenKind::Symbol(';') => {
+                            j += 1;
+                            break;
+                        }
+                        _ => break,
+                    }
+                    j += 1;
+                }
+                if !parts.is_empty() {
+                    ctx.package = Some(parts.join("."));
+                }
+                i = j;
+                continue;
+            }
+
+            if tok.kind == TokenKind::Ident && tok.text == "import" {
+                let mut j = i + 1;
+                let is_static = tokens
+                    .get(j)
+                    .is_some_and(|t| t.kind == TokenKind::Ident && t.text == "static");
+                if is_static {
+                    j += 1;
+                }
+
+                let mut parts = Vec::<String>::new();
+                let mut is_star = false;
+                while j < tokens.len() {
+                    match tokens[j].kind {
+                        TokenKind::Ident => parts.push(tokens[j].text.clone()),
+                        TokenKind::Symbol('.') => {}
+                        TokenKind::Symbol('*') => {
+                            is_star = true;
+                        }
+                        TokenKind::Symbol(';') => {
+                            j += 1;
+                            break;
+                        }
+                        _ => break,
+                    }
+                    j += 1;
+                }
+
+                if !is_static && !parts.is_empty() {
+                    if is_star {
+                        ctx.star_imports.push(parts.join("."));
+                    } else {
+                        let path = parts.join(".");
+                        if let Some(simple) = parts.last().cloned() {
+                            ctx.single_type_imports.insert(simple, path);
+                        }
+                    }
+                }
+
+                i = j;
+                continue;
+            }
+
+            i += 1;
+        }
+
+        ctx
+    }
+
+    fn resolve_reference_type(&self, types: &mut TypeStore, name: &str) -> Type {
+        let name = name.trim();
+        if name.is_empty() {
+            return Type::Unknown;
+        }
+
+        if name.contains('.') {
+            return ensure_class_id(types, name)
+                .map(|id| Type::class(id, vec![]))
+                .unwrap_or_else(|| Type::Named(name.to_string()));
+        }
+
+        let mut candidates = Vec::<String>::new();
+        if let Some(import) = self.single_type_imports.get(name) {
+            candidates.push(import.clone());
+        }
+        if let Some(pkg) = &self.package {
+            candidates.push(format!("{pkg}.{name}"));
+        }
+        candidates.push(format!("java.lang.{name}"));
+        for pkg in &self.star_imports {
+            candidates.push(format!("{pkg}.{name}"));
+        }
+        candidates.push(name.to_string());
+
+        for candidate in candidates {
+            if let Some(id) = ensure_class_id(types, &candidate) {
+                return Type::class(id, vec![]);
+            }
+        }
+
+        Type::Named(name.to_string())
+    }
+}
+
+fn parse_source_type_in_context(
+    types: &mut TypeStore,
+    ctx: &JavaFileTypeContext,
+    source: &str,
+) -> Type {
+    let mut s = source.trim();
+    if s.is_empty() {
+        return Type::Unknown;
+    }
+
+    // Strip generics.
+    if let Some(idx) = s.find('<') {
+        s = &s[..idx];
+    }
+
+    // Arrays.
+    let mut array_dims = 0usize;
+    while let Some(stripped) = s.strip_suffix("[]") {
+        array_dims += 1;
+        s = stripped.trim_end();
+    }
+
+    let mut ty = match s {
+        "void" => Type::Void,
+        "boolean" => Type::Primitive(PrimitiveType::Boolean),
+        "byte" => Type::Primitive(PrimitiveType::Byte),
+        "short" => Type::Primitive(PrimitiveType::Short),
+        "char" => Type::Primitive(PrimitiveType::Char),
+        "int" => Type::Primitive(PrimitiveType::Int),
+        "long" => Type::Primitive(PrimitiveType::Long),
+        "float" => Type::Primitive(PrimitiveType::Float),
+        "double" => Type::Primitive(PrimitiveType::Double),
+        other => ctx.resolve_reference_type(types, other),
+    };
+
+    for _ in 0..array_dims {
+        ty = Type::Array(Box::new(ty));
+    }
+
+    ty
+}
+
+fn completion_type_store(db: &dyn Database, file: FileId) -> TypeStore {
+    const MAX_INDEXED_FILES: usize = 256;
+
+    let mut store = TypeStore::with_minimal_jdk();
+    let mut provider = SourceTypeProvider::new();
+
+    let root = completion_workspace_root(db, file);
+
+    let mut java_files: Vec<(FileId, PathBuf)> = Vec::new();
+    for file_id in db.all_file_ids() {
+        let Some(path) = db.file_path(file_id) else {
+            continue;
+        };
+        if path.extension().and_then(|e| e.to_str()) != Some("java") {
+            continue;
+        }
+        if let Some(root) = root.as_ref() {
+            if !path.starts_with(root) {
+                continue;
+            }
+        }
+        java_files.push((file_id, path.to_path_buf()));
+    }
+
+    // Keep the current file at the front so in-file completions work even when
+    // we cap the workspace size for performance.
+    java_files.sort_by_key(|(id, _)| if *id == file { 0 } else { 1 });
+
+    let mut did_update_current_file = false;
+    for (idx, (file_id, path)) in java_files.into_iter().enumerate() {
+        if idx >= MAX_INDEXED_FILES {
+            break;
+        }
+        let text = db.file_content(file_id);
+        provider.update_file(&mut store, path, text);
+        did_update_current_file |= file_id == file;
+    }
+
+    // Best-effort: if we can't get a real path from the DB, still index the
+    // current buffer so same-file completions work in tests and ephemeral files.
+    if !did_update_current_file && db.file_path(file).is_none() {
+        let text = db.file_content(file);
+        provider.update_file(&mut store, PathBuf::from("/unknown.java"), text);
+    }
+
+    store
+}
+
+fn completion_workspace_root(db: &dyn Database, file: FileId) -> Option<PathBuf> {
+    let path = db.file_path(file)?;
+
+    if path.exists() {
+        return nova_project::workspace_root(path).or_else(|| {
+            path.parent()
+                .map(|p| p.to_path_buf())
+                .or_else(|| Some(path.to_path_buf()))
+        });
+    }
+
+    // In-memory fixtures often have non-existent paths; treat anything with an
+    // extension as a file and fall back to the nearest `src/` parent.
+    let dir = if path.extension().is_some() {
+        path.parent().unwrap_or(path)
+    } else {
+        path
+    };
+
+    let root = dir
+        .ancestors()
+        .find_map(|ancestor| {
+            if ancestor.file_name().and_then(|n| n.to_str()) == Some("src") {
+                ancestor.parent().map(Path::to_path_buf)
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| dir.to_path_buf());
+
+    Some(root)
+}
+
 fn member_completions(
     db: &dyn Database,
     file: FileId,
     receiver: &str,
     prefix: &str,
+    receiver_offset: usize,
 ) -> Vec<CompletionItem> {
     let text = db.file_content(file);
     let analysis = analyze(text);
 
-    let Some(receiver_type) = infer_receiver_type_name(&analysis, receiver) else {
+    let mut types = completion_type_store(db, file);
+    let file_ctx = JavaFileTypeContext::from_tokens(&analysis.tokens);
+
+    let (receiver_ty, call_kind) =
+        infer_receiver(&mut types, &analysis, &file_ctx, receiver, receiver_offset);
+    if matches!(receiver_ty, Type::Unknown | Type::Error) {
         return Vec::new();
-    };
-    member_completions_for_receiver_type(db, file, &receiver_type, prefix)
-}
-
-fn infer_receiver_type_name(analysis: &Analysis, receiver: &str) -> Option<String> {
-    if receiver.starts_with('"') {
-        return Some("String".to_string());
     }
 
-    analysis
-        .vars
-        .iter()
-        .find(|v| v.name == receiver)
-        .map(|v| v.ty.clone())
-        .or_else(|| {
-            analysis
-                .methods
-                .iter()
-                .flat_map(|m| m.params.iter())
-                .find(|p| p.name == receiver)
-                .map(|p| p.ty.clone())
-        })
-        .or_else(|| {
-            analysis
-                .fields
-                .iter()
-                .find(|f| f.name == receiver)
-                .map(|f| f.ty.clone())
-        })
-}
+    let mut items = semantic_member_completions(&mut types, &receiver_ty, call_kind);
 
-fn member_completions_for_receiver_type(
-    db: &dyn Database,
-    file: FileId,
-    receiver_type: &str,
-    prefix: &str,
-) -> Vec<CompletionItem> {
-    let mut items = Vec::new();
-    if receiver_type == "String" {
-        for (name, detail) in STRING_MEMBER_METHODS {
-            items.push(CompletionItem {
-                label: name.to_string(),
-                kind: Some(CompletionItemKind::METHOD),
-                detail: Some(detail.to_string()),
-                insert_text: Some(format!("{name}()")),
-                ..Default::default()
-            });
-        }
-    }
-    if receiver_type == "Stream" {
-        for (name, detail) in STREAM_MEMBER_METHODS {
-            items.push(CompletionItem {
-                label: name.to_string(),
-                kind: Some(CompletionItemKind::METHOD),
-                detail: Some(detail.to_string()),
-                insert_text: Some(format!("{name}()")),
-                ..Default::default()
-            });
-        }
-    }
+    // Lombok virtual members are useful for instance access and are intentionally
+    // kept as a fallback/additional completion source.
+    if call_kind == CallKind::Instance {
+        let static_names = static_member_names(&mut types, &receiver_ty);
 
-    if receiver_type != "String" {
-        for member in lombok_intel::complete_members(db, file, receiver_type) {
-            let (kind, insert_text) = match member.kind {
+        let receiver_type = nova_types::format_type(&types, &receiver_ty);
+        for member in lombok_intel::complete_members(db, file, &receiver_type) {
+            if static_names.contains(&member.label) {
+                continue;
+            }
+
+            let (kind, insert_text, format) = match member.kind {
                 lombok_intel::MemberKind::Field => {
-                    (CompletionItemKind::FIELD, member.label.clone())
+                    (CompletionItemKind::FIELD, member.label.clone(), None)
                 }
-                lombok_intel::MemberKind::Method => {
-                    (CompletionItemKind::METHOD, format!("{}()", member.label))
-                }
+                lombok_intel::MemberKind::Method => (
+                    CompletionItemKind::METHOD,
+                    format!("{}($0)", member.label),
+                    Some(InsertTextFormat::SNIPPET),
+                ),
                 lombok_intel::MemberKind::Class => {
-                    (CompletionItemKind::CLASS, member.label.clone())
+                    (CompletionItemKind::CLASS, member.label.clone(), None)
                 }
             };
+
             items.push(CompletionItem {
                 label: member.label,
                 kind: Some(kind),
                 insert_text: Some(insert_text),
+                insert_text_format: format,
                 ..Default::default()
             });
         }
@@ -3431,6 +3639,90 @@ fn member_completions_for_receiver_type(
     let ctx = CompletionRankingContext::default();
     rank_completions(prefix, &mut items, &ctx);
     items
+}
+
+fn member_completions_for_receiver_type(
+    db: &dyn Database,
+    file: FileId,
+    receiver_type: &str,
+    prefix: &str,
+) -> Vec<CompletionItem> {
+    let text = db.file_content(file);
+    let analysis = analyze(text);
+
+    let mut types = completion_type_store(db, file);
+    let file_ctx = JavaFileTypeContext::from_tokens(&analysis.tokens);
+
+    let receiver_ty = parse_source_type_in_context(&mut types, &file_ctx, receiver_type);
+    if matches!(receiver_ty, Type::Unknown | Type::Error) {
+        return Vec::new();
+    }
+
+    let mut items = semantic_member_completions(&mut types, &receiver_ty, CallKind::Instance);
+
+    let static_names = static_member_names(&mut types, &receiver_ty);
+    let receiver_type = nova_types::format_type(&types, &receiver_ty);
+    for member in lombok_intel::complete_members(db, file, &receiver_type) {
+        if static_names.contains(&member.label) {
+            continue;
+        }
+
+        let (kind, insert_text, format) = match member.kind {
+            lombok_intel::MemberKind::Field => (CompletionItemKind::FIELD, member.label.clone(), None),
+            lombok_intel::MemberKind::Method => (
+                CompletionItemKind::METHOD,
+                format!("{}($0)", member.label),
+                Some(InsertTextFormat::SNIPPET),
+            ),
+            lombok_intel::MemberKind::Class => (CompletionItemKind::CLASS, member.label.clone(), None),
+        };
+
+        items.push(CompletionItem {
+            label: member.label,
+            kind: Some(kind),
+            insert_text: Some(insert_text),
+            insert_text_format: format,
+            ..Default::default()
+        });
+    }
+
+    deduplicate_completion_items(&mut items);
+    let ctx = CompletionRankingContext::default();
+    rank_completions(prefix, &mut items, &ctx);
+    items
+}
+
+fn static_member_names(types: &mut TypeStore, receiver_ty: &Type) -> HashSet<String> {
+    let class_id = match receiver_ty {
+        Type::Class(nova_types::ClassType { def, .. }) => Some(*def),
+        Type::Named(name) => ensure_class_id(types, name.as_str()),
+        _ => None,
+    };
+
+    let mut out = HashSet::new();
+    let Some(class_id) = class_id else {
+        return out;
+    };
+    let Some(class_def) = types.class(class_id) else {
+        return out;
+    };
+
+    out.extend(
+        class_def
+            .fields
+            .iter()
+            .filter(|f| f.is_static)
+            .map(|f| f.name.clone()),
+    );
+    out.extend(
+        class_def
+            .methods
+            .iter()
+            .filter(|m| m.is_static)
+            .map(|m| m.name.clone()),
+    );
+
+    out
 }
 
 fn infer_receiver_type_before_dot(
@@ -3461,7 +3753,38 @@ fn infer_receiver_type_before_dot(
     if inner.is_empty() {
         return None;
     }
-    infer_receiver_type_name(&analysis, inner)
+
+    if inner.starts_with('"') {
+        return Some("String".to_string());
+    }
+
+    // Local vars.
+    if let Some(var) = analysis
+        .vars
+        .iter()
+        .filter(|v| v.name == inner && v.name_span.start <= dot_offset)
+        .max_by_key(|v| v.name_span.start)
+    {
+        return Some(var.ty.clone());
+    }
+
+    // Params within the enclosing method.
+    if let Some(method) = analysis
+        .methods
+        .iter()
+        .find(|m| span_contains(m.body_span, dot_offset))
+    {
+        if let Some(param) = method.params.iter().find(|p| p.name == inner) {
+            return Some(param.ty.clone());
+        }
+    }
+
+    // Fields.
+    analysis
+        .fields
+        .iter()
+        .find(|f| f.name == inner)
+        .map(|f| f.ty.clone())
 }
 
 fn find_matching_open_paren(bytes: &[u8], close_paren_idx: usize) -> Option<usize> {
@@ -3498,6 +3821,8 @@ fn infer_call_return_type(
         .unwrap_or_else(|| PathBuf::from("/completion.java"));
     source_types.update_file(&mut types, file_path, text);
 
+    let file_ctx = JavaFileTypeContext::from_tokens(&analysis.tokens);
+
     // `new Foo()` is tokenized as an `Ident` call (`Foo(` ... `)`), but for completion purposes we
     // want the constructed type, not overload resolution.
     if is_constructor_call(analysis, call) {
@@ -3505,7 +3830,7 @@ fn infer_call_return_type(
         return Some(nova_types::format_type(&types, &ty));
     }
 
-    let (receiver_ty, call_kind) = infer_call_receiver_lexical(&mut types, analysis, text, call);
+    let (receiver_ty, call_kind) = infer_call_receiver_lexical(&mut types, analysis, &file_ctx, text, call);
     if matches!(receiver_ty, Type::Unknown | Type::Error) {
         return fallback_receiver_type_for_call(call.name.as_str());
     }
@@ -3565,11 +3890,13 @@ fn is_constructor_call(analysis: &Analysis, call: &CallExpr) -> bool {
 fn infer_call_receiver_lexical(
     types: &mut TypeStore,
     analysis: &Analysis,
+    file_ctx: &JavaFileTypeContext,
     text: &str,
     call: &CallExpr,
 ) -> (Type, CallKind) {
     if let Some(receiver) = call.receiver.as_deref() {
-        let (mut receiver_ty, call_kind) = infer_receiver(types, analysis, receiver);
+        let (mut receiver_ty, call_kind) =
+            infer_receiver(types, analysis, file_ctx, receiver, call.name_span.start);
         receiver_ty = ensure_local_class_receiver(types, analysis, receiver_ty);
         return (receiver_ty, call_kind);
     }
@@ -3588,14 +3915,15 @@ fn infer_call_receiver_lexical(
         let dot_offset = analysis.tokens[name_idx - 1].span.start;
         let receiver = receiver_before_dot(text, dot_offset);
         if !receiver.is_empty() {
-            let (mut receiver_ty, call_kind) = infer_receiver(types, analysis, &receiver);
+            let (mut receiver_ty, call_kind) =
+                infer_receiver(types, analysis, file_ctx, &receiver, dot_offset);
             receiver_ty = ensure_local_class_receiver(types, analysis, receiver_ty);
             return (receiver_ty, call_kind);
         }
 
         // Handle common complex receivers like `new Foo().bar()`.
         if let Some(receiver_ty) =
-            infer_receiver_type_of_expr_ending_at(types, analysis, text, dot_offset)
+            infer_receiver_type_of_expr_ending_at(types, analysis, file_ctx, text, dot_offset)
         {
             let receiver_ty = ensure_local_class_receiver(types, analysis, receiver_ty);
             return (receiver_ty, CallKind::Instance);
@@ -3623,6 +3951,7 @@ fn enclosing_class<'a>(analysis: &'a Analysis, offset: usize) -> Option<&'a Clas
 fn infer_receiver_type_of_expr_ending_at(
     types: &mut TypeStore,
     analysis: &Analysis,
+    file_ctx: &JavaFileTypeContext,
     text: &str,
     expr_end: usize,
 ) -> Option<Type> {
@@ -3651,8 +3980,11 @@ fn infer_receiver_type_of_expr_ending_at(
     // Parenthesized expression like `(foo)`.
     let open_paren = find_matching_open_paren(bytes, end - 1)?;
     let inner = text.get(open_paren + 1..end - 1)?.trim();
-    let ty_name = infer_receiver_type_name(analysis, inner)?;
-    Some(parse_source_type(types, &ty_name))
+    let (ty, _call_kind) = infer_receiver(types, analysis, file_ctx, inner, expr_end);
+    match ty {
+        Type::Unknown | Type::Error => None,
+        other => Some(other),
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -4131,6 +4463,63 @@ fn workspace_types_in_file(text: &str) -> (Option<String>, Vec<(String, Completi
     (package, types)
 }
 
+fn semantic_member_completions(
+    types: &mut TypeStore,
+    receiver_ty: &Type,
+    call_kind: CallKind,
+) -> Vec<CompletionItem> {
+    ensure_type_methods_loaded(types, receiver_ty);
+
+    let class_id = match receiver_ty {
+        Type::Class(nova_types::ClassType { def, .. }) => Some(*def),
+        Type::Named(name) => ensure_class_id(types, name.as_str()),
+        _ => None,
+    };
+    let Some(class_id) = class_id else {
+        return Vec::new();
+    };
+    let Some(class_def) = types.class(class_id) else {
+        return Vec::new();
+    };
+
+    let mut items = Vec::new();
+
+    for field in &class_def.fields {
+        let include = match call_kind {
+            CallKind::Instance => !field.is_static,
+            CallKind::Static => field.is_static,
+        };
+        if !include {
+            continue;
+        }
+        items.push(CompletionItem {
+            label: field.name.clone(),
+            kind: Some(CompletionItemKind::FIELD),
+            detail: Some(nova_types::format_type(types, &field.ty)),
+            ..Default::default()
+        });
+    }
+
+    for method in &class_def.methods {
+        let include = match call_kind {
+            CallKind::Instance => !method.is_static,
+            CallKind::Static => method.is_static,
+        };
+        if !include {
+            continue;
+        }
+        items.push(CompletionItem {
+            label: method.name.clone(),
+            kind: Some(CompletionItemKind::METHOD),
+            detail: Some(nova_types::format_method_signature(types, class_id, method)),
+            insert_text: Some(format!("{}($0)", method.name)),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..Default::default()
+        });
+    }
+
+    items
+}
 fn general_completions(
     db: &dyn Database,
     file: FileId,
@@ -4460,7 +4849,9 @@ fn expected_type_for_call_argument(
     arg_index: usize,
 ) -> Option<Type> {
     let receiver = call.receiver.as_deref()?;
-    let (receiver_ty, call_kind) = infer_receiver(types, analysis, receiver);
+    let file_ctx = JavaFileTypeContext::from_tokens(&analysis.tokens);
+    let (receiver_ty, call_kind) =
+        infer_receiver(types, analysis, &file_ctx, receiver, call.name_span.start);
     if matches!(receiver_ty, Type::Unknown | Type::Error) {
         return None;
     }
@@ -6473,7 +6864,9 @@ fn semantic_call_signatures(
         return Vec::new();
     };
 
-    let (receiver_ty, call_kind) = infer_receiver(types, analysis, receiver);
+    let file_ctx = JavaFileTypeContext::from_tokens(&analysis.tokens);
+    let (receiver_ty, call_kind) =
+        infer_receiver(types, analysis, &file_ctx, receiver, call.name_span.start);
     if matches!(receiver_ty, Type::Unknown | Type::Error) {
         return Vec::new();
     }
@@ -6516,7 +6909,9 @@ fn semantic_call_for_inlay(
         return None;
     };
 
-    let (receiver_ty, call_kind) = infer_receiver(types, analysis, receiver);
+    let file_ctx = JavaFileTypeContext::from_tokens(&analysis.tokens);
+    let (receiver_ty, call_kind) =
+        infer_receiver(types, analysis, &file_ctx, receiver, call.name_span.start);
     if matches!(receiver_ty, Type::Unknown | Type::Error) {
         return None;
     }
@@ -6548,7 +6943,13 @@ fn semantic_call_for_inlay(
     Some((resolved, names))
 }
 
-fn infer_receiver(types: &mut TypeStore, analysis: &Analysis, receiver: &str) -> (Type, CallKind) {
+fn infer_receiver(
+    types: &mut TypeStore,
+    analysis: &Analysis,
+    file_ctx: &JavaFileTypeContext,
+    receiver: &str,
+    offset: usize,
+) -> (Type, CallKind) {
     if receiver.starts_with('"') {
         return (
             types
@@ -6560,7 +6961,10 @@ fn infer_receiver(types: &mut TypeStore, analysis: &Analysis, receiver: &str) ->
     }
 
     if let Some(var) = analysis.vars.iter().find(|v| v.name == receiver) {
-        return (parse_source_type(types, &var.ty), CallKind::Instance);
+        return (
+            parse_source_type_in_context(types, file_ctx, &var.ty),
+            CallKind::Instance,
+        );
     }
     if let Some(param) = analysis
         .methods
@@ -6571,11 +6975,30 @@ fn infer_receiver(types: &mut TypeStore, analysis: &Analysis, receiver: &str) ->
         return (parse_source_type(types, &param.ty), CallKind::Instance);
     }
     if let Some(field) = analysis.fields.iter().find(|f| f.name == receiver) {
-        return (parse_source_type(types, &field.ty), CallKind::Instance);
+        return (
+            parse_source_type_in_context(types, file_ctx, &field.ty),
+            CallKind::Instance,
+        );
     }
 
-    // Allow `Foo.bar()` to treat `Foo` as a type reference.
-    (parse_source_type(types, receiver), CallKind::Static)
+    if let Some(method) = analysis
+        .methods
+        .iter()
+        .find(|m| span_contains(m.body_span, offset))
+    {
+        if let Some(param) = method.params.iter().find(|p| p.name == receiver) {
+            return (
+                parse_source_type_in_context(types, file_ctx, &param.ty),
+                CallKind::Instance,
+            );
+        }
+    }
+
+    // Allow `Foo.bar()` / `Foo.<cursor>` to treat `Foo` as a type reference.
+    (
+        parse_source_type_in_context(types, file_ctx, receiver),
+        CallKind::Static,
+    )
 }
 
 fn infer_expr_type_at(types: &mut TypeStore, analysis: &Analysis, offset: usize) -> Type {
@@ -6704,7 +7127,9 @@ fn infer_call_receiver_for_argument_completion(
     call: &CallExpr,
 ) -> Option<(Type, CallKind)> {
     if let Some(receiver) = call.receiver.as_deref() {
-        let (mut receiver_ty, call_kind) = infer_receiver(types, analysis, receiver);
+        let file_ctx = JavaFileTypeContext::from_tokens(&analysis.tokens);
+        let (mut receiver_ty, call_kind) =
+            infer_receiver(types, analysis, &file_ctx, receiver, call.name_span.start);
         receiver_ty = ensure_local_class_receiver(types, analysis, receiver_ty);
         return Some((receiver_ty, call_kind));
     }

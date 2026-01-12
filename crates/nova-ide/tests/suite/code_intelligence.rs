@@ -351,6 +351,101 @@ fn annotation_attribute_completion_filters_already_present_elements() {
 }
 
 #[test]
+fn completion_instance_members_exclude_static() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo {
+  int inst;
+  int m() { return 0; }
+  static int sm() { return 0; }
+}
+
+class A {
+  void test() {
+    Foo f = new Foo();
+    f.<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"m"),
+        "expected completion list to contain Foo.m; got {labels:?}"
+    );
+    assert!(
+        labels.contains(&"inst"),
+        "expected completion list to contain Foo.inst; got {labels:?}"
+    );
+    assert!(
+        !labels.contains(&"sm"),
+        "expected completion list to NOT contain Foo.sm for instance access; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_static_members_exclude_instance() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo {
+  int inst;
+  int m() { return 0; }
+  static int sm() { return 0; }
+}
+
+class A {
+  void test() {
+    Foo.<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"sm"),
+        "expected completion list to contain Foo.sm for static access; got {labels:?}"
+    );
+    assert!(
+        !labels.contains(&"m"),
+        "expected completion list to NOT contain Foo.m for static access; got {labels:?}"
+    );
+    assert!(
+        !labels.contains(&"inst"),
+        "expected completion list to NOT contain Foo.inst for static access; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_parameter_receiver_works() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo {
+  int inst;
+  int m() { return 0; }
+  static int sm() { return 0; }
+}
+
+class A {
+  void test(Foo f) {
+    f.<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"m"),
+        "expected completion list to contain Foo.m for parameter receiver; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_new_expression_includes_arraylist_with_star_import() {
     let (db, file, pos) = fixture(
         r#"

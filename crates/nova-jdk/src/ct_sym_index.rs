@@ -314,6 +314,7 @@ impl CtSymReleaseIndex {
 
         bytes
     }
+
     pub(crate) fn modules(&self) -> &[ModuleName] {
         &self.modules
     }
