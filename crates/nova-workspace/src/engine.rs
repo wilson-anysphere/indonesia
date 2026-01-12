@@ -1268,10 +1268,11 @@ mod tests {
     #[test]
     fn filesystem_events_update_salsa_and_preserve_file_ids_across_moves() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
         fs::create_dir_all(root.join("src")).unwrap();
 
-        let workspace = crate::Workspace::open(root).unwrap();
+        let workspace = crate::Workspace::open(&root).unwrap();
         let engine = workspace.engine_for_tests();
 
         let project = ProjectId::from_raw(0);
@@ -1327,7 +1328,8 @@ mod tests {
     #[test]
     fn move_event_ordering_preserves_file_ids_for_rename_chains() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
         fs::create_dir_all(root.join("src")).unwrap();
 
         let a = root.join("src/A.java");
@@ -1335,7 +1337,7 @@ mod tests {
         fs::write(&a, "class A {}".as_bytes()).unwrap();
         fs::write(&b, "class B {}".as_bytes()).unwrap();
 
-        let workspace = crate::Workspace::open(root).unwrap();
+        let workspace = crate::Workspace::open(&root).unwrap();
         let engine = workspace.engine_for_tests();
 
         engine.apply_filesystem_events(vec![
@@ -1378,10 +1380,11 @@ mod tests {
     #[test]
     fn renaming_java_file_to_non_java_removes_it_from_project_files() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
         fs::create_dir_all(root.join("src")).unwrap();
 
-        let workspace = crate::Workspace::open(root).unwrap();
+        let workspace = crate::Workspace::open(&root).unwrap();
         let engine = workspace.engine_for_tests();
         let project = ProjectId::from_raw(0);
 
@@ -1442,12 +1445,13 @@ mod tests {
     #[test]
     fn move_events_preserve_open_document_overlay_and_file_id() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
         fs::create_dir_all(root.join("src")).unwrap();
         let file_a = root.join("src/A.java");
         fs::write(&file_a, "class A { disk }".as_bytes()).unwrap();
 
-        let workspace = crate::Workspace::open(root).unwrap();
+        let workspace = crate::Workspace::open(&root).unwrap();
         let vfs_a = VfsPath::local(file_a.clone());
         let file_id = workspace.open_document(vfs_a.clone(), "class A { overlay }".to_string(), 1);
 
@@ -1479,7 +1483,8 @@ mod tests {
     #[test]
     fn move_to_known_destination_deletes_source_file_id() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
         fs::create_dir_all(root.join("src")).unwrap();
 
         let file_a = root.join("src/A.java");
@@ -1487,7 +1492,7 @@ mod tests {
         fs::write(&file_a, "class A {}".as_bytes()).unwrap();
         fs::write(&file_b, "class B {}".as_bytes()).unwrap();
 
-        let workspace = crate::Workspace::open(root).unwrap();
+        let workspace = crate::Workspace::open(&root).unwrap();
         let engine = workspace.engine_for_tests();
 
         engine.apply_filesystem_events(vec![
@@ -1524,9 +1529,10 @@ mod tests {
     }
 
     #[test]
-    fn move_open_document_to_known_destination_keeps_destination_id() {
+    fn move_open_document_to_known_destination_displaces_destination_id() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
         fs::create_dir_all(root.join("src")).unwrap();
 
         let file_a = root.join("src/A.java");
@@ -1534,7 +1540,7 @@ mod tests {
         fs::write(&file_a, "class A { disk }".as_bytes()).unwrap();
         fs::write(&file_b, "class B { disk }".as_bytes()).unwrap();
 
-        let workspace = crate::Workspace::open(root).unwrap();
+        let workspace = crate::Workspace::open(&root).unwrap();
         let engine = workspace.engine_for_tests();
         engine.apply_filesystem_events(vec![
             NormalizedEvent::Created(file_a.clone()),
@@ -1546,8 +1552,9 @@ mod tests {
         let id_a = engine.vfs.get_id(&vfs_a).unwrap();
         let id_b = engine.vfs.get_id(&vfs_b).unwrap();
 
-        // Open A (overlay). The rename should keep B's existing `FileId` while moving the overlay
-        // contents over, so analysis remains consistent with the `FileIdRegistry` behavior.
+        // Open A (overlay). When an open document is moved to an existing path, the open
+        // document's FileId is preserved (the editor knows this id) and the destination id
+        // is orphaned.
         let opened = workspace.open_document(vfs_a.clone(), "class A { overlay }".to_string(), 1);
         assert_eq!(opened, id_a);
         assert!(engine.vfs.open_documents().is_open(id_a));
@@ -1563,21 +1570,21 @@ mod tests {
         }]);
 
         assert_eq!(engine.vfs.get_id(&vfs_a), None);
-        assert_eq!(engine.vfs.get_id(&vfs_b), Some(id_b));
-        assert_eq!(engine.vfs.path_for_id(id_a), None);
+        assert_eq!(engine.vfs.get_id(&vfs_b), Some(id_a));
+        assert_eq!(engine.vfs.path_for_id(id_b), None);
         assert_eq!(
             engine.vfs.read_to_string(&vfs_b).unwrap(),
             "class A { overlay }"
         );
-        assert!(!engine.vfs.open_documents().is_open(id_a));
-        assert!(engine.vfs.open_documents().is_open(id_b));
+        assert!(engine.vfs.open_documents().is_open(id_a));
+        assert!(!engine.vfs.open_documents().is_open(id_b));
 
         engine.query_db.with_snapshot(|snap| {
-            assert!(!snap.file_exists(id_a));
-            assert!(snap.file_exists(id_b));
-            assert_eq!(snap.file_rel_path(id_b).as_str(), "src/B.java");
-            assert_eq!(snap.file_content(id_b).as_str(), "class A { overlay }");
-            assert!(!snap.project_files(ProjectId::from_raw(0)).contains(&id_a));
+            assert!(snap.file_exists(id_a));
+            assert!(!snap.file_exists(id_b));
+            assert_eq!(snap.file_rel_path(id_a).as_str(), "src/B.java");
+            assert_eq!(snap.file_content(id_a).as_str(), "class A { overlay }");
+            assert!(!snap.project_files(ProjectId::from_raw(0)).contains(&id_b));
         });
     }
 

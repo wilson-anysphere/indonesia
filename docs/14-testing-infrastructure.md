@@ -116,7 +116,31 @@ cargo test -p nova-refactor move_static_method_updates_call_sites
 
 **Expectation:** unit tests should be deterministic and should not require network access.
 
-**Note on ignored tests:** Rust’s test harness supports two commonly confused flags:
+#### Cross-platform testing gotchas
+
+CI runs tests on Linux, macOS, and Windows. Keep these platform differences in mind:
+
+1. **Path canonicalization:** On macOS, `/var` is a symlink to `/private/var`. If your test
+   creates a temp directory with `tempfile::tempdir()` and later canonicalizes paths (e.g.,
+   `fs::canonicalize` or `Workspace::open`), the canonical path won't match the original.
+   **Fix:** Canonicalize temp directory paths at the start of the test:
+   ```rust
+   let dir = tempfile::tempdir().unwrap();
+   let root = dir.path().canonicalize().unwrap();  // resolves /var -> /private/var
+   ```
+
+2. **Path separators:** Use `std::path::Path::join` or `PathBuf::push`, never hardcoded `/`.
+
+3. **Line endings:** Git may convert line endings on Windows. If comparing file content,
+   normalize line endings or use `.lines()` for line-by-line comparison.
+
+4. **Case sensitivity:** Windows/macOS filesystems are typically case-insensitive. Tests
+   that rely on case-sensitive path lookups may behave differently across platforms.
+
+5. **Drive letters (Windows):** Paths like `C:\foo` need special handling. The VFS
+   normalizes drive letters to uppercase for stable path identity.
+
+**Note on ignored tests:** Rust's test harness supports two commonly confused flags:
 
 - `-- --ignored` runs **only** ignored tests
 - `-- --include-ignored` runs **both** ignored and non-ignored tests
