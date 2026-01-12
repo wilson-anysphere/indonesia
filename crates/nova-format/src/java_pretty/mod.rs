@@ -69,8 +69,11 @@ impl<'a> JavaPrettyFormatter<'a> {
 
         let mut parts: Vec<Doc<'a>> = Vec::new();
         let mut pending_hardlines: usize = 0;
-        let mut prev_end: Option<u32> = None;
-        let mut prev_was_type_decl = false;
+        // Track the last significant token of the previously printed top-level item so we can
+        // preserve a single blank line between consecutive type declarations when the original
+        // source gap is whitespace-only (comments are handled by `JavaComments`).
+        let mut prev_item_last_sig_end: Option<u32> = None;
+        let mut prev_item_was_type_decl: bool = false;
 
         let mut idx = 0usize;
         while idx < children.len() {
@@ -81,8 +84,9 @@ impl<'a> JavaPrettyFormatter<'a> {
                     parts.push(self.print_package_declaration(child));
                     // Exactly one blank line after a package declaration.
                     pending_hardlines = 2;
-                    prev_end = Some(u32::from(child.text_range().end()));
-                    prev_was_type_decl = false;
+                    prev_item_last_sig_end = boundary_significant_tokens(child)
+                        .map(|(_, last)| u32::from(last.text_range().end()));
+                    prev_item_was_type_decl = false;
                     idx += 1;
                 }
                 SyntaxKind::ImportDeclaration => {
@@ -102,57 +106,52 @@ impl<'a> JavaPrettyFormatter<'a> {
                         // Blank line between the imports section and the first declaration.
                         pending_hardlines = 2;
                     }
-                    prev_end = Some(u32::from(children[idx - 1].text_range().end()));
-                    prev_was_type_decl = false;
+                    prev_item_last_sig_end = boundary_significant_tokens(&children[idx - 1])
+                        .map(|(_, last)| u32::from(last.text_range().end()));
+                    prev_item_was_type_decl = false;
                 }
                 SyntaxKind::ModuleDeclaration => {
                     self.flush_pending_hardlines(&mut parts, &mut pending_hardlines, Some(child));
                     parts.push(self.print_module_declaration(child));
                     pending_hardlines = 1;
-                    prev_end = Some(u32::from(child.text_range().end()));
-                    prev_was_type_decl = false;
+                    prev_item_last_sig_end = boundary_significant_tokens(child)
+                        .map(|(_, last)| u32::from(last.text_range().end()));
+                    prev_item_was_type_decl = false;
                     idx += 1;
                 }
                 _ => {
-                    // Preserve at most one blank line between consecutive top-level type
-                    // declarations *when the gap is whitespace-only*.
-                    //
-                    // If there are boundary comments between types (line/block/doc), the slice will
-                    // not be whitespace-only and we'll fall back to a single hardline between
-                    // declarations.
-                    if pending_hardlines == 1
-                        && prev_was_type_decl
-                        && ast::TypeDeclaration::cast(child.clone()).is_some()
-                    {
-                        if let Some(prev_end) = prev_end {
-                            let start = u32::from(child.text_range().start());
-                            let len = self.source.len();
-                            let mut a = prev_end as usize;
-                            let mut b = start as usize;
-                            a = a.min(len);
-                            b = b.min(len);
-                            if a > b {
-                                std::mem::swap(&mut a, &mut b);
-                            }
-                            let slice = self.source.get(a..b).unwrap_or("");
-                            if slice.trim().is_empty() && has_blank_line(slice) {
-                                pending_hardlines = 2;
+                    let ty = ast::TypeDeclaration::cast(child.clone());
+                    let is_type_decl = ty.is_some();
+                    let bounds = boundary_significant_tokens(child);
+
+                    // Preserve a single blank line (collapse >1) between consecutive type
+                    // declarations when the source gap contains only whitespace. If the gap
+                    // contains comments or other non-whitespace, leave spacing to `JavaComments`.
+                    if prev_item_was_type_decl && is_type_decl {
+                        if let (Some(prev_end), Some((first, _))) =
+                            (prev_item_last_sig_end, bounds.as_ref())
+                        {
+                            let next_start = u32::from(first.text_range().start());
+                            if has_whitespace_only_blank_line_between_offsets(
+                                self.source, prev_end, next_start,
+                            ) {
+                                pending_hardlines = pending_hardlines.max(2);
                             }
                         }
                     }
 
                     self.flush_pending_hardlines(&mut parts, &mut pending_hardlines, Some(child));
-                    if let Some(ty) = ast::TypeDeclaration::cast(child.clone()) {
+                    if let Some(ty) = ty {
                         parts.push(self.print_type_declaration(ty));
-                        prev_was_type_decl = true;
                     } else {
                         // Fallback nodes print verbatim source, including any nested comment tokens.
                         // Consume those comments so they don't trip the drain assertion.
                         parts.push(self.print_verbatim_node_with_boundary_comments(child));
-                        prev_was_type_decl = false;
                     }
                     pending_hardlines = 1;
-                    prev_end = Some(u32::from(child.text_range().end()));
+                    prev_item_last_sig_end =
+                        bounds.map(|(_, last)| u32::from(last.text_range().end()));
+                    prev_item_was_type_decl = is_type_decl;
                     idx += 1;
                 }
             }
@@ -584,6 +583,15 @@ fn find_braces(body: &SyntaxNode) -> Option<(SyntaxToken, SyntaxToken)> {
 }
 
 fn has_blank_line_between_offsets(source: &str, start: u32, end: u32) -> bool {
+    has_blank_line(source_slice_between_offsets(source, start, end))
+}
+
+fn has_whitespace_only_blank_line_between_offsets(source: &str, start: u32, end: u32) -> bool {
+    let slice = source_slice_between_offsets(source, start, end);
+    slice.trim().is_empty() && has_blank_line(slice)
+}
+
+fn source_slice_between_offsets<'a>(source: &'a str, start: u32, end: u32) -> &'a str {
     let len = source.len();
     let mut start = start as usize;
     let mut end = end as usize;
@@ -592,8 +600,7 @@ fn has_blank_line_between_offsets(source: &str, start: u32, end: u32) -> bool {
     if start > end {
         std::mem::swap(&mut start, &mut end);
     }
-    let slice = source.get(start..end).unwrap_or("");
-    has_blank_line(slice)
+    source.get(start..end).unwrap_or("")
 }
 
 fn has_blank_line(text: &str) -> bool {

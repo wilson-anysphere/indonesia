@@ -1295,7 +1295,7 @@ public @interface MyAnno {
 
 #[test]
 fn pretty_preserves_blank_line_between_top_level_types_when_gap_is_whitespace_only() {
-    let input = "class Foo{}\n\nclass Bar{}\n";
+    let input = "class Foo{}\n\n\n\nclass Bar{}\n";
     let edits = edits_for_document_formatting_with_strategy(
         input,
         &FormatConfig::default(),

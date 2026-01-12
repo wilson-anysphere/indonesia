@@ -113,8 +113,8 @@ impl<'a> JavaComments<'a> {
 
         // Preserve blank line metadata around the entire leading comment block.
         //
-        // `CommentStore` computes `blank_line_before/after` relative to the surrounding *significant*
-        // tokens. For leading comments, that means:
+        // `CommentStore` computes `blank_line_before/after` relative to the surrounding
+        // *significant* tokens. For leading comments, that means:
         // - `blank_line_before` on the first comment => there was an extra blank line between the
         //   previous token and this comment block.
         // - `blank_line_after` on the last comment => there was an extra blank line between this
@@ -122,7 +122,7 @@ impl<'a> JavaComments<'a> {
         //
         // The formatter will already emit the "base" newline(s) needed to place the comment block
         // on its own line. Here we only emit *one* additional hardline to represent that blank
-        // line, and we do it on the correct side of the comment block.
+        // line.
         if comments
             .first()
             .is_some_and(|comment| comment.blank_line_before)
@@ -162,6 +162,7 @@ impl<'a> JavaComments<'a> {
                     parts.push(Doc::hardline());
                 }
             }
+
         }
 
         if comments
