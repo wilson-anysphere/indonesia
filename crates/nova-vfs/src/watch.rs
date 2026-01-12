@@ -947,6 +947,17 @@ mod notify_impl {
         }
 
         #[cfg(feature = "watch-notify")]
+        fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+            use std::sync::{Mutex, OnceLock};
+
+            static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+            ENV_LOCK
+                .get_or_init(|| Mutex::new(()))
+                .lock()
+                .expect("env lock poisoned")
+        }
+
+        #[cfg(feature = "watch-notify")]
         #[test]
         fn emits_rescan_when_raw_queue_overflows_via_notify_watcher() {
             use notify::EventKind;
@@ -1434,6 +1445,7 @@ mod notify_impl {
         #[cfg(feature = "watch-notify")]
         #[test]
         fn queue_capacity_from_env_returns_none_when_unset() {
+            let _lock = env_lock();
             const VAR: &str = "NOVA_VFS_TEST_QUEUE_CAPACITY_UNSET";
             let _guard = EnvVarGuard::new(VAR);
             std::env::remove_var(VAR);
@@ -1443,6 +1455,7 @@ mod notify_impl {
         #[cfg(feature = "watch-notify")]
         #[test]
         fn queue_capacity_from_env_treats_empty_and_zero_as_none() {
+            let _lock = env_lock();
             const VAR: &str = "NOVA_VFS_TEST_QUEUE_CAPACITY_EMPTY";
             let _guard = EnvVarGuard::new(VAR);
 
@@ -1462,6 +1475,7 @@ mod notify_impl {
         #[cfg(feature = "watch-notify")]
         #[test]
         fn queue_capacity_from_env_parses_and_clamps_values() {
+            let _lock = env_lock();
             const VAR: &str = "NOVA_VFS_TEST_QUEUE_CAPACITY_PARSE";
             let _guard = EnvVarGuard::new(VAR);
 
@@ -1476,6 +1490,7 @@ mod notify_impl {
         #[cfg(feature = "watch-notify")]
         #[test]
         fn queue_capacity_from_env_rejects_invalid_values() {
+            let _lock = env_lock();
             const VAR: &str = "NOVA_VFS_TEST_QUEUE_CAPACITY_INVALID";
             let _guard = EnvVarGuard::new(VAR);
 
