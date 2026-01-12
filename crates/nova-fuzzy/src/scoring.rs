@@ -1044,6 +1044,20 @@ mod tests {
         }
 
         #[test]
+        fn compatibility_equivalence_matches() {
+            // U+212A KELVIN SIGN is compatibility-equivalent to ASCII 'K'.
+            let score = fuzzy_match("kelvin", "\u{212A}elvin").unwrap();
+            assert_eq!(score.kind, MatchKind::Prefix);
+        }
+
+        #[test]
+        fn micro_sign_nfkc_normalizes_to_greek_mu() {
+            // U+00B5 MICRO SIGN is compatibility-equivalent to U+03BC GREEK SMALL LETTER MU.
+            let score = fuzzy_match("\u{03BC}", "\u{00B5}").unwrap();
+            assert_eq!(score.kind, MatchKind::Prefix);
+        }
+
+        #[test]
         fn grapheme_cluster_stability() {
             // "👩‍💻" is a single extended grapheme cluster (woman technologist).
             // Matching must operate on grapheme clusters, not on individual UTF-8 bytes
