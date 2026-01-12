@@ -20,6 +20,7 @@ mod move_package;
 mod organize_imports;
 mod preview_file_ops;
 mod refactorings;
+mod rename_non_body_expr_refs;
 mod rename_constructor_symbol_at;
 mod rename_field_accessors;
 mod rename_members;
