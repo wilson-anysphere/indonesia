@@ -4,7 +4,6 @@ mod rpc_out;
 mod rename_lsp;
 
 use crossbeam_channel::{Receiver, Sender};
-use globset::{Glob, GlobSet, GlobSetBuilder};
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response, ResponseError};
 use lsp_types::{
     CallHierarchyIncomingCallsParams, CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams,
@@ -1348,37 +1347,6 @@ impl SemanticSearchWorkspaceIndexStatus {
     }
 }
 
-fn compile_excluded_paths_globset(patterns: &[String]) -> GlobSet {
-    let mut builder = GlobSetBuilder::new();
-    for pattern in patterns {
-        match Glob::new(pattern) {
-            Ok(glob) => {
-                builder.add(glob);
-            }
-            Err(err) => {
-                tracing::warn!(
-                    target = "nova.lsp",
-                    pattern,
-                    "invalid ai.privacy.excluded_paths glob: {err}"
-                );
-            }
-        }
-    }
-
-    match builder.build() {
-        Ok(set) => set,
-        Err(err) => {
-            tracing::warn!(
-                target = "nova.lsp",
-                "failed to build ai.privacy.excluded_paths globset: {err}"
-            );
-            GlobSetBuilder::new()
-                .build()
-                .expect("empty globset should build")
-        }
-    }
-}
-
 struct ServerState {
     shutdown_requested: bool,
     project_root: Option<PathBuf>,
@@ -1393,10 +1361,9 @@ struct ServerState {
     extension_load_errors: Vec<String>,
     extension_register_errors: Vec<String>,
     ai: Option<NovaAi>,
-    ai_privacy_excluded_matcher: Result<ExcludedPathMatcher, nova_ai::AiError>,
+    ai_privacy_excluded_matcher: Arc<Result<ExcludedPathMatcher, nova_ai::AiError>>,
     semantic_search: Arc<RwLock<Box<dyn nova_ai::SemanticSearch>>>,
     semantic_search_open_files: Arc<Mutex<HashSet<PathBuf>>>,
-    semantic_search_excluded_paths: Arc<GlobSet>,
     semantic_search_workspace_index_status: Arc<SemanticSearchWorkspaceIndexStatus>,
     semantic_search_workspace_index_cancel: CancellationToken,
     semantic_search_workspace_index_run_id: u64,
@@ -1446,7 +1413,8 @@ impl ServerState {
         let ai_config = config.ai.clone();
         let privacy = privacy_override
             .unwrap_or_else(|| nova_ai::PrivacyMode::from_ai_privacy_config(&ai_config.privacy));
-        let ai_privacy_excluded_matcher = ExcludedPathMatcher::from_config(&ai_config.privacy);
+        let ai_privacy_excluded_matcher =
+            Arc::new(ExcludedPathMatcher::from_config(&ai_config.privacy));
 
         let (ai, runtime) = if ai_config.enabled {
             match NovaAi::new(&ai_config) {
@@ -1561,9 +1529,6 @@ impl ServerState {
             &ai_config,
         )));
         let semantic_search_open_files = Arc::new(Mutex::new(HashSet::<PathBuf>::new()));
-        let semantic_search_excluded_paths = Arc::new(compile_excluded_paths_globset(
-            &ai_config.privacy.excluded_paths,
-        ));
         let semantic_search_workspace_index_status =
             Arc::new(SemanticSearchWorkspaceIndexStatus::default());
         let semantic_search_workspace_index_cancel = CancellationToken::new();
@@ -1585,7 +1550,6 @@ impl ServerState {
             ai_privacy_excluded_matcher,
             semantic_search,
             semantic_search_open_files,
-            semantic_search_excluded_paths,
             semantic_search_workspace_index_status,
             semantic_search_workspace_index_cancel,
             semantic_search_workspace_index_run_id: 0,
@@ -1917,20 +1881,10 @@ impl ServerState {
     }
 
     fn semantic_search_is_excluded(&self, path: &Path) -> bool {
-        if self.semantic_search_excluded_paths.is_match(path) {
-            return true;
-        }
-
-        let Some(root) = self.project_root.as_deref() else {
-            return false;
-        };
-
-        // Treat `excluded_paths` patterns as matching either absolute paths or paths relative to
-        // the workspace root. This is intentionally conservative (it may exclude more paths than
-        // the LLM prompt filter), ensuring excluded files never enter the semantic search index.
-        path.strip_prefix(root)
-            .ok()
-            .is_some_and(|rel| self.semantic_search_excluded_paths.is_match(rel))
+        // Keep semantic search consistent with LLM privacy filtering. In particular, this ensures
+        // that any file excluded from AI prompts is also excluded from the semantic-search index
+        // (which is later used to construct AI context).
+        is_excluded_by_ai_privacy(self, path)
     }
 
     fn semantic_search_should_index_path(&self, path: &Path) -> bool {
@@ -2138,7 +2092,7 @@ impl ServerState {
 
         let semantic_search = Arc::clone(&self.semantic_search);
         let open_files = Arc::clone(&self.semantic_search_open_files);
-        let excluded_paths = Arc::clone(&self.semantic_search_excluded_paths);
+        let excluded_matcher = Arc::clone(&self.ai_privacy_excluded_matcher);
         let status = Arc::clone(&self.semantic_search_workspace_index_status);
         let cancel = self.semantic_search_workspace_index_cancel.clone();
         let runtime = self.runtime.as_ref().expect("checked runtime");
@@ -2182,12 +2136,12 @@ impl ServerState {
                 }
 
                 // Respect privacy exclusions.
-                if excluded_paths.is_match(&path)
-                    || path
-                        .strip_prefix(&root)
-                        .ok()
-                        .is_some_and(|rel| excluded_paths.is_match(rel))
-                {
+                let is_excluded = match excluded_matcher.as_ref() {
+                    Ok(matcher) => matcher.is_match(&path),
+                    // Fail-closed: invalid privacy config means we should not index anything.
+                    Err(_) => true,
+                };
+                if is_excluded {
                     continue;
                 }
 
@@ -7021,7 +6975,7 @@ fn path_from_uri(uri: &str) -> Option<PathBuf> {
 }
 
 fn is_excluded_by_ai_privacy(state: &ServerState, path: &Path) -> bool {
-    match &state.ai_privacy_excluded_matcher {
+    match state.ai_privacy_excluded_matcher.as_ref() {
         Ok(matcher) => matcher.is_match(path),
         // Best-effort fail-closed: if privacy configuration is invalid, avoid starting any AI work
         // based on potentially sensitive files.
