@@ -334,8 +334,8 @@ class C { void m(){ int[] a = {1,2}; } }
 #[test]
 fn array_creation_with_initializer_has_array_type() {
     let src = r#"
-class C { void m(){ int[] a = new int[] {1,2}; } }
-"#;
+ class C { void m(){ int[] a = new int[] {1,2}; } }
+ "#;
 
     let (db, file) = setup_db(src);
 
@@ -373,6 +373,44 @@ class C { void m(){ Runnable[] rs = { () -> {}, () -> {} }; } }
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
     assert_eq!(ty, "Runnable");
+}
+
+#[test]
+fn static_context_rejects_unqualified_instance_field_access() {
+    let src = r#"
+class C {
+    int x;
+    static void m() {
+        x = 1;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "static-context"),
+        "expected static-context diagnostic for instance field access in static method; got {diags:?}"
+    );
+}
+
+#[test]
+fn static_context_allows_unqualified_static_field_access() {
+    let src = r#"
+class C {
+    static int x;
+    static void m() {
+        x = 1;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "static-context"),
+        "expected no static-context diagnostic for static field access in static method; got {diags:?}"
+    );
 }
 
 #[test]
