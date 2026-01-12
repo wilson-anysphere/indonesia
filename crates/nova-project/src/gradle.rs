@@ -1598,6 +1598,49 @@ fn extract_quoted_strings(text: &str) -> Vec<String> {
     out
 }
 
+fn is_probable_slashy_string_start(bytes: &[u8], idx: usize) -> bool {
+    // Best-effort heuristic for Groovy "slashy" strings (`/.../`), which are commonly used for
+    // regex literals inside `build.gradle`.
+    //
+    // Slashy strings are ambiguous with division operators (`a / b`). We bias toward treating `/`
+    // as a string delimiter when it appears in a context that's unlikely to be division:
+    // - at the start of the file, or
+    // - preceded by a non-word, non-closer token (after skipping whitespace).
+    //
+    // This heuristic is intentionally conservative; it is only used to avoid interpreting braces/
+    // keywords inside slashy strings as structural Gradle DSL constructs.
+    if bytes.get(idx) != Some(&b'/') {
+        return false;
+    }
+
+    // Exclude comment starters.
+    match bytes.get(idx + 1) {
+        Some(b'/') | Some(b'*') | None => return false,
+        _ => {}
+    }
+
+    let mut j = idx;
+    while j > 0 {
+        let prev = bytes[j - 1];
+        if prev.is_ascii_whitespace() {
+            j -= 1;
+            continue;
+        }
+
+        // If the previous token looks like it could end an expression (`foo/`, `) /`, etc),
+        // treat this `/` as division.
+        if prev.is_ascii_alphanumeric() || prev == b'_' || prev == b')' || prev == b']' || prev == b'}' {
+            return false;
+        }
+
+        // Otherwise, treat it as a string delimiter.
+        return true;
+    }
+
+    // Start of file.
+    true
+}
+
 fn strip_gradle_comments(contents: &str) -> String {
     // Best-effort comment stripping to avoid parsing commented-out `include`/`projectDir` lines.
     // This is intentionally conservative and only strips:
@@ -1612,6 +1655,8 @@ fn strip_gradle_comments(contents: &str) -> String {
     let mut in_double = false;
     let mut in_triple_single = false;
     let mut in_triple_double = false;
+    let mut in_slashy = false;
+    let mut in_dollar_slashy = false;
     let mut in_line_comment = false;
     let mut in_block_comment = false;
 
@@ -1633,6 +1678,49 @@ fn strip_gradle_comments(contents: &str) -> String {
                 i += 2;
                 continue;
             }
+            i += 1;
+            continue;
+        }
+
+        if in_dollar_slashy {
+            if bytes[i..].starts_with(b"/$") {
+                out.extend_from_slice(b"/$");
+                in_dollar_slashy = false;
+                i += 2;
+                continue;
+            }
+
+            // Dollar slashy escape sequences:
+            // - `$$` -> `$`
+            // - `$/` -> `/`
+            if b == b'$' {
+                if let Some(next) = bytes.get(i + 1) {
+                    if *next == b'$' || *next == b'/' {
+                        out.push(b'$');
+                        out.push(*next);
+                        i += 2;
+                        continue;
+                    }
+                }
+            }
+
+            out.push(b);
+            i += 1;
+            continue;
+        }
+
+        if in_slashy {
+            out.push(b);
+            if b == b'\\' {
+                if let Some(next) = bytes.get(i + 1) {
+                    out.push(*next);
+                    i += 2;
+                    continue;
+                }
+            } else if b == b'/' {
+                in_slashy = false;
+            }
+
             i += 1;
             continue;
         }
@@ -1700,6 +1788,20 @@ fn strip_gradle_comments(contents: &str) -> String {
         if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
             in_block_comment = true;
             i += 2;
+            continue;
+        }
+
+        if bytes[i..].starts_with(b"$/") {
+            in_dollar_slashy = true;
+            out.extend_from_slice(b"$/");
+            i += 2;
+            continue;
+        }
+
+        if b == b'/' && is_probable_slashy_string_start(bytes, i) {
+            in_slashy = true;
+            out.push(b'/');
+            i += 1;
             continue;
         }
 
@@ -1887,9 +1989,43 @@ fn find_keyword_outside_strings(contents: &str, keyword: &str) -> Vec<usize> {
     let mut in_double = false;
     let mut in_triple_single = false;
     let mut in_triple_double = false;
+    let mut in_slashy = false;
+    let mut in_dollar_slashy = false;
     let mut i = 0usize;
     while i < bytes.len() {
         let b = bytes[i];
+
+        if in_dollar_slashy {
+            if bytes[i..].starts_with(b"/$") {
+                in_dollar_slashy = false;
+                i += 2;
+                continue;
+            }
+
+            if b == b'$' {
+                if let Some(next) = bytes.get(i + 1) {
+                    if *next == b'$' || *next == b'/' {
+                        i += 2;
+                        continue;
+                    }
+                }
+            }
+
+            i += 1;
+            continue;
+        }
+
+        if in_slashy {
+            if b == b'\\' {
+                i = (i + 2).min(bytes.len());
+                continue;
+            }
+            if b == b'/' {
+                in_slashy = false;
+            }
+            i += 1;
+            continue;
+        }
 
         if in_triple_single {
             if bytes[i..].starts_with(b"'''") {
@@ -1944,6 +2080,18 @@ fn find_keyword_outside_strings(contents: &str, keyword: &str) -> Vec<usize> {
         if bytes[i..].starts_with(b"\"\"\"") {
             in_triple_double = true;
             i += 3;
+            continue;
+        }
+
+        if bytes[i..].starts_with(b"$/") {
+            in_dollar_slashy = true;
+            i += 2;
+            continue;
+        }
+
+        if b == b'/' && is_probable_slashy_string_start(bytes, i) {
+            in_slashy = true;
+            i += 1;
             continue;
         }
 
@@ -2090,10 +2238,44 @@ fn extract_balanced_parens(contents: &str, open_paren_index: usize) -> Option<(S
     let mut in_double = false;
     let mut in_triple_single = false;
     let mut in_triple_double = false;
+    let mut in_slashy = false;
+    let mut in_dollar_slashy = false;
 
     let mut i = open_paren_index;
     while i < bytes.len() {
         let b = bytes[i];
+
+        if in_dollar_slashy {
+            if bytes[i..].starts_with(b"/$") {
+                in_dollar_slashy = false;
+                i += 2;
+                continue;
+            }
+
+            if b == b'$' {
+                if let Some(next) = bytes.get(i + 1) {
+                    if *next == b'$' || *next == b'/' {
+                        i = (i + 2).min(bytes.len());
+                        continue;
+                    }
+                }
+            }
+
+            i += 1;
+            continue;
+        }
+
+        if in_slashy {
+            if b == b'\\' {
+                i = (i + 2).min(bytes.len());
+                continue;
+            }
+            if b == b'/' {
+                in_slashy = false;
+            }
+            i += 1;
+            continue;
+        }
 
         if in_triple_single {
             if bytes[i..].starts_with(b"'''") {
@@ -2151,6 +2333,18 @@ fn extract_balanced_parens(contents: &str, open_paren_index: usize) -> Option<(S
             continue;
         }
 
+        if bytes[i..].starts_with(b"$/") {
+            in_dollar_slashy = true;
+            i += 2;
+            continue;
+        }
+
+        if b == b'/' && is_probable_slashy_string_start(bytes, i) {
+            in_slashy = true;
+            i += 1;
+            continue;
+        }
+
         match b {
             b'\'' => {
                 in_single = true;
@@ -2190,10 +2384,44 @@ fn extract_balanced_braces(contents: &str, open_brace_index: usize) -> Option<(S
     let mut in_double = false;
     let mut in_triple_single = false;
     let mut in_triple_double = false;
+    let mut in_slashy = false;
+    let mut in_dollar_slashy = false;
 
     let mut i = open_brace_index;
     while i < bytes.len() {
         let b = bytes[i];
+
+        if in_dollar_slashy {
+            if bytes[i..].starts_with(b"/$") {
+                in_dollar_slashy = false;
+                i += 2;
+                continue;
+            }
+
+            if b == b'$' {
+                if let Some(next) = bytes.get(i + 1) {
+                    if *next == b'$' || *next == b'/' {
+                        i = (i + 2).min(bytes.len());
+                        continue;
+                    }
+                }
+            }
+
+            i += 1;
+            continue;
+        }
+
+        if in_slashy {
+            if b == b'\\' {
+                i = (i + 2).min(bytes.len());
+                continue;
+            }
+            if b == b'/' {
+                in_slashy = false;
+            }
+            i += 1;
+            continue;
+        }
 
         if in_triple_single {
             if bytes[i..].starts_with(b"'''") {
@@ -2253,6 +2481,18 @@ fn extract_balanced_braces(contents: &str, open_brace_index: usize) -> Option<(S
             continue;
         }
 
+        if bytes[i..].starts_with(b"$/") {
+            in_dollar_slashy = true;
+            i += 2;
+            continue;
+        }
+
+        if b == b'/' && is_probable_slashy_string_start(bytes, i) {
+            in_slashy = true;
+            i += 1;
+            continue;
+        }
+
         match b {
             b'\'' => {
                 in_single = true;
@@ -2296,9 +2536,43 @@ fn find_keyword_positions_outside_strings(contents: &str, keyword: &str) -> Vec<
     let mut in_double = false;
     let mut in_triple_single = false;
     let mut in_triple_double = false;
+    let mut in_slashy = false;
+    let mut in_dollar_slashy = false;
 
     while i < bytes.len() {
         let b = bytes[i];
+
+        if in_dollar_slashy {
+            if bytes[i..].starts_with(b"/$") {
+                in_dollar_slashy = false;
+                i += 2;
+                continue;
+            }
+
+            if b == b'$' {
+                if let Some(next) = bytes.get(i + 1) {
+                    if *next == b'$' || *next == b'/' {
+                        i = (i + 2).min(bytes.len());
+                        continue;
+                    }
+                }
+            }
+
+            i += 1;
+            continue;
+        }
+
+        if in_slashy {
+            if b == b'\\' {
+                i = (i + 2).min(bytes.len());
+                continue;
+            }
+            if b == b'/' {
+                in_slashy = false;
+            }
+            i += 1;
+            continue;
+        }
 
         if in_triple_single {
             if bytes[i..].starts_with(b"'''") {
@@ -2353,6 +2627,18 @@ fn find_keyword_positions_outside_strings(contents: &str, keyword: &str) -> Vec<
         if bytes[i..].starts_with(b"\"\"\"") {
             in_triple_double = true;
             i += 3;
+            continue;
+        }
+
+        if bytes[i..].starts_with(b"$/") {
+            in_dollar_slashy = true;
+            i += 2;
+            continue;
+        }
+
+        if b == b'/' && is_probable_slashy_string_start(bytes, i) {
+            in_slashy = true;
+            i += 1;
             continue;
         }
 
@@ -4276,6 +4562,21 @@ def tripleGroovy = '''includeFlat("lib")'''
     }
 
     #[test]
+    fn parse_gradle_settings_projects_ignores_include_keywords_inside_slashy_strings() {
+        let settings = r#"
+def ignored = /include ':ignored'/
+def ignored_flat = $/includeFlat ':ignoredFlat'/$
+
+include(":app")
+"#;
+
+        let modules = parse_gradle_settings_projects(settings);
+        assert_eq!(modules.len(), 1);
+        assert_eq!(modules[0].project_path, ":app");
+        assert_eq!(modules[0].dir_rel, "app");
+    }
+
+    #[test]
     fn parse_gradle_settings_projects_parses_triple_quoted_include_arguments() {
         let settings = r#"
  include("""app""")
@@ -4330,6 +4631,18 @@ val triple = """includeBuild("ignored2")"""
 def tripleGroovy = '''includeBuild("ignored3")'''
 
 // This should be discovered.
+includeBuild("build-logic")
+"#;
+        let builds = parse_gradle_settings_included_builds(settings);
+        assert_eq!(builds, vec!["build-logic".to_string()]);
+    }
+
+    #[test]
+    fn parse_gradle_settings_included_builds_ignores_keywords_inside_slashy_strings() {
+        let settings = r#"
+def ignored = /includeBuild("ignored")/
+def ignored2 = $/includeBuild("ignored2")/$
+
 includeBuild("build-logic")
 "#;
         let builds = parse_gradle_settings_included_builds(settings);
@@ -5003,6 +5316,23 @@ def other = '''http://example.com//also-not-a-comment'''
     }
 
     #[test]
+    fn strip_gradle_comments_preserves_dollar_slashy_strings() {
+        let script = r#"
+def url = $/https://example.com//not-a-comment/$
+def other = $/http://example.com/*also-not-a-comment*/ok/$
+
+// this is a comment
+/* block comment */
+"#;
+
+        let stripped = strip_gradle_comments(script);
+        assert!(stripped.contains("https://example.com//not-a-comment"));
+        assert!(stripped.contains("http://example.com/*also-not-a-comment*/ok"));
+        assert!(!stripped.contains("this is a comment"));
+        assert!(!stripped.contains("block comment"));
+    }
+
+    #[test]
     fn extract_named_brace_blocks_ignores_triple_quoted_strings() {
         let script = r#"
 val ignored = """subprojects { dependencies { implementation("ignored:dep:1") } }"""
@@ -5026,6 +5356,40 @@ subprojects {
         assert!(
             !blocks[0].contains("ignored:dep:1"),
             "expected triple-quoted string contents to be ignored, got: {:?}",
+            blocks[0]
+        );
+    }
+
+    #[test]
+    fn extract_named_brace_blocks_ignores_slashy_strings() {
+        let script = r#"
+def ignored = /subprojects { dependencies { implementation("ignored:dep:1") } }/
+def ignored2 = $/subprojects { dependencies { implementation("ignored2:dep:1") } }/$
+
+subprojects {
+  // The brace in this slashy string should not affect brace matching.
+  def braces = /{/
+  dependencies {
+    implementation("real:dep:1")
+  }
+}
+"#;
+
+        let blocks = extract_named_brace_blocks(script, "subprojects");
+        assert_eq!(blocks.len(), 1, "blocks: {blocks:?}");
+        assert!(
+            blocks[0].contains("real:dep:1"),
+            "expected extracted block to contain real dep, got: {:?}",
+            blocks[0]
+        );
+        assert!(
+            !blocks[0].contains("ignored:dep:1"),
+            "expected slashy string contents to be ignored, got: {:?}",
+            blocks[0]
+        );
+        assert!(
+            !blocks[0].contains("ignored2:dep:1"),
+            "expected dollar slashy string contents to be ignored, got: {:?}",
             blocks[0]
         );
     }
