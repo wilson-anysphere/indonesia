@@ -737,3 +737,94 @@ fn gradle_buildsrc_resolves_versions_from_buildsrc_gradle_properties() {
         "did not expect buildSrc module dependencies to use the outer workspace gradle.properties value"
     );
 }
+
+#[test]
+fn gradle_buildsrc_uses_its_own_version_catalog() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let workspace_root = tmp.path();
+
+    std::fs::write(
+        workspace_root.join("settings.gradle"),
+        "rootProject.name = \"demo\"\n",
+    )
+    .expect("write settings.gradle");
+    std::fs::write(workspace_root.join("build.gradle"), "// root build\n")
+        .expect("write build.gradle");
+
+    // Outer build has its own version catalog that should not affect buildSrc.
+    std::fs::create_dir_all(workspace_root.join("gradle")).expect("mkdir gradle/");
+    std::fs::write(
+        workspace_root.join("gradle/libs.versions.toml"),
+        r#"
+            [versions]
+            guava = "33.0.0-jre"
+
+            [libraries]
+            guava = { module = "com.google.guava:guava", version = { ref = "guava" } }
+        "#,
+    )
+    .expect("write outer libs.versions.toml");
+
+    // buildSrc defines a different version catalog.
+    std::fs::create_dir_all(workspace_root.join("buildSrc/gradle")).expect("mkdir buildSrc/gradle");
+    std::fs::write(
+        workspace_root.join("buildSrc/gradle/libs.versions.toml"),
+        r#"
+            [versions]
+            guava = "32.0.0-jre"
+
+            [libraries]
+            guava = { module = "com.google.guava:guava", version = { ref = "guava" } }
+        "#,
+    )
+    .expect("write buildSrc libs.versions.toml");
+
+    std::fs::create_dir_all(workspace_root.join("buildSrc/src/main/java/com/example"))
+        .expect("mkdir buildSrc sources");
+    std::fs::write(
+        workspace_root.join("buildSrc/src/main/java/com/example/BuildLogic.java"),
+        "package com.example; class BuildLogic {}",
+    )
+    .expect("write buildSrc java");
+    std::fs::write(
+        workspace_root.join("buildSrc/build.gradle"),
+        r#"
+            plugins { id 'java' }
+            dependencies {
+              implementation(libs.guava)
+            }
+        "#,
+    )
+    .expect("write buildSrc/build.gradle");
+
+    let gradle_home = tempfile::tempdir().expect("tempdir (gradle home)");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+
+    let model =
+        load_workspace_model_with_options(workspace_root, &options).expect("load workspace model");
+    assert_eq!(model.build_system, BuildSystem::Gradle);
+
+    let buildsrc = model
+        .module_by_id("gradle::__buildSrc")
+        .expect("buildSrc module");
+    assert!(
+        buildsrc.dependencies.iter().any(|d| {
+            d.group_id == "com.google.guava"
+                && d.artifact_id == "guava"
+                && d.version.as_deref() == Some("32.0.0-jre")
+        }),
+        "expected buildSrc to resolve libs.guava from buildSrc version catalog; deps={:?}",
+        buildsrc.dependencies
+    );
+    assert!(
+        !buildsrc.dependencies.iter().any(|d| {
+            d.group_id == "com.google.guava"
+                && d.artifact_id == "guava"
+                && d.version.as_deref() == Some("33.0.0-jre")
+        }),
+        "did not expect buildSrc to use the outer build's version catalog"
+    );
+}
