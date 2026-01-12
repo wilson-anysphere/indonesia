@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use nova_types::{
-    ClassKind, FieldStub, MethodStub, Type, TypeDefStub, TypeEnv, TypeProvider, WildcardBound,
+    ClassDef, ClassKind, ConstructorDef, FieldStub, MethodDef, MethodStub, Type, TypeDefStub,
+    TypeEnv, TypeProvider, WildcardBound,
 };
 use nova_types_bridge::ExternalTypeLoader;
 
@@ -259,4 +260,151 @@ fn resolves_self_referential_method_type_param_bounds() {
     );
     assert_eq!(method.params, vec![Type::TypeVar(t)]);
     assert_eq!(method.return_type, Type::TypeVar(t));
+}
+
+#[test]
+fn ensure_class_does_not_overwrite_existing_non_placeholder_definition() {
+    let foo_stub = TypeDefStub {
+        binary_name: "com.example.Foo".to_string(),
+        access_flags: 0x0000,
+        super_binary_name: Some("java.lang.Object".to_string()),
+        interfaces: vec![],
+        signature: None,
+        fields: vec![],
+        methods: vec![MethodStub {
+            name: "providerMethod".to_string(),
+            descriptor: "()V".to_string(),
+            signature: None,
+            access_flags: 0x0000,
+        }],
+    };
+
+    let mut provider = MapProvider::default();
+    provider
+        .stubs
+        .insert("com.example.Foo".to_string(), foo_stub);
+
+    let mut store = nova_types::TypeStore::default();
+    let object_id = store.well_known().object;
+    let foo_id = store.upsert_class(ClassDef {
+        name: "com.example.Foo".to_string(),
+        kind: ClassKind::Class,
+        type_params: vec![],
+        super_class: Some(Type::class(object_id, vec![])),
+        interfaces: vec![],
+        fields: vec![],
+        constructors: vec![ConstructorDef {
+            params: vec![],
+            is_varargs: false,
+            is_accessible: true,
+        }],
+        methods: vec![MethodDef {
+            name: "workspaceMethod".to_string(),
+            type_params: vec![],
+            params: vec![],
+            return_type: Type::Void,
+            is_static: true,
+            is_varargs: false,
+            is_abstract: false,
+        }],
+    });
+
+    let mut loader = ExternalTypeLoader::new(&mut store, &provider);
+    let ensured = loader
+        .ensure_class("com.example.Foo")
+        .expect("Foo should be present");
+    assert_eq!(ensured, foo_id);
+
+    let foo_def = store.class(foo_id).expect("Foo should stay defined");
+    assert!(
+        foo_def.methods.iter().any(|m| m.name == "workspaceMethod"),
+        "expected the existing definition to remain intact"
+    );
+    assert!(
+        foo_def.methods.iter().all(|m| m.name != "providerMethod"),
+        "expected the provider stub to be ignored when a non-placeholder definition already exists"
+    );
+}
+
+#[test]
+fn ensure_class_does_not_overwrite_existing_supertype_during_recursive_load() {
+    let foo_stub = TypeDefStub {
+        binary_name: "com.example.Foo".to_string(),
+        access_flags: 0x0000,
+        super_binary_name: Some("java.lang.Object".to_string()),
+        interfaces: vec![],
+        signature: None,
+        fields: vec![],
+        methods: vec![MethodStub {
+            name: "providerMethod".to_string(),
+            descriptor: "()V".to_string(),
+            signature: None,
+            access_flags: 0x0000,
+        }],
+    };
+
+    let bar_stub = TypeDefStub {
+        binary_name: "com.example.Bar".to_string(),
+        access_flags: 0x0000,
+        super_binary_name: Some("com.example.Foo".to_string()),
+        interfaces: vec![],
+        signature: None,
+        fields: vec![],
+        methods: vec![],
+    };
+
+    let mut provider = MapProvider::default();
+    provider
+        .stubs
+        .insert("com.example.Foo".to_string(), foo_stub);
+    provider
+        .stubs
+        .insert("com.example.Bar".to_string(), bar_stub);
+
+    let mut store = nova_types::TypeStore::default();
+    let object_id = store.well_known().object;
+    let foo_id = store.upsert_class(ClassDef {
+        name: "com.example.Foo".to_string(),
+        kind: ClassKind::Class,
+        type_params: vec![],
+        super_class: Some(Type::class(object_id, vec![])),
+        interfaces: vec![],
+        fields: vec![],
+        constructors: vec![ConstructorDef {
+            params: vec![],
+            is_varargs: false,
+            is_accessible: true,
+        }],
+        methods: vec![MethodDef {
+            name: "workspaceMethod".to_string(),
+            type_params: vec![],
+            params: vec![],
+            return_type: Type::Void,
+            is_static: true,
+            is_varargs: false,
+            is_abstract: false,
+        }],
+    });
+
+    let mut loader = ExternalTypeLoader::new(&mut store, &provider);
+    let bar_id = loader
+        .ensure_class("com.example.Bar")
+        .expect("Bar should load");
+
+    let bar_def = store.class(bar_id).expect("Bar def should exist");
+    assert_eq!(
+        bar_def.super_class,
+        Some(Type::class(foo_id, vec![])),
+        "expected Bar's super class to resolve to the existing Foo"
+    );
+
+    let foo_def = store.class(foo_id).expect("Foo should stay defined");
+    assert!(
+        foo_def.methods.iter().any(|m| m.name == "workspaceMethod"),
+        "expected Foo to retain the existing definition even when referenced as Bar's supertype"
+    );
+    assert!(
+        foo_def.methods.iter().all(|m| m.name != "providerMethod"),
+        "expected recursive ensure_class(Foo) to avoid overwriting existing defs"
+    );
 }

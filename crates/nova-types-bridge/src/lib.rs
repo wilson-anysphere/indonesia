@@ -59,6 +59,25 @@ impl<'a> ExternalTypeLoader<'a> {
         }
 
         let existing = self.store.lookup_class(binary_name);
+        if let Some(id) = existing {
+            // `ExternalTypeLoader` is designed to populate conservative placeholders created by
+            // `TypeStore::intern_class_id`. Overwriting an existing, non-placeholder definition is a
+            // footgun: it can clobber workspace/source definitions (nova-db) and can allocate
+            // duplicate type params (since `define_class` replaces the `ClassDef` but does not
+            // reclaim `TypeVarId`s).
+            //
+            // We still allow `java.*` to be refreshed from the JDK provider (the built-in minimal
+            // JDK model is intentionally incomplete and callers may want richer stubs).
+            if !binary_name.starts_with("java.")
+                && self
+                    .store
+                    .class(id)
+                    .is_some_and(|def| !is_placeholder_class_def(def))
+            {
+                self.loaded.insert(binary_name.to_string());
+                return Some(id);
+            }
+        }
         let Some(stub) = self.provider.lookup_type(binary_name) else {
             return existing;
         };
@@ -244,6 +263,17 @@ impl<'a> ExternalTypeLoader<'a> {
             .map(|id| Type::class(id, vec![]))
             .unwrap_or_else(|| Type::Named(binary_name.to_string()))
     }
+}
+
+fn is_placeholder_class_def(def: &ClassDef) -> bool {
+    def.kind == ClassKind::Class
+        && def.name != "java.lang.Object"
+        && def.super_class.is_none()
+        && def.type_params.is_empty()
+        && def.interfaces.is_empty()
+        && def.fields.is_empty()
+        && def.constructors.is_empty()
+        && def.methods.is_empty()
 }
 
 fn constructor_def(
