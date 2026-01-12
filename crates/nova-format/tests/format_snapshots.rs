@@ -359,7 +359,7 @@ class Foo {
 
 #[test]
 fn ast_formatting_avoids_punctuation_token_merges() {
-    let input = "class Foo{void m(){int a=1 / / 2;int b=1 / * 2;int c=1: :2;int d=1- >2;boolean e=1> >2;boolean f=1> >>2;boolean g=1>> >2;boolean h=1> >=2;boolean i=1> =2;boolean j=1= =2;boolean k=1! =2;int l=non - sealed;}}\n";
+    let input = "class Foo{void m(){int a=1 / / 2;int b=1 / * 2;int c=1: :2;int d=1- >2;boolean e=1> >2;boolean f=1> >>2;boolean g=1>> >2;boolean h=1> >=2;boolean i=1> =2;boolean j=1= =2;boolean k=1! =2;int l=non - sealed;int m=1+ ++n;int o=1+ +=2;boolean p=true& &&false;boolean q=true& &=false;boolean r=true| ||false;boolean s=true| |=false;boolean t=true< <<false;boolean u=true/ /=false;}}\n";
     let parse = parse_java(input);
     let formatted = format_java_ast(&parse, input, &FormatConfig::default());
 
@@ -374,6 +374,26 @@ fn ast_formatting_avoids_punctuation_token_merges() {
     assert!(
         !formatted.contains("::"),
         "formatter should not synthesize method reference tokens: {formatted}"
+    );
+    assert!(
+        !formatted.contains("&&&"),
+        "formatter should not synthesize `&&&`: {formatted}"
+    );
+    assert!(
+        !formatted.contains("|||"),
+        "formatter should not synthesize `|||`: {formatted}"
+    );
+    assert!(
+        !formatted.contains("+++"),
+        "formatter should not synthesize `+++`: {formatted}"
+    );
+    assert!(
+        !formatted.contains("++="),
+        "formatter should not synthesize `++=`: {formatted}"
+    );
+    assert!(
+        !formatted.contains("<<<<<"),
+        "formatter should not synthesize `<<<<<`: {formatted}"
     );
     assert!(
         formatted.contains("1/ /2"),
@@ -415,6 +435,38 @@ fn ast_formatting_avoids_punctuation_token_merges() {
         formatted.contains("non -"),
         "expected whitespace before `-` in `non - sealed`: {formatted}"
     );
+    assert!(
+        formatted.contains("+ ++"),
+        "expected `+ ++` to remain separated: {formatted}"
+    );
+    assert!(
+        formatted.contains("+ +="),
+        "expected `+ +=` to remain separated: {formatted}"
+    );
+    assert!(
+        formatted.contains("& &&"),
+        "expected `& &&` to remain separated: {formatted}"
+    );
+    assert!(
+        formatted.contains("& &="),
+        "expected `& &= ` to remain separated: {formatted}"
+    );
+    assert!(
+        formatted.contains("| ||"),
+        "expected `| ||` to remain separated: {formatted}"
+    );
+    assert!(
+        formatted.contains("| |="),
+        "expected `| |=` to remain separated: {formatted}"
+    );
+    assert!(
+        formatted.contains("< <<"),
+        "expected `< <<` to remain separated: {formatted}"
+    );
+    assert!(
+        formatted.contains("/ /="),
+        "expected `/ /=` to remain separated: {formatted}"
+    );
 
     assert_snapshot!(
         formatted,
@@ -433,6 +485,14 @@ class Foo {
         boolean j = 1 = = 2;
         boolean k = 1! = 2;
         int l = non -sealed;
+        int m = 1+ ++n;
+        int o = 1+ +=2;
+        boolean p = true& &&false;
+        boolean q = true& &=false;
+        boolean r = true| ||false;
+        boolean s = true| |=false;
+        boolean t = true< <<false;
+        boolean u = true/ /=false;
     }
 }
 "###

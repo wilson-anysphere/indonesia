@@ -891,28 +891,53 @@ fn needs_space_to_avoid_token_merge(last: &SigToken, next_kind: SyntaxKind) -> b
         (SyntaxKind::Dot, SyntaxKind::Dot) => true,
 
         // Avoid producing comment tokens like `//` or `/*` from separate `/` + `/` / `*` tokens.
-        (SyntaxKind::Slash, SyntaxKind::Slash | SyntaxKind::Star) => true,
+        (SyntaxKind::Slash, SyntaxKind::Slash | SyntaxKind::Star | SyntaxKind::SlashEq) => true,
 
         // Avoid turning `- >` into the `->` arrow token.
         (SyntaxKind::Minus, SyntaxKind::Greater) => true,
+        // Avoid turning `- ->` into `-->` (which would tokenize as `--` + `>`).
+        (SyntaxKind::Minus, SyntaxKind::Arrow) => true,
 
         // Avoid merging standalone operators into their combined forms when the input separated
         // them with whitespace (e.g. `+ +` -> `++`).
         (SyntaxKind::Plus, SyntaxKind::Plus) => true,
+        // `+ ++` -> `+++` (tokenizes as `++` + `+`).
+        (SyntaxKind::Plus, SyntaxKind::PlusPlus) => true,
+        // `+ +=` -> `++=` (tokenizes as `++` + `=`).
+        (SyntaxKind::Plus, SyntaxKind::PlusEq) => true,
         (SyntaxKind::Minus, SyntaxKind::Minus) => true,
+        // `- --` -> `---` (tokenizes as `--` + `-`).
+        (SyntaxKind::Minus, SyntaxKind::MinusMinus) => true,
+        // `- -=` -> `--=` (tokenizes as `--` + `=`).
+        (SyntaxKind::Minus, SyntaxKind::MinusEq) => true,
         (SyntaxKind::Amp, SyntaxKind::Amp) => true,
+        // `& &&` -> `&&&` (tokenizes as `&&` + `&`).
+        (SyntaxKind::Amp, SyntaxKind::AmpAmp) => true,
+        // `& &=` -> `&&=` (tokenizes as `&&` + `=`).
+        (SyntaxKind::Amp, SyntaxKind::AmpEq) => true,
         (SyntaxKind::Pipe, SyntaxKind::Pipe) => true,
+        // `| ||` -> `|||` (tokenizes as `||` + `|`).
+        (SyntaxKind::Pipe, SyntaxKind::PipePipe) => true,
+        // `| |=` -> `||=` (tokenizes as `||` + `=`).
+        (SyntaxKind::Pipe, SyntaxKind::PipeEq) => true,
         (SyntaxKind::Eq, SyntaxKind::Eq) => true,
         (SyntaxKind::Bang, SyntaxKind::Eq) => true,
         (SyntaxKind::Less, SyntaxKind::Less) => true,
         (SyntaxKind::Greater, SyntaxKind::Greater) => true,
+        // `< <<` / `< <<=` -> `<<<` / `<<<=` (tokenizes as `<<` + `<` / `<<` + `<=`).
+        (SyntaxKind::Less, SyntaxKind::LeftShift | SyntaxKind::LeftShiftEq) => true,
         // Avoid collapsing separated shift tokens like `> >>` or `>> >` into the unsigned-shift
         // operator `>>>` (or similarly `> >=` -> `>>=`).
         (SyntaxKind::Greater, SyntaxKind::RightShift)
         | (SyntaxKind::RightShift, SyntaxKind::Greater)
+        // `> >>>` / `> >>>=` -> `>>>>` / `>>>>=` (tokenizes as `>>>` + `>` / `>>>` + `>=`).
+        | (SyntaxKind::Greater, SyntaxKind::UnsignedRightShift | SyntaxKind::UnsignedRightShiftEq)
         | (SyntaxKind::Greater, SyntaxKind::GreaterEq)
         | (SyntaxKind::RightShift, SyntaxKind::GreaterEq)
         | (SyntaxKind::Greater, SyntaxKind::RightShiftEq) => true,
+        // `>> >>` / `>> >>>` / `>> >>>=` would change tokenization (`>>>>` -> `>>>` + `>`).
+        (SyntaxKind::RightShift, SyntaxKind::RightShift)
+        | (SyntaxKind::RightShift, SyntaxKind::UnsignedRightShift | SyntaxKind::UnsignedRightShiftEq) => true,
         // Similarly for left-shift assignment: `< <=` would become `<<=`.
         (SyntaxKind::Less, SyntaxKind::LessEq) => true,
 
