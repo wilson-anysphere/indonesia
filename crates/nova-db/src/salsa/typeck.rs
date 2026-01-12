@@ -5160,15 +5160,16 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         expr: HirExprId,
         expected: Option<&Type>,
     ) -> ExprInfo {
-        // Lambda expressions are target-typed: their type (and, importantly, the types of their
-        // parameters) can depend on the surrounding context. If we previously inferred a lambda
-        // without an expected target type, allow re-inference once a target type becomes known.
+        // Some expressions are target-typed: their type can depend on an expected type from the
+        // surrounding context. If we previously inferred one of these expressions without an
+        // expected target type, allow re-inference once a target type becomes known.
         if let Some(info) = self.expr_info[expr.idx()].clone() {
             let is_target_typed = matches!(
                 self.body.exprs[expr],
                 HirExpr::Lambda { .. }
                     | HirExpr::MethodReference { .. }
                     | HirExpr::ConstructorReference { .. }
+                    | HirExpr::ArrayInitializer { .. }
             );
             let can_refine = expected.is_some() && is_target_typed && info.ty == Type::Unknown;
             if !can_refine {
@@ -5770,14 +5771,22 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 }
             }
             HirExpr::ArrayInitializer { items, .. } => {
-                for item in items {
-                    let _ = self.infer_expr(loader, *item);
-                }
+                // Array initializer braces (`{...}`) are only typeable when we have an expected
+                // array type from context (e.g. `int[] a = {1,2};` or `new int[] {1,2}`).
+                if let Some(expected) =
+                    expected.filter(|ty| matches!(ty, Type::Array(_)) && !ty.is_errorish())
+                {
+                    self.infer_array_initializer_with_expected(loader, expr, expected)
+                } else {
+                    for item in items {
+                        let _ = self.infer_expr(loader, *item);
+                    }
 
-                self.report_invalid_array_initializer(expr);
-                ExprInfo {
-                    ty: Type::Unknown,
-                    is_type_ref: false,
+                    self.report_invalid_array_initializer(expr);
+                    ExprInfo {
+                        ty: Type::Unknown,
+                        is_type_ref: false,
+                    }
                 }
             }
             HirExpr::Unary {

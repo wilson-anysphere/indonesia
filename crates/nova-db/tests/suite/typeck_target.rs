@@ -177,6 +177,12 @@ class C { void m(){ int[] a = {1,2}; } }
         }),
         "expected array initializer to type-check; got {diags:?}"
     );
+
+    let offset = src.find("{1,2}").expect("snippet should contain array initializer");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "int[]");
 }
 
 #[test]
