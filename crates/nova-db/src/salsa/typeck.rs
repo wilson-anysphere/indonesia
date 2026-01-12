@@ -7298,43 +7298,203 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             return this.infer_expr(loader, *arg).ty;
                         }
 
-                        // For now, restrict the generic/poly heuristic to qualified calls like
-                        // `Collections.emptyList()` where we can cheaply recover the receiver type
-                        // and check whether the invoked method is actually generic.
-                        let HirExpr::FieldAccess { receiver, name, .. } = &this.body.exprs[*callee]
-                        else {
-                            return this.infer_expr(loader, *arg).ty;
-                        };
+                        // Best-effort: attempt to detect whether the call is generic and therefore
+                        // depends on target typing. If so, treat it as `<unknown>` for the first
+                        // overload resolution pass, then re-infer it once the selected parameter
+                        // type is known.
+                        match &this.body.exprs[*callee] {
+                            HirExpr::FieldAccess { receiver, name, .. } => {
+                                let recv_info = this.infer_expr(loader, *receiver);
+                                let recv_ty = recv_info.ty.clone();
+                                if recv_ty.is_errorish() {
+                                    return Type::Unknown;
+                                }
+                                this.ensure_type_loaded(loader, &recv_ty);
 
-                        let recv_info = this.infer_expr(loader, *receiver);
-                        let recv_ty = recv_info.ty.clone();
-                        if recv_ty.is_errorish() {
-                            return Type::Unknown;
-                        }
-                        this.ensure_type_loaded(loader, &recv_ty);
+                                let call_kind = if recv_info.is_type_ref {
+                                    CallKind::Static
+                                } else {
+                                    CallKind::Instance
+                                };
 
-                        let call_kind = if recv_info.is_type_ref {
-                            CallKind::Static
-                        } else {
-                            CallKind::Instance
-                        };
+                                let call = MethodCall {
+                                    receiver: recv_ty,
+                                    call_kind,
+                                    name: name.as_str(),
+                                    args: inner_arg_tys,
+                                    expected_return: None,
+                                    explicit_type_args: Vec::new(),
+                                };
 
-                        let call = MethodCall {
-                            receiver: recv_ty,
-                            call_kind,
-                            name: name.as_str(),
-                            args: inner_arg_tys,
-                            expected_return: None,
-                            explicit_type_args: Vec::new(),
-                        };
+                                let env_ro: &dyn TypeEnv = &*loader.store;
+                                let mut ctx = TyContext::new(env_ro);
+                                match nova_types::resolve_method_call(&mut ctx, &call) {
+                                    MethodResolution::Found(method)
+                                        if !method.inferred_type_args.is_empty() =>
+                                    {
+                                        Type::Unknown
+                                    }
+                                    _ => this.infer_expr(loader, *arg).ty,
+                                }
+                            }
+                            HirExpr::Name { name, .. } => {
+                                let call_name = name.as_str();
 
-                        let env_ro: &dyn TypeEnv = &*loader.store;
-                        let mut ctx = TyContext::new(env_ro);
-                        match nova_types::resolve_method_call(&mut ctx, &call) {
-                            MethodResolution::Found(method)
-                                if !method.inferred_type_args.is_empty() =>
-                            {
-                                Type::Unknown
+                                // Unqualified calls like `id(null)` may resolve against the
+                                // implicit receiver (enclosing class) or against static imports.
+                                // Mirror `infer_call`'s resolution order, but only to determine
+                                // whether the callee is a generic method.
+                                if let Some(receiver_ty) = this.enclosing_class_type(loader) {
+                                    if receiver_ty.is_errorish() {
+                                        return Type::Unknown;
+                                    }
+                                    this.ensure_type_loaded(loader, &receiver_ty);
+
+                                    let call_kind = if this.is_static_context() {
+                                        CallKind::Static
+                                    } else {
+                                        CallKind::Instance
+                                    };
+
+                                    let call = MethodCall {
+                                        receiver: receiver_ty.clone(),
+                                        call_kind,
+                                        name: call_name,
+                                        args: inner_arg_tys.clone(),
+                                        expected_return: None,
+                                        explicit_type_args: Vec::new(),
+                                    };
+
+                                    match {
+                                        let env_ro: &dyn TypeEnv = &*loader.store;
+                                        let mut ctx = TyContext::new(env_ro);
+                                        nova_types::resolve_method_call(&mut ctx, &call)
+                                    } {
+                                        MethodResolution::Found(method)
+                                            if !method.inferred_type_args.is_empty() =>
+                                        {
+                                            return Type::Unknown;
+                                        }
+                                        MethodResolution::Found(_)
+                                        | MethodResolution::Ambiguous(_) => {
+                                            return this.infer_expr(loader, *arg).ty;
+                                        }
+                                        MethodResolution::NotFound(_) => {}
+                                    }
+                                }
+
+                                match this.resolver.resolve_name_detailed(
+                                    this.scopes,
+                                    this.scope_id,
+                                    &Name::from(call_name),
+                                ) {
+                                    NameResolution::Resolved(Resolution::StaticMember(
+                                        StaticMemberResolution::External(id),
+                                    )) => {
+                                        let Some((owner, member)) = id.as_str().split_once("::")
+                                        else {
+                                            return this.infer_expr(loader, *arg).ty;
+                                        };
+                                        let recv_ty = this
+                                            .ensure_workspace_class(loader, owner)
+                                            .or_else(|| loader.ensure_class(owner))
+                                            .map(|id| Type::class(id, vec![]))
+                                            .unwrap_or_else(|| Type::Named(owner.to_string()));
+                                        this.ensure_type_loaded(loader, &recv_ty);
+
+                                        let call = MethodCall {
+                                            receiver: recv_ty,
+                                            call_kind: CallKind::Static,
+                                            name: member,
+                                            args: inner_arg_tys.clone(),
+                                            expected_return: None,
+                                            explicit_type_args: Vec::new(),
+                                        };
+                                        match {
+                                            let env_ro: &dyn TypeEnv = &*loader.store;
+                                            let mut ctx = TyContext::new(env_ro);
+                                            nova_types::resolve_method_call(&mut ctx, &call)
+                                        } {
+                                            MethodResolution::Found(method)
+                                                if !method.inferred_type_args.is_empty() =>
+                                            {
+                                                Type::Unknown
+                                            }
+                                            _ => this.infer_expr(loader, *arg).ty,
+                                        }
+                                    }
+                                    NameResolution::Resolved(Resolution::StaticMember(
+                                        StaticMemberResolution::SourceField(field),
+                                    )) => {
+                                        let Some(owner) = this.field_owners.get(&field).cloned()
+                                        else {
+                                            return this.infer_expr(loader, *arg).ty;
+                                        };
+                                        let recv_ty = this
+                                            .ensure_workspace_class(loader, &owner)
+                                            .or_else(|| loader.ensure_class(&owner))
+                                            .map(|id| Type::class(id, vec![]))
+                                            .unwrap_or_else(|| Type::Named(owner.clone()));
+                                        this.ensure_type_loaded(loader, &recv_ty);
+
+                                        let call = MethodCall {
+                                            receiver: recv_ty,
+                                            call_kind: CallKind::Static,
+                                            name: call_name,
+                                            args: inner_arg_tys.clone(),
+                                            expected_return: None,
+                                            explicit_type_args: Vec::new(),
+                                        };
+                                        match {
+                                            let env_ro: &dyn TypeEnv = &*loader.store;
+                                            let mut ctx = TyContext::new(env_ro);
+                                            nova_types::resolve_method_call(&mut ctx, &call)
+                                        } {
+                                            MethodResolution::Found(method)
+                                                if !method.inferred_type_args.is_empty() =>
+                                            {
+                                                Type::Unknown
+                                            }
+                                            _ => this.infer_expr(loader, *arg).ty,
+                                        }
+                                    }
+                                    NameResolution::Resolved(Resolution::StaticMember(
+                                        StaticMemberResolution::SourceMethod(method),
+                                    )) => {
+                                        let Some(owner) = this.method_owners.get(&method).cloned()
+                                        else {
+                                            return this.infer_expr(loader, *arg).ty;
+                                        };
+                                        let recv_ty = this
+                                            .ensure_workspace_class(loader, &owner)
+                                            .or_else(|| loader.ensure_class(&owner))
+                                            .map(|id| Type::class(id, vec![]))
+                                            .unwrap_or_else(|| Type::Named(owner.clone()));
+                                        this.ensure_type_loaded(loader, &recv_ty);
+
+                                        let call = MethodCall {
+                                            receiver: recv_ty,
+                                            call_kind: CallKind::Static,
+                                            name: call_name,
+                                            args: inner_arg_tys.clone(),
+                                            expected_return: None,
+                                            explicit_type_args: Vec::new(),
+                                        };
+                                        match {
+                                            let env_ro: &dyn TypeEnv = &*loader.store;
+                                            let mut ctx = TyContext::new(env_ro);
+                                            nova_types::resolve_method_call(&mut ctx, &call)
+                                        } {
+                                            MethodResolution::Found(method)
+                                                if !method.inferred_type_args.is_empty() =>
+                                            {
+                                                Type::Unknown
+                                            }
+                                            _ => this.infer_expr(loader, *arg).ty,
+                                        }
+                                    }
+                                    _ => this.infer_expr(loader, *arg).ty,
+                                }
                             }
                             _ => this.infer_expr(loader, *arg).ty,
                         }
@@ -8477,43 +8637,203 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             return this.infer_expr(loader, *arg).ty;
                         }
 
-                        // For now, restrict the generic/poly heuristic to qualified calls like
-                        // `Collections.emptyList()` where we can cheaply recover the receiver type
-                        // and check whether the invoked method is actually generic.
-                        let HirExpr::FieldAccess { receiver, name, .. } = &this.body.exprs[*callee]
-                        else {
-                            return this.infer_expr(loader, *arg).ty;
-                        };
+                        // Best-effort: attempt to detect whether the call is generic and therefore
+                        // depends on target typing. If so, treat it as `<unknown>` for the first
+                        // overload resolution pass, then re-infer it once the selected parameter
+                        // type is known.
+                        match &this.body.exprs[*callee] {
+                            HirExpr::FieldAccess { receiver, name, .. } => {
+                                let recv_info = this.infer_expr(loader, *receiver);
+                                let recv_ty = recv_info.ty.clone();
+                                if recv_ty.is_errorish() {
+                                    return Type::Unknown;
+                                }
+                                this.ensure_type_loaded(loader, &recv_ty);
 
-                        let recv_info = this.infer_expr(loader, *receiver);
-                        let recv_ty = recv_info.ty.clone();
-                        if recv_ty.is_errorish() {
-                            return Type::Unknown;
-                        }
-                        this.ensure_type_loaded(loader, &recv_ty);
+                                let call_kind = if recv_info.is_type_ref {
+                                    CallKind::Static
+                                } else {
+                                    CallKind::Instance
+                                };
 
-                        let call_kind = if recv_info.is_type_ref {
-                            CallKind::Static
-                        } else {
-                            CallKind::Instance
-                        };
+                                let call = MethodCall {
+                                    receiver: recv_ty,
+                                    call_kind,
+                                    name: name.as_str(),
+                                    args: inner_arg_tys,
+                                    expected_return: None,
+                                    explicit_type_args: Vec::new(),
+                                };
 
-                        let call = MethodCall {
-                            receiver: recv_ty,
-                            call_kind,
-                            name: name.as_str(),
-                            args: inner_arg_tys,
-                            expected_return: None,
-                            explicit_type_args: Vec::new(),
-                        };
+                                let env_ro: &dyn TypeEnv = &*loader.store;
+                                let mut ctx = TyContext::new(env_ro);
+                                match nova_types::resolve_method_call(&mut ctx, &call) {
+                                    MethodResolution::Found(method)
+                                        if !method.inferred_type_args.is_empty() =>
+                                    {
+                                        Type::Unknown
+                                    }
+                                    _ => this.infer_expr(loader, *arg).ty,
+                                }
+                            }
+                            HirExpr::Name { name, .. } => {
+                                let call_name = name.as_str();
 
-                        let env_ro: &dyn TypeEnv = &*loader.store;
-                        let mut ctx = TyContext::new(env_ro);
-                        match nova_types::resolve_method_call(&mut ctx, &call) {
-                            MethodResolution::Found(method)
-                                if !method.inferred_type_args.is_empty() =>
-                            {
-                                Type::Unknown
+                                // Unqualified calls like `id(null)` may resolve against the
+                                // implicit receiver (enclosing class) or against static imports.
+                                // Mirror `infer_call`'s resolution order, but only to determine
+                                // whether the callee is a generic method.
+                                if let Some(receiver_ty) = this.enclosing_class_type(loader) {
+                                    if receiver_ty.is_errorish() {
+                                        return Type::Unknown;
+                                    }
+                                    this.ensure_type_loaded(loader, &receiver_ty);
+
+                                    let call_kind = if this.is_static_context() {
+                                        CallKind::Static
+                                    } else {
+                                        CallKind::Instance
+                                    };
+
+                                    let call = MethodCall {
+                                        receiver: receiver_ty.clone(),
+                                        call_kind,
+                                        name: call_name,
+                                        args: inner_arg_tys.clone(),
+                                        expected_return: None,
+                                        explicit_type_args: Vec::new(),
+                                    };
+
+                                    match {
+                                        let env_ro: &dyn TypeEnv = &*loader.store;
+                                        let mut ctx = TyContext::new(env_ro);
+                                        nova_types::resolve_method_call(&mut ctx, &call)
+                                    } {
+                                        MethodResolution::Found(method)
+                                            if !method.inferred_type_args.is_empty() =>
+                                        {
+                                            return Type::Unknown;
+                                        }
+                                        MethodResolution::Found(_)
+                                        | MethodResolution::Ambiguous(_) => {
+                                            return this.infer_expr(loader, *arg).ty;
+                                        }
+                                        MethodResolution::NotFound(_) => {}
+                                    }
+                                }
+
+                                match this.resolver.resolve_name_detailed(
+                                    this.scopes,
+                                    this.scope_id,
+                                    &Name::from(call_name),
+                                ) {
+                                    NameResolution::Resolved(Resolution::StaticMember(
+                                        StaticMemberResolution::External(id),
+                                    )) => {
+                                        let Some((owner, member)) = id.as_str().split_once("::")
+                                        else {
+                                            return this.infer_expr(loader, *arg).ty;
+                                        };
+                                        let recv_ty = this
+                                            .ensure_workspace_class(loader, owner)
+                                            .or_else(|| loader.ensure_class(owner))
+                                            .map(|id| Type::class(id, vec![]))
+                                            .unwrap_or_else(|| Type::Named(owner.to_string()));
+                                        this.ensure_type_loaded(loader, &recv_ty);
+
+                                        let call = MethodCall {
+                                            receiver: recv_ty,
+                                            call_kind: CallKind::Static,
+                                            name: member,
+                                            args: inner_arg_tys.clone(),
+                                            expected_return: None,
+                                            explicit_type_args: Vec::new(),
+                                        };
+                                        match {
+                                            let env_ro: &dyn TypeEnv = &*loader.store;
+                                            let mut ctx = TyContext::new(env_ro);
+                                            nova_types::resolve_method_call(&mut ctx, &call)
+                                        } {
+                                            MethodResolution::Found(method)
+                                                if !method.inferred_type_args.is_empty() =>
+                                            {
+                                                Type::Unknown
+                                            }
+                                            _ => this.infer_expr(loader, *arg).ty,
+                                        }
+                                    }
+                                    NameResolution::Resolved(Resolution::StaticMember(
+                                        StaticMemberResolution::SourceField(field),
+                                    )) => {
+                                        let Some(owner) = this.field_owners.get(&field).cloned()
+                                        else {
+                                            return this.infer_expr(loader, *arg).ty;
+                                        };
+                                        let recv_ty = this
+                                            .ensure_workspace_class(loader, &owner)
+                                            .or_else(|| loader.ensure_class(&owner))
+                                            .map(|id| Type::class(id, vec![]))
+                                            .unwrap_or_else(|| Type::Named(owner.clone()));
+                                        this.ensure_type_loaded(loader, &recv_ty);
+
+                                        let call = MethodCall {
+                                            receiver: recv_ty,
+                                            call_kind: CallKind::Static,
+                                            name: call_name,
+                                            args: inner_arg_tys.clone(),
+                                            expected_return: None,
+                                            explicit_type_args: Vec::new(),
+                                        };
+                                        match {
+                                            let env_ro: &dyn TypeEnv = &*loader.store;
+                                            let mut ctx = TyContext::new(env_ro);
+                                            nova_types::resolve_method_call(&mut ctx, &call)
+                                        } {
+                                            MethodResolution::Found(method)
+                                                if !method.inferred_type_args.is_empty() =>
+                                            {
+                                                Type::Unknown
+                                            }
+                                            _ => this.infer_expr(loader, *arg).ty,
+                                        }
+                                    }
+                                    NameResolution::Resolved(Resolution::StaticMember(
+                                        StaticMemberResolution::SourceMethod(method),
+                                    )) => {
+                                        let Some(owner) = this.method_owners.get(&method).cloned()
+                                        else {
+                                            return this.infer_expr(loader, *arg).ty;
+                                        };
+                                        let recv_ty = this
+                                            .ensure_workspace_class(loader, &owner)
+                                            .or_else(|| loader.ensure_class(&owner))
+                                            .map(|id| Type::class(id, vec![]))
+                                            .unwrap_or_else(|| Type::Named(owner.clone()));
+                                        this.ensure_type_loaded(loader, &recv_ty);
+
+                                        let call = MethodCall {
+                                            receiver: recv_ty,
+                                            call_kind: CallKind::Static,
+                                            name: call_name,
+                                            args: inner_arg_tys.clone(),
+                                            expected_return: None,
+                                            explicit_type_args: Vec::new(),
+                                        };
+                                        match {
+                                            let env_ro: &dyn TypeEnv = &*loader.store;
+                                            let mut ctx = TyContext::new(env_ro);
+                                            nova_types::resolve_method_call(&mut ctx, &call)
+                                        } {
+                                            MethodResolution::Found(method)
+                                                if !method.inferred_type_args.is_empty() =>
+                                            {
+                                                Type::Unknown
+                                            }
+                                            _ => this.infer_expr(loader, *arg).ty,
+                                        }
+                                    }
+                                    _ => this.infer_expr(loader, *arg).ty,
+                                }
                             }
                             _ => this.infer_expr(loader, *arg).ty,
                         }

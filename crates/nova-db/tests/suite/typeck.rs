@@ -5562,6 +5562,70 @@ class C {
 }
 
 #[test]
+fn target_typing_infers_generic_method_return_from_unqualified_call_argument_with_null() {
+    let src = r#"
+class C {
+    static <T> T id(T x) { return x; }
+    static void take(String s) {}
+    void m() {
+        take(id(null));
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "unresolved-method" && d.code.as_ref() != "type-mismatch"),
+        "expected target typing through invocation context to work for id(null), got {diags:?}"
+    );
+
+    let offset = src
+        .rfind("id(")
+        .expect("snippet should contain id(null) call")
+        + "id".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+}
+
+#[test]
+fn target_typing_infers_generic_method_return_from_static_import_call_argument() {
+    let src = r#"
+import java.util.*;
+import static java.util.Collections.emptyList;
+class C {
+    static void take(List<String> xs) {}
+    void m() {
+        take(emptyList());
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"
+            && d.code.as_ref() != "type-mismatch"
+            && d.code.as_ref() != "unresolved-static-member"
+            && d.code.as_ref() != "unresolved-type"),
+        "expected static-imported emptyList() to be target-typed via invocation context, got {diags:?}"
+    );
+
+    let offset = src
+        .rfind("emptyList(")
+        .expect("snippet should contain emptyList call")
+        + "emptyList".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "List<String>");
+}
+
+#[test]
 fn non_generic_no_arg_call_argument_allows_overload_resolution() {
     let src = r#"
 class C {
