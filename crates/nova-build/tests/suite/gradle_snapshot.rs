@@ -360,6 +360,73 @@ NOVA_JSON_END
 }
 
 #[test]
+fn writes_gradle_snapshot_for_root_java_compile_config_without_project_path_field() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+    std::fs::write(
+        project_root.join("settings.gradle"),
+        "rootProject.name = 'demo'\n",
+    )
+    .unwrap();
+    std::fs::write(project_root.join("build.gradle"), "plugins { id 'java' }\n").unwrap();
+
+    // Intentionally omit `projectPath`. Root config queries pass `project_path=None`, so the
+    // snapshot key should fall back to `":"`.
+    let stdout = format!(
+        r#"
+NOVA_JSON_BEGIN
+{{
+  "projectDir": "{project_dir}",
+  "compileClasspath": [],
+  "testCompileClasspath": [],
+  "mainSourceRoots": [],
+  "testSourceRoots": [],
+  "mainOutputDirs": [],
+  "testOutputDirs": [],
+  "compileCompilerArgs": [],
+  "testCompilerArgs": [],
+  "inferModulePath": false
+}}
+NOVA_JSON_END
+"#,
+        project_dir = project_root.display(),
+    );
+
+    let runner = Arc::new(FakeRunner {
+        output: CommandOutput {
+            status: exit_status(0),
+            stdout,
+            stderr: String::new(),
+            truncated: false,
+        },
+    });
+    let gradle = GradleBuild::with_runner(GradleConfig::default(), runner);
+    let cache = BuildCache::new(tmp.path().join("cache"));
+
+    let _cfg = gradle
+        .java_compile_config(&project_root, None, &cache)
+        .expect("java compile config");
+
+    let snapshot_path = project_root.join(GRADLE_SNAPSHOT_REL_PATH);
+    assert!(snapshot_path.is_file(), "snapshot file should be created");
+
+    let bytes = std::fs::read(&snapshot_path).unwrap();
+    let snapshot: SnapshotFile = serde_json::from_slice(&bytes).unwrap();
+
+    assert!(
+        snapshot.projects.iter().any(|p| p.path == ":"),
+        "snapshot projects should include root"
+    );
+
+    let cfg = snapshot
+        .java_compile_configs
+        .get(":")
+        .expect("config for root project");
+    assert_eq!(cfg.project_dir, project_root);
+}
+
+#[test]
 fn writes_gradle_snapshot_for_aggregator_root_union_config() {
     let tmp = tempfile::tempdir().unwrap();
     let project_root = tmp.path().join("project");
