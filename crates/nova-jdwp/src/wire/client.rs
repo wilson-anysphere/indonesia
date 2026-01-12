@@ -190,6 +190,13 @@ impl JdwpClient {
         Ok(client)
     }
 
+    /// Shut down the client locally without sending any JDWP command to the target VM.
+    ///
+    /// This is primarily a cancellation mechanism for higher-level adapters that need to
+    /// stop all in-flight JDWP requests and event processing.
+    ///
+    /// To explicitly detach from or terminate the target VM, use [`JdwpClient::virtual_machine_dispose`]
+    /// (detach) or [`JdwpClient::virtual_machine_exit`] (terminate).
     pub fn shutdown(&self) {
         self.inner.shutdown.cancel();
     }
@@ -1455,6 +1462,61 @@ impl JdwpClient {
         Ok(())
     }
 
+    /// VirtualMachine.Dispose (1, 6)
+    ///
+    /// Detach from the target VM and dispose the JDWP session.
+    ///
+    /// Note: this is distinct from [`JdwpClient::shutdown`], which is a local-only cancellation.
+    pub async fn virtual_machine_dispose(&self) -> Result<()> {
+        let _ = self.send_command_raw(1, 6, Vec::new()).await?;
+        // After a successful dispose the JDWP session is no longer usable, so shut down the
+        // local client to unblock pending requests and stop the reader task.
+        self.shutdown();
+        Ok(())
+    }
+
+    /// VirtualMachine.Exit (1, 10)
+    ///
+    /// Request that the target VM terminates with the given exit code.
+    pub async fn virtual_machine_exit(&self, exit_code: i32) -> Result<()> {
+        let mut w = JdwpWriter::new();
+        w.write_i32(exit_code);
+        let _ = self.send_command_raw(1, 10, w.into_vec()).await?;
+        Ok(())
+    }
+
+    /// VirtualMachine.DisposeObjects (1, 14)
+    ///
+    /// Dispose of object IDs held by the debugger. Each tuple in `objects` contains
+    /// `(objectId, refCnt)`.
+    pub async fn virtual_machine_dispose_objects(&self, objects: &[(ObjectId, u32)]) -> Result<()> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_u32(objects.len() as u32);
+        for (object_id, ref_cnt) in objects {
+            w.write_object_id(*object_id, &sizes);
+            w.write_u32(*ref_cnt);
+        }
+        let _ = self.send_command_raw(1, 14, w.into_vec()).await?;
+        Ok(())
+    }
+
+    /// VirtualMachine.HoldEvents (1, 15)
+    ///
+    /// Temporarily stops event delivery from the target VM.
+    pub async fn virtual_machine_hold_events(&self) -> Result<()> {
+        let _ = self.send_command_raw(1, 15, Vec::new()).await?;
+        Ok(())
+    }
+
+    /// VirtualMachine.ReleaseEvents (1, 16)
+    ///
+    /// Re-enables event delivery after a prior [`JdwpClient::virtual_machine_hold_events`].
+    pub async fn virtual_machine_release_events(&self) -> Result<()> {
+        let _ = self.send_command_raw(1, 16, Vec::new()).await?;
+        Ok(())
+    }
+
     /// EventRequest.Set (15, 1)
     pub async fn event_request_set(
         &self,
@@ -1473,6 +1535,12 @@ impl JdwpClient {
         let payload = self.send_command_raw(15, 1, w.into_vec()).await?;
         let mut r = JdwpReader::new(&payload);
         r.read_i32()
+    }
+
+    /// EventRequest.ClearAllBreakpoints (15, 3)
+    pub async fn event_request_clear_all_breakpoints(&self) -> Result<()> {
+        let _ = self.send_command_raw(15, 3, Vec::new()).await?;
+        Ok(())
     }
 
     /// EventRequest.Clear (15, 2)
@@ -2969,5 +3037,65 @@ mod tests {
             .unwrap();
 
         assert_eq!(server.signature_with_generic_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn virtual_machine_dispose_cancels_shutdown_token() {
+        let server = MockJdwpServer::spawn().await.unwrap();
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+        let token = client.shutdown_token();
+        assert!(!token.is_cancelled());
+
+        client.virtual_machine_dispose().await.unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), token.cancelled())
+            .await
+            .expect("shutdown token was not cancelled after VM dispose");
+
+        assert_eq!(server.virtual_machine_dispose_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn event_request_clear_all_breakpoints_clears_mock_state() {
+        let server = MockJdwpServer::spawn().await.unwrap();
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+        let request_id = client
+            .event_request_set(EVENT_KIND_BREAKPOINT, SUSPEND_POLICY_EVENT_THREAD, Vec::new())
+            .await
+            .unwrap();
+
+        assert_eq!(server.breakpoint_request().await, Some(request_id));
+
+        client.event_request_clear_all_breakpoints().await.unwrap();
+
+        assert_eq!(server.breakpoint_request().await, None);
+        assert_eq!(server.clear_all_breakpoints_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn virtual_machine_dispose_objects_uses_negotiated_id_sizes() {
+        let server = MockJdwpServer::spawn_with_config(MockJdwpServerConfig {
+            id_sizes: JdwpIdSizes {
+                object_id: 4,
+                ..JdwpIdSizes::default()
+            },
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+        client
+            .virtual_machine_dispose_objects(&[(0x1122_3344, 1), (0x5566_7788, 2)])
+            .await
+            .unwrap();
+
+        let calls = server.dispose_objects_calls().await;
+        assert_eq!(
+            calls,
+            vec![vec![(0x1122_3344, 1), (0x5566_7788, 2)]]
+        );
     }
 }

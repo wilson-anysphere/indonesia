@@ -332,6 +332,42 @@ impl MockJdwpServer {
         self.state.vm_resume_calls.load(Ordering::Relaxed)
     }
 
+    pub fn virtual_machine_dispose_calls(&self) -> u32 {
+        self.state
+            .virtual_machine_dispose_calls
+            .load(Ordering::Relaxed)
+    }
+
+    pub async fn virtual_machine_exit_codes(&self) -> Vec<i32> {
+        self.state.virtual_machine_exit_codes.lock().await.clone()
+    }
+
+    pub fn virtual_machine_hold_events_calls(&self) -> u32 {
+        self.state
+            .virtual_machine_hold_events_calls
+            .load(Ordering::Relaxed)
+    }
+
+    pub fn virtual_machine_release_events_calls(&self) -> u32 {
+        self.state
+            .virtual_machine_release_events_calls
+            .load(Ordering::Relaxed)
+    }
+
+    pub fn clear_all_breakpoints_calls(&self) -> u32 {
+        self.state
+            .clear_all_breakpoints_calls
+            .load(Ordering::Relaxed)
+    }
+
+    pub async fn dispose_objects_calls(&self) -> Vec<Vec<(ObjectId, u32)>> {
+        self.state.dispose_objects_calls.lock().await.clone()
+    }
+
+    pub async fn breakpoint_request(&self) -> Option<i32> {
+        *self.state.breakpoint_request.lock().await
+    }
+
     pub fn thread_suspend_calls(&self) -> u32 {
         self.state.thread_suspend_calls.load(Ordering::Relaxed)
     }
@@ -434,6 +470,14 @@ struct State {
     field_modification_events_remaining: AtomicUsize,
     class_unload_events_remaining: AtomicUsize,
     vm_disconnect_events_remaining: AtomicUsize,
+
+    virtual_machine_dispose_calls: AtomicU32,
+    virtual_machine_exit_calls: AtomicU32,
+    virtual_machine_exit_codes: tokio::sync::Mutex<Vec<i32>>,
+    virtual_machine_hold_events_calls: AtomicU32,
+    virtual_machine_release_events_calls: AtomicU32,
+    clear_all_breakpoints_calls: AtomicU32,
+    dispose_objects_calls: tokio::sync::Mutex<Vec<Vec<(ObjectId, u32)>>>,
 }
 
 impl Default for State {
@@ -511,6 +555,14 @@ impl State {
             field_modification_events_remaining: AtomicUsize::new(field_modification_events),
             class_unload_events_remaining: AtomicUsize::new(class_unload_events),
             vm_disconnect_events_remaining: AtomicUsize::new(vm_disconnect_events),
+
+            virtual_machine_dispose_calls: AtomicU32::new(0),
+            virtual_machine_exit_calls: AtomicU32::new(0),
+            virtual_machine_exit_codes: tokio::sync::Mutex::new(Vec::new()),
+            virtual_machine_hold_events_calls: AtomicU32::new(0),
+            virtual_machine_release_events_calls: AtomicU32::new(0),
+            clear_all_breakpoints_calls: AtomicU32::new(0),
+            dispose_objects_calls: tokio::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -960,6 +1012,61 @@ async fn handle_packet(
         // VirtualMachine.Resume
         (1, 9) => {
             state.vm_resume_calls.fetch_add(1, Ordering::Relaxed);
+            (0, Vec::new())
+        }
+        // VirtualMachine.Dispose
+        (1, 6) => {
+            state
+                .virtual_machine_dispose_calls
+                .fetch_add(1, Ordering::Relaxed);
+            (0, Vec::new())
+        }
+        // VirtualMachine.Exit
+        (1, 10) => {
+            let exit_code = r.read_i32().unwrap_or_default();
+            state
+                .virtual_machine_exit_calls
+                .fetch_add(1, Ordering::Relaxed);
+            state
+                .virtual_machine_exit_codes
+                .lock()
+                .await
+                .push(exit_code);
+            (0, Vec::new())
+        }
+        // VirtualMachine.DisposeObjects
+        (1, 14) => {
+            let res = (|| {
+                let count = r.read_u32()? as usize;
+                let mut objects = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let object_id = r.read_object_id(sizes)?;
+                    let ref_cnt = r.read_u32()?;
+                    objects.push((object_id, ref_cnt));
+                }
+                Ok::<_, super::types::JdwpError>(objects)
+            })();
+
+            match res {
+                Ok(objects) => {
+                    state.dispose_objects_calls.lock().await.push(objects);
+                    (0, Vec::new())
+                }
+                Err(_) => (1, Vec::new()),
+            }
+        }
+        // VirtualMachine.HoldEvents
+        (1, 15) => {
+            state
+                .virtual_machine_hold_events_calls
+                .fetch_add(1, Ordering::Relaxed);
+            (0, Vec::new())
+        }
+        // VirtualMachine.ReleaseEvents
+        (1, 16) => {
+            state
+                .virtual_machine_release_events_calls
+                .fetch_add(1, Ordering::Relaxed);
             (0, Vec::new())
         }
         // VirtualMachine.ClassPaths
@@ -2314,6 +2421,16 @@ async fn handle_packet(
                 }
                 _ => {}
             }
+            (0, Vec::new())
+        }
+        // EventRequest.ClearAllBreakpoints
+        (15, 3) => {
+            state
+                .clear_all_breakpoints_calls
+                .fetch_add(1, Ordering::Relaxed);
+            *state.breakpoint_request.lock().await = None;
+            *state.breakpoint_count_modifier.lock().await = None;
+            *state.breakpoint_suspend_policy.lock().await = None;
             (0, Vec::new())
         }
         _ => {
