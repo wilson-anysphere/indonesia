@@ -9,4 +9,4 @@ mod scoring;
 mod trigram;
 
 pub use scoring::{fuzzy_match, FuzzyMatcher, MatchKind, MatchScore, RankKey};
-pub use trigram::{Trigram, TrigramIndex, TrigramIndexBuilder};
+pub use trigram::{Trigram, TrigramCandidateScratch, TrigramIndex, TrigramIndexBuilder};

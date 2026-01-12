@@ -46,6 +46,18 @@ pub struct TrigramIndex {
     values: Vec<SymbolId>,
 }
 
+/// Reusable scratch buffers for trigram candidate retrieval.
+///
+/// This is used by [`TrigramIndex::candidates_with_scratch`] to avoid per-query
+/// allocations and, in the single-trigram case, to avoid copying posting lists.
+#[derive(Debug, Default, Clone)]
+pub struct TrigramCandidateScratch {
+    q_trigrams: Vec<Trigram>,
+    /// Posting list ranges into [`TrigramIndex::values`] (start, end).
+    lists: Vec<(u32, u32)>,
+    out: Vec<SymbolId>,
+}
+
 impl TrigramIndex {
     /// Returns the posting list for `trigram` (sorted ascending).
     pub fn postings(&self, trigram: Trigram) -> &[SymbolId] {
@@ -62,45 +74,72 @@ impl TrigramIndex {
     /// Generates candidate ids by intersecting posting lists for query trigrams.
     ///
     /// The output is sorted and contains no duplicates.
-    pub fn candidates(&self, query: &str) -> Vec<SymbolId> {
-        let mut q_trigrams = Vec::new();
-        trigrams(query, &mut q_trigrams);
-        if q_trigrams.is_empty() {
-            return Vec::new();
+    ///
+    /// This method reuses buffers in `scratch` and avoids copying posting lists.
+    /// If exactly one non-empty posting list is involved, it is returned directly
+    /// as a borrowed slice.
+    pub fn candidates_with_scratch<'a>(
+        &'a self,
+        query: &str,
+        scratch: &'a mut TrigramCandidateScratch,
+    ) -> &'a [SymbolId] {
+        scratch.q_trigrams.clear();
+        scratch.lists.clear();
+        scratch.out.clear();
+
+        trigrams(query, &mut scratch.q_trigrams);
+        if scratch.q_trigrams.is_empty() {
+            return &[];
         }
-        q_trigrams.sort_unstable();
-        q_trigrams.dedup();
+        scratch.q_trigrams.sort_unstable();
+        scratch.q_trigrams.dedup();
 
-        // Collect posting lists and sort by length ascending (rarest first).
-        let mut lists: Vec<&[SymbolId]> = q_trigrams
-            .iter()
-            .map(|&t| self.postings(t))
-            .filter(|list| !list.is_empty())
-            .collect();
-
-        if lists.is_empty() {
-            return Vec::new();
+        // Collect posting list ranges and sort by length ascending (rarest first).
+        for &t in &scratch.q_trigrams {
+            let Ok(ix) = self.keys.binary_search(&t) else {
+                continue;
+            };
+            let start = self.offsets[ix];
+            let end = self.offsets[ix + 1];
+            if start != end {
+                scratch.lists.push((start, end));
+            }
         }
 
-        lists.sort_by_key(|a| a.len());
-
-        let base = lists[0];
-        if lists.len() == 1 {
-            return base.to_vec();
+        if scratch.lists.is_empty() {
+            return &[];
         }
 
-        let mut out = Vec::new();
+        scratch.lists.sort_by_key(|&(start, end)| end - start);
+
+        let (base_start, base_end) = scratch.lists[0];
+        let base = &self.values[base_start as usize..base_end as usize];
+        if scratch.lists.len() == 1 {
+            return base;
+        }
+
         // We expect `base` to be the smallest list. For each id in base, check
         // that it is present in every other list.
+        scratch.out.reserve(base.len());
         'outer: for &id in base {
-            for other in &lists[1..] {
+            for &(start, end) in &scratch.lists[1..] {
+                let other = &self.values[start as usize..end as usize];
                 if other.binary_search(&id).is_err() {
                     continue 'outer;
                 }
             }
-            out.push(id);
+            scratch.out.push(id);
         }
-        out
+
+        &scratch.out
+    }
+
+    /// Generates candidate ids by intersecting posting lists for query trigrams.
+    ///
+    /// The output is sorted and contains no duplicates.
+    pub fn candidates(&self, query: &str) -> Vec<SymbolId> {
+        let mut scratch = TrigramCandidateScratch::default();
+        self.candidates_with_scratch(query, &mut scratch).to_vec()
     }
 
     /// Generates candidate ids by intersecting posting lists for query trigrams, reusing `scratch`.
@@ -257,6 +296,47 @@ impl TrigramIndexBuilder {
 mod tests {
     use super::*;
 
+    fn candidates_original(index: &TrigramIndex, query: &str) -> Vec<SymbolId> {
+        let mut q_trigrams = Vec::new();
+        trigrams(query, &mut q_trigrams);
+        if q_trigrams.is_empty() {
+            return Vec::new();
+        }
+        q_trigrams.sort_unstable();
+        q_trigrams.dedup();
+
+        // Collect posting lists and sort by length ascending (rarest first).
+        let mut lists: Vec<&[SymbolId]> = q_trigrams
+            .iter()
+            .map(|&t| index.postings(t))
+            .filter(|list| !list.is_empty())
+            .collect();
+
+        if lists.is_empty() {
+            return Vec::new();
+        }
+
+        lists.sort_by_key(|a| a.len());
+
+        let base = lists[0];
+        if lists.len() == 1 {
+            return base.to_vec();
+        }
+
+        let mut out = Vec::new();
+        // We expect `base` to be the smallest list. For each id in base, check
+        // that it is present in every other list.
+        'outer: for &id in base {
+            for other in &lists[1..] {
+                if other.binary_search(&id).is_err() {
+                    continue 'outer;
+                }
+            }
+            out.push(id);
+        }
+        out
+    }
+
     #[test]
     fn trigram_candidates_intersect_postings() {
         let mut builder = TrigramIndexBuilder::new();
@@ -266,9 +346,18 @@ mod tests {
 
         // "foo" appears in both.
         assert_eq!(index.candidates("foo"), vec![1, 2]);
+        let mut scratch = TrigramCandidateScratch::default();
+        assert_eq!(
+            index.candidates_with_scratch("foo", &mut scratch),
+            &[1, 2][..]
+        );
 
         // "oob" appears only in "foobar".
         assert_eq!(index.candidates("foob"), vec![1]);
+        assert_eq!(
+            index.candidates_with_scratch("foob", &mut scratch),
+            &[1][..]
+        );
     }
 
     #[test]
@@ -279,5 +368,65 @@ mod tests {
 
         assert_eq!(index.candidates("bar"), vec![1]);
         assert_eq!(index.candidates("BAR"), vec![1]);
+
+        let mut scratch = TrigramCandidateScratch::default();
+        assert_eq!(index.candidates_with_scratch("bar", &mut scratch), &[1][..]);
+        assert_eq!(index.candidates_with_scratch("BAR", &mut scratch), &[1][..]);
+    }
+
+    #[test]
+    fn scratch_candidates_agree_with_original_across_inputs() {
+        let mut builder = TrigramIndexBuilder::new();
+        builder.insert(1, "foobar");
+        builder.insert(2, "barfoo");
+        builder.insert(3, "Foo_Bar_Baz");
+        builder.insert(4, "quux");
+        let index = builder.build();
+
+        let queries = [
+            "",
+            "f",
+            "fo",
+            "foo",
+            "FOO",
+            "foob",
+            "bar",
+            "BAR",
+            "oob",
+            "quu",
+            "does-not-exist",
+            "Foo_Bar_Baz",
+            "foo_bar",
+        ];
+
+        let mut scratch = TrigramCandidateScratch::default();
+        for q in queries {
+            let expected = candidates_original(&index, q);
+            let got = index.candidates_with_scratch(q, &mut scratch).to_vec();
+            assert_eq!(got, expected, "query={q:?}");
+        }
+    }
+
+    #[test]
+    fn scratch_candidates_single_list_is_borrowed() {
+        let mut builder = TrigramIndexBuilder::new();
+        builder.insert(1, "foobar");
+        builder.insert(2, "fooqux");
+        let index = builder.build();
+
+        let mut t = Vec::new();
+        trigrams("foo", &mut t);
+        assert_eq!(t.len(), 1);
+        let trigram = t[0];
+
+        let postings = index.postings(trigram);
+        assert!(!postings.is_empty());
+
+        let mut scratch = TrigramCandidateScratch::default();
+        let got = index.candidates_with_scratch("foo", &mut scratch);
+
+        assert_eq!(got.as_ptr(), postings.as_ptr());
+        assert_eq!(got.len(), postings.len());
+        assert!(scratch.out.is_empty());
     }
 }
