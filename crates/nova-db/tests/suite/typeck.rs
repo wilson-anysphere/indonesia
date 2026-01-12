@@ -4428,6 +4428,135 @@ class B {
 }
 
 #[test]
+fn static_import_resolves_enum_constants_across_files() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let enum_file = FileId::from_raw(1);
+    let use_file = FileId::from_raw(2);
+
+    let src_enum = r#"package p; enum E { A; }"#;
+    let src_use = r#"
+package p;
+import static p.E.A;
+class Use { static E m(){ return A; } }
+"#;
+
+    set_file(&mut db, project, enum_file, "src/p/E.java", src_enum);
+    set_file(&mut db, project, use_file, "src/p/Use.java", src_use);
+    db.set_project_files(project, Arc::new(vec![enum_file, use_file]));
+
+    let offset = src_use
+        .find("return A")
+        .expect("snippet should contain return A")
+        + "return ".len();
+    let ty = db
+        .type_at_offset_display(use_file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "E");
+
+    let diags = db.type_diagnostics(use_file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-name"),
+        "expected static-imported enum constant to resolve; got {diags:?}"
+    );
+}
+
+#[test]
+fn static_import_resolves_interface_fields_across_files() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let iface_file = FileId::from_raw(1);
+    let use_file = FileId::from_raw(2);
+
+    let src_iface = r#"package p; interface I { int X = 1; }"#;
+    let src_use = r#"
+package p;
+import static p.I.X;
+class Use { static int m(){ return X; } }
+"#;
+
+    set_file(&mut db, project, iface_file, "src/p/I.java", src_iface);
+    set_file(&mut db, project, use_file, "src/p/Use.java", src_use);
+    db.set_project_files(project, Arc::new(vec![iface_file, use_file]));
+
+    let offset = src_use
+        .find("return X")
+        .expect("snippet should contain return X")
+        + "return ".len();
+    let ty = db
+        .type_at_offset_display(use_file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "int");
+
+    let diags = db.type_diagnostics(use_file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-name"),
+        "expected static-imported interface field to resolve; got {diags:?}"
+    );
+}
+
+#[test]
+fn static_import_resolves_annotation_constants_across_files() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let ann_file = FileId::from_raw(1);
+    let use_file = FileId::from_raw(2);
+
+    let src_ann = r#"package p; @interface A { int X = 1; }"#;
+    let src_use = r#"
+package p;
+import static p.A.X;
+class Use { static int m(){ return X; } }
+"#;
+
+    set_file(&mut db, project, ann_file, "src/p/A.java", src_ann);
+    set_file(&mut db, project, use_file, "src/p/Use.java", src_use);
+    db.set_project_files(project, Arc::new(vec![ann_file, use_file]));
+
+    let offset = src_use
+        .find("return X")
+        .expect("snippet should contain return X")
+        + "return ".len();
+    let ty = db
+        .type_at_offset_display(use_file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "int");
+
+    let diags = db.type_diagnostics(use_file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-name"),
+        "expected static-imported annotation constant to resolve; got {diags:?}"
+    );
+}
+
+#[test]
 fn static_single_import_resolves_workspace_member_type_across_files() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
