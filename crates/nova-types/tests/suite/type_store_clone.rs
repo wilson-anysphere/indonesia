@@ -148,3 +148,51 @@ fn type_store_clone_preserves_ids_and_is_independent() {
     assert_eq!(store.lookup_class("com.example.Foo"), Some(foo_id));
     assert_eq!(store.class(foo_id).unwrap().methods[0].name, "foo");
 }
+
+#[test]
+fn default_type_store_can_be_cloned_and_mutated_independently() {
+    let store = TypeStore::default();
+    let mut cloned = store.clone();
+
+    // `well_known` ids should resolve to the expected class names in both stores.
+    let wk = store.well_known().clone();
+    for (id, expected_name) in [
+        (wk.object, "java.lang.Object"),
+        (wk.string, "java.lang.String"),
+        (wk.integer, "java.lang.Integer"),
+        (wk.cloneable, "java.lang.Cloneable"),
+        (wk.serializable, "java.io.Serializable"),
+    ] {
+        assert_eq!(
+            store.class(id).expect("well-known class missing").name,
+            expected_name
+        );
+        assert_eq!(
+            cloned.class(id).expect("well-known class missing in clone").name,
+            expected_name
+        );
+    }
+
+    // Mutating the clone should not mutate the original store.
+    let local_tp = cloned.add_type_param("T", vec![Type::class(wk.object, vec![])]);
+    let foo_id = cloned.upsert_class(ClassDef {
+        name: "com.example.Foo".to_string(),
+        kind: ClassKind::Class,
+        type_params: vec![local_tp],
+        super_class: Some(Type::class(wk.object, vec![])),
+        interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
+        methods: vec![],
+    });
+    assert_eq!(cloned.lookup_class("com.example.Foo"), Some(foo_id));
+    assert_eq!(store.lookup_class("com.example.Foo"), None);
+    assert!(store.type_param(local_tp).is_none());
+
+    // Mutating a shared core class in the clone should not affect the original.
+    cloned
+        .remove_class("java.lang.String")
+        .expect("String should exist in default TypeStore");
+    assert_eq!(cloned.lookup_class("java.lang.String"), None);
+    assert_eq!(store.lookup_class("java.lang.String"), Some(wk.string));
+}
