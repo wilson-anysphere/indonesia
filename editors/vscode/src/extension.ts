@@ -1688,6 +1688,7 @@ export async function activate(context: vscode.ExtensionContext) {
           for (const workspace of vscode.workspace.workspaceFolders ?? []) {
             resetNovaExperimentalCapabilities(workspace.uri.toString());
           }
+          updateFrameworksMethodSupportContexts();
           return;
         }
         if (event.newState === State.Running) {
@@ -1695,6 +1696,7 @@ export async function activate(context: vscode.ExtensionContext) {
           for (const workspace of vscode.workspace.workspaceFolders ?? []) {
             setNovaExperimentalCapabilities(workspace.uri.toString(), languageClient.initializeResult);
           }
+          updateFrameworksMethodSupportContexts();
         }
       }),
     );
