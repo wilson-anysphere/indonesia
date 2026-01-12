@@ -76,6 +76,7 @@ Nova can integrate with your build tool (Maven/Gradle/Bazel) to keep its project
 
 - **Build status indicator (status bar):** Nova shows the current build status for the active workspace folder in the status bar (Idle / Building / Failed).
 - **Build diagnostics (Problems panel):** build-tool diagnostics are surfaced in VS Code’s **Problems** panel so you can click through to the failing files/lines.
+  - When build status polling is active, Nova will also **auto-refresh** build diagnostics when it observes a build completing (Building → Idle/Failed), even if the build was started outside of a Nova command.
 - **Explorer view: “Nova Project”:** Explorer → **Nova Project** shows Nova’s inferred project structure (workspace folders, modules/targets, source roots, and other build-derived metadata).
 - **Build tool selection:** configure which build tool Nova uses for manual builds/reloads via `nova.build.buildTool` ("auto" | "maven" | "gradle" | "prompt").
   - When set to `prompt`, Nova asks you to choose which build tool to use each time you run **Nova: Build Project** or **Nova: Reload Project**.
