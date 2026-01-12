@@ -41,7 +41,10 @@ fn run_input(input: &[u8]) {
     let payload = input.get(1..).unwrap_or_default();
 
     if mode & 1 == 0 {
-        run_zip_mode(payload);
+        // In zip mode, feed the *entire* input to the archive reader so seeds
+        // like `valid_metadata.jar` / `valid_metadata.jmod` remain valid
+        // ZIP/JAR/JMOD bytes (rather than dropping the first byte).
+        run_zip_mode(input);
     } else {
         run_dir_mode(payload);
     }
@@ -114,4 +117,3 @@ fuzz_target!(|data: &[u8]| {
         }
     }
 });
-
