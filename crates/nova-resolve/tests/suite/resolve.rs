@@ -565,6 +565,37 @@ class Use {}
 }
 
 #[test]
+fn type_import_on_demand_does_not_fallback_to_package_when_owner_is_type() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(
+        file,
+        r#"
+import p.B.*;
+class Use {}
+"#,
+    );
+
+    let mut index = TestIndex::default();
+    // `p.B` exists as a type (but has no member type `C`).
+    index.add_type("p", "B");
+
+    // `p.B` also exists as a package, containing a top-level type `p.B.C`.
+    index.add_type("p.B", "C");
+
+    let scopes = build_scopes(&db, file);
+    let resolver = Resolver::new(&index);
+
+    // Even though the `p.B` *package* contains `C`, `import p.B.*;` should be treated as a
+    // type-import-on-demand because `p.B` resolves to a type. It should not import `p.B.C` from the
+    // subpackage.
+    assert_eq!(
+        resolver.resolve_type_name(&scopes.scopes, scopes.file_scope, &Name::from("C")),
+        None
+    );
+}
+
+#[test]
 fn ambiguous_type_import_on_demand_is_reported() {
     let mut db = TestDb::default();
     let file = FileId::from_raw(0);
