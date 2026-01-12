@@ -938,7 +938,12 @@ async fn read_packet(
     }
     let command_set = header[9];
     let command = header[10];
-    let mut payload = vec![0u8; length - HEADER_LEN];
+    let payload_len = length - HEADER_LEN;
+    let mut payload = Vec::new();
+    if payload.try_reserve_exact(payload_len).is_err() {
+        return Ok(None);
+    }
+    payload.resize(payload_len, 0);
     socket.read_exact(&mut payload).await?;
     Ok(Some(Packet {
         id,

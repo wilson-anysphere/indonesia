@@ -1808,7 +1808,16 @@ async fn read_loop(mut reader: tokio::net::tcp::OwnedReadHalf, inner: Arc<Inner>
 
         let id = u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
         let flags = header[8];
-        let mut payload = vec![0u8; length - HEADER_LEN];
+        let payload_len = length - HEADER_LEN;
+        let mut payload = Vec::new();
+        if payload
+            .try_reserve_exact(payload_len)
+            .is_err()
+        {
+            terminated_with_error = true;
+            break;
+        }
+        payload.resize(payload_len, 0);
         let payload_read = tokio::select! {
             _ = inner.shutdown.cancelled() => break,
             res = reader.read_exact(&mut payload) => res,

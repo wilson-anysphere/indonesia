@@ -1518,7 +1518,14 @@ fn read_packet(reader: &mut impl Read) -> Result<Packet, JdwpError> {
     let length = u32::from_be_bytes(len_buf) as usize;
     crate::validate_jdwp_packet_length(length).map_err(JdwpError::Protocol)?;
 
-    let mut rest = vec![0u8; length - 4];
+    let rest_len = length - 4;
+    let mut rest = Vec::new();
+    rest.try_reserve_exact(rest_len).map_err(|_| {
+        JdwpError::Protocol(format!(
+            "unable to allocate packet buffer ({rest_len} bytes)"
+        ))
+    })?;
+    rest.resize(rest_len, 0);
     reader.read_exact(&mut rest)?;
 
     let id = u32::from_be_bytes(rest[0..4].try_into().unwrap());

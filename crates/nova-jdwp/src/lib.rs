@@ -300,7 +300,12 @@ pub fn decode_packet_bytes(bytes: &[u8]) -> Result<(), JdwpError> {
     // Emulate the real network readers: allocate based on the length prefix and
     // only then attempt to read/copy the remaining bytes.
     let rest_len = length - 4;
-    let mut rest = Vec::with_capacity(rest_len);
+    let mut rest = Vec::new();
+    rest.try_reserve_exact(rest_len).map_err(|_| {
+        JdwpError::Protocol(format!(
+            "unable to allocate packet buffer ({rest_len} bytes)"
+        ))
+    })?;
 
     if bytes.len() < length {
         // `read_exact` would fail here, but only after we've already allocated

@@ -10,3 +10,12 @@ artifacts/
 crashes/
 coverage/
 **/*.cur_input
+
+# Ignore any fuzz-generated corpus minimizations / expansions. Keep the checked-in
+# seed corpus curated.
+corpus/decode_packet_bytes/*
+!corpus/decode_packet_bytes/minimal_command
+!corpus/decode_packet_bytes/reply_ok
+!corpus/decode_packet_bytes/length_0
+!corpus/decode_packet_bytes/length_10
+!corpus/decode_packet_bytes/length_ffff_ffff
