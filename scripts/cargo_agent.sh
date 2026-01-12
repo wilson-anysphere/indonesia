@@ -313,24 +313,16 @@ run_cargo() {
   fi
 
   if [[ -n "${jobs}" ]]; then
-    # `-j/--jobs` is only valid for cargo's built-in build-like subcommands. Many
-    # external `cargo-*` subcommands (e.g. `cargo fmt`, `cargo fuzz`) do NOT accept
-    # `-j` and will fail with "unexpected argument '-j'".
+    # Many built-in cargo subcommands accept `-j/--jobs`, but a number of built-ins
+    # (e.g. `clean`, `metadata`) and many external cargo subcommands (e.g. `fmt`,
+    # `nextest`, `binstall`, `fuzz`) do not.
     #
-    # For `cargo fuzz`, we still want to cap the number of Rust compilation jobs
-    # (it invokes `cargo build` internally). Cargo supports `build.jobs` via the
-    # `CARGO_BUILD_JOBS` env var, and cargo-fuzz forwards the environment to those
-    # nested cargo invocations.
-    case "${subcommand}" in
-      clean|generate-lockfile|metadata|fmt|binstall)
-        ;;
-      fuzz)
-        export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-${jobs}}"
-        ;;
-      *)
-        cargo_cmd+=(-j "${jobs}")
-        ;;
-    esac
+    # Use the supported `build.jobs` config (via the `CARGO_BUILD_JOBS` env var)
+    # instead of passing `-j` on the command line. This avoids:
+    # - "unexpected argument '-j'" failures for external subcommands
+    # - errors when the caller supplies their own `-j` flag (cargo rejects
+    #   multiple `--jobs` arguments).
+    export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-${jobs}}"
   fi
 
   cargo_cmd+=("$@")
