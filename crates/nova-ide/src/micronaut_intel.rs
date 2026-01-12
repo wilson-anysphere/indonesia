@@ -216,10 +216,12 @@ fn workspace_signature(db: &dyn Database, root: &Path, cancel: &CancellationToke
             return None;
         }
         let is_java = path.extension().and_then(|e| e.to_str()) == Some("java");
-        let config_kind = match path.file_name().and_then(|n| n.to_str()) {
-            Some("application.properties") => Some("properties"),
-            Some("application.yml") | Some("application.yaml") => Some("yaml"),
-            _ => None,
+        let config_kind = if framework_cache::is_application_properties(&path) {
+            Some("properties")
+        } else if framework_cache::is_application_yaml(&path) {
+            Some("yaml")
+        } else {
+            None
         };
 
         if !is_java && config_kind.is_none() {
@@ -261,10 +263,12 @@ fn gather_workspace_inputs(
             return None;
         }
         let is_java = path.extension().and_then(|e| e.to_str()) == Some("java");
-        let config_kind = match path.file_name().and_then(|n| n.to_str()) {
-            Some("application.properties") => Some("properties"),
-            Some("application.yml") | Some("application.yaml") => Some("yaml"),
-            _ => None,
+        let config_kind = if framework_cache::is_application_properties(&path) {
+            Some("properties")
+        } else if framework_cache::is_application_yaml(&path) {
+            Some("yaml")
+        } else {
+            None
         };
 
         if !is_java && config_kind.is_none() {

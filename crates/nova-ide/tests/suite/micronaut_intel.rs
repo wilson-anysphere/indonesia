@@ -76,3 +76,27 @@ class C {
         "expected Micronaut config completion; got {labels:?}"
     );
 }
+
+#[test]
+fn micronaut_value_completions_use_profiled_config_keys() {
+    let config_path = PathBuf::from("/workspace/src/main/resources/application-test.properties");
+    let java_path = PathBuf::from("/workspace/src/main/java/C.java");
+
+    let config_text = "server.port=8080\n".to_string();
+    let java_text = r#"
+import io.micronaut.context.annotation.Value;
+class C {
+  @Value("${ser<|>}")
+  String port;
+}
+"#;
+
+    let (db, file, pos) = fixture_multi(java_path, java_text, vec![(config_path, config_text)]);
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"server.port"),
+        "expected Micronaut config completion from profiled application*.properties; got {labels:?}"
+    );
+}
