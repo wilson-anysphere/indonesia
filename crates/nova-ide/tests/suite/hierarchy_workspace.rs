@@ -295,6 +295,35 @@ class C implements I { void $0test(){ C c=null; c.foo(); } }
 }
 
 #[test]
+fn call_hierarchy_outgoing_resolves_default_interface_method_on_new_expression_receiver() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /I.java
+interface I { default void $1foo() {} }
+//- /C.java
+class C implements I { void $0test(){ new C().foo(); } }
+"#,
+    );
+
+    let file_c = fixture.marker_file(0);
+    let pos_test = fixture.marker_position(0);
+    let items = prepare_call_hierarchy(&fixture.db, file_c, pos_test)
+        .expect("expected call hierarchy preparation");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].name, "test");
+
+    let outgoing = call_hierarchy_outgoing_calls(&fixture.db, file_c, "test");
+    assert!(
+        outgoing.iter().any(|call| {
+            call.to.name == "foo"
+                && call.to.uri == fixture.marker_uri(1)
+                && call.to.selection_range.start == fixture.marker_position(1)
+        }),
+        "expected outgoing calls to include foo in I.java; got {outgoing:#?}"
+    );
+}
+
+#[test]
 fn call_hierarchy_resolves_receiverless_interface_default_method() {
     let fixture = FileIdFixture::parse(
         r#"
