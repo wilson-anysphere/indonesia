@@ -66,7 +66,7 @@ Nova already has the right *shape* of a memory system (`nova-memory`), but integ
 | Component | Crate | Category | Tracked? | Evictable? | Notes |
 |---|---|---:|---:|---:|---|
 | `QueryCache` (hot/warm + optional disk spill) | `nova-db` | QueryCache | yes | yes | `flush_to_disk()` persists warm tier (`crates/nova-db/src/query_cache.rs`) |
-| Salsa memos (coarse footprint) | `nova-db` | QueryCache | partial | yes | `SalsaMemoEvictor` rebuilds DB to drop memos (`crates/nova-db/src/salsa/mod.rs`) |
+| Salsa memos (coarse footprint) | `nova-db` | QueryCache | partial | yes | `SalsaMemoEvictor` rebuilds DB to drop memos (`crates/nova-db/src/salsa/mod.rs`). Interned tables are snapshot+restored so `#[ra_salsa::interned]` IDs can survive eviction. |
 | `SyntaxTreeStore` | `nova-syntax` | SyntaxTrees | yes | yes | Pins open docs, evicts closed files first (`crates/nova-syntax/src/tree_store.rs`) |
 | `ItemTreeStore` (open-doc pinned `item_tree`) | `nova-db` | SyntaxTrees | yes | yes | Preserves open-doc summaries across Salsa memo eviction (`crates/nova-db/src/salsa/item_tree_store.rs`) |
 | `IndexCache` (generic bytes) | `nova-index` | Indexes | yes | yes | LRU-based (`crates/nova-index/src/memory_cache.rs`) |
