@@ -5,12 +5,89 @@ use nova_config::AiPrivacyConfig;
 use regex::Regex;
 use std::path::{Component, Path, PathBuf};
 
+/// Matches file paths against [`AiPrivacyConfig::excluded_paths`].
+///
+/// This is exposed as a lightweight, provider-independent API so callers (e.g. LSP/IDE) can
+/// determine whether a file is excluded *before* attempting to initialize an LLM provider.
+///
+/// Matching semantics:
+/// - Patterns are compiled using `globset` (same as [`PrivacyFilter`]).
+/// - If the candidate path is absolute and the initial match fails, we also try matching against
+///   each suffix of the path components. This allows relative patterns like `secret/**` to match
+///   absolute filesystem paths such as `/home/user/project/secret/file.txt`.
+#[derive(Debug)]
+pub struct ExcludedPathMatcher {
+    set: GlobSet,
+}
+
+impl ExcludedPathMatcher {
+    pub fn from_config(config: &AiPrivacyConfig) -> Result<Self, AiError> {
+        Self::new(&config.excluded_paths)
+    }
+
+    pub fn new(patterns: &[String]) -> Result<Self, AiError> {
+        let mut builder = GlobSetBuilder::new();
+        for pattern in patterns {
+            let glob = Glob::new(pattern).map_err(|err| {
+                AiError::InvalidConfig(format!("invalid excluded_paths glob {pattern:?}: {err}"))
+            })?;
+            builder.add(glob);
+        }
+
+        let set = builder.build().map_err(|err| {
+            AiError::InvalidConfig(format!("failed to build excluded_paths globset: {err}"))
+        })?;
+
+        Ok(Self { set })
+    }
+
+    pub fn is_match(&self, path: &Path) -> bool {
+        if self.set.is_match(path) {
+            return true;
+        }
+
+        // `globset` patterns are typically configured as paths relative to some workspace root
+        // (e.g. "secret/**"), while callers like LSP generally deal in absolute filesystem paths.
+        //
+        // Since we don't have access to the caller's notion of "workspace root" here, we treat
+        // absolute paths as match candidates for *any* suffix of the path components.
+        if !path.is_absolute() {
+            return false;
+        }
+
+        let mut components = Vec::<&std::ffi::OsStr>::new();
+        for component in path.components() {
+            match component {
+                Component::Prefix(_) | Component::RootDir => {}
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    // Lexically normalize away `..` segments to avoid bypasses.
+                    components.pop();
+                }
+                Component::Normal(segment) => components.push(segment),
+            }
+        }
+
+        for start in 0..components.len() {
+            let mut suffix = PathBuf::new();
+            for segment in &components[start..] {
+                suffix.push(*segment);
+            }
+            if self.set.is_match(&suffix) {
+                return true;
+            }
+        }
+
+        false
+    }
+}
+
 /// Privacy filtering for LLM backends configured via `nova-config`.
 ///
 /// This sits alongside (and intentionally separate from) `nova_ai::privacy`,
 /// which focuses on prompt-building and token redaction/anonymization heuristics.
 pub struct PrivacyFilter {
-    excluded_paths: GlobSet,
+    excluded_paths: ExcludedPathMatcher,
     redact_patterns: Vec<Regex>,
     anonymizer_options: CodeAnonymizerOptions,
     use_anonymizer: bool,
@@ -36,17 +113,7 @@ impl SanitizationSession {
 
 impl PrivacyFilter {
     pub fn new(config: &AiPrivacyConfig) -> Result<Self, AiError> {
-        let mut excluded_builder = GlobSetBuilder::new();
-        for pattern in &config.excluded_paths {
-            let glob = Glob::new(pattern).map_err(|err| {
-                AiError::InvalidConfig(format!("invalid excluded_paths glob {pattern:?}: {err}"))
-            })?;
-            excluded_builder.add(glob);
-        }
-
-        let excluded_paths = excluded_builder.build().map_err(|err| {
-            AiError::InvalidConfig(format!("failed to build excluded_paths globset: {err}"))
-        })?;
+        let excluded_paths = ExcludedPathMatcher::from_config(config)?;
 
         let mut redact_patterns = Vec::new();
         for pattern in &config.redact_patterns {
@@ -80,38 +147,7 @@ impl PrivacyFilter {
     }
 
     pub fn is_excluded(&self, path: &Path) -> bool {
-        if self.excluded_paths.is_match(path) {
-            return true;
-        }
-
-        // In real LSP usage we often receive absolute paths, while configuration globs are usually
-        // written relative to the workspace root (e.g. `src/secrets/**`). `globset` matches from
-        // the beginning of the path, so `src/secrets/**` won't match
-        // `/home/user/project/src/secrets/Secret.java`.
-        //
-        // Best-effort fix: if the provided path is absolute, also attempt to match the configured
-        // globs against each suffix of the path (dropping leading components). This preserves the
-        // behavior of explicitly absolute patterns (e.g. `/home/user/**`) while avoiding false
-        // negatives for workspace-relative globs.
-        if path.is_absolute() {
-            let components: Vec<Component<'_>> = path.components().collect();
-            for start in 0..components.len() {
-                if matches!(components[start], Component::Prefix(_) | Component::RootDir) {
-                    continue;
-                }
-
-                let mut suffix = PathBuf::new();
-                for component in &components[start..] {
-                    suffix.push(component.as_os_str());
-                }
-
-                if self.excluded_paths.is_match(&suffix) {
-                    return true;
-                }
-            }
-        }
-
-        false
+        self.excluded_paths.is_match(path)
     }
 
     /// Apply redaction patterns to arbitrary prompt text.
@@ -338,5 +374,38 @@ class Foo {
             !tests_out.contains(secret),
             "sanitized prompt should not leak identifiers: {tests_out}"
         );
+    }
+
+    #[test]
+    fn excluded_paths_relative_patterns_match_absolute_paths() {
+        let cfg = AiPrivacyConfig {
+            excluded_paths: vec!["secret/**".into()],
+            ..AiPrivacyConfig::default()
+        };
+
+        let matcher = ExcludedPathMatcher::from_config(&cfg).expect("matcher");
+        let filter = PrivacyFilter::new(&cfg).expect("filter");
+
+        let abs = std::env::current_dir()
+            .expect("cwd")
+            .join("secret")
+            .join("file.txt");
+
+        assert!(matcher.is_match(&abs), "{abs:?} should match excluded_paths");
+        assert!(
+            filter.is_excluded(&abs),
+            "{abs:?} should be excluded via PrivacyFilter"
+        );
+    }
+
+    #[test]
+    fn excluded_paths_invalid_patterns_return_invalid_config() {
+        let cfg = AiPrivacyConfig {
+            excluded_paths: vec!["[unterminated".into()],
+            ..AiPrivacyConfig::default()
+        };
+
+        let err = ExcludedPathMatcher::from_config(&cfg).expect_err("should fail");
+        assert!(matches!(err, AiError::InvalidConfig(_)), "{err:?}");
     }
 }

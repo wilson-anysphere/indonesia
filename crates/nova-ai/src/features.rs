@@ -29,6 +29,10 @@ impl NovaAi {
         self
     }
 
+    pub fn is_excluded_path(&self, path: &Path) -> bool {
+        self.client.is_excluded_path(path)
+    }
+
     fn maybe_omit_context(&self, ctx: &ContextRequest, built: BuiltContext) -> BuiltContext {
         let Some(path) = ctx.file_path.as_deref() else {
             return built;
