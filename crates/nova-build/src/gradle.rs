@@ -198,6 +198,138 @@ impl GradleBuild {
     ) -> Result<Vec<(String, JavaCompileConfig)>> {
         let fingerprint = gradle_build_fingerprint(project_root)?;
 
+        // Best-effort cache hit: if we already have per-project configs for the current fingerprint,
+        // avoid spawning Gradle again.
+        //
+        // This keeps `java_compile_configs_all` consistent with `java_compile_config`'s cache-hit
+        // behavior and is useful for callers that periodically re-request full workspace configs.
+        if let Some(data) = cache.load(project_root, BuildSystemKind::Gradle, &fingerprint)? {
+            if let Some(projects) = data.projects.as_ref() {
+                let mut out = Vec::new();
+                let mut missing = false;
+
+                for project in projects {
+                    let cfg = if project.path == ":" {
+                        data.modules
+                            .get(":")
+                            .and_then(|m| m.java_compile_config.clone())
+                            // Backwards compat: older caches only stored the root config under
+                            // `<root>`.
+                            .or_else(|| {
+                                data.modules
+                                    .get("<root>")
+                                    .and_then(|m| m.java_compile_config.clone())
+                            })
+                    } else {
+                        data.modules
+                            .get(&project.path)
+                            .and_then(|m| m.java_compile_config.clone())
+                    };
+
+                    let Some(cfg) = cfg else {
+                        missing = true;
+                        break;
+                    };
+
+                    out.push((project.path.clone(), cfg));
+                }
+
+                if !missing {
+                    // Best-effort: keep the snapshot available even when serving purely from
+                    // cache (no Gradle invocation).
+                    let should_update_snapshot =
+                        match read_gradle_snapshot_file(&gradle_snapshot_path(project_root)) {
+                            Some(snapshot)
+                                if snapshot.schema_version == GRADLE_SNAPSHOT_SCHEMA_VERSION
+                                    && snapshot.build_fingerprint == fingerprint.digest =>
+                            {
+                                let snapshot_project_map: HashMap<String, PathBuf> = snapshot
+                                    .projects
+                                    .iter()
+                                    .map(|p| (p.path.clone(), p.project_dir.clone()))
+                                    .collect();
+
+                                let projects_mismatch = projects
+                                    .iter()
+                                    .any(|p| snapshot_project_map.get(&p.path) != Some(&p.dir));
+                                let missing_configs = projects
+                                    .iter()
+                                    .any(|p| !snapshot.java_compile_configs.contains_key(&p.path));
+
+                                projects_mismatch || missing_configs
+                            }
+                            _ => true,
+                        };
+
+                    if should_update_snapshot {
+                        // Snapshot project list.
+                        let snapshot_projects: Vec<GradleSnapshotProject> = projects
+                            .iter()
+                            .map(|p| GradleSnapshotProject {
+                                path: p.path.clone(),
+                                project_dir: p.dir.clone(),
+                            })
+                            .collect();
+
+                        // Snapshot compile configs.
+                        let project_dirs: HashMap<String, PathBuf> = projects
+                            .iter()
+                            .map(|p| (p.path.clone(), p.dir.clone()))
+                            .collect();
+
+                        let mut snapshot_configs: BTreeMap<
+                            String,
+                            GradleSnapshotJavaCompileConfig,
+                        > = BTreeMap::new();
+                        for (path, cfg) in &out {
+                            let cfg_for_snapshot = if path == ":" {
+                                // Prefer the cached `<root>` config for the snapshot's root entry:
+                                // - for normal roots, `<root>` is the root project's own config
+                                // - for aggregator roots, `<root>` is the union fallback
+                                data.modules
+                                    .get("<root>")
+                                    .and_then(|m| m.java_compile_config.as_ref())
+                                    .unwrap_or(cfg)
+                            } else {
+                                cfg
+                            };
+
+                            let project_dir = project_dirs
+                                .get(path)
+                                .cloned()
+                                .unwrap_or_else(|| project_root.to_path_buf());
+                            snapshot_configs.insert(
+                                path.clone(),
+                                GradleSnapshotJavaCompileConfig {
+                                    project_dir,
+                                    compile_classpath: cfg_for_snapshot.compile_classpath.clone(),
+                                    test_classpath: cfg_for_snapshot.test_classpath.clone(),
+                                    module_path: cfg_for_snapshot.module_path.clone(),
+                                    main_source_roots: cfg_for_snapshot.main_source_roots.clone(),
+                                    test_source_roots: cfg_for_snapshot.test_source_roots.clone(),
+                                    main_output_dir: cfg_for_snapshot.main_output_dir.clone(),
+                                    test_output_dir: cfg_for_snapshot.test_output_dir.clone(),
+                                    source: cfg_for_snapshot.source.clone(),
+                                    target: cfg_for_snapshot.target.clone(),
+                                    release: cfg_for_snapshot.release.clone(),
+                                    enable_preview: cfg_for_snapshot.enable_preview,
+                                },
+                            );
+                        }
+
+                        let _ = update_gradle_snapshot(project_root, &fingerprint, |snapshot| {
+                            snapshot.projects = snapshot_projects;
+                            snapshot.java_compile_configs = snapshot_configs;
+                        });
+                    }
+
+                    out.sort_by(|a, b| a.0.cmp(&b.0));
+                    out.dedup_by(|a, b| a.0 == b.0);
+                    return Ok(out);
+                }
+            }
+        }
+
         let (program, args, output) = self.run_print_all_java_compile_configs(project_root)?;
         if !output.status.success() {
             return Err(BuildError::CommandFailed {
@@ -284,6 +416,14 @@ impl GradleBuild {
 
             if is_root {
                 root_config = Some(config.clone());
+
+                // Cache the root project under `":"` so `java_compile_configs_all` can be served
+                // from cache without re-running Gradle (and without losing the distinction between
+                // the root project's own config vs the `<root>` union fallback for aggregator
+                // builds).
+                let module = data.modules.entry(":".to_string()).or_default();
+                module.java_compile_config = Some(config.clone());
+                module.classpath = Some(config.compile_classpath.clone());
             } else {
                 let module = data.modules.entry(project.path.clone()).or_default();
                 module.java_compile_config = Some(config.clone());

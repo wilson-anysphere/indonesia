@@ -551,6 +551,12 @@ fn gradle_java_compile_configs_all_parses_and_populates_cache() {
         .java_compile_configs_all(&root, &cache)
         .expect("batch java compile configs");
 
+    // Second call should be a cache hit (no extra Gradle invocation).
+    let configs2 = build
+        .java_compile_configs_all(&root, &cache)
+        .expect("batch java compile configs (cached)");
+    assert_eq!(configs2, configs);
+
     let app_cfg = configs
         .iter()
         .find(|(path, _)| path == ":app")
