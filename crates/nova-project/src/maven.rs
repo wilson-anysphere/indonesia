@@ -439,27 +439,28 @@ pub(crate) fn load_maven_workspace_model(
         .collect::<Vec<_>>();
     let jpms_modules = crate::jpms::discover_jpms_modules(&modules_for_jpms);
 
-    // JPMS-aware workspace model: if the workspace contains any `module-info.java`, treat jar
-    // dependencies as module-path entries so downstream consumers (e.g. `nova-db`) can build a
-    // module-aware classpath index.
-    if crate::jpms::workspace_uses_jpms(&jpms_modules) {
-        for module in &mut module_configs {
-            let mut module_path = std::mem::take(&mut module.module_path);
-            let mut classpath = Vec::new();
-
-            for entry in std::mem::take(&mut module.classpath) {
-                match entry.kind {
-                    ClasspathEntryKind::Jar => module_path.push(entry),
-                    ClasspathEntryKind::Directory => classpath.push(entry),
-                }
+    // JPMS-aware workspace model: when the workspace contains any `module-info.java`, treat Maven
+    // dependency jars as module-path entries so downstream consumers can resolve named modules.
+    for module in &mut module_configs {
+        // Keep output directories (directories) on the classpath, but reclassify dependency jars
+        // into module-path vs classpath based on whether the workspace uses JPMS.
+        let mut output_entries = Vec::new();
+        let mut dependency_entries = Vec::new();
+        for entry in std::mem::take(&mut module.classpath) {
+            match entry.kind {
+                ClasspathEntryKind::Directory => output_entries.push(entry),
+                ClasspathEntryKind::Jar => dependency_entries.push(entry),
             }
-
-            sort_dedup_classpath(&mut module_path);
-            sort_dedup_classpath(&mut classpath);
-
-            module.module_path = module_path;
-            module.classpath = classpath;
         }
+
+        let (mut module_path_deps, classpath_deps) =
+            crate::jpms::classify_dependency_entries(&jpms_modules, dependency_entries);
+        module.module_path.append(&mut module_path_deps);
+        module.classpath = output_entries;
+        module.classpath.extend(classpath_deps);
+
+        sort_dedup_classpath(&mut module.module_path);
+        sort_dedup_classpath(&mut module.classpath);
     }
 
     Ok(WorkspaceProjectModel::new(

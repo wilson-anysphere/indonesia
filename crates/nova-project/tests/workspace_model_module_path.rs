@@ -1,0 +1,170 @@
+use nova_project::{load_workspace_model_with_options, BuildSystem, ClasspathEntryKind, LoadOptions};
+use tempfile::tempdir;
+
+#[test]
+fn workspace_model_populates_module_path_for_jpms_workspaces() {
+    let tmp = tempdir().expect("tempdir");
+    let root = tmp.path();
+
+    std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+    std::fs::write(
+        root.join("module-info.java"),
+        "module mod.a { requires mod.b; }",
+    )
+    .expect("write module-info.java");
+
+    let dep_dir = root.join("deps/mod-b");
+    std::fs::create_dir_all(&dep_dir).expect("mkdir dep_dir");
+    std::fs::write(dep_dir.join("module-info.class"), make_module_info_class())
+        .expect("write module-info.class");
+
+    let mut options = LoadOptions::default();
+    options.classpath_overrides.push(dep_dir.clone());
+    let model = load_workspace_model_with_options(root, &options).expect("load workspace model");
+
+    assert_eq!(model.build_system, BuildSystem::Simple);
+    assert_eq!(model.modules.len(), 1);
+    let module = &model.modules[0];
+
+    assert!(
+        module
+            .module_path
+            .iter()
+            .any(|e| e.path == dep_dir && e.kind == ClasspathEntryKind::Directory),
+        "dependency override directory should be placed on module-path when JPMS is enabled"
+    );
+
+    assert!(
+        !module.classpath.iter().any(|e| e.path == dep_dir),
+        "dependency override directory should not remain on the classpath when JPMS is enabled"
+    );
+}
+
+fn make_module_info_class() -> Vec<u8> {
+    fn push_u2(out: &mut Vec<u8>, v: u16) {
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+    fn push_u4(out: &mut Vec<u8>, v: u32) {
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+
+    #[derive(Clone)]
+    enum CpEntry {
+        Utf8(String),
+        Module { name_index: u16 },
+        Package { name_index: u16 },
+    }
+
+    struct Cp {
+        entries: Vec<CpEntry>,
+    }
+
+    impl Cp {
+        fn new() -> Self {
+            Self { entries: Vec::new() }
+        }
+
+        fn push(&mut self, entry: CpEntry) -> u16 {
+            self.entries.push(entry);
+            self.entries.len() as u16
+        }
+
+        fn utf8(&mut self, s: &str) -> u16 {
+            self.push(CpEntry::Utf8(s.to_string()))
+        }
+
+        fn module(&mut self, name: &str) -> u16 {
+            let name_index = self.utf8(name);
+            self.push(CpEntry::Module { name_index })
+        }
+
+        fn package(&mut self, name: &str) -> u16 {
+            let name_index = self.utf8(name);
+            self.push(CpEntry::Package { name_index })
+        }
+
+        fn write(&self, out: &mut Vec<u8>) {
+            push_u2(out, (self.entries.len() as u16) + 1);
+            for entry in &self.entries {
+                match entry {
+                    CpEntry::Utf8(s) => {
+                        out.push(1);
+                        push_u2(out, s.len() as u16);
+                        out.extend_from_slice(s.as_bytes());
+                    }
+                    CpEntry::Module { name_index } => {
+                        out.push(19);
+                        push_u2(out, *name_index);
+                    }
+                    CpEntry::Package { name_index } => {
+                        out.push(20);
+                        push_u2(out, *name_index);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut cp = Cp::new();
+    let module_attr_name = cp.utf8("Module");
+    let self_module = cp.module("mod.b");
+    let api_pkg = cp.package("com/example/b/api");
+    let target_mod = cp.module("mod.a");
+
+    let mut module_attr = Vec::new();
+    push_u2(&mut module_attr, self_module); // module_name_index
+    push_u2(&mut module_attr, 0); // module_flags
+    push_u2(&mut module_attr, 0); // module_version_index
+    push_u2(&mut module_attr, 0); // requires_count
+    push_u2(&mut module_attr, 1); // exports_count
+                                       // exports
+    push_u2(&mut module_attr, api_pkg); // exports_index (Package)
+    push_u2(&mut module_attr, 0); // exports_flags
+    push_u2(&mut module_attr, 1); // exports_to_count
+    push_u2(&mut module_attr, target_mod); // exports_to_index (Module)
+    push_u2(&mut module_attr, 0); // opens_count
+    push_u2(&mut module_attr, 0); // uses_count
+    push_u2(&mut module_attr, 0); // provides_count
+
+    let mut out = Vec::new();
+    push_u4(&mut out, 0xCAFEBABE);
+    push_u2(&mut out, 0); // minor
+    push_u2(&mut out, 53); // major (Java 9)
+    cp.write(&mut out);
+
+    push_u2(&mut out, 0); // access_flags
+    push_u2(&mut out, 0); // this_class
+    push_u2(&mut out, 0); // super_class
+    push_u2(&mut out, 0); // interfaces_count
+    push_u2(&mut out, 0); // fields_count
+    push_u2(&mut out, 0); // methods_count
+
+    push_u2(&mut out, 1); // attributes_count
+    push_u2(&mut out, module_attr_name);
+    push_u4(&mut out, module_attr.len() as u32);
+    out.extend_from_slice(&module_attr);
+
+    // Sanity check: ensure the fixture parses (helps catch accidental corruption).
+    let info = nova_classfile::parse_module_info_class(&out).expect("parse module-info.class");
+    assert_eq!(info.name.as_str(), "mod.b");
+
+    out
+}
+
+#[test]
+fn make_module_info_class_fixture_is_readable_from_directory_archive() {
+    let tmp = tempdir().expect("tempdir");
+    let root = tmp.path();
+    let dep_dir = root.join("mod-b");
+    std::fs::create_dir_all(&dep_dir).expect("mkdir dep_dir");
+    std::fs::write(dep_dir.join("module-info.class"), make_module_info_class())
+        .expect("write module-info.class");
+
+    let archive = nova_archive::Archive::new(dep_dir.clone());
+    let bytes = archive
+        .read("module-info.class")
+        .expect("read module-info.class")
+        .expect("missing module-info.class");
+    let info = nova_classfile::parse_module_info_class(&bytes).expect("parse module-info.class");
+    assert_eq!(info.name.as_str(), "mod.b");
+}
