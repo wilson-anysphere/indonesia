@@ -3649,6 +3649,7 @@ version = "0.1.0"
 dependencies = [
  "nova-config",
  "nova-core",
+ "nova-db",
  "nova-ext-abi",
  "nova-metrics",
  "nova-scheduler",

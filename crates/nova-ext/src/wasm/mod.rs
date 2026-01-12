@@ -80,8 +80,9 @@ pub use nova_ext_abi::v1::{
     NavigationTargetV1, SeverityV1, SpanV1, SymbolV1,
 };
 pub use nova_ext_abi::{AbiVersion, ABI_V1};
+pub use nova_core::WasmHostDb;
 pub use runtime::{
-    WasmCallError, WasmCapabilities, WasmHostDb, WasmLoadError, WasmPlugin, WasmPluginConfig,
+    WasmCallError, WasmCapabilities, WasmLoadError, WasmPlugin, WasmPluginConfig,
 };
 
 #[cfg(test)]

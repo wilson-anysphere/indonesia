@@ -92,6 +92,16 @@ pub trait Database {
     }
 }
 
+impl nova_core::WasmHostDb for dyn Database + Send + Sync {
+    fn file_text(&self, file: FileId) -> &str {
+        self.file_content(file)
+    }
+
+    fn file_path(&self, file: FileId) -> Option<&Path> {
+        Database::file_path(self, file)
+    }
+}
+
 impl InMemoryFileStore {
     pub fn new() -> Self {
         Self::default()

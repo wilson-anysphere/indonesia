@@ -6,8 +6,8 @@ use crate::traits::{
 use crate::types::{CodeAction, InlayHint, NavigationTarget, Symbol};
 use crate::{ExtensionContext, ExtensionRegistry};
 use nova_core::FileId;
+use nova_core::WasmHostDb;
 use nova_types::{CompletionItem, Diagnostic, Severity, Span};
-use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Duration;
 use wasmtime::{Engine, Instance, Linker, Module, Store, StoreLimitsBuilder, TypedFunc};
@@ -131,15 +131,6 @@ impl WasmCapabilities {
             (Self::INLAY_HINTS, EXPORT_INLAY_HINTS),
         ]
         .into_iter()
-    }
-}
-
-/// Host-side database access required to build JSON requests for WASM extensions.
-pub trait WasmHostDb {
-    fn file_text(&self, file: FileId) -> &str;
-
-    fn file_path(&self, _file: FileId) -> Option<&Path> {
-        None
     }
 }
 

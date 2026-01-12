@@ -406,6 +406,25 @@ impl Diagnostic {
 }
 
 // -----------------------------------------------------------------------------
+// Extension host surfaces (used by `nova-ext` and integration layers)
+// -----------------------------------------------------------------------------
+
+/// Minimal host-side database access required to construct requests for Nova WASM extensions.
+///
+/// This trait lives in `nova-core` (rather than `nova-ext`) to avoid introducing a forbidden
+/// dependency edge from `nova-ext` (core layer) to `nova-db` (semantic layer). The primary
+/// database trait (`nova_db::Database`) implements this for its `dyn` object type.
+pub trait WasmHostDb {
+    /// Return the current UTF-8 text for `file`.
+    fn file_text(&self, file: FileId) -> &str;
+
+    /// Best-effort file path lookup for `file`.
+    fn file_path(&self, _file: FileId) -> Option<&Path> {
+        None
+    }
+}
+
+// -----------------------------------------------------------------------------
 // AI scaffolding surfaces (used by `nova-ai` and integration layers)
 // -----------------------------------------------------------------------------
 
