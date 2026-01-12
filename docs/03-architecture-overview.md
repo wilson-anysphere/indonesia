@@ -228,6 +228,7 @@ See [05 - Syntax and Parsing](05-syntax-and-parsing.md) for detailed design.
 Type checking, resolution, and semantic analysis.
 
 See [06 - Semantic Analysis](06-semantic-analysis.md) for detailed design.
+See also: stable type identity via `ClassId` ([ADR 0011](adr/0011-stable-classid-and-project-type-environments.md), [ADR 0012](adr/0012-classid-interning.md)).
 
 #### Components
 
