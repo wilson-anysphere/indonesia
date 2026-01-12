@@ -122,7 +122,30 @@ fn infer_type_at_offsets(
     None
 }
 
+#[derive(Clone, Copy)]
+struct TypeFormatOpts {
+    /// When formatting a type that appears in a Java signature, it's generally safe and more
+    /// readable to elide the `java.lang.` prefix since it is implicitly imported. However, the test
+    /// suite expects we *do not* elide `java.lang` for types that occur inside generic type
+    /// arguments, so we thread this option through the formatter.
+    elide_java_lang: bool,
+}
+
 fn format_type_fully_qualified(env: &dyn TypeEnv, ty: &Type) -> String {
+    format_type_fully_qualified_with_opts(
+        env,
+        ty,
+        TypeFormatOpts {
+            elide_java_lang: true,
+        },
+    )
+}
+
+fn format_type_fully_qualified_with_opts(
+    env: &dyn TypeEnv,
+    ty: &Type,
+    opts: TypeFormatOpts,
+) -> String {
     match ty {
         Type::Void => "void".to_string(),
         Type::Primitive(p) => format_primitive_type(*p).to_string(),
@@ -130,14 +153,23 @@ fn format_type_fully_qualified(env: &dyn TypeEnv, ty: &Type) -> String {
             let Some(class_def) = env.class(*def) else {
                 return format!("<class#{}>", def.to_raw());
             };
-            let mut out = binary_name_to_source_qualified(&class_def.name);
+            let mut out = binary_name_to_source_qualified(&class_def.name, opts.elide_java_lang);
             if !args.is_empty() {
                 out.push('<');
                 for (idx, arg) in args.iter().enumerate() {
                     if idx != 0 {
                         out.push_str(", ");
                     }
-                    out.push_str(&format_type_fully_qualified(env, arg));
+                    // `java.lang` types are implicitly imported, but keep `java.lang.*` fully
+                    // qualified when they appear as generic arguments for stability (see
+                    // `extract_method_infers_var_type_as_fully_qualified`).
+                    out.push_str(&format_type_fully_qualified_with_opts(
+                        env,
+                        arg,
+                        TypeFormatOpts {
+                            elide_java_lang: false,
+                        },
+                    ));
                 }
                 out.push('>');
             }
@@ -145,7 +177,7 @@ fn format_type_fully_qualified(env: &dyn TypeEnv, ty: &Type) -> String {
         }
         Type::Array(_) => {
             let (base, dims) = peel_array_dims(ty);
-            let mut out = format_type_fully_qualified(env, base);
+            let mut out = format_type_fully_qualified_with_opts(env, base, opts);
             for _ in 0..dims {
                 out.push_str("[]");
             }
@@ -155,10 +187,16 @@ fn format_type_fully_qualified(env: &dyn TypeEnv, ty: &Type) -> String {
         Type::Wildcard(bound) => match bound {
             WildcardBound::Unbounded => "?".to_string(),
             WildcardBound::Extends(upper) => {
-                format!("? extends {}", format_type_fully_qualified(env, upper))
+                format!(
+                    "? extends {}",
+                    format_type_fully_qualified_with_opts(env, upper, opts)
+                )
             }
             WildcardBound::Super(lower) => {
-                format!("? super {}", format_type_fully_qualified(env, lower))
+                format!(
+                    "? super {}",
+                    format_type_fully_qualified_with_opts(env, lower, opts)
+                )
             }
         },
         Type::Intersection(types) => {
@@ -166,22 +204,22 @@ fn format_type_fully_qualified(env: &dyn TypeEnv, ty: &Type) -> String {
             let Some(first) = it.next() else {
                 return "<?>".to_string();
             };
-            let mut out = format_type_fully_qualified(env, first);
+            let mut out = format_type_fully_qualified_with_opts(env, first, opts);
             for ty in it {
                 out.push_str(" & ");
-                out.push_str(&format_type_fully_qualified(env, ty));
+                out.push_str(&format_type_fully_qualified_with_opts(env, ty, opts));
             }
             out
         }
         Type::Null => "null".to_string(),
-        Type::Named(name) => binary_name_to_source_qualified(name),
+        Type::Named(name) => binary_name_to_source_qualified(name, opts.elide_java_lang),
         Type::VirtualInner { owner, name } => {
             let Some(owner_def) = env.class(*owner) else {
                 return format!("<class#{}>.{}", owner.to_raw(), name);
             };
             format!(
                 "{}.{}",
-                binary_name_to_source_qualified(&owner_def.name),
+                binary_name_to_source_qualified(&owner_def.name, opts.elide_java_lang),
                 name
             )
         }
@@ -218,8 +256,17 @@ fn format_primitive_type(p: PrimitiveType) -> &'static str {
     }
 }
 
-fn binary_name_to_source_qualified(binary_name: &str) -> String {
-    binary_name.replace('$', ".")
+fn binary_name_to_source_qualified(binary_name: &str, elide_java_lang: bool) -> String {
+    let out = binary_name.replace('$', ".");
+    if elide_java_lang {
+        // `java.lang` is implicitly imported in every compilation unit, so avoid emitting noisy
+        // qualifications like `java.lang.RuntimeException` in most signature positions.
+        out.strip_prefix("java.lang.")
+            .map(|s| s.to_string())
+            .unwrap_or(out)
+    } else {
+        out
+    }
 }
 
 fn item_members<'a>(

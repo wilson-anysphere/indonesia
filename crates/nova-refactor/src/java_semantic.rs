@@ -1565,11 +1565,23 @@ impl RefactorDatabase for RefactorJavaDatabase {
             return vec![symbol];
         }
 
-        // This is a best-effort override chain implementation:
+        // This is a best-effort override/implementation chain implementation:
         // - We group overloads by name in `resolution_to_symbol`, so a single symbol may represent
         //   multiple `MethodId`s.
         // - When matching overrides across types, we currently only consider method name +
         //   parameter count (not full type-erased signature).
+        //
+        // The implementation attempts to compute the *transitive closure* of override/implements
+        // relationships. In particular, this matters for interface renames:
+        //
+        // ```
+        // interface I { void m(); }
+        // class Base { public void m(){} }
+        // class C extends Base implements I { @Override public void m(){} }
+        // ```
+        //
+        // Renaming `I.m` should rename `C.m` and also `Base.m` so the class override chain remains
+        // consistent (e.g. `Base b = new C(); b.m()` keeps dispatching to the same implementation).
         fn matching_methods_in_type(
             db: &RefactorJavaDatabase,
             owner: ItemId,
@@ -1630,9 +1642,6 @@ impl RefactorDatabase for RefactorJavaDatabase {
             Vec::new()
         }
 
-        let mut out: HashSet<SymbolId> = HashSet::new();
-        out.insert(symbol);
-
         // Resolve the set of method IDs covered by this symbol (potentially multiple overloads).
         let method_ids: Vec<MethodId> = self
             .method_to_symbol
@@ -1643,30 +1652,68 @@ impl RefactorDatabase for RefactorJavaDatabase {
             return vec![symbol];
         }
 
-        for method_id in method_ids {
+        fn interface_supertypes(db: &RefactorJavaDatabase, ty: ItemId) -> Vec<ItemId> {
+            let mut out = Vec::new();
+            let mut visited: HashSet<ItemId> = HashSet::new();
+            let mut queue: VecDeque<ItemId> = VecDeque::new();
+            if let Some(sups) = db.type_supertypes.get(&ty) {
+                queue.extend(sups.iter().copied());
+            }
+            while let Some(next) = queue.pop_front() {
+                if !visited.insert(next) {
+                    continue;
+                }
+                if matches!(next, ItemId::Interface(_)) {
+                    out.push(next);
+                }
+                if let Some(sups) = db.type_supertypes.get(&next) {
+                    queue.extend(sups.iter().copied());
+                }
+            }
+            out
+        }
+
+        let mut out: HashSet<SymbolId> = HashSet::new();
+        let mut method_queue: VecDeque<MethodId> = method_ids.into_iter().collect();
+        let mut visited_methods: HashSet<MethodId> = HashSet::new();
+
+        // Always include the initial symbol, even if we fail to resolve method ids -> symbols.
+        out.insert(symbol);
+
+        while let Some(method_id) = method_queue.pop_front() {
+            if !visited_methods.insert(method_id) {
+                continue;
+            }
+
             let Some(owner) = self.method_owners.get(&method_id).copied() else {
                 continue;
             };
-            let owner_is_interface = matches!(owner, ItemId::Interface(_));
             let Some(signature) = self.method_signatures.get(&method_id).cloned() else {
                 continue;
             };
 
-            // Walk up the inheritance chain (overridden methods).
-            let mut visited: HashSet<ItemId> = HashSet::new();
+            if let Some(sym) = self.method_to_symbol.get(&method_id).copied() {
+                out.insert(sym);
+            }
+
+            let owner_is_interface = matches!(owner, ItemId::Interface(_));
+
+            // 1) Walk up the inheritance chain (overridden/implemented methods).
+            let mut visited_types: HashSet<ItemId> = HashSet::new();
             let mut queue: VecDeque<ItemId> = VecDeque::new();
             if let Some(sups) = self.type_supertypes.get(&owner) {
                 queue.extend(sups.iter().copied());
             }
             while let Some(ty) = queue.pop_front() {
-                if !visited.insert(ty) {
+                if !visited_types.insert(ty) {
                     continue;
                 }
 
-                for method in matching_methods_in_type(self, ty, &signature) {
-                    if let Some(sym) = self.method_to_symbol.get(&method).copied() {
+                for m in matching_methods_in_type(self, ty, &signature) {
+                    if let Some(sym) = self.method_to_symbol.get(&m).copied() {
                         out.insert(sym);
                     }
+                    method_queue.push_back(m);
                 }
 
                 if let Some(sups) = self.type_supertypes.get(&ty) {
@@ -1674,35 +1721,59 @@ impl RefactorDatabase for RefactorJavaDatabase {
                 }
             }
 
-            // Walk down the inheritance chain (overriding methods).
-            let mut visited: HashSet<ItemId> = HashSet::new();
+            // 2) Walk down the inheritance chain (overriding/implementing methods).
+            let mut visited_types: HashSet<ItemId> = HashSet::new();
             let mut queue: VecDeque<ItemId> = VecDeque::new();
             if let Some(subs) = self.type_subtypes.get(&owner) {
                 queue.extend(subs.iter().copied());
             }
             while let Some(ty) = queue.pop_front() {
-                if !visited.insert(ty) {
+                if !visited_types.insert(ty) {
                     continue;
                 }
 
-                let methods = matching_methods_in_type(self, ty, &signature);
-                for method in &methods {
-                    if let Some(sym) = self.method_to_symbol.get(method).copied() {
-                        out.insert(sym);
-                    }
-                }
+                if owner_is_interface {
+                    // For interface methods, a subtype class might implement the method via an
+                    // inherited superclass declaration.
+                    let methods = if matches!(ty, ItemId::Interface(_) | ItemId::Annotation(_)) {
+                        matching_methods_in_type(self, ty, &signature)
+                    } else {
+                        inherited_methods_in_class_hierarchy(self, ty, &signature)
+                    };
 
-                // Interface methods can be implemented by a class via an inherited superclass
-                // method declaration. The hierarchy index only points from interface -> implementer
-                // class, so we need an additional search to find the concrete declaration that
-                // satisfies the interface contract.
-                if owner_is_interface
-                    && methods.is_empty()
-                    && !matches!(ty, ItemId::Interface(_) | ItemId::Annotation(_))
-                {
-                    for method in inherited_methods_in_class_hierarchy(self, ty, &signature) {
-                        if let Some(sym) = self.method_to_symbol.get(&method).copied() {
+                    for m in methods {
+                        if let Some(sym) = self.method_to_symbol.get(&m).copied() {
                             out.insert(sym);
+                        }
+                        method_queue.push_back(m);
+                    }
+                } else {
+                    // For class methods, only *declared* methods in subtypes are overrides.
+                    let methods = matching_methods_in_type(self, ty, &signature);
+                    for m in &methods {
+                        if let Some(sym) = self.method_to_symbol.get(m).copied() {
+                            out.insert(sym);
+                        }
+                        method_queue.push_back(*m);
+                    }
+
+                    // If a subtype doesn't declare an override, this method may still be the
+                    // inherited implementation of an interface method that the subtype adds via
+                    // `implements`. In that case, connect this class method to the interface method
+                    // so renaming the class method keeps the interface contract consistent.
+                    if methods.is_empty()
+                        && !matches!(ty, ItemId::Interface(_) | ItemId::Annotation(_))
+                    {
+                        let inherited = inherited_methods_in_class_hierarchy(self, ty, &signature);
+                        if inherited.contains(&method_id) {
+                            for iface in interface_supertypes(self, ty) {
+                                for m in matching_methods_in_type(self, iface, &signature) {
+                                    if let Some(sym) = self.method_to_symbol.get(&m).copied() {
+                                        out.insert(sym);
+                                    }
+                                    method_queue.push_back(m);
+                                }
+                            }
                         }
                     }
                 }
