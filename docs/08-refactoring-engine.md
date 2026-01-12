@@ -158,7 +158,7 @@ impl ExtractMethod {
 Current implementation policy (semantic + statement-aware):
 
 - **Insertion point:** the new local declaration is inserted immediately **before the _enclosing statement_** that contains the extracted expression (statement-aware), not simply at the start of the current line.
-- **Formatting:** newline style (LF vs CRLF) and indentation are preserved. The inserted declaration uses the indentation of the enclosing statement, and we preserve surrounding blank lines as much as possible.
+- **Formatting:** newline style (LF vs CRLF) and indentation are preserved. The inserted declaration uses the indentation of the enclosing statement line.
 - **Type annotation:**
   - `use_var: true` emits `var <name> = <expr>;`
   - `use_var: false` emits an explicit Java type when we can infer it **best-effort**. If we cannot infer a type confidently, the refactoring is rejected rather than guessing. In practice, clients should default to `use_var: true` for maximum applicability.
