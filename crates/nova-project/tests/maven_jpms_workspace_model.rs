@@ -3,6 +3,19 @@ use std::fs;
 use nova_project::{load_workspace_model_with_options, BuildSystem, ClasspathEntryKind, LoadOptions};
 use tempfile::tempdir;
 
+fn write_fake_jar_dir_with_automatic_module_name(jar_path: &std::path::Path, module_name: &str) {
+    let manifest_path = jar_path.join("META-INF").join("MANIFEST.MF");
+    fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
+        .expect("mkdir jar/META-INF");
+
+    // `nova_project::jpms::is_stable_named_module` reads `META-INF/MANIFEST.MF` using
+    // `nova_archive::Archive`, which supports both `.jar` files and exploded directories.
+    //
+    // We create an exploded jar directory to avoid needing zip/jar tooling in tests.
+    fs::write(&manifest_path, format!("Manifest-Version: 1.0\r\nAutomatic-Module-Name: {module_name}\r\n\r\n"))
+        .expect("write manifest");
+}
+
 #[test]
 fn maven_workspace_model_populates_module_path_for_jpms_projects() {
     let tmp = tempdir().expect("tempdir");
@@ -12,12 +25,7 @@ fn maven_workspace_model_populates_module_path_for_jpms_projects() {
     // `~/.m2/repository`).
     let maven_repo = root.join("m2");
     let guava_dir = maven_repo.join("com/google/guava/guava/33.0.0-jre/guava-33.0.0-jre.jar");
-    fs::create_dir_all(guava_dir.join("META-INF")).expect("mkdir Guava jar dir");
-    fs::write(
-        guava_dir.join("META-INF/MANIFEST.MF"),
-        b"Manifest-Version: 1.0\r\nAutomatic-Module-Name: com.google.common\r\n\r\n",
-    )
-    .expect("write Guava MANIFEST.MF");
+    write_fake_jar_dir_with_automatic_module_name(&guava_dir, "com.google.common");
 
     fs::write(
         root.join("pom.xml"),

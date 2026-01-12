@@ -875,7 +875,7 @@ fn parse_gradle_dependencies_from_text(contents: &str) -> Vec<Dependency> {
         // Keep this list conservative: only configurations that are commonly used for
         // Java compilation or annotation processing. This is best-effort dependency extraction,
         // not a full Gradle parser.
-        let configs = r"(?:implementation|api|compileOnly|runtimeOnly|testImplementation|annotationProcessor)";
+        let configs = r"(?:implementation|api|compileOnly|runtimeOnly|testImplementation|testRuntimeOnly|testCompileOnly|annotationProcessor|testAnnotationProcessor|kapt|kaptTest)";
 
         Regex::new(&format!(
             r#"(?i)\b{configs}\s*\(?\s*['"]([^:'"]+):([^:'"]+):([^'"]+)['"]"#,
@@ -901,7 +901,7 @@ fn parse_gradle_dependencies_from_text(contents: &str) -> Vec<Dependency> {
     // language parser.
     static RE_MAP: OnceLock<Regex> = OnceLock::new();
     let re_map = RE_MAP.get_or_init(|| {
-        let configs = r"(?:implementation|api|compileOnly|runtimeOnly|testImplementation|annotationProcessor)";
+        let configs = r"(?:implementation|api|compileOnly|runtimeOnly|testImplementation|testRuntimeOnly|testCompileOnly|annotationProcessor|testAnnotationProcessor|kapt|kaptTest)";
 
         // Notes:
         // - `\s` matches newlines in Rust regex, which lets us handle typical multi-line map args.
@@ -923,6 +923,7 @@ fn parse_gradle_dependencies_from_text(contents: &str) -> Vec<Dependency> {
             type_: None,
         });
     }
+    sort_dedup_dependencies(&mut deps);
     deps
 }
 
@@ -1151,5 +1152,64 @@ dependencies {
             "auto-service".to_string(),
             Some("1.1.1".to_string())
         )));
+    }
+
+    #[test]
+    fn parses_gradle_dependencies_from_text_supported_configurations_and_dedups() {
+        let build_script = r#"
+plugins {
+    kotlin("jvm") version "1.9.0"
+}
+
+dependencies {
+    implementation("g1:a1:1")
+    api("g2:a2:2")
+    compileOnly("g3:a3:3")
+    runtimeOnly("g4:a4:4")
+    testImplementation("g5:a5:5")
+    testRuntimeOnly("g6:a6:6")
+    testCompileOnly("g7:a7:7")
+    annotationProcessor("g8:a8:8")
+    testAnnotationProcessor("g9:a9:9")
+    kapt("g10:a10:10")
+    kaptTest("g11:a11:11")
+
+    // Groovy-style call form (no parens)
+    implementation 'g12:a12:12'
+    kapt 'g13:a13:13'
+
+    // Duplicate coordinates should not produce duplicates in output.
+    implementation("dup:dep:1.0")
+    testImplementation("dup:dep:1.0")
+}
+"#;
+
+        let deps = parse_gradle_dependencies_from_text(build_script);
+        let got: BTreeSet<_> = deps
+            .into_iter()
+            .map(|d| (d.group_id, d.artifact_id, d.version))
+            .collect();
+
+        let expected: BTreeSet<(String, String, Option<String>)> = [
+            ("g1", "a1", "1"),
+            ("g2", "a2", "2"),
+            ("g3", "a3", "3"),
+            ("g4", "a4", "4"),
+            ("g5", "a5", "5"),
+            ("g6", "a6", "6"),
+            ("g7", "a7", "7"),
+            ("g8", "a8", "8"),
+            ("g9", "a9", "9"),
+            ("g10", "a10", "10"),
+            ("g11", "a11", "11"),
+            ("g12", "a12", "12"),
+            ("g13", "a13", "13"),
+            ("dup", "dep", "1.0"),
+        ]
+        .into_iter()
+        .map(|(g, a, v)| (g.to_string(), a.to_string(), Some(v.to_string())))
+        .collect();
+
+        assert_eq!(got, expected);
     }
 }
