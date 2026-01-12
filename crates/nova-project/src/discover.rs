@@ -221,10 +221,15 @@ pub fn reload_project(
             // If a build marker changes, the build system itself can change (e.g. a `pom.xml`
             // appears in a previously "simple" workspace). Treat *any* supported build file as a
             // signal to reload the full project configuration.
-            is_build_file(BuildSystem::Maven, path)
-                || is_build_file(BuildSystem::Gradle, path)
-                || is_build_file(BuildSystem::Bazel, path)
-                || is_apt_generated_roots_snapshot(path)
+            //
+            // `is_build_file` contains ignore heuristics for common output directories (e.g.
+            // `build/`, `.gradle/`). Use paths relative to the workspace root so absolute parent
+            // directories (like `/home/user/build/...`) don't spuriously trip those heuristics.
+            let rel = path.strip_prefix(workspace_root).unwrap_or(path.as_path());
+            is_build_file(BuildSystem::Maven, rel)
+                || is_build_file(BuildSystem::Gradle, rel)
+                || is_build_file(BuildSystem::Bazel, rel)
+                || is_apt_generated_roots_snapshot(rel)
         })
     {
         // Build files changed (or unknown change set): rescan the workspace root.
@@ -895,6 +900,76 @@ mod tests {
                 .iter()
                 .any(|root| root.path == snapshot_src),
             "expected Gradle snapshot source root to be present after reload"
+        );
+    }
+
+    #[test]
+    fn reload_project_reloads_when_gradle_lockfile_changes_even_when_workspace_root_contains_build_dir(
+    ) {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path().join("build").join("workspace");
+        std::fs::create_dir_all(&root).expect("mkdir workspace");
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching project loading behavior.
+        let root = root.canonicalize().expect("canonicalize workspace root");
+
+        std::fs::write(root.join("build.gradle"), "").expect("write build.gradle");
+        let lockfile_path = root.join("gradle.lockfile");
+        std::fs::write(&lockfile_path, "locked=1\n").expect("write gradle.lockfile");
+
+        // Snapshot-provided source root so we can observe snapshot application.
+        let snapshot_src = root.join("snapshot-src");
+        std::fs::create_dir_all(&snapshot_src).expect("mkdir snapshot-src");
+
+        let fingerprint = nova_build_model::collect_gradle_build_files(&root)
+            .and_then(|files| nova_build_model::BuildFileFingerprint::from_files(&root, files))
+            .expect("gradle build fingerprint")
+            .digest;
+
+        let snapshot_path = root.join(nova_build_model::GRADLE_SNAPSHOT_REL_PATH);
+        std::fs::create_dir_all(snapshot_path.parent().expect("snapshot parent"))
+            .expect("mkdir .nova/queries");
+        let snapshot = serde_json::json!({
+            "schemaVersion": nova_build_model::GRADLE_SNAPSHOT_SCHEMA_VERSION,
+            "buildFingerprint": fingerprint,
+            "projects": [{"path": ":", "projectDir": "."}],
+            "javaCompileConfigs": {
+                ":": {
+                    "projectDir": ".",
+                    "mainSourceRoots": ["snapshot-src"]
+                }
+            }
+        });
+        std::fs::write(
+            &snapshot_path,
+            serde_json::to_vec(&snapshot).expect("snapshot json"),
+        )
+        .expect("write gradle snapshot");
+
+        let options = LoadOptions::default();
+        let cfg = load_project_with_options(&root, &options).expect("load project");
+        assert_eq!(cfg.build_system, BuildSystem::Gradle);
+        assert!(
+            cfg.source_roots
+                .iter()
+                .any(|root| root.path == snapshot_src),
+            "expected Gradle snapshot source root to be present before lockfile changes"
+        );
+
+        // Mutating the lockfile changes the Gradle build fingerprint and should cause
+        // `reload_project()` to re-run project loading. Because the snapshot fingerprint is now
+        // stale, the snapshot should be ignored and the snapshot-provided source root should
+        // disappear.
+        std::fs::write(&lockfile_path, "locked=2\n").expect("update gradle.lockfile");
+
+        let mut options_reload = options.clone();
+        let cfg2 = reload_project(&cfg, &mut options_reload, &[lockfile_path.clone()])
+            .expect("reload with gradle.lockfile change");
+        assert_eq!(cfg2.build_system, BuildSystem::Gradle);
+        assert!(
+            !cfg2.source_roots
+                .iter()
+                .any(|root| root.path == snapshot_src),
+            "expected Gradle snapshot to be ignored after lockfile change invalidated fingerprint"
         );
     }
 
