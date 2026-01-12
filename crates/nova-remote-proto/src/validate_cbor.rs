@@ -1,8 +1,8 @@
 use anyhow::{bail, ensure, Context};
 
 use crate::{
-    MAX_FILES_PER_MESSAGE, MAX_FILE_TEXT_BYTES, MAX_MESSAGE_BYTES, MAX_SMALL_STRING_BYTES,
-    MAX_SYMBOLS_PER_SHARD_INDEX,
+    MAX_DIAGNOSTICS_PER_MESSAGE, MAX_FILES_PER_MESSAGE, MAX_FILE_TEXT_BYTES, MAX_MESSAGE_BYTES,
+    MAX_SEARCH_RESULTS_PER_MESSAGE, MAX_SMALL_STRING_BYTES, MAX_SYMBOLS_PER_SHARD_INDEX,
 };
 
 /// Conservative validation of a CBOR buffer to avoid allocation bombs during `serde_cbor` decode.
@@ -153,6 +153,20 @@ fn limits_for_map_value(key: &str, base: Limits) -> Limits {
             ..base
         },
 
+        // Search result payloads.
+        "items" => Limits {
+            max_array_len: MAX_SEARCH_RESULTS_PER_MESSAGE,
+            min_array_item_bytes: MIN_BYTES_PER_COMPLEX_ARRAY_ITEM,
+            ..base
+        },
+
+        // Diagnostics payloads.
+        "diagnostics" => Limits {
+            max_array_len: MAX_DIAGNOSTICS_PER_MESSAGE,
+            min_array_item_bytes: MIN_BYTES_PER_COMPLEX_ARRAY_ITEM,
+            ..base
+        },
+
         // Symbol payloads.
         "symbols" => Limits {
             max_array_len: MAX_SYMBOLS_PER_SHARD_INDEX,
@@ -177,7 +191,7 @@ fn limits_for_map_value(key: &str, base: Limits) -> Limits {
         },
 
         // Small strings.
-        "path" | "name" | "auth_token" | "message" | "details" | "worker_build" => Limits {
+        "path" | "name" | "auth_token" | "message" | "details" | "worker_build" | "query" => Limits {
             max_text_len: MAX_SMALL_STRING_BYTES,
             ..base
         },

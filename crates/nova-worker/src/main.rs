@@ -10,10 +10,11 @@ use anyhow::{anyhow, Context, Result};
 use nova_bugreport::{install_panic_hook, PanicHookConfig};
 use nova_config::{init_tracing_with_config, NovaConfig};
 use nova_db::salsa::Database as SalsaDatabase;
-use nova_db::{FileId, NovaHir, SourceRootId};
+use nova_db::{FileId, NovaHir, NovaInputs, NovaSyntax, SourceRootId};
 use nova_remote_proto::v3::{
-    CachedIndexInfo, Capabilities, CompressionAlgo, Notification, ProtocolVersion, Request,
-    Response, RpcError as ProtoRpcError, RpcErrorCode, SupportedVersions,
+    CachedIndexInfo, Capabilities, CompressionAlgo, DiagnosticSeverity, Notification,
+    ProtocolVersion, RemoteDiagnostic, Request, Response, RpcError as ProtoRpcError, RpcErrorCode,
+    SupportedVersions,
 };
 use nova_remote_proto::{FileText, ShardId, ShardIndex, WorkerStats};
 use nova_remote_rpc::{RequestContext, RpcConnection, WorkerConfig};
@@ -269,6 +270,35 @@ async fn handle_request(
             }
             Ok(Response::ShardIndex(index))
         }
+        Request::Diagnostics { path } => {
+            // Best-effort: failures should not abort the caller. Return an empty diagnostics list
+            // on any error/miss.
+            let state = state.lock().await;
+            let Some(&file_id) = state.path_to_file_id.get(&path) else {
+                return Ok(Response::Diagnostics {
+                    diagnostics: Vec::new(),
+                });
+            };
+
+            let snap = state.db.snapshot();
+            let text = snap.file_content(file_id);
+            let parse = snap.parse_java(file_id);
+            let mut diagnostics = Vec::new();
+            for err in parse
+                .errors
+                .iter()
+                .take(nova_remote_proto::MAX_DIAGNOSTICS_PER_MESSAGE)
+            {
+                let (line, column) = byte_offset_to_line_col(&text, err.range.start);
+                diagnostics.push(RemoteDiagnostic {
+                    severity: DiagnosticSeverity::Error,
+                    line,
+                    column,
+                    message: err.message.clone(),
+                });
+            }
+            Ok(Response::Diagnostics { diagnostics })
+        }
         Request::GetWorkerStats => {
             let state = state.lock().await;
             Ok(Response::WorkerStats(state.worker_stats()))
@@ -284,6 +314,24 @@ async fn handle_request(
             details: None,
         }),
     }
+}
+
+fn byte_offset_to_line_col(text: &str, byte_offset: u32) -> (u32, u32) {
+    let bytes = text.as_bytes();
+    let mut line: u32 = 0;
+    let mut col: u32 = 0;
+    let mut idx = 0usize;
+    let end = (byte_offset as usize).min(bytes.len());
+    while idx < end {
+        if bytes[idx] == b'\n' {
+            line = line.saturating_add(1);
+            col = 0;
+        } else {
+            col = col.saturating_add(1);
+        }
+        idx += 1;
+    }
+    (line, col)
 }
 
 fn cancelled_error() -> ProtoRpcError {

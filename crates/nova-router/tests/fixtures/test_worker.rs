@@ -366,6 +366,9 @@ async fn run_v3(conn: RpcConnection, shard_id: ShardId) -> Result<()> {
                         guard.index_generation = guard.index_generation.saturating_add(1);
                         Ok(Response::ShardIndex(guard.shard_index()))
                     }
+                    Request::Diagnostics { .. } => Ok(Response::Diagnostics {
+                        diagnostics: Vec::new(),
+                    }),
                     Request::GetWorkerStats => {
                         let guard = state.lock().await;
                         Ok(Response::WorkerStats(guard.stats()))

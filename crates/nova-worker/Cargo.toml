@@ -22,6 +22,7 @@ nova-cache = { path = "../nova-cache" }
 nova-bugreport = { path = "../nova-bugreport" }
 nova-config = { path = "../nova-config" }
 nova-db = { path = "../nova-db" }
+nova-fuzzy = { path = "../nova-fuzzy" }
 nova-remote-proto = { path = "../nova-remote-proto", features = ["tokio"] }
 nova-remote-rpc = { path = "../nova-remote-rpc" }
 
@@ -36,6 +37,7 @@ rustls-pemfile = { version = "2.2.0", optional = true }
 tempfile.workspace = true
 tokio.workspace = true
 rcgen = "0.13.2"
+tracing-subscriber.workspace = true
 
-nova-fuzzy = { path = "../nova-fuzzy" }
+nova-lsp = { path = "../nova-lsp" }
 nova-router = { path = "../nova-router" }

@@ -29,17 +29,20 @@ use nova_refactor::{
     RefactorJavaDatabase, RenameParams, SemanticRefactorError, TextDatabase,
     WorkspaceTextEdit as RefactorTextEdit,
 };
+use nova_router::{DistributedRouterConfig, ListenAddr, QueryRouter, SourceRoot, WorkspaceLayout};
 use nova_syntax::parse;
 use nova_workspace::{
     CacheStatus, DiagnosticsReport, IndexReport, ParseResult, PerfMetrics, Workspace,
     WorkspaceSymbol,
 };
+use nova_index::SymbolLocation;
 use serde::Serialize;
 use std::{
     collections::BTreeMap,
     env, fs,
     path::{Path, PathBuf},
     sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -148,6 +151,15 @@ struct SymbolsArgs {
     /// Emit JSON suitable for CI
     #[arg(long)]
     json: bool,
+    /// Use the experimental distributed router/worker stack for indexing + symbol search.
+    ///
+    /// If distributed mode fails (e.g. `nova-worker` is unavailable), the CLI falls back to the
+    /// default in-process implementation.
+    #[arg(long)]
+    distributed: bool,
+    /// Path to the `nova-worker` binary when using `--distributed`.
+    #[arg(long)]
+    distributed_worker_command: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -507,12 +519,21 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
             Ok(exit)
         }
         Command::Symbols(args) => {
-            let ws = Workspace::open(&args.path)?;
-            let results = ws
-                .workspace_symbols(&args.query)?
-                .into_iter()
-                .take(args.limit)
-                .collect::<Vec<_>>();
+            let results = if args.distributed {
+                match workspace_symbols_distributed(&args) {
+                    Ok(symbols) => symbols,
+                    Err(err) => {
+                        eprintln!("nova symbols: distributed mode failed; falling back: {err:#}");
+                        let ws = Workspace::open(&args.path)?;
+                        ws.workspace_symbols(&args.query)?
+                    }
+                }
+            } else {
+                let ws = Workspace::open(&args.path)?;
+                ws.workspace_symbols(&args.query)?
+            };
+
+            let results = results.into_iter().take(args.limit).collect::<Vec<_>>();
             print_output(&results, args.json)?;
             Ok(0)
         }
@@ -1262,6 +1283,159 @@ fn handle_organize_imports(args: OrganizeImportsArgs) -> Result<i32> {
     }
 
     Ok(0)
+}
+
+fn workspace_symbols_distributed(args: &SymbolsArgs) -> Result<Vec<WorkspaceSymbol>> {
+    let workspace_root = args.path.canonicalize().unwrap_or_else(|_| args.path.clone());
+    let worker_command = args
+        .distributed_worker_command
+        .clone()
+        .unwrap_or_else(default_worker_command);
+
+    let run_dir = distributed_run_dir();
+    std::fs::create_dir_all(&run_dir)
+        .with_context(|| format!("create distributed runtime dir {}", run_dir.display()))?;
+    let cache_dir = run_dir.join("cache");
+    std::fs::create_dir_all(&cache_dir)
+        .with_context(|| format!("create distributed cache dir {}", cache_dir.display()))?;
+    let listen_addr = distributed_listen_addr(&run_dir);
+
+    let cleanup_dir = run_dir.clone();
+    let result = (|| -> Result<Vec<WorkspaceSymbol>> {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .context("build tokio runtime for distributed mode")?;
+
+        let symbols = rt.block_on(async {
+            let layout = WorkspaceLayout {
+                source_roots: vec![SourceRoot {
+                    path: workspace_root.clone(),
+                }],
+            };
+            let config = DistributedRouterConfig {
+                listen_addr,
+                worker_command,
+                cache_dir,
+                auth_token: None,
+                allow_insecure_tcp: false,
+                max_rpc_bytes: nova_router::DEFAULT_MAX_RPC_BYTES,
+                max_inflight_handshakes: nova_router::DEFAULT_MAX_INFLIGHT_HANDSHAKES,
+                max_worker_connections: nova_router::DEFAULT_MAX_WORKER_CONNECTIONS,
+                #[cfg(feature = "tls")]
+                tls_client_cert_fingerprint_allowlist: Default::default(),
+                spawn_workers: true,
+            };
+
+            let router = QueryRouter::new_distributed(config, layout).await?;
+
+            let result = match router.index_workspace().await {
+                Ok(()) => Ok(router.workspace_symbols(&args.query).await),
+                Err(err) => Err(err),
+            };
+
+            let _ = router.shutdown().await;
+            result
+        })?;
+
+        use std::collections::btree_map::Entry;
+
+        let mut symbols_by_name: BTreeMap<String, Vec<SymbolLocation>> = BTreeMap::new();
+        let mut order: Vec<String> = Vec::new();
+
+        for sym in symbols {
+            let name = sym.name;
+            let path = sym.path;
+
+            match symbols_by_name.entry(name.clone()) {
+                Entry::Vacant(v) => {
+                    order.push(name.clone());
+                    v.insert(Vec::new());
+                }
+                Entry::Occupied(_) => {}
+            }
+
+            let file_path = PathBuf::from(path.as_str());
+            let file =
+                path_relative_to(&workspace_root, &file_path).unwrap_or_else(|_| path.clone());
+            symbols_by_name
+                .get_mut(&name)
+                .expect("symbols_by_name entry should exist")
+                .push(SymbolLocation {
+                    file,
+                    line: 1,
+                    column: 1,
+                });
+        }
+
+        let mut out = Vec::new();
+        for name in order {
+            if let Some(locations) = symbols_by_name.remove(&name) {
+                out.push(WorkspaceSymbol { name, locations });
+            }
+        }
+
+        Ok(out)
+    })();
+
+    // Best-effort cleanup: avoid leaving behind stale sockets/cache data if the CLI crashes.
+    let _ = std::fs::remove_dir_all(&cleanup_dir);
+    result
+}
+
+fn default_worker_command() -> PathBuf {
+    let exe_name = if cfg!(windows) {
+        "nova-worker.exe"
+    } else {
+        "nova-worker"
+    };
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join(exe_name);
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
+
+    PathBuf::from(exe_name)
+}
+
+fn distributed_run_dir() -> PathBuf {
+    let base = env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    base.join(format!("nova-distributed-{}-{ts}", std::process::id()))
+}
+
+#[cfg(unix)]
+fn distributed_listen_addr(run_dir: &Path) -> ListenAddr {
+    ListenAddr::Unix(run_dir.join("router.sock"))
+}
+
+#[cfg(windows)]
+fn distributed_listen_addr(_run_dir: &Path) -> ListenAddr {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    ListenAddr::NamedPipe(format!("nova-router-{}-{ts}", std::process::id()))
+}
+
+fn path_relative_to(root: &Path, path: &Path) -> Result<String> {
+    let rel = path.strip_prefix(root).with_context(|| {
+        format!(
+            "{} is not under workspace root {}",
+            path.display(),
+            root.display()
+        )
+    })?;
+    Ok(rel.to_string_lossy().replace('\\', "/"))
 }
 
 fn conflicts_to_json(

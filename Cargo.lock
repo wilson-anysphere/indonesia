@@ -3470,8 +3470,10 @@ dependencies = [
  "nova-deps-cache",
  "nova-ext",
  "nova-format",
+ "nova-index",
  "nova-perf",
  "nova-refactor",
+ "nova-router",
  "nova-syntax",
  "nova-workspace",
  "predicates",
@@ -4315,6 +4317,7 @@ dependencies = [
  "nova-config",
  "nova-db",
  "nova-fuzzy",
+ "nova-lsp",
  "nova-remote-proto",
  "nova-remote-rpc",
  "nova-router",
@@ -4325,6 +4328,7 @@ dependencies = [
  "tokio",
  "tokio-rustls 0.26.4",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

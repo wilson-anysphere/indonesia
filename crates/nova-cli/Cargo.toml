@@ -9,6 +9,7 @@ name = "nova"
 path = "src/main.rs"
 
 [features]
+tls = ["nova-router/tls"]
 wasm-extensions = ["dep:nova-ext", "nova-ext/wasm-extensions"]
 
 [dependencies]
@@ -29,6 +30,8 @@ nova-config = { path = "../nova-config" }
 nova-bugreport = { path = "../nova-bugreport" }
 nova-deps-cache = { path = "../nova-deps-cache" }
 nova-ext = { path = "../nova-ext", optional = true }
+nova-index = { path = "../nova-index" }
+nova-router = { path = "../nova-router" }
 tracing = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 tokio-util = "0.7"

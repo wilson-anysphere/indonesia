@@ -98,8 +98,12 @@ impl Default for SchedulerConfig {
             .unwrap_or(1);
         Self {
             // In containers, `available_parallelism()` can report the host CPU count even when the
-            // process is constrained by thread limits. Keep defaults conservative so spawning many
-            // schedulers in tests doesn't hit OS limits; callers can override via `SchedulerConfig`.
+            // process is constrained by cgroups or per-user thread limits. Nova also instantiates
+            // schedulers frequently in short-lived CLI commands and tests, so spawning one thread
+            // per core can quickly exhaust OS thread limits when many processes run in parallel.
+            //
+            // Keep defaults conservative; callers that want full-core utilization can provide an
+            // explicit `SchedulerConfig`.
             compute_threads: available.saturating_sub(1).clamp(1, 8),
             background_threads: available.clamp(1, 2),
             io_threads: 1,

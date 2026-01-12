@@ -622,6 +622,7 @@ fn looks_like_project_root(root: &Path) -> bool {
         // VCS
         ".git",
         ".hg",
+        ".svn",
         // Maven / Gradle
         "pom.xml",
         "mvnw",

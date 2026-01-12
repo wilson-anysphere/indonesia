@@ -23,7 +23,7 @@ use nova_remote_proto::v3::{
 };
 use nova_remote_proto::{Revision, WorkerId};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::{mpsc, oneshot, watch, Mutex};
+use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify};
 
 pub type RequestId = u64;
 
@@ -619,6 +619,7 @@ impl RpcConnection {
     {
         let handler: RequestHandler = Arc::new(move |ctx, req| Box::pin(handler(ctx, req)));
         *self.inner.request_handler.write().unwrap() = Some(handler);
+        self.inner.request_handler_notify.notify_waiters();
     }
 
     pub fn set_notification_handler<H, Fut>(&self, handler: H)
@@ -736,6 +737,7 @@ impl RpcConnection {
             pending: Mutex::new(HashMap::new()),
             incoming_cancels: Mutex::new(HashMap::new()),
             request_handler: RwLock::new(None),
+            request_handler_notify: Notify::new(),
             notification_state: StdMutex::new(NotificationState::default()),
             cancel_handler: RwLock::new(None),
             max_inflight_chunked_packets: MAX_INFLIGHT_CHUNKED_PACKETS,
@@ -765,6 +767,7 @@ struct Inner {
     incoming_cancels: Mutex<HashMap<RequestId, watch::Sender<bool>>>,
 
     request_handler: RwLock<Option<RequestHandler>>,
+    request_handler_notify: Notify,
     cancel_handler: RwLock<Option<CancelHandler>>,
     notification_state: StdMutex<NotificationState>,
 
@@ -1299,7 +1302,6 @@ async fn handle_payload(
                 map.insert(request_id, cancel_tx);
             }
 
-            let handler = inner.request_handler.read().unwrap().clone();
             let inner_clone = inner.clone();
             tokio::spawn(async move {
                 let ctx = RequestContext {
@@ -1307,15 +1309,43 @@ async fn handle_payload(
                     cancel: CancellationToken { rx: cancel_rx },
                 };
 
-                let result = if let Some(handler) = handler {
-                    handler(ctx, request).await
-                } else {
-                    Err(ProtoRpcError {
+                // A request can arrive immediately after the handshake completes (the read loop is
+                // already running), before the peer has had a chance to call
+                // `RpcConnection::set_request_handler`.
+                //
+                // This shows up as flaky tests when the router sends its first request as soon as a
+                // worker connects, but the worker hasn't installed its handler yet.
+                //
+                // Wait briefly for the handler to be installed instead of immediately returning an
+                // InvalidRequest error.
+                let handler: Option<RequestHandler> = loop {
+                    if let Some(handler) = inner_clone.request_handler.read().unwrap().clone() {
+                        break Some(handler);
+                    }
+
+                    let notified = inner_clone.request_handler_notify.notified();
+
+                    // Re-check after registering the waiter to avoid missing a fast notify.
+                    if let Some(handler) = inner_clone.request_handler.read().unwrap().clone() {
+                        break Some(handler);
+                    }
+
+                    match tokio::time::timeout(std::time::Duration::from_millis(500), notified)
+                        .await
+                    {
+                        Ok(_) => continue,
+                        Err(_) => break None,
+                    }
+                };
+
+                let result = match handler {
+                    Some(handler) => handler(ctx, request).await,
+                    None => Err(ProtoRpcError {
                         code: RpcErrorCode::InvalidRequest,
                         message: "no request handler installed".into(),
                         retryable: false,
                         details: None,
-                    })
+                    }),
                 };
 
                 {

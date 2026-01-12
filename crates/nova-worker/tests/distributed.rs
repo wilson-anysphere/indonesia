@@ -97,6 +97,51 @@ async fn distributed_indexing_updates_only_one_shard() -> Result<()> {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn distributed_diagnostics_returns_parse_errors() -> Result<()> {
+    let tmp = TempDir::new()?;
+    let workspace_root = tmp.path();
+
+    let module = workspace_root.join("module").join("src");
+    tokio::fs::create_dir_all(&module).await?;
+
+    let file = module.join("A.java");
+    tokio::fs::write(&file, "package a; public class Alpha { int x = ; }").await?;
+
+    let listen_path = workspace_root.join("router.sock");
+    let cache_dir = workspace_root.join("cache");
+    let worker_bin = PathBuf::from(env!("CARGO_BIN_EXE_nova-worker"));
+
+    let router = TestRouter::new(listen_path.clone()).await?;
+    let mut worker = spawn_worker(&worker_bin, &listen_path, &cache_dir, 0).await?;
+
+    router.wait_for_workers(&[0]).await?;
+    router.index_shard(0, &module).await?;
+
+    let resp = router
+        .call(
+            0,
+            Request::Diagnostics {
+                path: file.to_string_lossy().to_string(),
+            },
+        )
+        .await?;
+    let diagnostics = match resp {
+        Response::Diagnostics { diagnostics } => diagnostics,
+        other => return Err(anyhow!("unexpected Diagnostics response: {other:?}")),
+    };
+    assert!(!diagnostics.is_empty());
+
+    router.shutdown_workers(&[0]).await?;
+    router.shutdown().await?;
+
+    let status = tokio::time::timeout(Duration::from_secs(10), worker.wait()).await??;
+    assert!(status.success());
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn invalid_hello_doesnt_kill_accept_loop() -> Result<()> {
     let tmp = TempDir::new()?;
     let workspace_root = tmp.path();

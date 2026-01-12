@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use nova_remote_proto::Symbol;
+use nova_remote_proto::v3::RemoteDiagnostic;
 use nova_router::{DistributedRouterConfig, QueryRouter, SourceRoot, WorkspaceLayout};
 
 /// Lightweight wrapper that keeps `nova-lsp` as the frontend while delegating heavy work to the
@@ -47,6 +48,10 @@ impl NovaLspFrontend {
 
     pub async fn workspace_symbols(&self, query: &str) -> Vec<Symbol> {
         self.router.workspace_symbols(query).await
+    }
+
+    pub async fn diagnostics(&self, path: PathBuf) -> Vec<RemoteDiagnostic> {
+        self.router.diagnostics(path).await
     }
 
     pub async fn worker_stats(

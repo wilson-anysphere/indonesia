@@ -19,6 +19,9 @@ pub const MAX_FILES_PER_MESSAGE: usize = 100_000;
 /// Maximum number of items allowed in a `SearchSymbolsResult` response (legacy lockstep protocol).
 pub const MAX_SEARCH_RESULTS_PER_MESSAGE: usize = 10_000;
 
+/// Maximum number of diagnostics allowed in a single v3 `Diagnostics` response.
+pub const MAX_DIAGNOSTICS_PER_MESSAGE: usize = 100_000;
+
 /// Maximum number of symbols allowed in a single `ShardIndex` message (v3 protocol).
 pub const MAX_SYMBOLS_PER_SHARD_INDEX: usize = 1_000_000;
 
@@ -39,8 +42,8 @@ mod bounded_de {
     use serde::de::{Deserialize, Deserializer, Error, SeqAccess, Visitor};
 
     use crate::{
-        MAX_FILES_PER_MESSAGE, MAX_FILE_TEXT_BYTES, MAX_SEARCH_RESULTS_PER_MESSAGE,
-        MAX_SMALL_STRING_BYTES, MAX_SYMBOLS_PER_SHARD_INDEX,
+        MAX_DIAGNOSTICS_PER_MESSAGE, MAX_FILES_PER_MESSAGE, MAX_FILE_TEXT_BYTES,
+        MAX_SEARCH_RESULTS_PER_MESSAGE, MAX_SMALL_STRING_BYTES, MAX_SYMBOLS_PER_SHARD_INDEX,
     };
 
     const MAX_VEC_PREALLOC: usize = 1024;
@@ -183,6 +186,14 @@ mod bounded_de {
             MAX_SEARCH_RESULTS_PER_MESSAGE,
             "search results",
         )
+    }
+
+    pub fn diagnostics_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+    where
+        D: Deserializer<'de>,
+        T: Deserialize<'de>,
+    {
+        vec_with_limit(deserializer, MAX_DIAGNOSTICS_PER_MESSAGE, "diagnostics")
     }
 
     pub fn symbols_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>

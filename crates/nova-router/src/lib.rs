@@ -9,7 +9,7 @@ use anyhow::{anyhow, Context};
 use nova_bugreport::{install_panic_hook, PanicHookConfig};
 use nova_config::{init_tracing_with_config, NovaConfig};
 use nova_fuzzy::{FuzzyMatcher, MatchScore, TrigramIndex, TrigramIndexBuilder};
-use nova_remote_proto::v3::{HandshakeReject, Notification, RejectCode, Request, Response};
+use nova_remote_proto::v3::{HandshakeReject, Notification, RejectCode, RemoteDiagnostic, Request, Response};
 use nova_remote_proto::{FileText, ShardId, ShardIndex, Symbol, WorkerId, WorkerStats};
 use nova_remote_rpc::{
     PendingCall, RouterAdmission, RouterConfig as RpcRouterConfig, RpcConnection,
@@ -470,6 +470,17 @@ impl QueryRouter {
             RouterMode::Distributed(router) => router.workspace_symbols(query).await,
         }
     }
+
+    /// Best-effort diagnostics for a single file when running in distributed mode.
+    ///
+    /// This is intentionally minimal: it exists to enable an end-to-end distributed analysis
+    /// prototype. Callers should treat failures as non-fatal.
+    pub async fn diagnostics(&self, path: PathBuf) -> Vec<RemoteDiagnostic> {
+        match &self.inner {
+            RouterMode::InProcess(_) => Vec::new(),
+            RouterMode::Distributed(router) => router.diagnostics(path).await,
+        }
+    }
 }
 
 struct InProcessRouter {
@@ -860,6 +871,56 @@ impl DistributedRouter {
     async fn workspace_symbols(&self, query: &str) -> Vec<Symbol> {
         let guard = self.state.global_symbols.read().await;
         guard.search(query, WORKSPACE_SYMBOL_LIMIT)
+    }
+
+    async fn diagnostics(&self, path: PathBuf) -> Vec<RemoteDiagnostic> {
+        let shard_id = self
+            .state
+            .layout
+            .source_roots
+            .iter()
+            .enumerate()
+            .find_map(|(id, root)| path.starts_with(&root.path).then_some(id as ShardId));
+
+        let Some(shard_id) = shard_id else {
+            return Vec::new();
+        };
+
+        let worker = match wait_for_worker(self.state.clone(), shard_id).await {
+            Ok(worker) => worker,
+            Err(err) => {
+                warn!(
+                    shard_id,
+                    error = ?err,
+                    "diagnostics request dropped: shard worker unavailable"
+                );
+                return Vec::new();
+            }
+        };
+
+        let worker_id = worker.worker_id;
+        let path_str = path.to_string_lossy().to_string();
+        match worker_call(&worker, Request::Diagnostics { path: path_str }).await {
+            Ok(Response::Diagnostics { diagnostics }) => diagnostics,
+            Ok(other) => {
+                warn!(
+                    shard_id,
+                    worker_id,
+                    response = ?other,
+                    "unexpected worker response for diagnostics request"
+                );
+                Vec::new()
+            }
+            Err(err) => {
+                warn!(
+                    shard_id,
+                    worker_id,
+                    error = ?err,
+                    "diagnostics request failed"
+                );
+                Vec::new()
+            }
+        }
     }
 
     async fn shutdown(&self) -> Result<()> {

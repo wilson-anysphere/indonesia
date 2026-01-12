@@ -187,10 +187,38 @@ pub enum Request {
         revision: Revision,
         file: FileText,
     },
+    /// Best-effort diagnostics for a single file.
+    ///
+    /// This is intentionally minimal: it exists to enable an end-to-end distributed analysis
+    /// prototype. Callers should treat failures as non-fatal.
+    Diagnostics {
+        #[serde(deserialize_with = "crate::bounded_de::small_string")]
+        path: String,
+    },
     GetWorkerStats,
     Shutdown,
     #[serde(other)]
     Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticSeverity {
+    Error,
+    Warning,
+    Info,
+    Hint,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoteDiagnostic {
+    pub severity: DiagnosticSeverity,
+    pub line: u32,
+    pub column: u32,
+    #[serde(deserialize_with = "crate::bounded_de::small_string")]
+    pub message: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -198,6 +226,10 @@ pub enum Request {
 pub enum Response {
     Ack,
     ShardIndex(ShardIndex),
+    Diagnostics {
+        #[serde(deserialize_with = "crate::bounded_de::diagnostics_vec")]
+        diagnostics: Vec<RemoteDiagnostic>,
+    },
     WorkerStats(WorkerStats),
     Shutdown,
     #[serde(other)]
