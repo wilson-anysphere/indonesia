@@ -1362,6 +1362,7 @@ struct ServerState {
     extension_load_errors: Vec<String>,
     extension_register_errors: Vec<String>,
     ai: Option<NovaAi>,
+    ai_privacy_excluded_matcher: Result<ExcludedPathMatcher, nova_ai::AiError>,
     semantic_search: Arc<RwLock<Box<dyn nova_ai::SemanticSearch>>>,
     semantic_search_open_files: Arc<Mutex<HashSet<PathBuf>>>,
     semantic_search_excluded_paths: Arc<GlobSet>,
@@ -1414,6 +1415,7 @@ impl ServerState {
         let ai_config = config.ai.clone();
         let privacy =
             privacy_override.unwrap_or_else(|| nova_ai::PrivacyMode::from_ai_privacy_config(&ai_config.privacy));
+        let ai_privacy_excluded_matcher = ExcludedPathMatcher::from_config(&ai_config.privacy);
 
         let (ai, runtime) = if ai_config.enabled {
             match NovaAi::new(&ai_config) {
@@ -1550,6 +1552,7 @@ impl ServerState {
             extension_load_errors: Vec::new(),
             extension_register_errors: Vec::new(),
             ai,
+            ai_privacy_excluded_matcher,
             semantic_search,
             semantic_search_open_files,
             semantic_search_excluded_paths,
@@ -6909,7 +6912,7 @@ fn path_from_uri(uri: &str) -> Option<PathBuf> {
 }
 
 fn is_excluded_by_ai_privacy(state: &ServerState, path: &Path) -> bool {
-    match ExcludedPathMatcher::from_config(&state.ai_config.privacy) {
+    match &state.ai_privacy_excluded_matcher {
         Ok(matcher) => matcher.is_match(path),
         // Best-effort fail-closed: if privacy configuration is invalid, avoid starting any AI work
         // based on potentially sensitive files.
