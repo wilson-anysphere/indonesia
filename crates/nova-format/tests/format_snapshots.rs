@@ -545,13 +545,13 @@ class Foo {
         boolean k = 1! = 2;
         int l = non -sealed;
         int m = 1+ ++n;
-        int o = 1+ +=2;
+        int o = 1+ += 2;
         boolean p = true& &&false;
-        boolean q = true& &=false;
+        boolean q = true& &= false;
         boolean r = true| ||false;
-        boolean s = true| |=false;
+        boolean s = true| |= false;
         boolean t = true< <<false;
-        boolean u = true/ /=false;
+        boolean u = true/ /= false;
     }
 }
 "###
