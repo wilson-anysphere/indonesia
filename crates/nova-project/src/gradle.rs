@@ -315,9 +315,12 @@ pub(crate) fn load_gradle_workspace_model(
         .collect::<Vec<_>>();
     let jpms_modules = crate::jpms::discover_jpms_modules(&modules_for_jpms);
 
-    let mut dependency_entries = Vec::new();
+    // JPMS-aware workspace model: when the workspace contains any `module-info.java`, classify
+    // dependency entries into module-path vs classpath. Keep known output directories on the
+    // classpath.
+    let mut override_entries = Vec::new();
     for entry in &options.classpath_overrides {
-        dependency_entries.push(ClasspathEntry {
+        override_entries.push(ClasspathEntry {
             kind: if entry.extension().is_some_and(|ext| ext == "jar") {
                 ClasspathEntryKind::Jar
             } else {
@@ -326,14 +329,33 @@ pub(crate) fn load_gradle_workspace_model(
             path: entry.clone(),
         });
     }
-    sort_dedup_classpath(&mut dependency_entries);
-    let (module_path_deps, classpath_deps) =
-        crate::jpms::classify_dependency_entries(&jpms_modules, dependency_entries);
+    sort_dedup_classpath(&mut override_entries);
 
     let mut module_configs = module_configs;
     for module in &mut module_configs {
-        module.module_path.extend(module_path_deps.iter().cloned());
-        module.classpath.extend(classpath_deps.iter().cloned());
+        let output_dir_paths: BTreeSet<_> =
+            module.output_dirs.iter().map(|o| o.path.clone()).collect();
+
+        let mut output_entries = Vec::new();
+        let mut dependency_entries = override_entries.clone();
+
+        for entry in std::mem::take(&mut module.classpath) {
+            let is_output_dir = entry.kind == ClasspathEntryKind::Directory
+                && output_dir_paths.contains(&entry.path);
+            if is_output_dir {
+                output_entries.push(entry);
+            } else {
+                dependency_entries.push(entry);
+            }
+        }
+
+        sort_dedup_classpath(&mut dependency_entries);
+        let (mut module_path_deps, classpath_deps) =
+            crate::jpms::classify_dependency_entries(&jpms_modules, dependency_entries);
+        module.module_path.append(&mut module_path_deps);
+        module.classpath = output_entries;
+        module.classpath.extend(classpath_deps);
+
         sort_dedup_classpath(&mut module.module_path);
         sort_dedup_classpath(&mut module.classpath);
     }
