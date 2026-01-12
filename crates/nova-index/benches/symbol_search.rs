@@ -1,11 +1,19 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use nova_index::{CandidateStrategy, SearchSymbol, SymbolSearchIndex};
 
 const SYMBOL_COUNT: usize = 100_000;
 const LIMIT: usize = 100;
 
-fn synthetic_symbols(count: usize) -> Vec<SearchSymbol> {
+#[derive(Debug, Clone, Copy)]
+enum QualifiedNameMode {
+    /// `qualified_name == name` (workspace symbol search common case).
+    EqualToName,
+    /// `qualified_name` includes a package prefix (e.g. `com.example.Foo`).
+    WithPackagePrefix,
+}
+
+fn synthetic_symbols(count: usize, mode: QualifiedNameMode) -> Vec<SearchSymbol> {
     // Deterministic synthetic corpus intended to resemble a mixed workspace:
     // - A handful of well-known long CamelCase identifiers for acronym-style queries.
     // - A stable distribution of generic symbols.
@@ -37,9 +45,16 @@ fn synthetic_symbols(count: usize) -> Vec<SearchSymbol> {
     // path (50k) still finds matches.
     for i in 0..200usize {
         let name = format!("MyZooKeeperManager{i:04}");
+        let qualified_name = match mode {
+            QualifiedNameMode::EqualToName => name.clone(),
+            QualifiedNameMode::WithPackagePrefix => format!("com.example.cluster.{name}"),
+        };
         out.push(SearchSymbol {
-            qualified_name: format!("com.example.cluster.{name}"),
+            qualified_name,
             name,
+            container_name: None,
+            location: None,
+            ast_id: None,
         });
     }
 
@@ -61,9 +76,17 @@ fn synthetic_symbols(count: usize) -> Vec<SearchSymbol> {
             format!("{lead}{kind}{i:06}")
         };
 
+        let qualified_name = match mode {
+            QualifiedNameMode::EqualToName => name.clone(),
+            QualifiedNameMode::WithPackagePrefix => format!("com.example.pkg{pkg:03}.{name}"),
+        };
+
         out.push(SearchSymbol {
-            qualified_name: format!("com.example.pkg{pkg:03}.{name}"),
+            qualified_name,
             name,
+            container_name: None,
+            location: None,
+            ast_id: None,
         });
     }
 
@@ -71,52 +94,69 @@ fn synthetic_symbols(count: usize) -> Vec<SearchSymbol> {
 }
 
 fn bench_symbol_search(c: &mut Criterion) {
-    let symbols = synthetic_symbols(SYMBOL_COUNT);
-    let index = SymbolSearchIndex::build(symbols);
+    let symbols_equal = synthetic_symbols(SYMBOL_COUNT, QualifiedNameMode::EqualToName);
+    let index_equal = SymbolSearchIndex::build(symbols_equal);
+
+    let symbols_qualified = synthetic_symbols(SYMBOL_COUNT, QualifiedNameMode::WithPackagePrefix);
+    let index_qualified = SymbolSearchIndex::build(symbols_qualified);
 
     // Sanity-check the benchmark scenarios: if these change, the numbers stop being meaningful.
-    let (_results, stats) = index.search_with_stats("hm", LIMIT);
-    assert_eq!(
-        stats.strategy,
-        CandidateStrategy::Prefix,
-        "expected \"hm\" to hit prefix bucket"
-    );
-    let (_results, stats) = index.search_with_stats("map", LIMIT);
-    assert_eq!(
-        stats.strategy,
-        CandidateStrategy::Trigram,
-        "expected \"map\" to use trigram candidates"
-    );
-    let (_results, stats) = index.search_with_stats("hmap", LIMIT);
-    assert_eq!(
-        stats.strategy,
-        CandidateStrategy::Trigram,
-        "expected \"hmap\" to use multi-trigram intersection"
-    );
-    let (_results, stats) = index.search_with_stats("zkm", LIMIT);
-    assert_eq!(
-        stats.strategy,
-        CandidateStrategy::FullScan,
-        "expected \"zkm\" to force bounded full scan fallback"
-    );
+    for (label, index) in [
+        ("equal", &index_equal),
+        ("qualified", &index_qualified),
+    ] {
+        let (_results, stats) = index.search_with_stats("hm", LIMIT);
+        assert_eq!(
+            stats.strategy,
+            CandidateStrategy::Prefix,
+            "expected \"hm\" to hit prefix bucket ({label})"
+        );
+        let (_results, stats) = index.search_with_stats("map", LIMIT);
+        assert_eq!(
+            stats.strategy,
+            CandidateStrategy::Trigram,
+            "expected \"map\" to use trigram candidates ({label})"
+        );
+        let (_results, stats) = index.search_with_stats("hmap", LIMIT);
+        assert_eq!(
+            stats.strategy,
+            CandidateStrategy::Trigram,
+            "expected \"hmap\" to use multi-trigram intersection ({label})"
+        );
+        let (_results, stats) = index.search_with_stats("zkm", LIMIT);
+        assert_eq!(
+            stats.strategy,
+            CandidateStrategy::FullScan,
+            "expected \"zkm\" to force bounded full scan fallback ({label})"
+        );
+    }
 
     let mut group = c.benchmark_group("symbol_search");
 
-    group.bench_function("prefix_hm", |b| {
-        b.iter(|| black_box(index.search_with_stats(black_box("hm"), black_box(LIMIT))))
-    });
+    for (label, index) in [
+        ("equal", &index_equal),
+        ("qualified", &index_qualified),
+    ] {
+        group.bench_with_input(BenchmarkId::new("prefix_hm", label), index, |b, index| {
+            b.iter(|| black_box(index.search_with_stats(black_box("hm"), black_box(LIMIT))))
+        });
 
-    group.bench_function("trigram_map", |b| {
-        b.iter(|| black_box(index.search_with_stats(black_box("map"), black_box(LIMIT))))
-    });
+        group.bench_with_input(BenchmarkId::new("trigram_map", label), index, |b, index| {
+            b.iter(|| black_box(index.search_with_stats(black_box("map"), black_box(LIMIT))))
+        });
 
-    group.bench_function("trigram_hmap_multi", |b| {
-        b.iter(|| black_box(index.search_with_stats(black_box("hmap"), black_box(LIMIT))))
-    });
+        group.bench_with_input(
+            BenchmarkId::new("trigram_hmap_multi", label),
+            index,
+            |b, index| b.iter(|| black_box(index.search_with_stats(black_box("hmap"), black_box(LIMIT)))),
+        );
 
-    group.bench_function("fallback_full_scan_zkm", |b| {
-        b.iter(|| black_box(index.search_with_stats(black_box("zkm"), black_box(LIMIT))))
-    });
+        group.bench_with_input(
+            BenchmarkId::new("fallback_full_scan_zkm", label),
+            index,
+            |b, index| b.iter(|| black_box(index.search_with_stats(black_box("zkm"), black_box(LIMIT)))),
+        );
+    }
 
     group.finish();
 }
