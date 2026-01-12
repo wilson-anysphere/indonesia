@@ -162,6 +162,7 @@ Current implementation policy (semantic + statement-aware):
 - **Type annotation:**
   - `use_var: true` emits `var <name> = <expr>;`
   - `use_var: false` emits an explicit Java type when we can infer it **best-effort**. If we cannot infer a type confidently, the refactoring is rejected rather than guessing. In practice, clients should default to `use_var: true` for maximum applicability.
+    - Current explicit type inference is intentionally conservative and may only infer a small set of simple types (e.g. `int`/`String`/`char`) for literal and basic expression forms.
 - **Applicability:** the implementation is intentionally conservative and rejects extractions from contexts where hoisting the expression would change semantics or where we cannot reliably pick a statement insertion point. Known non-applicable contexts include:
   - expressions that are the condition of `while (...) { ... }` loops
   - expressions that are the condition of `do { ... } while (...);` loops
