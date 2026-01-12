@@ -6218,58 +6218,92 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     };
                 }
 
-                let class_id = match &recv_info.ty {
-                    Type::Class(nova_types::ClassType { def, .. }) => Some(*def),
-                    Type::Named(name) => self
-                        .ensure_workspace_class(loader, name)
-                        .or_else(|| loader.ensure_class(name)),
-                    _ => None,
-                };
-                let Some(class_id) = class_id else {
-                    return ExprInfo {
-                        ty: expected.clone(),
-                        is_type_ref: false,
-                    };
-                };
+                // Array constructor references (`T[]::new`) are not normal class constructors; they
+                // correspond to an array creation expression taking a single `int` length argument.
+                if matches!(recv_info.ty, Type::Array(_)) {
+                    let env_ro: &dyn TypeEnv = &*loader.store;
+                    let param_ok = sig.params.len() == 1
+                        && (sig.params[0].is_errorish()
+                            || assignment_conversion(env_ro, &sig.params[0], &Type::int()).is_some());
+                    let return_ok = sig.return_type != Type::Void
+                        && (sig.return_type.is_errorish()
+                            || assignment_conversion(env_ro, &recv_info.ty, &sig.return_type).is_some());
 
-                let env_ro: &dyn TypeEnv = &*loader.store;
-                let res = nova_types::resolve_constructor_call(
-                    env_ro,
-                    class_id,
-                    &sig.params,
-                    Some(&recv_info.ty),
-                );
-
-                let return_ok = |method: &ResolvedMethod| {
-                    if sig.return_type == Type::Void {
-                        return true;
-                    }
-                    assignment_conversion(env_ro, &method.return_type, &sig.return_type).is_some()
-                };
-
-                let ok = match &res {
-                    MethodResolution::Found(method) => return_ok(method),
-                    MethodResolution::Ambiguous(amb) => amb.candidates.iter().any(|m| return_ok(m)),
-                    MethodResolution::NotFound(_) => false,
-                };
-
-                if ok {
-                    ExprInfo {
-                        ty: expected.clone(),
-                        is_type_ref: false,
+                    if param_ok && return_ok {
+                        ExprInfo {
+                            ty: expected.clone(),
+                            is_type_ref: false,
+                        }
+                    } else {
+                        let expected_display = format_type(env_ro, expected);
+                        self.diagnostics.push(Diagnostic::error(
+                            "method-ref-mismatch",
+                            format!(
+                                "constructor reference is not compatible with target type {expected_display}"
+                            ),
+                            Some(self.body.exprs[expr].range()),
+                        ));
+                        ExprInfo {
+                            ty: Type::Error,
+                            is_type_ref: false,
+                        }
                     }
                 } else {
-                    let expected_display = format_type(env_ro, expected);
-                    self.diagnostics.push(Diagnostic::error(
-                        "method-ref-mismatch",
-                        format!(
-                            "constructor reference is not compatible with target type {expected_display}"
-                        ),
-                        Some(self.body.exprs[expr].range()),
-                    ));
-                    ExprInfo {
-                        ty: Type::Error,
-                        is_type_ref: false,
+                    let class_id = match &recv_info.ty {
+                        Type::Class(nova_types::ClassType { def, .. }) => Some(*def),
+                        Type::Named(name) => self
+                            .ensure_workspace_class(loader, name)
+                            .or_else(|| loader.ensure_class(name)),
+                        _ => None,
+                    };
+                    let Some(class_id) = class_id else {
+                        return ExprInfo {
+                            ty: expected.clone(),
+                            is_type_ref: false,
+                        };
+                    };
+
+                    let env_ro: &dyn TypeEnv = &*loader.store;
+                    let res = nova_types::resolve_constructor_call(
+                        env_ro,
+                        class_id,
+                        &sig.params,
+                        Some(&recv_info.ty),
+                    );
+
+                    let return_ok = |method: &ResolvedMethod| {
+                        if sig.return_type == Type::Void {
+                            return true;
+                        }
+                        assignment_conversion(env_ro, &method.return_type, &sig.return_type).is_some()
+                    };
+
+                    let ok = match &res {
+                        MethodResolution::Found(method) => return_ok(method),
+                        MethodResolution::Ambiguous(amb) => {
+                            amb.candidates.iter().any(|m| return_ok(m))
+                        }
+                        MethodResolution::NotFound(_) => false,
+                    };
+
+                    if ok {
+                        ExprInfo {
+                            ty: expected.clone(),
+                            is_type_ref: false,
+                        }
+                    } else {
+                        let expected_display = format_type(env_ro, expected);
+                        self.diagnostics.push(Diagnostic::error(
+                            "method-ref-mismatch",
+                            format!(
+                                "constructor reference is not compatible with target type {expected_display}"
+                            ),
+                            Some(self.body.exprs[expr].range()),
+                        ));
+                        ExprInfo {
+                            ty: Type::Error,
+                            is_type_ref: false,
+                        }
                     }
                 }
             }

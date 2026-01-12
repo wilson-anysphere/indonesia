@@ -2869,9 +2869,7 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags
-            .iter()
-            .all(|d| d.code.as_ref() != "method-ref-without-target"),
+        diags.iter().all(|d| d.code.as_ref() != "method-ref-without-target"),
         "expected constructor reference to be target-typed from constructor argument, got {diags:?}"
     );
 
@@ -2883,6 +2881,60 @@ class C {
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
     assert_eq!(ty, "Maker");
+}
+
+#[test]
+fn array_constructor_reference_is_typed_from_target() {
+    let src = r#"
+interface Maker { String[] make(int n); }
+class C {
+    void m() {
+        Maker x = String[]::new;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    let offset = src
+        .find("String[]::new")
+        .expect("snippet should contain array constructor reference")
+        + "String[]::".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Maker");
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "invalid-array-access"),
+        "expected no invalid-array-access diagnostics; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "method-ref-mismatch"),
+        "expected no method-ref-mismatch diagnostics; got {diags:?}"
+    );
+}
+
+#[test]
+fn array_constructor_reference_param_mismatch_reports_method_ref_diag() {
+    let src = r#"
+interface Maker { String[] make(String n); }
+class C {
+    void m() {
+        Maker x = String[]::new;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "method-ref-mismatch"),
+        "expected method-ref-mismatch diagnostic; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected no type-mismatch diagnostics; got {diags:?}"
+    );
 }
 
 #[test]

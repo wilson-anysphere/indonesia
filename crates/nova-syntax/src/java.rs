@@ -2569,7 +2569,8 @@ impl Lowerer {
         let mut segments = Vec::new();
         let mut tokens = Vec::new();
         for tok in node.children_with_tokens().filter_map(|el| el.into_token()) {
-            if tok.kind().is_identifier_like() || is_type_name_token(tok.kind()) {
+            let kind = tok.kind();
+            if kind.is_identifier_like() || is_type_name_token(kind) {
                 segments.push((tok.text().to_string(), self.spans.map_token(&tok)));
             }
             tokens.push(tok);
