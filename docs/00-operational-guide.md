@@ -55,7 +55,7 @@ the OS-enforced ceiling.
 # CORRECT - Always use the wrapper:
 bash scripts/cargo_agent.sh build --release
 bash scripts/cargo_agent.sh test -p nova-core --lib
-bash scripts/cargo_agent.sh check -p nova-semantic
+bash scripts/cargo_agent.sh check -p nova-syntax
 
 # WRONG - Will OOM the host:
 cargo test                    # Spawns 100s of rustc processes
