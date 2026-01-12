@@ -74,10 +74,12 @@ pub use distributed::NovaLspFrontend;
 pub use ide_state::{DynDb, NovaLspIdeState};
 pub use refactor::{
     change_signature_schema, change_signature_workspace_edit, convert_to_record_code_action,
-    extract_member_code_actions, extract_variable_code_actions, handle_safe_delete,
-    inline_method_code_actions, inline_variable_code_actions, resolve_extract_member_code_action,
-    resolve_extract_variable_code_action, safe_delete_code_action, RefactorResponse,
-    SafeDeleteParams, SafeDeleteResult, SafeDeleteTargetParam, CHANGE_SIGNATURE_METHOD,
+    extract_member_code_actions, extract_variable_code_actions, handle_move_method,
+    handle_move_static_member, handle_safe_delete, inline_method_code_actions,
+    inline_variable_code_actions, resolve_extract_member_code_action,
+    resolve_extract_variable_code_action, safe_delete_code_action, MoveMethodParams,
+    MoveStaticMemberParams, RefactorResponse, SafeDeleteParams, SafeDeleteResult,
+    SafeDeleteTargetParam, CHANGE_SIGNATURE_METHOD, MOVE_METHOD_METHOD, MOVE_STATIC_MEMBER_METHOD,
     SAFE_DELETE_COMMAND, SAFE_DELETE_METHOD,
 };
 #[cfg(feature = "ai")]

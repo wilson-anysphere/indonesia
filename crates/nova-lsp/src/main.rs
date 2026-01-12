@@ -469,6 +469,8 @@ fn initialize_result_json() -> serde_json::Value {
         // Refactor endpoints
         nova_lsp::SAFE_DELETE_METHOD,
         nova_lsp::CHANGE_SIGNATURE_METHOD,
+        nova_lsp::MOVE_METHOD_METHOD,
+        nova_lsp::MOVE_STATIC_MEMBER_METHOD,
         // AI endpoints
         nova_lsp::AI_EXPLAIN_ERROR_METHOD,
         nova_lsp::AI_GENERATE_METHOD_BODY_METHOD,
@@ -1712,6 +1714,98 @@ fn handle_request_json(
                     }),
                 },
             )
+        }
+        nova_lsp::MOVE_METHOD_METHOD => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+
+            nova_lsp::hardening::record_request();
+            if let Err(err) = nova_lsp::hardening::guard_method(nova_lsp::MOVE_METHOD_METHOD) {
+                let (code, message) = match err {
+                    nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
+                    nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
+                };
+                return Ok(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": code, "message": message }
+                }));
+            }
+
+            let params: nova_lsp::MoveMethodParams = match serde_json::from_value(params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return Ok(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": { "code": -32602, "message": err.to_string() }
+                    }));
+                }
+            };
+
+            let files = open_document_files(state);
+            Ok(match nova_lsp::handle_move_method(&files, params) {
+                Ok(edit) => match serde_json::to_value(edit) {
+                    Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                    Err(err) => {
+                        json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err.to_string() } })
+                    }
+                },
+                Err(err) => {
+                    let (code, message) = match err {
+                        nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
+                        nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
+                    };
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
+                }
+            })
+        }
+        nova_lsp::MOVE_STATIC_MEMBER_METHOD => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+
+            nova_lsp::hardening::record_request();
+            if let Err(err) = nova_lsp::hardening::guard_method(nova_lsp::MOVE_STATIC_MEMBER_METHOD) {
+                let (code, message) = match err {
+                    nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
+                    nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
+                };
+                return Ok(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": code, "message": message }
+                }));
+            }
+
+            let params: nova_lsp::MoveStaticMemberParams = match serde_json::from_value(params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return Ok(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": { "code": -32602, "message": err.to_string() }
+                    }));
+                }
+            };
+
+            let files = open_document_files(state);
+            Ok(match nova_lsp::handle_move_static_member(&files, params) {
+                Ok(edit) => match serde_json::to_value(edit) {
+                    Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                    Err(err) => {
+                        json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err.to_string() } })
+                    }
+                },
+                Err(err) => {
+                    let (code, message) = match err {
+                        nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
+                        nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
+                    };
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
+                }
+            })
         }
         _ => {
             if state.shutdown_requested {

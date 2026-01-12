@@ -3,14 +3,20 @@ use lsp_types::{
     CodeAction, CodeActionDisabled, CodeActionKind, CodeActionOrCommand, Position, Range, Uri,
     WorkspaceEdit,
 };
+use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
+use std::str::FromStr;
 use nova_index::Index;
 use nova_index::SymbolId;
 use nova_refactor::{
     change_signature as refactor_change_signature, convert_to_record, extract_variable,
-    inline_variable, safe_delete, workspace_edit_to_lsp, ChangeSignature, ConvertToRecordError,
+    inline_variable, move_method as refactor_move_method,
+    move_static_member as refactor_move_static_member, safe_delete, workspace_edit_to_lsp,
+    workspace_edit_to_lsp_with_uri_mapper, ChangeSignature, ConvertToRecordError,
     ConvertToRecordOptions, ExtractVariableParams, FileId, InlineVariableParams, JavaSymbolKind,
-    RefactorJavaDatabase, SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget,
-    SemanticRefactorError, TextDatabase, WorkspaceTextRange,
+    MoveMethodParams as RefactorMoveMethodParams,
+    MoveStaticMemberParams as RefactorMoveStaticMemberParams, RefactorJavaDatabase, SafeDeleteMode,
+    SafeDeleteOutcome, SafeDeleteTarget, SemanticRefactorError, TextDatabase, WorkspaceTextRange,
 };
 use schemars::schema::RootSchema;
 use schemars::schema_for;
@@ -443,6 +449,78 @@ fn is_java_uri(uri: &Uri) -> bool {
     uri.as_str().ends_with(".java")
 }
 
+fn move_refactor_workspace(
+    open_files: &BTreeMap<String, String>,
+) -> (BTreeMap<PathBuf, String>, TextDatabase, HashMap<FileId, Uri>) {
+    let mut files = BTreeMap::new();
+    let mut db_files = Vec::new();
+    let mut uri_by_id = HashMap::new();
+
+    for (uri_string, text) in open_files {
+        let Ok(path) = nova_core::file_uri_to_path(uri_string) else {
+            continue;
+        };
+        let path = path.into_path_buf();
+        let file_id = FileId::new(path.to_string_lossy().into_owned());
+        files.insert(path, text.clone());
+        db_files.push((file_id.clone(), text.clone()));
+
+        if let Ok(uri) = Uri::from_str(uri_string) {
+            uri_by_id.insert(file_id, uri);
+        }
+    }
+
+    (files, TextDatabase::new(db_files), uri_by_id)
+}
+
+pub fn handle_move_method(
+    open_files: &BTreeMap<String, String>,
+    params: MoveMethodParams,
+) -> crate::Result<WorkspaceEdit> {
+    let (files, db, uri_by_id) = move_refactor_workspace(open_files);
+    let edit = refactor_move_method(
+        &files,
+        RefactorMoveMethodParams {
+            from_class: params.from_class,
+            method_name: params.method_name,
+            to_class: params.to_class,
+        },
+    )
+    .map_err(|err| crate::NovaLspError::InvalidParams(err.to_string()))?;
+
+    workspace_edit_to_lsp_with_uri_mapper(&db, &edit, |file| {
+        Ok(uri_by_id
+            .get(file)
+            .cloned()
+            .expect("move refactor edit only touches known open files"))
+    })
+    .map_err(|err| crate::NovaLspError::InvalidParams(err.to_string()))
+}
+
+pub fn handle_move_static_member(
+    open_files: &BTreeMap<String, String>,
+    params: MoveStaticMemberParams,
+) -> crate::Result<WorkspaceEdit> {
+    let (files, db, uri_by_id) = move_refactor_workspace(open_files);
+    let edit = refactor_move_static_member(
+        &files,
+        RefactorMoveStaticMemberParams {
+            from_class: params.from_class,
+            member_name: params.member_name,
+            to_class: params.to_class,
+        },
+    )
+    .map_err(|err| crate::NovaLspError::InvalidParams(err.to_string()))?;
+
+    workspace_edit_to_lsp_with_uri_mapper(&db, &edit, |file| {
+        Ok(uri_by_id
+            .get(file)
+            .cloned()
+            .expect("move refactor edit only touches known open files"))
+    })
+    .map_err(|err| crate::NovaLspError::InvalidParams(err.to_string()))
+}
+
 pub fn handle_safe_delete(
     index: &Index,
     params: SafeDeleteParams,
@@ -493,6 +571,21 @@ mod tests {
             .collect();
 
         nova_core::apply_text_edits(text, &core_edits).expect("apply edits")
+    }
+
+    fn apply_workspace_edit(files: &BTreeMap<Uri, String>, edit: &WorkspaceEdit) -> BTreeMap<Uri, String> {
+        let mut out = files.clone();
+        let Some(changes) = &edit.changes else {
+            return out;
+        };
+
+        for (uri, edits) in changes {
+            let text = out.get(uri).cloned().unwrap_or_default();
+            let updated = apply_lsp_edits(&text, edits);
+            out.insert(uri.clone(), updated);
+        }
+
+        out
     }
 
     #[test]
@@ -741,6 +834,102 @@ class B {
             "declaration should be removed"
         );
         assert!(!updated_b.contains("used();"), "usage should be removed");
+    }
+
+    fn test_uri(file: &str) -> Uri {
+        #[cfg(windows)]
+        {
+            format!("file:///C:/{file}").parse().unwrap()
+        }
+
+        #[cfg(not(windows))]
+        {
+            format!("file:///{file}").parse().unwrap()
+        }
+    }
+
+    #[test]
+    fn move_static_member_request_returns_workspace_edit() {
+        let uri_a = test_uri("A.java");
+        let uri_b = test_uri("B.java");
+        let uri_use = test_uri("Use.java");
+
+        let before_a = "public class A {\n    public static int add(int a, int b) {\n        return a + b;\n    }\n}\n";
+        let before_b = "public class B {\n}\n";
+        let before_use =
+            "public class Use {\n    public int f() {\n        return A.add(1, 2);\n    }\n}\n";
+
+        let after_a = "public class A {\n}\n";
+        let after_b = "public class B {\n    public static int add(int a, int b) {\n        return a + b;\n    }\n}\n";
+        let after_use =
+            "public class Use {\n    public int f() {\n        return B.add(1, 2);\n    }\n}\n";
+
+        let mut files = BTreeMap::new();
+        files.insert(uri_a.clone(), before_a.to_string());
+        files.insert(uri_b.clone(), before_b.to_string());
+        files.insert(uri_use.clone(), before_use.to_string());
+
+        let open_files: BTreeMap<String, String> = files
+            .iter()
+            .map(|(uri, text)| (uri.to_string(), text.clone()))
+            .collect();
+
+        let edit = handle_move_static_member(
+            &open_files,
+            MoveStaticMemberParams {
+                from_class: "A".into(),
+                member_name: "add".into(),
+                to_class: "B".into(),
+            },
+        )
+        .expect("move static member workspace edit");
+
+        let updated = apply_workspace_edit(&files, &edit);
+        assert_eq!(updated.get(&uri_a).map(String::as_str), Some(after_a));
+        assert_eq!(updated.get(&uri_b).map(String::as_str), Some(after_b));
+        assert_eq!(updated.get(&uri_use).map(String::as_str), Some(after_use));
+    }
+
+    #[test]
+    fn move_method_request_returns_workspace_edit() {
+        let uri_a = test_uri("A.java");
+        let uri_b = test_uri("B.java");
+        let uri_use = test_uri("Use.java");
+
+        let before_a = "public class A {\n    public B b = new B();\n    int base = 10;\n\n    public int compute(int x) {\n        return base + b.inc(x);\n    }\n}\n";
+        let before_b = "public class B {\n    public int inc(int x) {\n        return x + 1;\n    }\n}\n";
+        let before_use =
+            "public class Use {\n    public int f(A a) {\n        return a.compute(5);\n    }\n}\n";
+
+        let after_a = "public class A {\n    public B b = new B();\n    int base = 10;\n}\n";
+        let after_b = "public class B {\n    public int inc(int x) {\n        return x + 1;\n    }\n\n    public int compute(A a, int x) {\n        return a.base + this.inc(x);\n    }\n}\n";
+        let after_use =
+            "public class Use {\n    public int f(A a) {\n        return a.b.compute(a, 5);\n    }\n}\n";
+
+        let mut files = BTreeMap::new();
+        files.insert(uri_a.clone(), before_a.to_string());
+        files.insert(uri_b.clone(), before_b.to_string());
+        files.insert(uri_use.clone(), before_use.to_string());
+
+        let open_files: BTreeMap<String, String> = files
+            .iter()
+            .map(|(uri, text)| (uri.to_string(), text.clone()))
+            .collect();
+
+        let edit = handle_move_method(
+            &open_files,
+            MoveMethodParams {
+                from_class: "A".into(),
+                method_name: "compute".into(),
+                to_class: "B".into(),
+            },
+        )
+        .expect("move method workspace edit");
+
+        let updated = apply_workspace_edit(&files, &edit);
+        assert_eq!(updated.get(&uri_a).map(String::as_str), Some(after_a));
+        assert_eq!(updated.get(&uri_b).map(String::as_str), Some(after_b));
+        assert_eq!(updated.get(&uri_use).map(String::as_str), Some(after_use));
     }
 
     #[test]
