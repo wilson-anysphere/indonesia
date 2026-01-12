@@ -3161,6 +3161,24 @@ class C {
 }
 
 #[test]
+fn lambda_return_value_is_error_for_runnable_target() {
+    let src = r#"
+class C {
+    void m() {
+        Runnable r = () -> { return 1; };
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "return-mismatch"),
+        "expected return-mismatch diagnostic for Runnable lambda with value return, got {diags:?}"
+    );
+}
+
+#[test]
 fn type_of_def_is_signature_only_and_does_not_execute_typeck_body() {
     let src = r#"
 class C {

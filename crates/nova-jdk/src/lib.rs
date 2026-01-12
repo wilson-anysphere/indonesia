@@ -142,6 +142,7 @@ impl JdkIndex {
         this.add_type("java.lang", "Throwable");
         this.add_type("java.lang", "Class");
         this.add_type("java.lang", "Iterable");
+        this.add_type("java.lang", "Runnable");
         this.add_type("java.lang", "String");
         this.add_type("java.lang", "Integer");
         this.add_type("java.lang", "Number");
@@ -174,6 +175,9 @@ impl JdkIndex {
 
         // java.util.function
         this.add_type("java.util.function", "Function");
+        this.add_type("java.util.function", "Supplier");
+        this.add_type("java.util.function", "Consumer");
+        this.add_type("java.util.function", "Predicate");
 
         // A tiny set of static members for static-import testing.
         this.add_static_member("java.lang.Math", "max");

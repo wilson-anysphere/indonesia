@@ -33,13 +33,32 @@ fn builtin_index_resolves_minimal_fixture_types() {
         Some(TypeName::new("java.lang.Iterable"))
     );
     assert_eq!(
+        index.resolve_type(&QualifiedName::from_dotted("java.lang.Runnable")),
+        Some(TypeName::new("java.lang.Runnable"))
+    );
+    assert_eq!(
         index.resolve_type(&QualifiedName::from_dotted("java.lang.Number")),
         Some(TypeName::new("java.lang.Number"))
+    );
+    assert_eq!(
+        index.resolve_type(&QualifiedName::from_dotted("java.util.function.Supplier")),
+        Some(TypeName::new("java.util.function.Supplier"))
+    );
+    assert_eq!(
+        index.resolve_type(&QualifiedName::from_dotted("java.util.function.Consumer")),
+        Some(TypeName::new("java.util.function.Consumer"))
     );
 
     assert_eq!(
         index.resolve_static_member(&TypeName::new("java.util.Collections"), &Name::from("emptyList")),
         Some(StaticMemberId::new("java.util.Collections::emptyList"))
+    );
+    assert_eq!(
+        index.resolve_static_member(
+            &TypeName::new("java.util.Collections"),
+            &Name::from("singletonList")
+        ),
+        Some(StaticMemberId::new("java.util.Collections::singletonList"))
     );
 }
 

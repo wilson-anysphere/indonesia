@@ -960,6 +960,26 @@ impl TypeStore {
             },
         );
 
+        // java.lang.Runnable
+        let _runnable = store.add_class(ClassDef {
+            name: "java.lang.Runnable".to_string(),
+            kind: ClassKind::Interface,
+            type_params: vec![],
+            super_class: Some(Type::class(object, vec![])),
+            interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
+            methods: vec![MethodDef {
+                name: "run".to_string(),
+                type_params: vec![],
+                params: vec![],
+                return_type: Type::Void,
+                is_static: false,
+                is_varargs: false,
+                is_abstract: true,
+            }],
+        });
+
         // java.lang.Iterable<T>
         //
         // This is used by richer typeck tests (e.g. foreach element inference)
@@ -1126,6 +1146,69 @@ impl TypeStore {
                 type_params: vec![],
                 params: vec![Type::TypeVar(function_t)],
                 return_type: Type::TypeVar(function_r),
+                is_static: false,
+                is_varargs: false,
+                is_abstract: true,
+            }],
+        });
+
+        // java.util.function.Supplier<T>
+        let supplier_t = store.add_type_param("T", vec![Type::class(object, vec![])]);
+        let _supplier = store.add_class(ClassDef {
+            name: "java.util.function.Supplier".to_string(),
+            kind: ClassKind::Interface,
+            type_params: vec![supplier_t],
+            super_class: Some(Type::class(object, vec![])),
+            interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
+            methods: vec![MethodDef {
+                name: "get".to_string(),
+                type_params: vec![],
+                params: vec![],
+                return_type: Type::TypeVar(supplier_t),
+                is_static: false,
+                is_varargs: false,
+                is_abstract: true,
+            }],
+        });
+
+        // java.util.function.Consumer<T>
+        let consumer_t = store.add_type_param("T", vec![Type::class(object, vec![])]);
+        let _consumer = store.add_class(ClassDef {
+            name: "java.util.function.Consumer".to_string(),
+            kind: ClassKind::Interface,
+            type_params: vec![consumer_t],
+            super_class: Some(Type::class(object, vec![])),
+            interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
+            methods: vec![MethodDef {
+                name: "accept".to_string(),
+                type_params: vec![],
+                params: vec![Type::TypeVar(consumer_t)],
+                return_type: Type::Void,
+                is_static: false,
+                is_varargs: false,
+                is_abstract: true,
+            }],
+        });
+
+        // java.util.function.Predicate<T>
+        let predicate_t = store.add_type_param("T", vec![Type::class(object, vec![])]);
+        let _predicate = store.add_class(ClassDef {
+            name: "java.util.function.Predicate".to_string(),
+            kind: ClassKind::Interface,
+            type_params: vec![predicate_t],
+            super_class: Some(Type::class(object, vec![])),
+            interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
+            methods: vec![MethodDef {
+                name: "test".to_string(),
+                type_params: vec![],
+                params: vec![Type::TypeVar(predicate_t)],
+                return_type: Type::Primitive(PrimitiveType::Boolean),
                 is_static: false,
                 is_varargs: false,
                 is_abstract: true,
@@ -4871,6 +4954,27 @@ mod tests {
 
         assert_eq!(sig.params, vec![string]);
         assert_eq!(sig.return_type, integer);
+    }
+
+    #[test]
+    fn lambda_sam_signature_inference_from_runnable_target() {
+        let env = store();
+        let runnable = env.class_id("java.lang.Runnable").unwrap();
+        let target = Type::class(runnable, vec![]);
+        let sig =
+            infer_lambda_sam_signature(&env, &target).expect("should infer lambda SAM signature");
+        assert_eq!(sig.params, Vec::<Type>::new());
+        assert_eq!(sig.return_type, Type::Void);
+    }
+
+    #[test]
+    fn lambda_param_inference_from_consumer_target() {
+        let env = store();
+        let consumer = env.class_id("java.util.function.Consumer").unwrap();
+        let string = Type::class(env.well_known().string, vec![]);
+        let target = Type::class(consumer, vec![string.clone()]);
+        let params = infer_lambda_param_types(&env, &target).expect("should infer lambda params");
+        assert_eq!(params, vec![string]);
     }
 
     #[test]
