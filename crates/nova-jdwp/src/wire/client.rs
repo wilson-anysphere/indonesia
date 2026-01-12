@@ -1929,8 +1929,6 @@ async fn read_loop(mut reader: tokio::net::tcp::OwnedReadHalf, inner: Arc<Inner>
         }
     }
 
-    inner.shutdown.cancel();
-
     if terminated_with_error {
         let pending = {
             let mut pending = inner.pending.lock().unwrap_or_else(|e| e.into_inner());
@@ -1940,6 +1938,10 @@ async fn read_loop(mut reader: tokio::net::tcp::OwnedReadHalf, inner: Arc<Inner>
             let _ = tx.send(Err(JdwpError::ConnectionClosed));
         }
     }
+
+    // Cancel the shutdown token after waking any pending requests. This avoids racy `Cancelled`
+    // results for in-flight request futures when the connection terminates unexpectedly.
+    inner.shutdown.cancel();
 }
 
 async fn handle_event_packet(inner: &Inner, payload: &[u8]) -> Result<()> {
