@@ -56,11 +56,11 @@ impl AstIdMap {
         let mut by_ptr = HashMap::new();
 
         for node in root.descendants() {
-            let kind = node.kind();
-            if !is_relevant_node(kind) {
+            if !is_relevant_node(&node) {
                 continue;
             }
 
+            let kind = node.kind();
             let range = text_range_of(&node);
             let ptr = AstPtr { kind, range };
             let id = AstId::new(nodes.len() as u32);
@@ -73,10 +73,10 @@ impl AstIdMap {
 
     #[must_use]
     pub fn ast_id(&self, node: &SyntaxNode) -> Option<AstId> {
-        let kind = node.kind();
-        if !is_relevant_node(kind) {
+        if !is_relevant_node(node) {
             return None;
         }
+        let kind = node.kind();
         let range = text_range_of(node);
         self.by_ptr.get(&AstPtr { kind, range }).copied()
     }
@@ -102,25 +102,32 @@ impl AstIdMap {
     }
 }
 
-fn is_relevant_node(kind: SyntaxKind) -> bool {
-    matches!(
-        kind,
-        SyntaxKind::ClassDeclaration
-            | SyntaxKind::InterfaceDeclaration
-            | SyntaxKind::EnumDeclaration
-            | SyntaxKind::RecordDeclaration
-            | SyntaxKind::AnnotationTypeDeclaration
-            | SyntaxKind::FieldDeclaration
-            | SyntaxKind::EnumConstant
-            | SyntaxKind::VariableDeclarator
-            | SyntaxKind::Parameter
-            | SyntaxKind::MethodDeclaration
-            | SyntaxKind::ConstructorDeclaration
-            | SyntaxKind::CompactConstructorDeclaration
-            | SyntaxKind::InitializerBlock
-            | SyntaxKind::Block
-            | SyntaxKind::ModuleDeclaration
-    )
+fn is_relevant_node(node: &SyntaxNode) -> bool {
+    match node.kind() {
+        SyntaxKind::Parameter => node.parent().is_some_and(|parent| {
+            parent.kind() == SyntaxKind::ParameterList
+                && parent.parent().is_some_and(|grandparent| {
+                    grandparent.kind() == SyntaxKind::RecordDeclaration
+                })
+        }),
+        kind => matches!(
+            kind,
+            SyntaxKind::ClassDeclaration
+                | SyntaxKind::InterfaceDeclaration
+                | SyntaxKind::EnumDeclaration
+                | SyntaxKind::RecordDeclaration
+                | SyntaxKind::AnnotationTypeDeclaration
+                | SyntaxKind::FieldDeclaration
+                | SyntaxKind::EnumConstant
+                | SyntaxKind::VariableDeclarator
+                | SyntaxKind::MethodDeclaration
+                | SyntaxKind::ConstructorDeclaration
+                | SyntaxKind::CompactConstructorDeclaration
+                | SyntaxKind::InitializerBlock
+                | SyntaxKind::Block
+                | SyntaxKind::ModuleDeclaration
+        ),
+    }
 }
 
 fn text_range_of(node: &SyntaxNode) -> TextRange {

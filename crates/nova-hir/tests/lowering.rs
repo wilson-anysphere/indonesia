@@ -913,6 +913,55 @@ class Foo {
 }
 
 #[test]
+fn ids_are_stable_under_method_signature_only_edits() {
+    let v1 = r#"class Foo { void a() {} void b() {} }"#;
+    let v2 = r#"class Foo { void a(int x) {} void b() {} }"#;
+
+    let file = FileId::from_raw(0);
+
+    let tree1 = item_tree(
+        &TestDb {
+            files: vec![Arc::from(v1)],
+        },
+        file,
+    );
+    let tree2 = item_tree(
+        &TestDb {
+            files: vec![Arc::from(v2)],
+        },
+        file,
+    );
+
+    assert_eq!(
+        method_id_by_name(&tree1, file, "b"),
+        method_id_by_name(&tree2, file, "b")
+    );
+}
+
+#[test]
+fn record_header_parameters_have_ast_ids() {
+    let source = "record Point(int x, int y) {}";
+    let parsed = nova_syntax::parse_java(source);
+    let ast_id_map = nova_hir::ast_id::AstIdMap::new(&parsed.syntax());
+
+    let record = parsed
+        .syntax()
+        .descendants()
+        .find(|node| node.kind() == nova_syntax::SyntaxKind::RecordDeclaration)
+        .expect("record declaration");
+
+    let params: Vec<_> = record
+        .descendants()
+        .filter(|node| node.kind() == nova_syntax::SyntaxKind::Parameter)
+        .collect();
+    assert_eq!(params.len(), 2);
+
+    let x_id = ast_id_map.ast_id(&params[0]).expect("x AstId");
+    let y_id = ast_id_map.ast_id(&params[1]).expect("y AstId");
+    assert_ne!(x_id, y_id);
+}
+
+#[test]
 fn ids_may_change_after_structural_edits() {
     let v1 = r#"
 class Foo {
