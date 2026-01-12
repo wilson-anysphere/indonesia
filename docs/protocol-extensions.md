@@ -557,6 +557,8 @@ file (on-demand), without requiring clients to know a Bazel target upfront.
 Notes:
 
 - `projectRoot` also accepts the legacy alias `root`.
+- `projectRoot` may be the Bazel workspace root itself or any path under it; the server will
+  normalize it to the detected workspace root.
 - `uri` must be a `file://` URI.
 - `runTarget` is optional; when provided, resolution is restricted to the transitive closure of that
   Bazel target (`deps(runTarget)`).

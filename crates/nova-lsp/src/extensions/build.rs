@@ -1076,7 +1076,7 @@ pub fn handle_file_classpath(params: serde_json::Value) -> Result<serde_json::Va
 
     let Some(workspace_root) = nova_project::bazel_workspace_root(&requested_root) else {
         return Err(NovaLspError::InvalidParams(
-            "`projectRoot` must be a Bazel workspace root for fileClasspath".to_string(),
+            "`projectRoot` must be within a Bazel workspace for fileClasspath".to_string(),
         ));
     };
 
