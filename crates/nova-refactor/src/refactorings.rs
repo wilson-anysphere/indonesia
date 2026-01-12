@@ -2660,14 +2660,21 @@ fn statement_always_exits(stmt: &ast::Statement) -> bool {
         | ast::Statement::BreakStatement(_)
         | ast::Statement::ContinueStatement(_) => true,
         ast::Statement::Block(block) => {
-            let mut it = block.statements();
-            let Some(only) = it.next() else {
+            for stmt in block.statements() {
+                if statement_always_exits(&stmt) {
+                    return true;
+                }
+            }
+            false
+        }
+        ast::Statement::IfStatement(if_stmt) => {
+            let Some(then_branch) = if_stmt.then_branch() else {
                 return false;
             };
-            if it.next().is_some() {
+            let Some(else_branch) = if_stmt.else_branch() else {
                 return false;
-            }
-            statement_always_exits(&only)
+            };
+            statement_always_exits(&then_branch) && statement_always_exits(&else_branch)
         }
         _ => false,
     }

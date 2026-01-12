@@ -1894,6 +1894,87 @@ fn extract_variable_rejects_name_conflict_with_pattern_variable_flow_scope() {
 }
 
 #[test]
+fn extract_variable_rejects_name_conflict_with_pattern_variable_flow_scope_multistmt_guard() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C {
+  void m(Object obj) {
+    if (!(obj instanceof String s)) {
+      System.out.println(obj);
+      return;
+    }
+    System.out.println(/*start*/1+2/*end*/);
+  }
+}
+"#;
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
+            name: "s".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    let SemanticRefactorError::Conflicts(conflicts) = err else {
+        panic!("expected conflicts, got: {err:?}");
+    };
+
+    assert!(
+        conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::NameCollision { name, .. } if name == "s")),
+        "expected NameCollision conflict: {conflicts:?}"
+    );
+}
+
+#[test]
+fn extract_variable_rejects_name_conflict_with_pattern_variable_flow_scope_else_guard() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C {
+  void m(Object obj) {
+    if (obj instanceof String s) {
+    } else {
+      System.out.println(obj);
+      return;
+    }
+    System.out.println(/*start*/1+2/*end*/);
+  }
+}
+"#;
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
+            name: "s".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    let SemanticRefactorError::Conflicts(conflicts) = err else {
+        panic!("expected conflicts, got: {err:?}");
+    };
+
+    assert!(
+        conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::NameCollision { name, .. } if name == "s")),
+        "expected NameCollision conflict: {conflicts:?}"
+    );
+}
+
+#[test]
 fn extract_variable_rejects_switch_expression_rule_expression() {
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
