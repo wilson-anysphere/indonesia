@@ -28,8 +28,10 @@ fn typecheck_single_file(source: &str) -> SingleFileTypecheck {
     db.set_classpath_index(project, None);
 
     let file = DbFileId::from_raw(0);
-    db.set_file_text(file, source.to_string());
+    // Set `file_rel_path` before `set_file_text` so `set_file_text` doesn't synthesize and then
+    // discard a default `file-123.java` rel-path.
     db.set_file_rel_path(file, Arc::new("Main.java".to_string()));
+    db.set_file_text(file, source.to_string());
     db.set_project_files(project, Arc::new(vec![file]));
 
     SingleFileTypecheck {
