@@ -209,6 +209,88 @@ fn matches_simple_glob(pattern: &str, text: &str) -> bool {
     p_idx == pattern.len()
 }
 
+/// A byte size which supports both raw byte counts and human-friendly suffixes.
+///
+/// This is used for config values where TOML integer literals would be unwieldy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, JsonSchema)]
+#[schemars(transparent)]
+pub struct ByteSize(pub u64);
+
+impl Serialize for ByteSize {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_u64(self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for ByteSize {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Bytes(u64),
+            Human(String),
+        }
+
+        let repr = Repr::deserialize(deserializer)?;
+        match repr {
+            Repr::Bytes(value) => Ok(ByteSize(value)),
+            Repr::Human(value) => nova_memory::parse_byte_size(&value)
+                .map(ByteSize)
+                .map_err(serde::de::Error::custom),
+        }
+    }
+}
+
+/// Optional configuration for Nova's in-process memory budgets (`nova-memory`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct MemoryConfig {
+    /// Override the total memory budget for Nova's caches (in bytes).
+    #[serde(default)]
+    pub total_bytes: Option<ByteSize>,
+
+    /// Override the query cache category budget (in bytes).
+    #[serde(default)]
+    pub query_cache_bytes: Option<ByteSize>,
+
+    /// Override the syntax tree category budget (in bytes).
+    #[serde(default)]
+    pub syntax_trees_bytes: Option<ByteSize>,
+
+    /// Override the indexes category budget (in bytes).
+    #[serde(default)]
+    pub indexes_bytes: Option<ByteSize>,
+
+    /// Override the type info category budget (in bytes).
+    #[serde(default)]
+    pub type_info_bytes: Option<ByteSize>,
+
+    /// Override the "other" category budget (in bytes).
+    #[serde(default)]
+    pub other_bytes: Option<ByteSize>,
+}
+
+impl MemoryConfig {
+    pub fn memory_budget_overrides(&self) -> nova_memory::MemoryBudgetOverrides {
+        nova_memory::MemoryBudgetOverrides {
+            total: self.total_bytes.map(|value| value.0),
+            categories: nova_memory::MemoryBreakdownOverrides {
+                query_cache: self.query_cache_bytes.map(|value| value.0),
+                syntax_trees: self.syntax_trees_bytes.map(|value| value.0),
+                indexes: self.indexes_bytes.map(|value| value.0),
+                type_info: self.type_info_bytes.map(|value| value.0),
+                other: self.other_bytes.map(|value| value.0),
+            },
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 /// Top-level Nova configuration loaded from TOML.
@@ -240,6 +322,10 @@ pub struct NovaConfig {
     #[serde(default)]
     pub logging: LoggingConfig,
 
+    /// Optional memory budgeting configuration (`nova-memory`).
+    #[serde(default)]
+    pub memory: MemoryConfig,
+
     /// AI configuration (provider selection, privacy controls, embeddings, etc).
     #[serde(default)]
     pub ai: AiConfig,
@@ -253,6 +339,7 @@ impl Default for NovaConfig {
             jdk: JdkConfig::default(),
             extensions: ExtensionsConfig::default(),
             logging: LoggingConfig::default(),
+            memory: MemoryConfig::default(),
             ai: AiConfig::default(),
         }
     }
@@ -1113,6 +1200,10 @@ impl NovaConfig {
             toolchains,
         }
     }
+
+    pub fn memory_budget_overrides(&self) -> nova_memory::MemoryBudgetOverrides {
+        self.memory.memory_budget_overrides()
+    }
 }
 
 pub const NOVA_CONFIG_ENV_VAR: &str = "NOVA_CONFIG_PATH";
@@ -1928,5 +2019,20 @@ toolchains = { "8" = "/opt/jdks/jdk8-a", "08" = "/opt/jdks/jdk8-b" }
                 home: PathBuf::from("/opt/jdks/jdk8-b"),
             }]
         );
+    }
+
+    #[test]
+    fn toml_memory_table_parses_and_converts_to_overrides() {
+        let text = r#"
+[memory]
+total_bytes = "1G"
+query_cache_bytes = "512M"
+"#;
+
+        let config: NovaConfig = toml::from_str(text).expect("config should parse");
+        let overrides = config.memory_budget_overrides();
+
+        assert_eq!(overrides.total, Some(nova_memory::GB));
+        assert_eq!(overrides.categories.query_cache, Some(512 * nova_memory::MB));
     }
 }

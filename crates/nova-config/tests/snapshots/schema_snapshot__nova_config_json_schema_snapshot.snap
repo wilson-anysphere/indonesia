@@ -650,6 +650,22 @@ expression: schema
           "$ref": "#/definitions/LoggingConfig"
         }
       ]
+    },
+    "memory": {
+      "description": "Optional memory budgeting configuration (`nova-memory`).",
+      "default": {
+        "indexes_bytes": null,
+        "other_bytes": null,
+        "query_cache_bytes": null,
+        "syntax_trees_bytes": null,
+        "total_bytes": null,
+        "type_info_bytes": null
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/MemoryConfig"
+        }
+      ]
     }
   },
   "additionalProperties": false,
@@ -1371,6 +1387,73 @@ expression: schema
           "description": "Mirror logs to stderr (in addition to the in-memory buffer).\n\nDefaults to enabled so running Nova binaries outside an editor still produces real-time logs.",
           "default": true,
           "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "MemoryConfig": {
+      "description": "Optional configuration for Nova's in-process memory budgets (`nova-memory`).",
+      "type": "object",
+      "properties": {
+        "indexes_bytes": {
+          "description": "Override the indexes category budget (in bytes).",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "other_bytes": {
+          "description": "Override the \"other\" category budget (in bytes).",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "query_cache_bytes": {
+          "description": "Override the query cache category budget (in bytes).",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "syntax_trees_bytes": {
+          "description": "Override the syntax tree category budget (in bytes).",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "total_bytes": {
+          "description": "Override the total memory budget for Nova's caches (in bytes).",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "type_info_bytes": {
+          "description": "Override the type info category budget (in bytes).",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
         }
       },
       "additionalProperties": false

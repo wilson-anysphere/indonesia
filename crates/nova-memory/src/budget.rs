@@ -7,6 +7,19 @@ pub const MB: u64 = 1024 * 1024;
 /// One gibibyte in bytes.
 pub const GB: u64 = 1024 * MB;
 
+/// Environment variable used to override the total memory budget.
+pub const ENV_MEMORY_BUDGET_TOTAL: &str = "NOVA_MEMORY_BUDGET_TOTAL";
+/// Environment variable used to override the query cache category budget.
+pub const ENV_MEMORY_BUDGET_QUERY_CACHE: &str = "NOVA_MEMORY_BUDGET_QUERY_CACHE";
+/// Environment variable used to override the syntax trees category budget.
+pub const ENV_MEMORY_BUDGET_SYNTAX_TREES: &str = "NOVA_MEMORY_BUDGET_SYNTAX_TREES";
+/// Environment variable used to override the indexes category budget.
+pub const ENV_MEMORY_BUDGET_INDEXES: &str = "NOVA_MEMORY_BUDGET_INDEXES";
+/// Environment variable used to override the type info category budget.
+pub const ENV_MEMORY_BUDGET_TYPE_INFO: &str = "NOVA_MEMORY_BUDGET_TYPE_INFO";
+/// Environment variable used to override the "other" category budget.
+pub const ENV_MEMORY_BUDGET_OTHER: &str = "NOVA_MEMORY_BUDGET_OTHER";
+
 /// A memory budget for Nova.
 ///
 /// The budget is split into coarse categories; individual components register
@@ -20,7 +33,7 @@ pub struct MemoryBudget {
 }
 
 /// Optional overrides for [`MemoryBudget`], intended to be populated by a
-/// configuration layer (`nova-config`) once it exists.
+/// configuration layer (`nova-config`) and/or environment variables.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryBudgetOverrides {
     /// Override total budget. When set, category defaults are derived from this.
@@ -36,6 +49,112 @@ pub struct MemoryBreakdownOverrides {
     pub indexes: Option<u64>,
     pub type_info: Option<u64>,
     pub other: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParseByteSizeError {
+    Empty,
+    InvalidNumber,
+    UnknownUnit(String),
+    Overflow,
+}
+
+impl std::fmt::Display for ParseByteSizeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => write!(f, "empty size string"),
+            Self::InvalidNumber => write!(f, "invalid number"),
+            Self::UnknownUnit(unit) => write!(f, "unknown unit: {unit}"),
+            Self::Overflow => write!(f, "size overflows u64"),
+        }
+    }
+}
+
+impl std::error::Error for ParseByteSizeError {}
+
+/// Parse a byte size from either a raw byte count or a human-friendly suffix.
+///
+/// Supported formats:
+/// - raw bytes: `"1048576"`
+/// - binary suffixes (case-insensitive): `"512K"`, `"512M"`, `"2G"`, `"1T"`
+/// - optional `"B"` or `"iB"` suffix: `"512MB"`, `"1GiB"`
+///
+/// Notes:
+/// - This parser is intentionally strict: it only accepts integer values.
+/// - The suffixes are interpreted as binary multiples (KiB/MiB/GiB/TiB).
+pub fn parse_byte_size(input: &str) -> Result<u64, ParseByteSizeError> {
+    let raw = input.trim();
+    if raw.is_empty() {
+        return Err(ParseByteSizeError::Empty);
+    }
+
+    // TOML numbers can include `_` separators, and users often copy/paste those.
+    let normalized: String = raw.chars().filter(|c| *c != '_').collect();
+    let normalized = normalized.trim();
+    if normalized.is_empty() {
+        return Err(ParseByteSizeError::Empty);
+    }
+
+    let mut split_idx = None;
+    for (idx, ch) in normalized.char_indices() {
+        if !ch.is_ascii_digit() {
+            split_idx = Some(idx);
+            break;
+        }
+    }
+
+    let (num_str, suffix) = match split_idx {
+        Some(idx) => (&normalized[..idx], normalized[idx..].trim()),
+        None => (normalized, ""),
+    };
+
+    let value: u64 = num_str.parse().map_err(|_| ParseByteSizeError::InvalidNumber)?;
+    let suffix = suffix.to_ascii_lowercase();
+    let suffix = suffix.as_str();
+
+    let (multiplier, consumed) = match suffix {
+        "" | "b" => (1u64, true),
+        "k" | "kb" | "kib" => (1024u64, true),
+        "m" | "mb" | "mib" => (1024u64.pow(2), true),
+        "g" | "gb" | "gib" => (1024u64.pow(3), true),
+        "t" | "tb" | "tib" => (1024u64.pow(4), true),
+        _ => (1u64, false),
+    };
+
+    if !consumed {
+        return Err(ParseByteSizeError::UnknownUnit(suffix.to_string()));
+    }
+
+    value
+        .checked_mul(multiplier)
+        .ok_or(ParseByteSizeError::Overflow)
+}
+
+impl MemoryBudgetOverrides {
+    /// Read memory budget overrides from environment variables.
+    ///
+    /// Any invalid values are ignored (treated as "unset").
+    pub fn from_env() -> Self {
+        fn read(name: &str) -> Option<u64> {
+            let value = std::env::var(name).ok()?;
+            let value = value.trim();
+            if value.is_empty() {
+                return None;
+            }
+            parse_byte_size(value).ok()
+        }
+
+        Self {
+            total: read(ENV_MEMORY_BUDGET_TOTAL),
+            categories: MemoryBreakdownOverrides {
+                query_cache: read(ENV_MEMORY_BUDGET_QUERY_CACHE),
+                syntax_trees: read(ENV_MEMORY_BUDGET_SYNTAX_TREES),
+                indexes: read(ENV_MEMORY_BUDGET_INDEXES),
+                type_info: read(ENV_MEMORY_BUDGET_TYPE_INFO),
+                other: read(ENV_MEMORY_BUDGET_OTHER),
+            },
+        }
+    }
 }
 
 impl MemoryBudget {
@@ -56,6 +175,11 @@ impl MemoryBudget {
     pub fn default_for_system_memory_bytes(system_memory_bytes: u64) -> Self {
         let budget = (system_memory_bytes / 4).clamp(512 * MB, 4 * GB);
         Self::from_total(budget)
+    }
+
+    /// Like [`Self::default_for_system`], but applies [`MemoryBudgetOverrides::from_env`].
+    pub fn default_for_system_with_env_overrides() -> Self {
+        Self::default_for_system().apply_overrides(MemoryBudgetOverrides::from_env())
     }
 
     /// Build a budget from an explicit total, using the default category split.
@@ -222,4 +346,76 @@ fn system_total_memory_bytes() -> Option<u64> {
         cgroup_limit,
         rlimit_as,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    fn set_env_var(name: &str, value: Option<&str>) -> Option<String> {
+        let prev = std::env::var(name).ok();
+        match value {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
+        prev
+    }
+
+    fn restore_env_var(name: &str, prev: Option<String>) {
+        match prev {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
+    }
+
+    #[test]
+    fn parse_byte_size_accepts_raw_bytes_and_suffixes() {
+        assert_eq!(parse_byte_size("1").unwrap(), 1);
+        assert_eq!(parse_byte_size("1024").unwrap(), 1024);
+        assert_eq!(parse_byte_size("1_024").unwrap(), 1024);
+        assert_eq!(parse_byte_size("1K").unwrap(), 1024);
+        assert_eq!(parse_byte_size("1kb").unwrap(), 1024);
+        assert_eq!(parse_byte_size("1KiB").unwrap(), 1024);
+        assert_eq!(parse_byte_size("2M").unwrap(), 2 * MB);
+        assert_eq!(parse_byte_size("2MiB").unwrap(), 2 * MB);
+        assert_eq!(parse_byte_size("3G").unwrap(), 3 * GB);
+        assert_eq!(parse_byte_size("3GiB").unwrap(), 3 * GB);
+        assert_eq!(parse_byte_size("1T").unwrap(), 1024u64.pow(4));
+    }
+
+    #[test]
+    fn default_for_system_with_env_overrides_honors_total() {
+        let _guard = env_lock();
+        let prev = set_env_var(ENV_MEMORY_BUDGET_TOTAL, Some("1G"));
+        let budget = MemoryBudget::default_for_system_with_env_overrides();
+        restore_env_var(ENV_MEMORY_BUDGET_TOTAL, prev);
+
+        assert_eq!(budget.total, GB);
+        assert_eq!(budget.categories.total(), GB);
+    }
+
+    #[test]
+    fn env_overrides_win_over_config_overrides() {
+        let _guard = env_lock();
+        let prev = set_env_var(ENV_MEMORY_BUDGET_TOTAL, Some("1G"));
+
+        let config_overrides = MemoryBudgetOverrides {
+            total: Some(2 * GB),
+            categories: MemoryBreakdownOverrides::default(),
+        };
+        let budget = MemoryBudget::default_for_system()
+            .apply_overrides(config_overrides)
+            .apply_overrides(MemoryBudgetOverrides::from_env());
+
+        restore_env_var(ENV_MEMORY_BUDGET_TOTAL, prev);
+
+        assert_eq!(budget.total, GB);
+    }
 }

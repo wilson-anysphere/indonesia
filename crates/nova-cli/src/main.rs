@@ -490,13 +490,13 @@ fn load_config_from_cli(cli: &Cli) -> NovaConfig {
 fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
     match cli.command {
         Command::Index(args) => {
-            let ws = Workspace::open(&args.path)?;
+            let ws = Workspace::open_with_config(&args.path, config)?;
             let report = ws.index_and_write_cache()?;
             print_output(&report, args.json)?;
             Ok(0)
         }
         Command::Diagnostics(args) => {
-            let ws = Workspace::open(&args.path)?;
+            let ws = Workspace::open_with_config(&args.path, config)?;
             let report = ws.diagnostics(&args.path)?;
             let exit = if report.summary.errors > 0 { 1 } else { 0 };
 
@@ -524,12 +524,12 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
                     Ok(symbols) => symbols,
                     Err(err) => {
                         eprintln!("nova symbols: distributed mode failed; falling back: {err:#}");
-                        let ws = Workspace::open(&args.path)?;
+                        let ws = Workspace::open_with_config(&args.path, config)?;
                         ws.workspace_symbols(&args.query)?
                     }
                 }
             } else {
-                let ws = Workspace::open(&args.path)?;
+                let ws = Workspace::open_with_config(&args.path, config)?;
                 ws.workspace_symbols(&args.query)?
             };
 
@@ -585,7 +585,7 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
         Command::Cache(args) => {
             match args.command {
                 CacheCommand::Clean(args) => {
-                    let ws = Workspace::open(&args.path)?;
+                    let ws = Workspace::open_with_config(&args.path, config)?;
                     let cache_root = ws.cache_root()?;
                     ws.cache_clean()?;
                     if !args.json {
@@ -595,12 +595,12 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
                     }
                 }
                 CacheCommand::Status(args) => {
-                    let ws = Workspace::open(&args.path)?;
+                    let ws = Workspace::open_with_config(&args.path, config)?;
                     let status = ws.cache_status()?;
                     print_cache_status(&status, args.json)?;
                 }
                 CacheCommand::Warm(args) => {
-                    let ws = Workspace::open(&args.path)?;
+                    let ws = Workspace::open_with_config(&args.path, config)?;
                     let report = ws.cache_warm()?;
                     print_output(&report, args.json)?;
                 }
@@ -671,7 +671,7 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
                     }
                 }
                 CacheCommand::Pack(args) => {
-                    let ws = Workspace::open(&args.path)?;
+                    let ws = Workspace::open_with_config(&args.path, config)?;
                     let cache_dir = CacheDir::new(ws.root(), CacheConfig::from_env())?;
                     pack_cache_package(&cache_dir, &args.out)?;
                     if args.json {
@@ -685,7 +685,7 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
                     }
                 }
                 CacheCommand::Install(args) => {
-                    let ws = Workspace::open(&args.path)?;
+                    let ws = Workspace::open_with_config(&args.path, config)?;
                     let cache_dir = CacheDir::new(ws.root(), CacheConfig::from_env())?;
                     let outcome = install_cache_package(&cache_dir, &args.package)?;
                     if args.json {
@@ -705,7 +705,7 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
                     }
                 }
                 CacheCommand::Fetch(args) => {
-                    let ws = Workspace::open(&args.path)?;
+                    let ws = Workspace::open_with_config(&args.path, config)?;
                     let cache_dir = CacheDir::new(ws.root(), CacheConfig::from_env())?;
                     let outcome = fetch_cache_package(&cache_dir, &args.url)?;
                     if args.json {
@@ -729,7 +729,7 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
         }
         Command::Perf(args) => match args.command {
             PerfCommand::Report(args) => {
-                let ws = Workspace::open(&args.path)?;
+                let ws = Workspace::open_with_config(&args.path, config)?;
                 let perf = ws.perf_report()?;
                 if args.json {
                     print_output(&PerfEnvelope { perf }, true)?;
@@ -937,7 +937,7 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
             }
         },
         Command::Parse(args) => {
-            let ws = Workspace::open(&args.file)?;
+            let ws = Workspace::open_with_config(&args.file, config)?;
             let result = ws.parse_file(&args.file)?;
             let exit = if result.errors.is_empty() { 0 } else { 1 };
             print_output(&result, args.json)?;

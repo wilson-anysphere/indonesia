@@ -7,7 +7,7 @@ use nova_index::{
     CandidateStrategy, ProjectIndexes, SearchStats, SearchSymbol, SymbolLocation,
     WorkspaceSymbolSearcher, DEFAULT_SHARD_COUNT,
 };
-use nova_memory::{MemoryBudget, MemoryManager};
+use nova_memory::{MemoryBudget, MemoryBudgetOverrides, MemoryManager};
 use nova_project::ProjectError;
 use nova_scheduler::{CancellationToken, Cancelled};
 use nova_syntax::SyntaxNode;
@@ -54,7 +54,7 @@ impl Workspace {
     /// This is primarily intended for integration tests exercising the workspace
     /// event stream and overlay handling.
     pub fn new_in_memory() -> Self {
-        let memory = MemoryManager::new(MemoryBudget::default_for_system());
+        let memory = MemoryManager::new(MemoryBudget::default_for_system_with_env_overrides());
         let symbol_searcher = WorkspaceSymbolSearcher::new(&memory);
         let engine_config = engine::WorkspaceEngineConfig {
             workspace_root: PathBuf::new(),
@@ -76,6 +76,17 @@ impl Workspace {
     ///
     /// If `path` is a file, its parent directory is treated as the workspace root.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with_memory_overrides(path, MemoryBudgetOverrides::default())
+    }
+
+    pub fn open_with_config(path: impl AsRef<Path>, config: &nova_config::NovaConfig) -> Result<Self> {
+        Self::open_with_memory_overrides(path, config.memory_budget_overrides())
+    }
+
+    pub fn open_with_memory_overrides(
+        path: impl AsRef<Path>,
+        config_memory_overrides: MemoryBudgetOverrides,
+    ) -> Result<Self> {
         let path = path.as_ref();
         let meta = fs::metadata(path)
             .with_context(|| format!("failed to read metadata for {}", path.display()))?;
@@ -89,7 +100,11 @@ impl Workspace {
         let root = fs::canonicalize(&root)
             .with_context(|| format!("failed to canonicalize {}", root.display()))?;
         let root = find_project_root(&root);
-        let memory = MemoryManager::new(MemoryBudget::default_for_system());
+
+        let memory_budget = MemoryBudget::default_for_system()
+            .apply_overrides(config_memory_overrides)
+            .apply_overrides(MemoryBudgetOverrides::from_env());
+        let memory = MemoryManager::new(memory_budget);
         let symbol_searcher = WorkspaceSymbolSearcher::new(&memory);
         let engine_config = engine::WorkspaceEngineConfig {
             workspace_root: root.clone(),

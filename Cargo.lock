@@ -3496,6 +3496,7 @@ dependencies = [
  "indexmap",
  "insta",
  "nova-core",
+ "nova-memory",
  "regex",
  "schemars",
  "serde",

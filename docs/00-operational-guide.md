@@ -187,6 +187,24 @@ Recommended max:       300 agents
 
 ---
 
+## Tuning Nova's internal memory budget (optional)
+
+`RLIMIT_AS` limits the **process** address space, but Nova also uses a cooperative in-process cache
+budget (`nova-memory`) to stay within predictable memory bounds when running many concurrent
+servers/agents.
+
+You can override the default cache budget without code changes:
+
+```bash
+# Limit Nova's internal caches to 1GiB total (split across categories by default).
+export NOVA_MEMORY_BUDGET_TOTAL=1G
+```
+
+You can also set per-category budgets (`NOVA_MEMORY_BUDGET_QUERY_CACHE`, `..._SYNTAX_TREES`, etc) or
+use a workspace `nova.toml` `[memory]` table. Environment variables take precedence over config.
+
+---
+
 ## Handling OOMs
 
 When RLIMIT_AS is hit, the process gets a memory allocation failure (usually manifests as `out of memory` or similar error). This is **expected behavior** - it's the limit working.

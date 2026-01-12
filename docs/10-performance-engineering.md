@@ -374,6 +374,58 @@ impl MemoryBudget {
 }
 ```
 
+#### Tuning budgets (env + config)
+
+Nova’s in-process caches are governed by `nova_memory::MemoryBudget`. Operators and CI can tune this
+without code changes:
+
+- **Defaults**: derived from total RAM (or cgroup limit) as described above.
+- **Config**: `[memory]` table in `nova.toml` (see below).
+- **Environment**: `NOVA_MEMORY_BUDGET_*` variables.
+
+Precedence (highest wins): **env > config > defaults**.
+
+##### Environment variables
+
+All values accept either:
+- raw bytes (e.g. `1073741824`)
+- a human-friendly suffix (binary multiples): `K`, `M`, `G`, `T` (e.g. `512M`, `1G`)
+
+Supported variables:
+- `NOVA_MEMORY_BUDGET_TOTAL`
+- `NOVA_MEMORY_BUDGET_QUERY_CACHE`
+- `NOVA_MEMORY_BUDGET_SYNTAX_TREES`
+- `NOVA_MEMORY_BUDGET_INDEXES`
+- `NOVA_MEMORY_BUDGET_TYPE_INFO`
+- `NOVA_MEMORY_BUDGET_OTHER`
+
+Example:
+
+```bash
+export NOVA_MEMORY_BUDGET_TOTAL=1G
+export NOVA_MEMORY_BUDGET_QUERY_CACHE=512M
+```
+
+##### Config (`nova.toml`)
+
+The workspace config supports an optional `[memory]` table:
+
+```toml
+[memory]
+# Either integer bytes...
+total_bytes = 1073741824
+
+# ...or human sizes as strings.
+query_cache_bytes = "512M"
+syntax_trees_bytes = "256M"
+indexes_bytes = "128M"
+type_info_bytes = "64M"
+other_bytes = "128M"
+```
+
+To confirm the effective budget at runtime, call the LSP endpoint `nova/memoryStatus` and inspect
+`report.budget`.
+
 ### Memory Pressure Handling
 
 ```rust

@@ -32,7 +32,11 @@ mod types;
 pub use budget::MemoryBreakdownOverrides;
 #[doc(hidden)]
 pub use budget::{effective_system_total_memory_bytes, interpret_rlimit_as_bytes};
-pub use budget::{MemoryBudget, MemoryBudgetOverrides, GB, MB};
+pub use budget::{
+    parse_byte_size, MemoryBudget, MemoryBudgetOverrides, ParseByteSizeError,
+    ENV_MEMORY_BUDGET_INDEXES, ENV_MEMORY_BUDGET_OTHER, ENV_MEMORY_BUDGET_QUERY_CACHE,
+    ENV_MEMORY_BUDGET_SYNTAX_TREES, ENV_MEMORY_BUDGET_TOTAL, ENV_MEMORY_BUDGET_TYPE_INFO, GB, MB,
+};
 pub use degraded::{BackgroundIndexingMode, DegradedSettings};
 pub use eviction::{EvictionRequest, EvictionResult, MemoryEvictor};
 pub use manager::{MemoryEvent, MemoryManager, MemoryRegistration, MemoryTracker};

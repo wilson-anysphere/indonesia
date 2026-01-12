@@ -29,7 +29,7 @@ use nova_ide::{
 use nova_ide::{multi_token_completion_context, CompletionConfig, CompletionEngine};
 use nova_index::{Index, SymbolKind};
 use nova_lsp::refactor_workspace::RefactorWorkspaceSnapshot;
-use nova_memory::{MemoryBudget, MemoryCategory, MemoryEvent, MemoryManager};
+use nova_memory::{MemoryBudget, MemoryBudgetOverrides, MemoryCategory, MemoryEvent, MemoryManager};
 use nova_refactor::{
     code_action_for_edit, organize_imports, rename as semantic_rename, workspace_edit_to_lsp,
     FileId as RefactorFileId, JavaSymbolKind, OrganizeImportsParams, RefactorJavaDatabase,
@@ -155,6 +155,7 @@ fn main() -> std::io::Result<()> {
     let mut state = ServerState::new(
         config.ai.clone(),
         ai_env.as_ref().map(|(_, privacy)| privacy.clone()),
+        config.memory_budget_overrides(),
     );
 
     let request_cancellation =
@@ -804,6 +805,7 @@ impl ServerState {
     fn new(
         ai_config: nova_config::AiConfig,
         privacy_override: Option<nova_ai::PrivacyMode>,
+        config_memory_overrides: MemoryBudgetOverrides,
     ) -> Self {
         let privacy = privacy_override.unwrap_or_else(|| {
             let mut privacy = nova_ai::PrivacyMode::from_ai_privacy_config(&ai_config.privacy);
@@ -836,7 +838,10 @@ impl ServerState {
             (None, None)
         };
 
-        let memory = MemoryManager::new(MemoryBudget::default_for_system());
+        let memory_budget = MemoryBudget::default_for_system()
+            .apply_overrides(config_memory_overrides)
+            .apply_overrides(MemoryBudgetOverrides::from_env());
+        let memory = MemoryManager::new(memory_budget);
         let memory_events: Arc<Mutex<Vec<MemoryEvent>>> = Arc::new(Mutex::new(Vec::new()));
         memory.subscribe({
             let memory_events = memory_events.clone();
