@@ -2,7 +2,7 @@
 //
 // Each `tests/*.rs` file becomes a separate Cargo integration test binary. Under
 // the `cargo_agent` RLIMIT_AS constraints this is expensive, so `nova-dap`
-// intentionally uses a single harness file (`tests/tests.rs`) that `mod`s the rest of the suite.
+// intentionally uses a single harness file (`tests/real_jvm.rs`) that `mod`s the rest of the suite.
 mod harness;
 mod suite;
 
@@ -38,8 +38,8 @@ fn harness_is_single_root_test_file() {
     root_rs_files.sort();
 
     assert_eq!(
-        expected, "tests.rs",
-        "expected nova-dap integration test harness to be named tests.rs (so `cargo test --locked -p nova-dap --test tests` works); got: {expected}"
+        expected, "real_jvm.rs",
+        "expected nova-dap integration test harness to be named real_jvm.rs (so `cargo test --locked -p nova-dap --test real_jvm` works); got: {expected}"
     );
 
     assert_eq!(

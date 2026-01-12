@@ -20,7 +20,7 @@ fn tool_available(name: &str) -> bool {
 }
 
 fn hot_swap_compile_temp_dirs() -> Vec<PathBuf> {
-    let base = std::env::temp_dir().join("nova-dap-hot-swap");
+    let base = std::env::temp_dir().join(format!("nova-dap-hot-swap-{}", std::process::id()));
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(&base) else {
         return out;
@@ -717,7 +717,7 @@ async fn dap_hot_swap_can_compile_changed_files_with_javac() {
     // Ensure the test environment is deterministic even if a previous run left
     // behind temp directories.
     std::env::remove_var("NOVA_DAP_KEEP_HOT_SWAP_TEMP");
-    let hot_swap_base = std::env::temp_dir().join("nova-dap-hot-swap");
+    let hot_swap_base = std::env::temp_dir().join(format!("nova-dap-hot-swap-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(hot_swap_base);
 
     let mut caps = vec![false; 32];

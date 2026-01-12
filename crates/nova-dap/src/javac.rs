@@ -490,7 +490,9 @@ fn keep_hot_swap_temp_dir() -> bool {
 }
 
 pub(crate) fn hot_swap_temp_dir() -> std::io::Result<TempDir> {
-    let base = std::env::temp_dir().join("nova-dap-hot-swap");
+    // Use a per-process base directory to avoid cross-process interference in tests
+    // and when multiple Nova instances are running concurrently on the same machine.
+    let base = std::env::temp_dir().join(format!("nova-dap-hot-swap-{}", std::process::id()));
     std::fs::create_dir_all(&base)?;
     tempfile::Builder::new().prefix("compile-").tempdir_in(base)
 }

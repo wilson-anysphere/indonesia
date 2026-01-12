@@ -83,14 +83,14 @@ done
 #
 # Each `tests/*.rs` file becomes a separate Cargo integration test binary, which is expensive
 # under the agent RLIMIT_AS constraints. `nova-dap` intentionally consolidates its integration
-# tests into a single harness, `tests/tests.rs`, which `mod`s the rest of the suite.
+# tests into a single harness, `tests/real_jvm.rs`, which `mod`s the rest of the suite.
 nova_dap_root_tests=()
 while IFS= read -r file; do
   nova_dap_root_tests+=("$file")
 done < <(find crates/nova-dap/tests -maxdepth 1 -name '*.rs' -print)
 
-if [[ ${#nova_dap_root_tests[@]} -ne 1 || "${nova_dap_root_tests[0]}" != "crates/nova-dap/tests/tests.rs" ]]; then
-  echo "repo invariant failed: nova-dap integration tests must be consolidated into crates/nova-dap/tests/tests.rs" >&2
+if [[ ${#nova_dap_root_tests[@]} -ne 1 || "${nova_dap_root_tests[0]}" != "crates/nova-dap/tests/real_jvm.rs" ]]; then
+  echo "repo invariant failed: nova-dap integration tests must be consolidated into crates/nova-dap/tests/real_jvm.rs" >&2
   if [[ ${#nova_dap_root_tests[@]} -eq 0 ]]; then
     echo "  found: <none>" >&2
   else
