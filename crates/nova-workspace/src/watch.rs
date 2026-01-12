@@ -67,9 +67,10 @@ pub struct WatchConfig {
     /// modules outside the workspace root (e.g. Maven `<modules>` entries like `../common`) still
     /// trigger project reloads.
     pub module_roots: Vec<PathBuf>,
-    /// Path to the Nova config file used for this workspace (if any).
+    /// The effective Nova config file path for this workspace, if any.
     ///
-    /// This may point outside of `workspace_root` when `NOVA_CONFIG_PATH` is set.
+    /// This may live outside `workspace_root` when `NOVA_CONFIG_PATH` is set or when
+    /// callers explicitly pass a config path (e.g. `nova-lsp --config <path>`).
     pub nova_config_path: Option<PathBuf>,
 }
 
@@ -111,10 +112,7 @@ pub fn categorize_event(config: &WatchConfig, event: &NormalizedEvent) -> Option
         // `module-info.java` updates the JPMS module graph embedded in `ProjectConfig`. Treat it
         // like a build change so we reload the project config instead of only updating file
         // contents.
-        if path
-            .file_name()
-            .is_some_and(|name| name == "module-info.java")
-        {
+        if path.file_name().is_some_and(|name| name == "module-info.java") {
             return Some(ChangeCategory::Build);
         }
         // Many build files are detected based on path components (e.g. ignoring `build/` output
@@ -703,14 +701,26 @@ mod tests {
 
     #[test]
     fn custom_nova_config_path_is_categorized_as_build() {
-        let root = PathBuf::from("/tmp/workspace");
-        let mut config = WatchConfig::new(root.clone());
-        config.nova_config_path = Some(root.join("custom-config.toml"));
+        let workspace_root = PathBuf::from("/tmp/workspace");
+        let candidates = [
+            workspace_root.join("custom-config.toml"),
+            PathBuf::from("/tmp/custom/nova-config.external.toml"),
+        ];
 
-        let event = NormalizedEvent::Modified(root.join("custom-config.toml"));
-        assert_eq!(
-            categorize_event(&config, &event),
-            Some(ChangeCategory::Build)
-        );
+        for config_path in candidates {
+            assert!(
+                !is_build_file(&config_path),
+                "test precondition: config path should not match standard build file names"
+            );
+
+            let mut config = WatchConfig::new(workspace_root.clone());
+            config.nova_config_path = Some(config_path.clone());
+
+            let event = NormalizedEvent::Modified(config_path);
+            assert_eq!(
+                categorize_event(&config, &event),
+                Some(ChangeCategory::Build)
+            );
+        }
     }
 }

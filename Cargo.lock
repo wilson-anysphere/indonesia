@@ -3514,6 +3514,7 @@ dependencies = [
  "insta",
  "nova-core",
  "nova-memory",
+ "parking_lot",
  "regex",
  "schemars",
  "serde",

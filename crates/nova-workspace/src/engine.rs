@@ -61,8 +61,8 @@ fn compute_watch_roots(
         roots.push((root.clone(), WatchMode::Recursive));
     }
 
-    // Watch the discovered config file when it lives outside the workspace root. Use a non-recursive
-    // watch so we don't accidentally watch huge trees like `$HOME`.
+    // Watch the discovered config file when it lives outside the workspace root. Use a
+    // non-recursive watch so we don't accidentally watch huge trees like `$HOME`.
     if let Some(config_path) = watch_config.nova_config_path.as_ref() {
         if !config_path.starts_with(workspace_root) {
             roots.push((config_path.clone(), WatchMode::NonRecursive));
@@ -3448,7 +3448,7 @@ mod tests {
         EvictionRequest, EvictionResult, MemoryBudget, MemoryCategory, MemoryEvictor,
     };
     use nova_project::BuildSystem;
-    use nova_test_utils::{env_lock, EnvVarGuard};
+    use nova_test_utils::EnvVarGuard;
     use nova_vfs::{FileChange, ManualFileWatcher, ManualFileWatcherHandle};
     use std::fs;
     use std::path::Path;
@@ -4297,33 +4297,35 @@ mod tests {
 
     #[test]
     fn external_config_path_adds_non_recursive_watch_for_parent_directory() {
-        // This test mutates `NOVA_CONFIG_PATH`, so it must be serialized with other env-mutation
-        // tests.
-        let _lock = env_lock();
+        nova_config::with_config_env_lock(|| {
+            let workspace_dir = tempfile::tempdir().unwrap();
+            let workspace_root = workspace_dir.path().canonicalize().unwrap();
 
-        let workspace_dir = tempfile::tempdir().unwrap();
-        let workspace_root = workspace_dir.path().canonicalize().unwrap();
+            let config_dir = tempfile::tempdir().unwrap();
+            let config_path = config_dir.path().join("myconfig.toml");
+            fs::write(&config_path, b"[generated_sources]\nenabled = true\n").unwrap();
+            let config_path = config_path.canonicalize().unwrap();
 
-        let config_dir = tempfile::tempdir().unwrap();
-        let config_path = config_dir.path().join("myconfig.toml");
-        fs::write(&config_path, b"[generated_sources]\nenabled = true\n").unwrap();
-        let config_path = config_path.canonicalize().unwrap();
+            let _config_guard = EnvVarGuard::set(nova_config::NOVA_CONFIG_ENV_VAR, &config_path);
 
-        let _config_guard = EnvVarGuard::set(nova_config::NOVA_CONFIG_ENV_VAR, &config_path);
+            let mut watch_config = WatchConfig::new(workspace_root.clone());
+            watch_config.nova_config_path = nova_config::discover_config_path(&workspace_root);
+            assert_eq!(
+                watch_config.nova_config_path.as_deref(),
+                Some(config_path.as_path())
+            );
 
-        let mut watch_config = WatchConfig::new(workspace_root.clone());
-        watch_config.nova_config_path = nova_config::discover_config_path(&workspace_root);
-        assert_eq!(
-            watch_config.nova_config_path.as_deref(),
-            Some(config_path.as_path())
-        );
-
-        let roots = compute_watch_roots(&workspace_root, &watch_config);
-        assert!(roots.contains(&(workspace_root.clone(), WatchMode::Recursive)));
-        assert!(
-            roots.contains(&(config_path.clone(), WatchMode::NonRecursive)),
-            "expected roots {roots:?} to include non-recursive watch for config path"
-        );
+            let roots = compute_watch_roots(&workspace_root, &watch_config);
+            assert!(roots.contains(&(workspace_root.clone(), WatchMode::Recursive)));
+            assert!(
+                roots.contains(&(config_path.clone(), WatchMode::NonRecursive)),
+                "expected roots {roots:?} to include non-recursive watch for config path"
+            );
+            assert!(
+                !roots.iter().any(|(root, _)| root == config_dir.path()),
+                "expected watch roots not to include the entire config directory; roots: {roots:?}"
+            );
+        });
     }
 
     #[test]
@@ -5824,40 +5826,41 @@ mod tests {
 
     #[test]
     fn project_reload_discovers_jdk_index_from_nova_config() {
-        let _lock = env_lock();
-        let _config_guard = EnvVarGuard::unset(nova_config::NOVA_CONFIG_ENV_VAR);
+        nova_config::with_config_env_lock(|| {
+            let _config_guard = EnvVarGuard::unset(nova_config::NOVA_CONFIG_ENV_VAR);
 
-        let dir = tempfile::tempdir().unwrap();
-        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
-        let root = dir.path().canonicalize().unwrap();
-        fs::create_dir_all(root.join("src")).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+            let root = dir.path().canonicalize().unwrap();
+            fs::create_dir_all(root.join("src")).unwrap();
 
-        // Ensure at least one file is indexed so project reload runs end-to-end.
-        fs::write(root.join("src/Main.java"), "class Main {}".as_bytes()).unwrap();
+            // Ensure at least one file is indexed so project reload runs end-to-end.
+            fs::write(root.join("src/Main.java"), "class Main {}".as_bytes()).unwrap();
 
-        let fake_jdk_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../nova-jdk/testdata/fake-jdk")
-            .canonicalize()
+            let fake_jdk_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../nova-jdk/testdata/fake-jdk")
+                .canonicalize()
+                .unwrap();
+            let fake_jdk_root = fake_jdk_root.to_string_lossy().replace('\\', "\\\\");
+            fs::write(
+                root.join("nova.toml"),
+                format!("[jdk]\nhome = \"{fake_jdk_root}\"\n"),
+            )
             .unwrap();
-        let fake_jdk_root = fake_jdk_root.to_string_lossy().replace('\\', "\\\\");
-        fs::write(
-            root.join("nova.toml"),
-            format!("[jdk]\nhome = \"{fake_jdk_root}\"\n"),
-        )
-        .unwrap();
 
-        let workspace = crate::Workspace::open(&root).unwrap();
-        let engine = workspace.engine_for_tests();
-        let project = ProjectId::from_raw(0);
+            let workspace = crate::Workspace::open(&root).unwrap();
+            let engine = workspace.engine_for_tests();
+            let project = ProjectId::from_raw(0);
 
-        engine.query_db.with_snapshot(|snap| {
-            let index = snap.jdk_index(project);
-            assert_eq!(index.info().backing, nova_jdk::JdkIndexBacking::Jmods);
-            assert!(index
-                .lookup_type("java.lang.String")
-                .ok()
-                .flatten()
-                .is_some());
+            engine.query_db.with_snapshot(|snap| {
+                let index = snap.jdk_index(project);
+                assert_eq!(index.info().backing, nova_jdk::JdkIndexBacking::Jmods);
+                assert!(index
+                    .lookup_type("java.lang.String")
+                    .ok()
+                    .flatten()
+                    .is_some());
+            });
         });
     }
 
@@ -5899,42 +5902,43 @@ enabled = false
 
     #[test]
     fn project_reload_resolves_relative_jdk_home_to_workspace_root() {
-        let _lock = env_lock();
-        let _config_guard = EnvVarGuard::unset(nova_config::NOVA_CONFIG_ENV_VAR);
+        nova_config::with_config_env_lock(|| {
+            let _config_guard = EnvVarGuard::unset(nova_config::NOVA_CONFIG_ENV_VAR);
 
-        let dir = tempfile::tempdir().unwrap();
-        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
-        let root = dir.path().canonicalize().unwrap();
-        fs::create_dir_all(root.join("src")).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+            let root = dir.path().canonicalize().unwrap();
+            fs::create_dir_all(root.join("src")).unwrap();
 
-        fs::write(root.join("src/Main.java"), "class Main {}".as_bytes()).unwrap();
+            fs::write(root.join("src/Main.java"), "class Main {}".as_bytes()).unwrap();
 
-        let testdata_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../nova-jdk/testdata/fake-jdk")
-            .canonicalize()
+            let testdata_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../nova-jdk/testdata/fake-jdk")
+                .canonicalize()
+                .unwrap();
+            let dest_jdk_root = root.join("fake-jdk");
+            fs::create_dir_all(dest_jdk_root.join("jmods")).unwrap();
+            fs::copy(
+                testdata_root.join("jmods").join("java.base.jmod"),
+                dest_jdk_root.join("jmods").join("java.base.jmod"),
+            )
             .unwrap();
-        let dest_jdk_root = root.join("fake-jdk");
-        fs::create_dir_all(dest_jdk_root.join("jmods")).unwrap();
-        fs::copy(
-            testdata_root.join("jmods").join("java.base.jmod"),
-            dest_jdk_root.join("jmods").join("java.base.jmod"),
-        )
-        .unwrap();
 
-        fs::write(root.join("nova.toml"), "[jdk]\nhome = \"fake-jdk\"\n").unwrap();
+            fs::write(root.join("nova.toml"), "[jdk]\nhome = \"fake-jdk\"\n").unwrap();
 
-        let workspace = crate::Workspace::open(&root).unwrap();
-        let engine = workspace.engine_for_tests();
-        let project = ProjectId::from_raw(0);
+            let workspace = crate::Workspace::open(&root).unwrap();
+            let engine = workspace.engine_for_tests();
+            let project = ProjectId::from_raw(0);
 
-        engine.query_db.with_snapshot(|snap| {
-            let index = snap.jdk_index(project);
-            assert_eq!(index.info().backing, nova_jdk::JdkIndexBacking::Jmods);
-            assert!(index
-                .lookup_type("java.lang.String")
-                .ok()
-                .flatten()
-                .is_some());
+            engine.query_db.with_snapshot(|snap| {
+                let index = snap.jdk_index(project);
+                assert_eq!(index.info().backing, nova_jdk::JdkIndexBacking::Jmods);
+                assert!(index
+                    .lookup_type("java.lang.String")
+                    .ok()
+                    .flatten()
+                    .is_some());
+            });
         });
     }
 
@@ -6492,12 +6496,11 @@ enabled = false
         fs::write(&external_config_path, "").unwrap();
         let external_config_path = external_config_path.canonicalize().unwrap();
 
-        let workspace = {
-            let _lock = env_lock();
+        let workspace = nova_config::with_config_env_lock(|| {
             let _config_guard =
                 EnvVarGuard::set(nova_config::NOVA_CONFIG_ENV_VAR, &external_config_path);
             crate::Workspace::open(&workspace_root).unwrap()
-        };
+        });
         let engine = workspace.engine.clone();
 
         let config_path = engine

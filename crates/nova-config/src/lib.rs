@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::time::Duration;
 
+use parking_lot::ReentrantMutex;
 use thiserror::Error;
 use tracing_subscriber::fmt::writer::{BoxMakeWriter, MakeWriterExt};
 use tracing_subscriber::fmt::MakeWriter;
@@ -1353,6 +1354,23 @@ impl NovaConfig {
 
 pub const NOVA_CONFIG_ENV_VAR: &str = "NOVA_CONFIG_PATH";
 
+static CONFIG_ENV_LOCK: OnceLock<ReentrantMutex<()>> = OnceLock::new();
+
+fn config_env_lock() -> &'static ReentrantMutex<()> {
+    CONFIG_ENV_LOCK.get_or_init(|| ReentrantMutex::new(()))
+}
+
+/// Run `f` while holding Nova's config environment lock.
+///
+/// Tests sometimes need to temporarily set [`NOVA_CONFIG_ENV_VAR`] (`NOVA_CONFIG_PATH`). Because
+/// environment variables are process-global, concurrent config discovery in other threads/tests can
+/// observe the temporary override and become flaky. Wrapping the mutation + config discovery logic
+/// in this helper ensures access is serialized.
+pub fn with_config_env_lock<R>(f: impl FnOnce() -> R) -> R {
+    let _guard = config_env_lock().lock();
+    f()
+}
+
 /// Discover the Nova configuration file for a workspace root.
 ///
 /// Search order:
@@ -1362,6 +1380,7 @@ pub const NOVA_CONFIG_ENV_VAR: &str = "NOVA_CONFIG_PATH";
 /// 4) `nova.config.toml` in `workspace_root`
 /// 5) `.nova/config.toml` in `workspace_root` (legacy fallback)
 pub fn discover_config_path(workspace_root: &Path) -> Option<PathBuf> {
+    let _guard = config_env_lock().lock();
     if let Some(value) = std::env::var_os(NOVA_CONFIG_ENV_VAR) {
         let candidate = PathBuf::from(value);
         let path = if candidate.is_absolute() {
