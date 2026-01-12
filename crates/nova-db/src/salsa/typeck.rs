@@ -4269,6 +4269,12 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 "invalid expression statement",
                 Some(self.body.exprs[expr].range()),
             ));
+            // Backwards-compatible alias used by some clients/tests.
+            self.diagnostics.push(Diagnostic::error(
+                "invalid-expr-stmt",
+                "invalid expression statement",
+                Some(self.body.exprs[expr].range()),
+            ));
         }
     }
 
@@ -4280,6 +4286,12 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         if !self.is_statement_expression(expr) {
             self.diagnostics.push(Diagnostic::error(
                 "invalid-for-update-expression",
+                "invalid expression in for-loop update",
+                Some(self.body.exprs[expr].range()),
+            ));
+            // Backwards-compatible alias used by some clients/tests.
+            self.diagnostics.push(Diagnostic::error(
+                "invalid-for-update-expr",
                 "invalid expression in for-loop update",
                 Some(self.body.exprs[expr].range()),
             ));
@@ -4455,6 +4467,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 if decl_ty == Type::Void {
                     self.diagnostics.push(Diagnostic::error(
                         "void-variable-type",
+                        "`void` is not a valid type for variables",
+                        Some(data.ty_range),
+                    ));
+                    self.diagnostics.push(Diagnostic::error(
+                        "invalid-void-type",
                         "`void` is not a valid type for variables",
                         Some(data.ty_range),
                     ));
@@ -4705,6 +4722,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             "`void` is not a valid type for variables",
                             Some(data.ty_range),
                         ));
+                        self.diagnostics.push(Diagnostic::error(
+                            "invalid-void-type",
+                            "`void` is not a valid type for variables",
+                            Some(data.ty_range),
+                        ));
                         decl_ty = Type::Error;
                     }
                     self.local_types[local.idx()] = decl_ty.clone();
@@ -4776,6 +4798,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     if catch_ty == Type::Void {
                         self.diagnostics.push(Diagnostic::error(
                             "void-catch-parameter-type",
+                            "`void` is not a valid catch parameter type",
+                            Some(data.ty_range),
+                        ));
+                        self.diagnostics.push(Diagnostic::error(
+                            "invalid-void-type",
                             "`void` is not a valid catch parameter type",
                             Some(data.ty_range),
                         ));
@@ -5418,10 +5445,56 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             HirExpr::Unary {
                 op, expr: operand, ..
             } => {
-                let inner = self.infer_expr(loader, *operand).ty;
+                let operand_info = self.infer_expr(loader, *operand);
+                let inner = operand_info.ty.clone();
                 let span = self.body.exprs[expr].range();
                 let env_ro: &dyn TypeEnv = &*loader.store;
                 let inner_prim = primitive_like(env_ro, &inner);
+                let operand_range = self.body.exprs[*operand].range();
+                let operand_is_lvalue = !operand_info.is_type_ref
+                    && match &self.body.exprs[*operand] {
+                        HirExpr::Name { name, .. } => {
+                            let scope = self
+                                .expr_scopes
+                                .scope_for_expr(*operand)
+                                .unwrap_or_else(|| self.expr_scopes.root_scope());
+                            if self
+                                .expr_scopes
+                                .resolve_name(scope, &Name::from(name.as_str()))
+                                .is_some()
+                            {
+                                true
+                            } else {
+                                match self.resolver.resolve_name_detailed(
+                                    self.scopes,
+                                    self.scope_id,
+                                    &Name::from(name.as_str()),
+                                ) {
+                                    NameResolution::Resolved(res) => match res {
+                                        Resolution::Local(_)
+                                        | Resolution::Parameter(_)
+                                        | Resolution::Field(_) => true,
+                                        Resolution::StaticMember(member) => matches!(
+                                            member,
+                                            StaticMemberResolution::SourceField(_)
+                                        ),
+                                        Resolution::Methods(_)
+                                        | Resolution::Constructors(_)
+                                        | Resolution::Type(_)
+                                        | Resolution::Package(_) => false,
+                                    },
+                                    // Prefer the name-resolution diagnostics produced while inferring
+                                    // the name itself.
+                                    NameResolution::Ambiguous(_) | NameResolution::Unresolved => {
+                                        true
+                                    }
+                                }
+                            }
+                        }
+                        HirExpr::FieldAccess { .. } => true,
+                        HirExpr::ArrayAccess { .. } => true,
+                        _ => false,
+                    };
                 let ty = match op {
                     UnaryOp::Not => {
                         if !inner.is_errorish()
@@ -5482,7 +5555,14 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         }
                     }
                     UnaryOp::PreInc | UnaryOp::PreDec | UnaryOp::PostInc | UnaryOp::PostDec => {
-                        if inner.is_errorish() {
+                        if !operand_is_lvalue {
+                            self.diagnostics.push(Diagnostic::error(
+                                "invalid-lvalue",
+                                "expression is not assignable",
+                                Some(operand_range),
+                            ));
+                            Type::Error
+                        } else if inner.is_errorish() {
                             inner
                         } else if let Some(primitive) = inner_prim {
                             if primitive.is_numeric() {
@@ -5497,7 +5577,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                                 self.diagnostics.push(Diagnostic::error(
                                     "invalid-inc-dec",
                                     "increment/decrement requires a numeric operand",
-                                    Some(self.body.exprs[*operand].range()),
+                                    Some(operand_range),
                                 ));
                                 Type::Error
                             }
@@ -5505,7 +5585,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             self.diagnostics.push(Diagnostic::error(
                                 "invalid-inc-dec",
                                 "increment/decrement requires a numeric operand",
-                                Some(self.body.exprs[*operand].range()),
+                                Some(operand_range),
                             ));
                             Type::Error
                         }
@@ -5660,6 +5740,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         "invalid assignment target: cannot assign to a type",
                         Some(lhs_range),
                     ));
+                    self.diagnostics.push(Diagnostic::error(
+                        "invalid-lvalue",
+                        "expression is not assignable",
+                        Some(lhs_range),
+                    ));
                     ExprInfo {
                         ty: Type::Error,
                         is_type_ref: false,
@@ -5668,6 +5753,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     self.diagnostics.push(Diagnostic::error(
                         "invalid-assignment-target",
                         "invalid assignment target",
+                        Some(lhs_range),
+                    ));
+                    self.diagnostics.push(Diagnostic::error(
+                        "invalid-lvalue",
+                        "expression is not assignable",
                         Some(lhs_range),
                     ));
                     ExprInfo {
@@ -8234,6 +8324,11 @@ fn resolve_param_types<'idx>(
         if resolved.ty == Type::Void {
             diags.push(Diagnostic::error(
                 "void-parameter-type",
+                "`void` is not a valid parameter type",
+                Some(param.ty_range),
+            ));
+            diags.push(Diagnostic::error(
+                "invalid-void-type",
                 "`void` is not a valid parameter type",
                 Some(param.ty_range),
             ));

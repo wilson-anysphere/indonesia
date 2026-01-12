@@ -569,7 +569,7 @@ fn rejects_non_statement_expression() {
     let src = r#"
 class C {
     void m() {
-        1;
+        1 + 2;
     }
 }
 "#;
@@ -581,6 +581,10 @@ class C {
             .iter()
             .any(|d| d.code.as_ref() == "invalid-statement-expression"),
         "expected invalid-statement-expression diagnostic; got {diags:?}"
+    );
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-expr-stmt"),
+        "expected invalid-expr-stmt diagnostic; got {diags:?}"
     );
 }
 
@@ -818,7 +822,7 @@ fn rejects_non_statement_expression_in_for_update() {
     let src = r#"
 class C {
     void m() {
-        for (;; 1) {}
+        for (;; 1 + 2) {}
     }
 }
 "#;
@@ -830,6 +834,10 @@ class C {
             .iter()
             .any(|d| d.code.as_ref() == "invalid-for-update-expression"),
         "expected invalid-for-update-expression diagnostic; got {diags:?}"
+    );
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-for-update-expr"),
+        "expected invalid-for-update-expr diagnostic; got {diags:?}"
     );
 }
 
@@ -1120,6 +1128,28 @@ class C {
             .iter()
             .any(|d| d.code.as_ref() == "invalid-assignment-target"),
         "expected invalid-assignment-target diagnostic, got {diags:?}"
+    );
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-lvalue"),
+        "expected invalid-lvalue diagnostic, got {diags:?}"
+    );
+}
+
+#[test]
+fn increment_literal_is_error() {
+    let src = r#"
+class C {
+    void m() {
+        ++1;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-lvalue"),
+        "expected invalid-lvalue diagnostic, got {diags:?}"
     );
 }
 
@@ -8773,6 +8803,10 @@ class C {
             .any(|d| d.code.as_ref() == "void-variable-type"),
         "expected void-variable-type diagnostic; got {diags:?}"
     );
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-void-type"),
+        "expected invalid-void-type diagnostic; got {diags:?}"
+    );
 }
 
 #[test]
@@ -8790,6 +8824,10 @@ class C {
             .iter()
             .any(|d| d.code.as_ref() == "void-parameter-type"),
         "expected void-parameter-type diagnostic; got {diags:?}"
+    );
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-void-type"),
+        "expected invalid-void-type diagnostic; got {diags:?}"
     );
 }
 
@@ -8826,6 +8864,10 @@ class C {
             .iter()
             .any(|d| d.code.as_ref() == "void-catch-parameter-type"),
         "expected void-catch-parameter-type diagnostic; got {diags:?}"
+    );
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "invalid-void-type"),
+        "expected invalid-void-type diagnostic; got {diags:?}"
     );
 }
 
