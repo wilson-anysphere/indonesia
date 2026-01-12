@@ -290,6 +290,57 @@ fn is_ident_continue(b: u8) -> bool {
     is_ident_start(b) || (b as char).is_ascii_digit()
 }
 
+fn skip_java_string(bytes: &[u8], mut i: usize) -> usize {
+    debug_assert_eq!(bytes.get(i), Some(&b'"'));
+
+    // Best-effort support for Java text blocks: """ ... """
+    if i + 2 < bytes.len() && bytes[i + 1] == b'"' && bytes[i + 2] == b'"' {
+        i += 3;
+        while i + 2 < bytes.len() {
+            if bytes[i] == b'\\' {
+                // Text blocks still allow escapes; treat them similarly to normal strings.
+                i = (i + 2).min(bytes.len());
+                continue;
+            }
+            if bytes[i] == b'"' && bytes[i + 1] == b'"' && bytes[i + 2] == b'"' {
+                return i + 3;
+            }
+            i += 1;
+        }
+        return bytes.len();
+    }
+
+    i += 1;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' {
+            i = (i + 2).min(bytes.len());
+            continue;
+        }
+        if bytes[i] == b'"' {
+            return i + 1;
+        }
+        i += 1;
+    }
+    bytes.len()
+}
+
+fn skip_java_char(bytes: &[u8], mut i: usize) -> usize {
+    debug_assert_eq!(bytes.get(i), Some(&b'\''));
+
+    i += 1;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' {
+            i = (i + 2).min(bytes.len());
+            continue;
+        }
+        if bytes[i] == b'\'' {
+            return i + 1;
+        }
+        i += 1;
+    }
+    bytes.len()
+}
+
 fn find_identifier_occurrences(text: &str, name: &str) -> Vec<TextRange> {
     let bytes = text.as_bytes();
     let mut out = Vec::new();
@@ -298,34 +349,12 @@ fn find_identifier_occurrences(text: &str, name: &str) -> Vec<TextRange> {
     while i < bytes.len() {
         // Skip strings and comments.
         if bytes[i] == b'"' {
-            i += 1;
-            while i < bytes.len() {
-                if bytes[i] == b'\\' {
-                    i += 2;
-                    continue;
-                }
-                if bytes[i] == b'"' {
-                    i += 1;
-                    break;
-                }
-                i += 1;
-            }
+            i = skip_java_string(bytes, i);
             continue;
         }
 
         if bytes[i] == b'\'' {
-            i += 1;
-            while i < bytes.len() {
-                if bytes[i] == b'\\' {
-                    i += 2;
-                    continue;
-                }
-                if bytes[i] == b'\'' {
-                    i += 1;
-                    break;
-                }
-                i += 1;
-            }
+            i = skip_java_char(bytes, i);
             continue;
         }
 
@@ -521,6 +550,17 @@ impl<'a> JavaSketchParser<'a> {
             if self.cursor >= self.bytes.len() {
                 return None;
             }
+            match self.bytes[self.cursor] {
+                b'"' => {
+                    self.cursor = skip_java_string(self.bytes, self.cursor);
+                    continue;
+                }
+                b'\'' => {
+                    self.cursor = skip_java_char(self.bytes, self.cursor);
+                    continue;
+                }
+                _ => {}
+            }
             if is_ident_start(self.bytes[self.cursor]) {
                 return self.next_identifier();
             }
@@ -612,18 +652,11 @@ fn parse_members_in_class(
                 continue;
             }
             b'"' => {
-                i += 1;
-                while i < bytes.len() {
-                    if bytes[i] == b'\\' {
-                        i += 2;
-                        continue;
-                    }
-                    if bytes[i] == b'"' {
-                        i += 1;
-                        break;
-                    }
-                    i += 1;
-                }
+                i = skip_java_string(bytes, i);
+                continue;
+            }
+            b'\'' => {
+                i = skip_java_char(bytes, i);
                 continue;
             }
             b'\'' => {
@@ -759,26 +792,28 @@ fn find_matching_paren(text: &str, open_paren: usize) -> Option<usize> {
     let mut i = open_paren;
     while i < bytes.len() {
         match bytes[i] {
-            b'(' => depth += 1,
+            b'(' => {
+                depth += 1;
+                i += 1;
+                continue;
+            }
             b')' => {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
                     return Some(i + 1);
                 }
+                i += 1;
+                continue;
             }
             b'"' => {
-                // Skip strings
-                i += 1;
-                while i < bytes.len() {
-                    if bytes[i] == b'\\' {
-                        i += 2;
-                        continue;
-                    }
-                    if bytes[i] == b'"' {
-                        break;
-                    }
-                    i += 1;
-                }
+                // Skip strings / text blocks.
+                i = skip_java_string(bytes, i);
+                continue;
+            }
+            b'\'' => {
+                // Skip char literals.
+                i = skip_java_char(bytes, i);
+                continue;
             }
             b'\'' => {
                 // Skip char literals.
@@ -1238,27 +1273,29 @@ fn find_matching_brace_with_offset(
     let mut i = open_brace;
     while i < bytes.len() {
         match bytes[i] {
-            b'{' => depth += 1,
+            b'{' => {
+                depth += 1;
+                i += 1;
+                continue;
+            }
             b'}' => {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
                     // include closing brace
                     return Some(base_offset + i + 1);
                 }
+                i += 1;
+                continue;
             }
             b'"' => {
-                // Skip strings
-                i += 1;
-                while i < bytes.len() {
-                    if bytes[i] == b'\\' {
-                        i += 2;
-                        continue;
-                    }
-                    if bytes[i] == b'"' {
-                        break;
-                    }
-                    i += 1;
-                }
+                // Skip strings / text blocks.
+                i = skip_java_string(bytes, i);
+                continue;
+            }
+            b'\'' => {
+                // Skip char literals.
+                i = skip_java_char(bytes, i);
+                continue;
             }
             b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
                 i += 2;
