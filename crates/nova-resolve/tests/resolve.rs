@@ -394,6 +394,60 @@ class C {}
 }
 
 #[test]
+fn type_import_on_demand_from_type_resolves_member_type() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(
+        file,
+        r#"
+import java.util.Map.*;
+class C {}
+"#,
+    );
+
+    let mut index = TestIndex::default();
+    index.add_type("java.util", "Map");
+    let entry = index.add_type("java.util", "Map$Entry");
+
+    let scopes = build_scopes(&db, file);
+    let resolver = Resolver::new(&index);
+    let res = resolver.resolve_name(&scopes.scopes, scopes.file_scope, &Name::from("Entry"));
+    assert_eq!(
+        res,
+        Some(Resolution::Type(TypeResolution::External(entry)))
+    );
+}
+
+#[test]
+fn type_import_on_demand_from_type_is_not_flagged_as_unresolved() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(
+        file,
+        r#"
+import java.util.Map.*;
+class C {}
+"#,
+    );
+
+    let mut index = TestIndex::default();
+    index.add_type("java.util", "Map");
+    index.add_type("java.util", "Map$Entry");
+
+    let tree = queries::item_tree(&db, file);
+    let imports = ImportMap::from_item_tree(&tree);
+
+    let resolver = Resolver::new(&index);
+    let diags = resolver.diagnose_imports(&imports);
+
+    assert!(
+        !diags.iter().any(|d| d.code.as_ref() == "unresolved-import"
+            && d.message.contains("java.util.Map.*")),
+        "expected no unresolved-import for `java.util.Map.*`, got {diags:#?}"
+    );
+}
+
+#[test]
 fn java_lang_is_implicit() {
     let mut db = TestDb::default();
     let file = FileId::from_raw(0);

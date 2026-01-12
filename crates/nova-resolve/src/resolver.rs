@@ -432,7 +432,13 @@ impl<'a> Resolver<'a> {
         }
 
         for import in &imports.type_star {
-            if !self.package_exists(&import.package) {
+            if self.package_exists(&import.package) {
+                continue;
+            }
+
+            let prefix = import.package.to_dotted();
+            let prefix_ty = self.resolve_type_in_index(&QualifiedName::from_dotted(&prefix));
+            if prefix_ty.is_none() {
                 diags.push(unresolved_import_diagnostic(
                     import.range,
                     &format!("{}.*", import.package),
@@ -939,7 +945,34 @@ impl<'a> Resolver<'a> {
         let mut candidates = Vec::<TypeName>::new();
 
         for import in &imports.type_star {
-            if let Some(ty) = self.resolve_type_in_package_index(&import.package, name) {
+            // JLS 7.5.2: `import p.*;` imports all public types in package `p`.
+            // Java also allows `import TypeName.*;`, which imports the public member types
+            // of `TypeName` (e.g. `import java.util.Map.*;` makes `Entry` visible).
+            //
+            // Our `ImportMap` currently represents non-static star imports as a `PackageName`
+            // prefix. Prefer package semantics when the prefix is a real package, otherwise
+            // fall back to treating it as a type name and attempt to resolve a member type.
+            if self.package_exists(&import.package) {
+                if let Some(ty) = self.resolve_type_in_package_index(&import.package, name) {
+                    if seen.insert(ty.clone()) {
+                        candidates.push(ty);
+                    }
+                }
+                continue;
+            }
+
+            let prefix = import.package.to_dotted();
+            // Only treat the prefix as a type-import-on-demand if the prefix itself resolves to
+            // a type name.
+            if self
+                .resolve_type_in_index(&QualifiedName::from_dotted(&prefix))
+                .is_none()
+            {
+                continue;
+            }
+
+            let candidate = QualifiedName::from_dotted(&format!("{prefix}.{}", name.as_str()));
+            if let Some(ty) = self.resolve_type_in_index(&candidate) {
                 if seen.insert(ty.clone()) {
                     candidates.push(ty);
                 }
