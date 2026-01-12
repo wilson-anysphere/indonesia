@@ -7,8 +7,6 @@ use crate::text_fixture::{offset_to_position, CARET};
 
 #[test]
 fn workspace_index_is_cached_across_navigation_requests() {
-    nova_ide::__nav_resolve_reset_workspace_index_build_counts();
-
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system time after epoch")
@@ -39,16 +37,21 @@ class B {
     let file_b = db.file_id_for_path(&file_b_path);
     db.set_file_text(file_b, file_b_text);
 
-    goto_definition(&db, file_b, file_b_pos).expect("expected definition location");
-    assert_eq!(nova_ide::__nav_resolve_workspace_index_build_count(&db), 1);
+    let before = nova_ide::__nav_resolve_workspace_index_build_count(&db);
 
     goto_definition(&db, file_b, file_b_pos).expect("expected definition location");
-    assert_eq!(nova_ide::__nav_resolve_workspace_index_build_count(&db), 1);
+    let after_first = nova_ide::__nav_resolve_workspace_index_build_count(&db);
+    assert_eq!(after_first, before + 1);
+
+    goto_definition(&db, file_b, file_b_pos).expect("expected definition location");
+    let after_second = nova_ide::__nav_resolve_workspace_index_build_count(&db);
+    assert_eq!(after_second, after_first);
 
     // Edits should invalidate the cache (content pointer/len changes).
     db.set_file_text(file_a, "class A { void foo() {} }\n// edit\n".to_string());
 
     goto_definition(&db, file_b, file_b_pos).expect("expected definition location");
-    assert_eq!(nova_ide::__nav_resolve_workspace_index_build_count(&db), 2);
+    let after_third = nova_ide::__nav_resolve_workspace_index_build_count(&db);
+    assert_eq!(after_third, after_second + 1);
 }
 
