@@ -133,7 +133,7 @@ function endpointMethodFromItem(item: unknown): string | undefined {
     asStringArray(asRecord(obj.endpoint)?.methods) ??
     asStringArray(asRecord(asRecord(obj.endpoint)?.endpoint)?.methods);
 
-  return methods ? methods.join(',') : undefined;
+  return methods ? methods.join(', ') : undefined;
 }
 
 function beanIdFromItem(item: unknown): string | undefined {
