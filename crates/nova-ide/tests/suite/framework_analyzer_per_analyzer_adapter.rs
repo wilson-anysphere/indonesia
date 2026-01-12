@@ -10,7 +10,7 @@ use nova_ext::{ClassId, ExtensionRegistry, ProjectId, Span, Symbol};
 use nova_framework::{Database as FrameworkDatabase, FrameworkAnalyzer};
 use nova_scheduler::CancellationToken;
 
-use nova_ide::extensions::{FrameworkAnalyzerOnTextDbAdapter, IdeExtensions};
+use nova_ide::extensions::{FrameworkAnalyzerAdapterOnTextDb, IdeExtensions};
 
 struct TestFrameworkAnalyzer;
 
@@ -74,7 +74,7 @@ fn framework_analyzer_adapter_runs_on_host_db_as_per_analyzer_providers() {
     let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
 
     let analyzer =
-        FrameworkAnalyzerOnTextDbAdapter::new("framework.test_adapter", TestFrameworkAnalyzer)
+        FrameworkAnalyzerAdapterOnTextDb::new("framework.test_adapter", TestFrameworkAnalyzer)
             .into_arc();
 
     let mut registry: ExtensionRegistry<dyn nova_db::Database + Send + Sync> =
@@ -168,7 +168,7 @@ fn framework_analyzer_adapter_propagates_cancellation_to_analyzer_on_host_db() {
     let (finished_tx, finished_rx) = mpsc::channel();
     let saw_cancel = Arc::new(AtomicBool::new(false));
 
-    let analyzer = FrameworkAnalyzerOnTextDbAdapter::new(
+    let analyzer = FrameworkAnalyzerAdapterOnTextDb::new(
         "framework.cancel_adapter",
         CancellationAwareAnalyzer {
             started: started_tx,
@@ -244,7 +244,7 @@ fn framework_analyzer_adapter_attempts_best_effort_class_navigation() {
     db.set_file_text(file, "class A {}".to_string());
     let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
 
-    let analyzer = FrameworkAnalyzerOnTextDbAdapter::new(
+    let analyzer = FrameworkAnalyzerAdapterOnTextDb::new(
         "framework.class_nav_adapter",
         ClassNavAnalyzer { file },
     )

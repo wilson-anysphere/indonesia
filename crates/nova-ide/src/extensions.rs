@@ -69,8 +69,6 @@ impl AsDynNovaDb for dyn IdeFrameworkDatabase + Send + Sync {
     }
 }
 
-pub use crate::framework_extensions::FrameworkAnalyzerAdapterOnTextDb;
-
 /// Adapter that exposes a `nova-framework` [`FrameworkAnalyzer`] via the unified `nova-ext` traits.
 ///
 /// This allows framework analyzers (Lombok, Spring, etc.) to coexist with third-party `nova-ext`
@@ -140,12 +138,12 @@ where
 /// Unlike [`FrameworkAnalyzerRegistryProvider`] (which runs *all* analyzers behind a single provider
 /// id), this adapter allows each framework analyzer to be registered as its own `nova-ext`
 /// provider. That in turn enables per-analyzer timeouts/metrics/circuit-breaker isolation.
-pub struct FrameworkAnalyzerOnTextDbAdapter<A> {
+pub struct FrameworkAnalyzerAdapterOnTextDb<A> {
     id: String,
     analyzer: A,
 }
 
-impl<A> FrameworkAnalyzerOnTextDbAdapter<A> {
+impl<A> FrameworkAnalyzerAdapterOnTextDb<A> {
     pub fn new(id: impl Into<String>, analyzer: A) -> Self {
         Self {
             id: id.into(),
@@ -390,7 +388,7 @@ where
 }
 
 impl<A> DiagnosticProvider<dyn nova_db::Database + Send + Sync>
-    for FrameworkAnalyzerOnTextDbAdapter<A>
+    for FrameworkAnalyzerAdapterOnTextDb<A>
 where
     A: FrameworkAnalyzer + Send + Sync + 'static,
 {
@@ -403,11 +401,19 @@ where
         ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
         params: DiagnosticParams,
     ) -> Vec<Diagnostic> {
+        if ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
+
         let Some(fw_db) =
             crate::framework_db::framework_db_for_file(ctx.db.clone(), params.file, &ctx.cancel)
         else {
             return Vec::new();
         };
+
+        if ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
 
         let project = fw_db.project_of_file(params.file);
         if !self.analyzer.applies_to(fw_db.as_ref(), project) {
@@ -420,7 +426,7 @@ where
 }
 
 impl<A> CompletionProvider<dyn nova_db::Database + Send + Sync>
-    for FrameworkAnalyzerOnTextDbAdapter<A>
+    for FrameworkAnalyzerAdapterOnTextDb<A>
 where
     A: FrameworkAnalyzer + Send + Sync + 'static,
 {
@@ -433,11 +439,19 @@ where
         ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
         params: CompletionParams,
     ) -> Vec<CompletionItem> {
+        if ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
+
         let Some(fw_db) =
             crate::framework_db::framework_db_for_file(ctx.db.clone(), params.file, &ctx.cancel)
         else {
             return Vec::new();
         };
+
+        if ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
 
         let project = fw_db.project_of_file(params.file);
         if !self.analyzer.applies_to(fw_db.as_ref(), project) {
@@ -455,7 +469,7 @@ where
 }
 
 impl<A> NavigationProvider<dyn nova_db::Database + Send + Sync>
-    for FrameworkAnalyzerOnTextDbAdapter<A>
+    for FrameworkAnalyzerAdapterOnTextDb<A>
 where
     A: FrameworkAnalyzer + Send + Sync + 'static,
 {
@@ -468,6 +482,10 @@ where
         ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
         params: NavigationParams,
     ) -> Vec<NavigationTarget> {
+        if ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
+
         let (fw_db, project, symbol) = match params.symbol {
             Symbol::File(file) => {
                 let Some(fw_db) =
@@ -480,6 +498,10 @@ where
                 (fw_db, project, FrameworkSymbol::File(file))
             }
             Symbol::Class(class) => {
+                if ctx.cancel.is_cancelled() {
+                    return Vec::new();
+                }
+
                 // `framework_db_for_file` needs a file to anchor a root-scoped framework DB. For
                 // class-based navigation we don't have that information, so we attempt a
                 // best-effort fallback: pick any file known to the host DB, build a framework DB
@@ -501,6 +523,10 @@ where
                     return Vec::new();
                 };
 
+                if ctx.cancel.is_cancelled() {
+                    return Vec::new();
+                }
+
                 let seed_project = seed_db.project_of_file(seed_file);
                 if !self.analyzer.applies_to(seed_db.as_ref(), seed_project) {
                     return Vec::new();
@@ -520,6 +546,10 @@ where
                     return Vec::new();
                 };
 
+                if ctx.cancel.is_cancelled() {
+                    return Vec::new();
+                }
+
                 let project = fw_db.project_of_file(anchor_file);
                 // Avoid panics in analyzers that call `db.class(class)` by checking the class id is
                 // present in this root-scoped DB's class set.
@@ -530,6 +560,10 @@ where
                 (fw_db, project, FrameworkSymbol::Class(class))
             }
         };
+
+        if ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
 
         if !self.analyzer.applies_to(fw_db.as_ref(), project) {
             return Vec::new();
@@ -548,7 +582,7 @@ where
 }
 
 impl<A> InlayHintProvider<dyn nova_db::Database + Send + Sync>
-    for FrameworkAnalyzerOnTextDbAdapter<A>
+    for FrameworkAnalyzerAdapterOnTextDb<A>
 where
     A: FrameworkAnalyzer + Send + Sync + 'static,
 {
@@ -561,11 +595,19 @@ where
         ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
         params: InlayHintParams,
     ) -> Vec<InlayHint> {
+        if ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
+
         let Some(fw_db) =
             crate::framework_db::framework_db_for_file(ctx.db.clone(), params.file, &ctx.cancel)
         else {
             return Vec::new();
         };
+
+        if ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
 
         let project = fw_db.project_of_file(params.file);
         if !self.analyzer.applies_to(fw_db.as_ref(), project) {
