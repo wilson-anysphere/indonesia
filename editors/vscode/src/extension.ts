@@ -721,12 +721,21 @@ export async function activate(context: vscode.ExtensionContext) {
     // Use server-advertised capability lists when available; otherwise fall back to an
     // optimistic default so the Frameworks view can attempt requests and handle method-not-found
     // gracefully.
-    const webSupported =
-      isNovaRequestSupported(DEFAULT_NOVA_CAPABILITIES_KEY, 'nova/web/endpoints') !== false ||
-      isNovaRequestSupported(DEFAULT_NOVA_CAPABILITIES_KEY, 'nova/quarkus/endpoints') !== false;
-    const micronautEndpointsSupported =
-      isNovaRequestSupported(DEFAULT_NOVA_CAPABILITIES_KEY, 'nova/micronaut/endpoints') !== false;
-    const micronautBeansSupported = isNovaRequestSupported(DEFAULT_NOVA_CAPABILITIES_KEY, 'nova/micronaut/beans') !== false;
+    //
+    // In multi-root mode, we may eventually have one LanguageClient per workspace folder; compute
+    // these global context booleans across all workspace keys.
+    const workspaceKeys = (vscode.workspace.workspaceFolders ?? []).map((workspace) => workspace.uri.toString());
+    const keys = workspaceKeys.length > 0 ? workspaceKeys : [DEFAULT_NOVA_CAPABILITIES_KEY];
+
+    const webSupported = keys.some(
+      (key) =>
+        isNovaRequestSupported(key, 'nova/web/endpoints') !== false ||
+        isNovaRequestSupported(key, 'nova/quarkus/endpoints') !== false,
+    );
+    const micronautEndpointsSupported = keys.some(
+      (key) => isNovaRequestSupported(key, 'nova/micronaut/endpoints') !== false,
+    );
+    const micronautBeansSupported = keys.some((key) => isNovaRequestSupported(key, 'nova/micronaut/beans') !== false);
 
     void vscode.commands.executeCommand('setContext', 'nova.frameworks.webEndpointsSupported', webSupported);
     void vscode.commands.executeCommand('setContext', 'nova.frameworks.micronautEndpointsSupported', micronautEndpointsSupported);
@@ -1509,7 +1518,10 @@ export async function activate(context: vscode.ExtensionContext) {
       try {
         await requireClient();
         const method = 'nova/bugReport';
-        if (isNovaRequestSupported(DEFAULT_NOVA_CAPABILITIES_KEY, method) === false) {
+        const workspaceKeys = (vscode.workspace.workspaceFolders ?? []).map((workspace) => workspace.uri.toString());
+        const keys = workspaceKeys.length > 0 ? workspaceKeys : [DEFAULT_NOVA_CAPABILITIES_KEY];
+        const supported = keys.some((key) => isNovaRequestSupported(key, method) !== false);
+        if (!supported) {
           void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
           return;
         }
