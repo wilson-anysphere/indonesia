@@ -108,8 +108,8 @@ testdata/
 │   └── declarations/
 ```
 
-These fixtures are exercised by the `golden_corpus` test inside the consolidated `harness`
-integration test binary (`crates/nova-syntax/tests/harness.rs` includes
+These fixtures are exercised by the `golden_corpus` test inside the `nova-syntax` integration
+test harness (`crates/nova-syntax/tests/harness.rs` includes
 `crates/nova-syntax/tests/suite/golden_corpus.rs`). There is no separate integration test target
 named `golden_corpus` — run it via `--test harness` and (optionally) a test-name filter.
 
@@ -126,7 +126,7 @@ BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::go
 # Run the golden corpus test
 bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
 
-# Run the full `nova-syntax` integration suite (`harness`)
+# Run the full `nova-syntax` integration harness
 bash scripts/cargo_agent.sh test -p nova-syntax --test harness
 ```
 
@@ -167,7 +167,7 @@ let formatted = nova_format::format_file(source, options);
 # Parser unit tests
 bash scripts/cargo_agent.sh test -p nova-syntax --lib
 
-# Parser integration tests (`harness` includes the `golden_corpus` fixture test)
+# Parser integration test harness
 bash scripts/cargo_agent.sh test -p nova-syntax --test harness
 
 # Parser golden corpus fixtures (test-name filter)

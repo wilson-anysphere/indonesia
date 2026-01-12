@@ -228,8 +228,8 @@ Nova uses “golden” fixtures when the expected output is easiest to review as
     - `*.errors` contains canonicalized parse errors
 - Test code: `crates/nova-syntax/tests/suite/golden_corpus.rs` (run via `crates/nova-syntax/tests/harness.rs`)
 
-The golden corpus test is the `#[test] fn golden_corpus()` test inside the consolidated `harness`
-integration test binary. There is **no** separate integration test target named `golden_corpus`;
+The golden corpus test is the `#[test] fn golden_corpus()` test inside the `nova-syntax`
+integration test harness. There is **no** separate integration test target named `golden_corpus`;
 run it via `--test harness` and (optionally) a test-name filter.
 
 **Run locally:**
@@ -280,7 +280,7 @@ These are not always golden “snapshots”, but they are fixture-driven tests:
 - `crates/nova-testing/fixtures/` — small Maven/Gradle projects used by LSP “test discovery” flows.
 - `crates/*/tests/fixtures/` — per-crate file fixtures (e.g. framework analyzers, decompiler inputs).
 - `crates/*/testdata/` — per-crate sample inputs (build tool parsing, classpath discovery, etc).
-- `crates/nova-syntax/testdata/javac/` — small `javac` corpus used by `crates/nova-syntax/tests/suite/javac_corpus.rs`.
+- `crates/nova-syntax/testdata/javac/` — small `javac` differential corpus used by `crates/nova-syntax/tests/suite/javac_corpus.rs` (included by `crates/nova-syntax/tests/harness.rs`).
 
 #### 2d) Formatter golden tests (`insta` snapshots)
 
@@ -290,7 +290,8 @@ Nova uses [`insta`](https://crates.io/crates/insta) snapshots for formatter outp
 
 - Inputs: `crates/nova-format/tests/fixtures/*.java`
 - Snapshot files: `crates/nova-format/tests/snapshots/*.snap`
-- Tests: `crates/nova-format/tests/harness.rs` (single integration test crate)
+- Tests:
+  - Harness: `crates/nova-format/tests/harness.rs` (single integration test crate)
   - `crates/nova-format/tests/suite/format_fixtures.rs` (file-based `.snap` snapshots)
   - `crates/nova-format/tests/suite/format_snapshots.rs` (inline snapshots in Rust source)
 
