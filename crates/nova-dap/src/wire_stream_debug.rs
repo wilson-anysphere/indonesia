@@ -57,14 +57,13 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// ones pinned via user interaction in the variables UI). JDWP collection
 /// enable/disable is not ref-counted; enabling collection here could undo a
 /// persistent pin.
-#[derive(Clone)]
-struct TemporaryObjectPin {
+pub(crate) struct TemporaryObjectPin {
     jdwp: JdwpClient,
     object_id: ObjectId,
 }
 
 impl TemporaryObjectPin {
-    async fn new(jdwp: &JdwpClient, object_id: ObjectId) -> Self {
+    pub(crate) async fn new(jdwp: &JdwpClient, object_id: ObjectId) -> Self {
         if object_id != 0 {
             // Best-effort: the object may already be invalid/collected.
             let _ = jdwp.object_reference_disable_collection(object_id).await;
@@ -115,6 +114,30 @@ impl Drop for TemporaryObjectPin {
     }
 }
 
+pub(crate) async fn inspect_object_children_temporarily_pinned(
+    jdwp: &JdwpClient,
+    object_id: ObjectId,
+) -> Result<Vec<(String, JdwpValue, Option<String>)>, JdwpError> {
+    if object_id == 0 {
+        return Ok(Vec::new());
+    }
+    let _pin = TemporaryObjectPin::new(jdwp, object_id).await;
+    inspect::object_children(jdwp, object_id).await
+}
+
+pub(crate) async fn inspect_object_preview_temporarily_pinned(
+    jdwp: &JdwpClient,
+    object_id: ObjectId,
+) -> Result<inspect::ObjectPreview, JdwpError> {
+    if object_id == 0 {
+        return Err(JdwpError::Protocol(
+            "expected non-null object id for preview".to_string(),
+        ));
+    }
+    let _pin = TemporaryObjectPin::new(jdwp, object_id).await;
+    inspect::preview_object(jdwp, object_id).await
+}
+
 /// Stream-debug sampling helper.
 ///
 /// Invokes a helper method (via JDWP `ClassType.InvokeMethod`) that returns an
@@ -146,8 +169,7 @@ pub async fn sample_object_children_via_invoke_method(
         return Ok(Vec::new());
     }
 
-    let _pin = TemporaryObjectPin::new(jdwp, object_id).await;
-    inspect::object_children(jdwp, object_id).await
+    inspect_object_children_temporarily_pinned(jdwp, object_id).await
 }
 
 #[derive(Debug, Error)]
@@ -609,6 +631,57 @@ mod tests {
         assert!(
             server.pinned_object_ids().await.is_empty(),
             "expected pin to be released after sampling"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn preview_object_inspection_temporarily_pins_object_ids() {
+        let mut config = MockJdwpServerConfig::default();
+        // Delay `ObjectReference.ReferenceType`, which `inspect::preview_object` issues after
+        // pinning but before returning.
+        config.delayed_replies = vec![DelayedReply {
+            command_set: 9, // ObjectReference
+            command: 1,     // ReferenceType
+            delay: Duration::from_millis(200),
+        }];
+
+        let server = MockJdwpServer::spawn_with_config(config).await.unwrap();
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+        let object_id: ObjectId = 0xDEAD_BEEF;
+
+        assert!(server.pinned_object_ids().await.is_empty());
+
+        let client_task = client.clone();
+        let task = tokio::spawn(async move {
+            inspect_object_preview_temporarily_pinned(&client_task, object_id)
+                .await
+                .unwrap()
+        });
+
+        // Wait until the preview code has pinned the object.
+        for _ in 0..50 {
+            if server.pinned_object_ids().await.contains(&object_id) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        assert!(
+            server.pinned_object_ids().await.contains(&object_id),
+            "expected object to be pinned during preview inspection"
+        );
+
+        let preview = task.await.unwrap();
+        assert_eq!(
+            preview.kind,
+            inspect::ObjectKindPreview::Plain,
+            "expected default mock preview kind for unknown object ids"
+        );
+
+        assert!(
+            server.pinned_object_ids().await.is_empty(),
+            "expected pin to be released after preview inspection"
         );
     }
 
