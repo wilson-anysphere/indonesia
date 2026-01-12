@@ -1,7 +1,6 @@
-// Expose the snapshot-style regression tests as a standalone integration test target.
+// Snapshot-style formatter regression tests.
 //
-// This allows running:
-// `cargo test -p nova-format --test format_snapshots`
+// Prefer running them through the consolidated harness + filter:
+// `cargo test -p nova-format --test format_fixtures format_snapshots`
 #[path = "suite/format_snapshots.rs"]
 mod format_snapshots;
-
