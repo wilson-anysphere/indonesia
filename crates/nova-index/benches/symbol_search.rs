@@ -2,7 +2,9 @@ use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use nova_index::{CandidateStrategy, IndexSymbolKind, SearchSymbol, SymbolLocation, SymbolSearchIndex};
+use nova_index::{
+    CandidateStrategy, IndexSymbolKind, SearchSymbol, SymbolLocation, SymbolSearchIndex,
+};
 
 const SYMBOL_COUNT: usize = 100_000;
 const LIMIT: usize = 100;
@@ -65,8 +67,8 @@ fn synthetic_symbols(count: usize, mode: QualifiedNameMode) -> Vec<SearchSymbol>
             QualifiedNameMode::WithPackagePrefix => format!("com.example.cluster.{name}"),
         };
         out.push(SearchSymbol {
-            qualified_name,
             name,
+            qualified_name,
             kind: IndexSymbolKind::Class,
             container_name: None,
             location: SymbolLocation {
@@ -102,8 +104,8 @@ fn synthetic_symbols(count: usize, mode: QualifiedNameMode) -> Vec<SearchSymbol>
         };
 
         out.push(SearchSymbol {
-            qualified_name,
             name,
+            qualified_name,
             kind: IndexSymbolKind::Class,
             container_name: None,
             location: SymbolLocation {
