@@ -2428,9 +2428,7 @@ fn extract_variable_crosses_execution_boundary(expr: &ast::Expression) -> Option
 fn infer_expr_type(expr: &ast::Expression) -> String {
     let inferred = match expr {
         ast::Expression::LiteralExpression(lit) => infer_type_from_literal(lit),
-        ast::Expression::NewExpression(new_expr) => new_expr
-            .ty()
-            .map(|ty| render_java_type(ty.syntax()))
+        ast::Expression::NewExpression(new_expr) => infer_type_from_new_expression(new_expr)
             .unwrap_or_else(|| "Object".to_string()),
         ast::Expression::ArrayCreationExpression(array_expr) => {
             let Some(base_ty) = array_expr.ty() else {
@@ -2499,6 +2497,40 @@ fn infer_expr_type(expr: &ast::Expression) -> String {
     }
 
     inferred
+}
+
+fn infer_type_from_new_expression(expr: &ast::NewExpression) -> Option<String> {
+    if let Some(ty) = expr.ty() {
+        let rendered = render_java_type(ty.syntax());
+        if rendered != "Object" {
+            return Some(rendered);
+        }
+    }
+
+    // Some parse trees model the instantiated name directly as a `NamedType` / `ClassOrInterfaceType`
+    // node under the `NewExpression` rather than wrapping it in a `Type` node. Fall back to
+    // rendering the first type-like child node.
+    for child in expr.syntax().children() {
+        match child.kind() {
+            SyntaxKind::Type
+            | SyntaxKind::NamedType
+            | SyntaxKind::PrimitiveType
+            | SyntaxKind::ArrayType
+            | SyntaxKind::AnnotatedType
+            | SyntaxKind::ClassOrInterfaceType
+            | SyntaxKind::ClassType
+            | SyntaxKind::InterfaceType
+            | SyntaxKind::TypeVariable => {
+                let rendered = render_java_type(&child);
+                if rendered != "Object" {
+                    return Some(rendered);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
 }
 
 fn infer_type_from_enclosing_declaration(expr: &ast::Expression) -> Option<String> {
