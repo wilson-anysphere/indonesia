@@ -38,18 +38,13 @@ pub use index::IndexingStats;
 pub use index::JdkIndexError;
 pub use stub::{JdkClassStub, JdkFieldStub, JdkMethodStub};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum JdkIndexBacking {
+    #[default]
     Builtin,
     Jmods,
     CtSym,
     BootJars,
-}
-
-impl Default for JdkIndexBacking {
-    fn default() -> Self {
-        Self::Builtin
-    }
 }
 
 #[derive(Debug, Clone)]

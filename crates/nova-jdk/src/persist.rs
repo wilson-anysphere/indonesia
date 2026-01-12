@@ -244,6 +244,7 @@ pub(crate) fn load_ct_sym_index(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn store_ct_sym_index(
     cache_dir: &Path,
     ct_sym_path: &Path,

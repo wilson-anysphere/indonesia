@@ -190,6 +190,7 @@ impl DependencyIndexStore {
 
         let lock_file = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(self.lock_path(jar_sha256))?;

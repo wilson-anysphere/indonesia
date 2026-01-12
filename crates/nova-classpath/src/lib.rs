@@ -621,6 +621,10 @@ impl ClasspathIndex {
         self.stubs_by_binary.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.stubs_by_binary.is_empty()
+    }
+
     /// All indexed class binary names (`java.lang.String`, `com.example.Foo`, ...) in sorted order.
     ///
     /// This is intended for deterministic pre-interning in `TypeStore` so `ClassId` allocation is
@@ -1167,6 +1171,7 @@ impl ModuleAwareClasspathIndex {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn extend_index_with_meta<F>(
         stubs_by_binary: &mut HashMap<String, ClasspathClassStub>,
         internal_to_binary: &mut HashMap<String, String>,
@@ -1758,25 +1763,19 @@ fn mr_version_from_dir_path(rel: &Path, is_multi_release: bool) -> Option<Option
     use std::path::Component;
 
     let mut components = rel.components();
-    let Some(first) = components.next() else {
-        return None;
-    };
+    let first = components.next()?;
 
     if matches!(first, Component::Normal(name) if name == "META-INF") {
         if !is_multi_release {
             return None;
         }
 
-        let Some(second) = components.next() else {
-            return None;
-        };
+        let second = components.next()?;
         if !matches!(second, Component::Normal(name) if name == "versions") {
             return None;
         }
 
-        let Some(version_component) = components.next() else {
-            return None;
-        };
+        let version_component = components.next()?;
         let Component::Normal(version_component) = version_component else {
             return None;
         };
@@ -1817,7 +1816,7 @@ fn stub_from_classfile(cf: ClassFile) -> ClasspathClassStub {
         annotations: cf
             .runtime_visible_annotations
             .into_iter()
-            .chain(cf.runtime_invisible_annotations.into_iter())
+            .chain(cf.runtime_invisible_annotations)
             .map(|a| a.type_descriptor)
             .collect(),
         fields: cf
@@ -1831,7 +1830,7 @@ fn stub_from_classfile(cf: ClassFile) -> ClasspathClassStub {
                 annotations: f
                     .runtime_visible_annotations
                     .into_iter()
-                    .chain(f.runtime_invisible_annotations.into_iter())
+                    .chain(f.runtime_invisible_annotations)
                     .map(|a| a.type_descriptor)
                     .collect(),
             })
@@ -1847,7 +1846,7 @@ fn stub_from_classfile(cf: ClassFile) -> ClasspathClassStub {
                 annotations: m
                     .runtime_visible_annotations
                     .into_iter()
-                    .chain(m.runtime_invisible_annotations.into_iter())
+                    .chain(m.runtime_invisible_annotations)
                     .map(|a| a.type_descriptor)
                     .collect(),
             })

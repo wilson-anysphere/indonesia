@@ -311,7 +311,7 @@ impl CtSymReleaseIndex {
         bytes = bytes.saturating_add(
             (self.class_to_module.capacity() * size_of::<(String, usize)>()) as u64,
         );
-        for (k, _) in &self.class_to_module {
+        for k in self.class_to_module.keys() {
             add_string(&mut bytes, k);
         }
 
