@@ -194,18 +194,60 @@ impl WorkspaceAnalysis {
                 offset,
             })?;
 
-        let Some(name_node) = token
-            .parent()
-            .and_then(|p| p.ancestors().find_map(ast::Name::cast))
-        else {
+        let Some(parent) = token.parent() else {
             return Err(RenameTypeError::NoTypeAtOffset {
                 file: file.clone(),
                 offset,
             });
         };
 
-        let Some((qname, _last_token_range)) = name_to_qname_and_last_token_range(&name_node)
-        else {
+        // Prefer resolving a typed `Name` node (common for `ast::Type` and many other type
+        // positions). Qualified `this` / `super` qualifiers are currently represented as a
+        // `NameExpression` that may not contain an `ast::Name`, so handle those separately.
+        let mut resolved: Option<(QualifiedName, SyntaxNode)> =
+            parent.ancestors().find_map(|node| {
+                let name = ast::Name::cast(node.clone())?;
+                let (qname, _) = name_to_qname_and_last_token_range(&name)?;
+                Some((qname, node))
+            });
+
+        if resolved.is_none() {
+            let token_range = token.text_range();
+            let token_start = u32::from(token_range.start());
+
+            if let Some(expr) = parent.ancestors().find_map(ast::ThisExpression::cast) {
+                if let Some(qual) = expr.qualifier() {
+                    let qual_range = qual.syntax().text_range();
+                    if token_start >= u32::from(qual_range.start())
+                        && token_start <= u32::from(qual_range.end())
+                    {
+                        if let Some((qname, _)) = qualifier_expression_name(&qual) {
+                            resolved = Some((qname, expr.syntax().clone()));
+                        }
+                    }
+                }
+            }
+        }
+
+        if resolved.is_none() {
+            let token_range = token.text_range();
+            let token_start = u32::from(token_range.start());
+
+            if let Some(expr) = parent.ancestors().find_map(ast::SuperExpression::cast) {
+                if let Some(qual) = expr.qualifier() {
+                    let qual_range = qual.syntax().text_range();
+                    if token_start >= u32::from(qual_range.start())
+                        && token_start <= u32::from(qual_range.end())
+                    {
+                        if let Some((qname, _)) = qualifier_expression_name(&qual) {
+                            resolved = Some((qname, expr.syntax().clone()));
+                        }
+                    }
+                }
+            }
+        }
+
+        let Some((qname, scope_node)) = resolved else {
             return Err(RenameTypeError::NoTypeAtOffset {
                 file: file.clone(),
                 offset,
@@ -215,7 +257,7 @@ impl WorkspaceAnalysis {
         let scope = scope_for_node(
             &analysis.scopes,
             &analysis.ast_id_map,
-            name_node.syntax(),
+            &scope_node,
             analysis.db_file,
         );
 
