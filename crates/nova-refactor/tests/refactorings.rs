@@ -1557,6 +1557,44 @@ fn extract_variable_splits_multi_declarator_when_initializer_depends_on_earlier_
 }
 
 #[test]
+fn extract_variable_allows_initializer_that_depends_on_earlier_declarator_with_qualified_name() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C {
+  static class Node { Node next; }
+  void m() {
+    Node b = new Node(), a = /*start*/b.next/*end*/;
+  }
+}
+"#;
+    let (src, range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(range.start, range.end),
+            name: "n".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class C {
+  static class Node { Node next; }
+  void m() {
+    Node b = new Node();
+    var n = b.next;
+    Node a = n;
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn extract_variable_rejects_expression_bodied_lambda() {
     let file = FileId::new("Test.java");
     let fixture = r#"import java.util.function.Function;

@@ -3764,6 +3764,17 @@ fn eval_order_guard_scan_root(
     expr_range: TextRange,
 ) -> nova_syntax::SyntaxNode {
     match enclosing_stmt {
+        ast::Statement::LocalVariableDeclarationStatement(stmt) => stmt
+            .declarator_list()
+            .and_then(|list| {
+                list.declarators().find_map(|decl| {
+                    decl.initializer().and_then(|init| {
+                        let init_range = trim_range(source, syntax_range(init.syntax()));
+                        contains_range(init_range, expr_range).then(|| init.syntax().clone())
+                    })
+                })
+            })
+            .unwrap_or_else(|| enclosing_stmt.syntax().clone()),
         ast::Statement::IfStatement(stmt) => stmt
             .condition()
             .filter(|cond| {
