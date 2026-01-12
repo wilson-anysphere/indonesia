@@ -28,7 +28,7 @@ Examples:
   scripts/cargo_agent.sh check --quiet
   scripts/cargo_agent.sh build --release
   scripts/cargo_agent.sh test -p nova-core --lib
-  scripts/cargo_agent.sh test --test type_checker_tests
+  scripts/cargo_agent.sh test -p nova-format --test format_fixtures
 
 Environment:
   NOVA_CARGO_SLOTS        Max concurrent cargo commands (default: auto)
@@ -40,7 +40,7 @@ Environment:
 Notes:
   - This wrapper enforces RAM caps via RLIMIT_AS (through scripts/run_limited.sh).
   - Set NOVA_CARGO_LIMIT_AS=unlimited to disable the cap.
-  - ALWAYS scope test runs: -p <crate>, --test <name>, --lib, or --bin <name>.
+  - ALWAYS scope test runs: -p <crate>, --test=<name>, --lib, or --bin <name>.
 EOF
 }
 

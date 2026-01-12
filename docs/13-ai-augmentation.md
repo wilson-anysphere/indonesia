@@ -667,12 +667,12 @@ impl CodeAnonymizer {
 
 Nova's AI subsystems are intentionally heuristic-heavy (privacy sanitization, patch safety checks, and multi-token completion validation). To prevent regressions **without** requiring live model calls, we keep a deterministic evaluation suite that exercises these behaviors end-to-end using synthetic Java snippets and golden expectations.
 
-- Tests live in `crates/nova-ai/tests/suite/ai_eval.rs` (wired up via `crates/nova-ai/tests/tests.rs`)
+- Tests live in `crates/nova-ai/tests/suite/ai_eval.rs` (included by `crates/nova-ai/tests/tests.rs`)
 - They must not make any network calls (no providers, no HTTP)
 - Run them directly with:
 
 ```bash
-cargo test -p nova-ai --test tests suite::ai_eval
+bash scripts/cargo_agent.sh test -p nova-ai --test tests suite::ai_eval
 ```
 
 The suite covers:

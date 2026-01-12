@@ -277,13 +277,13 @@ Nova uses [`insta`](https://crates.io/crates/insta) snapshots for formatter outp
 - Snapshot files: `crates/nova-format/tests/snapshots/*.snap`
 - Tests:
   - `crates/nova-format/tests/format_fixtures.rs` (file-based `.snap` snapshots)
-  - `crates/nova-format/tests/format_snapshots.rs` (inline snapshots in Rust source)
+  - `crates/nova-format/tests/suite/format_snapshots.rs` (inline snapshots in Rust source; included by `format_fixtures.rs`)
 
 **Run locally:**
 
 ```bash
 bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
-bash scripts/cargo_agent.sh test -p nova-format --test format_snapshots
+bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures format_snapshots
 ```
 
 There is also an ignored large-file regression/stress test:
@@ -623,13 +623,13 @@ Always inspect `git diff` after blessing.
 Nova uses `insta` snapshots for formatter tests in `crates/nova-format/tests/`:
 
 - `format_fixtures.rs` → updates `.snap` files under `crates/nova-format/tests/snapshots/`
-- `format_snapshots.rs` → updates inline snapshots in the Rust source file
+- `suite/format_snapshots.rs` → updates inline snapshots in the Rust source file (included by `format_fixtures.rs`)
 
 To update inline snapshots:
 
 ```bash
 INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_snapshots
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures format_snapshots
 ```
 
 Always inspect `git diff` after updating snapshots.
