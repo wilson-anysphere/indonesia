@@ -1133,6 +1133,7 @@ pub fn extract_variable(
     if params.use_var && has_side_effects(expr.syntax()) {
         return Err(RefactorError::ExtractSideEffects);
     }
+
     let stmt = expr
         .syntax()
         .ancestors()
@@ -1924,7 +1925,20 @@ pub fn inline_variable(
     // repeatedly-evaluated contexts such as `&&`/`||` RHS, `?:` branches, loop conditions, or
     // `assert`.
     if remove_decl && init_is_order_sensitive {
-        inline_variable_validate_safe_deletion_contexts(db, &targets)?;
+        if let Err(err) = inline_variable_validate_safe_deletion_contexts(db, &targets) {
+            // If the initializer has side effects, surface the more specific error so callers can
+            // distinguish "not supported" from "would change side effects".
+            return Err(
+                if init_has_side_effects
+                    && !params.inline_all
+                    && matches!(err, RefactorError::InlineNotSupported)
+                {
+                    RefactorError::InlineSideEffects
+                } else {
+                    err
+                },
+            );
+        }
     }
 
     if init_has_side_effects {
