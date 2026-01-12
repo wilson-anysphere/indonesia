@@ -159,26 +159,20 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
         // Text fallback: if we can enumerate files and read contents, look for MapStruct usage in
         // sources. This is the most precise signal available without build metadata.
         let files = db.all_files(project);
-        if !files.is_empty() {
-            return files.into_iter().any(|file| {
-                db.file_text(file)
-                    .is_some_and(|text| looks_like_mapstruct_source(text))
-            });
+        if files.into_iter().any(|file| {
+            db.file_text(file)
+                .is_some_and(|text| looks_like_mapstruct_source(text))
+        }) {
+            return true;
         }
 
         // Structural fallback: if the host database exposes HIR classes but cannot enumerate files
         // (or does not provide file text), still attempt to detect `@Mapper` usages.
         let classes = db.all_classes(project);
-        if !classes.is_empty() {
-            if classes.into_iter().any(|id| {
-                let class = db.class(id);
-                class.has_annotation("Mapper") || class.has_annotation("org.mapstruct.Mapper")
-            }) {
-                return true;
-            }
-        }
-
-        false
+        classes.into_iter().any(|id| {
+            let class = db.class(id);
+            class.has_annotation("Mapper") || class.has_annotation("org.mapstruct.Mapper")
+        })
     }
 
     fn virtual_members(&self, _db: &dyn Database, _class: ClassId) -> Vec<VirtualMember> {
