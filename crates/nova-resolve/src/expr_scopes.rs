@@ -268,6 +268,17 @@ impl Builder {
                 let _ = self.visit_stmt(body, *b, for_scope);
                 scope
             }
+            Stmt::Synchronized {
+                expr,
+                body: sync_body,
+                ..
+            } => {
+                self.stmt_scopes.insert(stmt_id, scope);
+                self.visit_expr(body, *expr, scope);
+                let sync_scope = self.alloc_scope(Some(scope));
+                let _ = self.visit_stmt(body, *sync_body, sync_scope);
+                scope
+            }
             Stmt::Switch {
                 selector, body: b, ..
             } => {

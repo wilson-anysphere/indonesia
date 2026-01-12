@@ -308,6 +308,14 @@ fn is_recursive(source: &str, method_name: &str, body: &jast::Block) -> bool {
                     || walk_expr(source, method_name, &stmt.iterable)
                     || walk_stmt(source, method_name, stmt.body.as_ref())
             }
+            jast::Stmt::Synchronized(stmt) => {
+                walk_expr(source, method_name, &stmt.expr)
+                    || stmt
+                        .body
+                        .statements
+                        .iter()
+                        .any(|s| walk_stmt(source, method_name, s))
+            }
             jast::Stmt::Switch(stmt) => {
                 walk_expr(source, method_name, &stmt.selector)
                     || stmt
@@ -573,6 +581,11 @@ fn collect_local_names(block: &jast::Block) -> HashSet<String> {
             jast::Stmt::ForEach(stmt) => {
                 out.insert(stmt.var.name.clone());
                 walk_stmt(stmt.body.as_ref(), out);
+            }
+            jast::Stmt::Synchronized(stmt) => {
+                for stmt in &stmt.body.statements {
+                    walk_stmt(stmt, out);
+                }
             }
             jast::Stmt::Switch(stmt) => {
                 for stmt in &stmt.body.statements {

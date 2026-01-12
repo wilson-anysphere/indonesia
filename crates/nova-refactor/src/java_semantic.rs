@@ -2939,6 +2939,14 @@ fn walk_hir_body(body: &hir::Body, mut f: impl FnMut(hir::ExprId)) {
                 walk_expr(body, *iterable, f);
                 walk_stmt(body, *inner, f);
             }
+            hir::Stmt::Synchronized {
+                expr,
+                body: inner,
+                ..
+            } => {
+                walk_expr(body, *expr, f);
+                walk_stmt(body, *inner, f);
+            }
             hir::Stmt::Switch {
                 selector,
                 body: inner,

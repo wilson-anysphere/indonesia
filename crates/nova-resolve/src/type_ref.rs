@@ -859,10 +859,32 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         }
     }
 
-    fn resolve_annotation_name(&mut self, _name_range: Range<usize>) {
-        // Type-use annotations are currently ignored by Nova's type reference parsing + typeck.
-        // We still parse/skip their syntax to avoid confusing the core type grammar, but we don't
-        // resolve their types or emit diagnostics.
+    fn resolve_annotation_name(&mut self, name_range: Range<usize>) {
+        // Type-use annotations can appear anywhere inside a type reference (`@A String`,
+        // `Outer.@A Inner`, `String @A []`, ...). Even though Nova's `Type` model does not represent
+        // type-use annotations yet, we still want to diagnose missing annotation *types* so
+        // unresolved names don't get silently ignored in signatures.
+        //
+        // Only emit diagnostics when we have a base span to anchor them. Many callers (and tests)
+        // parse detached `TypeRef.text` strings with `base_span = None` and expect annotations to be
+        // skipped without diagnostics in that mode.
+        if self.base_span.is_none() || name_range.is_empty() {
+            return;
+        }
+        let text = self.text.get(name_range.clone()).unwrap_or("");
+        if text.is_empty() {
+            return;
+        }
+        let segments: Vec<String> = text
+            .split('.')
+            .filter(|seg| !seg.is_empty())
+            .map(|seg| seg.to_string())
+            .collect();
+        if segments.is_empty() {
+            return;
+        }
+        let per_segment_args = vec![Vec::new(); segments.len()];
+        let _ = self.resolve_named_type(segments, per_segment_args, name_range);
     }
 
     fn find_best_annotation_name_end(

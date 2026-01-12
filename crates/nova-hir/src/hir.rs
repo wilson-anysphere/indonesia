@@ -195,6 +195,11 @@ pub enum Stmt {
         body: StmtId,
         range: Span,
     },
+    Synchronized {
+        expr: ExprId,
+        body: StmtId,
+        range: Span,
+    },
     Switch {
         selector: ExprId,
         body: StmtId,

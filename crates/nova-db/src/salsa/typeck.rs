@@ -685,6 +685,7 @@ fn type_of_expr_demand_result(
                     stack.push(*b);
                 }
                 HirStmt::ForEach { body: b, .. } => stack.push(*b),
+                HirStmt::Synchronized { body: b, .. } => stack.push(*b),
                 HirStmt::Switch { body: b, .. } => stack.push(*b),
                 HirStmt::Try {
                     body: b,
@@ -1303,6 +1304,10 @@ fn resolve_method_call_demand(
                     visit_expr(body, *iterable, parent_expr, visited_expr);
                     visit_stmt(body, *b, parent_expr, visited_expr);
                 }
+                HirStmt::Synchronized { expr, body: b, .. } => {
+                    visit_expr(body, *expr, parent_expr, visited_expr);
+                    visit_stmt(body, *b, parent_expr, visited_expr);
+                }
                 HirStmt::Switch {
                     selector, body: b, ..
                 } => {
@@ -1395,7 +1400,8 @@ fn resolve_method_call_demand(
                 }
                 HirStmt::While { body: b, .. }
                 | HirStmt::Switch { body: b, .. }
-                | HirStmt::ForEach { body: b, .. } => {
+                | HirStmt::ForEach { body: b, .. }
+                | HirStmt::Synchronized { body: b, .. } => {
                     collect_expected_roots(body, *b, expected_return, local_types, expected_roots);
                 }
                 HirStmt::For { init, body: b, .. } => {
@@ -3900,6 +3906,18 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     }
                     self.local_ty_states[local.idx()] = LocalTyState::Computed;
                 }
+                self.check_stmt(loader, *body, expected_return);
+            }
+            HirStmt::Synchronized { expr, body, .. } => {
+                let lock_ty = self.infer_expr(loader, *expr).ty;
+                if !lock_ty.is_errorish() && matches!(lock_ty, Type::Primitive(_)) {
+                    self.diagnostics.push(Diagnostic::error(
+                        "invalid-synchronized-expression",
+                        "synchronized expression must be a reference type",
+                        Some(self.body.exprs[*expr].range()),
+                    ));
+                }
+
                 self.check_stmt(loader, *body, expected_return);
             }
             HirStmt::Switch { selector, body, .. } => {
@@ -7503,6 +7521,14 @@ fn find_best_expr_in_stmt(
             find_best_expr_in_expr(body, *iterable, offset, owner, best);
             find_best_expr_in_stmt(body, *foreach_body, offset, owner, best);
         }
+        HirStmt::Synchronized {
+            expr,
+            body: sync_body,
+            ..
+        } => {
+            find_best_expr_in_expr(body, *expr, offset, owner, best);
+            find_best_expr_in_stmt(body, *sync_body, offset, owner, best);
+        }
         HirStmt::Switch {
             selector,
             body: switch_body,
@@ -7583,6 +7609,9 @@ fn contains_expr_in_stmt(body: &HirBody, stmt: nova_hir::hir::StmtId, target: Hi
         } => {
             contains_expr_in_expr(body, *iterable, target)
                 || contains_expr_in_stmt(body, *b, target)
+        }
+        HirStmt::Synchronized { expr, body: b, .. } => {
+            contains_expr_in_expr(body, *expr, target) || contains_expr_in_stmt(body, *b, target)
         }
         HirStmt::Switch {
             selector, body: b, ..
@@ -7695,6 +7724,7 @@ fn find_enclosing_call_with_arg_in_stmt_inner(
         | HirStmt::While { range, .. }
         | HirStmt::For { range, .. }
         | HirStmt::ForEach { range, .. }
+        | HirStmt::Synchronized { range, .. }
         | HirStmt::Switch { range, .. }
         | HirStmt::Try { range, .. }
         | HirStmt::Throw { range, .. }
@@ -7778,6 +7808,10 @@ fn find_enclosing_call_with_arg_in_stmt_inner(
             iterable, body: b, ..
         } => {
             find_enclosing_call_with_arg_in_expr(body, *iterable, target, target_range, best);
+            find_enclosing_call_with_arg_in_stmt_inner(body, *b, target, target_range, best);
+        }
+        HirStmt::Synchronized { expr, body: b, .. } => {
+            find_enclosing_call_with_arg_in_expr(body, *expr, target, target_range, best);
             find_enclosing_call_with_arg_in_stmt_inner(body, *b, target, target_range, best);
         }
         HirStmt::Switch {

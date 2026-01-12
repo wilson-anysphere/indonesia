@@ -289,6 +289,7 @@ pub mod ast {
         While(WhileStmt),
         For(ForStmt),
         ForEach(ForEachStmt),
+        Synchronized(SynchronizedStmt),
         Switch(SwitchStmt),
         Try(TryStmt),
         Throw(ThrowStmt),
@@ -387,6 +388,13 @@ pub mod ast {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct ThrowStmt {
         pub expr: Expr,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct SynchronizedStmt {
+        pub expr: Expr,
+        pub body: Block,
         pub range: Span,
     }
 
@@ -1418,6 +1426,9 @@ impl Lowerer {
                 Some(ast::Stmt::While(self.lower_while_stmt(node)))
             }
             SyntaxKind::ForStatement => Some(self.lower_for_stmt(node)),
+            SyntaxKind::SynchronizedStatement => {
+                Some(ast::Stmt::Synchronized(self.lower_synchronized_stmt(node)))
+            }
             SyntaxKind::SwitchStatement => Some(ast::Stmt::Switch(self.lower_switch_stmt(node))),
             SyntaxKind::TryStatement => {
                 // `try ( ... ) { ... }` introduces one or more resources. Model this as a
@@ -1816,6 +1827,29 @@ impl Lowerer {
             body: Box::new(body),
             range,
         })
+    }
+
+    fn lower_synchronized_stmt(&self, node: &SyntaxNode) -> ast::SynchronizedStmt {
+        let range = self.spans.map_node(node);
+
+        let expr = node
+            .children()
+            .find(|child| is_expression_kind(child.kind()))
+            .map(|expr| self.lower_expr(&expr))
+            .unwrap_or_else(|| ast::Expr::Missing(range));
+
+        let body_node = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::Block);
+        let body = body_node
+            .as_ref()
+            .map(|block| self.lower_block(block))
+            .unwrap_or_else(|| ast::Block {
+                statements: Vec::new(),
+                range,
+            });
+
+        ast::SynchronizedStmt { expr, body, range }
     }
 
     fn lower_switch_stmt(&self, node: &SyntaxNode) -> ast::SwitchStmt {
@@ -2925,6 +2959,7 @@ fn is_statement_kind(kind: SyntaxKind) -> bool {
             | SyntaxKind::WhileStatement
             | SyntaxKind::DoWhileStatement
             | SyntaxKind::ForStatement
+            | SyntaxKind::SynchronizedStatement
             | SyntaxKind::SwitchStatement
             | SyntaxKind::TryStatement
             | SyntaxKind::ThrowStatement
@@ -2982,6 +3017,18 @@ mod tests {
         };
         assert_eq!(arg.name, "x");
         assert_eq!(arg.range, Span::new(offset + 13, offset + 14));
+    }
+
+    #[test]
+    fn parse_block_lowers_synchronized_statement() {
+        let text = "{ synchronized (x) { } }";
+        let block = parse_block(text, 0);
+
+        assert_eq!(block.statements.len(), 1);
+        match &block.statements[0] {
+            ast::Stmt::Synchronized(_) => {}
+            other => panic!("expected synchronized statement, got {other:?}"),
+        }
     }
 
     #[test]

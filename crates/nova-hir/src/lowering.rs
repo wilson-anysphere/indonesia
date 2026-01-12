@@ -1131,6 +1131,15 @@ impl<'a> BodyLower<'a> {
                     range: for_each.range,
                 }))
             }
+            syntax::Stmt::Synchronized(sync) => {
+                let expr = self.lower_expr(&sync.expr);
+                let body = self.lower_block(&sync.body);
+                Some(self.alloc_stmt(Stmt::Synchronized {
+                    expr,
+                    body,
+                    range: sync.range,
+                }))
+            }
             syntax::Stmt::Switch(switch_stmt) => {
                 let selector = self.lower_expr(&switch_stmt.selector);
                 let body = self.lower_block(&switch_stmt.body);

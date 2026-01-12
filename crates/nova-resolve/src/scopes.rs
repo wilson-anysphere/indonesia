@@ -624,6 +624,18 @@ impl<'a> ScopeBuilder<'a> {
                 self.build_stmt_scopes(loop_scope, owner, body, *loop_body);
                 parent
             }
+            hir::Stmt::Synchronized {
+                expr,
+                body: sync_body,
+                ..
+            } => {
+                self.stmt_scopes.insert((owner, stmt_id), parent);
+                self.record_expr_scopes(parent, owner, body, *expr);
+
+                let sync_scope = self.alloc_block_scope(parent, owner, *sync_body);
+                self.build_stmt_scopes(sync_scope, owner, body, *sync_body);
+                parent
+            }
             hir::Stmt::Switch {
                 selector,
                 body: switch_body,

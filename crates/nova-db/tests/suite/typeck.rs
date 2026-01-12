@@ -206,6 +206,26 @@ class C {
 }
 
 #[test]
+fn synchronized_on_primitive_is_error() {
+    let src = r#"
+class C {
+    void m() {
+        int x = 0;
+        synchronized (x) { }
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter()
+            .any(|d| d.code.as_ref() == "invalid-synchronized-expression"),
+        "expected invalid-synchronized-expression diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn rejects_non_statement_expression() {
     let src = r#"
 class C {
