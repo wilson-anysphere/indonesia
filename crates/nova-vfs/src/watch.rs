@@ -53,6 +53,20 @@
 //! If a backend drops events due to overflow/backpressure, it should emit [`WatchEvent::Rescan`] so
 //! consumers can fall back to a full rescan of watched paths/roots.
 //!
+//! ## Backpressure / overflow (Notify backend)
+//!
+//! The Notify-backed watcher implementation (feature `watch-notify`) uses bounded internal queues to
+//! avoid unbounded memory growth under event storms (e.g. `git checkout`, branch switches, build
+//! output churn). If these queues overflow, the watcher drops events and emits
+//! [`WatchEvent::Rescan`].
+//!
+//! Queue sizes can be tuned via environment variables:
+//!
+//! - `NOVA_WATCH_NOTIFY_RAW_QUEUE_CAPACITY` (notify callback → drain thread)
+//! - `NOVA_WATCH_NOTIFY_EVENTS_QUEUE_CAPACITY` (drain thread → consumer)
+//!
+//! See `docs/file-watching.md` for details and testing guidance.
+//!
 //! ## Rename pairing and limitations
 //!
 //! Many watcher backends do not provide an atomic rename event. Instead, they may emit two separate
