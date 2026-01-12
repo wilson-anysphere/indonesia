@@ -156,7 +156,14 @@ fn run_case(data: &[u8]) {
     }
 
     // Split the input into an initial UTF-8 buffer and a small "edit op" stream.
-    let op_len = (data[0] as usize % (MAX_OP_BYTES + 1)).min(data.len());
+    // Keep at least half the bytes for the initial text so short `.java` seeds don't end up with
+    // an empty (or near-empty) document.
+    let max_op_len = (data.len() / 2).min(MAX_OP_BYTES);
+    let op_len = if max_op_len == 0 {
+        0
+    } else {
+        (data[0] as usize % (max_op_len + 1)).min(data.len())
+    };
     let split = data.len().saturating_sub(op_len);
     let (text_bytes, op_bytes) = data.split_at(split);
 
