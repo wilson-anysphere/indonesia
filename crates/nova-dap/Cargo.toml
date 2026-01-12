@@ -65,3 +65,4 @@ path = "tests/fixtures/nova_dap_test_helper.rs"
 
 [dev-dependencies]
 nova-jdwp = { path = "../nova-jdwp", features = ["wire-test-support"] }
+nova-test-utils = { path = "../nova-test-utils", default-features = false }

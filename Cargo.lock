@@ -3585,6 +3585,7 @@ dependencies = [
  "nova-project",
  "nova-scheduler",
  "nova-stream-debug",
+ "nova-test-utils",
  "serde",
  "serde_json",
  "tempfile",

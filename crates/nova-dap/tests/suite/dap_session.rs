@@ -8,6 +8,7 @@ use crate::harness::spawn_wire_server;
 use base64::{engine::general_purpose, Engine as _};
 use nova_dap::object_registry::{OBJECT_HANDLE_BASE, PINNED_SCOPE_REF};
 use nova_jdwp::wire::mock::MockJdwpServer;
+use nova_test_utils::{env_lock, EnvVarGuard};
 use serde_json::json;
 
 fn tool_available(name: &str) -> bool {
@@ -716,7 +717,8 @@ async fn dap_hot_swap_can_compile_changed_files_with_javac() {
 
     // Ensure the test environment is deterministic even if a previous run left
     // behind temp directories.
-    std::env::remove_var("NOVA_DAP_KEEP_HOT_SWAP_TEMP");
+    let _env_lock = env_lock();
+    let _keep_temp_guard = EnvVarGuard::unset("NOVA_DAP_KEEP_HOT_SWAP_TEMP");
     let hot_swap_base =
         std::env::temp_dir().join(format!("nova-dap-hot-swap-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(hot_swap_base);
