@@ -23,6 +23,11 @@ If breakpoint/exception configuration arrives before the debugger is attached,
 `nova-dap` caches it and applies it automatically once `attach`/`launch`
 completes.
 
+If `stopOnEntry=true` is used with a direct Java `launch`, the debuggee is started
+with JDWP `suspend=y` and will remain suspended until the client sends
+`configurationDone`. (If a client sends `configurationDone` early, before
+`launch`, `nova-dap` will resume automatically once `launch` completes.)
+
 ## Debugging a simple Java program (manual)
 
 ### 1) Build Nova DAP
