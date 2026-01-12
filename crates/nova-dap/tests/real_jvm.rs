@@ -10,6 +10,12 @@ mod suite;
 fn harness_is_single_root_test_file() {
     let tests_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
 
+    let expected = std::path::Path::new(file!())
+        .file_name()
+        .expect("harness filename is missing")
+        .to_string_lossy()
+        .into_owned();
+
     let mut root_rs_files = Vec::new();
     for entry in std::fs::read_dir(&tests_dir)
         .unwrap_or_else(|err| panic!("failed to read nova-dap tests dir {}: {err}", tests_dir.display()))
@@ -30,7 +36,7 @@ fn harness_is_single_root_test_file() {
 
     assert_eq!(
         root_rs_files,
-        ["real_jvm.rs"],
-        "expected a single root integration test harness file (tests/real_jvm.rs); found: {root_rs_files:?}"
+        [expected.clone()],
+        "expected a single root integration test harness file (tests/{expected}); found: {root_rs_files:?}"
     );
 }
