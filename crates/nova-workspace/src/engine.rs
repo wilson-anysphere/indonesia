@@ -3900,12 +3900,8 @@ fn reload_project_and_sync(
             watch_source_roots.clone(),
             watch_generated_roots.clone(),
         );
-        cfg.module_roots = watch_module_roots
-            .iter()
-            .cloned()
-            .map(normalize_vfs_local_path)
-            .collect();
-        cfg.nova_config_path = nova_config_path.clone().map(normalize_vfs_local_path);
+        cfg.set_module_roots(watch_module_roots.clone());
+        cfg.set_nova_config_path(nova_config_path.clone());
     }
 
     // If the watcher is running, schedule a refresh so it reconciles watched paths/roots with the
@@ -5442,7 +5438,7 @@ mode = "off"
             let _config_guard = EnvVarGuard::set(nova_config::NOVA_CONFIG_ENV_VAR, &config_path);
 
             let mut watch_config = WatchConfig::new(workspace_root.clone());
-            watch_config.nova_config_path = nova_config::discover_config_path(&workspace_root);
+            watch_config.set_nova_config_path(nova_config::discover_config_path(&workspace_root));
             assert_eq!(
                 watch_config.nova_config_path.as_deref(),
                 Some(config_path.as_path())

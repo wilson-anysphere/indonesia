@@ -56,6 +56,23 @@ impl WatchConfig {
             nova_config_path: None,
         }
     }
+
+    /// Replace module roots, applying the same logical normalization as `VfsPath::local`.
+    pub fn set_module_roots(&mut self, module_roots: Vec<PathBuf>) {
+        let mut roots: Vec<PathBuf> = module_roots
+            .into_iter()
+            .map(|root| normalize_watch_path(root))
+            .collect();
+        roots.sort();
+        roots.dedup();
+        self.module_roots = roots;
+    }
+
+    /// Replace the effective Nova config path for this workspace, applying the same logical
+    /// normalization as `VfsPath::local`.
+    pub fn set_nova_config_path(&mut self, nova_config_path: Option<PathBuf>) {
+        self.nova_config_path = nova_config_path.map(normalize_watch_path);
+    }
 }
 
 pub fn categorize_event(config: &WatchConfig, change: &FileChange) -> Option<ChangeCategory> {
@@ -814,6 +831,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn module_roots_are_logically_normalized() {
+        let mut config = WatchConfig::new(PathBuf::from("/tmp/ws/root"));
+        config.set_module_roots(vec![PathBuf::from("/tmp/ws/root/../external")]);
+        assert_eq!(config.module_roots, vec![PathBuf::from("/tmp/ws/external")]);
+    }
+
+    #[test]
+    fn nova_config_path_is_logically_normalized() {
+        let mut config = WatchConfig::new(PathBuf::from("/tmp/ws"));
+        config.set_nova_config_path(Some(PathBuf::from("/tmp/ws/x/../myconfig.toml")));
+        assert_eq!(
+            config.nova_config_path,
+            Some(PathBuf::from("/tmp/ws/myconfig.toml"))
+        );
+    }
+
     #[cfg(windows)]
     #[test]
     fn configured_root_drive_letter_case_does_not_affect_matching() {
@@ -891,7 +925,7 @@ mod tests {
             );
 
             let mut config = WatchConfig::new(workspace_root.clone());
-            config.nova_config_path = Some(config_path.clone());
+            config.set_nova_config_path(Some(config_path.clone()));
 
             let event = FileChange::Modified {
                 path: VfsPath::local(config_path),
