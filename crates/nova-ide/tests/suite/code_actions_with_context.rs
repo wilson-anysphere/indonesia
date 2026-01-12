@@ -74,6 +74,70 @@ fn code_actions_with_context_includes_unused_import_quickfix_for_cursor_selectio
 }
 
 #[test]
+fn code_actions_with_context_includes_unresolved_name_type_import_and_fqn_quickfixes() {
+    let mut db = InMemoryFileStore::new();
+    let file = db.file_id_for_path(PathBuf::from("/test.java"));
+    let source = r#"class A {
+  void m() {
+    List.of("x");
+  }
+}
+"#;
+    db.set_file_text(file, source.to_string());
+
+    let start = source.find("List").expect("List occurrence");
+    let end = start + "List".len();
+    let range = Range::new(
+        offset_to_position(source, start),
+        offset_to_position(source, end),
+    );
+
+    let diag = lsp_types::Diagnostic {
+        range,
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String("unresolved-name".to_string())),
+        message: "unresolved reference `List`".to_string(),
+        ..lsp_types::Diagnostic::default()
+    };
+
+    let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
+    let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
+
+    let actions = ide.code_actions_lsp_with_context(
+        CancellationToken::new(),
+        file,
+        Some(Span::new(start, end)),
+        &[diag],
+    );
+
+    assert!(
+        actions.iter().any(|action| match action {
+            lsp_types::CodeActionOrCommand::CodeAction(action)
+                if action.title == "Import java.util.List"
+                    && action.kind == Some(lsp_types::CodeActionKind::QUICKFIX) =>
+            {
+                true
+            }
+            _ => false,
+        }),
+        "expected to find `Import java.util.List` quick fix; got {actions:?}"
+    );
+
+    assert!(
+        actions.iter().any(|action| match action {
+            lsp_types::CodeActionOrCommand::CodeAction(action)
+                if action.title == "Use fully qualified name 'java.util.List'"
+                    && action.kind == Some(lsp_types::CodeActionKind::QUICKFIX) =>
+            {
+                true
+            }
+            _ => false,
+        }),
+        "expected to find `Use fully qualified name 'java.util.List'` quick fix; got {actions:?}"
+    );
+}
+
+#[test]
 fn code_actions_with_context_includes_unresolved_import_quickfix_for_cursor_selection() {
     let mut db = InMemoryFileStore::new();
     let file = db.file_id_for_path(PathBuf::from("/test.java"));
