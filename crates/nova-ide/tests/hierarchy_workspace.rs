@@ -220,4 +220,3 @@ fn strip_markers(text: &str) -> (String, Vec<(u32, usize)>) {
 
     (out, markers)
 }
-

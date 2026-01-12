@@ -140,12 +140,12 @@ fn lex(text: &str) -> Vec<Token> {
                     i += 1;
                 }
             }
-            _ if (b as char).is_ascii_alphabetic() || b == b'_' => {
+            _ if (b as char).is_ascii_alphabetic() || b == b'_' || b == b'$' => {
                 let start = i;
                 i += 1;
                 while i < bytes.len() {
                     let c = bytes[i] as char;
-                    if c.is_ascii_alphanumeric() || c == '_' {
+                    if c.is_ascii_alphanumeric() || c == '_' || c == '$' {
                         i += 1;
                     } else {
                         break;

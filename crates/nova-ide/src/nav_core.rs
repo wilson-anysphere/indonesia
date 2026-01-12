@@ -36,7 +36,7 @@ pub(crate) fn identifier_at(text: &str, offset: usize) -> Option<(String, Span)>
     let mut start = offset;
     while start > 0 {
         let ch = bytes[start - 1] as char;
-        if ch.is_ascii_alphanumeric() || ch == '_' {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' {
             start -= 1;
         } else {
             break;
@@ -46,7 +46,7 @@ pub(crate) fn identifier_at(text: &str, offset: usize) -> Option<(String, Span)>
     let mut end = offset;
     while end < bytes.len() {
         let ch = bytes[end] as char;
-        if ch.is_ascii_alphanumeric() || ch == '_' {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' {
             end += 1;
         } else {
             break;
