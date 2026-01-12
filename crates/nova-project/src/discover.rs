@@ -612,6 +612,7 @@ pub fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
                         | "BUILD"
                         | "BUILD.bazel"
                 )
+                || path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.jar"))
                 || path.extension().is_some_and(|ext| ext == "bzl")
         }
     }
