@@ -11,9 +11,10 @@ use lsp_types::{
     DidChangeWatchedFilesParams as LspDidChangeWatchedFilesParams, DocumentHighlight,
     DocumentHighlightKind, DocumentHighlightParams, DocumentSymbolParams,
     FileChangeType as LspFileChangeType, FoldingRange, FoldingRangeKind, FoldingRangeParams,
+    HoverParams,
     InlayHintParams as LspInlayHintParams, Location as LspLocation, Position as LspTypesPosition,
     Range as LspTypesRange, RenameParams as LspRenameParams, SelectionRange,
-    SelectionRangeParams, SymbolInformation, SymbolKind as LspSymbolKind,
+    SelectionRangeParams, SignatureHelpParams, SymbolInformation, SymbolKind as LspSymbolKind,
     TextDocumentPositionParams, TextEdit, TypeHierarchyPrepareParams, TypeHierarchySubtypesParams,
     TypeHierarchySupertypesParams, Uri as LspUri, WorkspaceEdit as LspWorkspaceEdit,
     WorkspaceSymbolParams,
@@ -595,6 +596,11 @@ fn initialize_result_json() -> serde_json::Value {
             "completionProvider": {
                 "resolveProvider": true,
                 "triggerCharacters": ["."]
+            },
+            "hoverProvider": true,
+            "signatureHelpProvider": {
+                "triggerCharacters": ["(", ","],
+                "retriggerCharacters": [",", ")"]
             },
             "semanticTokensProvider": {
                 "legend": semantic_tokens_legend,
@@ -2270,6 +2276,30 @@ fn handle_request_json(
             let result = handle_completion(params, state, cancel.clone());
             Ok(match result {
                 Ok(list) => json!({ "jsonrpc": "2.0", "id": id, "result": list }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
+            })
+        }
+        "textDocument/hover" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_hover(params, state);
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
+            })
+        }
+        "textDocument/signatureHelp" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_signature_help(params, state);
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
                 Err(err) => {
                     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
                 }
@@ -4544,6 +4574,42 @@ fn handle_type_definition(
     let location = nova_lsp::type_definition(&state.analysis, file_id, params.position);
     match location {
         Some(loc) => serde_json::to_value(loc).map_err(|e| e.to_string()),
+        None => Ok(serde_json::Value::Null),
+    }
+}
+
+fn handle_hover(params: serde_json::Value, state: &mut ServerState) -> Result<serde_json::Value, String> {
+    let params: HoverParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let uri = params.text_document_position_params.text_document.uri;
+    let position = params.text_document_position_params.position;
+
+    let file_id = state.analysis.ensure_loaded(&uri);
+    if !state.analysis.exists(file_id) {
+        return Ok(serde_json::Value::Null);
+    }
+
+    match nova_ide::hover(&state.analysis, file_id, position) {
+        Some(hover) => serde_json::to_value(hover).map_err(|e| e.to_string()),
+        None => Ok(serde_json::Value::Null),
+    }
+}
+
+fn handle_signature_help(
+    params: serde_json::Value,
+    state: &mut ServerState,
+) -> Result<serde_json::Value, String> {
+    let params: SignatureHelpParams =
+        serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let uri = params.text_document_position_params.text_document.uri;
+    let position = params.text_document_position_params.position;
+
+    let file_id = state.analysis.ensure_loaded(&uri);
+    if !state.analysis.exists(file_id) {
+        return Ok(serde_json::Value::Null);
+    }
+
+    match nova_ide::signature_help(&state.analysis, file_id, position) {
+        Some(help) => serde_json::to_value(help).map_err(|e| e.to_string()),
         None => Ok(serde_json::Value::Null),
     }
 }
