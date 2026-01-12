@@ -566,6 +566,50 @@ class C {
 }
 
 #[test]
+fn extract_method_switch_expression_in_local_initializer_discovers_arm_locals() {
+    // Similar to the common `int y = switch (...) { ... };` pattern, but the variable `x` is only
+    // referenced inside the switch arms (not in the selector). Without proper SwitchExpression
+    // lowering in flow IR, Extract Method would miss `x` and generate an invalid extracted method.
+    let fixture = r#"
+class C {
+    int m(int x, int sel) {
+        /*start*/int y = switch (sel) { case 0 -> x + 1; default -> x + 2; };/*end*/
+        return y;
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    int m(int x, int sel) {
+        int y = extracted(sel, x);
+        return y;
+    }
+
+    private int extracted(int sel, int x) {
+        int y = switch (sel) { case 0 -> x + 1; default -> x + 2; };
+        return y;
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn extract_method_from_interface_default_method() {
     let fixture = r#"
 interface I {
