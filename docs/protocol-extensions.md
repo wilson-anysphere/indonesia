@@ -593,7 +593,8 @@ Semantics:
 
 Notes:
 
-- For Bazel projects diagnostics are sourced via BSP when configured (see `NOVA_BSP_PROGRAM`).
+- For Bazel projects diagnostics are sourced via BSP when configured (via standard `.bsp/*.json` or
+  `NOVA_BSP_PROGRAM` / `NOVA_BSP_ARGS`).
 - `status` indicates the state of the background build task (if one has been enqueued).
 
 ---

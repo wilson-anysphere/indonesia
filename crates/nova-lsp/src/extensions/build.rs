@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap},
-    env,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -124,45 +123,6 @@ fn reset_bazel_build_orchestrator(workspace_root: &Path) {
     if let Some(orchestrator) = bazel_build_orchestrator_if_present(workspace_root) {
         orchestrator.reset();
     }
-}
-
-fn bazel_bsp_config_from_env() -> Result<Option<BazelBspConfig>> {
-    // BSP configuration discovery (env-based).
-    //
-    // - NOVA_BSP_PROGRAM: launcher executable (e.g. `bsp4bazel`)
-    // - NOVA_BSP_ARGS: optional args, either:
-    //     - JSON array (e.g. `["--arg1","--arg2"]`)
-    //     - whitespace-separated string (quotes are not interpreted)
-    let Some(program) = env::var("NOVA_BSP_PROGRAM")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(None);
-    };
-
-    let args = match env::var("NOVA_BSP_ARGS") {
-        Ok(raw) => {
-            let raw = raw.trim();
-            if raw.is_empty() {
-                Vec::new()
-            } else if raw.starts_with('[') {
-                serde_json::from_str::<Vec<String>>(raw).map_err(|err| {
-                    NovaLspError::Internal(format!("invalid NOVA_BSP_ARGS JSON array: {err}"))
-                })?
-            } else {
-                raw.split_whitespace().map(|s| s.to_string()).collect()
-            }
-        }
-        Err(env::VarError::NotPresent) => Vec::new(),
-        Err(err) => {
-            return Err(NovaLspError::Internal(format!(
-                "failed to read NOVA_BSP_ARGS: {err}"
-            )));
-        }
-    };
-
-    Ok(Some(BazelBspConfig { program, args }))
 }
 
 fn map_bazel_task_state(state: BazelBuildTaskState) -> BuildTaskState {
@@ -353,12 +313,13 @@ pub fn handle_build_project(params: serde_json::Value) -> Result<serde_json::Val
         .map(str::to_string);
 
     if let (Some(workspace_root), Some(target)) = (&bazel_workspace_root, &bazel_target) {
-        let bsp_config = bazel_bsp_config_from_env()?;
-
         let orchestrator = bazel_build_orchestrator_for_root(workspace_root);
         let build_id = orchestrator.enqueue(BazelBuildRequest {
             targets: vec![target.clone()],
-            bsp_config,
+            // BSP config resolution is handled inside `nova-build-bazel`:
+            // - standard `.bsp/*.json` discovery
+            // - `NOVA_BSP_PROGRAM` / `NOVA_BSP_ARGS` overrides
+            bsp_config: None,
         });
 
         let status = orchestrator.status();

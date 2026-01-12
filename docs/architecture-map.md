@@ -93,7 +93,9 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Key entry points:** `crates/nova-build-bazel/src/lib.rs` (`BazelWorkspace`, `JavaCompileInfo`), `crates/nova-build-bazel/src/orchestrator.rs` (feature `bsp`: `BazelBuildOrchestrator`, `BazelBspConfig`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
-  - BSP support exists behind the `bsp` Cargo feature and is optional at runtime (configured via `NOVA_BSP_PROGRAM`); the default metadata path is still `query`/`aquery`.
+  - BSP support exists behind the `bsp` Cargo feature and is optional at runtime (configured via
+    standard `.bsp/*.json` discovery or `NOVA_BSP_PROGRAM` / `NOVA_BSP_ARGS`); the default metadata
+    path is still `query`/`aquery`.
 
 ### `nova-cache`
 - **Purpose:** per-project persistent cache directory management + cache packaging (`tar.zst`).
