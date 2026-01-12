@@ -320,6 +320,24 @@ mod tests {
     }
 
     #[test]
+    fn manifest_main_attribute_handles_continuation_lines_and_stops_at_end_of_main_section() {
+        // Note: Don't use `\` line continuations in this string literal; Rust will strip the
+        // leading space on continuation lines which would defeat the manifest continuation test.
+        let manifest = "Manifest-Version: 1.0\n\
+Automatic-Module-Name: com.example.\n foo\n\n\
+Name: ignored\n\
+X-Other: also-ignored\n";
+
+        assert_eq!(
+            manifest_main_attribute(manifest, "Automatic-Module-Name"),
+            Some("com.example.foo".to_string())
+        );
+
+        // Main attributes parsing should stop at the first empty line.
+        assert_eq!(manifest_main_attribute(manifest, "Name"), None);
+    }
+
+    #[test]
     fn main_source_roots_have_module_info_checks_for_source_file() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
