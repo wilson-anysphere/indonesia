@@ -4,7 +4,7 @@ use nova_decompile::DecompiledDocumentStore;
 use std::path::Path;
 use tempfile::TempDir;
 
-const FOO_CLASS: &[u8] = include_bytes!("fixtures/com/example/Foo.class");
+const FOO_CLASS: &[u8] = include_bytes!("../fixtures/com/example/Foo.class");
 const FOO_INTERNAL_NAME: &str = "com/example/Foo";
 
 const WINDOWS_INVALID_FILENAME_CHARS: &[char] = &['<', '>', ':', '"', '/', '\\', '|', '?', '*'];

@@ -89,3 +89,4 @@ fn gc_deletes_entries_older_than_max_age() {
         "expected fresh entry to be retained"
     );
 }
+
