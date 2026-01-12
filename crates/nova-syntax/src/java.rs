@@ -3059,7 +3059,9 @@ impl Lowerer {
             .find(|child| child.kind() == SyntaxKind::Dims)
             .map(|dims| {
                 dims.children()
-                    .filter(|child| child.kind() == SyntaxKind::Dim)
+                    // Dims can appear as either `Dim` or `AnnotatedDim` nodes depending on whether
+                    // there are type annotations on the brackets.
+                    .filter(|child| matches!(child.kind(), SyntaxKind::Dim | SyntaxKind::AnnotatedDim))
                     .count()
             })
             .unwrap_or(0);
@@ -4012,6 +4014,26 @@ mod tests {
             panic!("expected array creation expression");
         };
         assert_eq!(array.elem_ty.text, "int");
+        assert_eq!(array.dim_exprs.len(), 1);
+        assert_eq!(array.extra_dims, 1);
+    }
+
+    #[test]
+    fn parse_block_lowers_array_creation_with_annotated_dim_expr() {
+        let block = parse_block("{ new int @A [1][]; }", 0);
+        assert_eq!(block.statements.len(), 1);
+
+        let ast::Stmt::Expr(expr_stmt) = &block.statements[0] else {
+            panic!("expected expression statement");
+        };
+        let ast::Expr::ArrayCreation(array) = &expr_stmt.expr else {
+            panic!("expected array creation expression");
+        };
+        assert!(
+            array.elem_ty.text.contains("int"),
+            "expected element type to contain `int`, got {:?}",
+            array.elem_ty.text
+        );
         assert_eq!(array.dim_exprs.len(), 1);
         assert_eq!(array.extra_dims, 1);
     }
