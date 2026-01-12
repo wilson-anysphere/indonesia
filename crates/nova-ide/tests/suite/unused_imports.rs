@@ -105,6 +105,22 @@ class A {}
 }
 
 #[test]
+fn diagnostics_include_unused_import_for_multiline_import_declaration() {
+    let mut db = InMemoryFileStore::new();
+    let path = PathBuf::from("/test.java");
+    let file = db.file_id_for_path(&path);
+    db.set_file_text(file, "import java.util.\nList;\nclass A {}\n".to_string());
+
+    let diags = file_diagnostics(&db, file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.severity == Severity::Warning && d.code.as_ref() == "unused-import"),
+        "expected unused-import warning diagnostic; got {diags:#?}"
+    );
+}
+
+#[test]
 fn diagnostics_do_not_consume_the_whole_file_when_an_import_is_missing_a_semicolon() {
     let mut db = InMemoryFileStore::new();
     let path = PathBuf::from("/test.java");

@@ -1181,17 +1181,6 @@ fn unused_import_diagnostics(java_source: &str) -> Vec<Diagnostic> {
         simple: String,
     }
 
-    fn line_end_offset(text: &str, offset: usize) -> usize {
-        let offset = offset.min(text.len());
-        let Some(rest) = text.get(offset..) else {
-            return text.len();
-        };
-        match rest.find('\n') {
-            Some(rel) => offset + rel + 1,
-            None => text.len(),
-        }
-    }
-
     let tokens = nova_syntax::lex(java_source);
 
     let mut imports: Vec<ImportLine> = Vec::new();
@@ -1251,13 +1240,6 @@ fn unused_import_diagnostics(java_source: &str) -> Vec<Diagnostic> {
                 | nova_syntax::SyntaxKind::LineComment
                 | nova_syntax::SyntaxKind::BlockComment
                 | nova_syntax::SyntaxKind::DocComment => {
-                    // Incomplete imports are common while editing (`import foo.Bar` without a
-                    // trailing `;`). Avoid consuming tokens from the rest of the file by treating
-                    // any newline as the end of the import statement (best-effort).
-                    if tok.text(java_source).contains('\n') {
-                        stmt_end = tok.range.start as usize;
-                        break;
-                    }
                     idx += 1;
                     continue;
                 }
@@ -1282,20 +1264,21 @@ fn unused_import_diagnostics(java_source: &str) -> Vec<Diagnostic> {
                     break;
                 }
                 nova_syntax::SyntaxKind::Eof => {
-                    stmt_end = tok.range.end as usize;
-                    idx += 1;
-                    complete_stmt = true;
+                    stmt_end = tok.range.start as usize;
                     break;
                 }
                 _ => {
-                    idx += 1;
-                    continue;
+                    // Avoid consuming tokens from the rest of the file when the import statement
+                    // is incomplete (missing `;`). Stop at the first unexpected token (e.g.
+                    // `import`, `class`).
+                    stmt_end = tok.range.start as usize;
+                    break;
                 }
             }
         }
 
         if stmt_end > 0 {
-            last_import_end = last_import_end.max(line_end_offset(java_source, stmt_end));
+            last_import_end = last_import_end.max(stmt_end);
         }
 
         // Skip generating unused-import diagnostics for incomplete import statements.
