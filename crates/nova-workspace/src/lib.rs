@@ -1032,11 +1032,19 @@ fn fuzzy_rank_workspace_symbols(
 ) -> (Vec<WorkspaceSymbol>, SearchStats) {
     if query.is_empty() {
         let mut ranked = Vec::new();
-        for (name, locations) in symbols.symbols.iter().take(limit) {
-            ranked.push(WorkspaceSymbol {
-                name: name.clone(),
-                locations: locations.clone(),
-            });
+        for (name, locations) in &symbols.symbols {
+            for loc in locations {
+                ranked.push(WorkspaceSymbol {
+                    name: name.clone(),
+                    locations: vec![loc.clone()],
+                });
+                if ranked.len() >= limit {
+                    break;
+                }
+            }
+            if ranked.len() >= limit {
+                break;
+            }
         }
         return (
             ranked,
@@ -1049,14 +1057,29 @@ fn fuzzy_rank_workspace_symbols(
 
     let (results, stats) = searcher.search_with_stats(symbols, query, limit, indexes_changed);
 
-    let mut ranked = Vec::with_capacity(results.len());
+    let mut ranked = Vec::new();
     for res in results {
         let name = res.symbol.name;
         if let Some(locations) = symbols.symbols.get(name.as_str()) {
-            ranked.push(WorkspaceSymbol {
-                name,
-                locations: locations.clone(),
+            let mut locations = locations.clone();
+            locations.sort_by(|a, b| {
+                a.file
+                    .cmp(&b.file)
+                    .then_with(|| a.line.cmp(&b.line))
+                    .then_with(|| a.column.cmp(&b.column))
             });
+            for loc in locations {
+                ranked.push(WorkspaceSymbol {
+                    name: name.clone(),
+                    locations: vec![loc],
+                });
+                if ranked.len() >= limit {
+                    break;
+                }
+            }
+        }
+        if ranked.len() >= limit {
+            break;
         }
     }
 
@@ -1074,21 +1097,81 @@ fn fuzzy_rank_workspace_symbols_sharded(
         use std::cmp::Ordering;
         use std::collections::BinaryHeap;
 
-        #[derive(Copy, Clone, Eq, PartialEq)]
-        struct ShardKey<'a> {
-            name: &'a str,
-            shard_idx: usize,
+        struct ShardEntryIter<'a> {
+            map_iter: std::collections::btree_map::Iter<'a, String, Vec<SymbolLocation>>,
+            current_name: Option<&'a str>,
+            current_locations: &'a [SymbolLocation],
+            loc_idx: usize,
         }
 
-        impl Ord for ShardKey<'_> {
-            fn cmp(&self, other: &Self) -> Ordering {
-                self.name
-                    .cmp(other.name)
-                    .then_with(|| self.shard_idx.cmp(&other.shard_idx))
+        impl<'a> ShardEntryIter<'a> {
+            fn new(index: &'a nova_index::SymbolIndex) -> Self {
+                let mut map_iter = index.symbols.iter();
+                if let Some((name, locs)) = map_iter.next() {
+                    Self {
+                        map_iter,
+                        current_name: Some(name.as_str()),
+                        current_locations: locs.as_slice(),
+                        loc_idx: 0,
+                    }
+                } else {
+                    Self {
+                        map_iter,
+                        current_name: None,
+                        current_locations: &[],
+                        loc_idx: 0,
+                    }
+                }
+            }
+
+            fn next_entry(&mut self) -> Option<(&'a str, &'a SymbolLocation, usize)> {
+                loop {
+                    let name = self.current_name?;
+                    if self.loc_idx < self.current_locations.len() {
+                        let idx = self.loc_idx;
+                        let loc = &self.current_locations[idx];
+                        self.loc_idx += 1;
+                        return Some((name, loc, idx));
+                    }
+
+                    match self.map_iter.next() {
+                        Some((name, locs)) => {
+                            self.current_name = Some(name.as_str());
+                            self.current_locations = locs.as_slice();
+                            self.loc_idx = 0;
+                            continue;
+                        }
+                        None => {
+                            self.current_name = None;
+                            self.current_locations = &[];
+                            return None;
+                        }
+                    }
+                }
             }
         }
 
-        impl PartialOrd for ShardKey<'_> {
+        #[derive(Copy, Clone, Eq, PartialEq)]
+        struct HeapEntry<'a> {
+            name: &'a str,
+            location: &'a SymbolLocation,
+            shard_idx: usize,
+            location_idx: usize,
+        }
+
+        impl Ord for HeapEntry<'_> {
+            fn cmp(&self, other: &Self) -> Ordering {
+                self.name
+                    .cmp(other.name)
+                    .then_with(|| self.location.file.cmp(&other.location.file))
+                    .then_with(|| self.location.line.cmp(&other.location.line))
+                    .then_with(|| self.location.column.cmp(&other.location.column))
+                    .then_with(|| self.shard_idx.cmp(&other.shard_idx))
+                    .then_with(|| self.location_idx.cmp(&other.location_idx))
+            }
+        }
+
+        impl PartialOrd for HeapEntry<'_> {
             fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
                 Some(self.cmp(other))
             }
@@ -1096,48 +1179,39 @@ fn fuzzy_rank_workspace_symbols_sharded(
 
         let mut iters: Vec<_> = shards
             .iter()
-            .map(|shard| shard.symbols.symbols.keys())
+            .map(|shard| ShardEntryIter::new(&shard.symbols))
             .collect();
 
-        let mut heap = BinaryHeap::<std::cmp::Reverse<ShardKey<'_>>>::new();
+        let mut heap = BinaryHeap::<std::cmp::Reverse<HeapEntry<'_>>>::new();
         for (shard_idx, iter) in iters.iter_mut().enumerate() {
-            if let Some(name) = iter.next() {
-                heap.push(std::cmp::Reverse(ShardKey {
-                    name: name.as_str(),
+            if let Some((name, location, location_idx)) = iter.next_entry() {
+                heap.push(std::cmp::Reverse(HeapEntry {
+                    name,
+                    location,
                     shard_idx,
+                    location_idx,
                 }));
             }
         }
 
-        let mut names = Vec::new();
-        let mut last_name: Option<&str> = None;
+        let mut ranked = Vec::new();
         while let Some(std::cmp::Reverse(entry)) = heap.pop() {
-            if last_name != Some(entry.name) {
-                names.push(entry.name.to_string());
-                last_name = Some(entry.name);
-                if names.len() >= limit {
-                    break;
-                }
+            ranked.push(WorkspaceSymbol {
+                name: entry.name.to_string(),
+                locations: vec![entry.location.clone()],
+            });
+
+            if ranked.len() >= limit {
+                break;
             }
 
-            if let Some(next_name) = iters[entry.shard_idx].next() {
-                heap.push(std::cmp::Reverse(ShardKey {
-                    name: next_name.as_str(),
+            if let Some((name, location, location_idx)) = iters[entry.shard_idx].next_entry() {
+                heap.push(std::cmp::Reverse(HeapEntry {
+                    name,
+                    location,
                     shard_idx: entry.shard_idx,
+                    location_idx,
                 }));
-            }
-        }
-
-        let mut ranked = Vec::with_capacity(names.len());
-        for name in names {
-            let mut locations = Vec::new();
-            for shard in shards {
-                if let Some(found) = shard.symbols.symbols.get(name.as_str()) {
-                    locations.extend(found.iter().cloned());
-                }
-            }
-            if !locations.is_empty() {
-                ranked.push(WorkspaceSymbol { name, locations });
             }
         }
 
@@ -1171,17 +1245,32 @@ fn fuzzy_rank_workspace_symbols_sharded(
 
     let (results, stats) = searcher.search_with_stats_cached(query, limit);
 
-    let mut ranked = Vec::with_capacity(results.len());
+    let mut ranked = Vec::new();
     for res in results {
         let name = res.symbol.name;
-        let mut locations = Vec::new();
+        let mut locations: Vec<SymbolLocation> = Vec::new();
         for shard in shards {
             if let Some(found) = shard.symbols.symbols.get(name.as_str()) {
                 locations.extend(found.iter().cloned());
             }
         }
-        if !locations.is_empty() {
-            ranked.push(WorkspaceSymbol { name, locations });
+        locations.sort_by(|a, b| {
+            a.file
+                .cmp(&b.file)
+                .then_with(|| a.line.cmp(&b.line))
+                .then_with(|| a.column.cmp(&b.column))
+        });
+        for loc in locations {
+            ranked.push(WorkspaceSymbol {
+                name: name.clone(),
+                locations: vec![loc],
+            });
+            if ranked.len() >= limit {
+                break;
+            }
+        }
+        if ranked.len() >= limit {
+            break;
         }
     }
 
@@ -1276,6 +1365,84 @@ mod fuzzy_symbol_tests {
         let _ = ws.workspace_symbols("met").expect("workspace symbols");
         assert_eq!(ws.symbol_searcher.build_count(), 1);
     }
+
+    #[test]
+    fn workspace_symbol_search_empty_query_is_deterministic_and_includes_duplicates() {
+        let memory = MemoryManager::new(MemoryBudget::from_total(256 * nova_memory::MB));
+        let searcher = WorkspaceSymbolSearcher::new(&memory);
+
+        let mut shard0 = ProjectIndexes::default();
+        shard0.symbols.insert(
+            "Alpha",
+            SymbolLocation {
+                file: "pkg/Alpha.java".into(),
+                line: 1,
+                column: 1,
+            },
+        );
+        shard0.symbols.insert(
+            "Dup",
+            SymbolLocation {
+                file: "com/foo/Dup.java".into(),
+                line: 1,
+                column: 1,
+            },
+        );
+
+        let shard1 = ProjectIndexes::default(); // empty shard should not panic
+
+        let mut shard2 = ProjectIndexes::default();
+        shard2.symbols.insert(
+            "Dup",
+            SymbolLocation {
+                file: "com/bar/Dup.java".into(),
+                line: 1,
+                column: 1,
+            },
+        );
+        shard2.symbols.insert(
+            "Zulu",
+            SymbolLocation {
+                file: "pkg/Zulu.java".into(),
+                line: 1,
+                column: 1,
+            },
+        );
+
+        let shards = vec![shard0, shard1, shard2];
+
+        let (first, _stats) =
+            fuzzy_rank_workspace_symbols_sharded(searcher.as_ref(), &shards, "", 10, true);
+        let (second, _stats) =
+            fuzzy_rank_workspace_symbols_sharded(searcher.as_ref(), &shards, "", 10, true);
+        assert_eq!(first, second, "empty query results should be stable");
+
+        let order: Vec<(String, String)> = first
+            .iter()
+            .map(|sym| {
+                (
+                    sym.name.clone(),
+                    sym.locations
+                        .first()
+                        .map(|loc| loc.file.clone())
+                        .unwrap_or_default(),
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            order,
+            vec![
+                ("Alpha".to_string(), "pkg/Alpha.java".to_string()),
+                ("Dup".to_string(), "com/bar/Dup.java".to_string()),
+                ("Dup".to_string(), "com/foo/Dup.java".to_string()),
+                ("Zulu".to_string(), "pkg/Zulu.java".to_string()),
+            ]
+        );
+
+        let dup_count = first.iter().filter(|sym| sym.name == "Dup").count();
+        assert_eq!(dup_count, 2, "expected duplicate entries for the same name");
+    }
 }
 
 #[cfg(test)]
@@ -1335,7 +1502,7 @@ pub struct PerfMetrics {
     pub rss_bytes: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceSymbol {
     pub name: String,
     pub locations: Vec<SymbolLocation>,
