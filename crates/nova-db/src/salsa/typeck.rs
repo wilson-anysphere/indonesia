@@ -253,7 +253,7 @@ fn type_of_def(db: &dyn NovaTypeck, def: DefWithBodyId) -> Type {
             let mut loader = ExternalTypeLoader::new(&mut store, &provider);
 
             // Define source types in this file so `Type::Class` ids are stable.
-            let (_field_types, _method_types, source_type_vars) =
+            let SourceTypes { source_type_vars, .. } =
                 define_source_types(&resolver, &scopes, &tree, &mut loader);
 
             let type_vars = type_vars_for_owner(
@@ -512,18 +512,24 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
     let provider = JavaOnlyJdkTypeProvider::new(&base_provider, jdk_provider);
     let mut loader = ExternalTypeLoader::new(&mut store, &provider);
 
-    // Define source types in this file so `Type::Class` ids are stable within this body.
-    let (field_types, method_types, source_type_vars) =
-        define_source_types(&resolver, &scopes, &tree, &mut loader);
-
+    // Define source types for the full workspace so workspace `Type::Class` ids are stable within
+    // this body and cross-file member resolution works.
+    let source_types = define_workspace_source_types(db, project, &resolver, &mut loader);
     let type_vars = type_vars_for_owner(
         owner,
         body_scope,
         &scopes.scopes,
         &tree,
         &mut loader,
-        &source_type_vars,
+        &source_types.source_type_vars,
     );
+    let SourceTypes {
+        field_types,
+        method_types,
+        field_owners,
+        method_owners,
+        ..
+    } = source_types;
 
     let (expected_return, signature_diags) = resolve_expected_return_type(
         &resolver,
@@ -576,6 +582,8 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
         param_types,
         field_types,
         method_types,
+        field_owners,
+        method_owners,
     );
     checker.diagnostics.extend(signature_diags);
     checker.diagnostics.extend(param_diags);
@@ -791,6 +799,8 @@ struct BodyChecker<'a, 'idx> {
     param_types: Vec<Type>,
     field_types: HashMap<FieldId, Type>,
     method_types: HashMap<MethodId, (Vec<Type>, Type)>,
+    field_owners: HashMap<FieldId, String>,
+    method_owners: HashMap<MethodId, String>,
     expr_info: Vec<Option<ExprInfo>>,
     call_resolutions: Vec<Option<ResolvedMethod>>,
     diagnostics: Vec<Diagnostic>,
@@ -815,6 +825,8 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         param_types: Vec<Type>,
         field_types: HashMap<FieldId, Type>,
         method_types: HashMap<MethodId, (Vec<Type>, Type)>,
+        field_owners: HashMap<FieldId, String>,
+        method_owners: HashMap<MethodId, String>,
     ) -> Self {
         let local_types = vec![Type::Unknown; body.locals.len()];
         let expr_info = vec![None; body.exprs.len()];
@@ -835,6 +847,8 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             param_types,
             field_types,
             method_types,
+            field_owners,
+            method_owners,
             expr_info,
             call_resolutions,
             diagnostics: Vec::new(),
@@ -2051,22 +2065,42 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         member: StaticMemberResolution,
         range: Span,
     ) -> ExprInfo {
-        let StaticMemberResolution::External(id) = member else {
-            return ExprInfo {
-                ty: Type::Unknown,
-                is_type_ref: false,
-            };
-        };
-
-        let Some((owner, name)) = id.as_str().split_once("::") else {
-            return ExprInfo {
-                ty: Type::Unknown,
-                is_type_ref: false,
-            };
+        let (owner, name) = match member {
+            StaticMemberResolution::External(id) => match id.as_str().split_once("::") {
+                Some((owner, name)) => (owner.to_string(), name.to_string()),
+                None => {
+                    return ExprInfo {
+                        ty: Type::Unknown,
+                        is_type_ref: false,
+                    };
+                }
+            },
+            StaticMemberResolution::SourceField(field) => {
+                let Some(owner) = self.field_owners.get(&field).cloned() else {
+                    return ExprInfo {
+                        ty: Type::Unknown,
+                        is_type_ref: false,
+                    };
+                };
+                let tree = self.db.hir_item_tree(field.file);
+                let name = tree.field(field).name.clone();
+                (owner, name)
+            }
+            StaticMemberResolution::SourceMethod(method) => {
+                let Some(owner) = self.method_owners.get(&method).cloned() else {
+                    return ExprInfo {
+                        ty: Type::Unknown,
+                        is_type_ref: false,
+                    };
+                };
+                let tree = self.db.hir_item_tree(method.file);
+                let name = tree.method(method).name.clone();
+                (owner, name)
+            }
         };
 
         let receiver = loader
-            .ensure_class(owner)
+            .ensure_class(&owner)
             .map(|id| Type::class(id, vec![]))
             .unwrap_or_else(|| Type::Named(owner.to_string()));
         self.ensure_type_loaded(loader, &receiver);
@@ -2074,7 +2108,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         {
             let env_ro: &dyn TypeEnv = &*loader.store;
             let mut ctx = TyContext::new(env_ro);
-            if let Some(field) = ctx.resolve_field(&receiver, name, CallKind::Static) {
+            if let Some(field) = ctx.resolve_field(&receiver, &name, CallKind::Static) {
                 return ExprInfo {
                     ty: field.ty,
                     is_type_ref: false,
@@ -2387,85 +2421,171 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 }
 
                 // Handle static-imported methods.
-                let NameResolution::Resolved(Resolution::StaticMember(
-                    StaticMemberResolution::External(id),
-                )) = self.resolver.resolve_name_detailed(
-                    self.scopes,
-                    self.scope_id,
-                    &Name::from(name.as_str()),
-                )
-                else {
-                    self.diagnostics.push(Diagnostic::error(
-                        "unresolved-method",
-                        format!("unresolved call `{}`", name),
-                        Some(*range),
-                    ));
-                    return ExprInfo {
-                        ty: Type::Unknown,
-                        is_type_ref: false,
-                    };
-                };
+                match self
+                    .resolver
+                    .resolve_name_detailed(self.scopes, self.scope_id, &Name::from(name.as_str()))
+                {
+                    NameResolution::Resolved(Resolution::StaticMember(
+                        StaticMemberResolution::External(id),
+                    )) => {
+                        let Some((owner, member)) = id.as_str().split_once("::") else {
+                            return ExprInfo {
+                                ty: Type::Unknown,
+                                is_type_ref: false,
+                            };
+                        };
 
-                let Some((owner, member)) = id.as_str().split_once("::") else {
-                    return ExprInfo {
-                        ty: Type::Unknown,
-                        is_type_ref: false,
-                    };
-                };
+                        let recv_ty = loader
+                            .ensure_class(owner)
+                            .map(|id| Type::class(id, vec![]))
+                            .unwrap_or_else(|| Type::Named(owner.to_string()));
+                        self.ensure_type_loaded(loader, &recv_ty);
 
-                let recv_ty = loader
-                    .ensure_class(owner)
-                    .map(|id| Type::class(id, vec![]))
-                    .unwrap_or_else(|| Type::Named(owner.to_string()));
-                self.ensure_type_loaded(loader, &recv_ty);
+                        let call = MethodCall {
+                            receiver: recv_ty,
+                            call_kind: CallKind::Static,
+                            name: member,
+                            args: arg_types,
+                            expected_return: expected.cloned(),
+                            explicit_type_args: Vec::new(),
+                        };
 
-                let call = MethodCall {
-                    receiver: recv_ty,
-                    call_kind: CallKind::Static,
-                    name: member,
-                    args: arg_types,
-                    expected_return: expected.cloned(),
-                    explicit_type_args: Vec::new(),
-                };
+                        let env_ro: &dyn TypeEnv = &*loader.store;
+                        let mut ctx = TyContext::new(env_ro);
+                        match nova_types::resolve_method_call(&mut ctx, &call) {
+                            MethodResolution::Found(method) => {
+                                self.call_resolutions[expr.idx()] = Some(method.clone());
+                                ExprInfo {
+                                    ty: method.return_type,
+                                    is_type_ref: false,
+                                }
+                            }
+                            MethodResolution::Ambiguous(amb) => {
+                                self.diagnostics.push(self.ambiguous_call_diag(
+                                    env_ro,
+                                    member,
+                                    &amb.candidates,
+                                    self.body.exprs[expr].range(),
+                                ));
+                                if let Some(first) = amb.candidates.first() {
+                                    self.call_resolutions[expr.idx()] = Some(first.clone());
+                                    ExprInfo {
+                                        ty: first.return_type.clone(),
+                                        is_type_ref: false,
+                                    }
+                                } else {
+                                    ExprInfo {
+                                        ty: Type::Unknown,
+                                        is_type_ref: false,
+                                    }
+                                }
+                            }
+                            MethodResolution::NotFound(not_found) => {
+                                self.diagnostics.push(self.unresolved_method_diag(
+                                    env_ro,
+                                    &not_found,
+                                    self.body.exprs[expr].range(),
+                                ));
+                                ExprInfo {
+                                    ty: Type::Error,
+                                    is_type_ref: false,
+                                }
+                            }
+                        }
+                    }
+                    NameResolution::Resolved(Resolution::StaticMember(
+                        StaticMemberResolution::SourceMethod(method),
+                    )) => {
+                        let Some(owner) = self.method_owners.get(&method).cloned() else {
+                            self.diagnostics.push(Diagnostic::error(
+                                "unresolved-method",
+                                format!("unresolved call `{}`", name),
+                                Some(*range),
+                            ));
+                            return ExprInfo {
+                                ty: Type::Unknown,
+                                is_type_ref: false,
+                            };
+                        };
 
-                let env_ro: &dyn TypeEnv = &*loader.store;
-                let mut ctx = TyContext::new(env_ro);
-                match nova_types::resolve_method_call(&mut ctx, &call) {
-                    MethodResolution::Found(method) => {
-                        self.call_resolutions[expr.idx()] = Some(method.clone());
+                        let recv_ty = self
+                            .ensure_workspace_class(loader, &owner)
+                            .or_else(|| loader.ensure_class(&owner))
+                            .map(|id| Type::class(id, vec![]))
+                            .unwrap_or_else(|| Type::Named(owner.clone()));
+                        self.ensure_type_loaded(loader, &recv_ty);
+
+                        let call = MethodCall {
+                            receiver: recv_ty,
+                            call_kind: CallKind::Static,
+                            name: name.as_str(),
+                            args: arg_types,
+                            expected_return: expected.cloned(),
+                            explicit_type_args: Vec::new(),
+                        };
+
+                        let env_ro: &dyn TypeEnv = &*loader.store;
+                        let mut ctx = TyContext::new(env_ro);
+                        match nova_types::resolve_method_call(&mut ctx, &call) {
+                            MethodResolution::Found(method) => {
+                                self.call_resolutions[expr.idx()] = Some(method.clone());
+                                ExprInfo {
+                                    ty: method.return_type,
+                                    is_type_ref: false,
+                                }
+                            }
+                            MethodResolution::Ambiguous(amb) => {
+                                self.diagnostics.push(self.ambiguous_call_diag(
+                                    env_ro,
+                                    name.as_str(),
+                                    &amb.candidates,
+                                    self.body.exprs[expr].range(),
+                                ));
+                                if let Some(first) = amb.candidates.first() {
+                                    self.call_resolutions[expr.idx()] = Some(first.clone());
+                                    ExprInfo {
+                                        ty: first.return_type.clone(),
+                                        is_type_ref: false,
+                                    }
+                                } else {
+                                    ExprInfo {
+                                        ty: Type::Unknown,
+                                        is_type_ref: false,
+                                    }
+                                }
+                            }
+                            MethodResolution::NotFound(not_found) => {
+                                self.diagnostics.push(self.unresolved_method_diag(
+                                    env_ro,
+                                    &not_found,
+                                    self.body.exprs[expr].range(),
+                                ));
+                                ExprInfo {
+                                    ty: Type::Error,
+                                    is_type_ref: false,
+                                }
+                            }
+                        }
+                    }
+                    NameResolution::Ambiguous(_) => {
+                        self.diagnostics.push(Diagnostic::error(
+                            "ambiguous-name",
+                            format!("ambiguous reference `{}`", name),
+                            Some(*range),
+                        ));
                         ExprInfo {
-                            ty: method.return_type,
+                            ty: Type::Unknown,
                             is_type_ref: false,
                         }
                     }
-                    MethodResolution::Ambiguous(amb) => {
-                        self.diagnostics.push(self.ambiguous_call_diag(
-                            env_ro,
-                            member,
-                            &amb.candidates,
-                            self.body.exprs[expr].range(),
-                        ));
-                        if let Some(first) = amb.candidates.first() {
-                            self.call_resolutions[expr.idx()] = Some(first.clone());
-                            ExprInfo {
-                                ty: first.return_type.clone(),
-                                is_type_ref: false,
-                            }
-                        } else {
-                            ExprInfo {
-                                ty: Type::Unknown,
-                                is_type_ref: false,
-                            }
-                        }
-                    }
-                    MethodResolution::NotFound(not_found) => {
-                        self.diagnostics.push(self.unresolved_method_diag(
-                            env_ro,
-                            &not_found,
-                            self.body.exprs[expr].range(),
+                    _ => {
+                        self.diagnostics.push(Diagnostic::error(
+                            "unresolved-method",
+                            format!("unresolved call `{}`", name),
+                            Some(*range),
                         ));
                         ExprInfo {
-                            ty: Type::Error,
+                            ty: Type::Unknown,
                             is_type_ref: false,
                         }
                     }
@@ -2912,6 +3032,65 @@ fn resolve_type_ref_text<'idx>(
     )
 }
 
+#[derive(Default)]
+struct SourceTypes {
+    field_types: HashMap<FieldId, Type>,
+    method_types: HashMap<MethodId, (Vec<Type>, Type)>,
+    field_owners: HashMap<FieldId, String>,
+    method_owners: HashMap<MethodId, String>,
+    source_type_vars: SourceTypeVars,
+}
+
+impl SourceTypes {
+    fn extend(&mut self, other: SourceTypes) {
+        self.field_types.extend(other.field_types);
+        self.method_types.extend(other.method_types);
+        self.field_owners.extend(other.field_owners);
+        self.method_owners.extend(other.method_owners);
+        self.source_type_vars.classes.extend(other.source_type_vars.classes);
+        self.source_type_vars.methods.extend(other.source_type_vars.methods);
+    }
+}
+
+fn define_workspace_source_types<'idx>(
+    db: &dyn NovaTypeck,
+    project: ProjectId,
+    resolver: &nova_resolve::Resolver<'idx>,
+    loader: &mut ExternalTypeLoader<'_>,
+) -> SourceTypes {
+    let files = db.project_files(project);
+
+    // First pass: intern ids for every workspace type so cross-file references can resolve to
+    // `Type::Class` during member signature resolution.
+    for (idx, file) in files.iter().copied().enumerate() {
+        cancel::checkpoint_cancelled_every(db, idx as u32, 32);
+        let tree = db.hir_item_tree(file);
+        let scopes = db.scope_graph(file);
+
+        let mut items = Vec::new();
+        for item in &tree.items {
+            collect_item_ids(&tree, *item, &mut items);
+        }
+
+        for item in items {
+            if let Some(name) = scopes.scopes.type_name(item) {
+                loader.store.intern_class_id(name.as_str());
+            }
+        }
+    }
+
+    // Second pass: define skeleton class defs + collect member typing/ownership info.
+    let mut out = SourceTypes::default();
+    for (idx, file) in files.iter().copied().enumerate() {
+        cancel::checkpoint_cancelled_every(db, idx as u32, 32);
+        let tree = db.hir_item_tree(file);
+        let scopes = db.scope_graph(file);
+        out.extend(define_source_types(resolver, &scopes, &tree, loader));
+    }
+
+    out
+}
+
 fn param_name_lookup(tree: &nova_hir::item_tree::ItemTree, id: ParamId) -> Name {
     match id.owner {
         DefWithBodyId::Method(m) => tree
@@ -3071,11 +3250,7 @@ fn define_source_types<'idx>(
     scopes: &nova_resolve::ItemTreeScopeBuildResult,
     tree: &nova_hir::item_tree::ItemTree,
     loader: &mut ExternalTypeLoader<'_>,
-) -> (
-    HashMap<FieldId, Type>,
-    HashMap<MethodId, (Vec<Type>, Type)>,
-    SourceTypeVars,
-) {
+) -> SourceTypes {
     let mut items = Vec::new();
     for item in &tree.items {
         collect_item_ids(tree, *item, &mut items);
@@ -3090,6 +3265,8 @@ fn define_source_types<'idx>(
 
     let mut field_types = HashMap::new();
     let mut method_types = HashMap::new();
+    let mut field_owners = HashMap::new();
+    let mut method_owners = HashMap::new();
     let mut source_type_vars = SourceTypeVars::default();
 
     // Second pass: define skeleton class defs.
@@ -3138,6 +3315,7 @@ fn define_source_types<'idx>(
 
         let mut fields = Vec::new();
         let mut methods = Vec::new();
+        let mut constructors = Vec::new();
         for member in item_members(tree, item) {
             match member {
                 nova_hir::item_tree::Member::Field(fid) => {
@@ -3154,6 +3332,7 @@ fn define_source_types<'idx>(
                     )
                     .ty;
                     field_types.insert(*fid, ty.clone());
+                    field_owners.insert(*fid, name.clone());
                     let is_static =
                         field.modifiers.raw & nova_hir::item_tree::Modifiers::STATIC != 0;
                     let is_final = field.modifiers.raw & nova_hir::item_tree::Modifiers::FINAL != 0;
@@ -3220,6 +3399,7 @@ fn define_source_types<'idx>(
                     )
                     .ty;
                     method_types.insert(*mid, (params.clone(), return_type.clone()));
+                    method_owners.insert(*mid, name.clone());
                     let is_static =
                         method.modifiers.raw & nova_hir::item_tree::Modifiers::STATIC != 0;
 
@@ -3231,6 +3411,39 @@ fn define_source_types<'idx>(
                         is_static,
                         is_varargs,
                         is_abstract: method.body.is_none(),
+                    });
+                }
+                nova_hir::item_tree::Member::Constructor(cid) => {
+                    let ctor = tree.constructor(*cid);
+                    let scope = scopes
+                        .constructor_scopes
+                        .get(cid)
+                        .copied()
+                        .unwrap_or(class_scope);
+                    let vars: HashMap<String, TypeVarId> = HashMap::new();
+
+                    let params = ctor
+                        .params
+                        .iter()
+                        .map(|p| {
+                            preload_type_names(resolver, &scopes.scopes, scope, loader, &p.ty);
+                            nova_resolve::type_ref::resolve_type_ref_text(
+                                resolver,
+                                &scopes.scopes,
+                                scope,
+                                &*loader.store,
+                                &vars,
+                                &p.ty,
+                                None,
+                            )
+                            .ty
+                        })
+                        .collect::<Vec<_>>();
+
+                    constructors.push(nova_types::ConstructorDef {
+                        params,
+                        is_varargs: false,
+                        is_accessible: ctor.modifiers.raw & Modifiers::PRIVATE == 0,
                     });
                 }
                 _ => {}
@@ -3246,13 +3459,19 @@ fn define_source_types<'idx>(
                 super_class,
                 interfaces: Vec::new(),
                 fields,
-                constructors: Vec::new(),
+                constructors,
                 methods,
             },
         );
     }
 
-    (field_types, method_types, source_type_vars)
+    SourceTypes {
+        field_types,
+        method_types,
+        field_owners,
+        method_owners,
+        source_type_vars,
+    }
 }
 
 fn item_members<'a>(

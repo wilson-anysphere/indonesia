@@ -736,6 +736,85 @@ fn cross_file_varargs_method_call_resolves_on_workspace_class() {
 }
 
 #[test]
+fn cross_file_static_method_call_resolves_on_workspace_class() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let a_file = FileId::from_raw(1);
+    let b_file = FileId::from_raw(2);
+
+    let src_a = r#"package p; class A { static int foo(int x) { return x; } }"#;
+    let src_b = r#"package p; class B { int m() { return A.foo(1); } }"#;
+
+    set_file(&mut db, project, a_file, "src/p/A.java", src_a);
+    set_file(&mut db, project, b_file, "src/p/B.java", src_b);
+    db.set_project_files(project, Arc::new(vec![a_file, b_file]));
+
+    let offset = src_b
+        .find("foo(1)")
+        .expect("snippet should contain foo call")
+        + "foo".len();
+    let ty = db
+        .type_at_offset_display(b_file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "int");
+
+    let diags = db.type_diagnostics(b_file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected cross-file workspace static method call to resolve, got {diags:?}"
+    );
+}
+
+#[test]
+fn static_import_resolves_workspace_members_across_files() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let util_file = FileId::from_raw(1);
+    let use_file = FileId::from_raw(2);
+
+    let src_util = r#"package p; class Util { static int F = 1; static int foo(int x) { return x; } }"#;
+    let src_use = r#"package p; import static p.Util.*; class Use { int m() { return foo(F); } }"#;
+
+    set_file(&mut db, project, util_file, "src/p/Util.java", src_util);
+    set_file(&mut db, project, use_file, "src/p/Use.java", src_use);
+    db.set_project_files(project, Arc::new(vec![util_file, use_file]));
+
+    let offset = src_use
+        .find("foo(F)")
+        .expect("snippet should contain foo call")
+        + "foo".len();
+    let ty = db
+        .type_at_offset_display(use_file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "int");
+
+    let diags = db.type_diagnostics(use_file);
+    assert!(
+        !diags.iter().any(|d| d.code.as_ref() == "unresolved-method"
+            || d.code.as_ref() == "unresolved-static-member"),
+        "expected static-imported members to resolve, got {diags:?}"
+    );
+}
+
+#[test]
 fn cross_file_signature_type_resolves_in_same_package() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
