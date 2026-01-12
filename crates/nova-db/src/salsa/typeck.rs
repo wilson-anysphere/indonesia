@@ -13,7 +13,7 @@ use nova_resolve::expr_scopes::{ExprScopes, ResolvedValue as ResolvedLocal};
 use nova_resolve::ids::{DefWithBodyId, ParamId};
 use nova_resolve::jpms_env::JpmsCompilationEnvironment;
 use nova_resolve::{NameResolution, Resolution, ScopeKind, StaticMemberResolution, TypeResolution};
-use nova_syntax::JavaLanguageLevel;
+use nova_syntax::{JavaLanguageLevel, SyntaxKind};
 use nova_types::{
     assignment_conversion, assignment_conversion_with_const, binary_numeric_promotion,
     cast_conversion, format_resolved_method, format_type, infer_diamond_type_args, is_subtype,
@@ -3172,27 +3172,49 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
 
     fn range_is_wrapped_in_parens(&self, range: Span) -> bool {
         let file = def_file(self.owner);
-        let text = self.db.file_content(file);
-        let bytes = text.as_bytes();
-        if range.start == 0 || range.end >= bytes.len() {
+        let Ok(start) = u32::try_from(range.start) else {
+            return false;
+        };
+        let Ok(end) = u32::try_from(range.end) else {
+            return false;
+        };
+
+        let parse = self.db.parse_java(file);
+
+        let Some(start_token) = parse
+            .token_at_offset(start)
+            .right_biased()
+            .or_else(|| parse.token_at_offset(start).left_biased())
+        else {
+            return false;
+        };
+
+        let mut prev = start_token.prev_token();
+        while prev.as_ref().is_some_and(|tok| tok.kind().is_trivia()) {
+            prev = prev.and_then(|tok| tok.prev_token());
+        }
+        let Some(prev) = prev else {
+            return false;
+        };
+        if prev.kind() != SyntaxKind::LParen {
             return false;
         }
 
-        // Look for an opening `(` immediately before the expression (ignoring whitespace).
-        let mut left = range.start;
-        while left > 0 && bytes[left - 1].is_ascii_whitespace() {
-            left -= 1;
-        }
-        if left == 0 || bytes[left - 1] != b'(' {
+        let Some(end_token) = parse
+            .token_at_offset(end)
+            .right_biased()
+            .or_else(|| parse.token_at_offset(end).left_biased())
+        else {
             return false;
+        };
+        let mut next = Some(end_token);
+        while next.as_ref().is_some_and(|tok| tok.kind().is_trivia()) {
+            next = next.and_then(|tok| tok.next_token());
         }
-
-        // Look for a closing `)` immediately after the expression (ignoring whitespace).
-        let mut right = range.end;
-        while right < bytes.len() && bytes[right].is_ascii_whitespace() {
-            right += 1;
-        }
-        right < bytes.len() && bytes[right] == b')'
+        let Some(next) = next else {
+            return false;
+        };
+        next.kind() == SyntaxKind::RParen
     }
 
     fn check_stmt(
