@@ -810,6 +810,11 @@ fn refreshes_gradle_snapshot_from_cached_java_compile_config_with_project_dir_ov
     let app_dir = project_root.join("modules").join("app");
     std::fs::create_dir_all(&app_dir).unwrap();
 
+    // Use non-standard output dirs so snapshot regeneration can't infer `projectDir` from the
+    // conventional `build/classes/java/<sourceSet>` suffix and must rely on cached metadata.
+    let main_out = project_root.join("out/main");
+    let test_out = project_root.join("out/test");
+
     // Note: this payload mirrors Gradle's init script behavior, which emits JSON-escaped strings
     // (important for Windows paths containing backslashes).
     let payload = serde_json::json!({
@@ -819,8 +824,8 @@ fn refreshes_gradle_snapshot_from_cached_java_compile_config_with_project_dir_ov
         "testCompileClasspath": [],
         "mainSourceRoots": [],
         "testSourceRoots": [],
-        "mainOutputDirs": [],
-        "testOutputDirs": [],
+        "mainOutputDirs": [main_out.to_string_lossy().to_string()],
+        "testOutputDirs": [test_out.to_string_lossy().to_string()],
         "compileCompilerArgs": [],
         "testCompilerArgs": [],
         "inferModulePath": false

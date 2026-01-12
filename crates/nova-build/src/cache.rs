@@ -35,6 +35,8 @@ pub enum CacheError {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CachedModuleData {
+    #[serde(default)]
+    pub project_dir: Option<PathBuf>,
     pub classpath: Option<Vec<PathBuf>>,
     #[serde(default)]
     pub java_compile_config: Option<JavaCompileConfig>,

@@ -424,10 +424,12 @@ impl GradleBuild {
                 // the root project's own config vs the `<root>` union fallback for aggregator
                 // builds).
                 let module = data.modules.entry(":".to_string()).or_default();
+                module.project_dir = Some(project_dir.clone());
                 module.java_compile_config = Some(config.clone());
                 module.classpath = Some(config.compile_classpath.clone());
             } else {
                 let module = data.modules.entry(project.path.clone()).or_default();
+                module.project_dir = Some(project_dir.clone());
                 module.java_compile_config = Some(config.clone());
                 // Keep populating the legacy classpath field for older readers.
                 module.classpath = Some(config.compile_classpath.clone());
@@ -463,6 +465,7 @@ impl GradleBuild {
         if root_missing_compile_classpath {
             let union = JavaCompileConfig::union(non_root_configs_for_union);
             let module = data.modules.entry("<root>".to_string()).or_default();
+            module.project_dir = Some(project_root.to_path_buf());
             module.java_compile_config = Some(union.clone());
             module.classpath = Some(union.compile_classpath.clone());
 
@@ -488,6 +491,7 @@ impl GradleBuild {
             );
         } else if let Some(root) = root_config {
             let module = data.modules.entry("<root>".to_string()).or_default();
+            module.project_dir = Some(project_root.to_path_buf());
             module.java_compile_config = Some(root.clone());
             module.classpath = Some(root.compile_classpath.clone());
         }
@@ -528,6 +532,7 @@ impl GradleBuild {
             &fingerprint,
             module_key,
         )? {
+            let cached_project_dir = cached.project_dir.clone();
             if let Some(cfg) = cached.java_compile_config {
                 let project_path_for_snapshot = project_path.unwrap_or(":");
                 let should_update_snapshot =
@@ -546,15 +551,18 @@ impl GradleBuild {
                     let project_dir = if project_path_for_snapshot == ":" {
                         Some(project_root.to_path_buf())
                     } else {
-                        infer_gradle_project_dir_from_java_compile_config(&cfg).or_else(|| {
-                            gradle_project_dir_cached(
-                                project_root,
-                                Some(project_path_for_snapshot),
-                                cache,
-                                &fingerprint,
-                            )
-                            .ok()
-                        })
+                        cached_project_dir
+                            .clone()
+                            .or_else(|| infer_gradle_project_dir_from_java_compile_config(&cfg))
+                            .or_else(|| {
+                                gradle_project_dir_cached(
+                                    project_root,
+                                    Some(project_path_for_snapshot),
+                                    cache,
+                                    &fingerprint,
+                                )
+                                .ok()
+                            })
                     };
                     if let Some(project_dir) = project_dir {
                         let _ = update_gradle_snapshot_java_compile_config(
@@ -593,12 +601,20 @@ impl GradleBuild {
                         _ => true,
                     };
                 if should_update_snapshot {
-                    if let Ok(project_dir) = gradle_project_dir_cached(
-                        project_root,
-                        Some(project_path_for_snapshot),
-                        cache,
-                        &fingerprint,
-                    ) {
+                    let project_dir = if project_path_for_snapshot == ":" {
+                        Some(project_root.to_path_buf())
+                    } else {
+                        cached_project_dir.clone().or_else(|| {
+                            gradle_project_dir_cached(
+                                project_root,
+                                Some(project_path_for_snapshot),
+                                cache,
+                                &fingerprint,
+                            )
+                            .ok()
+                        })
+                    };
+                    if let Some(project_dir) = project_dir {
                         let _ = update_gradle_snapshot_java_compile_config(
                             project_root,
                             &fingerprint,
@@ -626,6 +642,7 @@ impl GradleBuild {
                 &fingerprint,
                 module_key,
             )? {
+                let cached_project_dir = cached.project_dir.clone();
                 if let Some(cfg) = cached.java_compile_config {
                     let project_path_for_snapshot = project_path.unwrap_or(":");
                     let should_update_snapshot =
@@ -644,15 +661,18 @@ impl GradleBuild {
                         let project_dir = if project_path_for_snapshot == ":" {
                             Some(project_root.to_path_buf())
                         } else {
-                            infer_gradle_project_dir_from_java_compile_config(&cfg).or_else(|| {
-                                gradle_project_dir_cached(
-                                    project_root,
-                                    Some(project_path_for_snapshot),
-                                    cache,
-                                    &fingerprint,
-                                )
-                                .ok()
-                            })
+                            cached_project_dir
+                                .clone()
+                                .or_else(|| infer_gradle_project_dir_from_java_compile_config(&cfg))
+                                .or_else(|| {
+                                    gradle_project_dir_cached(
+                                        project_root,
+                                        Some(project_path_for_snapshot),
+                                        cache,
+                                        &fingerprint,
+                                    )
+                                    .ok()
+                                })
                         };
                         if let Some(project_dir) = project_dir {
                             let _ = update_gradle_snapshot_java_compile_config(
@@ -688,12 +708,20 @@ impl GradleBuild {
                             _ => true,
                         };
                     if should_update_snapshot {
-                        if let Ok(project_dir) = gradle_project_dir_cached(
-                            project_root,
-                            Some(project_path_for_snapshot),
-                            cache,
-                            &fingerprint,
-                        ) {
+                        let project_dir = if project_path_for_snapshot == ":" {
+                            Some(project_root.to_path_buf())
+                        } else {
+                            cached_project_dir.clone().or_else(|| {
+                                gradle_project_dir_cached(
+                                    project_root,
+                                    Some(project_path_for_snapshot),
+                                    cache,
+                                    &fingerprint,
+                                )
+                                .ok()
+                            })
+                        };
+                        if let Some(project_dir) = project_dir {
                             let _ = update_gradle_snapshot_java_compile_config(
                                 project_root,
                                 &fingerprint,
@@ -815,6 +843,7 @@ impl GradleBuild {
                 &fingerprint,
                 module_key,
                 |m| {
+                    m.project_dir = Some(project_root.to_path_buf());
                     m.java_compile_config = Some(union.clone());
                     m.classpath = Some(union.compile_classpath.clone());
                 },
@@ -867,6 +896,7 @@ impl GradleBuild {
             &fingerprint,
             module_key,
             |m| {
+                m.project_dir = Some(project_dir.clone());
                 m.java_compile_config = Some(config.clone());
                 // Keep populating the legacy classpath field for older readers.
                 m.classpath = Some(config.compile_classpath.clone());
