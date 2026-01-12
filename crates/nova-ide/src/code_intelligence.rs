@@ -4908,6 +4908,9 @@ pub(crate) fn core_completions(
     }
 
     // Java annotation element (attribute) completions inside `@Anno(...)`.
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
     if let Some(items) = annotation_attribute_completions(db, text, offset, prefix_start, &prefix) {
         if cancel.is_cancelled() {
             return Vec::new();
@@ -4935,6 +4938,9 @@ pub(crate) fn core_completions(
         return decorate_completions(&text_index, prefix_start, offset, items);
     }
 
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
     if let Some(items) = import_path_completions(db, text, offset, &prefix) {
         if cancel.is_cancelled() {
             return Vec::new();
@@ -4955,6 +4961,9 @@ pub(crate) fn core_completions(
         );
     }
 
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
     if let Some(ctx) = dot_completion_context(text, prefix_start) {
         if cancel.is_cancelled() {
             return Vec::new();
@@ -5040,11 +5049,16 @@ pub(crate) fn core_completions(
         }
     }
 
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
     if let Some(items) = enum_case_label_completions(db, file, text, offset, prefix_start, &prefix)
     {
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
         return decorate_completions(&text_index, prefix_start, offset, items);
     }
-
     if let Some(kind) = type_position_completion_kind(text, prefix_start, &prefix) {
         if cancel.is_cancelled() {
             return Vec::new();
@@ -5061,12 +5075,15 @@ pub(crate) fn core_completions(
     if cancel.is_cancelled() {
         return Vec::new();
     }
-    decorate_completions(
-        &text_index,
-        prefix_start,
-        offset,
-        general_completions(db, file, offset, prefix_start, &prefix),
-    )
+    let items = general_completions(db, file, offset, prefix_start, &prefix);
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+    let out = decorate_completions(&text_index, prefix_start, offset, items);
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+    out
 }
 
 #[cfg(test)]
