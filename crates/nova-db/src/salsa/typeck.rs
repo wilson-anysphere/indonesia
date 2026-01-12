@@ -5183,7 +5183,8 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     }
                 } else {
                     let env_ro: &dyn TypeEnv = &*loader.store;
-                    if cast_conversion(env_ro, &from, &to).is_none() {
+                    match cast_conversion(env_ro, &from, &to) {
+                        None => {
                         let from = format_type(env_ro, &from);
                         let to_display = format_type(env_ro, &to);
                         self.diagnostics.push(Diagnostic::error(
@@ -5195,10 +5196,28 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             ty: Type::Error,
                             is_type_ref: false,
                         }
-                    } else {
-                        ExprInfo {
-                            ty: to,
-                            is_type_ref: false,
+                        }
+                        Some(conv) => {
+                            // Surface unchecked/raw-cast warnings even though the cast typechecks.
+                            for warning in conv.warnings {
+                                if let TypeWarning::Unchecked(reason) = warning {
+                                    let reason = match reason {
+                                        UncheckedReason::RawConversion => "raw conversion",
+                                        UncheckedReason::UncheckedCast => "cast",
+                                        UncheckedReason::UncheckedVarargs => "varargs",
+                                    };
+                                    self.diagnostics.push(Diagnostic::warning(
+                                        "unchecked",
+                                        format!("unchecked {reason}"),
+                                        Some(*range),
+                                    ));
+                                }
+                            }
+
+                            ExprInfo {
+                                ty: to,
+                                is_type_ref: false,
+                            }
                         }
                     }
                 }

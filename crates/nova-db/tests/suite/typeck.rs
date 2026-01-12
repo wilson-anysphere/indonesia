@@ -394,6 +394,24 @@ class C {
 }
 
 #[test]
+fn unchecked_cast_emits_warning() {
+    let src = r#"
+class C {
+    void m(Object o) {
+        java.util.List<String> xs = (java.util.List<String>) o;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.severity == Severity::Warning && d.code.as_ref() == "unchecked"),
+        "expected an unchecked warning diagnostic, got {diags:?}"
+    );
+}
+
+#[test]
 fn synchronized_on_primitive_is_error() {
     let src = r#"
 class C {
