@@ -780,7 +780,8 @@ pub fn parse_decompiled_uri(uri: &str) -> Option<ParsedDecompiledUri> {
 /// This is a small compatibility shim for callers that still produce legacy
 /// `nova-decompile:///...` URIs.
 ///
-/// - If `uri` is already a canonical `nova:///decompiled/...` URI, it is returned as-is.
+/// - If `uri` is already a canonical `nova:///decompiled/...` URI, it is returned in
+///   canonicalized form (the hash and binary name may be normalized).
 /// - If `uri` is a legacy `nova-decompile:///...` URI, it is upgraded to the canonical
 ///   URI using `classfile_bytes` to compute the content hash.
 pub fn canonicalize_decompiled_uri(uri: &str, classfile_bytes: &[u8]) -> Option<String> {
