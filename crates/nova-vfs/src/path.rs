@@ -643,6 +643,40 @@ mod tests {
         }
     }
 
+    #[test]
+    fn local_paths_clamp_dotdot_at_root() {
+        #[cfg(not(windows))]
+        {
+            let local = VfsPath::local("/a/../../b.java");
+            let uri = VfsPath::uri("file:///b.java");
+            assert_eq!(local, uri);
+        }
+
+        #[cfg(windows)]
+        {
+            let local = VfsPath::local(r"C:\a\..\..\b.java");
+            let uri = VfsPath::uri("file:///C:/b.java");
+            assert_eq!(local, uri);
+        }
+    }
+
+    #[test]
+    fn local_paths_remove_dot_segments() {
+        #[cfg(not(windows))]
+        {
+            let local = VfsPath::local("/a/./b/./c.java");
+            let uri = VfsPath::uri("file:///a/b/c.java");
+            assert_eq!(local, uri);
+        }
+
+        #[cfg(windows)]
+        {
+            let local = VfsPath::local(r"C:\a\.\b\.\c.java");
+            let uri = VfsPath::uri("file:///C:/a/b/c.java");
+            assert_eq!(local, uri);
+        }
+    }
+
     #[cfg(windows)]
     #[test]
     fn local_paths_normalize_drive_letter_case() {
