@@ -1085,7 +1085,6 @@ where
             actions.extend(type_mismatch_quick_fixes(
                 source,
                 &uri,
-                &cancel,
                 span,
                 &diagnostics,
             ));

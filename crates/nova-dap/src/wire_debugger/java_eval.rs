@@ -965,35 +965,26 @@ fn parse_stage_decl_line(line: &str) -> Option<StageDecl> {
         return None;
     }
 
-    if trimmed.contains(" terminal(")
-        || trimmed.contains("\tterminal(")
-        || trimmed.contains(" terminal (")
-    {
+    // Only consider the method *signature* (everything before `{`). Otherwise we can get false
+    // positives when user expressions contain e.g. `terminal(...)`.
+    let header = trimmed.split_once('{').map(|(h, _)| h).unwrap_or(trimmed);
+
+    // Parse the method name as the identifier immediately preceding the first `(`.
+    let open_paren = header.find('(')?;
+    let before_paren = header[..open_paren].trim_end();
+    let method_name = before_paren.split_whitespace().last()?;
+
+    if method_name == "terminal" {
         return Some(StageDecl::Terminal);
     }
-
-    // Look for the stage method name.
-    // Examples:
-    //   public static Object stage0(...)
-    //   public static void stage12(...)
-    let stage_pos = trimmed.find(" stage")?;
-    let after = trimmed[stage_pos + " stage".len()..].trim_start();
-
-    let digits_end = after
-        .find(|ch: char| !ch.is_ascii_digit())
-        .unwrap_or(after.len());
-    if digits_end == 0 {
-        return None;
-    }
-    let digits = &after[..digits_end];
-    let stage = digits.parse::<usize>().ok()?;
-
-    let rest = after[digits_end..].trim_start();
-    if !rest.starts_with('(') {
-        return None;
+    if let Some(suffix) = method_name.strip_prefix("stage") {
+        if !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit()) {
+            let stage = suffix.parse::<usize>().ok()?;
+            return Some(StageDecl::Stage(stage));
+        }
     }
 
-    Some(StageDecl::Stage(stage))
+    None
 }
 
 fn stream_eval_compile_hints(javac_output: &str) -> Vec<String> {
@@ -1219,6 +1210,32 @@ mod tests {
         assert!(
             message.contains("Stage: source sample"),
             "expected stage attribution despite colon in message:\n{message}"
+        );
+    }
+
+    #[test]
+    fn stream_eval_stage_detection_does_not_confuse_terminal_calls_in_expressions() {
+        let source_path = Path::new("/tmp/NovaStreamEval_Test.java");
+        let source = concat!(
+            "public final class NovaStreamEval_Test {\n",
+            "  public static Object stage0(Object x) { return x.toString().terminal(); }\n",
+            "}\n",
+        );
+
+        let javac_err = crate::hot_swap::CompileError::new(
+            "/tmp/NovaStreamEval_Test.java:2:1: error: cannot find symbol",
+        );
+        let message = format_stream_eval_compile_failure(
+            source_path,
+            source,
+            &[String::from("x.toString().terminal()")],
+            None,
+            &javac_err,
+        );
+
+        assert!(
+            message.contains("Stage: source sample"),
+            "expected stage0 to be treated as source sample, not terminal:\n{message}"
         );
     }
 }
