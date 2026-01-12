@@ -5,12 +5,11 @@ use std::sync::Arc;
 use nova_cache::normalize_rel_path;
 use nova_classpath::{ClasspathEntry, ClasspathIndex, IndexOptions};
 use nova_core::ClassId;
-use nova_jdk::JdkIndex;
+use nova_jdk::{JdkIndex, BUILTIN_JDK_BINARY_NAMES};
 use nova_project::{
     JavaConfig, JavaLanguageLevel, JpmsModuleRoot, Module, ProjectConfig, SourceRoot,
     WorkspaceModuleConfig, WorkspaceProjectModel,
 };
-use nova_types::MINIMAL_JDK_BINARY_NAMES;
 use thiserror::Error;
 use walkdir::WalkDir;
 
@@ -368,9 +367,9 @@ impl WorkspaceLoader {
             })
             .unwrap_or_default();
 
-        // Optional: seed a small, stable set of JDK names that are guaranteed to exist in
-        // `TypeStore::with_minimal_jdk()` so semantic consumers can always obtain a `ClassId` for
-        // core JDK types.
+        // Optional: seed a small, stable set of core JDK binary names (shared with the built-in
+        // `nova-jdk` index) so semantic consumers can always obtain a `ClassId` for common JDK
+        // types without indexing a full on-disk JDK.
         //
         // We intentionally avoid enumerating all JDK classes here: real JDKs can contain tens of
         // thousands of types, and the host-managed registry is monotonic across the process
@@ -378,7 +377,7 @@ impl WorkspaceLoader {
         for name in source_names
             .into_iter()
             .chain(classpath_names)
-            .chain(MINIMAL_JDK_BINARY_NAMES.iter().copied().map(String::from))
+            .chain(BUILTIN_JDK_BINARY_NAMES.iter().copied().map(String::from))
         {
             let key = (project, name);
             if self.class_ids.contains_key(&key) {

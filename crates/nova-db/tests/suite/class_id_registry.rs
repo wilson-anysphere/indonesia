@@ -243,3 +243,65 @@ fn class_ids_survive_salsa_memo_eviction() {
         );
     });
 }
+
+#[test]
+fn core_jdk_class_ids_are_seeded_and_stable() {
+    let root = fixture_root("maven-multi");
+    assert!(root.is_dir(), "fixture missing: {}", root.display());
+
+    let db = Database::new();
+    let mut loader = WorkspaceLoader::new();
+    let mut alloc = file_id_allocator();
+    loader.load(&db, &root, &mut alloc).expect("load workspace");
+
+    let app_project = loader
+        .project_id_for_module("maven:com.example:app")
+        .expect("app project");
+
+    let names = ["java.lang.Object", "java.util.Map", "java.util.Map$Entry"];
+
+    let ids_before: Vec<_> = db.with_snapshot(|snap| {
+        names
+            .iter()
+            .map(|&name| {
+                snap.class_id_for_name(app_project, Arc::from(name))
+                    .unwrap_or_else(|| panic!("expected seeded ClassId for {name}"))
+            })
+            .collect()
+    });
+
+    loader.reload(&db, &[], &mut alloc).expect("reload");
+
+    let ids_after_reload: Vec<_> = db.with_snapshot(|snap| {
+        names
+            .iter()
+            .map(|&name| {
+                snap.class_id_for_name(app_project, Arc::from(name))
+                    .unwrap_or_else(|| panic!("expected ClassId for {name} after reload"))
+            })
+            .collect()
+    });
+    assert_eq!(
+        ids_before, ids_after_reload,
+        "seeded JDK ids should remain stable across reload"
+    );
+
+    db.evict_salsa_memos(MemoryPressure::Critical);
+
+    db.with_snapshot(|snap| {
+        for (&name, &id_before) in names.iter().zip(ids_before.iter()) {
+            let id_after_evict = snap
+                .class_id_for_name(app_project, Arc::from(name))
+                .unwrap_or_else(|| panic!("expected ClassId for {name} after eviction"));
+            assert_eq!(
+                id_before, id_after_evict,
+                "seeded JDK ids should survive Salsa memo eviction"
+            );
+
+            assert_eq!(
+                snap.class_name_for_id(app_project, id_after_evict).as_deref(),
+                Some(name)
+            );
+        }
+    });
+}

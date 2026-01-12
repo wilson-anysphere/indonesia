@@ -8,6 +8,7 @@
 //! For `nova-types` unit tests, this crate also exposes [`minimal_jdk`], a tiny
 //! semantic class/type model of a few key JDK types.
 
+mod builtin_names;
 mod ct_sym;
 mod ct_sym_index;
 mod discovery;
@@ -35,6 +36,7 @@ pub use discovery::{JdkDiscoveryError, JdkInstallation};
 pub use index::IndexingStats;
 pub use index::JdkIndexError;
 pub use stub::{JdkClassStub, JdkFieldStub, JdkMethodStub};
+pub use builtin_names::BUILTIN_JDK_BINARY_NAMES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JdkIndexBacking {
@@ -147,48 +149,14 @@ impl JdkIndex {
     pub fn new() -> Self {
         let mut this = Self::default();
 
-        // java.lang
-        this.add_type("java.lang", "Object");
-        this.add_type("java.lang", "Throwable");
-        this.add_type("java.lang", "Class");
-        this.add_type("java.lang", "Iterable");
-        this.add_type("java.lang", "Runnable");
-        this.add_type("java.lang", "Exception");
-        this.add_type("java.lang", "String");
-        this.add_type("java.lang", "Integer");
-        this.add_type("java.lang", "Number");
-        this.add_type("java.lang", "Boolean");
-        this.add_type("java.lang", "Byte");
-        this.add_type("java.lang", "Short");
-        this.add_type("java.lang", "Character");
-        this.add_type("java.lang", "Long");
-        this.add_type("java.lang", "Float");
-        this.add_type("java.lang", "Double");
-        this.add_type("java.lang", "System");
-        this.add_type("java.lang", "Math");
-        this.add_type("java.lang", "Cloneable");
-
-        // java.io
-        this.add_type("java.io", "Serializable");
-
-        // java.io
-        this.add_type("java.io", "PrintStream");
-
-        // java.util
-        this.add_type("java.util", "List");
-        this.add_type("java.util", "ArrayList");
-        this.add_type("java.util", "Collections");
-        // Keep a few nested-type examples around so resolver tests can validate
-        // `Outer.Inner` → `Outer$Inner` translation without relying on an
-        // on-disk JDK index.
-        this.add_type("java.util", "Map");
-        this.add_type("java.util", "Map$Entry");
-
-        // java.util.function
-        this.add_type("java.util.function", "Function");
-        this.add_type("java.util.function", "Supplier");
-        this.add_type("java.util.function", "Consumer");
-        this.add_type("java.util.function", "Predicate");
+        for &binary_name in BUILTIN_JDK_BINARY_NAMES {
+            // All entries are expected to be in binary-name form like `java.util.List` (including
+            // nested types like `java.util.Map$Entry`).
+            let (package, name) = binary_name
+                .rsplit_once('.')
+                .expect("built-in JDK type binary names should be qualified");
+            this.add_type(package, name);
+        }
 
         // A tiny set of static members for static-import testing.
         this.add_static_member("java.lang.Math", "max", StaticMemberKind::Method);
