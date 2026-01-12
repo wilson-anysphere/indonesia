@@ -1170,7 +1170,7 @@ fn parse_return_mismatch(message: &str) -> Option<(String, String)> {
     Some((expected.trim().to_string(), found.trim().to_string()))
 }
 
-fn is_simple_cast_expr(expr: &str) -> bool {
+pub(crate) fn is_simple_cast_expr(expr: &str) -> bool {
     static IDENT_RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"^[A-Za-z_$][A-Za-z0-9_$]*$").expect("valid regex"));
     // Minimal MVP numeric literal support: decimal integers/floats (with optional underscores).

@@ -1460,20 +1460,10 @@ fn type_mismatch_quick_fixes(
     diagnostics: &[Diagnostic],
 ) -> Vec<lsp_types::CodeActionOrCommand> {
     fn cast_replacement(expected: &str, expr: &str) -> String {
-        // Java casts apply to a *unary* expression. Without parentheses, `({T}) a + b` parses as
-        // `((T) a) + b` and does not cast the whole expression.
-        let needs_parens = expr.chars().any(|c| c.is_whitespace())
-            || [
-                "+", "-", "*", "/", "%", "?", ":", "&&", "||", "==", "!=", "<", ">", "=", "&", "|",
-                "^",
-            ]
-            .into_iter()
-            .any(|op| expr.contains(op));
-
-        if needs_parens {
-            format!("({expected}) ({expr})")
-        } else {
+        if crate::code_action::is_simple_cast_expr(expr) {
             format!("({expected}) {expr}")
+        } else {
+            format!("({expected}) ({expr})")
         }
     }
     fn parse_type_mismatch(message: &str) -> Option<(String, String)> {
@@ -1566,20 +1556,10 @@ fn type_mismatch_quick_fixes_from_context(
     context_diagnostics: &[lsp_types::Diagnostic],
 ) -> Vec<lsp_types::CodeActionOrCommand> {
     fn cast_replacement(expected: &str, expr: &str) -> String {
-        // Java casts apply to a *unary* expression. Without parentheses, `({T}) a + b` parses as
-        // `((T) a) + b` and does not cast the whole expression.
-        let needs_parens = expr.chars().any(|c| c.is_whitespace())
-            || [
-                "+", "-", "*", "/", "%", "?", ":", "&&", "||", "==", "!=", "<", ">", "=", "&", "|",
-                "^",
-            ]
-            .into_iter()
-            .any(|op| expr.contains(op));
-
-        if needs_parens {
-            format!("({expected}) ({expr})")
-        } else {
+        if crate::code_action::is_simple_cast_expr(expr) {
             format!("({expected}) {expr}")
+        } else {
+            format!("({expected}) ({expr})")
         }
     }
     fn parse_type_mismatch(message: &str) -> Option<(String, String)> {
