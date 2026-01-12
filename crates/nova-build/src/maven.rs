@@ -1326,6 +1326,11 @@ fn collect_maven_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf>
                     out.push(config);
                 }
 
+                let jvm_config = path.join("jvm.config");
+                if jvm_config.is_file() {
+                    out.push(jvm_config);
+                }
+
                 let extensions = path.join("extensions.xml");
                 if extensions.is_file() {
                     out.push(extensions);

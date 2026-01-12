@@ -93,6 +93,32 @@ fn fingerprint_changes_on_maven_maven_config_edit() {
 }
 
 #[test]
+fn fingerprint_changes_on_maven_jvm_config_edit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+
+    std::fs::write(
+        root.join("pom.xml"),
+        "<project><modelVersion>4.0.0</modelVersion></project>",
+    )
+    .unwrap();
+
+    let mvn_dir = root.join(".mvn");
+    std::fs::create_dir_all(&mvn_dir).unwrap();
+    let config = mvn_dir.join("jvm.config");
+    std::fs::write(&config, "-Xmx2g\n").unwrap();
+
+    let fp1 =
+        BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap()).unwrap();
+    std::fs::write(&config, "-Xmx4g\n").unwrap();
+    let fp2 =
+        BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap()).unwrap();
+
+    assert_ne!(fp1.digest, fp2.digest);
+}
+
+#[test]
 fn fingerprint_changes_on_maven_extensions_xml_edit() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("proj");
