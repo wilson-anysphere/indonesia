@@ -989,6 +989,46 @@ fn split_top_level(text: &str, sep: u8) -> Vec<String> {
         .collect()
 }
 
+fn looks_like_generic_angle_open(text: &str, lt_pos: usize) -> bool {
+    let bytes = text.as_bytes();
+    if lt_pos == 0 {
+        return false;
+    }
+
+    // Find the identifier immediately preceding `<` (skipping whitespace).
+    let mut end = lt_pos;
+    while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    if end == 0 {
+        return false;
+    }
+
+    let mut start = end;
+    while start > 0 && is_ident_continue(bytes[start - 1]) {
+        start -= 1;
+    }
+    if start == end || !is_ident_start(bytes[start]) {
+        return false;
+    }
+    let token = &text[start..end];
+
+    // Best-effort heuristic to avoid treating `<` comparisons (e.g. `a < b`) as generic
+    // delimiters. We only consider `<` to open a generic argument list if the preceding token
+    // looks like a type name (CamelCase) or a type variable (`T`).
+    //
+    // This intentionally accepts false negatives for unusual code styles (e.g. all-uppercase
+    // generic type names) in favor of not breaking statement splitting for common comparisons.
+    let mut chars = token.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_uppercase() {
+        return false;
+    }
+    token.len() == 1 || token.chars().any(|c| c.is_ascii_lowercase())
+}
+
 fn split_top_level_ranges(text: &str, sep: u8) -> Vec<(usize, usize)> {
     let bytes = text.as_bytes();
     let mut out: Vec<(usize, usize)> = Vec::new();
@@ -1057,9 +1097,17 @@ fn split_top_level_ranges(text: &str, sep: u8) -> Vec<(usize, usize)> {
             b']' => depth_brack -= 1,
             b'{' => depth_brace += 1,
             b'}' => depth_brace -= 1,
-            b'<' => depth_angle += 1,
+            b'<' => {
+                if depth_paren == 0
+                    && depth_brack == 0
+                    && depth_brace == 0
+                    && looks_like_generic_angle_open(text, i)
+                {
+                    depth_angle += 1;
+                }
+            }
             b'>' => {
-                if depth_angle > 0 {
+                if depth_angle > 0 && depth_paren == 0 && depth_brack == 0 && depth_brace == 0 {
                     depth_angle -= 1;
                 }
             }
@@ -1145,9 +1193,17 @@ fn find_top_level_byte(text: &str, needle: u8) -> Option<usize> {
             b']' => depth_brack -= 1,
             b'{' => depth_brace += 1,
             b'}' => depth_brace -= 1,
-            b'<' => depth_angle += 1,
+            b'<' => {
+                if depth_paren == 0
+                    && depth_brack == 0
+                    && depth_brace == 0
+                    && looks_like_generic_angle_open(text, i)
+                {
+                    depth_angle += 1;
+                }
+            }
             b'>' => {
-                if depth_angle > 0 {
+                if depth_angle > 0 && depth_paren == 0 && depth_brack == 0 && depth_brace == 0 {
                     depth_angle -= 1;
                 }
             }

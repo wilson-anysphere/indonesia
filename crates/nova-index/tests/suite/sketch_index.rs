@@ -87,6 +87,7 @@ fn fields_are_indexed_including_multiple_declarators() {
         "A.java".to_string(),
         r#"class A {
     int a, b = 1;
+    boolean lt = 1 < 2, ge = true;
     private String name;
 
     void method() {
@@ -104,10 +105,12 @@ fn fields_are_indexed_including_multiple_declarators() {
         .iter()
         .filter(|sym| sym.kind == SymbolKind::Field && sym.container.as_deref() == Some("A"))
         .collect();
-    assert_eq!(fields.len(), 3, "expected three fields in class A");
+    assert_eq!(fields.len(), 5, "expected five fields in class A");
 
     let a = fields.iter().find(|f| f.name == "a").expect("field a");
     let b = fields.iter().find(|f| f.name == "b").expect("field b");
+    let lt = fields.iter().find(|f| f.name == "lt").expect("field lt");
+    let ge = fields.iter().find(|f| f.name == "ge").expect("field ge");
     let name = fields
         .iter()
         .find(|f| f.name == "name")
@@ -115,12 +118,19 @@ fn fields_are_indexed_including_multiple_declarators() {
 
     assert_eq!(&text[a.name_range.start..a.name_range.end], "a");
     assert_eq!(&text[b.name_range.start..b.name_range.end], "b");
+    assert_eq!(&text[lt.name_range.start..lt.name_range.end], "lt");
+    assert_eq!(&text[ge.name_range.start..ge.name_range.end], "ge");
     assert_eq!(&text[name.name_range.start..name.name_range.end], "name");
 
     assert_eq!(a.decl_range, b.decl_range);
     assert_eq!(
         &text[a.decl_range.start..a.decl_range.end],
         "    int a, b = 1;"
+    );
+    assert_eq!(lt.decl_range, ge.decl_range);
+    assert_eq!(
+        &text[lt.decl_range.start..lt.decl_range.end],
+        "    boolean lt = 1 < 2, ge = true;"
     );
     assert_eq!(
         &text[name.decl_range.start..name.decl_range.end],
