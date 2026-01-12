@@ -480,6 +480,50 @@ hello \{"#;
     assert_eq!(last_non_eof.kind, SyntaxKind::Error);
     assert_eq!(last_non_eof.range.start as usize, input.len());
     assert_eq!(last_non_eof.range.end as usize, input.len());
+
+    // Unterminated *outer* interpolation with a completed nested template.
+    //
+    // This exercises the lexer's mode stack: the nested template is popped, leaving us still
+    // inside the outer interpolation. The EOF handler should therefore report an unterminated
+    // interpolation (not an unterminated template).
+    let input = r#"STR."outer \{ STR."inner""#;
+    let (tokens, errors) = lex_with_errors(input);
+    assert_lossless(input, &tokens);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message == "unterminated string template interpolation"),
+        "expected unterminated interpolation error, got: {errors:?}"
+    );
+    let start_count = tokens
+        .iter()
+        .filter(|t| t.kind == SyntaxKind::StringTemplateStart)
+        .count();
+    assert_eq!(
+        start_count, 2,
+        "expected two template starts (outer + nested), got: {tokens:?}"
+    );
+
+    // Unterminated *nested* template inside an outer interpolation. The EOF handler should report
+    // an unterminated template (not an interpolation), since the innermost unclosed template has
+    // not started an interpolation itself.
+    let input = r#"STR."outer \{ STR."inner"#;
+    let (tokens, errors) = lex_with_errors(input);
+    assert_lossless(input, &tokens);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message == "unterminated string template"),
+        "expected unterminated template error, got: {errors:?}"
+    );
+    let start_count = tokens
+        .iter()
+        .filter(|t| t.kind == SyntaxKind::StringTemplateStart)
+        .count();
+    assert_eq!(
+        start_count, 2,
+        "expected two template starts (outer + nested), got: {tokens:?}"
+    );
 }
 
 #[test]
