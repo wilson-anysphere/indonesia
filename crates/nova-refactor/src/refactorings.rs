@@ -206,10 +206,21 @@ pub fn rename(
             }
 
             let new_name = params.new_name;
-            let mut changes = vec![SemanticChange::Rename {
-                symbol: params.symbol,
-                new_name: new_name.clone(),
-            }];
+            let mut symbols = db.method_override_chain(params.symbol);
+            if symbols.is_empty() {
+                symbols.push(params.symbol);
+            }
+
+            // Dedup defensively in case the database returns duplicates.
+            let mut seen = HashSet::new();
+            let mut changes = symbols
+                .into_iter()
+                .filter(|sym| seen.insert(*sym))
+                .map(|symbol| SemanticChange::Rename {
+                    symbol,
+                    new_name: new_name.clone(),
+                })
+                .collect::<Vec<_>>();
 
             // Java annotation shorthand `@Anno(expr)` is desugared as `@Anno(value = expr)`. If the
             // annotation element method `value()` is renamed, shorthand usages must be rewritten to

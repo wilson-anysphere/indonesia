@@ -212,6 +212,17 @@ pub trait RefactorDatabase {
         None
     }
 
+    /// Return the full override/implementation chain for a method symbol.
+    ///
+    /// The returned list should include `symbol` itself. Implementations are free to return
+    /// an empty list if the symbol is unknown or not a method.
+    ///
+    /// Note: the default implementation returns just `symbol`, which preserves the existing
+    /// behaviour of renaming a single method declaration.
+    fn method_override_chain(&self, symbol: SymbolId) -> Vec<SymbolId> {
+        vec![symbol]
+    }
+
     /// Best-effort visibility check.
     ///
     /// The default implementation assumes visibility is preserved.

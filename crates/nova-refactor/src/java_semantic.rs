@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use nova_core::{Name, QualifiedName};
@@ -20,7 +20,8 @@ use nova_syntax::{ast, AstNode};
 
 use crate::edit::{FileId, TextRange};
 use crate::semantic::{
-    MethodSignature, RefactorDatabase, Reference, SymbolDefinition, TypeSymbolInfo,
+    MethodSignature as SemanticMethodSignature, RefactorDatabase, Reference, SymbolDefinition,
+    TypeSymbolInfo,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -46,12 +47,24 @@ pub enum JavaSymbolKind {
     Parameter,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct OverrideMethodSignature {
+    name: String,
+    param_types: Vec<String>,
+}
+
+impl OverrideMethodSignature {
+    fn param_count(&self) -> usize {
+        self.param_types.len()
+    }
+}
+
 #[derive(Clone, Debug)]
 struct SymbolData {
     def: SymbolDefinition,
     kind: JavaSymbolKind,
     type_info: Option<TypeInfo>,
-    method_signature: Option<MethodSignature>,
+    method_signature: Option<SemanticMethodSignature>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -79,7 +92,7 @@ struct SymbolCandidate {
     scope: u32,
     kind: JavaSymbolKind,
     type_info: Option<TypeInfo>,
-    method_signature: Option<MethodSignature>,
+    method_signature: Option<SemanticMethodSignature>,
 }
 
 #[derive(Clone, Debug)]
@@ -161,6 +174,9 @@ pub struct RefactorJavaDatabase {
     snap: nova_db::salsa::Snapshot,
 
     scopes: HashMap<DbFileId, ScopeBuildResult>,
+    workspace_def_map: WorkspaceDefMap,
+    type_supertypes: HashMap<ItemId, Vec<ItemId>>,
+    type_subtypes: HashMap<ItemId, Vec<ItemId>>,
     scope_interner: ScopeInterner,
 
     symbols: Vec<SymbolData>,
@@ -170,6 +186,9 @@ pub struct RefactorJavaDatabase {
 
     resolution_to_symbol: HashMap<ResolutionKey, SymbolId>,
     top_level_types: HashMap<(Option<String>, String), SymbolId>,
+    method_to_symbol: HashMap<MethodId, SymbolId>,
+    method_signatures: HashMap<MethodId, OverrideMethodSignature>,
+    method_owners: HashMap<MethodId, ItemId>,
 }
 
 impl RefactorJavaDatabase {
@@ -224,11 +243,19 @@ impl RefactorJavaDatabase {
             workspace_def_map.extend_from_def_map(&def_map);
         }
 
+        // Shared resolver used for both reference collection and hierarchy building.
+        let jdk = nova_jdk::JdkIndex::new();
+        let resolver = Resolver::new(&jdk)
+            .with_classpath(&workspace_def_map)
+            .with_workspace(&workspace_def_map);
+
         let mut scope_interner = ScopeInterner::default();
         let mut scopes: HashMap<DbFileId, ScopeBuildResult> = HashMap::new();
         let mut candidates: Vec<SymbolCandidate> = Vec::new();
         let mut method_groups: Vec<MethodGroupInfo> = Vec::new();
         let mut type_constructor_refs: HashMap<ItemId, Vec<(FileId, TextRange)>> = HashMap::new();
+        let mut method_signatures: HashMap<MethodId, OverrideMethodSignature> = HashMap::new();
+        let mut method_owners: HashMap<MethodId, ItemId> = HashMap::new();
 
         // Build per-file scope graphs + symbol definitions.
         for (file, file_id) in &file_ids {
@@ -282,6 +309,8 @@ impl RefactorJavaDatabase {
                     &mut candidates,
                     &mut method_groups,
                     &mut type_constructor_refs,
+                    &mut method_signatures,
+                    &mut method_owners,
                 );
             }
 
@@ -491,6 +520,13 @@ impl RefactorJavaDatabase {
             scopes.insert(*file_id, scope_result);
         }
 
+        let (type_supertypes, type_subtypes) = build_type_hierarchy(
+            &file_ids,
+            &item_trees,
+            &scopes,
+            &resolver,
+        );
+
         candidates.sort_by(|a, b| {
             a.file
                 .cmp(&b.file)
@@ -552,6 +588,13 @@ impl RefactorJavaDatabase {
             }
         }
 
+        let mut method_to_symbol: HashMap<MethodId, SymbolId> = HashMap::new();
+        for (key, symbol) in &resolution_to_symbol {
+            if let ResolutionKey::Method(method_id) = key {
+                method_to_symbol.insert(*method_id, *symbol);
+            }
+        }
+
         // Treat constructor declarations as references to their enclosing type so `rename` on a
         // class updates `Foo()` -> `Bar()` as well.
         for (ty, refs) in &type_constructor_refs {
@@ -568,11 +611,6 @@ impl RefactorJavaDatabase {
         }
 
         // Collect reference spans by walking HIR bodies and resolving them via the scope graph.
-        let jdk = nova_jdk::JdkIndex::new();
-        let resolver = Resolver::new(&jdk)
-            .with_classpath(&workspace_def_map)
-            .with_workspace(&workspace_def_map);
-
         // Precompute a best-effort inheritance view and type/member maps used for receiver-aware
         // method resolution (e.g. `super::m`, `this::m`).
         let inheritance = snap.project_indexes(project).inheritance.clone();
@@ -591,7 +629,6 @@ impl RefactorJavaDatabase {
                 );
             }
         }
-
         for (file, file_id) in &file_ids {
             let Some(scope_result) = scopes.get(file_id) else {
                 continue;
@@ -767,6 +804,9 @@ impl RefactorJavaDatabase {
             db_files: file_ids,
             snap,
             scopes,
+            workspace_def_map,
+            type_supertypes,
+            type_subtypes,
             scope_interner,
             symbols,
             references,
@@ -774,6 +814,9 @@ impl RefactorJavaDatabase {
             name_expr_scopes,
             resolution_to_symbol,
             top_level_types,
+            method_to_symbol,
+            method_signatures,
+            method_owners,
         }
     }
 
@@ -955,6 +998,8 @@ fn collect_type_candidates(
     candidates: &mut Vec<SymbolCandidate>,
     method_groups: &mut Vec<MethodGroupInfo>,
     type_constructor_refs: &mut HashMap<ItemId, Vec<(FileId, TextRange)>>,
+    method_signatures: &mut HashMap<MethodId, OverrideMethodSignature>,
+    method_owners: &mut HashMap<MethodId, ItemId>,
 ) {
     // Type declaration.
     let (name, name_range) = item_name_and_range(tree, item);
@@ -1006,6 +1051,18 @@ fn collect_type_candidates(
             }
             Member::Method(method_id) => {
                 let method = tree.method(*method_id);
+                method_signatures.insert(
+                    *method_id,
+                    OverrideMethodSignature {
+                        name: method.name.clone(),
+                        param_types: method
+                            .params
+                            .iter()
+                            .map(|p| p.ty.trim().to_string())
+                            .collect(),
+                    },
+                );
+                method_owners.insert(*method_id, item);
                 methods_by_name
                     .entry(method.name.clone())
                     .or_default()
@@ -1036,6 +1093,8 @@ fn collect_type_candidates(
                     candidates,
                     method_groups,
                     type_constructor_refs,
+                    method_signatures,
+                    method_owners,
                 );
             }
             Member::Initializer(_) => {}
@@ -1062,12 +1121,12 @@ fn collect_type_candidates(
             scope: class_scope_interned,
             kind: JavaSymbolKind::Method,
             type_info: None,
-            method_signature: Some(MethodSignature {
+            method_signature: Some(SemanticMethodSignature {
                 param_types: tree
                     .method(representative)
                     .params
                     .iter()
-                    .map(|p| p.ty.clone())
+                    .map(|p| p.ty.trim().to_string())
                     .collect(),
             }),
         });
@@ -1079,6 +1138,144 @@ fn collect_type_candidates(
             decl_ranges: methods.iter().map(|(_, range)| *range).collect(),
         });
     }
+}
+
+fn parse_type_name_for_hierarchy(text: &str) -> Option<QualifiedName> {
+    let mut s = text.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    // Skip leading type annotations (`@Foo` / `@foo.Bar(...)`). We do not attempt to parse the
+    // full annotation grammar; we just drop the token up to the next whitespace.
+    loop {
+        let trimmed = s.trim_start();
+        if !trimmed.starts_with('@') {
+            s = trimmed;
+            break;
+        }
+        let Some(ws) = trimmed.find(|c: char| c.is_whitespace()) else {
+            return None;
+        };
+        s = &trimmed[ws..];
+    }
+
+    // Take the first whitespace-delimited token, then strip generics.
+    let token = s.split_whitespace().next().unwrap_or("");
+    let token = token.split('<').next().unwrap_or("").trim();
+    if token.is_empty() || token == "var" {
+        return None;
+    }
+
+    // Strip array/varargs suffixes.
+    let mut token = token;
+    while token.ends_with("[]") {
+        token = token.strip_suffix("[]").unwrap_or(token);
+    }
+    while token.ends_with("...") {
+        token = token.strip_suffix("...").unwrap_or(token);
+    }
+
+    // Replace `$` with `.` so binary nested names resolve as source-like nesting.
+    let token = token.replace('$', ".");
+    Some(QualifiedName::from_dotted(&token))
+}
+
+fn build_type_hierarchy(
+    file_ids: &BTreeMap<FileId, DbFileId>,
+    item_trees: &HashMap<DbFileId, Arc<nova_hir::item_tree::ItemTree>>,
+    scopes: &HashMap<DbFileId, ScopeBuildResult>,
+    resolver: &Resolver<'_>,
+) -> (HashMap<ItemId, Vec<ItemId>>, HashMap<ItemId, Vec<ItemId>>) {
+    fn collect_item(
+        item: ItemId,
+        decl_scope: nova_resolve::ScopeId,
+        tree: &nova_hir::item_tree::ItemTree,
+        scope_result: &ScopeBuildResult,
+        resolver: &Resolver<'_>,
+        type_supertypes: &mut HashMap<ItemId, Vec<ItemId>>,
+        type_subtypes: &mut HashMap<ItemId, Vec<ItemId>>,
+    ) {
+        let clause_types: Vec<&str> = match item {
+            ItemId::Class(id) => {
+                let class = tree.class(id);
+                class
+                    .extends
+                    .iter()
+                    .chain(class.implements.iter())
+                    .map(|s| s.as_str())
+                    .collect()
+            }
+            ItemId::Interface(id) => tree.interface(id).extends.iter().map(|s| s.as_str()).collect(),
+            ItemId::Enum(id) => tree.enum_(id).implements.iter().map(|s| s.as_str()).collect(),
+            ItemId::Record(id) => tree.record(id).implements.iter().map(|s| s.as_str()).collect(),
+            ItemId::Annotation(_) => Vec::new(),
+        };
+
+        for super_text in clause_types {
+            let Some(path) = parse_type_name_for_hierarchy(super_text) else {
+                continue;
+            };
+            let Some(TypeResolution::Source(super_item)) =
+                resolver.resolve_qualified_type_resolution_in_scope(
+                    &scope_result.scopes,
+                    decl_scope,
+                    &path,
+                )
+            else {
+                continue;
+            };
+
+            type_supertypes.entry(item).or_default().push(super_item);
+            type_subtypes.entry(super_item).or_default().push(item);
+        }
+
+        let Some(&class_scope) = scope_result.class_scopes.get(&item) else {
+            return;
+        };
+        for member in item_members(tree, item) {
+            let Member::Type(child) = member else {
+                continue;
+            };
+            let child_id = item_to_item_id(*child);
+            collect_item(
+                child_id,
+                class_scope,
+                tree,
+                scope_result,
+                resolver,
+                type_supertypes,
+                type_subtypes,
+            );
+        }
+    }
+
+    let mut type_supertypes: HashMap<ItemId, Vec<ItemId>> = HashMap::new();
+    let mut type_subtypes: HashMap<ItemId, Vec<ItemId>> = HashMap::new();
+
+    for (_file, db_file) in file_ids {
+        let Some(tree) = item_trees.get(db_file) else {
+            continue;
+        };
+        let Some(scope_result) = scopes.get(db_file) else {
+            continue;
+        };
+
+        for item in &tree.items {
+            let item_id = item_to_item_id(*item);
+            collect_item(
+                item_id,
+                scope_result.file_scope,
+                tree.as_ref(),
+                scope_result,
+                resolver,
+                &mut type_supertypes,
+                &mut type_subtypes,
+            );
+        }
+    }
+
+    (type_supertypes, type_subtypes)
 }
 
 impl RefactorDatabase for RefactorJavaDatabase {
@@ -1132,6 +1329,113 @@ impl RefactorDatabase for RefactorJavaDatabase {
     ) -> Option<SymbolId> {
         let pkg = package.filter(|p| !p.is_empty()).map(|p| p.to_string());
         self.top_level_types.get(&(pkg, name.to_string())).copied()
+    }
+
+    fn method_override_chain(&self, symbol: SymbolId) -> Vec<SymbolId> {
+        if self.symbol_kind(symbol) != Some(JavaSymbolKind::Method) {
+            return vec![symbol];
+        }
+
+        // This is a best-effort override chain implementation:
+        // - We group overloads by name in `resolution_to_symbol`, so a single symbol may represent
+        //   multiple `MethodId`s.
+        // - When matching overrides across types, we currently only consider method name +
+        //   parameter count (not full type-erased signature).
+        fn matching_methods_in_type(
+            db: &RefactorJavaDatabase,
+            owner: ItemId,
+            signature: &OverrideMethodSignature,
+        ) -> Vec<MethodId> {
+            let Some(def) = db.workspace_def_map.type_def(owner) else {
+                return Vec::new();
+            };
+            let Some(methods) = def.methods.get(&Name::from(signature.name.as_str())) else {
+                return Vec::new();
+            };
+
+            methods
+                .iter()
+                .filter_map(|method| {
+                    let method_id = method.id;
+                    let sig = db.method_signatures.get(&method_id)?;
+                    if sig.param_count() == signature.param_count() {
+                        Some(method_id)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        }
+
+        let mut out: HashSet<SymbolId> = HashSet::new();
+        out.insert(symbol);
+
+        // Resolve the set of method IDs covered by this symbol (potentially multiple overloads).
+        let method_ids: Vec<MethodId> = self
+            .method_to_symbol
+            .iter()
+            .filter_map(|(method_id, sym)| (*sym == symbol).then_some(*method_id))
+            .collect();
+        if method_ids.is_empty() {
+            return vec![symbol];
+        }
+
+        for method_id in method_ids {
+            let Some(owner) = self.method_owners.get(&method_id).copied() else {
+                continue;
+            };
+            let Some(signature) = self.method_signatures.get(&method_id).cloned() else {
+                continue;
+            };
+
+            // Walk up the inheritance chain (overridden methods).
+            let mut visited: HashSet<ItemId> = HashSet::new();
+            let mut queue: VecDeque<ItemId> = VecDeque::new();
+            if let Some(sups) = self.type_supertypes.get(&owner) {
+                queue.extend(sups.iter().copied());
+            }
+            while let Some(ty) = queue.pop_front() {
+                if !visited.insert(ty) {
+                    continue;
+                }
+
+                for method in matching_methods_in_type(self, ty, &signature) {
+                    if let Some(sym) = self.method_to_symbol.get(&method).copied() {
+                        out.insert(sym);
+                    }
+                }
+
+                if let Some(sups) = self.type_supertypes.get(&ty) {
+                    queue.extend(sups.iter().copied());
+                }
+            }
+
+            // Walk down the inheritance chain (overriding methods).
+            let mut visited: HashSet<ItemId> = HashSet::new();
+            let mut queue: VecDeque<ItemId> = VecDeque::new();
+            if let Some(subs) = self.type_subtypes.get(&owner) {
+                queue.extend(subs.iter().copied());
+            }
+            while let Some(ty) = queue.pop_front() {
+                if !visited.insert(ty) {
+                    continue;
+                }
+
+                for method in matching_methods_in_type(self, ty, &signature) {
+                    if let Some(sym) = self.method_to_symbol.get(&method).copied() {
+                        out.insert(sym);
+                    }
+                }
+
+                if let Some(subs) = self.type_subtypes.get(&ty) {
+                    queue.extend(subs.iter().copied());
+                }
+            }
+        }
+
+        let mut out: Vec<_> = out.into_iter().collect();
+        out.sort_by_key(|sym| sym.0);
+        out
     }
 
     fn resolve_name_in_scope(&self, scope: u32, name: &str) -> Option<SymbolId> {
@@ -1221,7 +1525,7 @@ impl RefactorDatabase for RefactorJavaDatabase {
         out
     }
 
-    fn method_signature(&self, symbol: SymbolId) -> Option<MethodSignature> {
+    fn method_signature(&self, symbol: SymbolId) -> Option<SemanticMethodSignature> {
         self.symbols
             .get(symbol.as_usize())
             .and_then(|s| s.method_signature.clone())
