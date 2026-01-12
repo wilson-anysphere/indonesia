@@ -2288,7 +2288,7 @@ fn parse_java_version_assignment(line: &str, key: &str) -> Option<JavaVersion> {
     JavaVersion::parse(rest)
 }
 
-const GRADLE_DEPENDENCY_CONFIGS: &str = r"(?:implementation|api|compile|runtime|compileOnly|compileOnlyApi|providedCompile|runtimeOnly|providedRuntime|testImplementation|testCompile|testRuntime|testRuntimeOnly|testCompileOnly|annotationProcessor|testAnnotationProcessor|kapt|kaptTest)";
+const GRADLE_DEPENDENCY_CONFIGS: &str = r"(?:implementation|api|compile|runtime|compileOnly|compileOnlyApi|providedCompile|runtimeOnly|providedRuntime|testImplementation|testCompile|testRuntime|testRuntimeOnly|testCompileOnly|annotationProcessor|testAnnotationProcessor|kapt|kaptTest|ksp|kspTest)";
 
 type GradleProperties = HashMap<String, String>;
 
@@ -2386,7 +2386,7 @@ fn resolve_gradle_properties_placeholder(
 /// - `runtimeOnly|runtime|providedRuntime` => `runtime`
 /// - `compileOnly|compileOnlyApi|providedCompile` => `provided`
 /// - `testImplementation|testRuntimeOnly|testCompileOnly|testCompile|testRuntime` => `test`
-/// - `annotationProcessor|testAnnotationProcessor|kapt|kaptTest` => `annotationProcessor`
+/// - `annotationProcessor|testAnnotationProcessor|kapt|kaptTest|ksp|kspTest` => `annotationProcessor`
 fn gradle_scope_from_configuration(configuration: &str) -> Option<&'static str> {
     let configuration = configuration.trim();
     if configuration.eq_ignore_ascii_case("implementation")
@@ -2423,6 +2423,8 @@ fn gradle_scope_from_configuration(configuration: &str) -> Option<&'static str> 
         || configuration.eq_ignore_ascii_case("testAnnotationProcessor")
         || configuration.eq_ignore_ascii_case("kapt")
         || configuration.eq_ignore_ascii_case("kaptTest")
+        || configuration.eq_ignore_ascii_case("ksp")
+        || configuration.eq_ignore_ascii_case("kspTest")
     {
         return Some("annotationProcessor");
     }
@@ -3856,6 +3858,8 @@ dependencies {
     testAnnotationProcessor("g9:a9:9")
     kapt("g10:a10:10")
     kaptTest("g11:a11:11")
+    ksp("g21:a21:21")
+    kspTest("g22:a22:22")
 
     // Groovy-style call form (no parens)
     implementation 'g12:a12:12'
@@ -3905,6 +3909,8 @@ dependencies {
             ("g18", "a18", "18"),
             ("g19", "a19", "19"),
             ("g20", "a20", "20"),
+            ("g21", "a21", "21"),
+            ("g22", "a22", "22"),
             ("dup", "dep", "1.0"),
         ]
         .into_iter()
@@ -3920,7 +3926,7 @@ dependencies {
 
         // Scope mapping is best-effort. If a dependency is declared in multiple configurations,
         // we keep a single deterministic scope for the coordinates.
-        let expected_scopes: [((String, String, Option<String>), &str); 21] = [
+        let expected_scopes: [((String, String, Option<String>), &str); 23] = [
             (
                 (String::from("g1"), String::from("a1"), Some("1".into())),
                 "compile",
@@ -4000,6 +4006,14 @@ dependencies {
             (
                 (String::from("g20"), String::from("a20"), Some("20".into())),
                 "provided",
+            ),
+            (
+                (String::from("g21"), String::from("a21"), Some("21".into())),
+                "annotationProcessor",
+            ),
+            (
+                (String::from("g22"), String::from("a22"), Some("22".into())),
+                "annotationProcessor",
             ),
             (
                 (String::from("dup"), String::from("dep"), Some("1.0".into())),
