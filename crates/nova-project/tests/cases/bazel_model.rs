@@ -76,6 +76,117 @@ fn options_with_bazel_enabled() -> LoadOptions {
 }
 
 #[test]
+fn bazel_workspace_project_model_classifies_overrides_onto_module_path_for_jpms() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    fs::write(tmp.path().join("WORKSPACE"), "").expect("WORKSPACE");
+
+    // Enable JPMS via a module-info in the lib target's root (//java/com/example:lib ->
+    // java/com/example).
+    let module_root = tmp.path().join("java/com/example");
+    fs::create_dir_all(&module_root).expect("create module root");
+    fs::write(
+        module_root.join("module-info.java"),
+        "module mod.a { requires mod.b; }",
+    )
+    .expect("write module-info.java");
+
+    // Dependency override directory providing a stable module name.
+    let dep_dir = tmp.path().join("deps/mod-b");
+    fs::create_dir_all(dep_dir.join("META-INF")).expect("mkdir dep META-INF");
+    fs::write(
+        dep_dir.join("META-INF/MANIFEST.MF"),
+        b"Manifest-Version: 1.0\r\nAutomatic-Module-Name: mod.b\r\n\r\n",
+    )
+    .expect("write manifest");
+
+    let query = read_fixture("bazel/query.txt");
+    let aquery_lib = read_fixture("bazel/aquery_lib.textproto");
+    let aquery_test = read_fixture("bazel/aquery_lib_test.textproto");
+    let aquery_alias = read_fixture("bazel/aquery_alias.textproto");
+
+    let runner = MockRunner::default()
+        .with_stdout(
+            "bazel",
+            &["info", "execution_root"],
+            format!("{}\n", tmp.path().display()),
+        )
+        .with_stdout("bazel", &["query", r#"kind("java_.* rule", //...)"#], query)
+        .with_stdout(
+            "bazel",
+            &[
+                "aquery",
+                "--output=textproto",
+                r#"mnemonic("Javac", //java/com/example:lib)"#,
+            ],
+            aquery_lib.clone(),
+        )
+        .with_stdout(
+            "bazel",
+            &[
+                "aquery",
+                "--output=textproto",
+                r#"mnemonic("Javac", deps(//java/com/example:lib))"#,
+            ],
+            aquery_lib,
+        )
+        .with_stdout(
+            "bazel",
+            &[
+                "aquery",
+                "--output=textproto",
+                r#"mnemonic("Javac", //java/com/example:lib_test)"#,
+            ],
+            aquery_test.clone(),
+        )
+        .with_stdout(
+            "bazel",
+            &[
+                "aquery",
+                "--output=textproto",
+                r#"mnemonic("Javac", deps(//java/com/example:lib_test))"#,
+            ],
+            aquery_test,
+        )
+        .with_stdout(
+            "bazel",
+            &[
+                "aquery",
+                "--output=textproto",
+                r#"mnemonic("Javac", //java/com/example:alias)"#,
+            ],
+            aquery_alias.clone(),
+        )
+        .with_stdout(
+            "bazel",
+            &[
+                "aquery",
+                "--output=textproto",
+                r#"mnemonic("Javac", deps(//java/com/example:alias))"#,
+            ],
+            aquery_alias,
+        );
+
+    let mut options = options_with_bazel_enabled();
+    options.classpath_overrides.push(dep_dir.clone());
+
+    let model =
+        nova_project::load_bazel_workspace_project_model_with_runner(tmp.path(), &options, runner)
+            .expect("load bazel workspace project model");
+
+    let lib = model
+        .module_by_id("//java/com/example:lib")
+        .expect("expected lib module");
+    assert!(
+        lib.module_path.iter().any(|e| e.path == dep_dir),
+        "override dir should be classified onto module-path when JPMS is enabled"
+    );
+    assert!(
+        !lib.classpath.iter().any(|e| e.path == dep_dir),
+        "override dir should not remain on classpath when JPMS is enabled"
+    );
+}
+
+#[test]
 fn loads_bazel_targets_as_module_configs() {
     let tmp = tempfile::tempdir().expect("tempdir");
     fs::write(tmp.path().join("WORKSPACE"), "").expect("WORKSPACE");

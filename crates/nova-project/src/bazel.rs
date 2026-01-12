@@ -433,6 +433,31 @@ pub fn load_bazel_workspace_project_model_with_runner<R: CommandRunner>(
         .collect::<Vec<_>>();
     let jpms_modules = crate::jpms::discover_jpms_modules(&modules_for_jpms);
 
+    // Add user-provided dependency entries (overrides) after JPMS discovery so we can decide
+    // whether they should land on the module-path or classpath. Only overrides are
+    // subject to reclassification; Bazel-provided module/classpath entries remain untouched.
+    let mut dependency_entries = Vec::new();
+    for entry in &options.classpath_overrides {
+        dependency_entries.push(ClasspathEntry {
+            kind: if entry.extension().is_some_and(|ext| ext == "jar") {
+                ClasspathEntryKind::Jar
+            } else {
+                ClasspathEntryKind::Directory
+            },
+            path: entry.clone(),
+        });
+    }
+    sort_dedup_classpath(&mut dependency_entries);
+    let (module_path_deps, classpath_deps) =
+        crate::jpms::classify_dependency_entries(&jpms_modules, dependency_entries);
+
+    for module in &mut modules {
+        module.module_path.extend(module_path_deps.iter().cloned());
+        module.classpath.extend(classpath_deps.iter().cloned());
+        sort_dedup_classpath(&mut module.module_path);
+        sort_dedup_classpath(&mut module.classpath);
+    }
+
     Ok(WorkspaceProjectModel::new(
         root.to_path_buf(),
         BuildSystem::Bazel,
@@ -676,16 +701,6 @@ fn workspace_module_config_from_module_config(
     );
 
     let mut classpath = module.classpath.clone();
-    for entry in &options.classpath_overrides {
-        classpath.push(ClasspathEntry {
-            kind: if entry.extension().is_some_and(|ext| ext == "jar") {
-                ClasspathEntryKind::Jar
-            } else {
-                ClasspathEntryKind::Directory
-            },
-            path: entry.clone(),
-        });
-    }
 
     let mut module_path = module.module_path.clone();
 
