@@ -2366,6 +2366,11 @@ fn collect_declared_types(
             .unwrap_or("Object")
             .trim()
             .to_string();
+        let ty_text = if ty_text.contains('|') {
+            "Throwable".to_string()
+        } else {
+            ty_text
+        };
         types.insert(span_of_token(name_tok), ty_text);
     }
 

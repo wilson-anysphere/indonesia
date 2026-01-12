@@ -2974,6 +2974,60 @@ class C {
 }
 
 #[test]
+fn extract_method_uses_throwable_for_multi_catch_param_parameter_type() {
+    let fixture = r#"
+class C {
+    void m() {
+        try {
+            if (System.currentTimeMillis() == 0) {
+                throw new java.io.IOException();
+            } else {
+                throw new java.sql.SQLException();
+            }
+        } catch (java.io.IOException | java.sql.SQLException e) {
+            /*start*/System.out.println(e.getMessage());/*end*/
+        }
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "log".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m() {
+        try {
+            if (System.currentTimeMillis() == 0) {
+                throw new java.io.IOException();
+            } else {
+                throw new java.sql.SQLException();
+            }
+        } catch (java.io.IOException | java.sql.SQLException e) {
+            log(e);
+        }
+    }
+
+    private void log(Throwable e) {
+        System.out.println(e.getMessage());
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn extract_method_infers_var_throw_type() {
     let fixture = r#"
 class C {

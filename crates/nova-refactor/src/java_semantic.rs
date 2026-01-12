@@ -6292,7 +6292,6 @@ fn collect_switch_contexts(
                         selector_enum,
                     });
                 }
- 
                 for arm in arms {
                     for label in &arm.labels {
                         match label {
