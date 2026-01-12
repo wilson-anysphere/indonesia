@@ -28,7 +28,16 @@ export function registerNovaDebugConfigurations(
   context.subscriptions.push(
     vscode.commands.registerCommand('nova.addDebugConfiguration', async () => {
       try {
-        await addDebugConfigurationsFromLsp(request);
+        await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: 'Nova: Loading debug configurations…',
+            cancellable: true,
+          },
+          async (_progress, token) => {
+            await addDebugConfigurationsFromLsp(request, token);
+          },
+        );
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         void vscode.window.showErrorMessage(`Nova: failed to add debug configurations: ${message}`);
@@ -103,7 +112,7 @@ function getDebugDefaults(): { host: string; port: number } {
   return { host, port };
 }
 
-async function addDebugConfigurationsFromLsp(request: NovaRequest): Promise<void> {
+async function addDebugConfigurationsFromLsp(request: NovaRequest, token?: vscode.CancellationToken): Promise<void> {
   const folders = vscode.workspace.workspaceFolders ?? [];
   if (folders.length === 0) {
     void vscode.window.showErrorMessage('Nova: Open a workspace folder to add debug configurations.');
@@ -118,9 +127,13 @@ async function addDebugConfigurationsFromLsp(request: NovaRequest): Promise<void
     return;
   }
 
+  if (token?.isCancellationRequested) {
+    return;
+  }
+
   const configs = (await request('nova/debug/configurations', {
     projectRoot: folder.uri.fsPath,
-  })) as NovaLspDebugConfiguration[] | undefined;
+  }, token ? { token } : undefined)) as NovaLspDebugConfiguration[] | undefined;
   if (!configs) {
     return;
   }

@@ -87,12 +87,25 @@ export function registerNovaHotSwap(
           return file;
         });
 
-        const result = (await request('nova/debug/hotSwap', {
-          projectRoot,
-          changedFiles,
-          host,
-          port,
-        })) as HotSwapResult | undefined;
+        const result = await vscode.window.withProgress<HotSwapResult | undefined>(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: 'Nova: Hot swapping changed files…',
+            cancellable: true,
+          },
+          async (_progress, token) => {
+            return (await request(
+              'nova/debug/hotSwap',
+              {
+                projectRoot,
+                changedFiles,
+                host,
+                port,
+              },
+              { token },
+            )) as HotSwapResult | undefined;
+          },
+        );
         if (!result) {
           return;
         }
