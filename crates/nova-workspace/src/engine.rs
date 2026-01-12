@@ -6043,6 +6043,71 @@ enabled = false
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn manual_watcher_directory_create_triggers_rescan_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path().join("project");
+        fs::create_dir_all(project_root.join("src")).unwrap();
+        fs::write(project_root.join("src/Main.java"), "class Main {}".as_bytes()).unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let project_root = project_root.canonicalize().unwrap();
+
+        let workspace = crate::Workspace::open(&project_root).unwrap();
+        let engine = workspace.engine.clone();
+
+        let manual = ManualFileWatcher::new();
+        let handle: ManualFileWatcherHandle = manual.handle();
+        let _watcher = engine
+            .start_watching_with_watcher(Box::new(manual), WatchDebounceConfig::ZERO)
+            .unwrap();
+
+        let gen_dir = project_root.join("src").join("gen");
+        let gen_file = gen_dir.join("Generated.java");
+        let gen_text = "class Generated { int x; }";
+        fs::create_dir_all(&gen_dir).unwrap();
+        fs::write(&gen_file, gen_text.as_bytes()).unwrap();
+
+        // Simulate the watcher emitting only a directory-level create event. The workspace should
+        // fall back to a rescan and discover the new file.
+        handle
+            .push(WatchEvent::Changes {
+                changes: vec![FileChange::Created {
+                    path: VfsPath::local(gen_dir),
+                }],
+            })
+            .unwrap();
+
+        let vfs_path = VfsPath::local(gen_file.clone());
+        timeout(Duration::from_secs(5), async move {
+            loop {
+                let Some(file_id) = engine.vfs.get_id(&vfs_path) else {
+                    yield_now().await;
+                    continue;
+                };
+
+                let ready = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    engine.query_db.with_snapshot(|snap| {
+                        snap.file_exists(file_id)
+                            && snap.file_content(file_id).as_str() == gen_text
+                            && snap.file_rel_path(file_id).as_str() == "src/gen/Generated.java"
+                            && snap
+                                .project_files(ProjectId::from_raw(0))
+                                .contains(&file_id)
+                    })
+                }))
+                .unwrap_or(false);
+
+                if ready {
+                    break;
+                }
+
+                yield_now().await;
+            }
+        })
+        .await
+        .expect("timed out waiting for directory-create-triggered project reload");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn external_nova_config_path_is_watched_and_triggers_reload() {
         let workspace_dir = tempfile::tempdir().unwrap();
         // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
