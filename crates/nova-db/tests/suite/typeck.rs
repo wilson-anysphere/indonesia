@@ -4065,6 +4065,23 @@ class C {
 }
 
 #[test]
+fn source_varargs_method_call_resolves_in_static_context() {
+    let src = r#"
+class C {
+    static void foo(int... xs) {}
+    static void m() { foo(1, 2, 3); }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected varargs call to resolve in static context, got {diags:?}"
+    );
+}
+
+#[test]
 fn source_varargs_method_call_resolves_with_single_arg() {
     let src = r#"
 class C {
