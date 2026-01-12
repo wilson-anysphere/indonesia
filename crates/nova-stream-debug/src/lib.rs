@@ -139,6 +139,15 @@ impl StreamOperation {
     pub fn is_side_effecting(&self) -> bool {
         self.kind.is_side_effecting()
     }
+
+    fn returns_void(&self) -> bool {
+        // Prefer the resolved return type when available so future void-returning
+        // operations (beyond `forEach`) are handled automatically.
+        self.resolved
+            .as_ref()
+            .is_some_and(|resolved| resolved.return_type == "void")
+            || matches!(self.kind, StreamOperationKind::ForEach)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -605,13 +614,33 @@ pub fn debug_stream<C: JdwpClient>(
                 "{safe_expr}.limit({}).{}",
                 config.max_sample_size, term.call_source
             );
-            let (value, duration_ms) = timed(|| eval_scalar(jdwp, frame_id, &eval_expr))?;
+
+            // Some terminal operations (e.g. `forEach`) return `void`. The underlying
+            // evaluator often expects value-returning expressions and may wrap the
+            // expression in an `Object`-returning helper method (e.g. `return <expr>;`),
+            // which fails to compile for `void` expressions.
+            //
+            // To keep side effects while satisfying value-returning evaluators, execute
+            // the `void` expression inside an `Object`-returning wrapper and then
+            // surface a legacy `"void"` terminal result to callers.
+            let (value, type_name, duration_ms) = if term.returns_void() {
+                let wrapped = wrap_void_expression(&eval_expr);
+                let (_, duration_ms) = timed(|| eval_void(jdwp, frame_id, &wrapped))?;
+                (
+                    Some("void".to_string()),
+                    Some("void".to_string()),
+                    duration_ms,
+                )
+            } else {
+                let (value, duration_ms) = timed(|| eval_scalar(jdwp, frame_id, &eval_expr))?;
+                (Some(value.display), value.type_name, duration_ms)
+            };
             Some(StreamTerminalResult {
                 operation: term.name.clone(),
                 kind: term.kind,
                 executed: true,
-                value: Some(value.display),
-                type_name: value.type_name,
+                value,
+                type_name,
                 duration_ms,
             })
         }
@@ -694,6 +723,29 @@ fn eval_scalar<C: JdwpClient>(
         display: format_value(jdwp, &value),
         type_name: Some(type_name_for_value(&value)),
     })
+}
+
+fn eval_void<C: JdwpClient>(
+    jdwp: &mut C,
+    frame_id: FrameId,
+    expression: &str,
+) -> Result<(), StreamDebugError> {
+    let _ = jdwp.evaluate(expression, frame_id)?;
+    Ok(())
+}
+
+fn wrap_void_expression(expr: &str) -> String {
+    // Use a lambda-based wrapper so `<expr>` can remain a statement expression while the
+    // whole evaluation becomes an `Object` expression.
+    //
+    // Example:
+    //   ((Supplier<Object>)(() -> { <expr>; return null; })).get()
+    //
+    // This is intentionally fully-qualified to avoid relying on imports in the
+    // evaluator's compilation context.
+    format!(
+        "((java.util.function.Supplier<Object>)(() -> {{{expr};return null;}})).get()"
+    )
 }
 
 fn infer_element_type(sample: &[JdwpValue]) -> Option<String> {
@@ -1531,5 +1583,56 @@ mod tests {
             result.terminal.as_ref().unwrap().value.as_deref(),
             Some("1")
         );
+    }
+
+    #[test]
+    fn debug_stream_for_each_returns_void_when_allowed() {
+        let expr = "list.stream().forEach(System.out::println)";
+        let chain = analyze_stream_expression(expr).unwrap();
+
+        let mut jdwp = MockJdwpClient::new();
+        jdwp.set_evaluation(
+            1,
+            "list.stream().limit(3).collect(java.util.stream.Collectors.toList())",
+            Ok(JdwpValue::Object(ObjectRef {
+                id: 10,
+                runtime_type: "java.util.ArrayList".to_string(),
+            })),
+        );
+        jdwp.insert_object(
+            10,
+            MockObject {
+                preview: ObjectPreview {
+                    runtime_type: "java.util.ArrayList".to_string(),
+                    kind: ObjectKindPreview::List {
+                        size: 3,
+                        sample: vec![JdwpValue::Int(1), JdwpValue::Int(2), JdwpValue::Int(3)],
+                    },
+                },
+                children: Vec::new(),
+            },
+        );
+
+        // The runtime wraps void-returning terminals so evaluators that expect
+        // value-returning expressions still compile.
+        jdwp.set_evaluation(
+            1,
+            "((java.util.function.Supplier<Object>)(() -> {list.stream().limit(3).forEach(System.out::println);return null;})).get()",
+            Ok(JdwpValue::Void),
+        );
+
+        let config = StreamDebugConfig {
+            max_sample_size: 3,
+            max_total_time: Duration::from_secs(1),
+            allow_side_effects: true,
+            allow_terminal_ops: true,
+        };
+        let cancel = CancellationToken::default();
+        let result = debug_stream(&mut jdwp, 1, &chain, &config, &cancel).unwrap();
+
+        let terminal = result.terminal.as_ref().expect("missing terminal result");
+        assert!(terminal.executed);
+        assert_eq!(terminal.value.as_deref(), Some("void"));
+        assert_eq!(terminal.type_name.as_deref(), Some("void"));
     }
 }
