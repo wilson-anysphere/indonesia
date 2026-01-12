@@ -767,7 +767,7 @@ fn eval_sample<C: JdwpClient>(
     };
 
     let truncated = raw_elements.len() < size;
-    let element_type = infer_element_type(&raw_elements);
+    let element_type = infer_element_type(jdwp, &raw_elements);
     let elements = raw_elements.iter().map(|v| format_value(jdwp, v)).collect();
 
     Ok(StreamSample {
@@ -817,11 +817,29 @@ fn wrap_void_expression(expr: &str) -> String {
     format!("((java.util.function.Supplier<Object>)(() -> {{{expr};return null;}})).get()")
 }
 
-fn infer_element_type(sample: &[JdwpValue]) -> Option<String> {
-    sample
-        .iter()
-        .find(|v| !matches!(v, JdwpValue::Null))
-        .map(type_name_for_value)
+fn infer_element_type<C: JdwpClient>(jdwp: &mut C, sample: &[JdwpValue]) -> Option<String> {
+    for v in sample {
+        if matches!(v, JdwpValue::Null) {
+            continue;
+        }
+
+        match v {
+            JdwpValue::Object(obj) => {
+                // For list samples, object values frequently have a placeholder runtime type (e.g.
+                // `java.lang.Object`). Use `preview_object` to recover a more useful type name.
+                if let Ok(preview) = jdwp.preview_object(obj.id) {
+                    if let ObjectKindPreview::PrimitiveWrapper { value } = &preview.kind {
+                        return Some(type_name_for_value(value));
+                    }
+                    return Some(preview.runtime_type);
+                }
+                return Some(type_name_for_value(v));
+            }
+            other => return Some(type_name_for_value(other)),
+        }
+    }
+
+    None
 }
 
 fn type_name_for_value(value: &JdwpValue) -> String {
@@ -853,13 +871,23 @@ fn format_value<C: JdwpClient>(jdwp: &mut C, value: &JdwpValue) -> String {
         JdwpValue::Double(v) => v.to_string(),
         JdwpValue::Char(v) => v.to_string(),
         JdwpValue::Object(obj) => {
-            if obj.runtime_type == "java.lang.String" {
-                if let Ok(preview) = jdwp.preview_object(obj.id) {
-                    if let ObjectKindPreview::String { value } = preview.kind {
-                        return value;
+            // Best-effort: render user-friendly values for common JDK wrappers.
+            if let Ok(preview) = jdwp.preview_object(obj.id) {
+                match preview.kind {
+                    ObjectKindPreview::String { value } => return value,
+                    ObjectKindPreview::PrimitiveWrapper { value } => {
+                        return format_value(jdwp, &value)
                     }
+                    ObjectKindPreview::Optional { value } => {
+                        return match value {
+                            None => "Optional.empty".to_string(),
+                            Some(v) => format!("Optional[{}]", format_value(jdwp, &v)),
+                        };
+                    }
+                    _ => return format!("{}#{}", preview.runtime_type, obj.id),
                 }
             }
+
             format!("{}#{}", obj.runtime_type, obj.id)
         }
     }
@@ -1431,6 +1459,77 @@ mod tests {
             sample_suffix(StreamValueKind::DoubleStream, 5),
             ".limit(5).boxed().collect(java.util.stream.Collectors.toList())"
         );
+    }
+
+    #[test]
+    fn sample_formatting_unwraps_boxed_primitive_wrappers() {
+        let mut jdwp = MockJdwpClient::new();
+        jdwp.set_evaluation(
+            1,
+            "list.stream().limit(3).collect(java.util.stream.Collectors.toList())",
+            Ok(JdwpValue::Object(ObjectRef {
+                id: 40,
+                runtime_type: "java.util.ArrayList".to_string(),
+            })),
+        );
+
+        jdwp.insert_object(
+            40,
+            MockObject {
+                preview: ObjectPreview {
+                    runtime_type: "java.util.ArrayList".to_string(),
+                    kind: ObjectKindPreview::List {
+                        size: 2,
+                        sample: vec![
+                            JdwpValue::Object(ObjectRef {
+                                id: 41,
+                                runtime_type: "java.lang.Object".to_string(),
+                            }),
+                            JdwpValue::Object(ObjectRef {
+                                id: 42,
+                                runtime_type: "java.lang.Object".to_string(),
+                            }),
+                        ],
+                    },
+                },
+                children: Vec::new(),
+            },
+        );
+
+        jdwp.insert_object(
+            41,
+            MockObject {
+                preview: ObjectPreview {
+                    runtime_type: "java.lang.Long".to_string(),
+                    kind: ObjectKindPreview::PrimitiveWrapper {
+                        value: Box::new(JdwpValue::Long(1)),
+                    },
+                },
+                children: Vec::new(),
+            },
+        );
+        jdwp.insert_object(
+            42,
+            MockObject {
+                preview: ObjectPreview {
+                    runtime_type: "java.lang.Long".to_string(),
+                    kind: ObjectKindPreview::PrimitiveWrapper {
+                        value: Box::new(JdwpValue::Long(2)),
+                    },
+                },
+                children: Vec::new(),
+            },
+        );
+
+        let sample = eval_sample(
+            &mut jdwp,
+            1,
+            "list.stream().limit(3).collect(java.util.stream.Collectors.toList())",
+        )
+        .unwrap();
+
+        assert_eq!(sample.elements, vec!["1", "2"]);
+        assert_eq!(sample.element_type.as_deref(), Some("long"));
     }
 
     #[test]
