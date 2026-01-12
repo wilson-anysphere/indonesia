@@ -120,14 +120,14 @@ fn parse_method_declaration() {
 # - `insta` snapshots (formatter): set `INSTA_UPDATE=always`
 #
 # Parser golden corpus (`nova-syntax`): writes `crates/nova-syntax/testdata/**/*.tree` + `.errors`
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::golden_corpus
 #
 # Refactor before/after fixtures (`nova-refactor`): writes `crates/nova-refactor/tests/fixtures/**/after/**`
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-refactor --test refactorings move_static_method_updates_call_sites
+BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-refactor --test refactorings move_static_method_updates_call_sites
 #
 # Formatter snapshots (`nova-format`): writes `crates/nova-format/tests/snapshots/*.snap`
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test harness suite::format_fixtures
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test harness suite::format_snapshots
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test --locked -p nova-format --test harness suite::format_fixtures
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test --locked -p nova-format --test harness suite::format_snapshots
 ```
 
 For the canonical “where do fixtures live / how do I bless them” workflow, see
@@ -322,7 +322,7 @@ criterion_main!(benches);
 
 **Run benchmarks:**
 ```bash
-bash scripts/cargo_agent.sh bench -p nova-core
+bash scripts/cargo_agent.sh bench --locked -p nova-core
 ```
 
 ### Threshold Tests
@@ -391,22 +391,22 @@ crates/nova-foo/
 
 ```bash
 # Single crate
-bash scripts/cargo_agent.sh test -p nova-core --lib
+bash scripts/cargo_agent.sh test --locked -p nova-core --lib
 
 # Specific test
-bash scripts/cargo_agent.sh test -p nova-types --lib -- test_name
+bash scripts/cargo_agent.sh test --locked -p nova-types --lib -- test_name
 
 # With output
-bash scripts/cargo_agent.sh test -p nova-syntax --lib -- --nocapture
+bash scripts/cargo_agent.sh test --locked -p nova-syntax --lib -- --nocapture
 
 # Update snapshots
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-refactor --test refactorings move_static_method_updates_call_sites
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test harness suite::format_fixtures
-INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test harness suite::format_snapshots
+BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-refactor --test refactorings move_static_method_updates_call_sites
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test --locked -p nova-format --test harness suite::format_fixtures
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test --locked -p nova-format --test harness suite::format_snapshots
 
 # Update `nova-testing` schema fixtures
-UPDATE_SCHEMA_FIXTURES=1 bash scripts/cargo_agent.sh test -p nova-testing --test integration suite::schema_json
+UPDATE_SCHEMA_FIXTURES=1 bash scripts/cargo_agent.sh test --locked -p nova-testing --test integration suite::schema_json
 ```
 
 **NEVER run:**
@@ -426,7 +426,7 @@ Generate coverage reports:
 bash scripts/cargo_agent.sh install cargo-llvm-cov --locked
 
 # Generate report
-bash scripts/cargo_agent.sh llvm-cov -p nova-core --html
+bash scripts/cargo_agent.sh llvm-cov --locked -p nova-core --html
 ```
 
 ---
