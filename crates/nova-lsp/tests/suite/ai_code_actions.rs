@@ -901,3 +901,173 @@ fn stdio_server_rejects_surrogate_pair_interior_ranges_for_ai_code_actions() {
     let status = child.wait().expect("wait");
     assert!(status.success());
 }
+
+#[test]
+fn stdio_server_rejects_cloud_ai_code_edits_when_anonymization_is_enabled() {
+    let _lock = crate::support::stdio_server_lock();
+    let ai_server = crate::support::TestAiServer::start(json!({ "completion": "unused" }));
+
+    let temp = TempDir::new().expect("tempdir");
+    let config_path = temp.path().join("nova.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "http"
+url = "{}/complete"
+model = "default"
+
+[ai.privacy]
+local_only = false
+"#,
+            ai_server.base_url()
+        ),
+    )
+    .expect("write config");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // initialize
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    // open doc containing an empty method body so the AI code action is offered.
+    let uri = "file:///Test.java";
+    let text = "class Test {\n    void run() {\n    }\n}\n";
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": text
+                }
+            }
+        }),
+    );
+
+    let method_snippet = "    void run() {\n    }\n";
+    let method_start = text.find(method_snippet).expect("method snippet start");
+    let method_end = method_start + method_snippet.len();
+    let pos = TextPos::new(text);
+    let start = pos.lsp_position(method_start).expect("start position");
+    let end = pos.lsp_position(method_end).expect("end position");
+    let range = Range { start, end };
+
+    // request code actions; ensure we can find the "Generate method body with AI" action.
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": { "uri": uri },
+                "range": range,
+                "context": { "diagnostics": [] }
+            }
+        }),
+    );
+    let code_actions_resp = read_response_with_id(&mut stdout, 2);
+    let actions = code_actions_resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .expect("code actions array");
+
+    let gen_method = actions
+        .iter()
+        .find(|a| a.get("title").and_then(|t| t.as_str()) == Some("Generate method body with AI"))
+        .unwrap_or_else(|| panic!("missing generate method body action in {actions:#?}"));
+
+    let cmd = gen_method
+        .get("command")
+        .and_then(|c| c.get("command"))
+        .and_then(|v| v.as_str())
+        .expect("command string");
+    assert_eq!(cmd, nova_ide::COMMAND_GENERATE_METHOD_BODY);
+
+    let args = gen_method
+        .get("command")
+        .and_then(|c| c.get("arguments"))
+        .cloned()
+        .expect("arguments");
+
+    // Execute command: in cloud mode, anonymization is enabled by default and code edits should be
+    // rejected before any model call is made.
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "workspace/executeCommand",
+            "params": {
+                "command": cmd,
+                "arguments": args
+            }
+        }),
+    );
+
+    let exec_resp = read_response_with_id(&mut stdout, 3);
+    let err_msg = exec_resp
+        .get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(|m| m.as_str())
+        .expect("expected executeCommand to return an error");
+    assert!(
+        err_msg.contains("AI code edits are disabled when identifier anonymization is enabled in cloud mode"),
+        "expected CodeEditPolicyError in error message, got: {err_msg}"
+    );
+    assert_eq!(
+        ai_server.hits(),
+        0,
+        "expected no AI provider calls when code edits are blocked by policy"
+    );
+
+    // shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}

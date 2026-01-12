@@ -7246,6 +7246,11 @@ fn run_ai_generate_method_body(
         }
     }
 
+    // AI code generation is a code-editing operation. Enforce privacy policy (cloud mode requires
+    // explicit opt-in, and anonymization currently makes edits impossible to apply reliably).
+    nova_ai::enforce_code_edit_policy(&state.ai_config.privacy)
+        .map_err(|e| (-32603, e.to_string()))?;
+
     send_progress_begin(
         rpc_out,
         work_done_token.as_ref(),
@@ -7300,6 +7305,11 @@ fn run_ai_generate_tests(
             }
         }
     }
+
+    // AI test generation is a code-editing operation. Enforce privacy policy (cloud mode requires
+    // explicit opt-in, and anonymization currently makes edits impossible to apply reliably).
+    nova_ai::enforce_code_edit_policy(&state.ai_config.privacy)
+        .map_err(|e| (-32603, e.to_string()))?;
 
     send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Generate tests")?;
     send_progress_report(rpc_out, work_done_token.as_ref(), "Building context…", None)?;
