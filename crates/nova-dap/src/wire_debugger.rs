@@ -5576,6 +5576,55 @@ mod tests {
     use super::*;
 
     #[test]
+    fn handle_table_intern_is_stable_and_refreshes_value() {
+        let mut table = HandleTable::<i32, i32>::default();
+        let id1 = table.intern(42, 1);
+        let id2 = table.intern(42, 2);
+        assert_eq!(id1, id2);
+        assert_eq!(table.get(id1), Some(&2));
+    }
+
+    #[test]
+    fn handle_table_ids_do_not_grow_unbounded_across_clears() {
+        let mut table = HandleTable::<i64, ()>::default();
+        let mut max_id = 0;
+
+        // Simulate repeatedly stopping and requesting (at most) 10 distinct handles per stop.
+        // The ID space should be bounded by the maximum number of handles allocated in any
+        // single stop, not by the number of stops.
+        for stop in 0..1000 {
+            for handle in 0..10 {
+                let id = table.intern(stop * 100 + handle, ());
+                max_id = max_id.max(id);
+            }
+            table.clear();
+        }
+
+        // With the current scheme of `(next << 1) | epoch`, allocating at most 10 distinct
+        // handles per stop should never exceed `2 * 10 + 1 = 21`, regardless of how many
+        // times we clear the table.
+        assert!(
+            max_id <= 21,
+            "expected bounded handle ids; observed max_id={max_id}"
+        );
+    }
+
+    #[test]
+    fn handle_table_double_clear_does_not_reenable_previous_epoch_ids() {
+        let mut table = HandleTable::<i32, ()>::default();
+        let id_before_clear = table.intern(1, ());
+
+        // First clear invalidates the previous epoch.
+        table.clear();
+        // Subsequent clears while the table is already empty should not flip the epoch again,
+        // otherwise a later allocation could collide with ids from the immediately previous stop.
+        table.clear();
+
+        let id_after_clear = table.intern(1, ());
+        assert_ne!(id_before_clear, id_after_clear);
+    }
+
+    #[test]
     fn hit_condition_digits_means_at_least() {
         assert!(!hit_condition_matches("3", 1).unwrap());
         assert!(!hit_condition_matches("3", 2).unwrap());
