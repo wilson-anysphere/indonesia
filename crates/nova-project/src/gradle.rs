@@ -1036,12 +1036,95 @@ fn parse_gradle_settings_projects(contents: &str) -> Vec<GradleModuleRef> {
 }
 
 fn extract_quoted_strings(text: &str) -> Vec<String> {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r#"['"]([^'"]+)['"]"#).expect("valid regex"));
+    // Best-effort string literal extraction for Gradle settings parsing.
+    //
+    // Supports:
+    // - `'...'`
+    // - `"..."` (with backslash escapes)
+    // - `'''...'''` / `"""..."""` (Groovy / Kotlin raw strings)
+    //
+    // Note: we intentionally do not unescape contents; callers normalize/trim as needed.
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
 
-    re.captures_iter(text)
-        .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string()))
-        .collect()
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"'''") {
+            let start = i + 3;
+            i = start;
+            while i < bytes.len() && !bytes[i..].starts_with(b"'''") {
+                i += 1;
+            }
+            if i < bytes.len() {
+                if start < i {
+                    out.push(text[start..i].to_string());
+                }
+                i += 3;
+            }
+            continue;
+        }
+
+        if bytes[i..].starts_with(b"\"\"\"") {
+            let start = i + 3;
+            i = start;
+            while i < bytes.len() && !bytes[i..].starts_with(b"\"\"\"") {
+                i += 1;
+            }
+            if i < bytes.len() {
+                if start < i {
+                    out.push(text[start..i].to_string());
+                }
+                i += 3;
+            }
+            continue;
+        }
+
+        if bytes[i] == b'\'' {
+            let start = i + 1;
+            i = start;
+            while i < bytes.len() {
+                let b = bytes[i];
+                if b == b'\\' {
+                    i = (i + 2).min(bytes.len());
+                    continue;
+                }
+                if b == b'\'' {
+                    if start < i {
+                        out.push(text[start..i].to_string());
+                    }
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+
+        if bytes[i] == b'"' {
+            let start = i + 1;
+            i = start;
+            while i < bytes.len() {
+                let b = bytes[i];
+                if b == b'\\' {
+                    i = (i + 2).min(bytes.len());
+                    continue;
+                }
+                if b == b'"' {
+                    if start < i {
+                        out.push(text[start..i].to_string());
+                    }
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+
+        i += 1;
+    }
+
+    out
 }
 
 fn strip_gradle_comments(contents: &str) -> String {
@@ -1472,10 +1555,32 @@ fn extract_balanced_parens(contents: &str, open_paren_index: usize) -> Option<(S
     let mut depth = 0usize;
     let mut in_single = false;
     let mut in_double = false;
+    let mut in_triple_single = false;
+    let mut in_triple_double = false;
 
     let mut i = open_paren_index;
     while i < bytes.len() {
         let b = bytes[i];
+
+        if in_triple_single {
+            if bytes[i..].starts_with(b"'''") {
+                in_triple_single = false;
+                i += 3;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_triple_double {
+            if bytes[i..].starts_with(b"\"\"\"") {
+                in_triple_double = false;
+                i += 3;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
 
         if in_single {
             if b == b'\\' {
@@ -1498,6 +1603,18 @@ fn extract_balanced_parens(contents: &str, open_paren_index: usize) -> Option<(S
                 in_double = false;
             }
             i += 1;
+            continue;
+        }
+
+        if bytes[i..].starts_with(b"'''") {
+            in_triple_single = true;
+            i += 3;
+            continue;
+        }
+
+        if bytes[i..].starts_with(b"\"\"\"") {
+            in_triple_double = true;
+            i += 3;
             continue;
         }
 
@@ -2794,6 +2911,21 @@ def tripleGroovy = '''includeFlat("lib")'''
         assert_eq!(modules.len(), 1);
         assert_eq!(modules[0].project_path, ":");
         assert_eq!(modules[0].dir_rel, ".");
+    }
+
+    #[test]
+    fn parse_gradle_settings_projects_parses_triple_quoted_include_arguments() {
+        let settings = r#"
+ include("""app""")
+ includeFlat('''lib''')
+ "#;
+
+        let modules = parse_gradle_settings_projects(settings);
+        assert_eq!(modules.len(), 2);
+        assert_eq!(modules[0].project_path, ":app");
+        assert_eq!(modules[0].dir_rel, "app");
+        assert_eq!(modules[1].project_path, ":lib");
+        assert_eq!(modules[1].dir_rel, "../lib");
     }
 
     #[test]
