@@ -197,6 +197,10 @@ pub fn extract_variable(
         .ok_or(RefactorError::InvalidSelection)?
         .to_string();
 
+    if let Some(reason) = extract_variable_crosses_execution_boundary(&expr) {
+        return Err(RefactorError::ExtractNotSupported { reason });
+    }
+
     // Extracting a side-effectful expression into a new statement can change evaluation order or
     // conditionality (e.g. when the expression appears under `?:`, `&&`, etc). Be conservative.
     //
@@ -607,11 +611,69 @@ fn constant_expression_only_context_reason(expr: &ast::Expression) -> Option<&'s
             return Some("cannot extract from annotation element values (compile-time constant required)");
         }
 
-        if ast::CaseLabelElement::cast(node.clone()).is_some() || ast::SwitchLabel::cast(node).is_some()
+        if ast::CaseLabelElement::cast(node.clone()).is_some()
+            || ast::SwitchLabel::cast(node).is_some()
         {
             return Some("cannot extract from switch case labels (compile-time constant required)");
         }
     }
+
+    None
+}
+
+fn extract_variable_crosses_execution_boundary(expr: &ast::Expression) -> Option<&'static str> {
+    let expr_range = syntax_range(expr.syntax());
+
+    // Walk up to the nearest enclosing statement; if we cross into a lambda/switch execution
+    // context that cannot contain an inserted statement, reject the refactoring.
+    for node in expr.syntax().ancestors() {
+        if ast::Statement::cast(node.clone()).is_some() {
+            break;
+        }
+
+        if let Some(lambda) = ast::LambdaExpression::cast(node.clone()) {
+            if lambda.body().and_then(|body| body.expression()).is_some() {
+                return Some("cannot extract from expression-bodied lambda");
+            }
+        }
+
+        let Some(rule) = ast::SwitchRule::cast(node) else {
+            continue;
+        };
+        let Some(body) = rule.body() else {
+            continue;
+        };
+        if matches!(body, ast::SwitchRuleBody::Block(_)) {
+            continue;
+        }
+
+        // Only guard when the selection is inside the rule body (not the labels/guard).
+        let body_range = syntax_range(body.syntax());
+        if !(body_range.start <= expr_range.start && expr_range.end <= body_range.end) {
+            continue;
+        }
+
+        // Reject when inside a switch *expression* rule body that is not a block, since extracting
+        // would either lift evaluation out of the selected case arm or require block/yield
+        // conversion (not implemented yet).
+        let container = rule
+            .syntax()
+            .ancestors()
+            .skip(1)
+            .find_map(|node| {
+                if ast::SwitchExpression::cast(node.clone()).is_some() {
+                    Some(true)
+                } else if ast::SwitchStatement::cast(node).is_some() {
+                    Some(false)
+                } else {
+                    None
+                }
+            });
+        if container == Some(true) {
+            return Some("cannot extract from switch expression rule body");
+        }
+    }
+
     None
 }
 
