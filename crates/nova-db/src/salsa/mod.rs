@@ -633,9 +633,6 @@ impl SalsaInputs {
         for (&file, edit) in &self.file_last_edit {
             db.set_file_last_edit(file, edit.clone());
         }
-        for (&file, &dirty) in &self.file_is_dirty {
-            db.set_file_is_dirty(file, dirty);
-        }
         for (&file, path) in &self.file_rel_path {
             db.set_file_rel_path(file, path.clone());
         }

@@ -79,22 +79,22 @@ fn item_tree(db: &dyn NovaSemantic, file: FileId) -> Arc<TokenItemTree> {
             .persistence()
             .load_ast_artifacts(file_path.as_str(), fingerprint)
         {
-                Some(artifacts) => {
-                    db.record_disk_cache_hit("item_tree");
-                    let result = Arc::new(artifacts.item_tree);
-                    if let Some(store) = store.as_ref().filter(|store| store.is_open(file)) {
-                        store.insert(file, text.clone(), result.clone());
-                        // Avoid double-counting with `ItemTreeStore`.
-                        db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ItemTree, 0);
-                    } else {
-                        db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ItemTree, approx_bytes);
-                    }
-                    db.record_query_stat("item_tree", start.elapsed());
-                    return result;
+            Some(artifacts) => {
+                db.record_disk_cache_hit("item_tree");
+                let result = Arc::new(artifacts.item_tree);
+                if let Some(store) = store.as_ref().filter(|store| store.is_open(file)) {
+                    store.insert(file, text.clone(), result.clone());
+                    // Avoid double-counting with `ItemTreeStore`.
+                    db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ItemTree, 0);
+                } else {
+                    db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ItemTree, approx_bytes);
                 }
-                None => {
-                    db.record_disk_cache_miss("item_tree");
-                }
+                db.record_query_stat("item_tree", start.elapsed());
+                return result;
+            }
+            None => {
+                db.record_disk_cache_miss("item_tree");
+            }
         }
     }
 
@@ -110,7 +110,7 @@ fn item_tree(db: &dyn NovaSemantic, file: FileId) -> Arc<TokenItemTree> {
     }
 
     if let (Some(fingerprint), Some(file_path)) = (fingerprint.as_ref(), file_path.as_ref()) {
-        if !db.file_is_dirty(file) {
+        if db.file_exists(file) && !db.file_is_dirty(file) {
             let artifacts = FileAstArtifacts {
                 parse: (*parse).clone(),
                 item_tree: (*result).clone(),

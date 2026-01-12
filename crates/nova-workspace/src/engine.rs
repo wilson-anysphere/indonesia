@@ -366,20 +366,16 @@ fn workspace_scheduler() -> Scheduler {
     static SCHEDULER: OnceLock<Scheduler> = OnceLock::new();
     SCHEDULER
         .get_or_init(|| {
-            // Unit tests create many workspaces/engines in parallel. Keep the scheduler minimal so
-            // we don't exhaust OS thread limits in constrained CI environments.
-            #[cfg(test)]
-            {
-                return Scheduler::new(SchedulerConfig {
+            // Unit tests create many short-lived workspaces. Keep the scheduler conservative so we
+            // don't exhaust OS thread limits when the test harness runs with high parallelism.
+            if cfg!(test) {
+                Scheduler::new(SchedulerConfig {
                     compute_threads: 1,
                     background_threads: 1,
                     io_threads: 1,
                     progress_channel_capacity: 1024,
-                });
-            }
-
-            #[cfg(not(test))]
-            {
+                })
+            } else {
                 Scheduler::default()
             }
         })
@@ -1127,10 +1123,10 @@ impl WorkspaceEngine {
                 true
             }
         };
-        self.query_db.set_file_is_dirty(file_id, dirty);
 
         self.query_db.set_file_exists(file_id, true);
         self.query_db.set_file_content(file_id, text_for_db);
+        self.query_db.set_file_is_dirty(file_id, dirty);
         self.update_project_files_membership(&path, file_id, true);
 
         self.publish(WorkspaceEvent::FileChanged { file: path.clone() });
@@ -1554,27 +1550,41 @@ impl WorkspaceEngine {
         self.query_db.set_file_exists(file_id, exists);
 
         let open_docs = self.vfs.open_documents();
-        if exists && !open_docs.is_open(file_id) {
-            match fs::read_to_string(path) {
-                Ok(text) => {
-                    self.query_db.set_file_content(file_id, Arc::new(text));
-                    self.query_db.set_file_is_dirty(file_id, false);
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    self.query_db.set_file_exists(file_id, false);
-                    exists = false;
-                    self.query_db.set_file_is_dirty(file_id, false);
-                }
-                Err(_) if !was_known => {
-                    self.query_db
-                        .set_file_content(file_id, Arc::new(String::new()));
-                    self.query_db.set_file_is_dirty(file_id, false);
-                }
-                Err(_) => {
-                    // Best-effort: keep the previous contents if we fail to read during a transient
-                    // IO error.
+        if exists {
+            if open_docs.is_open(file_id) {
+                // The file is open in the editor; keep overlay contents but update dirty state if the
+                // file was saved to disk (or modified externally).
+                let disk_text = fs::read_to_string(path);
+                let overlay_text = self.vfs.overlay().document_text(&vfs_path);
+                let is_dirty = match (disk_text, overlay_text) {
+                    (Ok(disk), Some(overlay)) => disk != overlay,
+                    _ => true,
+                };
+                self.query_db.set_file_is_dirty(file_id, is_dirty);
+            } else {
+                match fs::read_to_string(path) {
+                    Ok(text) => {
+                        self.query_db.set_file_content(file_id, Arc::new(text));
+                        self.query_db.set_file_is_dirty(file_id, false);
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                        self.query_db.set_file_exists(file_id, false);
+                        exists = false;
+                        self.query_db.set_file_is_dirty(file_id, false);
+                    }
+                    Err(_) if !was_known => {
+                        self.query_db
+                            .set_file_content(file_id, Arc::new(String::new()));
+                        self.query_db.set_file_is_dirty(file_id, true);
+                    }
+                    Err(_) => {
+                        // Best-effort: keep the previous contents if we fail to read during a transient
+                        // IO error.
+                    }
                 }
             }
+        } else if !open_docs.is_open(file_id) {
+            self.query_db.set_file_is_dirty(file_id, false);
         }
 
         self.update_project_files_membership(&vfs_path, file_id, exists);
@@ -1609,12 +1619,23 @@ impl WorkspaceEngine {
                 if let Ok(text) = self.vfs.read_to_string(&to_vfs) {
                     self.query_db.set_file_content(file_id, Arc::new(text));
                 }
+                let disk_text = fs::read_to_string(to);
+                let overlay_text = self.vfs.overlay().document_text(&to_vfs);
+                let is_dirty = match (disk_text, overlay_text) {
+                    (Ok(disk), Some(overlay)) => disk != overlay,
+                    _ => true,
+                };
+                self.query_db.set_file_is_dirty(file_id, is_dirty);
             } else {
                 match fs::read_to_string(to) {
-                    Ok(text) => self.query_db.set_file_content(file_id, Arc::new(text)),
+                    Ok(text) => {
+                        self.query_db.set_file_content(file_id, Arc::new(text));
+                        self.query_db.set_file_is_dirty(file_id, false);
+                    }
                     Err(_) if is_new_id => {
                         self.query_db
                             .set_file_content(file_id, Arc::new(String::new()));
+                        self.query_db.set_file_is_dirty(file_id, true);
                     }
                     Err(_) => {}
                 }
@@ -2350,7 +2371,10 @@ fn reload_project_and_sync(
 
         if !open_docs.is_open(file_id) {
             match fs::read_to_string(&path) {
-                Ok(text) => query_db.set_file_content(file_id, Arc::new(text)),
+                Ok(text) => {
+                    query_db.set_file_content(file_id, Arc::new(text));
+                    query_db.set_file_is_dirty(file_id, false);
+                }
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                     query_db.set_file_exists(file_id, false);
                     continue;
@@ -2358,6 +2382,7 @@ fn reload_project_and_sync(
                 Err(_) if !previous_set.contains(&file_id) => {
                     // Ensure the input is initialized for new files even if we cannot read them.
                     query_db.set_file_content(file_id, Arc::new(String::new()));
+                    query_db.set_file_is_dirty(file_id, true);
                 }
                 Err(_) => {
                     // Keep previous contents for existing files on transient errors.
@@ -3172,7 +3197,55 @@ mod tests {
     }
 
     #[test]
+    fn open_document_sets_file_is_dirty_and_clears_on_save() {
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+
+        let file_path = root.join("src/A.java");
+        fs::write(&file_path, "class A {}").unwrap();
+
+        let workspace = crate::Workspace::open(&root).unwrap();
+        let engine = workspace.engine_for_tests();
+
+        let vfs_path = VfsPath::local(file_path.clone());
+        let file_id = workspace.open_document(vfs_path.clone(), "class A {}".to_string(), 1);
+
+        engine
+            .query_db
+            .with_snapshot(|snap| assert!(!snap.file_is_dirty(file_id)));
+
+        workspace
+            .apply_changes(&vfs_path, 2, &[ContentChange::full("class A { int x; }")])
+            .unwrap();
+
+        engine
+            .query_db
+            .with_snapshot(|snap| assert!(snap.file_is_dirty(file_id)));
+
+        // Simulate saving the open document to disk: update the file and inject a watcher event.
+        fs::write(&file_path, "class A { int x; }").unwrap();
+        engine.apply_filesystem_events(vec![NormalizedEvent::Modified(file_path)]);
+
+        engine
+            .query_db
+            .with_snapshot(|snap| assert!(!snap.file_is_dirty(file_id)));
+    }
+
+    #[test]
     fn overlay_document_memory_is_reported_via_memory_manager() {
+        // `MemoryCategory::Other` contains multiple components (e.g. salsa input tracking), so use
+        // the detailed report to validate the VFS document tracker specifically.
+        fn overlay_bytes(memory: &MemoryManager) -> u64 {
+            let (_report, components) = memory.report_detailed();
+            components
+                .iter()
+                .find(|c| c.name == "vfs_documents")
+                .map(|c| c.bytes)
+                .unwrap_or(0)
+        }
+
         let memory = MemoryManager::new(MemoryBudget::from_total(256 * nova_memory::MB));
         let engine = WorkspaceEngine::new(WorkspaceEngineConfig {
             workspace_root: PathBuf::new(),
@@ -3182,17 +3255,6 @@ mod tests {
             },
             memory: memory.clone(),
         });
-
-        // `MemoryCategory::Other` contains multiple components (e.g. salsa input tracking),
-        // so use the detailed report to validate the overlay tracker specifically.
-        fn overlay_bytes(memory: &MemoryManager) -> u64 {
-            let (_report, components) = memory.report_detailed();
-            components
-                .iter()
-                .find(|c| c.name == "vfs_documents")
-                .map(|c| c.bytes)
-                .unwrap_or(0)
-        }
         let baseline = overlay_bytes(&memory);
 
         let dir = tempfile::tempdir().unwrap();
@@ -3387,8 +3449,25 @@ mod tests {
         let root = dir.path().canonicalize().unwrap();
         fs::create_dir_all(root.join("src")).unwrap();
 
-        let workspace = crate::Workspace::open(&root).unwrap();
-        let engine = workspace.engine_for_tests();
+        // Avoid `Workspace::open` (project discovery + indexing) in this low-level test: we only
+        // need `workspace_root` to be set so `project_files` membership logic can run.
+        let memory = MemoryManager::new(MemoryBudget::default_for_system_with_env_overrides());
+        let engine = WorkspaceEngine::new(WorkspaceEngineConfig {
+            workspace_root: root.clone(),
+            persistence: PersistenceConfig {
+                mode: PersistenceMode::Disabled,
+                cache: CacheConfig::from_env(),
+            },
+            memory,
+        });
+        {
+            let mut state = engine
+                .project_state
+                .lock()
+                .expect("workspace project state mutex poisoned");
+            state.workspace_root = Some(root.clone());
+            state.source_roots.clear();
+        }
         let project = ProjectId::from_raw(0);
 
         let java_path = root.join("src/A.java");
