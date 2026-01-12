@@ -4,8 +4,9 @@
 //!
 //! - By default, scoring is **ASCII case-insensitive** and operates on raw UTF-8 bytes.
 //! - With the crate's `unicode` feature enabled, scoring becomes **Unicode-aware** by
-//!   normalizing inputs to **NFKC** and applying Unicode **case folding** first.
-//!   Purely ASCII inputs continue to take a fast path.
+//!   normalizing inputs to **NFKC** and applying Unicode **case folding** first, and
+//!   then matching over **extended grapheme clusters** (not bytes). Purely ASCII
+//!   inputs continue to take a fast path.
 
 use std::cmp::Ordering;
 
@@ -15,7 +16,8 @@ pub enum MatchKind {
     /// `candidate` starts with `query` (case-insensitive).
     ///
     /// - Without the `unicode` feature this is ASCII-only.
-    /// - With `unicode` enabled this is Unicode-aware (NFKC + Unicode case folding).
+    /// - With `unicode` enabled this is Unicode-aware (NFKC + Unicode case folding)
+    ///   and operates on extended grapheme clusters.
     Prefix,
     /// General fuzzy subsequence match.
     Fuzzy,
@@ -588,6 +590,11 @@ impl FuzzyMatcher {
 }
 
 #[cfg(feature = "unicode")]
+/// Reusable fuzzy matcher that avoids per-candidate allocations.
+///
+/// With `feature = "unicode"`, this type keeps an ASCII fast path and otherwise
+/// normalizes and case-folds both query and candidate (NFKC + Unicode case
+/// folding) and scores matches over extended grapheme clusters.
 #[derive(Debug, Clone)]
 pub struct FuzzyMatcher {
     query: Vec<u8>,
@@ -856,6 +863,11 @@ pub fn fuzzy_match(query: &str, candidate: &str) -> Option<MatchScore> {
     })
 }
 
+/// Fuzzy match `query` against `candidate`.
+///
+/// - Case-insensitive (`unicode` feature controls whether this is ASCII-only or
+///   Unicode-aware).
+/// - Prefix matches are fast-pathed and always rank above fuzzy matches.
 #[cfg(feature = "unicode")]
 pub fn fuzzy_match(query: &str, candidate: &str) -> Option<MatchScore> {
     if query.is_ascii() && candidate.is_ascii() {
