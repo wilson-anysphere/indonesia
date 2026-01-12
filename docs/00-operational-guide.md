@@ -53,9 +53,9 @@ the OS-enforced ceiling.
 
 ```bash
 # CORRECT - Always use the wrapper:
-bash scripts/cargo_agent.sh build --release
-bash scripts/cargo_agent.sh test -p nova-core --lib
-bash scripts/cargo_agent.sh check -p nova-syntax
+bash scripts/cargo_agent.sh build --locked --release
+bash scripts/cargo_agent.sh test --locked -p nova-core --lib
+bash scripts/cargo_agent.sh check --locked -p nova-syntax
 
 # WRONG - Will OOM the host:
 cargo test                    # Spawns 100s of rustc processes
@@ -84,10 +84,10 @@ cargo check --all-features    # Unbounded work
 
 ```bash
 # CORRECT:
-bash scripts/cargo_agent.sh build --release
-bash scripts/cargo_agent.sh test -p nova-core --lib
-bash scripts/cargo_agent.sh test -p nova-format --test harness suite::format_fixtures
-bash scripts/cargo_agent.sh check -p nova-syntax
+bash scripts/cargo_agent.sh build --locked --release
+bash scripts/cargo_agent.sh test --locked -p nova-core --lib
+bash scripts/cargo_agent.sh test --locked -p nova-format --test harness suite::format_fixtures
+bash scripts/cargo_agent.sh check --locked -p nova-syntax
 
 # WRONG — WILL DESTROY HOST:
 cargo test
@@ -126,9 +126,9 @@ Options:
 High-throughput cargo wrapper for multi-agent hosts.
 
 ```bash
-bash scripts/cargo_agent.sh build --release
-bash scripts/cargo_agent.sh test -p nova-core --lib
-bash scripts/cargo_agent.sh check -p nova-syntax --quiet
+bash scripts/cargo_agent.sh build --locked --release
+bash scripts/cargo_agent.sh test --locked -p nova-core --lib
+bash scripts/cargo_agent.sh check --locked -p nova-syntax --quiet
 ```
 
 Features:
@@ -217,7 +217,7 @@ If this happens:
 
 ```bash
 # If 4GB isn't enough for a specific task:
-NOVA_CARGO_LIMIT_AS=8G bash scripts/cargo_agent.sh build --release
+NOVA_CARGO_LIMIT_AS=8G bash scripts/cargo_agent.sh build --locked --release
 
 # Or use run_limited directly:
 bash scripts/run_limited.sh --as 8G -- ./memory-hungry-task
@@ -237,7 +237,7 @@ if [[ -d target ]]; then
   size_bytes=$(du -sb target 2>/dev/null | cut -f1 || echo 0)
   if [[ "${size_bytes}" -ge "${TARGET_MAX_BYTES}" ]]; then
     echo "target/ exceeds ${TARGET_MAX_GB}GB; running cargo clean..."
-    bash scripts/cargo_agent.sh clean
+    bash scripts/cargo_agent.sh clean --locked
   fi
 fi
 ```
@@ -269,10 +269,10 @@ Remember: **CPU and I/O are free**. Use them aggressively.
 
 ```bash
 # GOOD: Use all cores
-bash scripts/cargo_agent.sh build --release -j$(nproc)
+bash scripts/cargo_agent.sh build --locked --release -j$(nproc)
 
 # GOOD: Run tests in parallel
-bash scripts/cargo_agent.sh test -p nova-core --lib
+bash scripts/cargo_agent.sh test --locked -p nova-core --lib
 
 # The wrapper handles throttling - you don't need to be conservative
 ```

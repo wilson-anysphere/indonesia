@@ -25,8 +25,8 @@ When running hundreds of concurrent agents on a shared system (e.g., 192 vCPU / 
 
 ```bash
 # CORRECT:
-bash scripts/cargo_agent.sh build --release
-bash scripts/cargo_agent.sh test -p nova-core --lib
+bash scripts/cargo_agent.sh build --locked --release
+bash scripts/cargo_agent.sh test --locked -p nova-core --lib
 
 # WRONG - WILL DESTROY HOST:
 cargo test
@@ -88,9 +88,9 @@ Each workstream has its own instruction file in `instructions/`:
 
 ```bash
 # ALWAYS use wrapper:
-bash scripts/cargo_agent.sh build --release
-bash scripts/cargo_agent.sh test -p nova-core --lib
-bash scripts/cargo_agent.sh check -p nova-syntax
+bash scripts/cargo_agent.sh build --locked --release
+bash scripts/cargo_agent.sh test --locked -p nova-core --lib
+bash scripts/cargo_agent.sh check --locked -p nova-syntax
 
 # NEVER run these:
 cargo test                    # Unbounded
@@ -122,7 +122,7 @@ See [Testing Infrastructure](docs/14-testing-infrastructure.md) for details.
 ### Code Quality
 
 - Fix linter errors before committing
-- Run `bash scripts/cargo_agent.sh check -p <crate>` before pushing
+- Run `bash scripts/cargo_agent.sh check --locked -p <crate>` before pushing
 - Add tests for new functionality
 - Follow existing code conventions in each crate
 

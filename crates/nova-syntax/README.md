@@ -23,17 +23,17 @@ There is **no** standalone integration test target named `golden_corpus`, so you
 Run the full `nova-syntax` integration test suite (`harness`):
 
 ```bash
-bash scripts/cargo_agent.sh test -p nova-syntax --test harness
+bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness
 ```
 
 Run just the golden corpus test (test-name filter):
 
 ```bash
-bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
+bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::golden_corpus
 ```
 
 Update (or create) the expected outputs:
 
 ```bash
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test --locked -p nova-syntax --test harness suite::golden_corpus
 ```

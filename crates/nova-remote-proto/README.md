@@ -45,7 +45,7 @@ Note: v3 uses negotiated `max_frame_len` / `max_packet_len` and does not read th
 ## Testing
 
 ```bash
-bash scripts/cargo_agent.sh test -p nova-remote-proto
+bash scripts/cargo_agent.sh test --locked -p nova-remote-proto
 ```
 
 ## Fuzzing
@@ -82,5 +82,5 @@ crate: `crates/nova-remote-rpc/fuzz/`.
 To regenerate (e.g. after a deliberate protocol change and version bump):
 
 ```bash
-bash scripts/cargo_agent.sh run -p nova-remote-proto --bin generate_testdata
+bash scripts/cargo_agent.sh run --locked -p nova-remote-proto --bin generate_testdata
 ```

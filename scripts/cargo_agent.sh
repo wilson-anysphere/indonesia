@@ -9,10 +9,10 @@ set -euo pipefail
 # - Enforce a per-command RAM ceiling via RLIMIT_AS
 #
 # Usage:
-#   bash scripts/cargo_agent.sh build --release
-#   bash scripts/cargo_agent.sh check -p nova-syntax
-#   bash scripts/cargo_agent.sh test -p nova-core --lib
-#   bash scripts/cargo_agent.sh test -p nova-types --test javac_differential -- --ignored
+#   bash scripts/cargo_agent.sh build --locked --release
+#   bash scripts/cargo_agent.sh check --locked -p nova-syntax
+#   bash scripts/cargo_agent.sh test --locked -p nova-core --lib
+#   bash scripts/cargo_agent.sh test --locked -p nova-types --test javac_differential -- --ignored
 #
 # Tuning knobs (env vars):
 #   NOVA_CARGO_SLOTS        Max concurrent cargo commands (default: auto from CPU)
@@ -27,11 +27,11 @@ usage() {
 usage: bash scripts/cargo_agent.sh <cargo-subcommand> [args...]
 
 Examples:
-  bash scripts/cargo_agent.sh check -p nova-syntax --quiet
-  bash scripts/cargo_agent.sh build --release
-  bash scripts/cargo_agent.sh test -p nova-core --lib
-  bash scripts/cargo_agent.sh test -p nova-format --test harness suite::format_fixtures
-  bash scripts/cargo_agent.sh test -p nova-types --test javac_differential -- --ignored
+  bash scripts/cargo_agent.sh check --locked -p nova-syntax --quiet
+  bash scripts/cargo_agent.sh build --locked --release
+  bash scripts/cargo_agent.sh test --locked -p nova-core --lib
+  bash scripts/cargo_agent.sh test --locked -p nova-format --test harness suite::format_fixtures
+  bash scripts/cargo_agent.sh test --locked -p nova-types --test javac_differential -- --ignored
 
 Environment:
   NOVA_CARGO_SLOTS        Max concurrent cargo commands (default: auto)
@@ -115,7 +115,7 @@ Re-run with an explicit scope selector:
   --manifest-path <path>
 
 Example:
-  bash scripts/cargo_agent.sh test -p nova-testing --lib
+  bash scripts/cargo_agent.sh test --locked -p nova-testing --lib
 
 To override (rare): set `NOVA_CARGO_ALLOW_UNSCOPED_TEST=1` and re-run.
 EOF
