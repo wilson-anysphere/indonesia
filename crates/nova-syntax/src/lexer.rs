@@ -171,21 +171,30 @@ impl<'a> Lexer<'a> {
             // diagnostic. We keep the token stream lossless by leaving already-emitted template
             // tokens intact and surfacing a zero-length `Error` sentinel at EOF.
             if !self.mode_stack.is_empty() {
-                let mut delimiter = None;
-                for mode in self.mode_stack.iter().rev() {
-                    match *mode {
-                        LexMode::Template { delimiter: d, .. } => {
-                            delimiter = Some(d);
-                            break;
-                        }
-                        LexMode::TemplateInterpolation { .. } => {}
+                let mut delimiter = TemplateDelimiter::Quote;
+                let mut template_idx = None;
+
+                for (idx, mode) in self.mode_stack.iter().enumerate().rev() {
+                    if let LexMode::Template {
+                        delimiter: d,
+                        ..
+                    } = *mode
+                    {
+                        delimiter = d;
+                        template_idx = Some(idx);
+                        break;
                     }
                 }
-                let delimiter = delimiter.unwrap_or(TemplateDelimiter::Quote);
-                let in_expr = self
-                    .mode_stack
-                    .iter()
-                    .any(|m| matches!(m, LexMode::TemplateInterpolation { .. }));
+
+                // Report an unterminated interpolation only when the *innermost* unclosed template
+                // is currently inside an interpolation. This avoids misleading diagnostics for
+                // cases like `STR."outer \{ STR."inner` where the nested template is unterminated
+                // but no interpolation has started inside it.
+                let in_expr = template_idx.is_some_and(|idx| {
+                    self.mode_stack[idx + 1..]
+                        .iter()
+                        .any(|m| matches!(m, LexMode::TemplateInterpolation { .. }))
+                });
 
                 let message = match (delimiter, in_expr) {
                     (TemplateDelimiter::Quote, false) => "unterminated string template",
