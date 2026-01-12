@@ -1868,7 +1868,12 @@ impl EventModifier {
 }
 
 async fn read_loop(mut reader: tokio::net::tcp::OwnedReadHalf, inner: Arc<Inner>) {
-    let mut terminated_with_error = false;
+    // If the peer sends malformed JDWP frames (e.g. invalid length prefixes), wake all pending
+    // requests with a protocol error to preserve an actionable reason for the disconnect.
+    //
+    // For IO errors / graceful disconnects we keep returning `ConnectionClosed`, which is what most
+    // callers expect for remote shutdowns.
+    let mut terminated_with_error: Option<JdwpError> = None;
 
     loop {
         let mut header = [0u8; HEADER_LEN];
@@ -1877,14 +1882,13 @@ async fn read_loop(mut reader: tokio::net::tcp::OwnedReadHalf, inner: Arc<Inner>
             res = reader.read_exact(&mut header) => res,
         };
         if let Err(err) = header_read {
-            terminated_with_error = true;
-            let _ = err;
+            terminated_with_error = Some(JdwpError::Io(err));
             break;
         }
 
         let length = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
-        if crate::validate_jdwp_packet_length(length).is_err() {
-            terminated_with_error = true;
+        if let Err(msg) = crate::validate_jdwp_packet_length(length) {
+            terminated_with_error = Some(JdwpError::Protocol(msg));
             break;
         }
 
@@ -1893,7 +1897,9 @@ async fn read_loop(mut reader: tokio::net::tcp::OwnedReadHalf, inner: Arc<Inner>
         let payload_len = length - HEADER_LEN;
         let mut payload = Vec::new();
         if payload.try_reserve_exact(payload_len).is_err() {
-            terminated_with_error = true;
+            terminated_with_error = Some(JdwpError::Protocol(format!(
+                "unable to allocate packet buffer ({payload_len} bytes)"
+            )));
             break;
         }
         payload.resize(payload_len, 0);
@@ -1901,8 +1907,8 @@ async fn read_loop(mut reader: tokio::net::tcp::OwnedReadHalf, inner: Arc<Inner>
             _ = inner.shutdown.cancelled() => break,
             res = reader.read_exact(&mut payload) => res,
         };
-        if payload_read.is_err() {
-            terminated_with_error = true;
+        if let Err(err) = payload_read {
+            terminated_with_error = Some(JdwpError::Io(err));
             break;
         }
 
@@ -1924,8 +1930,8 @@ async fn read_loop(mut reader: tokio::net::tcp::OwnedReadHalf, inner: Arc<Inner>
             let command = header[10];
             if command_set == 64 && command == 100 {
                 // Composite event packet.
-                if handle_event_packet(&inner, &payload).await.is_err() {
-                    terminated_with_error = true;
+                if let Err(err) = handle_event_packet(&inner, &payload).await {
+                    terminated_with_error = Some(err);
                     break;
                 }
             } else {
@@ -1935,13 +1941,17 @@ async fn read_loop(mut reader: tokio::net::tcp::OwnedReadHalf, inner: Arc<Inner>
         }
     }
 
-    if terminated_with_error {
+    if let Some(err) = terminated_with_error {
         let pending = {
             let mut pending = inner.pending.lock().unwrap_or_else(|e| e.into_inner());
             std::mem::take(&mut *pending)
         };
         for (_id, tx) in pending {
-            let _ = tx.send(Err(JdwpError::ConnectionClosed));
+            let err = match &err {
+                JdwpError::Protocol(msg) => JdwpError::Protocol(msg.clone()),
+                _ => JdwpError::ConnectionClosed,
+            };
+            let _ = tx.send(Err(err));
         }
     }
 
