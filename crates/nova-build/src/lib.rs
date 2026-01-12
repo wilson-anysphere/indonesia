@@ -8,6 +8,7 @@ mod cache;
 mod command;
 mod gradle;
 mod javac;
+mod jpms;
 mod maven;
 mod module_graph;
 mod orchestrator;

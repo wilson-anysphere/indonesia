@@ -1,5 +1,6 @@
 use crate::cache::{BuildCache, BuildFileFingerprint};
 use crate::command::format_command;
+use crate::jpms::{infer_module_path_entries, main_source_roots_have_module_info};
 use crate::{
     BuildError, BuildResult, BuildSystemKind, Classpath, CommandOutput, CommandRunner,
     DefaultCommandRunner, JavaCompileConfig, MavenBuildGoal, Result,
@@ -372,32 +373,39 @@ impl MavenBuild {
                 "project.testCompileModulePathElements",
             )?;
 
-            let mut module_path = Vec::new();
-            module_path.extend(absolutize_paths(&module_dir, main_module_path));
-            module_path.extend(absolutize_paths(&module_dir, test_module_path));
+            let mut module_path_candidates = Vec::new();
+            module_path_candidates.extend(absolutize_paths(&module_dir, main_module_path));
+            module_path_candidates.extend(absolutize_paths(&module_dir, test_module_path));
 
-            // Dedupe while preserving order.
-            let mut seen = std::collections::HashSet::new();
-            module_path.retain(|p| seen.insert(p.clone()));
+            // Avoid placing build output directories on the module-path.
+            if let Some(out_dir) = &main_output_dir {
+                module_path_candidates.retain(|p| p != out_dir);
+            }
+            if let Some(out_dir) = &test_output_dir {
+                module_path_candidates.retain(|p| p != out_dir);
+            }
+
+            // Match Gradle behavior by considering only stable modules
+            // (`module-info.class` or `Automatic-Module-Name`).
+            let module_path = infer_module_path_entries(&module_path_candidates);
 
             if module_path.is_empty() {
                 // Fallback heuristic: if the module looks like it uses JPMS, approximate by
-                // placing the entire compile classpath on the module-path.
+                // inferring stable modules from the compile classpath.
                 let has_module_info = module_dir
                     .join("src")
                     .join("main")
                     .join("java")
                     .join("module-info.java")
                     .is_file()
-                    || main_source_roots
-                        .iter()
-                        .any(|root| root.join("module-info.java").is_file());
+                    || main_source_roots_have_module_info(&main_source_roots);
 
                 if has_module_info {
-                    let mut module_path = compile_classpath.clone();
-                    let mut seen = std::collections::HashSet::new();
-                    module_path.retain(|p| seen.insert(p.clone()));
-                    module_path
+                    let mut deps = compile_classpath.clone();
+                    if let Some(out_dir) = &main_output_dir {
+                        deps.retain(|p| p != out_dir);
+                    }
+                    infer_module_path_entries(&deps)
                 } else {
                     Vec::new()
                 }
