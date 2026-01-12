@@ -1346,6 +1346,38 @@ class C { long m(){ return 1L; } }
 }
 
 #[test]
+fn type_at_offset_shows_float_for_float_literal() {
+    let src = r#"
+class C { float m(){ return 1.0f; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("1.0f")
+        .expect("snippet should contain float literal");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "float");
+}
+
+#[test]
+fn type_at_offset_shows_double_for_double_literal() {
+    let src = r#"
+class C { double m(){ return 1.0d; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("1.0d")
+        .expect("snippet should contain double literal");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "double");
+}
+
+#[test]
 fn type_at_offset_shows_char_for_char_literal() {
     let src = r#"
 class C { char m(){ return 'a'; } }
