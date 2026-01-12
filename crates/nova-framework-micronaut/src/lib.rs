@@ -385,9 +385,14 @@ fn project_inputs(db: &dyn Database, file_ids: &[FileId]) -> (Vec<JavaSource>, V
 }
 
 fn config_file_kind(path: &Path) -> Option<ConfigFileKind> {
-    match path.file_name().and_then(|n| n.to_str()) {
-        Some("application.properties") => Some(ConfigFileKind::Properties),
-        Some("application.yml" | "application.yaml") => Some(ConfigFileKind::Yaml),
+    let file_name = path.file_name().and_then(|n| n.to_str())?;
+    if !file_name.starts_with("application") {
+        return None;
+    }
+
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("properties") => Some(ConfigFileKind::Properties),
+        Some("yml" | "yaml") => Some(ConfigFileKind::Yaml),
         _ => None,
     }
 }
