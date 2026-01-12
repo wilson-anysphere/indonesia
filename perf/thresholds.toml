@@ -73,3 +73,5 @@ p95_regression = 0.20
 "symbol_search/trigram_hmap_multi/qualified" = { p50_regression = 0.25, p95_regression = 0.80 }
 "symbol_search/fallback_full_scan_zkm/equal" = { p50_regression = 0.25, p95_regression = 0.50 }
 "symbol_search/fallback_full_scan_zkm/qualified" = { p50_regression = 0.25, p95_regression = 0.50 }
+"symbol_search_full_scan_many/full_scan_z_many_matches/equal" = { p50_regression = 0.25, p95_regression = 0.80 }
+"symbol_search_full_scan_many/full_scan_z_many_matches/qualified" = { p50_regression = 0.25, p95_regression = 0.80 }
