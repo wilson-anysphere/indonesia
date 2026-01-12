@@ -513,7 +513,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Key entry points:** `crates/nova-types-bridge/src/lib.rs` (`ExternalTypeLoader`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
-  - Still a best-effort adapter; not yet the single canonical “type loading” path across the index/resolution stack.
+  - Still a best-effort adapter; higher semantic layers still need a project-level/shared `TypeStore` (or equivalent) for stable identities across Salsa queries.
 
 ### `nova-types-signature`
 - **Purpose:** best-effort translation from JVM descriptors + generic signature ASTs (`nova-classfile`) into Nova’s type model (`nova-types::Type`).
