@@ -1,10 +1,9 @@
-//! Integration test entry point for type checking.
+//! Type-checking integration test entry point for `nova-db`.
 //!
-//! We keep most test logic in submodules (e.g. `tests/suite/*` and `tests/typeck/*`) to keep the
-//! top-level `tests/` directory manageable while still exposing a stable `--test typeck` target.
+//! `nova-db` consolidates most integration tests into `tests/harness.rs` for compile-time
+//! performance. This crate exists solely to provide a stable, narrowly-scoped target for:
+//! `cargo test -p nova-db --test typeck`.
 
-mod suite;
-
-// Type-checker specific tests that don't fit the broader suite harness.
-#[path = "typeck/diagnostics.rs"]
-mod diagnostics;
+// Core typeck regression tests live in `tests/suite/typeck.rs`.
+#[path = "suite/typeck.rs"]
+mod suite_typeck;
