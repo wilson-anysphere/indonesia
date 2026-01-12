@@ -2760,7 +2760,14 @@ export async function activate(context: vscode.ExtensionContext) {
             const uriString = typeof context?.uri === 'string' ? context.uri : undefined;
             const uri = uriString ? vscode.Uri.parse(uriString) : vscode.window.activeTextEditor?.document.uri;
             const workspaces = vscode.workspace.workspaceFolders ?? [];
-            const targetFolder = uri ? vscode.workspace.getWorkspaceFolder(uri) : workspaces.length === 1 ? workspaces[0] : undefined;
+            let targetFolder = uri ? vscode.workspace.getWorkspaceFolder(uri) : undefined;
+            if (!targetFolder) {
+              if (workspaces.length === 1) {
+                targetFolder = workspaces[0];
+              } else if (workspaces.length > 1) {
+                targetFolder = await promptWorkspaceFolder(workspaces, 'Select workspace folder to run safe delete');
+              }
+            }
             if (!targetFolder) {
               void vscode.window.showErrorMessage('Nova: Open a workspace folder to run safe delete.');
               return;
