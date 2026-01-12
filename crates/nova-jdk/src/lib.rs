@@ -257,6 +257,15 @@ impl JdkIndex {
         bytes
     }
 
+    /// Best-effort drop of large in-memory caches inside the symbol-backed index.
+    ///
+    /// This keeps the index usable, but may make subsequent lookups slower until caches re-warm.
+    pub fn evict_symbol_caches(&self) {
+        if let Some(symbols) = &self.symbols {
+            symbols.evict_caches();
+        }
+    }
+
     /// Build an index backed by a JDK installation's standard-library containers
     /// (`jmods/` on JPMS JDKs, `rt.jar`/`tools.jar` on legacy JDK 8).
     pub fn from_jdk_root(root: impl AsRef<Path>) -> Result<Self, JdkIndexError> {

@@ -221,6 +221,17 @@ impl JdkSymbolIndex {
             Self::CtSym(index) => index.estimated_bytes(),
         }
     }
+
+    /// Best-effort drop of large in-memory caches (stub maps, negative caches).
+    ///
+    /// This keeps the symbol index usable but may cause subsequent lookups to
+    /// re-parse classfiles or re-read archive entries.
+    pub(crate) fn evict_caches(&self) {
+        match self {
+            Self::Jmods(index) => index.evict_caches(),
+            Self::CtSym(index) => index.evict_caches(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1165,6 +1176,35 @@ impl JmodSymbolIndex {
         }
 
         bytes
+    }
+
+    pub(crate) fn evict_caches(&self) {
+        use std::mem;
+        use std::sync::TryLockError;
+
+        fn try_lock_best_effort<T>(mutex: &Mutex<T>) -> Option<std::sync::MutexGuard<'_, T>> {
+            match mutex.try_lock() {
+                Ok(guard) => Some(guard),
+                Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+                Err(TryLockError::WouldBlock) => None,
+            }
+        }
+
+        if let Some(mut map) = try_lock_best_effort(&self.by_internal) {
+            let _ = mem::take(&mut *map);
+        }
+
+        if let Some(mut map) = try_lock_best_effort(&self.by_binary) {
+            let _ = mem::take(&mut *map);
+        }
+
+        if let Some(mut missing) = try_lock_best_effort(&self.missing) {
+            let _ = mem::take(&mut *missing);
+        }
+
+        // NOTE: `class_to_container` is a persistent mapping populated by container scans that are
+        // guarded by per-container `OnceCell` flags. Clearing it would make lookups fail because we
+        // cannot reset the `OnceCell` state to allow re-indexing.
     }
 }
 

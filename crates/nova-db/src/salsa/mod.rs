@@ -959,12 +959,13 @@ impl InputIndexTracker {
         }
     }
 
-    fn register(&self, manager: &MemoryManager) {
+    fn register_evictor(&self, manager: &MemoryManager, evictor: Arc<dyn MemoryEvictor>) {
         if self.registration.get().is_some() {
             return;
         }
 
-        let registration = manager.register_tracker(self.name.clone(), MemoryCategory::Indexes);
+        let registration =
+            manager.register_evictor(self.name.clone(), MemoryCategory::Indexes, evictor);
         let _ = self.tracker.set(registration.tracker());
         let _ = self.registration.set(registration);
         self.refresh_tracker();
@@ -976,6 +977,10 @@ impl InputIndexTracker {
         };
         let bytes = self.lock_inner().total_bytes;
         tracker.set_bytes(bytes);
+    }
+
+    fn bytes(&self) -> u64 {
+        self.lock_inner().total_bytes
     }
 
     fn set_project_ptr(&self, project: ProjectId, ptr: Option<usize>, bytes: u64) {
@@ -1053,6 +1058,196 @@ impl InputIndexTracker {
 
         if let Some(tracker) = self.tracker.get() {
             tracker.set_bytes(total);
+        }
+    }
+}
+
+#[derive(Debug)]
+struct JdkIndexEvictor {
+    name: String,
+    inputs: Arc<ParkingMutex<SalsaInputs>>,
+    tracker: Arc<InputIndexTracker>,
+}
+
+impl JdkIndexEvictor {
+    fn new(inputs: Arc<ParkingMutex<SalsaInputs>>, tracker: Arc<InputIndexTracker>) -> Self {
+        Self {
+            name: tracker.name.clone(),
+            inputs,
+            tracker,
+        }
+    }
+}
+
+impl MemoryEvictor for JdkIndexEvictor {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn category(&self) -> MemoryCategory {
+        MemoryCategory::Indexes
+    }
+
+    fn evict(&self, request: EvictionRequest) -> EvictionResult {
+        let before = self.tracker.bytes();
+        if before <= request.target_bytes {
+            return EvictionResult {
+                before_bytes: before,
+                after_bytes: before,
+            };
+        }
+
+        // Under low pressure, avoid disrupting cache locality.
+        if matches!(request.pressure, MemoryPressure::Low) {
+            return EvictionResult {
+                before_bytes: before,
+                after_bytes: before,
+            };
+        }
+
+        let Some(inputs) = self.inputs.try_lock() else {
+            return EvictionResult {
+                before_bytes: before,
+                after_bytes: before,
+            };
+        };
+
+        let snapshots: Vec<(ProjectId, usize, Arc<nova_jdk::JdkIndex>)> = inputs
+            .jdk_index
+            .iter()
+            .map(|(&project, index)| {
+                let index = index.0.clone();
+                let ptr = Arc::as_ptr(&index) as usize;
+                (project, ptr, index)
+            })
+            .collect();
+        drop(inputs);
+
+        // Clear caches per unique JDK index allocation.
+        {
+            use std::collections::HashSet;
+
+            let mut seen = HashSet::new();
+            for (_project, ptr, index) in &snapshots {
+                if seen.insert(*ptr) {
+                    index.evict_symbol_caches();
+                }
+            }
+        }
+
+        // Update tracked bytes for projects that still reference the same `Arc` allocation.
+        let bytes_by_ptr: HashMap<usize, u64> = snapshots
+            .iter()
+            .map(|(_project, ptr, index)| (*ptr, index.estimated_bytes()))
+            .collect();
+
+        if let Some(inputs) = self.inputs.try_lock() {
+            for (project, ptr, _index) in &snapshots {
+                let still_same = inputs
+                    .jdk_index
+                    .get(project)
+                    .is_some_and(|current| Arc::as_ptr(&current.0) as usize == *ptr);
+                if !still_same {
+                    continue;
+                }
+
+                let bytes = bytes_by_ptr.get(ptr).copied().unwrap_or(0);
+                self.tracker.set_project_ptr(*project, Some(*ptr), bytes);
+            }
+        }
+
+        let after = self.tracker.bytes();
+        EvictionResult {
+            before_bytes: before,
+            after_bytes: after,
+        }
+    }
+}
+
+struct ClasspathIndexEvictor {
+    name: String,
+    db: Arc<ParkingMutex<RootDatabase>>,
+    inputs: Arc<ParkingMutex<SalsaInputs>>,
+    tracker: Arc<InputIndexTracker>,
+}
+
+impl ClasspathIndexEvictor {
+    fn new(
+        db: Arc<ParkingMutex<RootDatabase>>,
+        inputs: Arc<ParkingMutex<SalsaInputs>>,
+        tracker: Arc<InputIndexTracker>,
+    ) -> Self {
+        Self {
+            name: tracker.name.clone(),
+            db,
+            inputs,
+            tracker,
+        }
+    }
+}
+
+impl MemoryEvictor for ClasspathIndexEvictor {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn category(&self) -> MemoryCategory {
+        MemoryCategory::Indexes
+    }
+
+    fn evict(&self, request: EvictionRequest) -> EvictionResult {
+        let before = self.tracker.bytes();
+        if before <= request.target_bytes {
+            return EvictionResult {
+                before_bytes: before,
+                after_bytes: before,
+            };
+        }
+
+        // Dropping the classpath index is a large UX hit. Only do it when we enter high pressure.
+        if !matches!(
+            request.pressure,
+            MemoryPressure::High | MemoryPressure::Critical
+        ) {
+            return EvictionResult {
+                before_bytes: before,
+                after_bytes: before,
+            };
+        }
+
+        // Lock ordering: `inputs` then `db` (matches the rest of this file).
+        let Some(mut inputs) = self.inputs.try_lock() else {
+            return EvictionResult {
+                before_bytes: before,
+                after_bytes: before,
+            };
+        };
+        let Some(mut db) = self.db.try_lock() else {
+            return EvictionResult {
+                before_bytes: before,
+                after_bytes: before,
+            };
+        };
+
+        let projects: Vec<ProjectId> = inputs
+            .classpath_index
+            .iter()
+            .filter_map(|(&project, index)| index.as_ref().map(|_| project))
+            .collect();
+
+        for project in projects {
+            inputs.classpath_index.insert(project, None);
+            db.set_classpath_index(project, None);
+            self.tracker.set_project_ptr(project, None, 0);
+        }
+
+        drop(db);
+        drop(inputs);
+
+        let after = self.tracker.bytes();
+        EvictionResult {
+            before_bytes: before,
+            after_bytes: after,
         }
     }
 }
@@ -2703,8 +2898,21 @@ impl Database {
 
     /// Register memory trackers for large Salsa inputs (JDK + classpath indexes).
     pub fn register_input_index_trackers(&self, manager: &MemoryManager) {
-        self.jdk_index_tracker.register(manager);
-        self.classpath_index_tracker.register(manager);
+        self.jdk_index_tracker.register_evictor(
+            manager,
+            Arc::new(JdkIndexEvictor::new(
+                self.inputs.clone(),
+                self.jdk_index_tracker.clone(),
+            )),
+        );
+        self.classpath_index_tracker.register_evictor(
+            manager,
+            Arc::new(ClasspathIndexEvictor::new(
+                self.inner.clone(),
+                self.inputs.clone(),
+                self.classpath_index_tracker.clone(),
+            )),
+        );
     }
 
     pub fn register_java_parse_cache_evictor(&self, manager: &MemoryManager) {
@@ -4132,6 +4340,113 @@ class Foo {
             0,
             "expected memory tracker to update when classpath_index is cleared"
         );
+    }
+
+    #[test]
+    fn salsa_input_classpath_index_evicts_under_memory_pressure() {
+        let manager = MemoryManager::new(MemoryBudget::from_total(1_000));
+        let db = Database::new_with_memory_manager(&manager);
+        let project = ProjectId::from_raw(0);
+
+        let stub = nova_classpath::ClasspathClassStub {
+            binary_name: "com.example.Foo".to_string(),
+            internal_name: "com/example/Foo".to_string(),
+            access_flags: 0,
+            super_binary_name: None,
+            interfaces: Vec::new(),
+            signature: None,
+            annotations: Vec::new(),
+            fields: vec![nova_classpath::ClasspathFieldStub {
+                name: "FOO".to_string(),
+                descriptor: "I".to_string(),
+                signature: None,
+                access_flags: 0,
+                annotations: Vec::new(),
+            }],
+            methods: vec![nova_classpath::ClasspathMethodStub {
+                name: "bar".to_string(),
+                descriptor: "()V".to_string(),
+                signature: None,
+                access_flags: 0,
+                annotations: Vec::new(),
+            }],
+        };
+
+        let module_aware = nova_classpath::ModuleAwareClasspathIndex::from_stubs([(stub, None)]);
+        let classpath = module_aware.types;
+        db.set_classpath_index(project, Some(Arc::new(classpath)));
+
+        assert!(
+            db.snapshot().classpath_index(project).is_some(),
+            "expected classpath_index to be set before eviction"
+        );
+
+        // Under very small budgets the process will enter Critical pressure due to RSS and should
+        // evict the classpath index to keep the process alive.
+        manager.enforce();
+
+        assert!(
+            db.snapshot().classpath_index(project).is_none(),
+            "expected classpath_index to be cleared under memory pressure"
+        );
+        assert_eq!(
+            manager.report().usage.indexes,
+            0,
+            "expected index usage to return to 0 after classpath eviction"
+        );
+    }
+
+    #[test]
+    fn salsa_input_jdk_index_evictor_clears_symbol_caches_under_pressure() {
+        let manager = MemoryManager::new(MemoryBudget::from_total(1_000));
+        let db = Database::new_with_memory_manager(&manager);
+        let project = ProjectId::from_raw(0);
+
+        let fake_jdk_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../nova-jdk/testdata/fake-jdk");
+        let fake_jdk_root = std::fs::canonicalize(&fake_jdk_root).unwrap_or(fake_jdk_root);
+
+        let jdk = Arc::new(
+            nova_jdk::JdkIndex::from_jdk_root_with_cache(fake_jdk_root, None)
+                .expect("expected fake JDK fixture to load"),
+        );
+        db.set_jdk_index(project, Arc::clone(&jdk));
+
+        // Warm the symbol caches by loading multiple stubs.
+        assert!(jdk
+            .lookup_type("java.lang.String")
+            .expect("lookup should succeed")
+            .is_some());
+        assert!(jdk
+            .lookup_type("java.util.List")
+            .expect("lookup should succeed")
+            .is_some());
+        assert!(jdk
+            .lookup_type("java.lang.Custom")
+            .expect("lookup should succeed")
+            .is_some());
+
+        // Refresh the tracked bytes for the same `Arc` allocation now that caches are populated.
+        db.set_jdk_index(project, Arc::clone(&jdk));
+        let bytes_before = manager.report().usage.indexes;
+        assert!(
+            bytes_before > 0,
+            "expected JDK index usage to be tracked after setting input"
+        );
+
+        manager.enforce();
+
+        let bytes_after = manager.report().usage.indexes;
+        assert!(
+            bytes_after < bytes_before,
+            "expected JDK index eviction to reduce tracked bytes (before={bytes_before}, after={bytes_after})"
+        );
+
+        // The index should remain usable after eviction (cache miss -> recompute).
+        assert!(jdk
+            .lookup_type("java.lang.String")
+            .expect("lookup should succeed after eviction")
+            .is_some());
     }
 
     #[test]

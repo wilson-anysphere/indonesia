@@ -384,6 +384,30 @@ impl CtSymReleaseIndex {
         bytes
     }
 
+    pub(crate) fn evict_caches(&self) {
+        use std::mem;
+        use std::sync::TryLockError;
+
+        fn try_lock_best_effort<T>(mutex: &Mutex<T>) -> Option<std::sync::MutexGuard<'_, T>> {
+            match mutex.try_lock() {
+                Ok(guard) => Some(guard),
+                Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+                Err(TryLockError::WouldBlock) => None,
+            }
+        }
+
+        if let Some(mut map) = try_lock_best_effort(&self.by_internal) {
+            let _ = mem::take(&mut *map);
+        }
+
+        if let Some(mut map) = try_lock_best_effort(&self.by_binary) {
+            let _ = mem::take(&mut *map);
+        }
+
+        if let Some(mut set) = try_lock_best_effort(&self.missing) {
+            let _ = mem::take(&mut *set);
+        }
+    }
     pub(crate) fn modules(&self) -> &[ModuleName] {
         &self.modules
     }

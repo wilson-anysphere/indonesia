@@ -71,6 +71,8 @@ Nova already has the right *shape* of a memory system (`nova-memory`), but integ
 | `ItemTreeStore` (open-doc pinned `item_tree`) | `nova-db` | SyntaxTrees | yes | yes | Preserves open-doc summaries across Salsa memo eviction (`crates/nova-db/src/salsa/item_tree_store.rs`) |
 | `IndexCache` (generic bytes) | `nova-index` | Indexes | yes | yes | LRU-based (`crates/nova-index/src/memory_cache.rs`) |
 | `WorkspaceSymbolSearcher` | `nova-index` | Indexes | yes | yes | Tracks trigram/prefix index bytes (`crates/nova-index/src/symbol_search.rs`) |
+| Classpath index (Salsa input) | `nova-db` | Indexes | yes | yes | Dropped (set to `None`) under `High`/`Critical` pressure to keep the process alive. |
+| JDK index (Salsa input) | `nova-db` / `nova-jdk` | Indexes | yes | yes | Clears in-memory symbol caches (stub maps) under pressure, but keeps the index usable for lookups/decompilation. |
 
 ### Currently tracked but non-evictable (today)
 
@@ -78,8 +80,6 @@ Nova already has the right *shape* of a memory system (`nova-memory`), but integ
 |---|---|---:|---:|---|
 | VFS in-memory documents (overlay + virtual) | `nova-lsp` | Other | yes | Tracked via `Vfs::estimated_bytes()` (`crates/nova-lsp/src/main.rs`) |
 | Salsa inputs (file contents) | `nova-db` | Other | yes | `SalsaInputFootprint` tracks per-file `file_content` sizes (registered via `register_salsa_memo_evictor`). Although these inputs are not evictable, they still drive cache eviction via `MemoryManager` cross-category compensation. |
-| Classpath index (Salsa input) | `nova-db` | Indexes | yes | Tracked by `InputIndexTracker` via `ClasspathIndex::estimated_bytes()` |
-| JDK index (Salsa input) | `nova-db` | Indexes | yes | Tracked by `InputIndexTracker` via `JdkIndex::estimated_bytes()` |
 | VFS in-memory documents (overlay + virtual) | `nova-workspace` | Other | yes | Tracked via `Vfs::estimated_bytes()` |
 
 ### Major gaps (high impact)
@@ -89,8 +89,9 @@ Nova already has the right *shape* of a memory system (`nova-memory`), but integ
      `ProjectIndexes` and can drop it under pressure, but eviction currently drops the entire
      in-memory index (no partial retention) and does not persist shards via `flush_to_disk()`.
 2. **Large external indexes are tracked but not evictable**
-   - Classpath + JDK indexes are tracked via `InputIndexTracker`, but there is currently no
-     `MemoryEvictor` that can drop/clear them under `High`/`Critical` pressure.
+    - (Resolved) Classpath + JDK indexes are tracked via `InputIndexTracker` and participate in
+      eviction: the classpath index can be dropped under `High`/`Critical`, and the JDK index can
+      clear its in-memory symbol caches.
 3. **`MemoryCategory::TypeInfo` is unused**
    - Classpath/JDK indexes (arguably “type info”) are currently tracked under `Indexes`.
    - No component registers under `TypeInfo`, so the budget split is not meaningful for real-world
@@ -228,17 +229,16 @@ coherent end-to-end system.
    - Remaining work: persist shards in `flush_to_disk()` and support partial retention (keep symbols
      while dropping references/inheritance/etc.) to reduce UX impact.
 
-5. **`nova-db` / `nova-workspace`: classpath index eviction hook**
-   - Add a memory evictor that can drop `ClasspathIndex` (set Salsa input to `None`) at
-     `High`/`Critical`.
-   - Ensure queries behave deterministically with `None` classpath (existing tests already cover
-     classpath-optional behavior in many places).
-   - Unit tests: under small budgets, classpath index is dropped and core queries remain non-panicking.
+5. **(Done on main) `nova-db`: classpath index eviction hook**
+    - `ClasspathIndexEvictor` can drop `ClasspathIndex` (set Salsa input to `None`) at
+      `High`/`Critical` (`crates/nova-db/src/salsa/mod.rs`).
+    - Unit tests validate eviction under tight budgets.
 
-6. **`nova-jdk`: clear in-memory caches under pressure**
-   - Add a method (or evictor) that clears large memo tables inside the symbol-backed index, while
-     keeping minimal discovery/metadata.
-   - Unit tests: repeated lookups after eviction still succeed (cache miss → recompute), no panic.
+6. **(Done on main) `nova-jdk`: clear in-memory caches under pressure**
+    - `JdkIndex::evict_symbol_caches()` clears large memo tables inside the symbol-backed index, while
+      keeping the index usable (`crates/nova-jdk/src/lib.rs`).
+    - `nova-db` registers a `jdk_index` evictor to call this hook under memory pressure.
+    - Unit tests validate eviction and continued lookup success.
 
 7. **`nova-db`: refine Salsa memo eviction behavior**
    - Optional but valuable: treat `SalsaMemoEvictor` as expensive and avoid triggering it under
