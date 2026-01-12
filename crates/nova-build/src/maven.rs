@@ -225,12 +225,12 @@ impl MavenBuild {
             )?,
         );
 
-        let main_source_roots = absolutize_paths(
+        let mut main_source_roots = absolutize_paths(
             &module_dir,
             self.evaluate_path_list(project_root, module_relative, "project.compileSourceRoots")?,
         );
 
-        let test_source_roots = {
+        let mut test_source_roots = {
             let roots = self.evaluate_path_list(
                 project_root,
                 module_relative,
@@ -243,6 +243,36 @@ impl MavenBuild {
             };
             absolutize_paths(&module_dir, roots)
         };
+
+        let build_dir = self
+            .evaluate_scalar_best_effort(project_root, module_relative, "project.build.directory")?
+            .filter(|value| !value.contains("${"))
+            .map(PathBuf::from)
+            .map(|p| absolutize_path(&module_dir, p))
+            .unwrap_or_else(|| module_dir.join("target"));
+
+        // Best-effort heuristic: Maven codegen plugins typically write generated sources to
+        // `${project.build.directory}/generated-sources/**` but these roots may not be present in
+        // `project.compileSourceRoots` / `project.testCompileSourceRoots` until after the first
+        // successful build.
+        for root in [
+            build_dir.join("generated-sources"),
+            build_dir.join("generated-sources").join("annotations"),
+        ] {
+            if !main_source_roots.iter().any(|p| p == &root) {
+                main_source_roots.push(root);
+            }
+        }
+        for root in [
+            build_dir.join("generated-test-sources"),
+            build_dir
+                .join("generated-test-sources")
+                .join("test-annotations"),
+        ] {
+            if !test_source_roots.iter().any(|p| p == &root) {
+                test_source_roots.push(root);
+            }
+        }
 
         let main_output_dir = self
             .evaluate_scalar_best_effort(
