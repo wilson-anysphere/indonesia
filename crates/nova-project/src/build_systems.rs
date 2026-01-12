@@ -14,9 +14,9 @@ fn common_watch_files() -> Vec<PathPattern> {
         PathPattern::ExactFileName("nova.toml"),
         PathPattern::ExactFileName(".nova.toml"),
         PathPattern::ExactFileName("nova.config.toml"),
-        PathPattern::Glob("**/.nova/config.toml"),
+        PathPattern::Glob(".nova/config.toml"),
         // Generated source roots discovery snapshot.
-        PathPattern::Glob("**/.nova/apt-cache/generated-roots.json"),
+        PathPattern::Glob(".nova/apt-cache/generated-roots.json"),
     ]
 }
 

@@ -10,9 +10,9 @@ export const NOVA_CONFIG_REL_PATH = '.nova/config.toml' as const;
 export const NOVA_APT_GENERATED_ROOTS_SNAPSHOT_REL_PATH = '.nova/apt-cache/generated-roots.json' as const;
 export const NOVA_GRADLE_SNAPSHOT_REL_PATH = '.nova/queries/gradle.json' as const;
 
-export const NOVA_CONFIG_GLOB = `**/${NOVA_CONFIG_REL_PATH}` as const;
-export const NOVA_APT_GENERATED_ROOTS_SNAPSHOT_GLOB = `**/${NOVA_APT_GENERATED_ROOTS_SNAPSHOT_REL_PATH}` as const;
-export const NOVA_GRADLE_SNAPSHOT_GLOB = `**/${NOVA_GRADLE_SNAPSHOT_REL_PATH}` as const;
+export const NOVA_CONFIG_GLOB = NOVA_CONFIG_REL_PATH;
+export const NOVA_APT_GENERATED_ROOTS_SNAPSHOT_GLOB = NOVA_APT_GENERATED_ROOTS_SNAPSHOT_REL_PATH;
+export const NOVA_GRADLE_SNAPSHOT_GLOB = NOVA_GRADLE_SNAPSHOT_REL_PATH;
 
 const BUILD_SYSTEM_GLOB_PATTERNS = [
   // Maven build configuration / wrapper.

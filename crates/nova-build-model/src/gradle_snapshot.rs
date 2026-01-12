@@ -13,7 +13,7 @@ pub const GRADLE_SNAPSHOT_REL_PATH: &str = ".nova/queries/gradle.json";
 ///
 /// This is primarily used by build file watching logic (e.g. editor integrations) so changes to
 /// the snapshot can trigger a reload.
-pub const GRADLE_SNAPSHOT_GLOB: &str = "**/.nova/queries/gradle.json";
+pub const GRADLE_SNAPSHOT_GLOB: &str = GRADLE_SNAPSHOT_REL_PATH;
 
 /// Workspace-local Gradle snapshot file (`.nova/queries/gradle.json`).
 ///
