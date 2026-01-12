@@ -1430,6 +1430,10 @@ fn type_mismatch_quick_fixes_from_context(
         }
     }
 
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+
     let mut actions = Vec::new();
     let source_index = TextIndex::new(source);
     for diagnostic in context_diagnostics {
