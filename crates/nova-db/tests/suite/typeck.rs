@@ -170,6 +170,47 @@ class C {
 }
 
 #[test]
+fn allows_class_instance_creation_statement_expression() {
+    let src = r#"
+class C {
+    void m() {
+        new C();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "invalid-statement-expression"),
+        "expected no invalid-statement-expression diagnostics; got {diags:?}"
+    );
+}
+
+#[test]
+fn allows_inc_dec_statement_expression() {
+    let src = r#"
+class C {
+    void m() {
+        int x = 0;
+        x++;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "invalid-statement-expression"),
+        "expected no invalid-statement-expression diagnostics; got {diags:?}"
+    );
+}
+
+#[test]
 fn rejects_non_statement_expression_in_for_update() {
     let src = r#"
 class C {
