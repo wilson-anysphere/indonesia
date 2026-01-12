@@ -74,6 +74,7 @@ type WorkspaceBuildState = {
   lastReportedStatus?: NovaBuildStatus;
   lastError?: string;
   statusSupported: boolean | 'unknown';
+  diagnosticsSupported: boolean | 'unknown';
   statusRequestInFlight?: Promise<NovaBuildStatusResult | undefined>;
   statusTimer?: NodeJS.Timeout;
   diagnosticFiles: Set<string>;
@@ -117,7 +118,7 @@ export function registerNovaBuildIntegration(
     if (existing) {
       return existing;
     }
-    const created: WorkspaceBuildState = { statusSupported: 'unknown', diagnosticFiles: new Set() };
+    const created: WorkspaceBuildState = { statusSupported: 'unknown', diagnosticsSupported: 'unknown', diagnosticFiles: new Set() };
     workspaceStates.set(key, created);
     return created;
   };
@@ -364,6 +365,10 @@ export function registerNovaBuildIntegration(
     const projectRoot = folder.uri.fsPath;
     const silent = opts?.silent ?? false;
 
+    if (silent && state.diagnosticsSupported === false) {
+      return undefined;
+    }
+
     try {
       const response = await request<NovaBuildDiagnosticsResult>('nova/build/diagnostics', {
         projectRoot,
@@ -372,6 +377,8 @@ export function registerNovaBuildIntegration(
       if (!response) {
         return undefined;
       }
+
+      state.diagnosticsSupported = true;
 
       // Clear stale diagnostics for this workspace only.
       clearDiagnosticsForWorkspace(folder, state);
@@ -405,6 +412,7 @@ export function registerNovaBuildIntegration(
     } catch (err) {
       if (isMethodNotFoundError(err)) {
         const msg = formatUnsupportedNovaMethodMessage('nova/build/diagnostics');
+        state.diagnosticsSupported = false;
         if (silent) {
           output.appendLine(msg);
         } else {
