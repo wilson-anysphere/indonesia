@@ -1,5 +1,5 @@
 use nova_build::{
-    collect_gradle_build_files, collect_maven_build_files,
+    collect_gradle_build_files, collect_maven_build_files, maven_jar_path,
     parse_gradle_annotation_processing_output, parse_gradle_classpath_output,
     parse_gradle_projects_output, parse_javac_diagnostics, parse_maven_classpath_output,
     parse_maven_effective_pom_annotation_processing_with_repo, parse_maven_evaluate_scalar_output,
@@ -643,4 +643,56 @@ fn parses_maven_effective_pom_annotation_processing() {
             "/custom/repo/com/example/demo-processor/1.2.3/demo-processor-1.2.3-shaded.jar"
         )]
     );
+}
+
+#[test]
+fn maven_jar_path_resolves_timestamped_snapshot_from_local_metadata() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+
+    let group_id = "com.example";
+    let artifact_id = "proc";
+    let version = "1.0-SNAPSHOT";
+
+    let version_dir = repo
+        .join(group_id.replace('.', "/"))
+        .join(artifact_id)
+        .join(version);
+    std::fs::create_dir_all(&version_dir).unwrap();
+
+    let v1 = "1.0-20260112.123456-1";
+    let v2 = "1.0-20260113.000000-1";
+    let jar1 = version_dir.join(format!("{artifact_id}-{v1}.jar"));
+    let jar2 = version_dir.join(format!("{artifact_id}-{v2}.jar"));
+    std::fs::write(&jar1, "").unwrap();
+    std::fs::write(&jar2, "").unwrap();
+
+    std::fs::write(
+        version_dir.join("maven-metadata-local.xml"),
+        format!(
+            r#"
+<metadata>
+  <groupId>{group_id}</groupId>
+  <artifactId>{artifact_id}</artifactId>
+  <versioning>
+    <snapshotVersions>
+      <snapshotVersion>
+        <extension>jar</extension>
+        <value>{v1}</value>
+      </snapshotVersion>
+      <snapshotVersion>
+        <extension>jar</extension>
+        <value>{v2}</value>
+      </snapshotVersion>
+    </snapshotVersions>
+  </versioning>
+</metadata>
+"#
+        ),
+    )
+    .unwrap();
+
+    let resolved = maven_jar_path(repo, group_id, artifact_id, version, None).unwrap();
+    assert_eq!(resolved, jar2);
+    assert!(resolved.is_file());
 }

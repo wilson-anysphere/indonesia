@@ -1040,7 +1040,7 @@ fn default_maven_repo() -> PathBuf {
     home.join(".m2/repository")
 }
 
-fn maven_jar_path(
+pub fn maven_jar_path(
     repo: &Path,
     group_id: &str,
     artifact_id: &str,
@@ -1049,12 +1049,91 @@ fn maven_jar_path(
 ) -> Option<PathBuf> {
     let group_path = group_id.replace('.', "/");
     let base = repo.join(group_path).join(artifact_id).join(version);
-    let file_name = if let Some(classifier) = classifier {
+
+    let classifier = classifier.map(str::trim).filter(|c| !c.is_empty());
+
+    if version.ends_with("-SNAPSHOT") {
+        if let Some(path) = resolve_snapshot_maven_jar_path(&base, artifact_id, classifier) {
+            return Some(path);
+        }
+    }
+
+    Some(base.join(maven_jar_file_name(artifact_id, version, classifier)))
+}
+
+fn maven_jar_file_name(artifact_id: &str, version: &str, classifier: Option<&str>) -> String {
+    if let Some(classifier) = classifier {
         format!("{artifact_id}-{version}-{classifier}.jar")
     } else {
         format!("{artifact_id}-{version}.jar")
+    }
+}
+
+fn resolve_snapshot_maven_jar_path(
+    version_dir: &Path,
+    artifact_id: &str,
+    classifier: Option<&str>,
+) -> Option<PathBuf> {
+    let value = snapshot_jar_value_from_local_metadata(version_dir, classifier)?;
+    let file_name = if let Some(classifier) = classifier {
+        format!("{artifact_id}-{value}-{classifier}.jar")
+    } else {
+        format!("{artifact_id}-{value}.jar")
     };
-    Some(base.join(file_name))
+    let path = version_dir.join(file_name);
+
+    // Best-effort: ensure we don't hand out paths to jars that aren't present.
+    path.is_file().then_some(path)
+}
+
+fn snapshot_jar_value_from_local_metadata(
+    version_dir: &Path,
+    classifier: Option<&str>,
+) -> Option<String> {
+    let mut best: Option<String> = None;
+
+    // Maven writes metadata files like:
+    // - `maven-metadata-local.xml` (installed snapshots)
+    // - `maven-metadata.xml` (downloaded snapshots)
+    for file in ["maven-metadata-local.xml", "maven-metadata.xml"] {
+        let path = version_dir.join(file);
+        let Ok(xml) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(doc) = roxmltree::Document::parse(&xml) else {
+            continue;
+        };
+
+        for sv in doc
+            .descendants()
+            .filter(|n| n.is_element() && n.has_tag_name("snapshotVersion"))
+        {
+            let ext = child_text(&sv, "extension");
+            if ext.as_deref() != Some("jar") {
+                continue;
+            }
+
+            let sv_classifier = child_text(&sv, "classifier");
+            let sv_classifier = sv_classifier
+                .as_deref()
+                .map(str::trim)
+                .filter(|c| !c.is_empty());
+            if sv_classifier != classifier {
+                continue;
+            }
+
+            let Some(value) = child_text(&sv, "value") else {
+                continue;
+            };
+            match &best {
+                None => best = Some(value),
+                Some(current) if value > *current => best = Some(value),
+                _ => {}
+            }
+        }
+    }
+
+    best
 }
 
 fn split_path_list(value: &str) -> Vec<PathBuf> {
