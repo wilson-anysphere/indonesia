@@ -2061,6 +2061,45 @@ fn rename_local_variable_inside_array_access() {
 }
 
 #[test]
+fn rename_local_variable_inside_array_creation_expression() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int foo = 1;
+    int[] arr = new int[foo];
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int foo").unwrap() + "int ".len() + 1;
+    let symbol = db.symbol_at(&file, offset).expect("symbol at foo");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "bar".into(),
+        },
+    )
+    .unwrap();
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    assert!(
+        after.contains("int bar = 1;"),
+        "expected foo declaration to be renamed: {after}"
+    );
+    assert!(
+        after.contains("new int[bar]"),
+        "expected foo usage inside array creation to be renamed: {after}"
+    );
+    assert!(
+        !after.contains("new int[foo]"),
+        "expected old name to be gone: {after}"
+    );
+}
+
+#[test]
 fn rename_local_variable_inside_instanceof_expression() {
     let file = FileId::new("Test.java");
     let src = r#"class Foo {}

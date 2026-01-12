@@ -1936,15 +1936,24 @@ impl Lowerer {
                 .map(|expr| self.lower_expr(&expr))
                 .unwrap_or_else(|| ast::Expr::Missing(self.spans.map_node(node))),
             // For expression kinds we don't handle precisely (including parse recovery via
-            // `SyntaxKind::Error`), preserve any direct child expressions so name resolution and
+            // `SyntaxKind::Error`), preserve any nested expressions so name resolution and
             // refactoring still see identifiers nested inside.
             _ => {
                 let range = self.spans.map_node(node);
                 let mut children = Vec::new();
-                for child in node.children() {
+                // Collect "direct" descendant expressions: we descend through non-expression
+                // wrapper nodes (e.g. `DimExpr`) but stop once we hit another expression node.
+                // This preserves nested names without needing to model the full syntax kind yet.
+                let mut stack: Vec<SyntaxNode> = node.children().collect();
+                stack.reverse();
+                while let Some(child) = stack.pop() {
                     if is_expression_kind(child.kind()) {
                         children.push(self.lower_expr(&child));
+                        continue;
                     }
+                    let mut nested: Vec<SyntaxNode> = child.children().collect();
+                    nested.reverse();
+                    stack.extend(nested);
                 }
                 if children.is_empty() {
                     ast::Expr::Missing(range)
@@ -2652,6 +2661,7 @@ fn is_expression_kind(kind: SyntaxKind) -> bool {
             | SyntaxKind::MethodCallExpression
             | SyntaxKind::FieldAccessExpression
             | SyntaxKind::ArrayAccessExpression
+            | SyntaxKind::ArrayCreationExpression
             | SyntaxKind::ClassLiteralExpression
             | SyntaxKind::MethodReferenceExpression
             | SyntaxKind::ConstructorReferenceExpression
@@ -2663,6 +2673,11 @@ fn is_expression_kind(kind: SyntaxKind) -> bool {
             | SyntaxKind::SwitchExpression
             | SyntaxKind::LambdaExpression
             | SyntaxKind::CastExpression
+            | SyntaxKind::ClassInstanceCreationExpression
+            | SyntaxKind::PostfixExpression
+            | SyntaxKind::PrefixExpression
+            | SyntaxKind::ExplicitGenericInvocationExpression
+            | SyntaxKind::StringTemplateExpression
             | SyntaxKind::Error
     )
 }
