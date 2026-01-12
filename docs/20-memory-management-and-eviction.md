@@ -43,8 +43,8 @@ Pick the **closest semantic bucket** for a component; avoid “Other” unless t
 |---|---|---|
 | `QueryCache` | Recomputable cached query results; memo tables; anything “Salsa-like” where eviction means “drop cached results and recompute later”. | `nova_db::QueryCache`, `nova_db::salsa::SalsaMemoEvictor` |
 | `SyntaxTrees` | Parsed/structural per-file artifacts closely tied to source text; caches that should prefer keeping *open* documents warm. | `nova_syntax::SyntaxTreeStore`, `nova_db::salsa::ItemTreeStore` |
-| `Indexes` | Cross-file/workspace indexes used for search/navigation; may have disk-backed warm-start formats. | `nova_index::WorkspaceSymbolSearcher`, `nova_index::IndexCache`, `jdk_index`/`classpath_index` trackers |
-| `TypeInfo` | Typechecking/type inference caches and expensive semantic models (reserved; not heavily used yet). | (gap: no major registrations today) |
+| `Indexes` | Cross-file/workspace indexes used for search/navigation; may have disk-backed warm-start formats. | `nova_index::WorkspaceSymbolSearcher`, `nova_index::IndexCache`, workspace-held `ProjectIndexes` (`workspace_project_indexes`) |
+| `TypeInfo` | Typechecking/type inference caches and expensive semantic models. Also used for large external type indexes (JDK/classpath) that can be reduced under pressure. | `jdk_index` / `classpath_index` evictors (`nova_db::salsa::InputIndexTracker`) |
 | `Other` | Everything else (inputs, overlays, glue). This is also where we track memory that we **cannot** currently evict. | `salsa_inputs` tracker, LSP `vfs_documents` tracker |
 
 ### Avoiding double-counting (important)
@@ -211,10 +211,14 @@ This list is meant to be kept accurate as new components integrate.
 - Registration: via `Database::register_salsa_memo_evictor(&MemoryManager)`
   - Also registers additional trackers as a side effect (see below).
 - Tracked bytes:
-  - Approximation via `SalsaMemoFootprint` for selected file-keyed memo tables (`TrackedSalsaMemo`), currently:
-    - `TrackedSalsaMemo::Parse` / `TrackedSalsaMemo::ParseJava`
-    - `TrackedSalsaMemo::ItemTree`
-    - `TrackedSalsaMemo::FileIndexDelta` (recorded by `NovaIndexing::file_index_delta` in `crates/nova-db/src/salsa/indexing.rs`)
+  - Approximation via `SalsaMemoFootprint` (in `crates/nova-db/src/salsa/mod.rs`) for selected memo tables, recorded explicitly by query implementations:
+    - **File-keyed** memos: `TrackedSalsaMemo` (e.g. `Parse`, `ParseJava`, `ItemTree`, `FileIndexDelta`, plus additional tracked file memos in `crates/nova-db/src/salsa/{syntax,semantic,hir,resolve}.rs`)
+    - **Project-keyed** memos: `TrackedSalsaProjectMemo`, notably:
+      - `ProjectIndexShards` (`NovaIndexing::project_index_shards` in `crates/nova-db/src/salsa/indexing.rs`)
+      - `ProjectIndexes` (`NovaIndexing::project_indexes` in `crates/nova-db/src/salsa/indexing.rs`)
+      - `WorkspaceDefMap` (`NovaResolve::workspace_def_map` in `crates/nova-db/src/salsa/resolve.rs`)
+      - `ProjectBaseTypeStore` (`NovaTypeck::project_base_type_store` in `crates/nova-db/src/salsa/typeck.rs`)
+    - **Body-keyed** memos: `TrackedSalsaBodyMemo` (recorded in `crates/nova-db/src/salsa/{hir,flow,typeck}.rs`)
 - `evict(request)`:
   - Best-effort rebuild: clones `SalsaInputs` and rebuilds `RootDatabase` behind a mutex, dropping memoized results.
   - Interned tables (`#[ra_salsa::interned]`) are snapshot+restored **for the subset included in**
@@ -298,12 +302,25 @@ This list is meant to be kept accurate as new components integrate.
 - `flush_to_disk()`:
   - Not implemented (default no-op).
 
-#### Trackers: `jdk_index`, `classpath_index`
+### `TypeInfo` category
 
-- Code: `crates/nova-db/src/salsa/mod.rs` (`InputIndexTracker`)
-- Category: `MemoryCategory::Indexes`
-- Tracked bytes: best-effort estimated sizes, de-duplicated across projects via pointer identity
-- Eviction: none (trackers only)
+#### Evictors: `jdk_index`, `classpath_index` (Salsa input index tracking)
+
+- Code: `crates/nova-db/src/salsa/mod.rs` (`InputIndexTracker`, `JdkIndexEvictor`, `ClasspathIndexEvictor`)
+- Category: `MemoryCategory::TypeInfo`
+- Registration:
+  - `Database::register_input_index_trackers` (called from `Database::register_salsa_memo_evictor`)
+  - `InputIndexTracker::register_evictor` calls `MemoryManager::register_evictor(..., MemoryCategory::TypeInfo, ...)`
+- Tracked bytes: best-effort estimated sizes, de-duplicated across projects via pointer identity (see `InputIndexTrackerInner::{by_project,by_ptr}`)
+- `evict(request)`:
+  - `jdk_index` (`JdkIndexEvictor`):
+    - If `before_bytes > target_bytes` and pressure is `Medium+`, clears per-index symbol caches via `nova_jdk::JdkIndex::evict_symbol_caches()` (does **not** drop the index input itself).
+    - Best-effort: uses `try_lock`; if locks can’t be acquired, eviction is a no-op.
+  - `classpath_index` (`ClasspathIndexEvictor`):
+    - Has `eviction_priority = 10` (evict later than “cheaper” `TypeInfo` caches).
+    - Only drops classpath indexes under `High/Critical` pressure by setting the Salsa input `classpath_index(project)` to `None` (large UX hit, but safe under degraded mode).
+- `flush_to_disk()`:
+  - Not implemented (default no-op).
 
 ### `Other` category
 
@@ -334,29 +351,6 @@ This list is meant to be kept accurate as new components integrate.
 
 This section is intentionally written as **worker-ready tasks** (clear entrypoints + acceptance criteria).
 
-### Gap: Salsa indexing memo tracking is incomplete (project-level memos)
-
-Symptoms:
-
-- The workspace-held `ProjectIndexes` are now registered as `workspace_project_indexes` (see above), and Salsa tracks `file_index_delta` via `TrackedSalsaMemo::FileIndexDelta`:
-  - Definition: `crates/nova-db/src/salsa/mod.rs` (`TrackedSalsaMemo::FileIndexDelta`)
-  - Recording site: `crates/nova-db/src/salsa/indexing.rs` (`NovaIndexing::file_index_delta`)
-- However, project-level indexing memos such as `NovaIndexing::project_index_shards` are **project-keyed** and are not currently included in the `SalsaMemoFootprint` approximation (which is file-keyed today), so `QueryCache` usage can still be undercounted for large workspaces.
-
-#### Follow-up task 1: Track project-level indexing memos (e.g. `project_index_shards`)
-
-- Owner: `nova-db` / `nova-index`
-- Entry points:
-  - `crates/nova-db/src/salsa/indexing.rs` (`NovaIndexing::project_index_shards`)
-  - `crates/nova-db/src/salsa/mod.rs` (`TrackedSalsaMemo`, `SalsaMemoFootprint`)
-- Approach:
-  1. Extend memory accounting to include project-scoped indexing memos (most notably `project_index_shards`) without requiring them to be file-keyed.
-     - Options include: adding a new tracking path parallel to `SalsaMemoFootprint`, or expanding it to support project keys.
-  2. Ensure accounting remains best-effort and avoids double-counting with any workspace-level caches (e.g. `workspace_project_indexes`).
-- Acceptance criteria:
-  - `MemoryManager::report_detailed()` shows meaningful query_cache usage for indexing memos.
-  - Under eviction, large memo tables drop and are recomputed correctly.
-
 ### Gap: VFS overlay + virtual document store are only partially tracked and not evictable
 
 Symptoms:
@@ -366,7 +360,7 @@ Symptoms:
   - VFS internal overhead (path maps, versions, snapshots)
 - There is no memory-manager-driven eviction strategy for overlays or virtual documents (beyond any fixed internal LRU/budgeting).
 
-#### Follow-up task 2: Track + evict `VirtualDocumentStore` bytes under memory pressure
+#### Follow-up task 1: Track + evict `VirtualDocumentStore` bytes under memory pressure
 
 - Owner: `nova-vfs` (plus integration in `nova-lsp` / `nova-workspace` as needed)
 - Entry points:
@@ -388,7 +382,7 @@ Symptoms:
   - they never serialize content derived from dirty overlays (or they must include overlay fingerprints in the cache key)
   - failures are treated as cache misses (never correctness)
 
-#### Follow-up task 3: Standardize “safe persistence” guardrails for `flush_to_disk()`
+#### Follow-up task 2: Standardize “safe persistence” guardrails for `flush_to_disk()`
 
 - Owner: all crates implementing `MemoryEvictor` + persistence (`nova-db`, `nova-index`, etc.)
 - Entry points:
