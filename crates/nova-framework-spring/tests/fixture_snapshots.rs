@@ -10,6 +10,8 @@ use nova_framework_spring::{
     diagnostics_for_config_file, SpringWorkspaceIndex,
 };
 
+mod suite;
+
 fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/basic")
 }
