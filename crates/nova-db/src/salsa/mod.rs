@@ -39,6 +39,7 @@ mod indexing;
 mod interned_class_key;
 mod item_tree_store;
 mod inputs;
+mod java_parse_cache;
 mod resolve;
 mod semantic;
 mod stats;
@@ -85,6 +86,7 @@ use crate::persistence::{HasPersistence, Persistence, PersistenceConfig};
 use crate::{FileId, ProjectId, SourceRootId};
 
 use self::stats::QueryStatsCollector;
+use java_parse_cache::JavaParseCache;
 
 /// `Arc` wrapper that compares by pointer identity.
 ///
@@ -250,6 +252,12 @@ pub enum TrackedSalsaMemo {
 /// panic if accounting fails.
 pub trait HasSalsaMemoStats {
     fn record_salsa_memo_bytes(&self, file: FileId, memo: TrackedSalsaMemo, bytes: u64);
+}
+
+/// Database functionality needed by `parse_java` to access the previous parse result for
+/// incremental reparsing.
+pub trait HasJavaParseCache {
+    fn java_parse_cache(&self) -> &JavaParseCache;
 }
 
 #[derive(Debug, Default)]
@@ -646,6 +654,7 @@ pub struct RootDatabase {
     syntax_tree_store: Option<Arc<SyntaxTreeStore>>,
     class_interner: Arc<ParkingMutex<ClassIdInterner>>,
     memo_footprint: Arc<SalsaMemoFootprint>,
+    java_parse_cache: Arc<JavaParseCache>,
 }
 
 impl Default for RootDatabase {
@@ -670,6 +679,7 @@ impl RootDatabase {
             syntax_tree_store: None,
             class_interner: Arc::new(ParkingMutex::new(ClassIdInterner::default())),
             memo_footprint: Arc::new(SalsaMemoFootprint::default()),
+            java_parse_cache: Arc::new(JavaParseCache::default()),
         };
 
         // Provide a sensible default `ProjectConfig` so callers can start
@@ -766,6 +776,18 @@ impl HasQueryStats for RootDatabase {
 impl HasSalsaMemoStats for RootDatabase {
     fn record_salsa_memo_bytes(&self, file: FileId, memo: TrackedSalsaMemo, bytes: u64) {
         self.memo_footprint.record(file, memo, bytes);
+    }
+}
+
+impl HasJavaParseCache for RootDatabase {
+    fn java_parse_cache(&self) -> &JavaParseCache {
+        self.java_parse_cache.as_ref()
+    }
+}
+
+impl HasJavaParseCache for ra_salsa::Snapshot<RootDatabase> {
+    fn java_parse_cache(&self) -> &JavaParseCache {
+        std::ops::Deref::deref(self).java_parse_cache.as_ref()
     }
 }
 
@@ -882,6 +904,7 @@ impl ra_salsa::ParallelDatabase for RootDatabase {
             class_interner: self.class_interner.clone(),
             syntax_tree_store: self.syntax_tree_store.clone(),
             memo_footprint: self.memo_footprint.clone(),
+            java_parse_cache: self.java_parse_cache.clone(),
         })
     }
 }
@@ -1027,6 +1050,8 @@ impl MemoryEvictor for SalsaMemoEvictor {
             let item_tree_store = db.item_tree_store.clone();
             let class_interner = db.class_interner.clone();
             let syntax_tree_store = db.syntax_tree_store.clone();
+            let java_parse_cache = db.java_parse_cache.clone();
+            java_parse_cache.clear();
             let mut fresh = RootDatabase {
                 storage: ra_salsa::Storage::default(),
                 stats,
@@ -1036,6 +1061,7 @@ impl MemoryEvictor for SalsaMemoEvictor {
                 class_interner,
                 syntax_tree_store,
                 memo_footprint: self.footprint.clone(),
+                java_parse_cache,
             };
             inputs.apply_to(&mut fresh);
             *db = fresh;
@@ -1104,6 +1130,7 @@ impl Database {
     pub fn new_with_memory_manager(manager: &MemoryManager) -> Self {
         let db = Self::new();
         db.register_salsa_memo_evictor(manager);
+        db.register_java_parse_cache_evictor(manager);
         db
     }
 
@@ -1727,6 +1754,8 @@ impl Database {
             let item_tree_store = db.item_tree_store.clone();
             let class_interner = db.class_interner.clone();
             let syntax_tree_store = db.syntax_tree_store.clone();
+            let java_parse_cache = db.java_parse_cache.clone();
+            java_parse_cache.clear();
             let mut fresh = RootDatabase {
                 storage: ra_salsa::Storage::default(),
                 stats,
@@ -1736,6 +1765,7 @@ impl Database {
                 class_interner,
                 syntax_tree_store,
                 memo_footprint: self.memo_footprint.clone(),
+                java_parse_cache,
             };
             inputs.apply_to(&mut fresh);
             *db = fresh;
@@ -1800,6 +1830,11 @@ impl Database {
     pub fn register_input_index_trackers(&self, manager: &MemoryManager) {
         self.jdk_index_tracker.register(manager);
         self.classpath_index_tracker.register(manager);
+    }
+
+    pub fn register_java_parse_cache_evictor(&self, manager: &MemoryManager) {
+        let cache = self.inner.lock().java_parse_cache.clone();
+        cache.register(manager);
     }
 
     pub fn persist_project_indexes(
@@ -3374,6 +3409,50 @@ class Foo {
         assert!(
             !Arc::ptr_eq(&before, &after),
             "expected closed document parse to be recomputed after memo eviction"
+        );
+    }
+
+    #[test]
+    fn java_parse_cache_clears_on_salsa_memo_eviction() {
+        let db = Database::new();
+        let file = FileId::from_raw(1);
+
+        db.set_file_text(file, "class Foo { int x; }");
+        db.with_snapshot(|snap| {
+            let parse = snap.parse_java(file);
+            assert!(
+                parse.errors.is_empty(),
+                "expected initial Java parse to succeed, got: {:?}",
+                parse.errors
+            );
+        });
+
+        assert!(
+            db.inner.lock().java_parse_cache.entry_count() > 0,
+            "expected incremental parse cache to be populated after parse_java"
+        );
+
+        db.evict_salsa_memos(MemoryPressure::Critical);
+        assert_eq!(
+            db.inner.lock().java_parse_cache.entry_count(),
+            0,
+            "expected incremental parse cache to clear after memo eviction"
+        );
+
+        // Subsequent edit should fall back to a full parse (cache miss) without panicking.
+        db.set_file_text(file, "class Foo { int x; int y; }");
+        db.with_snapshot(|snap| {
+            let parse = snap.parse_java(file);
+            assert!(
+                parse.errors.is_empty(),
+                "expected Java parse after eviction to succeed, got: {:?}",
+                parse.errors
+            );
+        });
+
+        assert!(
+            db.inner.lock().java_parse_cache.entry_count() > 0,
+            "expected incremental parse cache to be repopulated after reparse"
         );
     }
 

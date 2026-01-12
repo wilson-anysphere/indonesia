@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use nova_cache::Fingerprint;
 use nova_core::LineIndex;
-use nova_syntax::{GreenNode, JavaParseResult, ParseResult};
+use nova_syntax::{GreenNode, JavaParseResult, ParseResult, TextEdit, TextRange};
 use nova_types::Diagnostic;
 
 use crate::persistence::HasPersistence;
@@ -13,14 +13,20 @@ use super::cancellation as cancel;
 use super::inputs::NovaInputs;
 use super::stats::HasQueryStats;
 use super::HasFilePaths;
-use super::{HasSalsaMemoStats, HasSyntaxTreeStore, TrackedSalsaMemo};
+use super::{HasJavaParseCache, HasSalsaMemoStats, HasSyntaxTreeStore, TrackedSalsaMemo};
 
 /// The parsed syntax tree type exposed by the database.
 pub type SyntaxTree = GreenNode;
 
 #[ra_salsa::query_group(NovaSyntaxStorage)]
 pub trait NovaSyntax:
-    NovaInputs + HasQueryStats + HasPersistence + HasFilePaths + HasSalsaMemoStats + HasSyntaxTreeStore
+    NovaInputs
+    + HasQueryStats
+    + HasPersistence
+    + HasFilePaths
+    + HasSalsaMemoStats
+    + HasSyntaxTreeStore
+    + HasJavaParseCache
 {
     /// Parse a file into a syntax tree (memoized and dependency-tracked).
     fn parse(&self, file: FileId) -> Arc<ParseResult>;
@@ -135,11 +141,74 @@ fn parse_java(db: &dyn NovaSyntax, file: FileId) -> Arc<JavaParseResult> {
     // NOTE: `nova_syntax` supports incremental reparsing (`parse_java_incremental` /
     // `reparse_java`) by splicing updated green subtrees into the previous tree.
     // Wiring edit propagation through Salsa inputs is handled separately.
-    let parsed = nova_syntax::parse_java(text.as_str());
+    let new_text = text.as_str();
+    let mut parsed = None;
+
+    if let Some(prev) = db.java_parse_cache().get(file) {
+        let old_parse = prev.parse;
+        let old_text = prev.text;
+        if let Some(edit) = diff_as_single_edit(old_text.as_str(), new_text) {
+            parsed = Some(nova_syntax::parse_java_incremental(
+                Some((old_parse.as_ref(), old_text.as_str())),
+                Some(edit),
+                new_text,
+            ));
+        }
+    }
+
+    let parsed = parsed.unwrap_or_else(|| nova_syntax::parse_java(new_text));
     let result = Arc::new(parsed);
+    db.java_parse_cache()
+        .insert(file, text.clone(), result.clone());
     db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ParseJava, text.len() as u64);
     db.record_query_stat("parse_java", start.elapsed());
     result
+}
+
+fn diff_as_single_edit(old_text: &str, new_text: &str) -> Option<TextEdit> {
+    if old_text == new_text {
+        return None;
+    }
+    if old_text.len() > u32::MAX as usize || new_text.len() > u32::MAX as usize {
+        return None;
+    }
+
+    let old_bytes = old_text.as_bytes();
+    let new_bytes = new_text.as_bytes();
+
+    let mut prefix = 0usize;
+    let min_len = old_bytes.len().min(new_bytes.len());
+    while prefix < min_len && old_bytes[prefix] == new_bytes[prefix] {
+        prefix += 1;
+    }
+    while prefix > 0 && (!old_text.is_char_boundary(prefix) || !new_text.is_char_boundary(prefix)) {
+        prefix -= 1;
+    }
+
+    let mut suffix_bytes = 0usize;
+    let old_tail = &old_text[prefix..];
+    let new_tail = &new_text[prefix..];
+    for (oc, nc) in old_tail.chars().rev().zip(new_tail.chars().rev()) {
+        if oc != nc {
+            break;
+        }
+        suffix_bytes += oc.len_utf8();
+    }
+
+    let old_end = old_text.len().saturating_sub(suffix_bytes);
+    let new_end = new_text.len().saturating_sub(suffix_bytes);
+    if old_end < prefix || new_end < prefix {
+        return None;
+    }
+
+    let replacement = new_text[prefix..new_end].to_string();
+    Some(TextEdit {
+        range: TextRange {
+            start: prefix as u32,
+            end: old_end as u32,
+        },
+        replacement,
+    })
 }
 
 fn java_language_level(db: &dyn NovaSyntax, file: FileId) -> nova_syntax::JavaLanguageLevel {
