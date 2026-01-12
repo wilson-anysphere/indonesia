@@ -8,6 +8,7 @@
 pub mod ai;
 pub mod analysis;
 pub mod code_action;
+pub mod completion_cache;
 pub mod decompile;
 pub mod diagnostics;
 pub mod extensions;

@@ -28,6 +28,7 @@ use nova_types::{
 use once_cell::sync::Lazy;
 use serde_json::json;
 
+use crate::completion_cache;
 use crate::framework_cache;
 use crate::lombok_intel;
 use crate::micronaut_intel;
@@ -1747,6 +1748,43 @@ fn general_completions(
                 kind: Some(CompletionItemKind::KEYWORD),
                 ..Default::default()
             }),
+        }
+    }
+    // Best-effort type name completions from the cached workspace index.
+    //
+    // We intentionally guard on a non-empty prefix: large workspaces can contain tens of thousands
+    // of types, and returning them all for an empty prefix would be both slow and noisy.
+    if prefix.len() >= 2 {
+        if let Some(env) = completion_cache::completion_env_for_file(db, file) {
+            let mut last_simple: Option<&str> = None;
+            // Keep the list bounded to avoid producing enormous completion payloads.
+            let mut added = 0usize;
+            const MAX_TYPE_ITEMS: usize = 256;
+
+            for ty in env.workspace_index().types() {
+                if added >= MAX_TYPE_ITEMS {
+                    break;
+                }
+                if !ty.simple.starts_with(prefix) {
+                    continue;
+                }
+
+                // The index can contain multiple FQNs for the same simple name; only include a
+                // single item per simple name to keep results deterministic and avoid duplicate
+                // labels (which can make sorting non-deterministic).
+                if last_simple == Some(ty.simple.as_str()) {
+                    continue;
+                }
+                last_simple = Some(ty.simple.as_str());
+
+                items.push(CompletionItem {
+                    label: ty.simple.clone(),
+                    kind: Some(CompletionItemKind::CLASS),
+                    detail: Some(ty.qualified.clone()),
+                    ..Default::default()
+                });
+                added += 1;
+            }
         }
     }
 

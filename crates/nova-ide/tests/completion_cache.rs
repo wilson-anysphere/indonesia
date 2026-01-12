@@ -1,0 +1,80 @@
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use nova_db::InMemoryFileStore;
+use nova_ide::{completion_cache, completions};
+
+fn offset_to_position(text: &str, offset: usize) -> lsp_types::Position {
+    let mut line = 0u32;
+    let mut col = 0u32;
+    for (idx, ch) in text.char_indices() {
+        if idx >= offset {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            col = 0;
+        } else {
+            col += 1;
+        }
+    }
+    lsp_types::Position::new(line, col)
+}
+
+#[test]
+fn completion_env_is_reused_across_completion_requests() {
+    let mut db = InMemoryFileStore::new();
+
+    let file_a_path = PathBuf::from("/workspace/src/main/java/p/FooBar.java");
+    let file_b_path = PathBuf::from("/workspace/src/main/java/p/Main.java");
+
+    let file_a = db.file_id_for_path(&file_a_path);
+    db.set_file_text(
+        file_a,
+        r#"
+package p;
+public class FooBar { }
+"#
+        .to_string(),
+    );
+
+    let caret = "<|>";
+    let file_b_with_caret = r#"
+package p;
+class Main {
+  void m() {
+    Fo<|>
+  }
+}
+"#;
+    let caret_offset = file_b_with_caret
+        .find(caret)
+        .expect("fixture must contain caret marker");
+    let file_b_text = file_b_with_caret.replace(caret, "");
+    let pos = offset_to_position(&file_b_text, caret_offset);
+
+    let file_b = db.file_id_for_path(&file_b_path);
+    db.set_file_text(file_b, file_b_text.clone());
+
+    // First completion builds the cache and returns workspace type suggestions.
+    let items1 = completions(&db, file_b, pos);
+    let labels1: Vec<_> = items1.iter().map(|i| i.label.clone()).collect();
+    assert!(
+        labels1.iter().any(|l| l == "FooBar"),
+        "expected type completion for FooBar; got {labels1:?}"
+    );
+
+    let env1 = completion_cache::completion_env_for_file(&db, file_b).expect("env");
+
+    // Second completion should reuse the cached environment and produce identical results.
+    let items2 = completions(&db, file_b, pos);
+    let labels2: Vec<_> = items2.iter().map(|i| i.label.clone()).collect();
+    assert_eq!(labels1, labels2, "expected deterministic completions");
+
+    let env2 = completion_cache::completion_env_for_file(&db, file_b).expect("env");
+    assert!(
+        Arc::ptr_eq(&env1, &env2),
+        "expected completion env to be reused (cache hit)"
+    );
+}
+
