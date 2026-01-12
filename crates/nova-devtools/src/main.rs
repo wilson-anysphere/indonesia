@@ -406,7 +406,7 @@ USAGE:
 COMMANDS:
   check-deps             Validate workspace crate dependency edges against ADR 0007 layering rules
   check-layers           Validate crate-layers.toml integrity (workspace coverage, unknown crates, layer refs)
-  check-architecture-map Validate docs/architecture-map.md coverage for crates/ directory crates
+  check-architecture-map Validate docs/architecture-map.md coverage for workspace crates
   check-protocol-extensions Validate docs/protocol-extensions.md coverage for `nova/*` method constants and VS Code client usage
   graph-deps             Emit a GraphViz/DOT dependency graph annotated by layer (see --help)
 

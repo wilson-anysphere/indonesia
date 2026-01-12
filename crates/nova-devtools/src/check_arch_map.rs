@@ -13,16 +13,17 @@ pub struct CheckArchitectureMapReport {
 
 pub fn check(
     doc_path: &Path,
-    _manifest_path: Option<&Path>,
-    _metadata_path: Option<&Path>,
+    manifest_path: Option<&Path>,
+    metadata_path: Option<&Path>,
     strict: bool,
 ) -> anyhow::Result<CheckArchitectureMapReport> {
     let doc = std::fs::read_to_string(doc_path)
         .with_context(|| format!("failed to read {}", doc_path.display()))?;
 
+    let workspace = crate::workspace::load_workspace_graph(manifest_path, metadata_path)?;
+    let workspace_crates: BTreeSet<String> = workspace.packages.keys().cloned().collect();
+
     let repo_root = std::env::current_dir().context("failed to determine repo root")?;
-    let workspace_crates =
-        crates_under_repo_root(&repo_root).context("failed to enumerate crates/ directory")?;
     let diagnostics =
         validate_architecture_map(&doc, &repo_root, doc_path, &workspace_crates, strict);
 
@@ -30,24 +31,6 @@ pub fn check(
         .iter()
         .any(|d| matches!(d.level, DiagnosticLevel::Error));
     Ok(CheckArchitectureMapReport { diagnostics, ok })
-}
-
-fn crates_under_repo_root(repo_root: &Path) -> anyhow::Result<BTreeSet<String>> {
-    let crates_dir = repo_root.join("crates");
-    let entries = std::fs::read_dir(&crates_dir)
-        .with_context(|| format!("failed to read {}", crates_dir.display()))?;
-
-    let mut crates = BTreeSet::new();
-    for entry in entries {
-        let entry = entry?;
-        if !entry.file_type()?.is_dir() {
-            continue;
-        }
-
-        crates.insert(entry.file_name().to_string_lossy().to_string());
-    }
-
-    Ok(crates)
 }
 
 #[derive(Debug, Clone)]
@@ -135,7 +118,7 @@ fn validate_architecture_map(
             Diagnostic::error(
                 "unknown-crate-section",
                 format!(
-                    "{} contains crate section(s) that are not crates/ directory crates: {}",
+                    "{} contains crate section(s) that are not workspace members: {}",
                     doc_path.display(),
                     stale.join(", ")
                 ),
@@ -418,6 +401,7 @@ fn is_repo_root_path(span: &str) -> bool {
         span,
         "crate-layers.toml" | "Cargo.toml" | "Cargo.lock" | "README.md"
     ) || span.starts_with("crates/")
+        || span.starts_with("examples/")
         || span.starts_with("docs/")
         || span.starts_with("scripts/")
         || span.starts_with("editors/")

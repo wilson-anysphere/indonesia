@@ -34,7 +34,7 @@ cargo run -p nova-devtools -- check-layers
 
 Validates [`docs/architecture-map.md`](../../docs/architecture-map.md):
 
-- every crate under `crates/` has a `### \`crate-name\`` section
+- every workspace crate has a `### \`crate-name\`` section
 - the “If you’re looking for…” quick-links only reference real crates / real paths
 
 Strict mode additionally requires each crate section to include:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 import sys
+import json
+import subprocess
 from collections import Counter
 from pathlib import Path
 
@@ -16,10 +18,18 @@ def read_text(path: Path) -> str:
 
 
 def check_architecture_map() -> list[str]:
-    crates_dir = REPO_ROOT / "crates"
     doc_path = REPO_ROOT / "docs" / "architecture-map.md"
 
-    crates = sorted(p.name for p in crates_dir.iterdir() if p.is_dir())
+    try:
+        raw = subprocess.check_output(
+            ["cargo", "metadata", "--format-version=1", "--no-deps", "--locked"],
+            cwd=REPO_ROOT,
+        )
+        metadata = json.loads(raw)
+        crates = sorted(p["name"] for p in metadata.get("packages", []))
+    except Exception as e:
+        return [f"failed to enumerate workspace crates via cargo metadata: {e}"]
+
     doc = read_text(doc_path)
 
     heading_re = re.compile(r"^### `([^`]+)`\s*$", flags=re.MULTILINE)
