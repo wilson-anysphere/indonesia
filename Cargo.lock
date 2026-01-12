@@ -4434,6 +4434,7 @@ dependencies = [
  "nova-project",
  "nova-scheduler",
  "nova-syntax",
+ "nova-test-utils",
  "nova-types",
  "nova-vfs",
  "rowan",

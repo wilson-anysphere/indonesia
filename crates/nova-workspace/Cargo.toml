@@ -36,3 +36,4 @@ lsp-types = "0.97"
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt", "time"] }
+nova-test-utils = { path = "../nova-test-utils", default-features = false }

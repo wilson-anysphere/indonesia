@@ -516,10 +516,7 @@ mod tests {
         let path = root.join("Example.java");
         assert!(!is_build_file(&path));
         let event = NormalizedEvent::Modified(path);
-        assert_eq!(
-            categorize_event(&config, &event),
-            Some(ChangeCategory::Source)
-        );
+        assert_eq!(categorize_event(&config, &event), Some(ChangeCategory::Source));
     }
 
     #[test]
@@ -665,6 +662,19 @@ mod tests {
             ),
             Some(ChangeCategory::Build),
             "files under workspace build/ should not be treated as build changes"
+        );
+    }
+
+    #[test]
+    fn custom_nova_config_path_is_categorized_as_build() {
+        let root = PathBuf::from("/tmp/workspace");
+        let mut config = WatchConfig::new(root.clone());
+        config.nova_config_path = Some(root.join("custom-config.toml"));
+
+        let event = NormalizedEvent::Modified(root.join("custom-config.toml"));
+        assert_eq!(
+            categorize_event(&config, &event),
+            Some(ChangeCategory::Build)
         );
     }
 }

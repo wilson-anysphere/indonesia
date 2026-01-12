@@ -3018,8 +3018,10 @@ mod tests {
         EvictionRequest, EvictionResult, MemoryBudget, MemoryCategory, MemoryEvictor,
     };
     use nova_project::BuildSystem;
+    use nova_test_utils::{env_lock, EnvVarGuard};
     use nova_vfs::{FileChange, ManualFileWatcher, ManualFileWatcherHandle};
     use std::fs;
+    use std::path::Path;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, OnceLock};
@@ -5253,6 +5255,9 @@ mod tests {
 
     #[test]
     fn project_reload_discovers_jdk_index_from_nova_config() {
+        let _lock = env_lock();
+        let _config_guard = EnvVarGuard::unset(nova_config::NOVA_CONFIG_ENV_VAR);
+
         let dir = tempfile::tempdir().unwrap();
         // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
         let root = dir.path().canonicalize().unwrap();
@@ -5325,6 +5330,9 @@ enabled = false
 
     #[test]
     fn project_reload_resolves_relative_jdk_home_to_workspace_root() {
+        let _lock = env_lock();
+        let _config_guard = EnvVarGuard::unset(nova_config::NOVA_CONFIG_ENV_VAR);
+
         let dir = tempfile::tempdir().unwrap();
         // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
         let root = dir.path().canonicalize().unwrap();
@@ -5751,5 +5759,134 @@ enabled = false
         })
         .await
         .expect("timed out waiting for rescan-triggered project reload");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn external_nova_config_path_is_watched_and_triggers_reload() {
+        let workspace_dir = tempfile::tempdir().unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let workspace_root = workspace_dir.path().canonicalize().unwrap();
+        fs::create_dir_all(workspace_root.join("src")).unwrap();
+        fs::write(
+            workspace_root.join("src/Main.java"),
+            "class Main {}".as_bytes(),
+        )
+        .unwrap();
+
+        let external_dir = tempfile::tempdir().unwrap();
+        let external_config_path = external_dir.path().join("external-config.toml");
+        fs::write(&external_config_path, "").unwrap();
+        let external_config_path = external_config_path.canonicalize().unwrap();
+
+        let workspace = {
+            let _lock = env_lock();
+            let _config_guard =
+                EnvVarGuard::set(nova_config::NOVA_CONFIG_ENV_VAR, &external_config_path);
+            crate::Workspace::open(&workspace_root).unwrap()
+        };
+        let engine = workspace.engine.clone();
+
+        let config_path = engine
+            .watch_config
+            .read()
+            .expect("workspace watch config lock poisoned")
+            .nova_config_path
+            .clone()
+            .expect("expected discover_config_path to use NOVA_CONFIG_PATH");
+        assert_eq!(config_path, external_config_path);
+
+        // Wrap a ManualFileWatcher so tests can observe watch_path calls even after the watcher is
+        // moved into the workspace thread.
+        struct RecordingWatcher {
+            inner: ManualFileWatcher,
+            calls: Arc<Mutex<Vec<(PathBuf, WatchMode)>>>,
+        }
+
+        impl FileWatcher for RecordingWatcher {
+            fn watch_path(&mut self, path: &Path, mode: WatchMode) -> std::io::Result<()> {
+                self.calls
+                    .lock()
+                    .expect("recording watcher calls mutex poisoned")
+                    .push((path.to_path_buf(), mode));
+                self.inner.watch_path(path, mode)
+            }
+
+            fn unwatch_path(&mut self, path: &Path) -> std::io::Result<()> {
+                self.inner.unwatch_path(path)
+            }
+
+            fn receiver(&self) -> &channel::Receiver<nova_vfs::WatchMessage> {
+                self.inner.receiver()
+            }
+        }
+
+        let watch_calls: Arc<Mutex<Vec<(PathBuf, WatchMode)>>> = Arc::new(Mutex::new(Vec::new()));
+        let manual = ManualFileWatcher::new();
+        let handle: ManualFileWatcherHandle = manual.handle();
+        let watcher = RecordingWatcher {
+            inner: manual,
+            calls: Arc::clone(&watch_calls),
+        };
+
+        let _watcher_handle = engine
+            .start_watching_with_watcher(Box::new(watcher), WatchDebounceConfig::ZERO)
+            .unwrap();
+
+        // Ensure the watcher is asked to watch the external config file (or its parent) explicitly.
+        let watch_calls_for_wait = Arc::clone(&watch_calls);
+        let config_path_for_wait = config_path.clone();
+        timeout(Duration::from_secs(5), async move {
+            loop {
+                let calls = watch_calls_for_wait
+                    .lock()
+                    .expect("recording watcher calls mutex poisoned");
+                let parent = config_path_for_wait.parent();
+                if calls.iter().any(|(path, mode)| {
+                    *mode == WatchMode::NonRecursive
+                        && (path == &config_path_for_wait
+                            || parent.is_some_and(|p| path.as_path() == p))
+                }) {
+                    break;
+                }
+                drop(calls);
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("timed out waiting for watcher to watch external nova config path");
+
+        // Inject a config file change and ensure it is treated as a build change (project reload).
+        handle
+            .push(WatchEvent::Changes {
+                changes: vec![FileChange::Modified {
+                    path: VfsPath::local(config_path.clone()),
+                }],
+            })
+            .unwrap();
+
+        let engine_for_wait = Arc::clone(&engine);
+        timeout(Duration::from_secs(5), async move {
+            loop {
+                if engine_for_wait
+                    .project_reload_debouncer
+                    .cancel(&"workspace-reload")
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("timed out waiting for config change to enqueue project reload");
+
+        let mut changed_files = {
+            let mut state = engine
+                .project_state
+                .lock()
+                .expect("workspace project state mutex poisoned");
+            state.pending_build_changes.drain().collect::<Vec<_>>()
+        };
+        changed_files.sort();
+        assert_eq!(changed_files, vec![config_path]);
     }
 }
