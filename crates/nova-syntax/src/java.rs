@@ -3812,6 +3812,29 @@ mod tests {
     }
 
     #[test]
+    fn parse_block_lowers_array_creation_with_initializer() {
+        let block = parse_block("{ new int[] {1,2}; }", 0);
+        assert_eq!(block.statements.len(), 1);
+
+        let ast::Stmt::Expr(expr_stmt) = &block.statements[0] else {
+            panic!("expected expression statement");
+        };
+        let ast::Expr::ArrayCreation(array) = &expr_stmt.expr else {
+            panic!("expected array creation expression");
+        };
+
+        let Some(init_expr) = array.initializer.as_deref() else {
+            panic!("expected array creation initializer");
+        };
+        let ast::Expr::ArrayInitializer(init) = init_expr else {
+            panic!("expected array creation initializer");
+        };
+        assert_eq!(init.items.len(), 2);
+        assert!(matches!(&init.items[0], ast::Expr::IntLiteral(_)));
+        assert!(matches!(&init.items[1], ast::Expr::IntLiteral(_)));
+    }
+
+    #[test]
     fn parse_block_lowers_assert_statement() {
         let block = parse_block("{ assert x; }", 0);
         assert_eq!(block.statements.len(), 1);
