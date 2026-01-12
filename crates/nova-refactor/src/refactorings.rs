@@ -1733,32 +1733,6 @@ pub fn inline_variable(
 
     }
 
-    // --- Initializer dependency stability analysis ---
-    //
-    // Inlining can change semantics when the initializer reads other locals/parameters whose
-    // values may change between the declaration statement and the usage site being inlined.
-    let referenced_symbols = collect_initializer_locals_and_params(db, &def.file, &init_expr)?;
-    if !referenced_symbols.is_empty() {
-        let decl_end = decl.statement_range.end;
-        for dep in referenced_symbols {
-            for r in db.find_references(dep) {
-                if r.file != def.file {
-                    continue;
-                }
-                if !reference_is_write(&parsed, r.range)? {
-                    continue;
-                }
-                let write_offset = r.range.start;
-                for usage in &targets {
-                    let usage_start = usage.range.start;
-                    if decl_end < write_offset && write_offset < usage_start {
-                        return Err(RefactorError::InlineNotSupported);
-                    }
-                }
-            }
-        }
-    }
-
     // Even "pure" initializers can be order-sensitive because they may throw (NPE/AIOOBE/ClassCast)
     // at a different time if moved across intervening statements. When we delete the declaration,
     // require the earliest inlined usage statement to be the immediately following statement in
@@ -1861,31 +1835,44 @@ fn ensure_inline_variable_dependencies_not_shadowed(
 ) -> Result<(), RefactorError> {
     let mut deps: HashMap<String, SymbolId> = HashMap::new();
 
-    // Collect locals/params referenced by the initializer so we can prevent cases where inlining
-    // would change what those identifiers resolve to at the usage site (shadowing).
-    for tok in initializer
+    // Collect any *unqualified* locals/params/fields referenced by the initializer so we can
+    // prevent cases where inlining would change what those identifiers resolve to at the usage
+    // site (shadowing).
+    //
+    // Only consider the leftmost identifier segment of each `NameExpression` (e.g. `b` in `b`,
+    // `b` in `b.x`, but not `x` in `b.x`), since qualified segments like `obj.field` cannot be
+    // shadowed by locals.
+    for name_expr in initializer
         .syntax()
-        .descendants_with_tokens()
-        .filter_map(|el| el.into_token())
+        .descendants()
+        .filter_map(ast::NameExpression::cast)
     {
-        if tok.kind() != SyntaxKind::Identifier {
+        let Some(first_ident) = name_expr
+            .syntax()
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .filter(|tok| !tok.kind().is_trivia())
+            .find(|tok| tok.kind().is_identifier_like())
+        else {
             continue;
-        }
+        };
 
-        let range = syntax_token_range(&tok);
+        let range = syntax_token_range(&first_ident);
         let Some(sym) = db.symbol_at(file, range.start) else {
             continue;
         };
 
+        let kind = db.symbol_kind(sym);
         if !matches!(
-            db.symbol_kind(sym),
-            Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter)
+            kind,
+            Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter | JavaSymbolKind::Field)
         ) {
             continue;
         }
 
-        // Ignore locals/params declared inside the initializer expression itself (for example,
-        // lambda parameters). Inlining doesn't change their binding.
+        // Ignore locals/params/fields declared inside the initializer expression itself (for
+        // example lambda parameters or fields declared inside an anonymous class expression).
+        // Inlining doesn't change their binding.
         if let Some(def) = db.symbol_definition(sym) {
             if def.file == *file
                 && initializer_range.start <= def.name_range.start
@@ -1895,10 +1882,10 @@ fn ensure_inline_variable_dependencies_not_shadowed(
             }
         }
 
-        let name = tok.text().to_string();
+        let name = first_ident.text().to_string();
         if let Some(existing) = deps.insert(name.clone(), sym) {
             if existing != sym {
-                // Same spelling resolves to different locals/params inside the initializer
+                // Same spelling resolves to different locals/params/fields inside the initializer
                 // (e.g. nested scopes). This best-effort resolver doesn't support that.
                 return Err(RefactorError::InlineNotSupported);
             }
@@ -1916,18 +1903,45 @@ fn ensure_inline_variable_dependencies_not_shadowed(
         }
 
         for (name, init_sym) in &deps {
-            let Some(decl_offset) =
-                lexical_resolve_local_or_param_decl_offset(parsed, text, usage.range.start, name)
-            else {
-                return Err(RefactorError::InlineShadowedDependency { name: name.clone() });
-            };
+            let init_kind = db.symbol_kind(*init_sym);
 
-            let Some(resolved_sym) = db.symbol_at(file, decl_offset) else {
-                return Err(RefactorError::InlineShadowedDependency { name: name.clone() });
-            };
+            // This lexical resolver only finds locals/params (and other local-like bindings such as
+            // catch params / for-init decls / patterns). When the initializer dependency is a
+            // field, `None` means "no local binding shadows it" (so the inlined name should still
+            // resolve to the field).
+            let decl_offset =
+                lexical_resolve_local_or_param_decl_offset(parsed, text, usage.range.start, name);
 
-            if resolved_sym != *init_sym {
-                return Err(RefactorError::InlineShadowedDependency { name: name.clone() });
+            match init_kind {
+                Some(JavaSymbolKind::Field) => {
+                    if let Some(decl_offset) = decl_offset {
+                        let Some(resolved_sym) = db.symbol_at(file, decl_offset) else {
+                            return Err(RefactorError::InlineShadowedDependency {
+                                name: name.clone(),
+                            });
+                        };
+
+                        if resolved_sym != *init_sym {
+                            return Err(RefactorError::InlineShadowedDependency {
+                                name: name.clone(),
+                            });
+                        }
+                    }
+                }
+                Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter) => {
+                    let Some(decl_offset) = decl_offset else {
+                        return Err(RefactorError::InlineShadowedDependency { name: name.clone() });
+                    };
+
+                    let Some(resolved_sym) = db.symbol_at(file, decl_offset) else {
+                        return Err(RefactorError::InlineShadowedDependency { name: name.clone() });
+                    };
+
+                    if resolved_sym != *init_sym {
+                        return Err(RefactorError::InlineShadowedDependency { name: name.clone() });
+                    }
+                }
+                _ => return Err(RefactorError::InlineNotSupported),
             }
         }
     }
@@ -2009,6 +2023,7 @@ fn ensure_inline_variable_value_stable(
 /// - locals declared in `for (...)` headers,
 /// - locals declared in `try ( ... )` resource specifications,
 /// - catch clause parameters,
+/// - pattern variables (`instanceof` / record patterns / switch patterns),
 /// - method/constructor parameters, and
 /// - lambda parameters.
 ///
@@ -2061,6 +2076,12 @@ fn lexical_resolve_local_or_param_decl_offset(
 
         if let Some(for_stmt) = ast::ForStatement::cast(anc.clone()) {
             if let Some(decl_offset) = lexical_resolve_in_for_header(&for_stmt, offset, name) {
+                return Some(decl_offset);
+            }
+        }
+
+        if let Some(stmt) = ast::Statement::cast(anc.clone()) {
+            if let Some(decl_offset) = lexical_resolve_in_type_patterns(&stmt, offset, name) {
                 return Some(decl_offset);
             }
         }
@@ -2126,6 +2147,31 @@ fn lexical_resolve_in_lambda_params(lambda: &ast::LambdaExpression, name: &str) 
         }
     }
     None
+}
+
+fn lexical_resolve_in_type_patterns(
+    stmt: &ast::Statement,
+    offset: usize,
+    name: &str,
+) -> Option<usize> {
+    let mut found = None;
+    for pat in stmt
+        .syntax()
+        .descendants()
+        .filter_map(ast::TypePattern::cast)
+    {
+        let Some(name_tok) = pat.name_token() else {
+            continue;
+        };
+        if name_tok.text() != name {
+            continue;
+        }
+        let start = u32::from(name_tok.text_range().start()) as usize;
+        if start < offset {
+            found = Some(start);
+        }
+    }
+    found
 }
 
 fn lexical_resolve_in_for_header(
@@ -4662,48 +4708,6 @@ fn binary_short_circuit_operator_kind(binary: &ast::BinaryExpression) -> Option<
     }
 
     None
-}
-
-fn collect_initializer_locals_and_params(
-    db: &dyn RefactorDatabase,
-    file: &FileId,
-    initializer: &ast::Expression,
-) -> Result<HashSet<SymbolId>, RefactorError> {
-    let mut out: HashSet<SymbolId> = HashSet::new();
-
-    for name_expr in initializer
-        .syntax()
-        .descendants()
-        .filter_map(ast::NameExpression::cast)
-    {
-        let Some(ident) = name_expr
-            .syntax()
-            .descendants_with_tokens()
-            .filter_map(|el| el.into_token())
-            .find(|tok| tok.kind().is_identifier_like())
-        else {
-            continue;
-        };
-
-        let range = syntax_token_range(&ident);
-        let Some(symbol) = db.symbol_at(file, range.start) else {
-            return Err(RefactorError::InlineNotSupported);
-        };
-        match db.symbol_kind(symbol) {
-            Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter) => {
-                out.insert(symbol);
-            }
-            // Fields can be mutated independently of the variable we're inlining; the current
-            // dependency stability analysis is scoped to locals/params, so conservatively reject.
-            Some(JavaSymbolKind::Field) => return Err(RefactorError::InlineNotSupported),
-            // Non-value symbols (methods/types) do not affect the "captured value" semantics we
-            // are checking for here.
-            Some(JavaSymbolKind::Method | JavaSymbolKind::Type | JavaSymbolKind::Package) => {}
-            None => return Err(RefactorError::InlineNotSupported),
-        };
-    }
-
-    Ok(out)
 }
 
 fn has_side_effects(expr: &nova_syntax::SyntaxNode) -> bool {

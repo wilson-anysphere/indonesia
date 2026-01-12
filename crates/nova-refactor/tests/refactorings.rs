@@ -6947,7 +6947,7 @@ fn inline_variable_allows_stable_dependency() {
 }
 
 #[test]
-fn inline_variable_rejects_field_dependency() {
+fn inline_variable_allows_field_dependency_when_no_writes_or_shadowing() {
     let file = FileId::new("Test.java");
     let src = r#"class C { int x = 1; void m() { int a = x; System.out.println(a); } }
 "#;
@@ -6956,7 +6956,7 @@ fn inline_variable_rejects_field_dependency() {
     let offset = src.find("int a").unwrap() + "int ".len();
     let symbol = db.symbol_at(&file, offset).expect("symbol at a");
 
-    let err = inline_variable(
+    let edit = inline_variable(
         &db,
         InlineVariableParams {
             symbol,
@@ -6964,8 +6964,12 @@ fn inline_variable_rejects_field_dependency() {
             usage_range: None,
         },
     )
-    .unwrap_err();
-    assert!(matches!(err, SemanticRefactorError::InlineNotSupported));
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class C { int x = 1; void m() { System.out.println(x); } }
+"#;
+    assert_eq!(after, expected);
 }
 
 #[test]
