@@ -167,3 +167,82 @@ fn tests_dir_contains_only_tests_rs_at_root() {
          Found: {root_rs_files:?}",
     );
 }
+
+#[test]
+fn stdio_config_spawns_scrub_legacy_ai_env() {
+    let suite_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("suite");
+    let required = [
+        "NOVA_AI_PROVIDER",
+        "NOVA_AI_ENDPOINT",
+        "NOVA_AI_MODEL",
+        "NOVA_AI_API_KEY",
+        "NOVA_AI_AUDIT_LOGGING",
+    ];
+
+    for entry in std::fs::read_dir(&suite_dir)
+        .unwrap_or_else(|err| panic!("failed to read suite dir `{}`: {err}", suite_dir.display()))
+    {
+        let entry = entry.expect("suite dir entry");
+        let path = entry.path();
+        if !path.extension().is_some_and(|ext| ext == "rs") {
+            continue;
+        }
+
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("failed to read `{}`: {err}", path.display()));
+        let lines = text.lines().collect::<Vec<_>>();
+        for (i, line) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            if !line.contains(".arg(\"--config\")") {
+                continue;
+            }
+
+            let mut seen_spawn = false;
+            let mut scrubbed = vec![false; required.len()];
+            for lookahead in 0..80usize {
+                let Some(scan) = lines.get(i + lookahead) else {
+                    break;
+                };
+                for (idx, key) in required.iter().enumerate() {
+                    if scan.contains(&format!(".env_remove(\"{key}\")")) {
+                        scrubbed[idx] = true;
+                    }
+                }
+                if scan.contains(".spawn()") || scan.contains(".output()") {
+                    seen_spawn = true;
+                    break;
+                }
+            }
+
+            // Avoid false positives if a comment or assertion happens to contain `.arg("--config")`.
+            if !seen_spawn {
+                continue;
+            }
+
+            let missing = required
+                .iter()
+                .zip(scrubbed.iter())
+                .filter_map(|(key, present)| (!present).then_some(*key))
+                .collect::<Vec<_>>();
+            assert!(
+                missing.is_empty(),
+                "found `nova-lsp --config` spawn without legacy AI env scrubbing.\n\
+                 file: {}\n\
+                 line: {}\n\
+                 missing env_remove: {missing:?}\n\
+                 \n\
+                 NOTE: nova-lsp loads legacy AI env config (NOVA_AI_*) early and it can override the\n\
+                 config file; tests that pass --config must remove these env vars to remain\n\
+                 deterministic in developer shells.\n\
+                 ",
+                path.display(),
+                i + 1,
+            );
+        }
+    }
+}
