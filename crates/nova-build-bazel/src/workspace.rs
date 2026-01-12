@@ -204,6 +204,43 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             return Ok(Vec::new());
         };
 
+        let mut owners = BTreeSet::<String>::new();
+
+        if let Some(run_target) = run_target {
+            // When restricting the universe to a run target closure, batch reverse-dep steps per BFS
+            // layer to reduce the number of Bazel invocations.
+            let mut seen = BTreeSet::<String>::new();
+            let mut frontier = BTreeSet::<String>::new();
+            seen.insert(file_label.clone());
+            frontier.insert(file_label);
+
+            while !frontier.is_empty() {
+                let frontier_expr = frontier.iter().cloned().collect::<Vec<_>>().join(" + ");
+                let expr = format!("rdeps(deps({run_target}), ({frontier_expr}), 1)");
+                let direct_rdeps = self.query_label_kind(&expr)?;
+
+                let mut next_frontier = BTreeSet::<String>::new();
+                for (kind, label) in direct_rdeps {
+                    if frontier.contains(&label) {
+                        continue;
+                    }
+
+                    if is_java_rule_kind(&kind) {
+                        owners.insert(label);
+                        continue;
+                    }
+
+                    if is_source_aggregation_rule_kind(&kind) && seen.insert(label.clone()) {
+                        next_frontier.insert(label);
+                    }
+                }
+
+                frontier = next_frontier;
+            }
+
+            return Ok(owners.into_iter().collect());
+        }
+
         let package_universe = if package_rel.is_empty() {
             "//:*".to_string()
         } else {
@@ -212,20 +249,11 @@ impl<R: CommandRunner> BazelWorkspace<R> {
 
         let mut seen = BTreeSet::<String>::new();
         let mut queue = VecDeque::<String>::new();
-        let mut owners = BTreeSet::<String>::new();
-
         seen.insert(file_label.clone());
         queue.push_back(file_label);
 
         while let Some(node) = queue.pop_front() {
-            let direct_rdeps = match run_target {
-                Some(run_target) => {
-                    let expr = format!("rdeps(deps({run_target}), {node}, 1)");
-                    self.query_label_kind(&expr)?
-                }
-                None => self.same_pkg_direct_rdeps_or_fallback(&package_universe, &node)?,
-            };
-
+            let direct_rdeps = self.same_pkg_direct_rdeps_or_fallback(&package_universe, &node)?;
             for (kind, label) in direct_rdeps {
                 if label == node {
                     continue;

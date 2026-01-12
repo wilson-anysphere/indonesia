@@ -164,6 +164,19 @@ fn path_to_label_normalizes_dotdots_that_escape_and_reenter_workspace() {
     assert_eq!(label.as_deref(), Some("//java:com/Hello.java"));
 }
 
+#[test]
+fn path_to_label_returns_none_when_no_build_file_found() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
+    create_file(&dir.path().join("java/Hello.java"));
+
+    let workspace = BazelWorkspace::new(dir.path().to_path_buf(), NoopRunner).unwrap();
+    let label = workspace
+        .workspace_file_label(Path::new("java/Hello.java"))
+        .unwrap();
+    assert_eq!(label, None);
+}
+
 fn minimal_java_package(workspace_root: &Path) -> PathBuf {
     std::fs::write(workspace_root.join("WORKSPACE"), "# test\n").unwrap();
     write_file(&workspace_root.join("java/BUILD"), "# java package\n");
@@ -228,6 +241,44 @@ fn filegroup_chain_file_to_filegroup_to_java_library() {
             vec![
                 "query".to_string(),
                 "same_pkg_direct_rdeps(//java:hello_files)".to_string(),
+                "--output=label_kind".to_string()
+            ],
+        ]
+    );
+}
+
+#[test]
+fn alias_chain_file_to_alias_to_java_library() {
+    let dir = tempdir().unwrap();
+    let file = minimal_java_package(dir.path());
+    let file_label = "//java:Hello.java";
+
+    let runner = QueryRunner::new([
+        (
+            format!("same_pkg_direct_rdeps({file_label})"),
+            MockResponse::Ok("alias rule //java:hello_alias\n".to_string()),
+        ),
+        (
+            "same_pkg_direct_rdeps(//java:hello_alias)".to_string(),
+            MockResponse::Ok("java_library rule //java:hello_lib\n".to_string()),
+        ),
+    ]);
+    let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), runner.clone()).unwrap();
+
+    let owners = workspace.java_owning_targets_for_file(&file).unwrap();
+    assert_eq!(owners, vec!["//java:hello_lib".to_string()]);
+
+    assert_eq!(
+        runner.calls(),
+        vec![
+            vec![
+                "query".to_string(),
+                format!("same_pkg_direct_rdeps({file_label})"),
+                "--output=label_kind".to_string()
+            ],
+            vec![
+                "query".to_string(),
+                "same_pkg_direct_rdeps(//java:hello_alias)".to_string(),
                 "--output=label_kind".to_string()
             ],
         ]
@@ -345,6 +396,96 @@ fn falls_back_to_rdeps_when_same_pkg_direct_rdeps_is_unsupported() {
                 format!("rdeps(//java:*, {file_label}, 1)"),
                 "--output=label_kind".to_string()
             ]
+        ]
+    );
+}
+
+#[test]
+fn does_not_retry_same_pkg_direct_rdeps_after_failure() {
+    let dir = tempdir().unwrap();
+    let file = minimal_java_package(dir.path());
+    let file_label = "//java:Hello.java";
+
+    let runner = QueryRunner::new([
+        (
+            format!("same_pkg_direct_rdeps({file_label})"),
+            MockResponse::Err("same_pkg_direct_rdeps unsupported".to_string()),
+        ),
+        (
+            format!("rdeps(//java:*, {file_label}, 1)"),
+            MockResponse::Ok("filegroup rule //java:hello_files\n".to_string()),
+        ),
+        (
+            "rdeps(//java:*, //java:hello_files, 1)".to_string(),
+            MockResponse::Ok("java_library rule //java:hello_lib\n".to_string()),
+        ),
+    ]);
+    let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), runner.clone()).unwrap();
+
+    let owners = workspace.java_owning_targets_for_file(&file).unwrap();
+    assert_eq!(owners, vec!["//java:hello_lib".to_string()]);
+
+    assert_eq!(
+        runner.calls(),
+        vec![
+            vec![
+                "query".to_string(),
+                format!("same_pkg_direct_rdeps({file_label})"),
+                "--output=label_kind".to_string()
+            ],
+            vec![
+                "query".to_string(),
+                format!("rdeps(//java:*, {file_label}, 1)"),
+                "--output=label_kind".to_string()
+            ],
+            vec![
+                "query".to_string(),
+                "rdeps(//java:*, //java:hello_files, 1)".to_string(),
+                "--output=label_kind".to_string()
+            ],
+        ]
+    );
+}
+
+#[test]
+fn run_target_closure_batches_frontier_union_per_step() {
+    let dir = tempdir().unwrap();
+    let file = minimal_java_package(dir.path());
+    let file_label = "//java:Hello.java";
+    let run_target = "//app:run";
+
+    let runner = QueryRunner::new([
+        (
+            format!("rdeps(deps({run_target}), ({file_label}), 1)"),
+            MockResponse::Ok(
+                "filegroup rule //java:fg1\nalias rule //java:alias1\n".to_string(),
+            ),
+        ),
+        (
+            format!("rdeps(deps({run_target}), (//java:alias1 + //java:fg1), 1)"),
+            MockResponse::Ok("java_library rule //java:hello_lib\n".to_string()),
+        ),
+    ]);
+    let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), runner.clone()).unwrap();
+
+    let owners = workspace
+        .java_owning_targets_for_file_in_run_target_closure(&file, run_target)
+        .unwrap();
+    assert_eq!(owners, vec!["//java:hello_lib".to_string()]);
+
+    assert_eq!(
+        runner.calls(),
+        vec![
+            vec![
+                "query".to_string(),
+                format!("rdeps(deps({run_target}), ({file_label}), 1)"),
+                "--output=label_kind".to_string()
+            ],
+            vec![
+                "query".to_string(),
+                format!("rdeps(deps({run_target}), (//java:alias1 + //java:fg1), 1)"),
+                "--output=label_kind".to_string()
+            ],
         ]
     );
 }
