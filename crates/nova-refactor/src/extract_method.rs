@@ -112,16 +112,6 @@ fn infer_type_at_offsets(
         };
 
         if is_valid_signature_type_string(&ty) {
-            // `type_at_offset_fully_qualified` returns fully-qualified names (e.g.
-            // `java.lang.RuntimeException`). Since `java.lang` is implicitly imported in Java,
-            // avoid emitting the redundant qualifier when it is the *top-level* type.
-            //
-            // Note: we intentionally keep nested `java.lang.*` segments inside generic type
-            // arguments (e.g. `java.util.List<java.lang.String>`) so the type remains fully
-            // qualified when the outer type already requires qualification.
-            if let Some(rest) = ty.strip_prefix("java.lang.") {
-                ty = rest.to_string();
-            }
             return Some(ty);
         }
     }
@@ -308,14 +298,6 @@ fn find_best_expr_in_stmt(
         }
         HirStmt::Yield { expr, .. } => {
             if let Some(expr) = expr {
-                find_best_expr_in_expr(body, *expr, offset, owner, best);
-            }
-        }
-        HirStmt::Assert {
-            condition, message, ..
-        } => {
-            find_best_expr_in_expr(body, *condition, offset, owner, best);
-            if let Some(expr) = message {
                 find_best_expr_in_expr(body, *expr, offset, owner, best);
             }
         }
