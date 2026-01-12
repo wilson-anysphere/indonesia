@@ -926,7 +926,12 @@ impl MemoryEvictor for SalsaMemoEvictor {
         // database from inputs and swap it behind the mutex. Outstanding
         // snapshots remain valid because they own their storage snapshots.
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let inputs = self.inputs.lock().clone();
+            // Avoid cloning potentially large input maps during eviction (file
+            // contents, per-project metadata, etc). Instead, hold the inputs
+            // lock while applying them to the fresh database.
+            //
+            // Lock ordering: `inputs` then `db` (matches the rest of this file).
+            let inputs = self.inputs.lock();
             let mut db = self.db.lock();
             let stats = db.stats.clone();
             let persistence = db.persistence.clone();
@@ -1544,7 +1549,12 @@ impl Database {
         }
 
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let inputs = self.inputs.lock().clone();
+            // Avoid cloning potentially large input maps during eviction (file
+            // contents, per-project metadata, etc). Instead, hold the inputs
+            // lock while applying them to the fresh database.
+            //
+            // Lock ordering: `inputs` then `db` (matches the rest of this file).
+            let inputs = self.inputs.lock();
             let mut db = self.inner.lock();
             let stats = db.stats.clone();
             let persistence = db.persistence.clone();
@@ -2928,6 +2938,58 @@ class Foo {
 
         // Previously returned results remain valid and the snapshot stays usable.
         assert_eq!(&*parse_from_snapshot, &*snap.parse(file));
+    }
+
+    #[test]
+    fn evict_salsa_memos_preserves_inputs_and_recomputes() {
+        let db = Database::new();
+
+        let files = [
+            FileId::from_raw(1),
+            FileId::from_raw(2),
+            FileId::from_raw(3),
+        ];
+        let texts = [
+            "class Foo { int x; }",
+            "class Bar { int y; }",
+            "class Baz { int z; }",
+        ];
+
+        for (file, text) in files.iter().copied().zip(texts) {
+            db.set_file_text(file, text);
+        }
+
+        let snap = db.snapshot();
+        let counts_before: Vec<_> = files.iter().map(|&file| snap.symbol_count(file)).collect();
+        let parses_before: Vec<_> = files.iter().map(|&file| snap.parse(file)).collect();
+
+        let parse_exec_before_evict = executions(&db.inner.lock(), "parse");
+
+        // Evict memoized values from the main database while the snapshot is alive.
+        db.evict_salsa_memos(MemoryPressure::Critical);
+
+        // Previously returned results remain valid and the snapshot stays usable.
+        for (idx, file) in files.iter().copied().enumerate() {
+            assert_eq!(&*parses_before[idx], &*snap.parse(file));
+            assert_eq!(counts_before[idx], snap.symbol_count(file));
+        }
+
+        // Inputs should still be present in the rebuilt database.
+        let snap2 = db.snapshot();
+        for (file, expected) in files.iter().copied().zip(texts) {
+            assert_eq!(snap2.file_content(file).as_str(), expected);
+        }
+
+        // Derived queries should recompute against the rebuilt database and produce
+        // the same results.
+        for (idx, file) in files.iter().copied().enumerate() {
+            assert!(snap2.parse(file).errors.is_empty());
+            assert_eq!(counts_before[idx], snap2.symbol_count(file));
+        }
+        assert!(
+            executions(&db.inner.lock(), "parse") > parse_exec_before_evict,
+            "expected parse to re-execute after memo eviction"
+        );
     }
 
     #[test]
