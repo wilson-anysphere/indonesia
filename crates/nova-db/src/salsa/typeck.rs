@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -8554,13 +8553,12 @@ fn resolve_type_ref_text<'idx>(
     text: &str,
     base_span: Option<Span>,
 ) -> nova_resolve::type_ref::ResolvedType {
-    // Preload the *referenced* types (excluding type-use annotations) so that the type-ref resolver
-    // can map them into `Type::Class` where possible.
+    // Preload referenced types so the type-ref resolver can map them into `Type::Class` where
+    // possible.
     //
     // We still pass the original text into `resolve_type_ref_text` so the parser can correctly
-    // skip annotations even when `TypeRef.text` is whitespace-stripped (e.g. `@A String` becomes
-    // `@AString`). Type-use annotation *types* are currently ignored by Nova, so no diagnostics are
-    // reported for annotation names.
+    // skip type-use annotations even when `TypeRef.text` is whitespace-stripped (e.g.
+    // `@A String` becomes `@AString`).
     preload_type_names(resolver, scopes, scope_id, loader, text);
     nova_resolve::type_ref::resolve_type_ref_text(
         resolver,
@@ -10100,8 +10098,7 @@ fn preload_type_names<'idx>(
     loader: &mut ExternalTypeLoader<'_>,
     text: &str,
 ) {
-    let masked = mask_type_use_annotations(text);
-    for_each_resolved_type_name(resolver, scopes, scope_id, masked.as_ref(), |name| {
+    for_each_resolved_type_name(resolver, scopes, scope_id, text, |name| {
         loader.store.intern_class_id(name);
     });
 }
@@ -10113,82 +10110,9 @@ fn collect_resolved_type_names<'idx>(
     text: &str,
     out: &mut Vec<String>,
 ) {
-    let masked = mask_type_use_annotations(text);
-    for_each_resolved_type_name(resolver, scopes, scope_id, masked.as_ref(), |name| {
+    for_each_resolved_type_name(resolver, scopes, scope_id, text, |name| {
         out.push(name.to_string());
     });
-}
-
-/// Rewrites type reference text so type-use annotation *names* do not participate in the
-/// lightweight signature-scanning heuristics used for preloading.
-///
-/// This is intentionally *position preserving*: we replace annotation spans with spaces rather than
-/// removing them so any offset-based consumers remain stable.
-fn mask_type_use_annotations(text: &str) -> Cow<'_, str> {
-    if !text.as_bytes().contains(&b'@') {
-        return Cow::Borrowed(text);
-    }
-
-    let mut bytes = text.as_bytes().to_vec();
-    let len = bytes.len();
-    let mut i = 0usize;
-    while i < len {
-        if bytes[i] != b'@' {
-            i += 1;
-            continue;
-        }
-
-        let start = i;
-        i += 1;
-
-        // Optional whitespace after `@`.
-        while i < len && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-
-        // Qualified annotation name: `Ident ('.' Ident)*`.
-        if i < len && is_ident_start(bytes[i]) {
-            i += 1;
-            while i < len && is_ident_continue(bytes[i]) {
-                i += 1;
-            }
-            while i + 1 < len && bytes[i] == b'.' && is_ident_start(bytes[i + 1]) {
-                i += 2;
-                while i < len && is_ident_continue(bytes[i]) {
-                    i += 1;
-                }
-            }
-        }
-
-        // Optional annotation arguments: `(...)` (balanced).
-        while i < len && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if i < len && bytes[i] == b'(' {
-            let mut depth = 0u32;
-            while i < len {
-                match bytes[i] {
-                    b'(' => depth += 1,
-                    b')' => {
-                        depth = depth.saturating_sub(1);
-                        if depth == 0 {
-                            i += 1;
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-                i += 1;
-            }
-        }
-
-        let end = i.min(len);
-        for b in &mut bytes[start..end] {
-            *b = b' ';
-        }
-    }
-
-    Cow::Owned(String::from_utf8(bytes).unwrap_or_else(|_| text.to_string()))
 }
 fn for_each_resolved_type_name<'idx>(
     resolver: &nova_resolve::Resolver<'idx>,
