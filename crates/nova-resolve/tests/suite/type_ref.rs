@@ -659,3 +659,324 @@ fn resolves_unicode_identifier_in_same_package() {
     assert_eq!(ty.diagnostics, Vec::new());
     assert_eq!(ty.ty, Type::Named("p.π".to_string()));
 }
+
+#[test]
+fn type_ref_reports_java_lang_vs_star_import_ambiguity() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(
+        file,
+        r#"
+import q.*;
+class C {}
+"#,
+    );
+
+    let jdk = JdkIndex::new();
+    let mut index = TestIndex::default();
+    index.add_type("q", "String");
+
+    let scopes = build_scopes(&db, file);
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let result = resolve_type_ref_text(
+        &resolver,
+        &scopes.scopes,
+        scopes.file_scope,
+        &env,
+        &type_vars,
+        "String",
+        None,
+    );
+
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "ambiguous-type"),
+        "expected ambiguous-type diagnostic, got {:#?}",
+        result.diagnostics
+    );
+
+    let diag = result
+        .diagnostics
+        .iter()
+        .find(|d| d.code.as_ref() == "ambiguous-type")
+        .expect("ambiguous-type diagnostic");
+    assert!(
+        diag.message.contains("q.String") && diag.message.contains("java.lang.String"),
+        "expected candidates to include q.String and java.lang.String, got: {}",
+        diag.message
+    );
+
+    // Best-effort: prefer java.lang to keep type inference stable, but still surface ambiguity.
+    let string_id = env.lookup_class("java.lang.String").expect("java.lang.String");
+    assert_eq!(result.ty, Type::class(string_id, vec![]));
+}
+
+#[test]
+fn type_use_annotations_are_ignored() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(file, "class C {}\n");
+
+    let jdk = JdkIndex::new();
+    let index = TestIndex::default();
+    let scopes = build_scopes(&db, file);
+
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let string_id = env.lookup_class("java.lang.String").expect("java.lang.String");
+
+    // Mimics `TypeRef.text` output where whitespace is stripped.
+    let result = resolve_type_ref_text(
+        &resolver,
+        &scopes.scopes,
+        scopes.file_scope,
+        &env,
+        &type_vars,
+        "@DeprecatedString",
+        None,
+    );
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        result.diagnostics
+    );
+    assert_eq!(result.ty, Type::class(string_id, vec![]));
+
+    // Also accept the spaced variant for completeness.
+    let result = resolve_type_ref_text(
+        &resolver,
+        &scopes.scopes,
+        scopes.file_scope,
+        &env,
+        &type_vars,
+        "@Deprecated String",
+        None,
+    );
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        result.diagnostics
+    );
+    assert_eq!(result.ty, Type::class(string_id, vec![]));
+}
+
+#[test]
+fn type_use_annotations_on_arrays_are_ignored() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(file, "class C {}\n");
+
+    let jdk = JdkIndex::new();
+    let index = TestIndex::default();
+    let scopes = build_scopes(&db, file);
+
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let string_id = env.lookup_class("java.lang.String").expect("java.lang.String");
+
+    let result = resolve_type_ref_text(
+        &resolver,
+        &scopes.scopes,
+        scopes.file_scope,
+        &env,
+        &type_vars,
+        "String@Deprecated[]",
+        None,
+    );
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        result.diagnostics
+    );
+    assert_eq!(
+        result.ty,
+        Type::Array(Box::new(Type::class(string_id, vec![])))
+    );
+}
+
+#[test]
+fn type_use_annotations_in_type_arguments_are_ignored() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(
+        file,
+        r#"
+import java.util.*;
+class C {}
+"#,
+    );
+
+    let jdk = JdkIndex::new();
+    let index = TestIndex::default();
+    let scopes = build_scopes(&db, file);
+
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let list_id = env.lookup_class("java.util.List").expect("java.util.List");
+    let string_id = env.lookup_class("java.lang.String").expect("java.lang.String");
+
+    // Mimics `TypeRef.text` output where whitespace is stripped.
+    let result = resolve_type_ref_text(
+        &resolver,
+        &scopes.scopes,
+        scopes.file_scope,
+        &env,
+        &type_vars,
+        "List<@DeprecatedString>",
+        None,
+    );
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        result.diagnostics
+    );
+    assert_eq!(
+        result.ty,
+        Type::class(list_id, vec![Type::class(string_id, vec![])])
+    );
+}
+
+#[test]
+fn type_use_annotations_before_varargs_are_ignored() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(file, "class C {}\n");
+
+    let jdk = JdkIndex::new();
+    let index = TestIndex::default();
+    let scopes = build_scopes(&db, file);
+
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let string_id = env.lookup_class("java.lang.String").expect("java.lang.String");
+
+    let result = resolve_type_ref_text(
+        &resolver,
+        &scopes.scopes,
+        scopes.file_scope,
+        &env,
+        &type_vars,
+        "String@Deprecated...",
+        None,
+    );
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        result.diagnostics
+    );
+    assert_eq!(
+        result.ty,
+        Type::Array(Box::new(Type::class(string_id, vec![])))
+    );
+}
+
+#[test]
+fn type_use_annotations_can_be_adjacent() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(
+        file,
+        r#"
+import java.util.*;
+class C {}
+"#,
+    );
+
+    let jdk = JdkIndex::new();
+    let index = TestIndex::default();
+    let scopes = build_scopes(&db, file);
+
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let list_id = env.lookup_class("java.util.List").expect("java.util.List");
+    let string_id = env.lookup_class("java.lang.String").expect("java.lang.String");
+
+    let expected = Type::class(list_id, vec![Type::class(string_id, vec![])]);
+
+    let result = resolve_type_ref_text(
+        &resolver,
+        &scopes.scopes,
+        scopes.file_scope,
+        &env,
+        &type_vars,
+        "List<@A@BString>",
+        None,
+    );
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        result.diagnostics
+    );
+    assert_eq!(result.ty, expected);
+}
+
+#[test]
+fn type_use_annotations_on_primitive_arrays_are_ignored() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(file, "class C {}\n");
+
+    let jdk = JdkIndex::new();
+    let index = TestIndex::default();
+    let scopes = build_scopes(&db, file);
+
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let result = resolve_type_ref_text(
+        &resolver,
+        &scopes.scopes,
+        scopes.file_scope,
+        &env,
+        &type_vars,
+        "int@B[]",
+        None,
+    );
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-type-ref"),
+        "unexpected diagnostics: {:?}",
+        result.diagnostics
+    );
+    assert_eq!(
+        result.ty,
+        Type::Array(Box::new(Type::Primitive(PrimitiveType::Int)))
+    );
+}

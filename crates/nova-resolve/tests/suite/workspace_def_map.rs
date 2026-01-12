@@ -5,9 +5,10 @@ use nova_modules::ModuleName;
 use nova_resolve::{DefMap, WorkspaceDefMap};
 
 fn def_map_from_source(file: FileId, source: &str) -> DefMap {
-    let parse = nova_syntax::java::parse(source);
     let rowan_parse = nova_syntax::parse_java(source);
-    let ast_id_map = AstIdMap::new(&rowan_parse.syntax());
+    let syntax = rowan_parse.syntax();
+    let parse = nova_syntax::java::parse_with_syntax(&syntax, source.len());
+    let ast_id_map = AstIdMap::new(&syntax);
     let tree = lower_item_tree(file, parse.compilation_unit(), &rowan_parse, &ast_id_map);
     DefMap::from_item_tree(file, &tree)
 }
@@ -59,4 +60,3 @@ fn iter_type_names_is_sorted_and_deterministic() {
     sorted.sort();
     assert_eq!(names_1, sorted);
 }
-
