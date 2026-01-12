@@ -1146,7 +1146,7 @@ where
                 }
             }
         }
-
+ 
         if let (Some(uri), Some(span)) = (uri, span) {
             let source_index = TextIndex::new(source);
             let selection = source_index.span_to_lsp_range(span);
@@ -1205,6 +1205,13 @@ where
             // Quick fixes driven by diagnostics should prefer the diagnostics passed by the LSP
             // client (`CodeActionContext.diagnostics`) so we don't need to recompute diagnostics
             // for the whole file.
+            actions.extend(return_mismatch_quick_fixes_from_context(
+                &cancel,
+                source,
+                &uri,
+                span,
+                context_diagnostics,
+            ));
             actions.extend(type_mismatch_quick_fixes_from_context(
                 &cancel,
                 source,
@@ -1488,6 +1495,114 @@ fn type_mismatch_quick_fixes_from_context(
     actions
 }
 
+fn return_mismatch_quick_fixes_from_context(
+    cancel: &CancellationToken,
+    source: &str,
+    uri: &lsp_types::Uri,
+    selection: Span,
+    context_diagnostics: &[lsp_types::Diagnostic],
+) -> Vec<lsp_types::CodeActionOrCommand> {
+    fn spans_overlap(a: Span, b: Span) -> bool {
+        a.start < b.end && b.start < a.end
+    }
+
+    fn parse_return_mismatch(message: &str) -> Option<(String, String)> {
+        // Current format (from Salsa typeck):
+        // `return type mismatch: expected {expected}, found {found}`
+        let message = message.strip_prefix("return type mismatch: expected ")?;
+        let (expected, found) = message.split_once(", found ")?;
+        Some((expected.trim().to_string(), found.trim().to_string()))
+    }
+
+    fn single_replace_edit(
+        uri: &lsp_types::Uri,
+        range: lsp_types::Range,
+        new_text: String,
+    ) -> lsp_types::WorkspaceEdit {
+        let mut changes: HashMap<lsp_types::Uri, Vec<lsp_types::TextEdit>> = HashMap::new();
+        changes.insert(uri.clone(), vec![lsp_types::TextEdit { range, new_text }]);
+        lsp_types::WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        }
+    }
+
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+
+    let mut actions = Vec::new();
+
+    let source_index = TextIndex::new(source);
+    for diagnostic in context_diagnostics {
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
+        let Some(lsp_types::NumberOrString::String(code)) = diagnostic.code.as_ref() else {
+            continue;
+        };
+        if code != "return-mismatch" {
+            continue;
+        }
+
+        let Some(start) = source_index.position_to_offset(diagnostic.range.start) else {
+            continue;
+        };
+        let Some(end) = source_index.position_to_offset(diagnostic.range.end) else {
+            continue;
+        };
+        let diag_span = Span::new(start, end);
+        if !spans_overlap(selection, diag_span) {
+            continue;
+        }
+
+        if diagnostic
+            .message
+            .contains("cannot return a value from a `void` method")
+        {
+            let edit = single_replace_edit(uri, diagnostic.range.clone(), String::new());
+            actions.push(lsp_types::CodeActionOrCommand::CodeAction(
+                lsp_types::CodeAction {
+                    title: "Remove returned value".to_string(),
+                    kind: Some(lsp_types::CodeActionKind::QUICKFIX),
+                    edit: Some(edit),
+                    ..lsp_types::CodeAction::default()
+                },
+            ));
+            continue;
+        }
+
+        let Some((expected, found)) = parse_return_mismatch(&diagnostic.message) else {
+            continue;
+        };
+        if found == "void" {
+            continue;
+        }
+
+        let expr = source
+            .get(diag_span.start..diag_span.end)
+            .unwrap_or_default()
+            .trim();
+        if expr.is_empty() {
+            continue;
+        }
+
+        let replacement = format!("({expected}) ({expr})");
+        let edit = single_replace_edit(uri, diagnostic.range.clone(), replacement);
+        actions.push(lsp_types::CodeActionOrCommand::CodeAction(
+            lsp_types::CodeAction {
+                title: format!("Cast to {expected}"),
+                kind: Some(lsp_types::CodeActionKind::QUICKFIX),
+                edit: Some(edit),
+                ..lsp_types::CodeAction::default()
+            },
+        ));
+    }
+
+    actions
+}
+
 fn unused_import_quick_fixes_from_context(
     cancel: &CancellationToken,
     source: &str,
@@ -1499,10 +1614,7 @@ fn unused_import_quick_fixes_from_context(
         a.start < b.end && b.start < a.end
     }
 
-    fn single_delete_edit(
-        uri: &lsp_types::Uri,
-        range: lsp_types::Range,
-    ) -> lsp_types::WorkspaceEdit {
+    fn single_delete_edit(uri: &lsp_types::Uri, range: lsp_types::Range) -> lsp_types::WorkspaceEdit {
         let mut changes: HashMap<lsp_types::Uri, Vec<lsp_types::TextEdit>> = HashMap::new();
         changes.insert(
             uri.clone(),

@@ -101,6 +101,51 @@ pub(crate) fn quick_fixes_for_diagnostics(
                     actions.push(CodeActionOrCommand::CodeAction(action));
                 }
             }
+            "return-mismatch" => {
+                let Some(diag_span) = diag.span else {
+                    continue;
+                };
+
+                if !spans_intersect(diag_span, selection) {
+                    continue;
+                }
+
+                if diag
+                    .message
+                    .contains("cannot return a value from a `void` method")
+                {
+                    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                        title: "Remove returned value".to_string(),
+                        kind: Some(CodeActionKind::QUICKFIX),
+                        edit: Some(single_replace_edit(uri, source, diag_span, String::new())),
+                        ..Default::default()
+                    }));
+                    continue;
+                }
+
+                let Some((expected, found)) = parse_return_mismatch(&diag.message) else {
+                    continue;
+                };
+                if found == "void" {
+                    continue;
+                }
+
+                let Some(expr_text) = source.get(diag_span.start..diag_span.end) else {
+                    continue;
+                };
+                let expr = expr_text.trim();
+                if expr.is_empty() {
+                    continue;
+                }
+
+                let replacement = format!("({expected}) ({expr})");
+                actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                    title: format!("Cast to {expected}"),
+                    kind: Some(CodeActionKind::QUICKFIX),
+                    edit: Some(single_replace_edit(uri, source, diag_span, replacement)),
+                    ..Default::default()
+                }));
+            }
             _ => {}
         }
     }
@@ -116,6 +161,14 @@ pub(crate) fn spans_intersect(a: Span, b: Span) -> bool {
         return a.start <= b.start && b.start < a.end;
     }
     a.start < b.end && b.start < a.end
+}
+
+fn parse_return_mismatch(message: &str) -> Option<(String, String)> {
+    // Current format (from Salsa typeck):
+    // `return type mismatch: expected {expected}, found {found}`
+    let rest = message.strip_prefix("return type mismatch: expected ")?;
+    let (expected, found) = rest.split_once(", found ")?;
+    Some((expected.trim().to_string(), found.trim().to_string()))
 }
 
 fn looks_like_value_ident(name: &str) -> bool {
@@ -234,6 +287,19 @@ fn single_replace_range_edit(
     let start = crate::text::offset_to_position(source, start_offset);
     let end = crate::text::offset_to_position(source, end_offset);
     let range = Range { start, end };
+    let edit = TextEdit { range, new_text };
+
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), vec![edit]);
+    WorkspaceEdit {
+        changes: Some(changes),
+        document_changes: None,
+        change_annotations: None,
+    }
+}
+
+fn single_replace_edit(uri: &Uri, source: &str, span: Span, new_text: String) -> WorkspaceEdit {
+    let range = crate::text::span_to_lsp_range(source, span);
     let edit = TextEdit { range, new_text };
 
     let mut changes = HashMap::new();
