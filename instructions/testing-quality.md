@@ -198,6 +198,9 @@ bash scripts/cargo_agent.sh +nightly fuzz run fuzz_completion -- -max_total_time
 
 # Incremental parsing invariants (`nova_syntax::reparse_java`).
 bash scripts/cargo_agent.sh +nightly fuzz run fuzz_reparse_java -- -max_total_time=60 -max_len=262144
+
+# Workstation equivalent (no agent wrapper):
+cargo +nightly fuzz run fuzz_reparse_java -- -max_total_time=60 -max_len=262144
 ```
 
 ### Fuzz Targets
