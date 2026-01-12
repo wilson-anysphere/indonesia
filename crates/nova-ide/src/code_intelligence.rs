@@ -6309,14 +6309,52 @@ pub fn prepare_call_hierarchy(
         return Some(vec![call_hierarchy_item(&uri, &text_index, method)]);
     }
 
-    // Next try call sites.
-    if let Some(call) = analysis
-        .calls
-        .iter()
-        .find(|c| span_contains(c.name_span, offset))
-    {
-        if let Some(target) = analysis.methods.iter().find(|m| m.name == call.name) {
-            return Some(vec![call_hierarchy_item(&uri, &text_index, target)]);
+    // Next try call sites (prefer resolving the *called* method when the cursor
+    // is on a call name, even across files).
+    if let Some(call) = analysis.calls.iter().find(|c| span_contains(c.name_span, offset)) {
+        // Fast-path: receiverless calls can often be resolved within the file.
+        if call.receiver.is_none() {
+            if let Some(target) = analysis.methods.iter().find(|m| m.name == call.name) {
+                return Some(vec![call_hierarchy_item(&uri, &text_index, target)]);
+            }
+        }
+
+        // Workspace-aware resolution for receiver calls (`a.foo()`) and for
+        // receiverless calls that aren't defined in the current file (e.g.
+        // inherited methods).
+        let index = crate::workspace_hierarchy::WorkspaceHierarchyIndex::new(db);
+        if let Some(parsed) = index.file(file) {
+            if let Some(parsed_call) = parsed
+                .calls
+                .iter()
+                .find(|c| span_contains(c.method_span, offset))
+            {
+                if let Some((containing_type, containing_method)) =
+                    parsed_method_containing_span(parsed, parsed_call.method_span)
+                {
+                    if let Some(receiver_ty) = resolve_receiver_type_for_call(
+                        &index,
+                        containing_type,
+                        containing_method,
+                        parsed_call,
+                    ) {
+                        if let Some(target) =
+                            index.resolve_method_definition(&receiver_ty, &parsed_call.method)
+                        {
+                            if let Some(target_file) = index.file(target.file_id) {
+                                let target_text_index = TextIndex::new(&target_file.text);
+                                return Some(vec![call_hierarchy_item_from_parsed_method(
+                                    &target.uri,
+                                    &target_text_index,
+                                    &target.name,
+                                    target.name_span,
+                                    target.body_span,
+                                )]);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

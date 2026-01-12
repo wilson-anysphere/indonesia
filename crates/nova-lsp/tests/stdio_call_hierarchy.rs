@@ -387,3 +387,175 @@ fn stdio_server_supports_call_hierarchy_across_files() {
     let status = child.wait().expect("wait");
     assert!(status.success());
 }
+
+#[test]
+fn stdio_server_prepare_call_hierarchy_resolves_receiver_call_sites_across_files() {
+    let _lock = stdio_server_lock();
+ 
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+ 
+    let cache_dir = TempDir::new().expect("cache dir");
+ 
+    let foo_path = root.join("Foo.java");
+    let foo_uri = uri_for_path(&foo_path);
+    let bar_path = root.join("Bar.java");
+    let bar_uri = uri_for_path(&bar_path);
+    let root_uri = uri_for_path(root);
+ 
+    let foo_text = r#"
+        public class Foo {
+            void caller() {
+                Bar.callee();
+            }
+        }
+    "#;
+ 
+    let bar_text = r#"
+        public class Bar {
+            static void callee() {}
+        }
+    "#;
+ 
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .env("NOVA_CACHE_DIR", cache_dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+ 
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+ 
+    // initialize
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": root_uri, "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+ 
+    // didOpen both files
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": foo_uri.as_str(),
+                    "languageId": "java",
+                    "version": 1,
+                    "text": foo_text,
+                }
+            }
+        }),
+    );
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": bar_uri.as_str(),
+                    "languageId": "java",
+                    "version": 1,
+                    "text": bar_text,
+                }
+            }
+        }),
+    );
+ 
+    // prepareCallHierarchy at the call-site name (`Bar.callee()`).
+    let callee_offset = foo_text.find("callee").expect("callee call-site name");
+    let pos = utf16_position(foo_text, callee_offset);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/prepareCallHierarchy",
+            "params": {
+                "textDocument": { "uri": foo_uri.as_str() },
+                "position": { "line": pos.line, "character": pos.character },
+            }
+        }),
+    );
+ 
+    let prepare_resp = read_response_with_id(&mut stdout, 2);
+    let items = prepare_resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| panic!("expected prepareCallHierarchy result array: {prepare_resp:#}"));
+    assert!(
+        !items.is_empty(),
+        "expected non-empty prepareCallHierarchy result: {prepare_resp:#}"
+    );
+ 
+    let callee_item = items
+        .iter()
+        .find(|value| {
+            value
+                .pointer("/name")
+                .and_then(|v| v.as_str())
+                .is_some_and(|name| name == "callee")
+                && value
+                    .pointer("/uri")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|uri| uri == bar_uri.as_str())
+        })
+        .cloned()
+        .unwrap_or_else(|| panic!("expected prepareCallHierarchy to resolve Bar.callee: {prepare_resp:#}"));
+ 
+    // incomingCalls on Bar.callee should include Foo.caller.
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "callHierarchy/incomingCalls",
+            "params": { "item": callee_item }
+        }),
+    );
+    let incoming_resp = read_response_with_id(&mut stdout, 3);
+    let incoming = incoming_resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| panic!("expected incomingCalls result array: {incoming_resp:#}"));
+    assert!(
+        incoming.iter().any(|value| {
+            value
+                .pointer("/from/name")
+                .and_then(|v| v.as_str())
+                .is_some_and(|name| name == "caller")
+                && value
+                    .pointer("/from/uri")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|uri| uri == foo_uri.as_str())
+        }),
+        "expected incoming calls to include Foo.caller: {incoming_resp:#}"
+    );
+ 
+    // shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+ 
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
