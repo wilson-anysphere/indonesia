@@ -1954,17 +1954,8 @@ fn exists_as_jar(path: &Path) -> bool {
 
     // Maven dependency artifacts are typically `.jar` files, but some build systems (and test
     // fixtures) can "explode" jars into directories (often still ending with `.jar`).
-    //
-    // Missing artifacts are treated as absent so downstream indexing doesn't try to open
-    // non-existent archives.
-    if !path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
-    {
-        return false;
-    }
-    path.is_file() || path.is_dir()
+    // Accept both files and directories, and treat missing paths as absent.
+    std::fs::metadata(path).is_ok_and(|meta| meta.is_file() || meta.is_dir())
 }
 
 fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<PathBuf> {
