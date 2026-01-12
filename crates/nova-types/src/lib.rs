@@ -1469,6 +1469,20 @@ impl TypeStore {
         self.lookup_class(name)
     }
 
+    /// Iterate over all class definitions currently stored in this [`TypeStore`].
+    ///
+    /// This is primarily intended for IDE features (e.g. completion) that need to
+    /// search across known types without maintaining a separate index.
+    ///
+    /// Note: The iterator includes inert placeholder/tombstone entries. Callers
+    /// should be prepared to filter out classes that are not relevant.
+    pub fn iter_classes(&self) -> impl Iterator<Item = (ClassId, &ClassDef)> {
+        self.classes
+            .iter()
+            .enumerate()
+            .map(|(idx, def)| (ClassId::from_raw(idx as u32), def))
+    }
+
     pub fn class_mut(&mut self, id: ClassId) -> Option<&mut ClassDef> {
         self.classes.get_mut(id.to_raw() as usize)
     }
@@ -1640,7 +1654,15 @@ fn is_subtype_class(env: &dyn TypeEnv, sub: &Type, super_: &Type) -> bool {
     let mut seen = HashSet::new();
     queue.push_back(Type::class(sub_def, sub_args));
 
-    while let Some(current) = queue.pop_front() {
+    while let Some(mut current) = queue.pop_front() {
+        // Allow supertypes to be recorded as `Type::Named` (common for source-derived
+        // environments where referenced types may not have been interned yet).
+        if let Type::Named(name) = &current {
+            if let Some(id) = env.lookup_class(name) {
+                current = Type::class(id, vec![]);
+            }
+        }
+
         let Type::Class(ClassType { def, args }) = current.clone() else {
             continue;
         };

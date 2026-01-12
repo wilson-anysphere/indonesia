@@ -6152,6 +6152,19 @@ fn general_completions(
 
     maybe_add_lambda_snippet_completion(&mut items, text, &analysis, prefix_start, offset, prefix);
 
+    maybe_add_smart_constructor_completions(
+        &mut items,
+        db,
+        file,
+        text,
+        &analysis,
+        &mut types,
+        expected_arg_ty.as_ref(),
+        prefix_start,
+        offset,
+        prefix,
+    );
+
     for m in &analysis.methods {
         if let Some(expected) = expected_arg_ty.as_ref() {
             let ret = parse_source_type(&mut types, &m.ret_ty);
@@ -6362,6 +6375,289 @@ fn general_completions(
     deduplicate_completion_items(&mut items);
     rank_completions(prefix, &mut items, &ctx);
     items
+}
+
+fn maybe_add_smart_constructor_completions(
+    items: &mut Vec<CompletionItem>,
+    db: &dyn Database,
+    file: FileId,
+    text: &str,
+    analysis: &Analysis,
+    types: &mut TypeStore,
+    expected_arg_ty: Option<&Type>,
+    prefix_start: usize,
+    offset: usize,
+    prefix: &str,
+) {
+    // Expected-type smart completions are only useful in expression positions.
+    let expected = expected_type_for_completion(types, text, analysis, prefix_start, offset)
+        .or_else(|| expected_arg_ty.cloned());
+    let Some(expected) = expected else {
+        return;
+    };
+    if !is_referenceish_type(&expected) {
+        return;
+    }
+
+    let expected_detail = nova_types::format_type(types, &expected);
+    let expected_name = match &expected {
+        Type::Class(nova_types::ClassType { def, .. }) => types
+            .class(*def)
+            .map(|c| c.name.clone())
+            .unwrap_or_default(),
+        Type::Named(name) => name.clone(),
+        Type::VirtualInner { owner, name } => types
+            .class(*owner)
+            .map(|c| format!("{}.{name}", c.name))
+            .unwrap_or_else(|| name.clone()),
+        _ => String::new(),
+    };
+    if expected_name.is_empty() {
+        return;
+    }
+
+    let Some(env) = completion_cache::completion_env_for_file(db, file) else {
+        return;
+    };
+    let env_types = env.types();
+
+    let imports = parse_java_imports(text);
+    let package = java_package_name(text);
+    let Some(expected_id) = resolve_completion_type_name(
+        env_types,
+        env.workspace_index(),
+        &imports,
+        package.as_deref(),
+        &expected_name,
+    ) else {
+        return;
+    };
+    let Some(expected_def) = env_types.class(expected_id) else {
+        return;
+    };
+
+    match expected_def.kind {
+        ClassKind::Class => {
+            if let Some(item) = smart_constructor_completion_item(
+                env_types,
+                expected_id,
+                &expected_detail,
+                prefix,
+            ) {
+                items.push(item);
+            }
+        }
+        ClassKind::Interface => {
+            let iface_ty = Type::class(expected_id, vec![]);
+            let mut candidates = Vec::<ClassId>::new();
+
+            for (id, def) in env_types.iter_classes() {
+                if def.kind != ClassKind::Class {
+                    continue;
+                }
+                if id == expected_id || id == env_types.well_known().object {
+                    continue;
+                }
+
+                let cand_ty = Type::class(id, vec![]);
+                if nova_types::is_subtype(env_types, &cand_ty, &iface_ty) {
+                    candidates.push(id);
+                }
+            }
+
+            candidates.sort_by(|a, b| {
+                let a_key = smart_constructor_candidate_key(env_types, *a, package.as_deref());
+                let b_key = smart_constructor_candidate_key(env_types, *b, package.as_deref());
+                a_key.cmp(&b_key)
+            });
+
+            const MAX_IMPL_CANDIDATES: usize = 8;
+            for id in candidates.into_iter().take(MAX_IMPL_CANDIDATES) {
+                if let Some(item) =
+                    smart_constructor_completion_item(env_types, id, &expected_detail, prefix)
+                {
+                    items.push(item);
+                }
+            }
+        }
+    }
+}
+
+fn smart_constructor_candidate_key(
+    types: &TypeStore,
+    id: ClassId,
+    current_package: Option<&str>,
+) -> (u8, String) {
+    let name = types.class(id).map(|c| c.name.as_str()).unwrap_or("");
+    let pkg = name.rsplit_once('.').map(|(pkg, _)| pkg).unwrap_or("");
+    let current_package = current_package.unwrap_or("");
+
+    // Prefer: same package -> workspace -> JDK.
+    let bucket = if pkg == current_package {
+        0
+    } else if name.starts_with("java.") {
+        2
+    } else {
+        1
+    };
+
+    (bucket, name.to_string())
+}
+
+fn java_package_name(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with("package ") {
+            continue;
+        }
+
+        let mut rest = trimmed["package ".len()..].trim();
+        if let Some(rest2) = rest.strip_suffix(';') {
+            rest = rest2.trim();
+        }
+        if rest.is_empty() {
+            return None;
+        }
+        return Some(rest.to_string());
+    }
+    None
+}
+
+fn resolve_completion_type_name(
+    types: &TypeStore,
+    workspace_index: &completion_cache::WorkspaceTypeIndex,
+    imports: &JavaImportInfo,
+    package: Option<&str>,
+    raw: &str,
+) -> Option<ClassId> {
+    let mut name = raw.trim();
+    if name.is_empty() {
+        return None;
+    }
+
+    // Strip generics.
+    if let Some(idx) = name.find('<') {
+        name = &name[..idx];
+    }
+
+    // Strip array dims.
+    while let Some(stripped) = name.strip_suffix("[]") {
+        name = stripped.trim_end();
+    }
+    name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+
+    // Normalize internal names (`java/util/List`).
+    let name = name.replace('/', ".");
+
+    // Fully-qualified (or binary) name.
+    if name.contains('.') || name.contains('$') {
+        return types.lookup_class(&name);
+    }
+
+    // Local/default package / implicit java.lang.
+    if let Some(id) = types.lookup_class(&name) {
+        return Some(id);
+    }
+
+    // Explicit imports.
+    for imported in &imports.explicit_types {
+        if imported.rsplit('.').next() == Some(name.as_str()) {
+            if let Some(id) = types.lookup_class(imported) {
+                return Some(id);
+            }
+        }
+    }
+
+    // Same package.
+    if let Some(pkg) = package.filter(|p| !p.is_empty()) {
+        let candidate = format!("{pkg}.{name}");
+        if let Some(id) = types.lookup_class(&candidate) {
+            return Some(id);
+        }
+    }
+
+    // Star imports.
+    for pkg in &imports.star_packages {
+        let candidate = format!("{pkg}.{name}");
+        if let Some(id) = types.lookup_class(&candidate) {
+            return Some(id);
+        }
+    }
+
+    // Workspace index: fall back to globally-unambiguous names.
+    if let Some(fqn) = workspace_index.unique_fqn_for_simple_name(&name) {
+        return types.lookup_class(fqn);
+    }
+
+    None
+}
+
+fn smart_constructor_completion_item(
+    types: &TypeStore,
+    id: ClassId,
+    expected_detail: &str,
+    prefix: &str,
+) -> Option<CompletionItem> {
+    let class_def = types.class(id)?;
+    if class_def.kind != ClassKind::Class {
+        return None;
+    }
+
+    let simple = java_simple_name(&class_def.name);
+    if !prefix.is_empty() && !simple.to_ascii_lowercase().starts_with(&prefix.to_ascii_lowercase()) {
+        return None;
+    }
+
+    let use_diamond = !class_def.type_params.is_empty();
+    let param_count = class_def
+        .constructors
+        .iter()
+        .filter(|ctor| ctor.is_accessible)
+        .map(|ctor| ctor.params.len())
+        .min()
+        .unwrap_or(0);
+
+    let snippet = new_expression_snippet(&simple, use_diamond, param_count);
+    let diamond = if use_diamond { "<>" } else { "" };
+    let label = format!("new {simple}{diamond}(...)");
+
+    Some(CompletionItem {
+        label,
+        kind: Some(CompletionItemKind::CONSTRUCTOR),
+        detail: Some(expected_detail.to_string()),
+        filter_text: Some(simple),
+        insert_text: Some(snippet),
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
+        ..Default::default()
+    })
+}
+
+fn java_simple_name(binary_name: &str) -> String {
+    let tail = binary_name
+        .rsplit_once('.')
+        .map(|(_, tail)| tail)
+        .unwrap_or(binary_name);
+    tail.replace('$', ".")
+}
+
+fn new_expression_snippet(simple: &str, use_diamond: bool, param_count: usize) -> String {
+    let diamond = if use_diamond { "<>" } else { "" };
+    if param_count == 0 {
+        return format!("new {simple}{diamond}($0)");
+    }
+
+    let mut args = String::new();
+    for idx in 0..param_count {
+        if idx > 0 {
+            args.push_str(", ");
+        }
+        let placeholder = idx + 1;
+        args.push_str(&format!("${{{placeholder}:arg{idx}}}"));
+    }
+    format!("new {simple}{diamond}({args})$0")
 }
 
 fn maybe_add_lambda_snippet_completion(
@@ -6859,7 +7155,12 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
     )> = items
         .drain(..)
         .filter_map(|item| {
-            let score = matcher.score(&item.label)?;
+            let match_target = item
+                .filter_text
+                .as_deref()
+                .filter(|t| !t.is_empty())
+                .unwrap_or(&item.label);
+            let score = matcher.score(match_target)?;
 
             let expected_bonus = match (expected_ty.as_ref(), item.detail.as_deref()) {
                 (Some(expected), Some(detail)) => types

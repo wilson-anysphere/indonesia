@@ -604,6 +604,47 @@ class A {
 }
 
 #[test]
+fn completion_suggests_arraylist_for_list_expected_type() {
+    let (db, file, pos) = fixture(
+        r#"
+import java.util.*;
+class A {
+  void m() {
+    List l = <|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label.contains("new ArrayList")),
+        "expected completion list to contain `new ArrayList`; got {items:#?}"
+    );
+}
+
+#[test]
+fn completion_suggests_local_impl_for_interface_expected_type() {
+    let (db, file, pos) = fixture(
+        r#"
+interface I {}
+class Impl implements I {}
+class A {
+  void m() {
+    I x = <|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|i| i.label.contains("new Impl")),
+        "expected completion list to contain `new Impl`; got {items:#?}"
+    );
+}
+
+#[test]
 fn completion_includes_javadoc_param_snippet() {
     let (db, file, pos) = fixture(
         r#"
