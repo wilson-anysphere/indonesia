@@ -1435,6 +1435,11 @@ pub fn core_file_diagnostics(
         }));
     }
 
+    // Checkpoint: before optional extra diagnostics (unused imports).
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+
     // 2) Unused imports (best-effort).
     if is_java {
         diagnostics.extend(unused_import_diagnostics(text));
@@ -1664,6 +1669,11 @@ pub(crate) fn core_file_diagnostics_cancelable(
         }));
     }
 
+    // Checkpoint: before optional extra diagnostics (unused imports).
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+
     // 2) Unused imports (best-effort).
     if is_java {
         diagnostics.extend(unused_import_diagnostics(text));
@@ -1780,8 +1790,17 @@ pub(crate) fn diagnostics_for_quick_fixes(
     // This intentionally avoids any framework analyzers and uses the lightweight
     // `with_salsa_snapshot_for_single_file` harness to keep the query surface minimal.
     with_salsa_snapshot_for_single_file(db, file, text, |snap| {
+        if cancel.is_cancelled() {
+            return;
+        }
         diagnostics.extend(snap.type_diagnostics(file));
+        if cancel.is_cancelled() {
+            return;
+        }
         diagnostics.extend(snap.flow_diagnostics_for_file(file).iter().cloned());
+        if cancel.is_cancelled() {
+            return;
+        }
         diagnostics.extend(snap.import_diagnostics(file).iter().cloned());
     });
 
