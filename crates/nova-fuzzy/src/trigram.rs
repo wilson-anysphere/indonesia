@@ -89,6 +89,7 @@ fn trigrams_unicode_chars(chars: impl Iterator<Item = char>, out: &mut Vec<Trigr
 /// Iterate all (overlapping) trigrams for `text`.
 ///
 /// The returned trigrams are ASCII case-folded.
+#[cfg_attr(feature = "unicode", allow(dead_code))]
 fn trigrams(text: &str, out: &mut Vec<Trigram>) {
     #[cfg(feature = "unicode")]
     {
