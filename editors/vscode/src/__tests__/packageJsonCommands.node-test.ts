@@ -111,6 +111,33 @@ test('package.json contributes Nova Frameworks view context-menu commands', asyn
   }
 });
 
+test('package.json path settings are resource-scoped and describe multi-root resolution', async () => {
+  const pkgPath = path.resolve(__dirname, '../../package.json');
+  const raw = await fs.readFile(pkgPath, 'utf8');
+  const pkg = JSON.parse(raw) as {
+    contributes?: { configuration?: { properties?: unknown } };
+  };
+
+  const properties = pkg.contributes?.configuration?.properties;
+  assert.ok(properties && typeof properties === 'object');
+
+  const props = properties as Record<string, unknown>;
+  const expectedSettings = ['nova.server.path', 'nova.dap.path', 'nova.lsp.configPath'];
+
+  for (const key of expectedSettings) {
+    const setting = props[key];
+    assert.ok(setting && typeof setting === 'object', `Missing ${key} configuration`);
+
+    const obj = setting as { scope?: unknown; description?: unknown };
+    assert.equal(obj.scope, 'resource', `${key} should be resource-scoped`);
+    assert.ok(typeof obj.description === 'string', `${key} should have a description`);
+    assert.ok(
+      obj.description.includes('target workspace folder'),
+      `${key} description should mention target workspace folder resolution`,
+    );
+  }
+});
+
 test('package.json contributes Nova Frameworks view + refresh command', async () => {
   const pkgPath = path.resolve(__dirname, '../../package.json');
   const raw = await fs.readFile(pkgPath, 'utf8');
