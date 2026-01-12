@@ -691,10 +691,15 @@ The workflow also supports an optional, **warn-only** minimum line coverage thre
 **Run locally (HTML report):**
 
 ```bash
+# CI/workstation equivalent:
 cargo install cargo-llvm-cov --locked
 rustup component add llvm-tools-preview
 
 cargo llvm-cov --locked -p nova-core -p nova-syntax -p nova-ide -p nova-testing -p nova-test-utils --html
+
+# agent/multi-runner:
+bash scripts/cargo_agent.sh install cargo-llvm-cov --locked
+bash scripts/cargo_agent.sh llvm-cov --locked -p nova-core -p nova-syntax -p nova-ide -p nova-testing -p nova-test-utils --html
 ```
 
 HTML is written under `target/llvm-cov/html/`.
