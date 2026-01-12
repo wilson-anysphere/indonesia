@@ -3996,6 +3996,54 @@ fn extract_variable_allows_extraction_from_synchronized_lock_with_side_effects_i
 }
 
 #[test]
+fn extract_variable_allows_extraction_from_switch_expression_selector_with_side_effects_in_body() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  int m(int x) {
+    int y = switch (/*select*/x + 1/*end*/) {
+      case 1 -> { foo(); yield 1; }
+      default -> 0;
+    };
+    return y;
+  }
+
+  void foo() {}
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "selector".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  int m(int x) {
+    var selector = x + 1;
+    int y = switch (selector) {
+      case 1 -> { foo(); yield 1; }
+      default -> 0;
+    };
+    return y;
+  }
+
+  void foo() {}
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn extract_variable_rejected_in_annotation_value() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {

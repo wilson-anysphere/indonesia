@@ -4678,8 +4678,12 @@ fn reject_extract_variable_eval_order_guard(
     // Important: for statements with nested bodies (`if`, `switch`, `synchronized`), extracting a
     // header expression does *not* reorder side effects inside the body. We therefore restrict
     // scanning to the header expression when the selection is inside it.
+    //
+    // Similarly, when extracting a `switch` *expression* selector, we can ignore side effects
+    // inside the switch body since they're evaluated after the selector.
     let scan_root = eval_order_guard_scan_root(source, enclosing_stmt, expr_range);
-    if has_order_sensitive_expr_outside_selection(source, &scan_root, expr_range) {
+    let excluded_ranges = eval_order_guard_excluded_ranges(source, expr, expr_range);
+    if has_order_sensitive_expr_outside_selection(source, &scan_root, expr_range, &excluded_ranges) {
         return Err(RefactorError::ExtractNotSupported {
             reason: "cannot extract because it may change evaluation order",
         });
@@ -4736,10 +4740,43 @@ fn eval_order_guard_scan_root(
     }
 }
 
+fn eval_order_guard_excluded_ranges(
+    source: &str,
+    expr: &ast::Expression,
+    expr_range: TextRange,
+) -> Vec<TextRange> {
+    // Exclude switch *expression* bodies when extracting from the selector expression. The body is
+    // evaluated after the selector, so hoisting a selector sub-expression does not reorder body
+    // side effects.
+    let mut excluded = Vec::new();
+
+    for node in expr.syntax().ancestors() {
+        let Some(switch_expr) = ast::SwitchExpression::cast(node.clone()) else {
+            continue;
+        };
+        let Some(selector) = switch_expr.expression() else {
+            continue;
+        };
+        if !contains_range(
+            trim_range(source, syntax_range(selector.syntax())),
+            expr_range,
+        ) {
+            continue;
+        }
+        if let Some(block) = switch_expr.block() {
+            excluded.push(trim_range(source, syntax_range(block.syntax())));
+        }
+        break;
+    }
+
+    excluded
+}
+
 fn has_order_sensitive_expr_outside_selection(
     source: &str,
     scan_root: &nova_syntax::SyntaxNode,
     selection: TextRange,
+    excluded_ranges: &[TextRange],
 ) -> bool {
     let selection = trim_range(source, selection);
     if selection.len() == 0 {
@@ -4751,6 +4788,12 @@ fn has_order_sensitive_expr_outside_selection(
         .filter_map(ast::Expression::cast)
         .any(|expr| {
             let range = trim_range(source, syntax_range(expr.syntax()));
+            if excluded_ranges
+                .iter()
+                .any(|excluded| contains_range(*excluded, range))
+            {
+                return false;
+            }
             ranges_disjoint(range, selection) && has_side_effects(expr.syntax())
         })
 }
