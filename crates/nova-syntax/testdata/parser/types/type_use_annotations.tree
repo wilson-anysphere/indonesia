@@ -107,17 +107,18 @@ CompilationUnit
           LParen "("
           RParen ")"
         Whitespace " "
-        ThrowsKw "throws"
-        Type
-          Whitespace " "
-          Annotation
-            At "@"
-            Name
-              Identifier "D"
-              Whitespace " "
-          NamedType
-            Identifier "Exception"
+        ThrowsClause
+          ThrowsKw "throws"
+          Type
             Whitespace " "
+            Annotation
+              At "@"
+              Name
+                Identifier "D"
+                Whitespace " "
+            NamedType
+              Identifier "Exception"
+              Whitespace " "
         Block
           LBrace "{"
           Whitespace "\n    "

@@ -31,16 +31,17 @@ CompilationUnit
         Modifiers
         Identifier "Point"
         Whitespace " "
-        ThrowsKw "throws"
-        Type
-          Whitespace " "
-          NamedType
-            Identifier "java"
-            Dot "."
-            Identifier "io"
-            Dot "."
-            Identifier "IOException"
+        ThrowsClause
+          ThrowsKw "throws"
+          Type
             Whitespace " "
+            NamedType
+              Identifier "java"
+              Dot "."
+              Identifier "io"
+              Dot "."
+              Identifier "IOException"
+              Whitespace " "
         Block
           LBrace "{"
           Whitespace "\n    "

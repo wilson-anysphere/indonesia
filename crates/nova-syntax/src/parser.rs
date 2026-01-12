@@ -1468,12 +1468,14 @@ impl<'a> Parser<'a> {
         if !self.at(SyntaxKind::ThrowsKw) {
             return;
         }
+        self.builder.start_node(SyntaxKind::ThrowsClause.into());
         self.bump();
         self.parse_type();
         while self.at(SyntaxKind::Comma) {
             self.bump();
             self.parse_type();
         }
+        self.builder.finish_node();
     }
 
     fn parse_modifiers(&mut self) {
