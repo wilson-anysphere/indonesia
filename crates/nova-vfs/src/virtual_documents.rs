@@ -115,3 +115,40 @@ fn is_decompiled_path(path: &VfsPath) -> bool {
         VfsPath::Decompiled { .. } | VfsPath::LegacyDecompiled { .. }
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HASH_64: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn ignores_non_decompiled_paths() {
+        let store = VirtualDocumentStore::new(1024);
+        store.insert_text(VfsPath::local("/tmp/Main.java"), "text".to_string());
+        assert!(!store.contains(&VfsPath::local("/tmp/Main.java")));
+    }
+
+    #[test]
+    fn evicts_lru_entries_to_respect_byte_budget() {
+        let store = VirtualDocumentStore::new(12);
+
+        let a = VfsPath::decompiled(HASH_64, "com.example.A");
+        let b = VfsPath::decompiled(HASH_64, "com.example.B");
+        let c = VfsPath::decompiled(HASH_64, "com.example.C");
+
+        // Each doc is 6 bytes; budget is 12, so at most 2 docs.
+        store.insert_text(a.clone(), "aaaaaa".to_string());
+        store.insert_text(b.clone(), "bbbbbb".to_string());
+
+        // Touch `a` so that `b` becomes least recently used.
+        assert_eq!(store.get_text(&a).as_deref(), Some("aaaaaa"));
+
+        // Insert `c`, forcing eviction of `b`.
+        store.insert_text(c.clone(), "cccccc".to_string());
+
+        assert!(store.contains(&a));
+        assert!(!store.contains(&b));
+        assert!(store.contains(&c));
+    }
+}
