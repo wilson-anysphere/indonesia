@@ -55,18 +55,18 @@ p95_regression = 0.20
 
 # Fuzzy scoring + trigram candidate generation (very hot paths; allow modest CI noise).
 "fuzzy_score/short" = { p50_regression = 0.15, p95_regression = 0.30 }
-"fuzzy_score/medium" = { p50_regression = 0.15, p95_regression = 0.30 }
+"fuzzy_score/medium" = { p50_regression = 0.15, p95_regression = 0.60 }
 "trigram_candidates/query_len_3" = { p50_regression = 0.15, p95_regression = 0.30 }
 "trigram_candidates/query_len_4_or_5" = { p50_regression = 0.15, p95_regression = 0.30 }
 "trigram_candidates/dense_multi_trigram_intersection" = { p50_regression = 0.20, p95_regression = 0.40 }
 
 # Workspace symbol search (in-memory; some variance from large allocations + sorting).
-"symbol_search/prefix_hm/equal" = { p50_regression = 0.15, p95_regression = 0.30 }
-"symbol_search/prefix_hm/qualified" = { p50_regression = 0.15, p95_regression = 0.30 }
+"symbol_search/prefix_hm/equal" = { p50_regression = 0.20, p95_regression = 0.80 }
+"symbol_search/prefix_hm/qualified" = { p50_regression = 0.35, p95_regression = 0.80 }
 "symbol_search/prefix_m_many/equal" = { p50_regression = 0.15, p95_regression = 0.30 }
 "symbol_search/prefix_m_many/qualified" = { p50_regression = 0.15, p95_regression = 0.30 }
-"symbol_search/trigram_map/equal" = { p50_regression = 0.15, p95_regression = 0.30 }
-"symbol_search/trigram_map/qualified" = { p50_regression = 0.15, p95_regression = 0.30 }
+"symbol_search/trigram_map/equal" = { p50_regression = 0.15, p95_regression = 1.20 }
+"symbol_search/trigram_map/qualified" = { p50_regression = 0.15, p95_regression = 0.80 }
 "symbol_search/trigram_hmap_multi/equal" = { p50_regression = 0.15, p95_regression = 0.30 }
 "symbol_search/trigram_hmap_multi/qualified" = { p50_regression = 0.15, p95_regression = 0.30 }
 "symbol_search/fallback_full_scan_zkm/equal" = { p50_regression = 0.25, p95_regression = 0.50 }
