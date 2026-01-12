@@ -3170,6 +3170,67 @@ mod tests {
     }
 
     #[test]
+    fn parse_block_lowers_explicit_constructor_invocation_generic_this() {
+        let block = parse_block(r#"{ <String>this("x"); }"#, 0);
+
+        assert_eq!(block.statements.len(), 1);
+        let ast::Stmt::Expr(expr_stmt) = &block.statements[0] else {
+            panic!("expected expression statement");
+        };
+
+        let ast::Expr::Call(call) = &expr_stmt.expr else {
+            panic!("expected call expression");
+        };
+
+        assert!(matches!(call.callee.as_ref(), ast::Expr::This(_)));
+        assert_eq!(call.args.len(), 1);
+        assert!(
+            matches!(call.args[0], ast::Expr::StringLiteral(_)),
+            "expected string literal arg, got {:?}",
+            call.args[0]
+        );
+    }
+
+    #[test]
+    fn parse_block_lowers_explicit_constructor_invocation_qualified_super() {
+        let block = parse_block("{ f.super(); }", 0);
+
+        assert_eq!(block.statements.len(), 1);
+        let ast::Stmt::Expr(expr_stmt) = &block.statements[0] else {
+            panic!("expected expression statement");
+        };
+
+        let ast::Expr::Call(call) = &expr_stmt.expr else {
+            panic!("expected call expression");
+        };
+
+        assert!(matches!(call.callee.as_ref(), ast::Expr::Super(_)));
+        assert_eq!(call.args.len(), 0);
+    }
+
+    #[test]
+    fn parse_block_lowers_explicit_constructor_invocation_qualified_generic_super() {
+        let block = parse_block("{ f.<String>super(s); }", 0);
+
+        assert_eq!(block.statements.len(), 1);
+        let ast::Stmt::Expr(expr_stmt) = &block.statements[0] else {
+            panic!("expected expression statement");
+        };
+
+        let ast::Expr::Call(call) = &expr_stmt.expr else {
+            panic!("expected call expression");
+        };
+
+        assert!(matches!(call.callee.as_ref(), ast::Expr::Super(_)));
+        assert_eq!(call.args.len(), 1);
+        assert!(
+            matches!(call.args[0], ast::Expr::Name(_)),
+            "expected name arg, got {:?}",
+            call.args[0]
+        );
+    }
+
+    #[test]
     fn parse_block_lowers_instanceof() {
         let text = "{ o instanceof String; }";
         let block = parse_block(text, 0);
