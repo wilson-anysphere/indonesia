@@ -78,7 +78,10 @@ Nova can integrate with your build tool (Maven/Gradle/Bazel) to keep its project
 - **Build status indicator (status bar):** Nova shows the current build status for the active workspace folder in the status bar (Idle / Building / Failed).
 - **Build diagnostics (Problems panel):** build-tool diagnostics are surfaced in VS Code’s **Problems** panel so you can click through to the failing files/lines.
   - When build status polling is active, Nova will also **auto-refresh** build diagnostics when it observes a build completing (Building → Idle/Failed), even if the build was started outside of a Nova command.
-- **Explorer view: “Nova Project”:** Explorer → **Nova Project** shows Nova’s inferred project structure (workspace folders, modules/targets, source roots, and other build-derived metadata).
+- **Explorer view: “Nova Project”:** Explorer → **Nova Project** shows Nova’s inferred project structure (workspace folders, modules/targets, source roots, classpaths, language levels, and build-derived metadata).
+  - When supported by your `nova-lsp` version, the view also includes a **Project Configuration** subtree (output dirs, dependencies, and other configuration snapshots).
+  - Large classpaths are chunked/paged to avoid freezing the VS Code UI.
+  - Right-click path nodes to **Copy Path**.
 - **Build tool selection:** configure which build tool Nova uses for manual builds/reloads via `nova.build.buildTool` ("auto" | "maven" | "gradle" | "prompt").
   - When set to `prompt`, Nova asks you to choose which build tool to use each time you run **Nova: Build Project** or **Nova: Reload Project**.
   - Auto-reload on build file changes treats `prompt` as `auto` (Nova won’t prompt in the background).
@@ -174,10 +177,10 @@ npm run compile
   - Forces Nova to reload the project model from build configuration (useful after editing build files).
 
 - **Nova: Show Project Model** (`nova.showProjectModel`)
-  - Fetches the normalized project model (`nova/projectModel`) and prints it (best-effort) for debugging.
+  - Fetches the normalized project model (`nova/projectModel`) and opens it as a JSON document (best-effort) for debugging.
 
 - **Nova: Show Project Configuration** (`nova.showProjectConfiguration`)
-  - Fetches the inferred project configuration (`nova/projectConfiguration`) and prints it (best-effort) for debugging.
+  - Fetches the inferred project configuration (`nova/projectConfiguration`) and opens it as a JSON document (best-effort) for debugging.
 
 - **Nova: Refresh Project Explorer** (`nova.refreshProjectExplorer`)
   - Refreshes the **Nova Project** Explorer view.
