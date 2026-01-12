@@ -298,7 +298,9 @@ fn javac_refactor_rename_type_compiles_before_after() {
 "#;
 
     let use_src = r#"class UseFoo {
-  int v = new Foo().value();
+  int v() {
+    return new Foo().value();
+  }
 }
 "#;
 
