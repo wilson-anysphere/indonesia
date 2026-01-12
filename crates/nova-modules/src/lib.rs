@@ -123,6 +123,78 @@ impl ModuleGraph {
         Self::default()
     }
 
+    /// Approximate heap memory usage of this graph in bytes.
+    ///
+    /// This is intended for best-effort integration with `nova-memory`.
+    pub fn estimated_bytes(&self) -> u64 {
+        use std::mem::size_of;
+
+        fn add_string(bytes: &mut u64, s: &String) {
+            *bytes = bytes.saturating_add(s.capacity() as u64);
+        }
+
+        fn add_module_name(bytes: &mut u64, m: &ModuleName) {
+            *bytes = bytes.saturating_add(m.0.capacity() as u64);
+        }
+
+        fn add_module_name_vec(bytes: &mut u64, v: &Vec<ModuleName>) {
+            *bytes = bytes.saturating_add((v.capacity() * size_of::<ModuleName>()) as u64);
+            for m in v {
+                add_module_name(bytes, m);
+            }
+        }
+
+        let mut bytes = 0u64;
+
+        bytes = bytes.saturating_add(
+            (self.modules.capacity() * size_of::<(ModuleName, ModuleInfo)>()) as u64,
+        );
+
+        for (name, info) in &self.modules {
+            // Key module name.
+            add_module_name(&mut bytes, name);
+
+            // Value module info.
+            add_module_name(&mut bytes, &info.name);
+
+            bytes = bytes.saturating_add((info.requires.capacity() * size_of::<Requires>()) as u64);
+            for req in &info.requires {
+                add_module_name(&mut bytes, &req.module);
+            }
+
+            bytes = bytes.saturating_add((info.exports.capacity() * size_of::<Exports>()) as u64);
+            for exports in &info.exports {
+                add_string(&mut bytes, &exports.package);
+                add_module_name_vec(&mut bytes, &exports.to);
+            }
+
+            bytes = bytes.saturating_add((info.opens.capacity() * size_of::<Opens>()) as u64);
+            for opens in &info.opens {
+                add_string(&mut bytes, &opens.package);
+                add_module_name_vec(&mut bytes, &opens.to);
+            }
+
+            bytes = bytes.saturating_add((info.uses.capacity() * size_of::<Uses>()) as u64);
+            for uses in &info.uses {
+                add_string(&mut bytes, &uses.service);
+            }
+
+            bytes = bytes.saturating_add((info.provides.capacity() * size_of::<Provides>()) as u64);
+            for provides in &info.provides {
+                add_string(&mut bytes, &provides.service);
+
+                bytes = bytes.saturating_add(
+                    (provides.implementations.capacity() * size_of::<String>()) as u64,
+                );
+                for implementation in &provides.implementations {
+                    add_string(&mut bytes, implementation);
+                }
+            }
+        }
+
+        bytes
+    }
+
     pub fn insert(&mut self, info: ModuleInfo) {
         self.modules.insert(info.name.clone(), info);
     }

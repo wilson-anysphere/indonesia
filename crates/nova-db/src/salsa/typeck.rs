@@ -30,7 +30,10 @@ use super::cancellation as cancel;
 use super::jpms::{module_for_file, JpmsProjectIndex, JpmsTypeProvider};
 use super::resolve::NovaResolve;
 use super::stats::HasQueryStats;
-use super::{ArcEq, HasClassInterner, TrackedSalsaBodyMemo, TrackedSalsaProjectMemo};
+use super::{
+    ArcEq, HasClassInterner, TrackedSalsaBodyMemo, TrackedSalsaProjectMemo,
+    TrackedSalsaProjectModuleMemo,
+};
 
 struct WorkspaceFirstIndex<'a> {
     workspace: &'a nova_resolve::WorkspaceDefMap,
@@ -3332,6 +3335,12 @@ fn project_base_type_store_for_module(
             }
         }
 
+        db.record_salsa_project_module_memo_bytes(
+            project,
+            from,
+            TrackedSalsaProjectModuleMemo::ProjectBaseTypeStoreForModule,
+            store.estimated_bytes(),
+        );
         db.record_query_stat("project_base_type_store_for_module", start.elapsed());
         return ArcEq::new(Arc::new(store));
     };
@@ -3363,6 +3372,12 @@ fn project_base_type_store_for_module(
         store.intern_class_id(name);
     }
 
+    db.record_salsa_project_module_memo_bytes(
+        project,
+        from,
+        TrackedSalsaProjectModuleMemo::ProjectBaseTypeStoreForModule,
+        store.estimated_bytes(),
+    );
     db.record_query_stat("project_base_type_store_for_module", start.elapsed());
     ArcEq::new(Arc::new(store))
 }

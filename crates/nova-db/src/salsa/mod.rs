@@ -298,6 +298,15 @@ pub enum TrackedSalsaProjectMemo {
     WorkspaceDefMap,
     /// Project-scoped base `TypeStore` produced by [`NovaTypeck::project_base_type_store`].
     ProjectBaseTypeStore,
+    /// JPMS compilation environment produced by [`NovaResolve::jpms_compilation_env`].
+    JpmsCompilationEnv,
+}
+
+/// Project+module-keyed memoized query results tracked for memory accounting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TrackedSalsaProjectModuleMemo {
+    /// Module-scoped base `TypeStore` produced by [`NovaTypeck::project_base_type_store_for_module`].
+    ProjectBaseTypeStoreForModule,
 }
 
 /// Body-keyed memoized query results tracked for memory accounting.
@@ -337,6 +346,15 @@ pub trait HasSalsaMemoStats {
         _bytes: u64,
     ) {
     }
+
+    fn record_salsa_project_module_memo_bytes(
+        &self,
+        _project: ProjectId,
+        _module: nova_modules::ModuleName,
+        _memo: TrackedSalsaProjectModuleMemo,
+        _bytes: u64,
+    ) {
+    }
 }
 
 /// Database functionality needed by `parse_java` to access the previous parse result for
@@ -362,6 +380,7 @@ struct SalsaInputFootprint {
 struct SalsaMemoFootprintInner {
     by_file: HashMap<FileId, FileMemoBytes>,
     by_project: HashMap<ProjectId, ProjectMemoBytes>,
+    by_project_module: HashMap<(ProjectId, nova_modules::ModuleName), ProjectModuleMemoBytes>,
     by_body: HashMap<DefWithBodyId, BodyMemoBytes>,
     total_bytes: u64,
 }
@@ -426,6 +445,7 @@ struct ProjectMemoBytes {
     project_indexes: u64,
     workspace_def_map: u64,
     project_base_type_store: u64,
+    jpms_compilation_env: u64,
 }
 
 impl ProjectMemoBytes {
@@ -434,6 +454,18 @@ impl ProjectMemoBytes {
             + self.project_indexes
             + self.workspace_def_map
             + self.project_base_type_store
+            + self.jpms_compilation_env
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ProjectModuleMemoBytes {
+    project_base_type_store_for_module: u64,
+}
+
+impl ProjectModuleMemoBytes {
+    fn total(self) -> u64 {
+        self.project_base_type_store_for_module
     }
 }
 
@@ -496,6 +528,7 @@ impl SalsaMemoFootprint {
         let mut inner = self.lock_inner();
         inner.by_file.clear();
         inner.by_project.clear();
+        inner.by_project_module.clear();
         inner.by_body.clear();
         inner.total_bytes = 0;
         drop(inner);
@@ -539,6 +572,36 @@ impl SalsaMemoFootprint {
             TrackedSalsaProjectMemo::ProjectIndexes => entry.project_indexes = bytes,
             TrackedSalsaProjectMemo::WorkspaceDefMap => entry.workspace_def_map = bytes,
             TrackedSalsaProjectMemo::ProjectBaseTypeStore => entry.project_base_type_store = bytes,
+            TrackedSalsaProjectMemo::JpmsCompilationEnv => entry.jpms_compilation_env = bytes,
+        }
+
+        let next_total = entry.total();
+        inner.total_bytes = inner
+            .total_bytes
+            .saturating_sub(prev_total)
+            .saturating_add(next_total);
+        drop(inner);
+        self.refresh_tracker();
+    }
+
+    fn record_project_module(
+        &self,
+        project: ProjectId,
+        module: nova_modules::ModuleName,
+        memo: TrackedSalsaProjectModuleMemo,
+        bytes: u64,
+    ) {
+        let mut inner = self.lock_inner();
+        let entry = inner
+            .by_project_module
+            .entry((project, module))
+            .or_default();
+        let prev_total = entry.total();
+
+        match memo {
+            TrackedSalsaProjectModuleMemo::ProjectBaseTypeStoreForModule => {
+                entry.project_base_type_store_for_module = bytes;
+            }
         }
 
         let next_total = entry.total();
@@ -1690,6 +1753,17 @@ impl HasSalsaMemoStats for RootDatabase {
         bytes: u64,
     ) {
         self.memo_footprint.record_project(project, memo, bytes);
+    }
+
+    fn record_salsa_project_module_memo_bytes(
+        &self,
+        project: ProjectId,
+        module: nova_modules::ModuleName,
+        memo: TrackedSalsaProjectModuleMemo,
+        bytes: u64,
+    ) {
+        self.memo_footprint
+            .record_project_module(project, module, memo, bytes);
     }
 }
 
@@ -5793,6 +5867,91 @@ class Foo {
         assert!(
             executions(&db.inner.lock(), "cfg") > cfg_exec_after_evict,
             "expected cfg to re-execute after memo eviction"
+        );
+    }
+
+    #[test]
+    fn salsa_memo_footprint_tracks_jpms_env_and_module_type_store() {
+        use nova_modules::{ModuleInfo, ModuleKind, ModuleName};
+        use nova_project::{JpmsModuleRoot, Module};
+
+        let manager = MemoryManager::new(MemoryBudget::from_total(10 * 1024 * 1024));
+        let db = Database::new_with_memory_manager(&manager);
+        let project = ProjectId::from_raw(0);
+        db.set_jdk_index(project, Arc::new(nova_jdk::JdkIndex::new()));
+        db.set_classpath_index(project, None);
+
+        let tmp = TempDir::new().unwrap();
+        let workspace_root = tmp.path().to_path_buf();
+
+        let module_name = ModuleName::new("workspace.a");
+        let module_root = workspace_root.join("mod-a");
+        let module_info_path = module_root.join("module-info.java");
+        let info = ModuleInfo {
+            kind: ModuleKind::Explicit,
+            name: module_name.clone(),
+            is_open: false,
+            requires: Vec::new(),
+            exports: Vec::new(),
+            opens: Vec::new(),
+            uses: Vec::new(),
+            provides: Vec::new(),
+        };
+
+        db.set_project_config(
+            project,
+            Arc::new(ProjectConfig {
+                workspace_root: workspace_root.clone(),
+                build_system: BuildSystem::Simple,
+                java: JavaConfig {
+                    source: JavaVersion::JAVA_21,
+                    target: JavaVersion::JAVA_21,
+                    enable_preview: false,
+                },
+                modules: vec![Module {
+                    name: "dummy".to_string(),
+                    root: workspace_root.clone(),
+                    annotation_processing: Default::default(),
+                }],
+                jpms_modules: vec![JpmsModuleRoot {
+                    name: module_name.clone(),
+                    root: module_root,
+                    module_info: module_info_path,
+                    info,
+                }],
+                jpms_workspace: None,
+                source_roots: Vec::new(),
+                module_path: Vec::new(),
+                classpath: Vec::new(),
+                output_dirs: Vec::new(),
+                dependencies: Vec::new(),
+                workspace_model: None,
+            }),
+        );
+
+        let baseline = db.salsa_memo_bytes();
+        db.with_snapshot(|snap| {
+            let _ = snap.jpms_compilation_env(project);
+        });
+        let after_env_bytes = db.salsa_memo_bytes();
+        assert!(
+            after_env_bytes > baseline,
+            "expected jpms_compilation_env memos to increase tracked bytes"
+        );
+
+        db.with_snapshot(|snap| {
+            let _ = snap.project_base_type_store_for_module(project, module_name.clone());
+        });
+        let after_module_store_bytes = db.salsa_memo_bytes();
+        assert!(
+            after_module_store_bytes > after_env_bytes,
+            "expected project_base_type_store_for_module memos to increase tracked bytes"
+        );
+
+        assert_eq!(
+            manager.report().usage.query_cache,
+            after_module_store_bytes,
+            "memory manager should see tracked salsa memo usage (including JPMS memos)"
         );
     }
 

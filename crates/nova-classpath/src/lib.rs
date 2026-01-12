@@ -1297,6 +1297,46 @@ impl ModuleAwareClasspathIndex {
         }
     }
 
+    /// Approximate heap memory usage of this index in bytes.
+    ///
+    /// This is intended for best-effort integration with `nova-memory`.
+    pub fn estimated_bytes(&self) -> u64 {
+        use std::mem::size_of;
+
+        fn add_string(bytes: &mut u64, s: &String) {
+            *bytes = bytes.saturating_add(s.capacity() as u64);
+        }
+
+        fn add_module_name(bytes: &mut u64, m: &ModuleName) {
+            // `ModuleName` wraps a `String`, but the inner allocation is private,
+            // so use the string length as a best-effort approximation.
+            *bytes = bytes.saturating_add(m.as_str().len() as u64);
+        }
+
+        let mut bytes = self.types.estimated_bytes();
+
+        bytes = bytes.saturating_add(
+            (self.type_to_module.capacity() * size_of::<(String, Option<ModuleName>)>()) as u64,
+        );
+        for (ty, module) in &self.type_to_module {
+            add_string(&mut bytes, ty);
+            if let Some(module) = module {
+                add_module_name(&mut bytes, module);
+            }
+        }
+
+        bytes = bytes.saturating_add(
+            (self.modules.capacity() * size_of::<(Option<ModuleName>, ModuleNameKind)>()) as u64,
+        );
+        for (module, _) in &self.modules {
+            if let Some(module) = module {
+                add_module_name(&mut bytes, module);
+            }
+        }
+
+        bytes
+    }
+
     pub fn module_of(&self, binary_name: &str) -> Option<&ModuleName> {
         self.type_to_module.get(binary_name)?.as_ref()
     }

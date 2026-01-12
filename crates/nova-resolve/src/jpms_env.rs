@@ -33,6 +33,21 @@ impl std::fmt::Debug for JpmsCompilationEnvironment {
     }
 }
 
+impl JpmsCompilationEnvironment {
+    /// Approximate heap memory usage of this compilation environment in bytes.
+    ///
+    /// This is intended for best-effort integration with `nova-memory`.
+    pub fn estimated_bytes(&self) -> u64 {
+        let mut bytes = 0u64;
+        bytes = bytes.saturating_add(self.env.graph.estimated_bytes());
+        // The unnamed module name is also present in the graph, but keep this simple and
+        // count the additional allocation as well.
+        bytes = bytes.saturating_add(self.env.unnamed.as_str().len() as u64);
+        bytes = bytes.saturating_add(self.classpath.estimated_bytes());
+        bytes
+    }
+}
+
 pub fn build_jpms_environment(
     jdk: &nova_jdk::JdkIndex,
     workspace: Option<&nova_build_model::ProjectConfig>,

@@ -379,6 +379,7 @@ fn jpms_compilation_env(
 
     let cfg = db.project_config(project);
     if !jpms_enabled(&cfg) {
+        db.record_salsa_project_memo_bytes(project, TrackedSalsaProjectMemo::JpmsCompilationEnv, 0);
         db.record_query_stat("jpms_compilation_env", start.elapsed());
         return None;
     }
@@ -392,6 +393,8 @@ fn jpms_compilation_env(
     )
     .ok()
     .map(|env| ArcEq::new(Arc::new(env)));
+    let bytes = env.as_deref().map(|env| env.estimated_bytes()).unwrap_or(0);
+    db.record_salsa_project_memo_bytes(project, TrackedSalsaProjectMemo::JpmsCompilationEnv, bytes);
     db.record_query_stat("jpms_compilation_env", start.elapsed());
     env
 }
