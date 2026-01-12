@@ -1,8 +1,8 @@
-use lsp_types::{CodeActionKind, CodeActionOrCommand};
+use lsp_types::{CodeActionKind, CodeActionOrCommand, NumberOrString};
 use nova_config::NovaConfig;
 use nova_db::InMemoryFileStore;
 use nova_ext::{ProjectId, Span};
-use nova_ide::{extensions::IdeExtensions, file_diagnostics};
+use nova_ide::{code_action::diagnostic_quick_fixes, extensions::IdeExtensions, file_diagnostics, file_diagnostics_lsp};
 use nova_refactor::position_to_offset_utf16;
 use nova_scheduler::CancellationToken;
 use nova_types::Severity;
@@ -62,6 +62,51 @@ fn quick_fix_removes_unused_import_line() {
     let edit = action.edit.as_ref().expect("expected workspace edit");
     let changes = edit.changes.as_ref().expect("expected changes-based edit");
     let edits = changes.values().next().expect("expected text edits");
+    assert_eq!(edits.len(), 1);
+    let text_edit = &edits[0];
+    assert!(text_edit.new_text.is_empty());
+    assert_eq!(text_edit.range.start.line, 0);
+    assert_eq!(text_edit.range.start.character, 0);
+    assert_eq!(text_edit.range.end.line, 1);
+    assert_eq!(text_edit.range.end.character, 0);
+
+    let start = position_to_offset_utf16(source, text_edit.range.start).expect("start offset");
+    let end = position_to_offset_utf16(source, text_edit.range.end).expect("end offset");
+    let mut updated = source.to_string();
+    updated.replace_range(start..end, &text_edit.new_text);
+    assert_eq!(updated, "class A {}\n");
+}
+
+#[test]
+fn diagnostic_quick_fixes_includes_remove_unused_import() {
+    let mut db = InMemoryFileStore::new();
+    let path = PathBuf::from("/test.java");
+    let file = db.file_id_for_path(&path);
+    let source = "import java.util.List;\nclass A {}\n";
+    db.set_file_text(file, source.to_string());
+
+    let lsp_diags = file_diagnostics_lsp(&db, file);
+    let diag = lsp_diags
+        .iter()
+        .find(|diag| matches!(&diag.code, Some(NumberOrString::String(code)) if code == "unused-import"))
+        .expect("expected unused-import diagnostic");
+
+    let abs = nova_core::AbsPathBuf::new(path).expect("absolute path");
+    let uri: lsp_types::Uri = nova_core::path_to_file_uri(&abs)
+        .expect("file uri")
+        .parse()
+        .expect("parse uri");
+
+    let actions = diagnostic_quick_fixes(source, Some(uri.clone()), diag.range.clone(), &lsp_diags);
+    let action = actions
+        .iter()
+        .find(|action| action.title == "Remove unused import")
+        .expect("expected Remove unused import code action");
+
+    assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+    let edit = action.edit.as_ref().expect("expected workspace edit");
+    let changes = edit.changes.as_ref().expect("expected changes-based edit");
+    let edits = changes.get(&uri).expect("expected edits for file uri");
     assert_eq!(edits.len(), 1);
     let text_edit = &edits[0];
     assert!(text_edit.new_text.is_empty());
