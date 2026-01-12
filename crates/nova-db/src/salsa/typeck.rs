@@ -956,7 +956,8 @@ fn resolve_method_call_demand(
                 | HirStmt::Switch { body: b, .. }
                 | HirStmt::ForEach { body: b, .. } => returned_from_method_body(body, *b, expr),
                 HirStmt::For { init, body: b, .. } => {
-                    init.iter().any(|s| returned_from_method_body(body, *s, expr))
+                    init.iter()
+                        .any(|s| returned_from_method_body(body, *s, expr))
                         || returned_from_method_body(body, *b, expr)
                 }
                 HirStmt::Try {
@@ -983,20 +984,18 @@ fn resolve_method_call_demand(
         if returned_from_method_body(&body, body.root, call_site.expr) {
             (!checker.expected_return.is_errorish()).then_some(checker.expected_return.clone())
         } else {
-            body.stmts
-                .iter()
-                .find_map(|(_, stmt)| match stmt {
-                    HirStmt::Let {
-                        local,
-                        initializer: Some(init),
-                        ..
-                    } if *init == call_site.expr => checker
-                        .local_types
-                        .get(local.idx())
-                        .filter(|ty| !ty.is_errorish())
-                        .cloned(),
-                    _ => None,
-                })
+            body.stmts.iter().find_map(|(_, stmt)| match stmt {
+                HirStmt::Let {
+                    local,
+                    initializer: Some(init),
+                    ..
+                } if *init == call_site.expr => checker
+                    .local_types
+                    .get(local.idx())
+                    .filter(|ty| !ty.is_errorish())
+                    .cloned(),
+                _ => None,
+            })
         }
     };
 
@@ -2600,10 +2599,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             HirExpr::Assign { .. }
             | HirExpr::Call { .. }
             | HirExpr::Unary {
-                op: UnaryOp::PreInc
-                | UnaryOp::PreDec
-                | UnaryOp::PostInc
-                | UnaryOp::PostDec,
+                op: UnaryOp::PreInc | UnaryOp::PreDec | UnaryOp::PostInc | UnaryOp::PostDec,
                 ..
             } => {}
             HirExpr::New {
@@ -3408,7 +3404,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     is_type_ref: false,
                 }
             }
-            HirExpr::Binary { op, lhs, rhs, .. } => self.infer_binary(loader, expr, *op, *lhs, *rhs),
+            HirExpr::Binary { op, lhs, rhs, .. } => {
+                self.infer_binary(loader, expr, *op, *lhs, *rhs)
+            }
             HirExpr::Assign { lhs, rhs, op, .. } => {
                 let lhs_info = self.infer_expr(loader, *lhs);
                 let lhs_range = self.body.exprs[*lhs].range();
@@ -3781,7 +3779,8 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 };
 
                 let env_ro: &dyn TypeEnv = &*loader.store;
-                let Some(args) = nova_types::instantiate_supertype(env_ro, other, iterable_def) else {
+                let Some(args) = nova_types::instantiate_supertype(env_ro, other, iterable_def)
+                else {
                     return Type::Unknown;
                 };
 
@@ -4667,8 +4666,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             };
                         };
 
-                        let recv_ty = loader
-                            .ensure_class(owner)
+                        let recv_ty = self
+                            .ensure_workspace_class(loader, owner)
+                            .or_else(|| loader.ensure_class(owner))
                             .map(|id| Type::class(id, vec![]))
                             .unwrap_or_else(|| Type::Named(owner.to_string()));
                         self.ensure_type_loaded(loader, &recv_ty);
@@ -5106,7 +5106,10 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 if lhs_ty.is_errorish() || rhs_ty.is_errorish() {
                     Type::boolean()
                 } else {
-                    let ok = matches!((lhs_prim, rhs_prim), (Some(PrimitiveType::Boolean), Some(PrimitiveType::Boolean)));
+                    let ok = matches!(
+                        (lhs_prim, rhs_prim),
+                        (Some(PrimitiveType::Boolean), Some(PrimitiveType::Boolean))
+                    );
                     if ok {
                         Type::boolean()
                     } else {
@@ -5162,7 +5165,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     Type::Unknown
                 } else {
                     match (lhs_prim, rhs_prim) {
-                        (Some(PrimitiveType::Boolean), Some(PrimitiveType::Boolean)) => Type::boolean(),
+                        (Some(PrimitiveType::Boolean), Some(PrimitiveType::Boolean)) => {
+                            Type::boolean()
+                        }
                         (Some(a), Some(b))
                             if matches!(
                                 a,
@@ -5281,17 +5286,15 @@ fn primitive_like_inner(env: &dyn TypeEnv, ty: &Type, depth: u8) -> Option<Primi
 
     match ty {
         Type::Primitive(p) => Some(*p),
-        Type::Class(nova_types::ClassType { def, .. }) => env
-            .class(*def)
-            .and_then(|c| unbox_class_name(&c.name)),
+        Type::Class(nova_types::ClassType { def, .. }) => {
+            env.class(*def).and_then(|c| unbox_class_name(&c.name))
+        }
         Type::Named(name) => unbox_class_name(name),
-        Type::TypeVar(id) => env
-            .type_param(*id)
-            .and_then(|tp| {
-                tp.upper_bounds
-                    .iter()
-                    .find_map(|b| primitive_like_inner(env, b, depth.saturating_sub(1)))
-            }),
+        Type::TypeVar(id) => env.type_param(*id).and_then(|tp| {
+            tp.upper_bounds
+                .iter()
+                .find_map(|b| primitive_like_inner(env, b, depth.saturating_sub(1)))
+        }),
         Type::Intersection(types) => types
             .iter()
             .find_map(|t| primitive_like_inner(env, t, depth.saturating_sub(1))),
@@ -6298,28 +6301,28 @@ fn find_best_expr_in_expr(
         }
     }
 
-        match &body.exprs[expr] {
-            HirExpr::FieldAccess { receiver, .. } => {
-                find_best_expr_in_expr(body, *receiver, offset, owner, best);
+    match &body.exprs[expr] {
+        HirExpr::FieldAccess { receiver, .. } => {
+            find_best_expr_in_expr(body, *receiver, offset, owner, best);
+        }
+        HirExpr::MethodReference { receiver, .. } => {
+            find_best_expr_in_expr(body, *receiver, offset, owner, best);
+        }
+        HirExpr::ConstructorReference { receiver, .. } => {
+            find_best_expr_in_expr(body, *receiver, offset, owner, best);
+        }
+        HirExpr::ClassLiteral { ty, .. } => {
+            find_best_expr_in_expr(body, *ty, offset, owner, best);
+        }
+        HirExpr::Invalid { children, .. } => {
+            for child in children {
+                find_best_expr_in_expr(body, *child, offset, owner, best);
             }
-            HirExpr::MethodReference { receiver, .. } => {
-                find_best_expr_in_expr(body, *receiver, offset, owner, best);
-            }
-            HirExpr::ConstructorReference { receiver, .. } => {
-                find_best_expr_in_expr(body, *receiver, offset, owner, best);
-            }
-            HirExpr::ClassLiteral { ty, .. } => {
-                find_best_expr_in_expr(body, *ty, offset, owner, best);
-            }
-            HirExpr::Invalid { children, .. } => {
-                for child in children {
-                    find_best_expr_in_expr(body, *child, offset, owner, best);
-                }
-            }
-            HirExpr::Call { callee, args, .. } => {
-                find_best_expr_in_expr(body, *callee, offset, owner, best);
-                for arg in args {
-                    find_best_expr_in_expr(body, *arg, offset, owner, best);
+        }
+        HirExpr::Call { callee, args, .. } => {
+            find_best_expr_in_expr(body, *callee, offset, owner, best);
+            for arg in args {
+                find_best_expr_in_expr(body, *arg, offset, owner, best);
             }
         }
         HirExpr::New { args, .. } => {
