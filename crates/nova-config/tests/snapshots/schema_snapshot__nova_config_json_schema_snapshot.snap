@@ -856,7 +856,7 @@ expression: schema
           "minimum": 1.0
         },
         "url": {
-          "description": "Base URL for the provider (e.g. http://localhost:11434, http://localhost:8000).",
+          "description": "Base URL for the provider.\n\nExamples: - Ollama: `http://localhost:11434` - OpenAI-compatible (vLLM, llama.cpp server): `http://localhost:8000/v1` - OpenAI: `https://api.openai.com/v1` - Anthropic: `https://api.anthropic.com` - Gemini: `https://generativelanguage.googleapis.com` - Azure OpenAI: `https://{resource}.openai.azure.com`",
           "default": "http://localhost:11434/",
           "type": "string",
           "format": "uri"

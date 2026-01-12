@@ -632,7 +632,15 @@ pub struct AiProviderConfig {
     #[serde(default)]
     pub kind: AiProviderKind,
 
-    /// Base URL for the provider (e.g. http://localhost:11434, http://localhost:8000).
+    /// Base URL for the provider.
+    ///
+    /// Examples:
+    /// - Ollama: `http://localhost:11434`
+    /// - OpenAI-compatible (vLLM, llama.cpp server): `http://localhost:8000/v1`
+    /// - OpenAI: `https://api.openai.com/v1`
+    /// - Anthropic: `https://api.anthropic.com`
+    /// - Gemini: `https://generativelanguage.googleapis.com`
+    /// - Azure OpenAI: `https://{resource}.openai.azure.com`
     #[serde(default = "default_provider_url")]
     #[schemars(schema_with = "crate::schema::url_schema")]
     pub url: Url,
