@@ -1,7 +1,8 @@
 # Fuzzing Nova
 
-Nova includes a `cargo-fuzz` harness under `fuzz/` to ensure that core text-processing
-pipelines (parser / formatter / refactorings) never panic or hang on malformed input.
+Nova includes a `cargo-fuzz` harness under `fuzz/` to ensure that core parsing, formatting, and related
+text-processing/config-parsing pipelines (parser / incremental reparsing / formatter / config parsing /
+refactorings) never panic or hang on malformed input.
 
 The fuzz targets are intentionally **not** part of the main Cargo workspace, so normal
 `cargo test` and CI remain unchanged unless you explicitly run fuzzing commands.
@@ -55,6 +56,18 @@ cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
 
 This target runs both `nova_syntax::parse` and `nova_syntax::parse_java` on the input.
 
+### Parse Java literals
+
+```bash
+cargo +nightly fuzz run fuzz_syntax_literals -- -max_total_time=60 -max_len=262144
+```
+
+This target exercises literal parsing and unescaping utilities (`nova_syntax::parse_*_literal`,
+`unescape_*`) and enforces:
+
+- never panic / never hang
+- reported error spans always stay within the input bounds
+
 ### Reparse Java (incremental)
 
 ```bash
@@ -67,6 +80,15 @@ asserting that:
 - the resulting syntax tree is lossless (roundtrips back to the edited text)
 - incremental diagnostics match a full reparse’s diagnostics
 
+### Reparse Java (incremental sequence)
+
+```bash
+cargo +nightly fuzz run fuzz_reparse_java_sequence -- -max_total_time=60 -max_len=262144
+```
+
+This target applies a small sequence of edits and asserts that incremental reparsing is equivalent to a
+full reparse after each edit.
+
 ### Format Java
 
 ```bash
@@ -74,6 +96,24 @@ cargo +nightly fuzz run fuzz_format -- -max_total_time=60 -max_len=262144
 ```
 
 This target exercises `nova_format::format_java` and edit generation (`edits_for_formatting`).
+
+### Format Java (range formatting)
+
+```bash
+cargo +nightly fuzz run fuzz_range_format -- -max_total_time=60 -max_len=262144
+```
+
+This target exercises range formatting (`nova_format::edits_for_range_formatting`) and enforces that any
+returned edits stay within the selected range.
+
+### Format Java (on-type formatting)
+
+```bash
+cargo +nightly fuzz run fuzz_on_type_format -- -max_total_time=60 -max_len=262144
+```
+
+This target exercises on-type formatting (`nova_format::edits_for_on_type_formatting`) with a few common
+trigger characters (e.g. `;`, `}`, `)`).
 
 ### Parse JVM classfiles
 
@@ -91,6 +131,33 @@ cargo +nightly fuzz run fuzz_junit_report -- -max_total_time=60 -max_len=262144
 
 This target feeds arbitrary UTF-8 input into `nova_testing::report::parse_junit_report_str` and
 treats parse errors as expected (the target only enforces "never panic / never hang").
+
+### Parse YAML
+
+```bash
+cargo +nightly fuzz run fuzz_yaml_parse -- -max_total_time=60 -max_len=262144
+```
+
+This target exercises Nova’s YAML parser (`nova_yaml::parse`) and asserts that any returned key/value
+ranges are safe to slice in the original UTF-8 input.
+
+### Parse Java `.properties`
+
+```bash
+cargo +nightly fuzz run fuzz_properties_parse -- -max_total_time=60 -max_len=262144
+```
+
+This target exercises Nova’s `.properties` parser (`nova_properties::parse`) and asserts that any returned
+key/value ranges are safe to slice in the original UTF-8 input.
+
+### Parse Spring configuration metadata
+
+```bash
+cargo +nightly fuzz run fuzz_config_metadata -- -max_total_time=60 -max_len=262144
+```
+
+This target ingests arbitrary bytes into the Spring configuration metadata index
+(`nova_config_metadata::MetadataIndex::ingest_json_bytes`) and enforces "never panic / never hang".
 
 ### Optional targets
 

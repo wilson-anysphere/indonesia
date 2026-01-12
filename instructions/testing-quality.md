@@ -199,15 +199,33 @@ fuzz/
 ├── Cargo.toml
 ├── corpus/           # Seed inputs
 │   ├── fuzz_syntax_parse/
+│   ├── fuzz_syntax_literals/
+│   ├── fuzz_reparse_java/
+│   ├── fuzz_reparse_java_sequence/
 │   ├── fuzz_format/
+│   ├── fuzz_range_format/
+│   ├── fuzz_on_type_format/
 │   ├── fuzz_classfile/
-│   └── fuzz_junit_report/
+│   ├── fuzz_junit_report/
+│   ├── fuzz_yaml_parse/
+│   ├── fuzz_properties_parse/
+│   ├── fuzz_config_metadata/
+│   ├── parse_java/
+│   ├── format_java/
+│   └── refactor_smoke/
 └── fuzz_targets/
     ├── fuzz_syntax_parse.rs
+    ├── fuzz_syntax_literals.rs
     ├── fuzz_reparse_java.rs
+    ├── fuzz_reparse_java_sequence.rs
     ├── fuzz_format.rs
+    ├── fuzz_range_format.rs
+    ├── fuzz_on_type_format.rs
     ├── fuzz_classfile.rs
     ├── fuzz_junit_report.rs
+    ├── fuzz_yaml_parse.rs
+    ├── fuzz_properties_parse.rs
+    ├── fuzz_config_metadata.rs
     ├── parse_java.rs
     ├── format_java.rs          # formatter idempotence
     └── refactor_smoke.rs       # requires `--features refactor`
