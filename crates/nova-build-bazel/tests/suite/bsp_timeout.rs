@@ -10,9 +10,12 @@ struct EnvVarGuard {
 }
 
 impl EnvVarGuard {
-    fn set(key: &'static str, value: &str) -> Self {
+    fn set(key: &'static str, value: Option<&str>) -> Self {
         let previous = std::env::var(key).ok();
-        std::env::set_var(key, value);
+        match value {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
         Self { key, previous }
     }
 }
@@ -29,7 +32,7 @@ impl Drop for EnvVarGuard {
 #[test]
 fn bsp_connect_times_out_when_initialize_hangs() {
     let _lock = nova_build_bazel::test_support::env_lock();
-    let _timeout_guard = EnvVarGuard::set("NOVA_BSP_CONNECT_TIMEOUT_MS", "50");
+    let _timeout_guard = EnvVarGuard::set("NOVA_BSP_CONNECT_TIMEOUT_MS", Some("50"));
 
     let root = tempdir().unwrap();
 
@@ -55,3 +58,44 @@ fn bsp_connect_times_out_when_initialize_hangs() {
     );
 }
 
+#[test]
+fn bsp_request_times_out_when_server_hangs() {
+    let _lock = nova_build_bazel::test_support::env_lock();
+    // Keep the handshake on the default timeout to avoid flakes; only shorten the request timeout
+    // for the method under test.
+    let _connect_guard = EnvVarGuard::set("NOVA_BSP_REQUEST_TIMEOUT_MS", None);
+
+    let root = tempdir().unwrap();
+
+    let fake_server_path = env!("CARGO_BIN_EXE_fake_bsp_server");
+    let config = BspServerConfig {
+        program: fake_server_path.to_string(),
+        args: vec![
+            "--hang-method".to_string(),
+            "workspace/buildTargets".to_string(),
+        ],
+    };
+
+    let mut workspace = BspWorkspace::connect(root.path().to_path_buf(), config).unwrap();
+
+    let _request_timeout_guard = EnvVarGuard::set("NOVA_BSP_REQUEST_TIMEOUT_MS", Some("50"));
+
+    let start = Instant::now();
+    let result = workspace.build_targets();
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "BSP request should fail quickly; took {elapsed:?}"
+    );
+    let err = result.expect_err("buildTargets should time out");
+    let message = err.to_string();
+    assert!(
+        message.to_ascii_lowercase().contains("timed out"),
+        "expected timeout error, got: {message}"
+    );
+    assert!(
+        message.contains("workspace/buildTargets"),
+        "expected method name in error, got: {message}"
+    );
+}

@@ -14,7 +14,22 @@ use std::{
 fn main() -> Result<()> {
     // Modes:
     // - `--hang-initialize`: accept the connection but never respond to `build/initialize`.
-    let hang_initialize = std::env::args().any(|arg| arg == "--hang-initialize");
+    // - `--hang-method <METHOD>`: accept the request but never respond to that method.
+    let mut hang_initialize = false;
+    let mut hang_method: Option<String> = None;
+
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--hang-initialize" => hang_initialize = true,
+            "--hang-method" => {
+                if let Some(method) = args.next() {
+                    hang_method = Some(method);
+                }
+            }
+            _ => {}
+        }
+    }
 
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
@@ -32,8 +47,50 @@ fn main() -> Result<()> {
             }
         }
 
-        // Best-effort: respond to any request with "method not found" so clients can exit.
         if let (Some(method), Some(id)) = (method, id) {
+            if hang_method.as_deref() == Some(method) {
+                loop {
+                    std::thread::sleep(Duration::from_secs(3600));
+                }
+            }
+
+            // Respond to initialize with a minimal but valid result so the client can complete the
+            // handshake.
+            if method == "build/initialize" {
+                let result = serde_json::json!({
+                    "displayName": "fake-bsp",
+                    "version": "0.1.0",
+                    "bspVersion": "2.1.0",
+                    "capabilities": {
+                        "compileProvider": { "languageIds": ["java"] },
+                        "javacProvider": { "languageIds": ["java"] },
+                    }
+                });
+                let _ = write_message(
+                    &mut writer,
+                    &serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": result,
+                    }),
+                );
+                continue;
+            }
+
+            // Respond to shutdown requests with null.
+            if method == "build/shutdown" {
+                let _ = write_message(
+                    &mut writer,
+                    &serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": Value::Null,
+                    }),
+                );
+                continue;
+            }
+
+            // Best-effort: respond to any other request with "method not found" so clients can exit.
             let _ = write_message(
                 &mut writer,
                 &serde_json::json!({
