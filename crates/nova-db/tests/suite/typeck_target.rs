@@ -178,6 +178,66 @@ class C { String m(){ return """x"""; } }
 }
 
 #[test]
+fn switch_expression_has_string_type() {
+    let src = r#"
+class C {
+    String m(int x) {
+        String s = switch (x) { case 1 -> "a"; default -> "b"; };
+        return s;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("switch")
+        .expect("snippet should contain switch expression");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "switch-type"),
+        "expected switch expression to have inferred type; got {diags:?}"
+    );
+}
+
+#[test]
+fn switch_expression_block_arm_yield_is_typed() {
+    let src = r#"
+class C {
+    String m(int x) {
+        return switch (x) {
+            case 1 -> { yield "a"; }
+            default -> "b";
+        };
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("switch")
+        .expect("snippet should contain switch expression");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "yield-outside-switch"),
+        "expected yield to be allowed inside switch expression; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "switch-type"),
+        "expected switch expression to have inferred type; got {diags:?}"
+    );
+}
+
+#[test]
 fn array_initializer_in_var_decl_typechecks() {
     let src = r#"
 class C { void m(){ int[] a = {1,2}; } }

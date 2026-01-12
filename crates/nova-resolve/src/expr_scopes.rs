@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 
 use nova_core::Name;
-use nova_hir::hir::{Body, Expr, ExprId, LocalId, Stmt, StmtId};
+use nova_hir::hir::{Body, Expr, ExprId, LocalId, Stmt, StmtId, SwitchArmBody, SwitchLabel};
 
 use crate::ids::ParamId;
 
@@ -458,6 +458,26 @@ impl Builder {
                 self.visit_expr(body, *then_expr, scope);
                 self.visit_expr(body, *else_expr, scope);
             }
+            Expr::Switch {
+                selector, arms, ..
+            } => {
+                self.visit_expr(body, *selector, scope);
+                for arm in arms {
+                    for label in &arm.labels {
+                        if let SwitchLabel::Case { values, .. } = label {
+                            for value in values {
+                                self.visit_expr(body, *value, scope);
+                            }
+                        }
+                    }
+                    match &arm.body {
+                        SwitchArmBody::Expr(expr) => self.visit_expr(body, *expr, scope),
+                        SwitchArmBody::Block(stmt) | SwitchArmBody::Stmt(stmt) => {
+                            let _ = self.visit_stmt(body, *stmt, scope);
+                        }
+                    }
+                }
+            }
             Expr::Lambda {
                 params, body: b, ..
             } => {
@@ -480,13 +500,6 @@ impl Builder {
                         let _ = self.visit_stmt(body, *stmt, lambda_scope);
                     }
                 }
-            }
-            Expr::Switch {
-                selector, body: b, ..
-            } => {
-                self.visit_expr(body, *selector, scope);
-                let switch_scope = self.alloc_scope(Some(scope));
-                let _ = self.visit_stmt(body, *b, switch_scope);
             }
             Expr::Invalid { children, .. } => {
                 for &child in children {

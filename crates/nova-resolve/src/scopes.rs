@@ -808,6 +808,29 @@ impl<'a> ScopeBuilder<'a> {
                 self.record_expr_scopes(scope, owner, body, *then_expr);
                 self.record_expr_scopes(scope, owner, body, *else_expr);
             }
+            hir::Expr::Switch {
+                selector, arms, ..
+            } => {
+                self.record_expr_scopes(scope, owner, body, *selector);
+                for arm in arms {
+                    for label in &arm.labels {
+                        if let hir::SwitchLabel::Case { values, .. } = label {
+                            for value in values {
+                                self.record_expr_scopes(scope, owner, body, *value);
+                            }
+                        }
+                    }
+
+                    match &arm.body {
+                        hir::SwitchArmBody::Expr(expr) => {
+                            self.record_expr_scopes(scope, owner, body, *expr);
+                        }
+                        hir::SwitchArmBody::Block(stmt) | hir::SwitchArmBody::Stmt(stmt) => {
+                            self.build_stmt_scopes(scope, owner, body, *stmt);
+                        }
+                    }
+                }
+            }
             hir::Expr::Lambda {
                 params,
                 body: lambda_body,
@@ -838,16 +861,6 @@ impl<'a> ScopeBuilder<'a> {
                         self.build_stmt_scopes(lambda_scope, owner, body, *stmt);
                     }
                 }
-            }
-            hir::Expr::Switch {
-                selector,
-                body: switch_body,
-                ..
-            } => {
-                self.record_expr_scopes(scope, owner, body, *selector);
-
-                let switch_scope = self.alloc_block_scope(scope, owner, *switch_body);
-                self.build_stmt_scopes(switch_scope, owner, body, *switch_body);
             }
             hir::Expr::Invalid { children, .. } => {
                 for child in children {

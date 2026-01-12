@@ -242,6 +242,26 @@ pub struct CatchClause {
     pub range: Span,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitchArm {
+    pub labels: Vec<SwitchLabel>,
+    pub body: SwitchArmBody,
+    pub range: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitchArmBody {
+    Expr(ExprId),
+    Block(StmtId),
+    Stmt(StmtId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitchLabel {
+    Case { values: Vec<ExprId>, range: Span },
+    Default { range: Span },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LiteralKind {
     Int,
@@ -358,14 +378,14 @@ pub enum Expr {
         else_expr: ExprId,
         range: Span,
     },
+    Switch {
+        selector: ExprId,
+        arms: Vec<SwitchArm>,
+        range: Span,
+    },
     Lambda {
         params: Vec<LambdaParam>,
         body: LambdaBody,
-        range: Span,
-    },
-    Switch {
-        selector: ExprId,
-        body: StmtId,
         range: Span,
     },
     /// An expression we don't lower precisely yet, but for which we still preserve
@@ -414,8 +434,8 @@ impl Expr {
             | Expr::Instanceof { range, .. }
             | Expr::Assign { range, .. }
             | Expr::Conditional { range, .. }
-            | Expr::Lambda { range, .. }
             | Expr::Switch { range, .. }
+            | Expr::Lambda { range, .. }
             | Expr::Invalid { range, .. }
             | Expr::Missing { range } => *range,
         }

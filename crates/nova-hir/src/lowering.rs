@@ -1,7 +1,7 @@
 use crate::ast_id::{span_to_text_range, AstId, AstIdMap};
 use crate::hir::{
     Arena, AssignOp, BinaryOp, Body, CatchClause, Expr, ExprId, LambdaBody, LambdaParam,
-    LiteralKind, Local, LocalId, Stmt, StmtId, UnaryOp,
+    LiteralKind, Local, LocalId, Stmt, StmtId, SwitchArm, SwitchArmBody, SwitchLabel, UnaryOp,
 };
 use crate::ids::{
     AnnotationId, ClassId, ConstructorId, EnumId, FieldId, InitializerId, InterfaceId, MethodId,
@@ -1499,6 +1499,66 @@ impl<'a> BodyLower<'a> {
                     range: cond.range,
                 })
             }
+            syntax::Expr::Switch(switch_expr) => {
+                let selector = self.lower_expr(switch_expr.selector.as_ref());
+                let mut arms = Vec::with_capacity(switch_expr.arms.len());
+                for arm in &switch_expr.arms {
+                    self.check_cancelled();
+                    let mut labels = Vec::with_capacity(arm.labels.len());
+                    for label in &arm.labels {
+                        self.check_cancelled();
+                        labels.push(match label {
+                            syntax::SwitchLabel::Case { values, range } => {
+                                let mut lowered = Vec::with_capacity(values.len());
+                                for value in values {
+                                    self.check_cancelled();
+                                    lowered.push(self.lower_expr(value));
+                                }
+                                SwitchLabel::Case {
+                                    values: lowered,
+                                    range: *range,
+                                }
+                            }
+                            syntax::SwitchLabel::Default { range } => SwitchLabel::Default {
+                                range: *range,
+                            },
+                        });
+                    }
+
+                    let body = match &arm.body {
+                        syntax::SwitchArmBody::Expr(expr) => {
+                            SwitchArmBody::Expr(self.lower_expr(expr))
+                        }
+                        syntax::SwitchArmBody::Block(block) => {
+                            SwitchArmBody::Block(self.lower_block(block))
+                        }
+                        syntax::SwitchArmBody::Stmt(stmt) => self
+                            .lower_stmt(stmt.as_ref())
+                            .map(SwitchArmBody::Stmt)
+                            .unwrap_or_else(|| {
+                                SwitchArmBody::Stmt(self.alloc_stmt(Stmt::Empty {
+                                    range: arm.range,
+                                }))
+                            }),
+                        syntax::SwitchArmBody::Missing(range) => {
+                            let missing = self.alloc_expr(Expr::Missing { range: *range });
+                            SwitchArmBody::Expr(missing)
+                        }
+                    };
+
+                    arms.push(SwitchArm {
+                        labels,
+                        body,
+                        range: arm.range,
+                    });
+                }
+
+                self.alloc_expr(Expr::Switch {
+                    selector,
+                    arms,
+                    range: switch_expr.range,
+                })
+            }
             syntax::Expr::Lambda(lambda) => {
                 let mut params = Vec::with_capacity(lambda.params.len());
                 for param in &lambda.params {
@@ -1531,15 +1591,6 @@ impl<'a> BodyLower<'a> {
                     ty_range: cast.ty.range,
                     expr: inner,
                     range: cast.range,
-                })
-            }
-            syntax::Expr::Switch(switch_expr) => {
-                let selector = self.lower_expr(switch_expr.selector.as_ref());
-                let body = self.lower_block(&switch_expr.body);
-                self.alloc_expr(Expr::Switch {
-                    selector,
-                    body,
-                    range: switch_expr.range,
                 })
             }
             syntax::Expr::Invalid { children, range } => {

@@ -5,7 +5,7 @@ use std::time::Instant;
 use nova_core::{Name, PackageName, QualifiedName, StaticMemberId, TypeIndex, TypeName};
 use nova_hir::hir::{
     AssignOp, BinaryOp, Body as HirBody, Expr as HirExpr, ExprId as HirExprId, LambdaBody,
-    LiteralKind, Stmt as HirStmt, UnaryOp,
+    LiteralKind, Stmt as HirStmt, SwitchArmBody, SwitchLabel, UnaryOp,
 };
 use nova_hir::ids::{FieldId, MethodId};
 use nova_hir::item_tree::{FieldKind, Modifiers};
@@ -1074,6 +1074,58 @@ fn type_of_expr_demand_result(
                             stack.push(*finally);
                         }
                     }
+                    HirStmt::Yield { expr, .. } => {
+                        let Some(stmt_expr) = expr else {
+                            continue;
+                        };
+                        // Yield statements are typing boundaries inside switch expressions; infer the
+                        // yield expression first so nested target-typed expressions can see their
+                        // context.
+                        {
+                            let stmt_range = body.exprs[*stmt_expr].range();
+                            let may_contain = stmt_range.start <= target_range.start
+                                && target_range.end <= stmt_range.end;
+                            if may_contain
+                                && contains_expr_in_expr(&body, *stmt_expr, target_expr)
+                            {
+                                update_inference_root(*stmt_expr, None);
+                            }
+                        }
+
+                        // Best-effort: propagate expected types through simple assignments in yield
+                        // expressions, primarily so target-typed lambdas get parameter types.
+                        let HirExpr::Assign { lhs, rhs, op, .. } = &body.exprs[*stmt_expr] else {
+                            continue;
+                        };
+                        if *op != AssignOp::Assign {
+                            continue;
+                        }
+
+                        let rhs_range = body.exprs[*rhs].range();
+                        let may_contain = rhs_range.start <= target_range.start
+                            && target_range.end <= rhs_range.end;
+                        if !may_contain || !contains_expr_in_expr(&body, *rhs, target_expr) {
+                            continue;
+                        }
+
+                        let lhs_ty = checker.infer_expr(&mut loader, *lhs).ty;
+                        if lhs_ty.is_errorish() {
+                            continue;
+                        }
+
+                        if *rhs == target_expr {
+                            expected_ty = Some(lhs_ty.clone());
+                        }
+
+                        if matches!(body.exprs[*rhs], HirExpr::Lambda { .. }) {
+                            seed_lambda_params_from_target(
+                                &mut checker,
+                                &mut loader,
+                                *rhs,
+                                &lhs_ty,
+                            );
+                        }
+                    }
                     HirStmt::Expr {
                         expr: stmt_expr, ..
                     } => {
@@ -1156,8 +1208,7 @@ fn type_of_expr_demand_result(
                             update_inference_root(*expr, None);
                         }
                     }
-                    HirStmt::Yield { .. }
-                    | HirStmt::Break { .. }
+                    HirStmt::Break { .. }
                     | HirStmt::Continue { .. }
                     | HirStmt::Empty { .. } => {}
                 }
@@ -1727,6 +1778,36 @@ fn resolve_method_call_demand(
                     visit_expr(body, *then_expr, parent_expr, visited_expr);
                     visit_expr(body, *else_expr, parent_expr, visited_expr);
                 }
+                HirExpr::Switch {
+                    selector, arms, ..
+                } => {
+                    set_parent(parent_expr, *selector);
+                    visit_expr(body, *selector, parent_expr, visited_expr);
+
+                    for arm in arms {
+                        for label in &arm.labels {
+                            match label {
+                                SwitchLabel::Case { values, .. } => {
+                                    for value in values {
+                                        set_parent(parent_expr, *value);
+                                        visit_expr(body, *value, parent_expr, visited_expr);
+                                    }
+                                }
+                                SwitchLabel::Default { .. } => {}
+                            }
+                        }
+
+                        match &arm.body {
+                            SwitchArmBody::Expr(expr_id) => {
+                                set_parent(parent_expr, *expr_id);
+                                visit_expr(body, *expr_id, parent_expr, visited_expr);
+                            }
+                            SwitchArmBody::Block(stmt_id) | SwitchArmBody::Stmt(stmt_id) => {
+                                visit_stmt(body, *stmt_id, Some(expr), parent_expr, visited_expr);
+                            }
+                        }
+                    }
+                }
                 HirExpr::Lambda { body: b, .. } => match b {
                     LambdaBody::Expr(expr_id) => {
                         set_parent(parent_expr, *expr_id);
@@ -1736,15 +1817,6 @@ fn resolve_method_call_demand(
                         visit_stmt(body, *stmt_id, Some(expr), parent_expr, visited_expr);
                     }
                 },
-                HirExpr::Switch {
-                    selector,
-                    body: switch_body,
-                    ..
-                } => {
-                    set_parent(parent_expr, *selector);
-                    visit_expr(body, *selector, parent_expr, visited_expr);
-                    visit_stmt(body, *switch_body, Some(expr), parent_expr, visited_expr);
-                }
                 HirExpr::Name { .. }
                 | HirExpr::Literal { .. }
                 | HirExpr::Null { .. }
@@ -2009,8 +2081,8 @@ fn resolve_method_call_demand(
                 HirStmt::Return { expr: None, .. }
                 | HirStmt::Let { .. }
                 | HirStmt::Expr { .. }
-                | HirStmt::Assert { .. }
                 | HirStmt::Yield { .. }
+                | HirStmt::Assert { .. }
                 | HirStmt::Throw { .. }
                 | HirStmt::Break { .. }
                 | HirStmt::Continue { .. }
@@ -4071,8 +4143,8 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             HirStmt::Block { range, .. }
             | HirStmt::Let { range, .. }
             | HirStmt::Expr { range, .. }
-            | HirStmt::Assert { range, .. }
             | HirStmt::Yield { range, .. }
+            | HirStmt::Assert { range, .. }
             | HirStmt::Return { range, .. }
             | HirStmt::If { range, .. }
             | HirStmt::While { range, .. }
@@ -6736,35 +6808,46 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     is_type_ref: false,
                 }
             }
-            HirExpr::Switch {
-                selector,
-                body: switch_body,
-                ..
-            } => {
+            HirExpr::Switch { selector, arms, .. } => {
                 let _ = self.infer_expr(loader, *selector);
 
-                self.switch_yield_stack.push(Vec::new());
-                let expected_return = self.current_expected_return.clone();
-                self.check_stmt(loader, *switch_body, &expected_return);
-                let yields = self.switch_yield_stack.pop().unwrap_or_default();
-
-                let mut acc: Option<Type> = None;
-                for ty in yields {
-                    if ty.is_errorish() {
-                        continue;
-                    }
-                    self.ensure_type_loaded(loader, &ty);
-                    acc = Some(match acc {
-                        None => ty,
-                        Some(prev) => {
-                            self.ensure_type_loaded(loader, &prev);
-                            lub(&*loader.store, &prev, &ty)
+                let mut yield_types = Vec::new();
+                for arm in arms {
+                    // Best-effort: type case label expressions too so IDE hover works.
+                    for label in &arm.labels {
+                        match label {
+                            SwitchLabel::Case { values, .. } => {
+                                for value in values {
+                                    let _ = self.infer_expr(loader, *value);
+                                }
+                            }
+                            SwitchLabel::Default { .. } => {}
                         }
-                    });
+                    }
+
+                    match &arm.body {
+                        SwitchArmBody::Expr(expr) => {
+                            yield_types.push(self.infer_expr(loader, *expr).ty);
+                        }
+                        SwitchArmBody::Block(stmt) | SwitchArmBody::Stmt(stmt) => {
+                            self.switch_yield_stack.push(Vec::new());
+                            let expected_return = self.current_expected_return.clone();
+                            self.check_stmt(loader, *stmt, &expected_return);
+                            let yields = self.switch_yield_stack.pop().unwrap_or_default();
+                            yield_types.extend(yields);
+                        }
+                    }
                 }
 
+                let env_ro: &dyn TypeEnv = &*loader.store;
+                let ty = self.infer_switch_expr_type(
+                    env_ro,
+                    &yield_types,
+                    self.body.exprs[expr].range(),
+                );
+
                 ExprInfo {
-                    ty: acc.unwrap_or(Type::Unknown),
+                    ty,
                     is_type_ref: false,
                 }
             }
@@ -7335,6 +7418,54 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         }
 
         info
+    }
+
+    fn infer_switch_expr_type(&mut self, env: &dyn TypeEnv, yields: &[Type], range: Span) -> Type {
+        let Some(first) = yields.first() else {
+            self.diagnostics.push(Diagnostic::error(
+                "switch-type",
+                "cannot infer switch expression type (no yielded values found)",
+                Some(range),
+            ));
+            return Type::Unknown;
+        };
+
+        if yields.iter().all(|t| t == first) {
+            return first.clone();
+        }
+
+        if yields
+            .iter()
+            .all(|t| matches!(t, Type::Primitive(p) if p.is_numeric()))
+        {
+            let mut promoted = match first {
+                Type::Primitive(p) => *p,
+                _ => PrimitiveType::Int,
+            };
+            for ty in yields.iter().skip(1) {
+                let Type::Primitive(p) = ty else { continue };
+                promoted = binary_numeric_promotion(promoted, *p).unwrap_or(promoted);
+            }
+            return Type::Primitive(promoted);
+        }
+
+        if yields
+            .iter()
+            .all(|t| t.is_reference() || matches!(t, Type::Null))
+        {
+            let mut acc = first.clone();
+            for ty in yields.iter().skip(1) {
+                acc = lub(env, &acc, ty);
+            }
+            return acc;
+        }
+
+        self.diagnostics.push(Diagnostic::error(
+            "switch-type",
+            "cannot infer switch expression type",
+            Some(range),
+        ));
+        Type::Unknown
     }
 
     fn infer_name(
@@ -10808,6 +10939,9 @@ fn contains_expr_in_stmt(body: &HirBody, stmt: nova_hir::hir::StmtId, target: Hi
             .as_ref()
             .is_some_and(|expr| contains_expr_in_expr(body, *expr, target)),
         HirStmt::Expr { expr, .. } => contains_expr_in_expr(body, *expr, target),
+        HirStmt::Yield { expr, .. } => expr
+            .as_ref()
+            .is_some_and(|expr| contains_expr_in_expr(body, *expr, target)),
         HirStmt::Return { expr, .. } => expr
             .as_ref()
             .is_some_and(|expr| contains_expr_in_expr(body, *expr, target)),
@@ -10819,9 +10953,6 @@ fn contains_expr_in_stmt(body: &HirBody, stmt: nova_hir::hir::StmtId, target: Hi
                     .as_ref()
                     .is_some_and(|expr| contains_expr_in_expr(body, *expr, target))
         }
-        HirStmt::Yield { expr, .. } => expr
-            .as_ref()
-            .is_some_and(|expr| contains_expr_in_expr(body, *expr, target)),
         HirStmt::If {
             condition,
             then_branch,
@@ -10950,18 +11081,28 @@ fn contains_expr_in_expr(body: &HirBody, expr: HirExprId, target: HirExprId) -> 
                 || contains_expr_in_expr(body, *then_expr, target)
                 || contains_expr_in_expr(body, *else_expr, target)
         }
+        HirExpr::Switch {
+            selector, arms, ..
+        } => {
+            contains_expr_in_expr(body, *selector, target)
+                || arms.iter().any(|arm| {
+                    arm.labels.iter().any(|label| match label {
+                        SwitchLabel::Case { values, .. } => values
+                            .iter()
+                            .any(|value| contains_expr_in_expr(body, *value, target)),
+                        SwitchLabel::Default { .. } => false,
+                    }) || match &arm.body {
+                        SwitchArmBody::Expr(expr) => contains_expr_in_expr(body, *expr, target),
+                        SwitchArmBody::Block(stmt) | SwitchArmBody::Stmt(stmt) => {
+                            contains_expr_in_stmt(body, *stmt, target)
+                        }
+                    }
+                })
+        }
         HirExpr::Lambda { body: b, .. } => match b {
             LambdaBody::Expr(expr) => contains_expr_in_expr(body, *expr, target),
             LambdaBody::Block(stmt) => contains_expr_in_stmt(body, *stmt, target),
         },
-        HirExpr::Switch {
-            selector,
-            body: switch_body,
-            ..
-        } => {
-            contains_expr_in_expr(body, *selector, target)
-                || contains_expr_in_stmt(body, *switch_body, target)
-        }
         HirExpr::Invalid { children, .. } => children
             .iter()
             .any(|expr| contains_expr_in_expr(body, *expr, target)),
@@ -11263,18 +11404,44 @@ fn find_enclosing_target_typed_expr_in_expr(
             find_enclosing_target_typed_expr_in_expr(body, *else_expr, target, target_range, best);
         }
         HirExpr::Switch {
-            selector,
-            body: switch_body,
-            ..
+            selector, arms, ..
         } => {
             find_enclosing_target_typed_expr_in_expr(body, *selector, target, target_range, best);
-            find_enclosing_target_typed_expr_in_stmt_inner(
-                body,
-                *switch_body,
-                target,
-                target_range,
-                best,
-            );
+            for arm in arms {
+                for label in &arm.labels {
+                    if let SwitchLabel::Case { values, .. } = label {
+                        for value in values {
+                            find_enclosing_target_typed_expr_in_expr(
+                                body,
+                                *value,
+                                target,
+                                target_range,
+                                best,
+                            );
+                        }
+                    }
+                }
+                match &arm.body {
+                    SwitchArmBody::Expr(expr) => {
+                        find_enclosing_target_typed_expr_in_expr(
+                            body,
+                            *expr,
+                            target,
+                            target_range,
+                            best,
+                        );
+                    }
+                    SwitchArmBody::Block(stmt) | SwitchArmBody::Stmt(stmt) => {
+                        find_enclosing_target_typed_expr_in_stmt_inner(
+                            body,
+                            *stmt,
+                            target,
+                            target_range,
+                            best,
+                        );
+                    }
+                }
+            }
         }
         HirExpr::Lambda { body: b, .. } => match b {
             LambdaBody::Expr(expr) => {
@@ -11325,8 +11492,8 @@ fn find_enclosing_call_with_arg_in_stmt_inner(
         HirStmt::Block { range, .. }
         | HirStmt::Let { range, .. }
         | HirStmt::Expr { range, .. }
-        | HirStmt::Assert { range, .. }
         | HirStmt::Yield { range, .. }
+        | HirStmt::Assert { range, .. }
         | HirStmt::Return { range, .. }
         | HirStmt::If { range, .. }
         | HirStmt::While { range, .. }
@@ -11587,6 +11754,41 @@ fn find_enclosing_call_with_arg_in_expr(
             find_enclosing_call_with_arg_in_expr(body, *then_expr, target, target_range, best);
             find_enclosing_call_with_arg_in_expr(body, *else_expr, target, target_range, best);
         }
+        HirExpr::Switch {
+            selector, arms, ..
+        } => {
+            find_enclosing_call_with_arg_in_expr(body, *selector, target, target_range, best);
+            for arm in arms {
+                for label in &arm.labels {
+                    if let SwitchLabel::Case { values, .. } = label {
+                        for value in values {
+                            find_enclosing_call_with_arg_in_expr(
+                                body,
+                                *value,
+                                target,
+                                target_range,
+                                best,
+                            );
+                        }
+                    }
+                }
+
+                match &arm.body {
+                    SwitchArmBody::Expr(expr) => {
+                        find_enclosing_call_with_arg_in_expr(body, *expr, target, target_range, best);
+                    }
+                    SwitchArmBody::Block(stmt) | SwitchArmBody::Stmt(stmt) => {
+                        find_enclosing_call_with_arg_in_stmt_inner(
+                            body,
+                            *stmt,
+                            target,
+                            target_range,
+                            best,
+                        );
+                    }
+                }
+            }
+        }
         HirExpr::Lambda { body: b, .. } => match b {
             LambdaBody::Expr(expr) => {
                 find_enclosing_call_with_arg_in_expr(body, *expr, target, target_range, best);
@@ -11595,20 +11797,6 @@ fn find_enclosing_call_with_arg_in_expr(
                 find_enclosing_call_with_arg_in_stmt_inner(body, *stmt, target, target_range, best);
             }
         },
-        HirExpr::Switch {
-            selector,
-            body: switch_body,
-            ..
-        } => {
-            find_enclosing_call_with_arg_in_expr(body, *selector, target, target_range, best);
-            find_enclosing_call_with_arg_in_stmt_inner(
-                body,
-                *switch_body,
-                target,
-                target_range,
-                best,
-            );
-        }
         HirExpr::Invalid { children, .. } => {
             for child in children {
                 find_enclosing_call_with_arg_in_expr(body, *child, target, target_range, best);
@@ -11724,20 +11912,33 @@ fn find_best_expr_in_expr(
             find_best_expr_in_expr(body, *then_expr, offset, owner, best);
             find_best_expr_in_expr(body, *else_expr, offset, owner, best);
         }
+        HirExpr::Switch {
+            selector, arms, ..
+        } => {
+            find_best_expr_in_expr(body, *selector, offset, owner, best);
+            for arm in arms {
+                for label in &arm.labels {
+                    if let SwitchLabel::Case { values, .. } = label {
+                        for value in values {
+                            find_best_expr_in_expr(body, *value, offset, owner, best);
+                        }
+                    }
+                }
+
+                match &arm.body {
+                    SwitchArmBody::Expr(expr) => find_best_expr_in_expr(body, *expr, offset, owner, best),
+                    SwitchArmBody::Block(stmt) | SwitchArmBody::Stmt(stmt) => {
+                        find_best_expr_in_stmt(body, *stmt, offset, owner, best)
+                    }
+                }
+            }
+        }
         HirExpr::Lambda {
             body: lambda_body, ..
         } => match lambda_body {
             LambdaBody::Expr(expr) => find_best_expr_in_expr(body, *expr, offset, owner, best),
             LambdaBody::Block(stmt) => find_best_expr_in_stmt(body, *stmt, offset, owner, best),
         },
-        HirExpr::Switch {
-            selector,
-            body: switch_body,
-            ..
-        } => {
-            find_best_expr_in_expr(body, *selector, offset, owner, best);
-            find_best_expr_in_stmt(body, *switch_body, offset, owner, best);
-        }
         HirExpr::Name { .. }
         | HirExpr::Literal { .. }
         | HirExpr::Null { .. }

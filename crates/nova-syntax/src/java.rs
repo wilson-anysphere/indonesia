@@ -6,7 +6,6 @@
 
 use nova_types::Span;
 
-use crate::ast::AstNode as _;
 use crate::{parse_java, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};
 
 pub mod ast {
@@ -384,6 +383,34 @@ pub mod ast {
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct SwitchExpr {
+        pub selector: Box<Expr>,
+        pub arms: Vec<SwitchArm>,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct SwitchArm {
+        pub labels: Vec<SwitchLabel>,
+        pub body: SwitchArmBody,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum SwitchArmBody {
+        Expr(Expr),
+        Block(Block),
+        Stmt(Box<Stmt>),
+        Missing(Span),
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum SwitchLabel {
+        Case { values: Vec<Expr>, range: Span },
+        Default { range: Span },
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct TryStmt {
         pub body: Block,
         pub catches: Vec<CatchClause>,
@@ -422,13 +449,6 @@ pub mod ast {
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct SwitchExpr {
-        pub selector: Box<Expr>,
-        pub body: Block,
-        pub range: Span,
-    }
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum Expr {
         Name(NameExpr),
         IntLiteral(LiteralExpr),
@@ -456,8 +476,8 @@ pub mod ast {
         ClassLiteral(ClassLiteralExpr),
         Assign(AssignExpr),
         Conditional(ConditionalExpr),
-        Lambda(LambdaExpr),
         Switch(SwitchExpr),
+        Lambda(LambdaExpr),
         Cast(CastExpr),
         /// A syntactically valid expression kind that we don't lower precisely yet.
         ///
@@ -498,8 +518,8 @@ pub mod ast {
                 Expr::ClassLiteral(expr) => expr.range,
                 Expr::Assign(expr) => expr.range,
                 Expr::Conditional(expr) => expr.range,
-                Expr::Lambda(expr) => expr.range,
                 Expr::Switch(expr) => expr.range,
+                Expr::Lambda(expr) => expr.range,
                 Expr::Cast(expr) => expr.range,
                 Expr::Invalid { range, .. } => *range,
                 Expr::Missing(range) => *range,
@@ -1690,14 +1710,13 @@ impl Lowerer {
     }
 
     fn lower_yield_stmt(&self, node: &SyntaxNode) -> ast::YieldStmt {
+        let range = self.spans.map_node(node);
         let expr = node
             .children()
             .find(|child| is_expression_kind(child.kind()))
             .map(|expr| self.lower_expr(&expr));
-        ast::YieldStmt {
-            expr,
-            range: self.spans.map_node(node),
-        }
+
+        ast::YieldStmt { expr, range }
     }
 
     fn lower_local_var_stmt(&self, node: &SyntaxNode) -> ast::LocalVarStmt {
@@ -2115,6 +2134,116 @@ impl Lowerer {
         }
     }
 
+    fn lower_switch_expr(&self, node: &SyntaxNode) -> ast::Expr {
+        let range = self.spans.map_node(node);
+        let selector = node
+            .children()
+            .find(|child| is_expression_kind(child.kind()))
+            .map(|expr| self.lower_expr(&expr))
+            .unwrap_or_else(|| ast::Expr::Missing(range));
+
+        let arms = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::SwitchBlock)
+            .map(|block| self.lower_switch_expr_arms(&block))
+            .unwrap_or_default();
+
+        ast::Expr::Switch(ast::SwitchExpr {
+            selector: Box::new(selector),
+            arms,
+            range,
+        })
+    }
+
+    fn lower_switch_expr_arms(&self, node: &SyntaxNode) -> Vec<ast::SwitchArm> {
+        let mut arms = Vec::new();
+        for child in node.children() {
+            match child.kind() {
+                SyntaxKind::SwitchRule => arms.push(self.lower_switch_rule_arm(&child)),
+                SyntaxKind::SwitchGroup => arms.push(self.lower_switch_group_arm(&child)),
+                _ => {}
+            }
+        }
+        arms
+    }
+
+    fn lower_switch_rule_arm(&self, node: &SyntaxNode) -> ast::SwitchArm {
+        let range = self.spans.map_node(node);
+        let labels = node
+            .children()
+            .filter(|child| child.kind() == SyntaxKind::SwitchLabel)
+            .map(|label| self.lower_switch_label(&label))
+            .collect();
+
+        let body_node = node.children().find(|child| {
+            if child.kind() == SyntaxKind::SwitchLabel {
+                return false;
+            }
+            child.kind() == SyntaxKind::Block
+                || is_expression_kind(child.kind())
+                || is_statement_kind(child.kind())
+        });
+
+        let body = if let Some(body_node) = body_node {
+            if body_node.kind() == SyntaxKind::Block {
+                ast::SwitchArmBody::Block(self.lower_block(&body_node))
+            } else if is_expression_kind(body_node.kind()) {
+                ast::SwitchArmBody::Expr(self.lower_expr(&body_node))
+            } else if is_statement_kind(body_node.kind()) {
+                self.lower_stmt(&body_node)
+                    .map(|stmt| ast::SwitchArmBody::Stmt(Box::new(stmt)))
+                    .unwrap_or(ast::SwitchArmBody::Missing(range))
+            } else {
+                ast::SwitchArmBody::Missing(range)
+            }
+        } else {
+            ast::SwitchArmBody::Missing(range)
+        };
+
+        ast::SwitchArm { labels, body, range }
+    }
+
+    fn lower_switch_group_arm(&self, node: &SyntaxNode) -> ast::SwitchArm {
+        let range = self.spans.map_node(node);
+        let labels = node
+            .children()
+            .filter(|child| child.kind() == SyntaxKind::SwitchLabel)
+            .map(|label| self.lower_switch_label(&label))
+            .collect();
+
+        let statements = node
+            .children()
+            .filter_map(|child| self.lower_stmt(&child))
+            .collect();
+
+        ast::SwitchArm {
+            labels,
+            body: ast::SwitchArmBody::Block(ast::Block { statements, range }),
+            range,
+        }
+    }
+
+    fn lower_switch_label(&self, node: &SyntaxNode) -> ast::SwitchLabel {
+        let range = self.spans.map_node(node);
+        let is_default = node
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .any(|tok| tok.kind() == SyntaxKind::DefaultKw);
+
+        if is_default {
+            return ast::SwitchLabel::Default { range };
+        }
+
+        let mut values = Vec::new();
+        for element in node.descendants().filter(|n| n.kind() == SyntaxKind::CaseLabelElement) {
+            if let Some(expr_node) = element.children().find(|c| is_expression_kind(c.kind())) {
+                values.push(self.lower_expr(&expr_node));
+            }
+        }
+
+        ast::SwitchLabel::Case { values, range }
+    }
+
     fn lower_switch_block(&self, node: &SyntaxNode) -> ast::Block {
         let mut statements = Vec::new();
         for child in node.descendants() {
@@ -2138,36 +2267,6 @@ impl Lowerer {
             statements,
             range: self.spans.map_node(node),
         }
-    }
-
-    fn lower_switch_expr_block(&self, node: &SyntaxNode) -> ast::Block {
-        let mut block = self.lower_switch_block(node);
-
-        // Switch expression rule bodies can be a bare expression (`case 1 -> 1;`) rather than a
-        // statement. The lightweight statement-only switch block lowering would otherwise drop
-        // these expressions entirely, leading to `Unknown` switch expression types and missing
-        // traversal for downstream semantic passes.
-        //
-        // Best-effort: treat rule-body expressions as synthetic `yield <expr>;` statements so
-        // typeck can compute a result type.
-        let Some(switch_block) = crate::ast::SwitchBlock::cast(node.clone()) else {
-            return block;
-        };
-
-        for rule in switch_block.rules() {
-            let Some(crate::ast::SwitchRuleBody::Expression(expr)) = rule.body() else {
-                continue;
-            };
-
-            let expr = self.lower_expr(expr.syntax());
-            let range = expr.range();
-            block.statements.push(ast::Stmt::Yield(ast::YieldStmt {
-                expr: Some(expr),
-                range,
-            }));
-        }
-
-        block
     }
 
     fn lower_try_stmt(&self, node: &SyntaxNode) -> ast::TryStmt {
@@ -2363,8 +2462,8 @@ impl Lowerer {
             SyntaxKind::InstanceofExpression => self.lower_instanceof_expr(node),
             SyntaxKind::AssignmentExpression => self.lower_assign_expr(node),
             SyntaxKind::ConditionalExpression => self.lower_conditional_expr(node),
-            SyntaxKind::LambdaExpression => self.lower_lambda_expr(node),
             SyntaxKind::SwitchExpression => self.lower_switch_expr(node),
+            SyntaxKind::LambdaExpression => self.lower_lambda_expr(node),
             SyntaxKind::ParenthesizedExpression => node
                 .children()
                 .find(|child| is_expression_kind(child.kind()))
@@ -2456,32 +2555,6 @@ impl Lowerer {
             expr: Box::new(lhs),
             ty,
             range: self.spans.map_node(node),
-        })
-    }
-
-    fn lower_switch_expr(&self, node: &SyntaxNode) -> ast::Expr {
-        let range = self.spans.map_node(node);
-        let selector = node
-            .children()
-            .find(|child| is_expression_kind(child.kind()))
-            .map(|expr| self.lower_expr(&expr))
-            .unwrap_or_else(|| ast::Expr::Missing(range));
-
-        let switch_block = node
-            .children()
-            .find(|child| child.kind() == SyntaxKind::SwitchBlock);
-        let body = switch_block
-            .as_ref()
-            .map(|block| self.lower_switch_expr_block(block))
-            .unwrap_or_else(|| ast::Block {
-                statements: Vec::new(),
-                range: Span::new(range.end, range.end),
-            });
-
-        ast::Expr::Switch(ast::SwitchExpr {
-            selector: Box::new(selector),
-            body,
-            range,
         })
     }
 

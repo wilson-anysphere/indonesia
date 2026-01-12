@@ -5165,6 +5165,26 @@ fn walk_hir_body(body: &hir::Body, mut f: impl FnMut(hir::ExprId)) {
                 walk_expr(body, *then_expr, f);
                 walk_expr(body, *else_expr, f);
             }
+            hir::Expr::Switch {
+                selector, arms, ..
+            } => {
+                walk_expr(body, *selector, f);
+                for arm in arms {
+                    for label in &arm.labels {
+                        if let hir::SwitchLabel::Case { values, .. } = label {
+                            for value in values {
+                                walk_expr(body, *value, f);
+                            }
+                        }
+                    }
+                    match &arm.body {
+                        hir::SwitchArmBody::Expr(expr) => walk_expr(body, *expr, f),
+                        hir::SwitchArmBody::Block(stmt) | hir::SwitchArmBody::Stmt(stmt) => {
+                            walk_stmt(body, *stmt, f)
+                        }
+                    }
+                }
+            }
             hir::Expr::Lambda {
                 body: lambda_body, ..
             } => match lambda_body {

@@ -424,6 +424,27 @@ fn is_recursive(source: &str, method_name: &str, body: &jast::Block) -> bool {
                     || walk_expr(source, method_name, &expr.then_expr)
                     || walk_expr(source, method_name, &expr.else_expr)
             }
+            jast::Expr::Switch(expr) => {
+                walk_expr(source, method_name, expr.selector.as_ref())
+                    || expr.arms.iter().any(|arm| {
+                        arm.labels.iter().any(|label| match label {
+                            jast::SwitchLabel::Case { values, .. } => values
+                                .iter()
+                                .any(|value| walk_expr(source, method_name, value)),
+                            jast::SwitchLabel::Default { .. } => false,
+                        }) || match &arm.body {
+                            jast::SwitchArmBody::Expr(expr) => walk_expr(source, method_name, expr),
+                            jast::SwitchArmBody::Block(block) => block
+                                .statements
+                                .iter()
+                                .any(|stmt| walk_stmt(source, method_name, stmt)),
+                            jast::SwitchArmBody::Stmt(stmt) => {
+                                walk_stmt(source, method_name, stmt.as_ref())
+                            }
+                            jast::SwitchArmBody::Missing(_) => false,
+                        }
+                    })
+            }
             jast::Expr::Lambda(expr) => match &expr.body {
                 jast::LambdaBody::Expr(expr) => walk_expr(source, method_name, expr.as_ref()),
                 jast::LambdaBody::Block(block) => block
@@ -431,14 +452,6 @@ fn is_recursive(source: &str, method_name: &str, body: &jast::Block) -> bool {
                     .iter()
                     .any(|stmt| walk_stmt(source, method_name, stmt)),
             },
-            jast::Expr::Switch(expr) => {
-                walk_expr(source, method_name, expr.selector.as_ref())
-                    || expr
-                        .body
-                        .statements
-                        .iter()
-                        .any(|stmt| walk_stmt(source, method_name, stmt))
-            }
             jast::Expr::Invalid { children, .. } => children
                 .iter()
                 .any(|child| walk_expr(source, method_name, child)),
