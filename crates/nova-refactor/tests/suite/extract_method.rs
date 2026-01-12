@@ -293,6 +293,88 @@ class C {
 }
 
 #[test]
+fn extract_method_copies_enclosing_type_parameters() {
+    let fixture = r#"
+class C {
+    <T> void m(T t) {
+        /*start*/System.out.println(t);/*end*/
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    <T> void m(T t) {
+        extracted(t);
+    }
+
+    private <T> void extracted(T t) {
+        System.out.println(t);
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn extract_method_returning_generic_type_variable() {
+    let fixture = r#"
+class C {
+    <T> T m(T t) {
+        T r = null;
+        /*start*/r = t;/*end*/
+        return r;
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "compute".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    <T> T m(T t) {
+        T r = null;
+        r = compute(t);
+        return r;
+    }
+
+    private <T> T compute(T t) {
+        T r;
+        r = t;
+        return r;
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn extract_method_returning_value() {
     let fixture = r#"
 class C {

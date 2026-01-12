@@ -221,7 +221,9 @@ impl ExtractMethod {
         }
 
         let root = parsed.syntax();
-        let Some((method, method_body)) = find_enclosing_method(root.clone(), selection) else {
+        let Some((method, method_body, _type_params_text)) =
+            find_enclosing_method(source, root.clone(), selection)
+        else {
             return Ok(ExtractMethodAnalysis {
                 region: ExtractRegionKind::Statements,
                 parameters: Vec::new(),
@@ -526,7 +528,7 @@ impl ExtractMethod {
         }
         let root = parsed.syntax();
 
-        let (method, method_body) = find_enclosing_method(root.clone(), selection)
+        let (method, method_body, type_params_text) = find_enclosing_method(source, root.clone(), selection)
             .ok_or("selection must be inside a method, constructor, or initializer block")?;
         let enclosing_method_is_static = method.is_static();
         let enclosing_type_body = find_enclosing_type_body(method.syntax())
@@ -633,24 +635,22 @@ impl ExtractMethod {
         };
 
         let vis_kw = self.visibility.keyword();
-        let signature = match (vis_kw.is_empty(), enclosing_method_is_static) {
-            (true, false) => format!(
-                "{method_indent}{return_ty} {}({params_sig}){throws_clause} {{{newline}",
-                self.name
-            ),
-            (true, true) => format!(
-                "{method_indent}static {return_ty} {}({params_sig}){throws_clause} {{{newline}",
-                self.name
-            ),
-            (false, false) => format!(
-                "{method_indent}{vis_kw} {return_ty} {}({params_sig}){throws_clause} {{{newline}",
-                self.name
-            ),
-            (false, true) => format!(
-                "{method_indent}{vis_kw} static {return_ty} {}({params_sig}){throws_clause} {{{newline}",
-                self.name
-            ),
-        };
+        let mut modifiers = String::new();
+        if !vis_kw.is_empty() {
+            modifiers.push_str(vis_kw);
+            modifiers.push(' ');
+        }
+        if enclosing_method_is_static {
+            modifiers.push_str("static ");
+        }
+        if let Some(type_params) = type_params_text.as_deref() {
+            modifiers.push_str(type_params);
+            modifiers.push(' ');
+        }
+        let signature = format!(
+            "{method_indent}{modifiers}{return_ty} {}({params_sig}){throws_clause} {{{newline}",
+            self.name
+        );
 
         let mut new_method_text = String::new();
         new_method_text.push_str(newline);
@@ -780,23 +780,29 @@ fn span_intersects_range(span: Span, range: TextRange) -> bool {
 }
 
 fn find_enclosing_method(
+    source: &str,
     root: nova_syntax::SyntaxNode,
     selection: TextRange,
-) -> Option<(EnclosingMethod, ast::Block)> {
-    let mut best: Option<(usize, EnclosingMethod, ast::Block)> = None;
+) -> Option<(EnclosingMethod, ast::Block, Option<String>)> {
+    let mut best: Option<(usize, EnclosingMethod, ast::Block, Option<String>)> = None;
 
     for method in root.descendants().filter_map(ast::MethodDeclaration::cast) {
         let Some(body) = method.body() else {
             continue;
         };
+        let type_params_text = method
+            .type_parameters()
+            .and_then(|tp| slice_syntax(source, tp.syntax()))
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty());
         let body_range = syntax_range(body.syntax());
         if body_range.start <= selection.start && selection.end <= body_range.end {
             let span = body_range.len();
             if best
                 .as_ref()
-                .is_none_or(|(best_span, _, _)| span < *best_span)
+                .is_none_or(|(best_span, _, _, _)| span < *best_span)
             {
-                best = Some((span, EnclosingMethod::Method(method), body));
+                best = Some((span, EnclosingMethod::Method(method), body, type_params_text));
             }
         }
     }
@@ -808,14 +814,19 @@ fn find_enclosing_method(
         let Some(body) = ctor.body() else {
             continue;
         };
+        let type_params_text = ctor
+            .type_parameters()
+            .and_then(|tp| slice_syntax(source, tp.syntax()))
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty());
         let body_range = syntax_range(body.syntax());
         if body_range.start <= selection.start && selection.end <= body_range.end {
             let span = body_range.len();
             if best
                 .as_ref()
-                .is_none_or(|(best_span, _, _)| span < *best_span)
+                .is_none_or(|(best_span, _, _, _)| span < *best_span)
             {
-                best = Some((span, EnclosingMethod::Constructor(ctor), body));
+                best = Some((span, EnclosingMethod::Constructor(ctor), body, type_params_text));
             }
         }
     }
@@ -848,14 +859,14 @@ fn find_enclosing_method(
             let span = body_range.len();
             if best
                 .as_ref()
-                .is_none_or(|(best_span, _, _)| span < *best_span)
+                .is_none_or(|(best_span, _, _, _)| span < *best_span)
             {
-                best = Some((span, EnclosingMethod::Initializer(init), body));
+                best = Some((span, EnclosingMethod::Initializer(init), body, None));
             }
         }
     }
 
-    best.map(|(_, m, b)| (m, b))
+    best.map(|(_, m, b, t)| (m, b, t))
 }
 
 #[derive(Debug, Clone)]

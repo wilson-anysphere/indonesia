@@ -762,7 +762,7 @@ fn extract_variable_trims_whitespace_in_selection_range() {
 }
 
 #[test]
-fn extract_variable_allows_initializer_that_depends_on_earlier_declarator() {
+fn extract_variable_splits_multi_declarator_when_initializer_depends_on_earlier_declarator() {
     let file = FileId::new("Test.java");
     let fixture = r#"class C {
   void m() {
@@ -835,7 +835,8 @@ fn extract_variable_allows_initializer_in_first_declarator_of_multi_declarator_s
 }
 
 #[test]
-fn extract_variable_allows_later_declarator_initializer_even_if_outer_names_exist() {
+fn extract_variable_splits_multi_declarator_when_initializer_depends_on_earlier_declarator_and_outer_names_exist(
+) {
     let file = FileId::new("Test.java");
     let fixture = r#"class C {
   void m() {
