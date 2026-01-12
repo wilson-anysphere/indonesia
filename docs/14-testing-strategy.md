@@ -570,7 +570,7 @@ or the “Real-project validation” section of [`14-testing-infrastructure.md`]
 mod real_project_tests {
     /// Test against real open-source projects
     #[test]
-    #[ignore] // Run with --include-ignored
+    #[ignore] // Run with --ignored
     fn test_spring_petclinic() {
         let db = load_project("test-projects/spring-petclinic");
         
