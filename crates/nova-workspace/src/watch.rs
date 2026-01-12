@@ -78,7 +78,11 @@ pub fn categorize_event(config: &WatchConfig, event: &NormalizedEvent) -> Option
         {
             return Some(ChangeCategory::Build);
         }
-        if is_build_file(path) {
+        // Many build files are detected based on path components (e.g. ignoring `build/` output
+        // directories). Use paths relative to the workspace root so absolute parent directories
+        // (like `/home/user/build/...`) don't accidentally trip ignore heuristics.
+        let rel = path.strip_prefix(&config.workspace_root).unwrap_or(path);
+        if is_build_file(rel) {
             return Some(ChangeCategory::Build);
         }
     }
@@ -476,5 +480,36 @@ mod tests {
         // Intentionally use the opposite drive-letter case from the configured root.
         let event = NormalizedEvent::Modified(PathBuf::from(r"C:\ws\src\A.java"));
         assert_eq!(categorize_event(&config, &event), Some(ChangeCategory::Source));
+    }
+
+    #[test]
+    fn build_file_detection_uses_paths_relative_to_workspace_root() {
+        // Regression test: `is_build_file` ignores `build/`, `target/`, and `.gradle/` directories
+        // by scanning path components. If the workspace root itself lives under a directory named
+        // `build` (e.g. `/home/user/build/my-project`), we still want to treat top-level Gradle
+        // script plugins and version catalogs as build changes.
+        let root = PathBuf::from("/tmp/build/workspace");
+        let config = WatchConfig::new(root.clone());
+
+        assert_eq!(
+            categorize_event(&config, &NormalizedEvent::Modified(root.join("dependencies.gradle"))),
+            Some(ChangeCategory::Build),
+            "root-level Gradle script plugins should be treated as build changes"
+        );
+        assert_eq!(
+            categorize_event(&config, &NormalizedEvent::Modified(root.join("libs.versions.toml"))),
+            Some(ChangeCategory::Build),
+            "root-level version catalogs should be treated as build changes"
+        );
+
+        // But build output directories inside the workspace should still be ignored.
+        assert_ne!(
+            categorize_event(
+                &config,
+                &NormalizedEvent::Modified(root.join("build/dependencies.gradle"))
+            ),
+            Some(ChangeCategory::Build),
+            "files under workspace build/ should not be treated as build changes"
+        );
     }
 }
