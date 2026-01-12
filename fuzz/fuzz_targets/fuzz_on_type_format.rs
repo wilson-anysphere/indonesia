@@ -55,9 +55,28 @@ fn runner() -> &'static Runner {
                 if let Ok(edits) =
                     nova_format::edits_for_on_type_formatting(&tree, text, position, ch, &config)
                 {
+                    let line_start = line_index
+                        .line_start(position.line)
+                        .expect("position line should be in bounds");
+                    let line_end = line_index
+                        .line_end(position.line)
+                        .expect("position line should be in bounds");
+                    let line_start_usize = u32::from(line_start) as usize;
+                    let line_end_usize = u32::from(line_end) as usize;
+
                     let formatted =
                         nova_core::apply_text_edits(text, &edits).expect("edits must apply");
-                    let _ = formatted;
+
+                    // On-type formatting should only affect the current line's content.
+                    assert!(formatted.starts_with(&text[..line_start_usize]));
+                    assert!(formatted.ends_with(&text[line_end_usize..]));
+
+                    for edit in &edits {
+                        assert!(
+                            edit.range.start() >= line_start && edit.range.end() <= line_end,
+                            "on-type formatting produced an out-of-line edit: {edit:?} not within {line_start:?}..{line_end:?}",
+                        );
+                    }
                 }
 
                 let _ = output_tx.send(());

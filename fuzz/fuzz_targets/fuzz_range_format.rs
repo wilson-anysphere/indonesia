@@ -73,14 +73,19 @@ fn runner() -> &'static Runner {
 
                 let res = nova_format::edits_for_range_formatting(&tree, text, range, &config);
                 if let Ok(edits) = res {
-                    let formatted =
-                        nova_core::apply_text_edits(text, &edits).expect("edits must apply");
-                    // Ensure we actually exercised the edit application path.
-                    let _ = formatted;
-
                     let selected = line_index
                         .text_range(text, range)
                         .expect("range should convert back to a byte range");
+                    let selected_start = u32::from(selected.start()) as usize;
+                    let selected_end = u32::from(selected.end()) as usize;
+
+                    let formatted =
+                        nova_core::apply_text_edits(text, &edits).expect("edits must apply");
+
+                    // Range formatting should preserve the text outside the range.
+                    assert!(formatted.starts_with(&text[..selected_start]));
+                    assert!(formatted.ends_with(&text[selected_end..]));
+
                     for edit in &edits {
                         assert!(
                             edit.range.start() >= selected.start()
