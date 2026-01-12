@@ -1,3 +1,4 @@
+mod ai_eval;
 mod cloud_multi_token;
 mod embedding_semantic_search;
 mod explain_error_providers;
