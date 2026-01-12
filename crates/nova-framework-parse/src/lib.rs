@@ -1,17 +1,32 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use nova_types::Span;
 use tree_sitter::{Node, Parser, Tree};
 
+thread_local! {
+    static JAVA_PARSER: RefCell<Result<Parser, String>> = RefCell::new({
+        let mut parser = Parser::new();
+        match parser.set_language(tree_sitter_java::language()) {
+            Ok(()) => Ok(parser),
+            Err(_) => Err("tree-sitter-java language load failed".to_string()),
+        }
+    });
+}
+
 /// Parse Java source text with `tree-sitter-java`.
 pub fn parse_java(source: &str) -> Result<Tree, String> {
-    let mut parser = Parser::new();
-    parser
-        .set_language(tree_sitter_java::language())
-        .map_err(|_| "tree-sitter-java language load failed".to_string())?;
-    parser
-        .parse(source, None)
-        .ok_or_else(|| "tree-sitter failed to produce a syntax tree".to_string())
+    JAVA_PARSER.with(|parser_cell| {
+        let mut parser = parser_cell.borrow_mut();
+        let parser = match parser.as_mut() {
+            Ok(parser) => parser,
+            Err(err) => return Err(err.clone()),
+        };
+
+        parser
+            .parse(source, None)
+            .ok_or_else(|| "tree-sitter failed to produce a syntax tree".to_string())
+    })
 }
 
 /// Visit a node and all its descendants in pre-order.
@@ -487,6 +502,22 @@ fn strip_generic_args(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_multiple_java_sources() {
+        let src1 = "class A {}";
+        let src2 = "class A {} class B {}";
+
+        let tree1 = parse_java(src1).expect("parse src1");
+        let tree2 = parse_java(src2).expect("parse src2");
+
+        assert!(!tree1.root_node().has_error());
+        assert!(!tree2.root_node().has_error());
+        assert_ne!(
+            tree1.root_node().named_child_count(),
+            tree2.root_node().named_child_count()
+        );
+    }
 
     #[test]
     fn parses_positional_and_named_args() {
