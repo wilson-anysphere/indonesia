@@ -1342,4 +1342,6 @@ fn lambda_parameter_iteration_single_param_form() {
         .map(|param| param.name_token().unwrap().text().to_string())
         .collect();
     assert_eq!(names, vec!["x"]);
+
+    assert_eq!(lambda.arrow_token().unwrap().kind(), SyntaxKind::Arrow);
 }

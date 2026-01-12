@@ -188,6 +188,12 @@ impl super::LambdaParameters {
     }
 }
 
+impl super::LambdaExpression {
+    pub fn arrow_token(&self) -> Option<SyntaxToken> {
+        support::token(self.syntax(), SyntaxKind::Arrow)
+    }
+}
+
 impl super::RequiresDirective {
     pub fn is_transitive(&self) -> bool {
         support::token(self.syntax(), SyntaxKind::TransitiveKw).is_some()
