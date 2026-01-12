@@ -40,6 +40,16 @@ mod unicode_folding;
 pub use scoring::{fuzzy_match, FuzzyMatcher, MatchKind, MatchScore, RankKey};
 pub use trigram::{Trigram, TrigramCandidateScratch, TrigramIndex, TrigramIndexBuilder};
 
+/// Case-insensitive prefix match.
+///
+/// - Without `feature = "unicode"`, this is ASCII-only case-insensitive matching over UTF-8 bytes.
+/// - With `unicode` enabled, this uses NFKC normalization + Unicode case folding and compares
+///   by extended grapheme clusters (so expansions like `ß → ss` work as expected).
+#[inline]
+pub fn prefix_match(query: &str, candidate: &str) -> bool {
+    fuzzy_match(query, candidate).is_some_and(|s| s.kind == MatchKind::Prefix)
+}
+
 #[cfg(feature = "unicode")]
 use unicode_casefold::UnicodeCaseFold;
 #[cfg(feature = "unicode")]
