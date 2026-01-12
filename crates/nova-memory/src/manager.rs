@@ -258,15 +258,22 @@ impl MemoryManager {
             target.set(category, target_bytes);
         }
 
+        // Snapshot current registrations so we don't hold the lock while calling
+        // out into evictors. We keep the counters by `Arc` so we can read the
+        // latest usage each round without re-locking.
+        let entries = self.collect_evictor_entries();
+
         // Try multiple passes to give evictors a chance to converge without
         // risking long stalls.
         for _round in 0..3 {
             let usage = self.usage_breakdown();
-            if self.within_targets(usage, target) {
+            let compensated_target = self.compensated_target(usage, target, &entries);
+
+            if self.within_targets(usage, compensated_target) {
                 break;
             }
 
-            self.evict_once(pressure, usage, target);
+            self.evict_once(pressure, usage, compensated_target, &entries);
         }
     }
 
@@ -279,15 +286,8 @@ impl MemoryManager {
         true
     }
 
-    fn evict_once(
-        &self,
-        pressure: MemoryPressure,
-        usage: MemoryBreakdown,
-        target: MemoryBreakdown,
-    ) {
-        // Snapshot current registrations so we don't hold the lock while calling
-        // out into evictors.
-        let entries: Vec<EvictorEntry> = {
+    fn collect_evictor_entries(&self) -> Vec<EvictorEntry> {
+        {
             let registrations = self.inner.registrations.lock().unwrap();
             registrations
                 .iter()
@@ -302,8 +302,74 @@ impl MemoryManager {
                     })
                 })
                 .collect()
-        };
+        }
+    }
 
+    fn evict_once(
+        &self,
+        pressure: MemoryPressure,
+        usage: MemoryBreakdown,
+        target: MemoryBreakdown,
+        entries: &[EvictorEntry],
+    ) {
+        let target = target;
+
+        for category in MemoryBreakdown::categories() {
+            let category_usage = usage.get(category);
+            let category_target = target.get(category);
+
+            if category_usage <= category_target {
+                continue;
+            }
+
+            // Sum evictable usage for this category.
+            let mut evictable_usage = 0u64;
+            let mut candidates = Vec::new();
+            for (_id, entry_category, usage_counter, evictor) in entries {
+                if *entry_category != category {
+                    continue;
+                }
+                let component_usage = usage_counter.load(Ordering::Relaxed);
+                evictable_usage = evictable_usage.saturating_add(component_usage);
+                candidates.push((component_usage, evictor.clone()));
+            }
+
+            if evictable_usage == 0 {
+                continue;
+            }
+
+            // Non-evictable usage is approximated as the delta between total
+            // usage and evictable usage (for this simplified skeleton).
+            // In a full implementation, all memory participants would register.
+            let non_evictable = category_usage.saturating_sub(evictable_usage);
+            let effective_target = category_target.max(non_evictable);
+            let evictable_target = effective_target.saturating_sub(non_evictable);
+
+            for (component_usage, evictor) in candidates {
+                let component_target = if category_usage == 0 {
+                    0
+                } else {
+                    // Proportional share of the evictable target.
+                    let numer = (component_usage as u128) * (evictable_target as u128);
+                    let denom = evictable_usage.max(1) as u128;
+                    (numer / denom) as u64
+                };
+
+                let request = EvictionRequest {
+                    pressure,
+                    target_bytes: component_target,
+                };
+                let _ = evictor.evict(request);
+            }
+        }
+    }
+
+    fn compensated_target(
+        &self,
+        usage: MemoryBreakdown,
+        target: MemoryBreakdown,
+        entries: &[EvictorEntry],
+    ) -> MemoryBreakdown {
         // --- Cross-category compensation ---
         //
         // Eviction targets start out as per-category budgets (`target`). That
@@ -328,9 +394,9 @@ impl MemoryManager {
         // the remaining evictable memory fits within it. This allows
         // non-evictable input memory (like file texts) to drive eviction of
         // evictable caches in other categories.
-        let compensated_target = {
+        {
             let mut evictable_by_category = MemoryBreakdown::default();
-            for (_id, category, usage_counter, _evictor) in &entries {
+            for (_id, category, usage_counter, _evictor) in entries {
                 let bytes = usage_counter.load(Ordering::Relaxed);
                 let prev = evictable_by_category.get(*category);
                 evictable_by_category.set(*category, prev.saturating_add(bytes));
@@ -377,55 +443,6 @@ impl MemoryManager {
             }
 
             compensated
-        };
-
-        for category in MemoryBreakdown::categories() {
-            let category_usage = usage.get(category);
-            let category_target = compensated_target.get(category);
-
-            if category_usage <= category_target {
-                continue;
-            }
-
-            // Sum evictable usage for this category.
-            let mut evictable_usage = 0u64;
-            let mut candidates = Vec::new();
-            for (_id, entry_category, usage_counter, evictor) in &entries {
-                if *entry_category != category {
-                    continue;
-                }
-                let component_usage = usage_counter.load(Ordering::Relaxed);
-                evictable_usage = evictable_usage.saturating_add(component_usage);
-                candidates.push((component_usage, evictor.clone()));
-            }
-
-            if evictable_usage == 0 {
-                continue;
-            }
-
-            // Non-evictable usage is approximated as the delta between total
-            // usage and evictable usage (for this simplified skeleton).
-            // In a full implementation, all memory participants would register.
-            let non_evictable = category_usage.saturating_sub(evictable_usage);
-            let effective_target = category_target.max(non_evictable);
-            let evictable_target = effective_target.saturating_sub(non_evictable);
-
-            for (component_usage, evictor) in candidates {
-                let component_target = if category_usage == 0 {
-                    0
-                } else {
-                    // Proportional share of the evictable target.
-                    let numer = (component_usage as u128) * (evictable_target as u128);
-                    let denom = evictable_usage.max(1) as u128;
-                    (numer / denom) as u64
-                };
-
-                let request = EvictionRequest {
-                    pressure,
-                    target_bytes: component_target,
-                };
-                let _ = evictor.evict(request);
-            }
         }
     }
 
