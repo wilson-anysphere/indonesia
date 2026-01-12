@@ -6423,49 +6423,6 @@ public class Bar {}"#;
     }
 
     #[tokio::test(flavor = "current_thread")]
-    #[ignore = "relies on OS file watcher timings"]
-    async fn notify_watcher_propagates_disk_edits_into_workspace() {
-        let dir = tempfile::tempdir().unwrap();
-        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
-        let root = dir.path().canonicalize().unwrap();
-        fs::create_dir_all(root.join("src")).unwrap();
-        let file = root.join("src/Main.java");
-        fs::write(&file, "class Main {}".as_bytes()).unwrap();
-
-        let workspace = crate::Workspace::open(&root).unwrap();
-        let rx = workspace.subscribe();
-        let engine = workspace.engine.clone();
-        let _watcher = engine.start_watching().unwrap();
-
-        let vfs_path = VfsPath::local(file.clone());
-        let updated = "class Main { int x; }";
-        fs::write(&file, updated.as_bytes()).unwrap();
-
-        let vfs_path_for_wait = vfs_path.clone();
-        timeout(Duration::from_secs(5), async move {
-            loop {
-                let event = rx
-                    .recv()
-                    .await
-                    .expect("workspace event channel unexpectedly closed");
-                match event {
-                    WorkspaceEvent::FileChanged { file } if file == vfs_path_for_wait => break,
-                    WorkspaceEvent::Status(WorkspaceStatus::IndexingError(err)) => {
-                        panic!("workspace watcher error: {err}");
-                    }
-                    _ => {}
-                }
-            }
-        })
-        .await
-        .expect("timed out waiting for file watcher to update workspace");
-
-        let file_id = engine.vfs.get_id(&vfs_path).expect("file id allocated");
-        engine.query_db.with_snapshot(|snap| {
-            assert_eq!(snap.file_content(file_id).as_str(), updated);
-        });
-    }
-    #[tokio::test(flavor = "current_thread")]
     async fn manual_watcher_propagates_disk_edits_into_workspace() {
         let dir = tempfile::tempdir().unwrap();
         let project_root = dir.path().join("project");
