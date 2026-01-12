@@ -176,12 +176,12 @@ pub(crate) fn method_stub(name: &str, indent: &str, is_static: bool) -> String {
     format!("\n\n{indent}private {static_kw}Object {name}(Object... args) {{ return null; }}\n")
 }
 
-fn field_stub(name: &str, indent: &str, is_static: bool) -> String {
+pub(crate) fn field_stub(name: &str, indent: &str, is_static: bool) -> String {
     let static_kw = if is_static { "static " } else { "" };
     format!("\n\n{indent}private {static_kw}Object {name};\n")
 }
 
-fn unresolved_member_name(message: &str, source: &str, span: Span) -> Option<String> {
+pub(crate) fn unresolved_member_name(message: &str, source: &str, span: Span) -> Option<String> {
     extract_backticked_ident(message).or_else(|| {
         let snippet = source.get(span.start..span.end)?;
         extract_identifier_from_snippet(snippet)
@@ -235,7 +235,7 @@ fn is_ident_continue(c: char) -> bool {
     is_ident_start(c) || c.is_ascii_digit()
 }
 
-fn looks_like_static_receiver(snippet: &str) -> bool {
+pub(crate) fn looks_like_static_receiver(snippet: &str) -> bool {
     let trimmed = snippet.trim();
     let Some((receiver, _)) = trimmed.split_once('.') else {
         return false;
@@ -248,7 +248,7 @@ fn looks_like_static_receiver(snippet: &str) -> bool {
         .is_some_and(|c| c.is_ascii_uppercase())
 }
 
-fn looks_like_enclosing_member_access(snippet: &str) -> bool {
+pub(crate) fn looks_like_enclosing_member_access(snippet: &str) -> bool {
     let trimmed = snippet.trim_start();
     let Some(dot) = trimmed.find('.') else {
         // Unqualified access like `foo()`/`bar` is assumed to refer to the enclosing type.
@@ -271,7 +271,7 @@ fn contains_word(haystack: &str, needle: &str) -> bool {
     false
 }
 
-fn is_within_static_block(source: &str, offset: usize) -> bool {
+pub(crate) fn is_within_static_block(source: &str, offset: usize) -> bool {
     let bytes = source.as_bytes();
     let mut depth: i32 = 0;
     let mut i = offset.min(bytes.len());

@@ -7,6 +7,7 @@ use nova_refactor::extract_method::{
     ExtractMethod, ExtractMethodIssue, InsertionStrategy, Visibility,
 };
 use nova_refactor::TextRange;
+use nova_types::Span;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -88,6 +89,8 @@ pub fn extract_method_code_action(source: &str, uri: Uri, lsp_range: Range) -> O
 ///
 /// Today this provides quick-fixes:
 /// - `unresolved-type` → `Create class '<Name>'`
+/// - `unresolved-method` / `UNRESOLVED_REFERENCE` → `Create method '<name>'`
+/// - `unresolved-field` → `Create field '<name>'`
 /// - `FLOW_UNREACHABLE` → `Remove unreachable code`
 /// - `FLOW_UNASSIGNED` → `Initialize '<name>'`
 /// - `type-mismatch` → `Cast to <expected>` / `Convert to String`
@@ -108,6 +111,7 @@ pub fn diagnostic_quick_fixes(
         .flat_map(|diag| {
             create_class_quick_fix(source, &uri, &selection, diag)
                 .into_iter()
+                .chain(create_symbol_quick_fixes(source, &uri, &selection, diag).into_iter())
                 .chain(
                     remove_unreachable_code_quick_fix(source, &uri, &selection, diag).into_iter(),
                 )
@@ -122,6 +126,108 @@ pub fn diagnostic_quick_fixes(
                 .chain(type_mismatch_quick_fixes(source, &uri, &selection, diag).into_iter())
         })
         .collect()
+}
+
+fn create_symbol_quick_fixes(
+    source: &str,
+    uri: &Uri,
+    selection: &Range,
+    diagnostic: &Diagnostic,
+) -> Vec<CodeAction> {
+    let Some(code) = diagnostic_code(diagnostic) else {
+        return Vec::new();
+    };
+
+    let kind = match code {
+        "unresolved-method" | "UNRESOLVED_REFERENCE" => UnresolvedMemberKind::Method,
+        "unresolved-field" => UnresolvedMemberKind::Field,
+        _ => return Vec::new(),
+    };
+
+    if !ranges_intersect(selection, &diagnostic.range) {
+        return Vec::new();
+    }
+
+    let span = match lsp_range_to_span(source, &diagnostic.range) {
+        Some(span) => span,
+        None => return Vec::new(),
+    };
+
+    let Some(name) =
+        crate::quick_fixes::unresolved_member_name(&diagnostic.message, source, span)
+    else {
+        return Vec::new();
+    };
+
+    let snippet = source.get(span.start..span.end).unwrap_or_default();
+    if !crate::quick_fixes::looks_like_enclosing_member_access(snippet) {
+        return Vec::new();
+    }
+
+    let is_static = match kind {
+        UnresolvedMemberKind::Method => {
+            diagnostic.message.contains("static context")
+                || crate::quick_fixes::looks_like_static_receiver(snippet)
+                || crate::quick_fixes::is_within_static_block(source, span.start)
+        }
+        UnresolvedMemberKind::Field => crate::quick_fixes::looks_like_static_receiver(snippet),
+    };
+
+    let (insert_offset, indent) = crate::quick_fixes::insertion_point(source);
+    let insert_pos = crate::text::offset_to_position(source, insert_offset);
+    let insert_range = Range {
+        start: insert_pos,
+        end: insert_pos,
+    };
+
+    let (title, new_text) = match kind {
+        UnresolvedMemberKind::Method => (
+            format!("Create method '{name}'"),
+            crate::quick_fixes::method_stub(&name, &indent, is_static),
+        ),
+        UnresolvedMemberKind::Field => (
+            format!("Create field '{name}'"),
+            crate::quick_fixes::field_stub(&name, &indent, is_static),
+        ),
+    };
+
+    let mut changes = HashMap::new();
+    changes.insert(
+        uri.clone(),
+        vec![TextEdit {
+            range: insert_range,
+            new_text,
+        }],
+    );
+
+    vec![CodeAction {
+        title,
+        kind: Some(CodeActionKind::QUICKFIX),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        }),
+        diagnostics: Some(vec![diagnostic.clone()]),
+        ..CodeAction::default()
+    }]
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnresolvedMemberKind {
+    Method,
+    Field,
+}
+
+fn lsp_range_to_span(source: &str, range: &Range) -> Option<Span> {
+    let (start_pos, end_pos) = normalize_range(range);
+    let start_offset = crate::text::position_to_offset(source, start_pos)?;
+    let end_offset = crate::text::position_to_offset(source, end_pos)?;
+    let (start_offset, end_offset) = (
+        start_offset.min(end_offset),
+        start_offset.max(end_offset),
+    );
+    Some(Span::new(start_offset, end_offset))
 }
 
 fn create_class_quick_fix(
