@@ -93,6 +93,15 @@ test('buildNovaLspLaunchConfig removes NOVA_DISABLE_AI and NOVA_DISABLE_AI_COMPL
   assert.equal(baseEnv.NOVA_DISABLE_AI_COMPLETIONS, '1');
 });
 
+test('buildNovaLspLaunchConfig sets NOVA_AI_COMPLETIONS_MAX_ITEMS when aiCompletionsMaxItems is provided', () => {
+  const baseEnv: NodeJS.ProcessEnv = { OTHER: 'x' };
+  const config = buildNovaLspLaunchConfig({ aiEnabled: true, aiCompletionsMaxItems: 7, baseEnv });
+
+  assert.equal(config.env.NOVA_AI_COMPLETIONS_MAX_ITEMS, '7');
+  assert.equal(config.env.OTHER, 'x');
+  assert.equal(baseEnv.NOVA_AI_COMPLETIONS_MAX_ITEMS, undefined);
+});
+
 test('buildNovaLspLaunchConfig reuses baseEnv when no env changes are required', () => {
   const baseEnv: NodeJS.ProcessEnv = { FOO: 'bar' };
   const config = buildNovaLspLaunchConfig({ aiEnabled: true, aiCompletionsEnabled: true, baseEnv });

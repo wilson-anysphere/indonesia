@@ -44,9 +44,10 @@ export function getNovaConfigChangeEffects(event: ConfigurationChangeEventLike):
       event.affectsConfiguration('nova.lsp.extraArgs') ||
       event.affectsConfiguration('nova.server.args') ||
       event.affectsConfiguration('nova.ai.enabled') ||
-      // Server-side AI completions enablement is controlled via env/CLI at nova-lsp startup, so
-      // changing this setting requires a server restart to take effect.
-      event.affectsConfiguration('nova.aiCompletions.enabled'));
+      // Server-side AI completions settings are controlled via env/CLI at nova-lsp startup, so
+      // changing these settings requires a server restart to take effect.
+      event.affectsConfiguration('nova.aiCompletions.enabled') ||
+      event.affectsConfiguration('nova.aiCompletions.maxItems'));
 
   const shouldClearAiCompletionCache =
     event.affectsConfiguration('nova.ai.enabled') ||

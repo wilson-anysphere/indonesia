@@ -34,6 +34,12 @@ export interface NovaLspLaunchConfigOptions {
    */
   aiCompletionsEnabled?: boolean;
   /**
+   * Maximum number of AI completion items to request from the provider.
+   *
+   * When set, the server is started with `NOVA_AI_COMPLETIONS_MAX_ITEMS=<n>`.
+   */
+  aiCompletionsMaxItems?: number;
+  /**
    * Base environment for the child process. Defaults to `process.env`.
    */
   baseEnv?: NodeJS.ProcessEnv;
@@ -73,11 +79,16 @@ export function buildNovaLspLaunchConfig(options: NovaLspLaunchConfigOptions = {
 
   const aiEnabled = options.aiEnabled ?? true;
   const aiCompletionsEnabled = options.aiCompletionsEnabled ?? true;
+  const aiCompletionsMaxItems = options.aiCompletionsMaxItems;
   const baseEnv = options.baseEnv ?? process.env;
 
   const disableAi = !aiEnabled;
   // If AI is disabled, multi-token completions are also disabled.
   const disableAiCompletions = disableAi || !aiCompletionsEnabled;
+  const aiCompletionsMaxItemsEnv =
+    !disableAi && typeof aiCompletionsMaxItems === 'number' && Number.isFinite(aiCompletionsMaxItems)
+      ? String(Math.max(0, Math.floor(aiCompletionsMaxItems)))
+      : undefined;
 
   const baseHasNovaAiVars = disableAi && Object.keys(baseEnv).some((key) => key.startsWith('NOVA_AI_'));
 
@@ -86,9 +97,17 @@ export function buildNovaLspLaunchConfig(options: NovaLspLaunchConfigOptions = {
   const needsDisableAiCompletionsMutation = disableAiCompletions
     ? baseEnv.NOVA_DISABLE_AI_COMPLETIONS !== '1'
     : typeof baseEnv.NOVA_DISABLE_AI_COMPLETIONS !== 'undefined';
+  const needsAiCompletionsMaxItemsMutation =
+    typeof aiCompletionsMaxItemsEnv === 'string'
+      ? baseEnv.NOVA_AI_COMPLETIONS_MAX_ITEMS !== aiCompletionsMaxItemsEnv
+      : false;
 
   const needsEnvMutation =
-    needsConfigPathMutation || needsDisableAiMutation || needsDisableAiCompletionsMutation || baseHasNovaAiVars;
+    needsConfigPathMutation ||
+    needsDisableAiMutation ||
+    needsDisableAiCompletionsMutation ||
+    needsAiCompletionsMaxItemsMutation ||
+    baseHasNovaAiVars;
 
   let env: NodeJS.ProcessEnv = needsEnvMutation ? { ...baseEnv } : baseEnv;
 
@@ -113,6 +132,10 @@ export function buildNovaLspLaunchConfig(options: NovaLspLaunchConfigOptions = {
       env.NOVA_DISABLE_AI_COMPLETIONS = '1';
     } else {
       delete env.NOVA_DISABLE_AI_COMPLETIONS;
+    }
+
+    if (typeof aiCompletionsMaxItemsEnv === 'string') {
+      env.NOVA_AI_COMPLETIONS_MAX_ITEMS = aiCompletionsMaxItemsEnv;
     }
 
     // If AI is disabled in VS Code settings, ensure we don't leak any NOVA_AI_*

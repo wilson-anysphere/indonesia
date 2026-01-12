@@ -156,6 +156,7 @@ function readLspLaunchConfig(): { args: string[]; env: NodeJS.ProcessEnv } {
 
   const aiEnabled = config.get<boolean>('ai.enabled', true);
   const aiCompletionsEnabled = config.get<boolean>('aiCompletions.enabled', true);
+  const aiCompletionsMaxItems = config.get<number>('aiCompletions.maxItems', 5);
 
   const launch = buildNovaLspLaunchConfig({
     configPath,
@@ -163,6 +164,7 @@ function readLspLaunchConfig(): { args: string[]; env: NodeJS.ProcessEnv } {
     workspaceRoot,
     aiEnabled,
     aiCompletionsEnabled,
+    aiCompletionsMaxItems,
     baseEnv: process.env,
   });
 

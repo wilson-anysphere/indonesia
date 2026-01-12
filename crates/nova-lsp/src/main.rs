@@ -1305,8 +1305,32 @@ impl ServerState {
 
         #[cfg(feature = "ai")]
         let completion_service = {
+            let ai_max_items_override = match std::env::var("NOVA_AI_COMPLETIONS_MAX_ITEMS") {
+                Ok(value) => {
+                    let trimmed = value.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        match trimmed.parse::<usize>() {
+                            Ok(max_items) => Some(max_items.min(32)),
+                            Err(_) => {
+                                eprintln!(
+                                    "invalid NOVA_AI_COMPLETIONS_MAX_ITEMS={value:?}; expected a non-negative integer"
+                                );
+                                None
+                            }
+                        }
+                    }
+                }
+                Err(_) => None,
+            };
             let multi_token_enabled =
                 ai_config.enabled && ai_config.features.multi_token_completion;
+            // `nova.aiCompletions.maxItems` is surfaced to the server via `NOVA_AI_COMPLETIONS_MAX_ITEMS`.
+            // Treat `0` as a hard disable so the server doesn't spawn background AI completion tasks
+            // or mark results as `is_incomplete`.
+            let multi_token_enabled =
+                multi_token_enabled && ai_max_items_override.unwrap_or(1) > 0;
             let ai_provider = if multi_token_enabled {
                 match AiClient::from_config(&ai_config) {
                     Ok(client) => {
@@ -1326,6 +1350,9 @@ impl ServerState {
             };
             let mut completion_config = CompletionConfig::default();
             completion_config.ai_enabled = multi_token_enabled;
+            if let Some(max_items) = ai_max_items_override {
+                completion_config.ai_max_items = max_items;
+            }
             completion_config.ai_timeout_ms = ai_config.timeouts.multi_token_completion_ms.max(1);
             let engine = CompletionEngine::new(
                 completion_config,

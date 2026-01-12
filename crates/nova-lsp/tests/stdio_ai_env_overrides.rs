@@ -10,7 +10,7 @@ use tempfile::TempDir;
 
 mod support;
 
-fn run_completion_request_with_env(env_key: &str) {
+fn run_completion_request_with_env(env_key: &str, env_value: &str) {
     let _lock = support::stdio_server_lock();
     let completion_payload = r#"
     {
@@ -71,7 +71,7 @@ model = "default"
         .arg("--stdio")
         .arg("--config")
         .arg(&config_path)
-        .env(env_key, "1")
+        .env(env_key, env_value)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -126,7 +126,7 @@ model = "default"
     let list: CompletionList = serde_json::from_value(completion_result).expect("decode completion list");
     assert_eq!(
         list.is_incomplete, false,
-        "expected no AI completions when {env_key} is set"
+        "expected no AI completions when {env_key}={env_value}"
     );
 
     let context_id = list
@@ -176,11 +176,15 @@ model = "default"
 
 #[test]
 fn stdio_server_honors_nova_disable_ai_env_var() {
-    run_completion_request_with_env("NOVA_DISABLE_AI");
+    run_completion_request_with_env("NOVA_DISABLE_AI", "1");
 }
 
 #[test]
 fn stdio_server_honors_nova_disable_ai_completions_env_var() {
-    run_completion_request_with_env("NOVA_DISABLE_AI_COMPLETIONS");
+    run_completion_request_with_env("NOVA_DISABLE_AI_COMPLETIONS", "1");
 }
 
+#[test]
+fn stdio_server_honors_nova_ai_completions_max_items_env_var() {
+    run_completion_request_with_env("NOVA_AI_COMPLETIONS_MAX_ITEMS", "0");
+}

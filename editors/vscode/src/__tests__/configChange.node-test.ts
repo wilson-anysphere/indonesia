@@ -15,9 +15,9 @@ test('prompts restart when nova.aiCompletions.enabled changes', () => {
   assert.equal(effects.shouldPromptRestartLanguageServer, true);
 });
 
-test('does not prompt restart when nova.aiCompletions.maxItems changes (client-only)', () => {
+test('prompts restart when nova.aiCompletions.maxItems changes', () => {
   const effects = getNovaConfigChangeEffects(eventFor(['nova.aiCompletions.maxItems']));
-  assert.equal(effects.shouldPromptRestartLanguageServer, false);
+  assert.equal(effects.shouldPromptRestartLanguageServer, true);
   assert.equal(effects.shouldClearAiCompletionCache, true);
 });
 
@@ -34,4 +34,3 @@ test('does not prompt restart when nova.server.path changes (auto-restart path)'
   assert.equal(effects.shouldPromptRestartLanguageServer, false);
   assert.equal(effects.shouldClearAiCompletionCache, true);
 });
-
