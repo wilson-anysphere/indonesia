@@ -544,8 +544,12 @@ pub(crate) async fn stream_sample_from_list_object(
     let _pin = TemporaryObjectPin::new(jdwp, list_object_id).await;
     let mut inspector = inspect::Inspector::new(jdwp.clone());
 
-    let preview = inspector.preview_object(list_object_id).await?;
-    let collection_type = Some(preview.runtime_type.clone());
+    // Prefer the richer preview runtime type, but fall back to the simpler runtime-type lookup
+    // (best-effort) so we can still surface samples even if the preview helpers fail.
+    let collection_type = match inspector.preview_object(list_object_id).await {
+        Ok(preview) => Some(preview.runtime_type),
+        Err(_) => inspector.runtime_type_name(list_object_id).await.ok(),
+    };
 
     let children = inspector.object_children(list_object_id).await?;
 

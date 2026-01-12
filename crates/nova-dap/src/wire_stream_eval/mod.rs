@@ -13,7 +13,7 @@ pub mod javac_config;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use nova_jdwp::wire::inspect::{self, Inspector};
+use nova_jdwp::wire::inspect::Inspector;
 use nova_jdwp::wire::types::{
     FrameId, Location, MethodId, ReferenceTypeId, INVOKE_SINGLE_THREADED,
 };
@@ -23,8 +23,6 @@ use nova_stream_debug::StreamSample;
 use thiserror::Error;
 
 use crate::javac::{apply_stream_eval_defaults, compile_java_for_hot_swap, HotSwapJavacConfig};
-use crate::wire_stream_debug::TemporaryObjectPin;
-
 static STREAM_EVAL_CLASS_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Error)]
@@ -284,108 +282,7 @@ pub async fn list_to_stream_sample(
         other => return Err(StreamEvalError::ExpectedObject(other.clone())),
     };
 
-    if object_id == 0 {
-        return Ok(StreamSample {
-            elements: Vec::new(),
-            truncated: false,
-            element_type: None,
-            collection_type: None,
-        });
-    }
-
-    let _pin = TemporaryObjectPin::new(jdwp, object_id).await;
-
-    let mut inspector = inspect::Inspector::new(jdwp.clone());
-    let collection_type = inspector.runtime_type_name(object_id).await.ok();
-
-    let children = inspector.object_children(object_id).await?;
-    let mut total_size: Option<usize> = None;
-    let mut elements = Vec::new();
-    let mut element_type: Option<String> = None;
-
-    for child in children {
-        match child.name.as_str() {
-            "size" => {
-                if let JdwpValue::Int(size) = child.value {
-                    total_size = Some(size.max(0) as usize);
-                }
-            }
-            "length" => {
-                if let JdwpValue::Int(len) = child.value {
-                    total_size = Some(len.max(0) as usize);
-                }
-            }
-            _ => {
-                if !child.name.starts_with('[') {
-                    continue;
-                }
-
-                let (display, ty) = format_sample_value_wire(jdwp, &child.value).await;
-                if element_type.is_none() {
-                    element_type = ty;
-                }
-                elements.push(display);
-            }
-        }
-    }
-
-    let truncated = total_size
-        .map(|size| elements.len() < size)
-        .unwrap_or(false);
-
-    Ok(StreamSample {
-        elements,
-        truncated,
-        element_type,
-        collection_type,
-    })
-}
-
-#[async_recursion::async_recursion]
-async fn format_sample_value_wire(
-    jdwp: &JdwpClient,
-    value: &JdwpValue,
-) -> (String, Option<String>) {
-    match value {
-        JdwpValue::Void => ("void".to_string(), Some("void".to_string())),
-        JdwpValue::Boolean(v) => (v.to_string(), Some("boolean".to_string())),
-        JdwpValue::Byte(v) => (v.to_string(), Some("byte".to_string())),
-        JdwpValue::Char(v) => (
-            char::from_u32(u32::from(*v))
-                .unwrap_or('\u{FFFD}')
-                .to_string(),
-            Some("char".to_string()),
-        ),
-        JdwpValue::Short(v) => (v.to_string(), Some("short".to_string())),
-        JdwpValue::Int(v) => (v.to_string(), Some("int".to_string())),
-        JdwpValue::Long(v) => (v.to_string(), Some("long".to_string())),
-        JdwpValue::Float(v) => (v.to_string(), Some("float".to_string())),
-        JdwpValue::Double(v) => (v.to_string(), Some("double".to_string())),
-        JdwpValue::Object { id: 0, .. } => ("null".to_string(), None),
-        JdwpValue::Object { id, .. } => match inspect::preview_object(jdwp, *id).await {
-            Ok(preview) => match preview.kind {
-                inspect::ObjectKindPreview::String { value } => (value, Some(preview.runtime_type)),
-                inspect::ObjectKindPreview::PrimitiveWrapper { value } => {
-                    format_sample_value_wire(jdwp, value.as_ref()).await
-                }
-                inspect::ObjectKindPreview::Optional { value } => {
-                    let display = match value {
-                        None => "Optional.empty".to_string(),
-                        Some(v) => {
-                            let (inner, _ty) = format_sample_value_wire(jdwp, v.as_ref()).await;
-                            format!("Optional[{inner}]")
-                        }
-                    };
-                    (display, Some(preview.runtime_type))
-                }
-                _ => (
-                    format!("{}@0x{id:x}", preview.runtime_type),
-                    Some(preview.runtime_type),
-                ),
-            },
-            Err(_) => (format!("object@0x{id:x}"), None),
-        },
-    }
+    Ok(crate::wire_stream_debug::stream_sample_from_list_object(jdwp, object_id).await?)
 }
 
 /// Define a class in the target VM, resolve a `stage0` method, and invoke it.
@@ -429,4 +326,43 @@ pub async fn define_class_and_invoke_stage0(
     }
 
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use nova_jdwp::wire::mock::MockJdwpServer;
+
+    #[tokio::test]
+    async fn list_to_stream_sample_filters_size_and_unwraps_boxed_primitives() {
+        let server = MockJdwpServer::spawn().await.unwrap();
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+        let value = JdwpValue::Object {
+            tag: b'L',
+            id: server.sample_arraylist_id(),
+        };
+        let sample = list_to_stream_sample(&client, &value).await.unwrap();
+
+        assert_eq!(
+            sample.collection_type.as_deref(),
+            Some("java.util.ArrayList"),
+            "expected collection_type from preview_object: {sample:?}"
+        );
+        assert_eq!(
+            sample.elements,
+            vec!["10", "20", "30"],
+            "expected only indexed elements (no `size` metadata) and boxed primitives to be unwrapped: {sample:?}"
+        );
+        assert_eq!(
+            sample.element_type.as_deref(),
+            Some("int"),
+            "expected primitive wrapper to infer element type: {sample:?}"
+        );
+        assert!(
+            !sample.truncated,
+            "expected sample list size to match returned elements: {sample:?}"
+        );
+    }
 }
