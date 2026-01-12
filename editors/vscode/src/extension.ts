@@ -13,6 +13,7 @@ import { registerNovaTestDebugRunProfile } from './testDebug';
 import { toDidRenameFilesParams } from './fileOperations';
 import { ServerManager, type NovaServerSettings } from './serverManager';
 import { buildNovaLspLaunchConfig, resolveNovaConfigPath } from './lspArgs';
+import { routeWorkspaceFolderUri } from './workspaceRouting';
 import {
   deriveReleaseUrlFromBaseUrl,
   findOnPath,
@@ -1921,8 +1922,21 @@ export async function activate(context: vscode.ExtensionContext) {
         return;
       }
 
+      const activeDocumentUri = vscode.window.activeTextEditor?.document.uri.toString();
+      const routedWorkspaceKey = routeWorkspaceFolderUri({
+        workspaceFolders: workspaces.map((workspace) => ({
+          name: workspace.name,
+          fsPath: workspace.uri.fsPath,
+          uri: workspace.uri.toString(),
+        })),
+        activeDocumentUri,
+        method: 'nova/test/run',
+        params: undefined,
+      });
+
       const workspace =
-        workspaces.length === 1 ? workspaces[0] : await pickWorkspaceFolder(workspaces, 'Select workspace folder');
+        (routedWorkspaceKey ? workspaces.find((w) => w.uri.toString() === routedWorkspaceKey) : undefined) ??
+        (workspaces.length === 1 ? workspaces[0] : await pickWorkspaceFolder(workspaces, 'Select workspace folder'));
       if (!workspace) {
         return;
       }
