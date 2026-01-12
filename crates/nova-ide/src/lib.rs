@@ -26,6 +26,7 @@ pub mod code_intelligence;
 mod completion;
 mod file_navigation;
 mod framework_extensions;
+mod imports;
 mod jpa_intel;
 mod micronaut_intel;
 mod project;

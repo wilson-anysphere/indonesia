@@ -2,8 +2,13 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use lsp_types::{CodeAction, CodeActionKind, CodeActionOrCommand, TextEdit, WorkspaceEdit};
+use nova_core::{Name, TypeIndex, TypeName};
 use nova_db::{Database, FileId, NovaTypeck};
+use nova_jdk::JdkIndex;
 use nova_types::{Diagnostic, Span};
+
+use crate::imports::java_import_text_edit;
+use crate::text::span_to_lsp_range;
 
 /// Diagnostic-driven quick fixes.
 ///
@@ -321,4 +326,159 @@ pub(crate) fn is_within_static_block(source: &str, offset: usize) -> bool {
         }
     }
     false
+}
+
+// -----------------------------------------------------------------------------
+// Unresolved static member quick fixes (JDK)
+// -----------------------------------------------------------------------------
+
+const STATIC_MEMBER_OWNERS: [&str; 4] = [
+    "java.lang.Math",
+    "java.util.Objects",
+    "java.util.Collections",
+    "java.util.stream.Collectors",
+];
+
+pub(crate) fn unresolved_static_member_quick_fixes(
+    source: &str,
+    uri: &lsp_types::Uri,
+    selection: Span,
+    diagnostics: &[Diagnostic],
+) -> Vec<CodeAction> {
+    let mut out = Vec::new();
+    let mut seen: HashSet<(String, Option<(u32, u32, u32, u32)>, String)> = HashSet::new();
+
+    let jdk = crate::code_intelligence::jdk_index();
+
+    let mut candidates: Vec<Span> = diagnostics
+        .iter()
+        .filter(|diag| {
+            matches!(
+                diag.code.as_ref(),
+                "unresolved-method" | "unresolved-name" | "UNRESOLVED_REFERENCE"
+            )
+        })
+        .filter_map(|diag| diag.span)
+        .filter(|span| spans_intersect(*span, selection))
+        .collect();
+
+    // Best-effort fallback: some file regions (e.g. field initializers) are not yet part of the
+    // unresolved-reference diagnostics. In those cases, treat the selected identifier as
+    // unresolved if it isn't declared locally.
+    if candidates.is_empty() && selection.start < selection.end && selection.end <= source.len() {
+        if let Some(ident) = source.get(selection.start..selection.end) {
+            if is_java_identifier(ident)
+                && !is_qualified(source, selection.start)
+                && !crate::code_intelligence::is_declared_name(source, ident)
+            {
+                candidates.push(selection);
+            }
+        }
+    }
+
+    candidates.sort_by_key(|span| (span.start, span.end));
+    candidates.dedup();
+
+    for span in candidates {
+        if is_qualified(source, span.start) {
+            continue;
+        }
+        let ident = match source.get(span.start..span.end) {
+            Some(s) => s,
+            None => continue,
+        };
+
+        for owner in STATIC_MEMBER_OWNERS {
+            if !static_member_exists(&jdk, owner, ident) {
+                continue;
+            }
+
+            let simple_owner = owner.rsplit('.').next().unwrap_or(owner);
+
+            // 1) Qualify fix.
+            let qualify_title = format!("Qualify with {simple_owner}");
+            let qualify_edit = TextEdit {
+                range: span_to_lsp_range(source, span),
+                new_text: format!("{simple_owner}.{ident}"),
+            };
+            push_code_action(&mut out, &mut seen, uri, qualify_title, qualify_edit);
+
+            // 2) Static import fix.
+            let import_path = format!("static {owner}.{ident}");
+            if let Some(import_edit) = java_import_text_edit(source, &import_path) {
+                let import_title = format!("Add static import {owner}.{ident}");
+                push_code_action(&mut out, &mut seen, uri, import_title, import_edit);
+            }
+        }
+    }
+
+    out
+}
+
+fn is_qualified(text: &str, ident_start: usize) -> bool {
+    let bytes = text.as_bytes();
+    let mut i = ident_start;
+    while i > 0 {
+        i -= 1;
+        let b = bytes[i];
+        if (b as char).is_ascii_whitespace() {
+            continue;
+        }
+        if b == b'.' {
+            return true;
+        }
+        if b == b':' {
+            // Handle `::` (best-effort, ignoring trivia between colons).
+            let mut j = i;
+            while j > 0 {
+                j -= 1;
+                let prev = bytes[j];
+                if (prev as char).is_ascii_whitespace() {
+                    continue;
+                }
+                return prev == b':';
+            }
+        }
+        break;
+    }
+    false
+}
+
+fn static_member_exists(jdk: &JdkIndex, owner: &str, name: &str) -> bool {
+    let owner = TypeName::new(owner);
+    let name = Name::from(name);
+    jdk.resolve_static_member(&owner, &name).is_some()
+}
+
+fn push_code_action(
+    out: &mut Vec<CodeAction>,
+    seen: &mut HashSet<(String, Option<(u32, u32, u32, u32)>, String)>,
+    uri: &lsp_types::Uri,
+    title: String,
+    edit: TextEdit,
+) {
+    let key_range = (
+        edit.range.start.line,
+        edit.range.start.character,
+        edit.range.end.line,
+        edit.range.end.character,
+    );
+    let key = (title.clone(), Some(key_range), edit.new_text.clone());
+    if !seen.insert(key) {
+        return;
+    }
+
+    let mut changes: HashMap<lsp_types::Uri, Vec<TextEdit>> = HashMap::new();
+    changes.insert(uri.clone(), vec![edit]);
+
+    out.push(CodeAction {
+        title,
+        kind: Some(CodeActionKind::QUICKFIX),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        }),
+        ..CodeAction::default()
+    });
 }

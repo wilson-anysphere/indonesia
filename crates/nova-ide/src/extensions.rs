@@ -1102,6 +1102,17 @@ where
                 ),
             );
 
+            actions.extend(
+                crate::quick_fixes::unresolved_static_member_quick_fixes(
+                    source,
+                    &uri,
+                    span,
+                    &diagnostics,
+                )
+                .into_iter()
+                .map(lsp_types::CodeActionOrCommand::CodeAction),
+            );
+
             actions.extend(crate::refactor::extract_member_code_actions(
                 &uri, source, selection,
             ));

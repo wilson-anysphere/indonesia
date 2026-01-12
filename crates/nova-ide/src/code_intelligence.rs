@@ -15014,7 +15014,6 @@ pub(crate) fn jdk_index() -> Arc<JdkIndex> {
         .cloned()
         .unwrap_or_else(|| EMPTY_JDK_INDEX.clone())
 }
-
 fn semantic_call_signatures(
     types: &mut TypeStore,
     analysis: &Analysis,
@@ -16238,6 +16237,14 @@ pub(crate) fn analyze_for_completion_context(text: &str) -> CompletionContextAna
             .collect(),
         methods: analysis.methods.into_iter().map(|m| m.name).collect(),
     }
+}
+
+pub(crate) fn is_declared_name(text: &str, name: &str) -> bool {
+    let analysis = analyze(text);
+    analysis.classes.iter().any(|c| c.name == name)
+        || analysis.methods.iter().any(|m| m.name == name)
+        || analysis.fields.iter().any(|f| f.name == name)
+        || analysis.vars.iter().any(|v| v.name == name)
 }
 
 fn analyze(text: &str) -> Analysis {

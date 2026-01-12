@@ -460,6 +460,40 @@ fn type_mismatch_offers_cast_quick_fix() {
 }
 
 #[test]
+fn unresolved_method_offers_jdk_static_member_quick_fixes() {
+    let source = "class A { void m() { int x = max(1, 2); } }";
+    let (ide, file) = ide_for_source("/static_member_method.java", source);
+
+    let max_start = source.find("max").expect("expected max in fixture");
+    let max_span = Span::new(max_start, max_start + "max".len());
+
+    let actions = ide.code_actions_lsp(CancellationToken::new(), file, Some(max_span));
+    let titles = action_titles(&actions);
+    assert!(
+        titles.iter().any(|t| *t == "Qualify with Math"),
+        "expected qualify quick fix; got {titles:?}"
+    );
+    assert!(
+        titles
+            .iter()
+            .any(|t| *t == "Add static import java.lang.Math.max"),
+        "expected static import quick fix; got {titles:?}"
+    );
+
+    let qualify =
+        find_code_action(&actions, "Qualify with Math").expect("missing qualify quick fix");
+    assert_eq!(first_text_edit(qualify).new_text, "Math.max");
+
+    let import = find_code_action(&actions, "Add static import java.lang.Math.max")
+        .expect("missing static import quick fix");
+    let updated = apply_workspace_edit(source, import.edit.as_ref().expect("expected edit"));
+    assert!(
+        updated.contains("import static java.lang.Math.max;"),
+        "expected static import insertion; got:\n{updated}"
+    );
+}
+
+#[test]
 fn unresolved_import_offers_remove_quick_fix() {
     let source = "import foo.Bar;\nclass A {}\n";
     let (ide, file) = ide_for_source("/imports.java", source);
@@ -521,4 +555,24 @@ fn quick_fixes_are_filtered_by_requested_span() {
         "expected import quick fix to be filtered out; got {:?}",
         action_titles(&actions)
     );
+}
+
+#[test]
+fn unresolved_name_offers_jdk_static_member_quick_fixes() {
+    let source = "class A { double x = PI; }";
+    let (ide, file) = ide_for_source("/static_member_field.java", source);
+
+    let pi_start = source.find("PI").expect("expected PI in fixture");
+    let pi_span = Span::new(pi_start, pi_start + "PI".len());
+
+    let actions = ide.code_actions_lsp(CancellationToken::new(), file, Some(pi_span));
+    let titles = action_titles(&actions);
+    assert!(
+        titles.iter().any(|t| *t == "Qualify with Math"),
+        "expected qualify quick fix; got {titles:?}"
+    );
+
+    let qualify =
+        find_code_action(&actions, "Qualify with Math").expect("missing qualify quick fix");
+    assert_eq!(first_text_edit(qualify).new_text, "Math.PI");
 }
