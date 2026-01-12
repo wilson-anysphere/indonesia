@@ -200,7 +200,11 @@ fn workspace_root(start: &Path) -> Option<PathBuf> {
         }
     }
 
-    let start_dir = if start.is_file() { start.parent()? } else { start };
+    let start_dir = if start.is_file() {
+        start.parent()?
+    } else {
+        start
+    };
 
     // If the caller explicitly provided a directory that already looks like a self-contained
     // "simple project" root, prefer it over ancestor build markers. This prevents unrelated
@@ -226,18 +230,15 @@ fn workspace_root(start: &Path) -> Option<PathBuf> {
     }
 
     let mut best: Option<(u8, PathBuf)> = None;
-    for (priority, candidate) in [
-        (0u8, bazel_root),
-        (1u8, maven_root),
-        (2u8, gradle_root),
-    ] {
+    for (priority, candidate) in [(0u8, bazel_root), (1u8, maven_root), (2u8, gradle_root)] {
         let Some(candidate) = candidate else { continue };
         match best.as_ref() {
             None => best = Some((priority, candidate)),
             Some((best_priority, best_path)) => {
                 let best_depth = depth(best_path);
                 let cand_depth = depth(&candidate);
-                if cand_depth > best_depth || (cand_depth == best_depth && priority < *best_priority)
+                if cand_depth > best_depth
+                    || (cand_depth == best_depth && priority < *best_priority)
                 {
                     best = Some((priority, candidate));
                 }
