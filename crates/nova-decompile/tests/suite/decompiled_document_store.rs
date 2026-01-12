@@ -319,6 +319,37 @@ fn symlink_entries_are_treated_as_cache_miss_and_deleted() {
 
 #[cfg(unix)]
 #[test]
+fn hard_link_entries_are_treated_as_cache_miss_and_deleted() {
+    let temp = TempDir::new().unwrap();
+    let store = DecompiledDocumentStore::new(temp.path().to_path_buf());
+
+    let content_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let binary_name = "com.example.Foo";
+
+    let outside = TempDir::new().unwrap();
+    let target = outside.path().join("outside.java");
+    std::fs::write(&target, "evil").unwrap();
+
+    let safe_stem = Fingerprint::from_bytes(binary_name.as_bytes()).to_string();
+    let path = temp
+        .path()
+        .join(content_hash)
+        .join(format!("{safe_stem}.java"));
+
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::hard_link(&target, &path).unwrap();
+
+    assert!(path.exists(), "precondition: hard link should exist");
+
+    let loaded = store.load_text(content_hash, binary_name).unwrap();
+    assert!(loaded.is_none());
+    assert!(!path.exists(), "hard link should be deleted");
+    assert!(target.exists(), "target outside the store must not be deleted");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "evil");
+}
+
+#[cfg(unix)]
+#[test]
 fn exists_rejects_symlink_entries_and_deletes_them() {
     use std::os::unix::fs::symlink;
 

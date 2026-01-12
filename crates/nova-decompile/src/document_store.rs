@@ -200,6 +200,15 @@ impl DecompiledDocumentStore {
             return false;
         }
 
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            if meta.nlink() > 1 {
+                remove_corrupt_path(&path);
+                return false;
+            }
+        }
+
         const MAX_DOC_BYTES: u64 = nova_cache::BINCODE_PAYLOAD_LIMIT_BYTES as u64;
         if meta.len() > MAX_DOC_BYTES {
             remove_corrupt_path(&path);
@@ -578,6 +587,19 @@ fn read_cache_file_bytes(path: &Path) -> Result<Option<Vec<u8>>, CacheError> {
     if meta.file_type().is_symlink() || !meta.is_file() {
         remove_corrupt_path(path);
         return Ok(None);
+    }
+
+    // Defense in depth: reject hard-linked cache entries. A malicious local process
+    // could replace a cache file with a hard link to an arbitrary other file on the
+    // same filesystem. Treat that as corruption and delete the entry so cache reads
+    // degrade to misses.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        if meta.nlink() > 1 {
+            remove_corrupt_path(path);
+            return Ok(None);
+        }
     }
 
     // Cap reads to avoid pathological allocations if the cache is corrupted.
