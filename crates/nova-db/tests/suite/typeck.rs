@@ -2154,7 +2154,7 @@ fn cross_file_type_reference_resolves_via_import_in_signature() {
         project,
         b_file,
         "src/q/B.java",
-        "package q; import p.A; class B { void m(A a) {} }",
+        "package q; import p.A; class B { A m() { return null; } }",
     );
     db.set_project_files(project, Arc::new(vec![a_file, b_file]));
 
