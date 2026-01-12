@@ -3,6 +3,7 @@ mod ai_completion_context;
 mod analysis;
 mod cancelable_diagnostics;
 mod code_actions;
+mod code_actions_create_symbol;
 mod code_actions_unresolved_type;
 mod code_actions_with_context;
 mod code_intelligence;
