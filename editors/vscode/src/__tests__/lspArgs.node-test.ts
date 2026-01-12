@@ -63,10 +63,21 @@ test('buildNovaLspLaunchConfig strips NOVA_AI_* env vars when aiEnabled is false
   const baseEnv: NodeJS.ProcessEnv = { NOVA_AI_PROVIDER: 'http', NOVA_AI_MODEL: 'default', OTHER: 'x' };
   const config = buildNovaLspLaunchConfig({ aiEnabled: false, baseEnv });
 
+  assert.equal(config.env.NOVA_DISABLE_AI, '1');
   assert.equal(config.env.NOVA_AI_PROVIDER, undefined);
   assert.equal(config.env.NOVA_AI_MODEL, undefined);
   assert.equal(config.env.OTHER, 'x');
+  assert.equal(baseEnv.NOVA_DISABLE_AI, undefined);
   assert.equal(baseEnv.NOVA_AI_PROVIDER, 'http');
+});
+
+test('buildNovaLspLaunchConfig sets NOVA_DISABLE_AI_COMPLETIONS when aiCompletionsEnabled is false', () => {
+  const baseEnv: NodeJS.ProcessEnv = { OTHER: 'x' };
+  const config = buildNovaLspLaunchConfig({ aiEnabled: true, aiCompletionsEnabled: false, baseEnv });
+
+  assert.equal(config.env.NOVA_DISABLE_AI_COMPLETIONS, '1');
+  assert.equal(config.env.OTHER, 'x');
+  assert.equal(baseEnv.NOVA_DISABLE_AI_COMPLETIONS, undefined);
 });
 
 test('buildNovaLspLaunchConfig reuses baseEnv when no env changes are required', () => {

@@ -151,8 +151,16 @@ function readLspLaunchConfig(): { args: string[]; env: NodeJS.ProcessEnv } {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
 
   const aiEnabled = config.get<boolean>('ai.enabled', true);
+  const aiCompletionsEnabled = config.get<boolean>('aiCompletions.enabled', true);
 
-  const launch = buildNovaLspLaunchConfig({ configPath, extraArgs, workspaceRoot, aiEnabled, baseEnv: process.env });
+  const launch = buildNovaLspLaunchConfig({
+    configPath,
+    extraArgs,
+    workspaceRoot,
+    aiEnabled,
+    aiCompletionsEnabled,
+    baseEnv: process.env,
+  });
 
   const normalizedServerArgs = Array.isArray(serverArgsSetting)
     ? serverArgsSetting.map((arg) => String(arg).trim()).filter(Boolean)

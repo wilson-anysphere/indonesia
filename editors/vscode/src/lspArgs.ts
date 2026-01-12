@@ -27,6 +27,13 @@ export interface NovaLspLaunchConfigOptions {
    */
   aiEnabled?: boolean;
   /**
+   * Toggle for multi-token completions only.
+   *
+   * When false, the server is started with `NOVA_DISABLE_AI_COMPLETIONS=1` so
+   * `nova.toml` cannot re-enable completion provider traffic.
+   */
+  aiCompletionsEnabled?: boolean;
+  /**
    * Base environment for the child process. Defaults to `process.env`.
    */
   baseEnv?: NodeJS.ProcessEnv;
@@ -65,11 +72,12 @@ export function buildNovaLspLaunchConfig(options: NovaLspLaunchConfigOptions = {
   });
 
   const aiEnabled = options.aiEnabled ?? true;
+  const aiCompletionsEnabled = options.aiCompletionsEnabled ?? true;
   const baseEnv = options.baseEnv ?? process.env;
 
   let env: NodeJS.ProcessEnv = baseEnv;
   // Only allocate a copy of the environment when we need to mutate it.
-  if (resolvedConfigPath || !aiEnabled) {
+  if (resolvedConfigPath || !aiEnabled || !aiCompletionsEnabled) {
     env = { ...baseEnv };
 
     // `nova-config` supports `NOVA_CONFIG_PATH`; set it when a config path is
@@ -82,11 +90,16 @@ export function buildNovaLspLaunchConfig(options: NovaLspLaunchConfigOptions = {
     // environment variables to the server process. This guarantees AI stays off
     // even if the user has set global env vars in their shell.
     if (!aiEnabled) {
+      env.NOVA_DISABLE_AI = '1';
       for (const key of Object.keys(env)) {
         if (key.startsWith('NOVA_AI_')) {
           delete env[key];
         }
       }
+    }
+
+    if (!aiCompletionsEnabled) {
+      env.NOVA_DISABLE_AI_COMPLETIONS = '1';
     }
   }
 

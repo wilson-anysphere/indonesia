@@ -247,6 +247,31 @@ fn main() -> std::io::Result<()> {
         config.ai.enabled = true;
         config.ai.audit_log.enabled = true;
     }
+
+    // ---------------------------------------------------------------------
+    // Server-side AI overrides (privacy / cost controls)
+    // ---------------------------------------------------------------------
+    // Some clients (notably the VS Code extension) can hide AI UI elements when
+    // users disable AI settings, but the server may still be configured to run
+    // AI via `nova.toml`. These env vars provide a hard override so the server
+    // process itself will never construct AI providers or issue provider
+    // requests when the client has explicitly disabled them.
+    let disable_ai = matches!(
+        std::env::var("NOVA_DISABLE_AI").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    );
+    let disable_ai_completions = matches!(
+        std::env::var("NOVA_DISABLE_AI_COMPLETIONS").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    );
+    if disable_ai {
+        config.ai.enabled = false;
+        config.ai.features.completion_ranking = false;
+        config.ai.features.semantic_search = false;
+        config.ai.features.multi_token_completion = false;
+    } else if disable_ai_completions {
+        config.ai.features.multi_token_completion = false;
+    }
     nova_lsp::hardening::init(&config, Arc::new(|message| eprintln!("{message}")));
 
     // Accept `--stdio` for compatibility with editor templates. For now we only
