@@ -30,6 +30,58 @@ fn expr_path(body: &Body, expr: ExprId) -> Option<String> {
 }
 
 #[test]
+fn lower_body_preserves_explicit_constructor_invocation_this() {
+    let block = parse_block("{ this(1); }", 0);
+    assert_eq!(block.statements.len(), 1);
+
+    let body = lower_body(&block);
+    let Stmt::Block { statements, .. } = &body.stmts[body.root] else {
+        panic!("expected root statement to be a block");
+    };
+    assert_eq!(statements.len(), 1);
+
+    let Stmt::Expr { expr, .. } = &body.stmts[statements[0]] else {
+        panic!("expected explicit constructor invocation to lower to an expression statement");
+    };
+
+    let Expr::Call { callee, args, .. } = &body.exprs[*expr] else {
+        panic!("expected explicit constructor invocation to lower to a call expression");
+    };
+    assert_eq!(args.len(), 1);
+    assert!(
+        matches!(&body.exprs[*callee], Expr::This { .. }),
+        "expected call callee to be `this`, got {:?}",
+        body.exprs[*callee]
+    );
+}
+
+#[test]
+fn lower_body_preserves_explicit_constructor_invocation_super() {
+    let block = parse_block("{ super(); }", 0);
+    assert_eq!(block.statements.len(), 1);
+
+    let body = lower_body(&block);
+    let Stmt::Block { statements, .. } = &body.stmts[body.root] else {
+        panic!("expected root statement to be a block");
+    };
+    assert_eq!(statements.len(), 1);
+
+    let Stmt::Expr { expr, .. } = &body.stmts[statements[0]] else {
+        panic!("expected explicit constructor invocation to lower to an expression statement");
+    };
+
+    let Expr::Call { callee, args, .. } = &body.exprs[*expr] else {
+        panic!("expected explicit constructor invocation to lower to a call expression");
+    };
+    assert_eq!(args.len(), 0);
+    assert!(
+        matches!(&body.exprs[*callee], Expr::Super { .. }),
+        "expected call callee to be `super`, got {:?}",
+        body.exprs[*callee]
+    );
+}
+
+#[test]
 fn lower_item_tree_and_body() {
     let source = r#"
 package com.example;
