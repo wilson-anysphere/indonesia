@@ -567,10 +567,9 @@ impl GradleBuild {
         project_root: &Path,
         project_path: Option<&str>,
     ) -> Result<(PathBuf, Vec<String>, CommandOutput)> {
-        let gradle = self.gradle_executable(project_root);
+        let (program, mut args) = self.gradle_program_and_prefix_args(project_root);
         let init_script = write_init_script(project_root)?;
 
-        let mut args: Vec<String> = Vec::new();
         args.push("--no-daemon".into());
         args.push("--console=plain".into());
         args.push("-q".into());
@@ -583,9 +582,9 @@ impl GradleBuild {
         };
         args.push(task);
 
-        let output = self.runner.run(project_root, &gradle, &args);
+        let output = self.runner.run(project_root, &program, &args);
         let _ = std::fs::remove_file(&init_script);
-        Ok((gradle, args, output?))
+        Ok((program, args, output?))
     }
 
     fn run_print_annotation_processing(
@@ -593,10 +592,9 @@ impl GradleBuild {
         project_root: &Path,
         project_path: Option<&str>,
     ) -> Result<(PathBuf, Vec<String>, CommandOutput)> {
-        let gradle = self.gradle_executable(project_root);
+        let (program, mut args) = self.gradle_program_and_prefix_args(project_root);
         let init_script = write_init_script(project_root)?;
 
-        let mut args: Vec<String> = Vec::new();
         args.push("--no-daemon".into());
         args.push("--console=plain".into());
         args.push("-q".into());
@@ -609,19 +607,18 @@ impl GradleBuild {
         };
         args.push(task);
 
-        let output = self.runner.run(project_root, &gradle, &args);
+        let output = self.runner.run(project_root, &program, &args);
         let _ = std::fs::remove_file(&init_script);
-        Ok((gradle, args, output?))
+        Ok((program, args, output?))
     }
 
     fn run_print_projects(
         &self,
         project_root: &Path,
     ) -> Result<(PathBuf, Vec<String>, CommandOutput)> {
-        let gradle = self.gradle_executable(project_root);
+        let (program, mut args) = self.gradle_program_and_prefix_args(project_root);
         let init_script = write_init_script(project_root)?;
 
-        let mut args: Vec<String> = Vec::new();
         args.push("--no-daemon".into());
         args.push("--console=plain".into());
         args.push("-q".into());
@@ -629,9 +626,9 @@ impl GradleBuild {
         args.push(init_script.to_string_lossy().to_string());
         args.push("printNovaProjects".into());
 
-        let output = self.runner.run(project_root, &gradle, &args);
+        let output = self.runner.run(project_root, &program, &args);
         let _ = std::fs::remove_file(&init_script);
-        Ok((gradle, args, output?))
+        Ok((program, args, output?))
     }
 
     fn run_print_all_java_compile_configs(
@@ -660,8 +657,7 @@ impl GradleBuild {
         project_path: Option<&str>,
         task: GradleBuildTask,
     ) -> Result<(PathBuf, Vec<String>, CommandOutput)> {
-        let gradle = self.gradle_executable(project_root);
-        let mut args: Vec<String> = Vec::new();
+        let (program, mut args) = self.gradle_program_and_prefix_args(project_root);
         args.push("--no-daemon".into());
         args.push("--console=plain".into());
 
@@ -673,8 +669,8 @@ impl GradleBuild {
         match project_path {
             Some(p) => {
                 args.push(format!("{p}:{task_name}"));
-                let output = self.runner.run(project_root, &gradle, &args)?;
-                Ok((gradle, args, output))
+                let output = self.runner.run(project_root, &program, &args)?;
+                Ok((program, args, output))
             }
             None => {
                 let (init_script, root_task) = match task {
@@ -691,20 +687,20 @@ impl GradleBuild {
                 args.push(init_script.to_string_lossy().to_string());
                 args.push(root_task.to_string());
 
-                let output = self.runner.run(project_root, &gradle, &args);
+                let output = self.runner.run(project_root, &program, &args);
                 let _ = std::fs::remove_file(&init_script);
-                Ok((gradle, args, output?))
+                Ok((program, args, output?))
             }
         }
     }
 
-    fn gradle_executable(&self, project_root: &Path) -> PathBuf {
+    fn gradle_program_and_prefix_args(&self, project_root: &Path) -> (PathBuf, Vec<String>) {
         if self.config.prefer_wrapper {
             #[cfg(windows)]
             {
                 let wrapper = project_root.join("gradlew.bat");
                 if wrapper.exists() {
-                    return wrapper;
+                    return (wrapper, Vec::new());
                 }
             }
 
@@ -712,11 +708,34 @@ impl GradleBuild {
             {
                 let wrapper = project_root.join("gradlew");
                 if wrapper.exists() {
-                    return wrapper;
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+
+                        // Many projects check `gradlew` into source control without the executable
+                        // bit set (common for Windows-originated checkouts). Instead of failing with
+                        // PermissionDenied when invoking the wrapper, fall back to `sh gradlew`.
+                        if std::fs::metadata(&wrapper)
+                            .map(|m| m.permissions().mode() & 0o111 != 0)
+                            .unwrap_or(false)
+                        {
+                            return (wrapper, Vec::new());
+                        }
+
+                        return (
+                            PathBuf::from("sh"),
+                            vec![wrapper.to_string_lossy().to_string()],
+                        );
+                    }
+
+                    #[cfg(not(unix))]
+                    {
+                        return (wrapper, Vec::new());
+                    }
                 }
             }
         }
-        self.config.gradle_path.clone()
+        (self.config.gradle_path.clone(), Vec::new())
     }
 }
 
