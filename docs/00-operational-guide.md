@@ -80,7 +80,7 @@ cargo check --all-features    # Unbounded work
 
 - **Always use `bash scripts/cargo_agent.sh`** for all cargo commands
 - **Always scope test runs to a package**: `-p/--package <crate>` or `--manifest-path <path>`
-  - Consider further scoping with `--test <name>`, `--lib`, or `--bin <name>`
+  - Consider further scoping with `--test=<name>`, `--lib`, or `--bin <name>`
 
 ```bash
 # CORRECT:
