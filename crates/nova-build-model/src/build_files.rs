@@ -97,14 +97,19 @@ fn parse_gradle_settings_included_builds(contents: &str) -> Vec<String> {
         }
 
         // Support optional parens: `includeBuild("...")`.
-        if bytes[idx] == b'(' {
+        let has_parens = bytes[idx] == b'(';
+        if has_parens {
             idx += 1;
         }
 
         // Scan forward until we find the first quote character.
         while idx < bytes.len() && !matches!(bytes[idx], b'\'' | b'"') {
             // Stop at EOL when there are no parens: `includeBuild '../dir'`.
-            if bytes[idx] == b'\n' {
+            if !has_parens && bytes[idx] == b'\n' {
+                break;
+            }
+            // Stop at the end of the call when we have parentheses but didn't find a string.
+            if has_parens && bytes[idx] == b')' {
                 break;
             }
             idx += 1;
@@ -686,7 +691,7 @@ mod tests {
 
         write_file(
             &root.join("settings.gradle"),
-            b"includeBuild(\"../included\")\n",
+            b"includeBuild(\n    \"../included\"\n)\n",
         );
         write_file(&included.join("build.gradle"), b"plugins { id 'java' }\n");
 
