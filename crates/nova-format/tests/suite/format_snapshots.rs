@@ -211,6 +211,18 @@ fn ast_formatting_treats_string_templates_as_opaque() {
 }
 
 #[test]
+fn ast_formatter_does_not_reindent_after_braces_inside_interpolation() {
+    let input = "class Foo{void m(){String s=STR.\"Lambda: \\{() -> { return 1; }}\";int after=1;}}\n";
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
+
+    assert_eq!(
+        formatted,
+        "class Foo {\n    void m() {\n        String s = STR.\"Lambda: \\{() -> { return 1; }}\";\n        int after = 1;\n    }\n}\n"
+    );
+}
+
+#[test]
 fn ast_formatting_preserves_multiline_string_template_text() {
     let input = concat!(
         "class Foo{void m(String name){String s=STR.\"\"\"\n",
