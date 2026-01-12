@@ -1507,6 +1507,96 @@ class C {
 }
 
 #[test]
+fn unresolved_abstract_method_signature_types_are_anchored() {
+    let src = r#"
+interface I {
+    Missing m(AlsoMissing x);
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+
+    let unresolved: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code.as_ref() == "unresolved-type")
+        .collect();
+    assert!(
+        unresolved.len() >= 2,
+        "expected at least two unresolved-type diagnostics, got {diags:?}"
+    );
+
+    for diag in unresolved {
+        let span = diag
+            .span
+            .expect("unresolved-type diagnostic should have a span");
+        let snippet = &src[span.start..span.end];
+        assert!(
+            snippet == "Missing" || snippet == "AlsoMissing",
+            "expected span to cover the unresolved type name, got {snippet:?} for {span:?}"
+        );
+    }
+}
+
+#[test]
+fn unresolved_field_types_are_anchored() {
+    let src = r#"
+class C {
+    Missing field;
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    let diag = diags
+        .iter()
+        .find(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Missing"))
+        .expect("expected unresolved-type diagnostic for field type");
+    let span = diag
+        .span
+        .expect("unresolved-type diagnostic should have a span");
+    assert_eq!(&src[span.start..span.end], "Missing");
+}
+
+#[test]
+fn unresolved_extends_clause_types_are_anchored() {
+    let src = r#"
+class C extends Missing {
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    let diag = diags
+        .iter()
+        .find(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Missing"))
+        .expect("expected unresolved-type diagnostic for extends clause");
+    let span = diag
+        .span
+        .expect("unresolved-type diagnostic should have a span");
+    assert_eq!(&src[span.start..span.end], "Missing");
+}
+
+#[test]
+fn unresolved_class_type_param_bounds_are_anchored() {
+    let src = r#"
+class C<T extends Missing> {
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    let diag = diags
+        .iter()
+        .find(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Missing"))
+        .expect("expected unresolved-type diagnostic for class type param bound");
+    let span = diag
+        .span
+        .expect("unresolved-type diagnostic should have a span");
+    assert_eq!(&src[span.start..span.end], "Missing");
+}
+
+#[test]
 fn unresolved_type_param_bounds_are_anchored() {
     let src = r#"
 class C {

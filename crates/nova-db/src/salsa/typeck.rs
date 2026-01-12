@@ -496,7 +496,7 @@ fn type_diagnostics(db: &dyn NovaTypeck, file: FileId) -> Vec<Diagnostic> {
     cancel::check_cancelled(db);
 
     let tree = db.hir_item_tree(file);
-    let mut diags = Vec::new();
+    let mut diags = signature_type_diagnostics(db, file, &tree);
     let owners = collect_body_owners(&tree);
     for (idx, owner) in owners.iter().enumerate() {
         cancel::checkpoint_cancelled_every(db, idx as u32, 32);
@@ -512,6 +512,390 @@ fn type_diagnostics(db: &dyn NovaTypeck, file: FileId) -> Vec<Diagnostic> {
 
     db.record_query_stat("type_diagnostics", start.elapsed());
     diags
+}
+
+fn signature_type_diagnostics(
+    db: &dyn NovaTypeck,
+    file: FileId,
+    tree: &nova_hir::item_tree::ItemTree,
+) -> Vec<Diagnostic> {
+    cancel::check_cancelled(db);
+
+    let project = db.file_project(file);
+    let jdk = db.jdk_index(project);
+    let classpath = db.classpath_index(project);
+    let workspace = db.workspace_def_map(project);
+    let jpms_env = db.jpms_compilation_env(project);
+
+    let jpms_index = jpms_env.as_deref().map(|env| {
+        let cfg = db.project_config(project);
+        let file_rel = db.file_rel_path(file);
+        let from = module_for_file(&cfg, file_rel.as_str());
+        JpmsTypeckIndex::new(env, &workspace, &*jdk, from)
+    });
+
+    let workspace_index = WorkspaceFirstIndex {
+        workspace: &workspace,
+        classpath: classpath.as_deref().map(|cp| cp as &dyn TypeIndex),
+    };
+
+    let resolver = if let Some(index) = jpms_index.as_ref() {
+        nova_resolve::Resolver::new(index).with_workspace(&workspace)
+    } else {
+        nova_resolve::Resolver::new(&*jdk)
+            .with_classpath(&workspace_index)
+            .with_workspace(&workspace)
+    };
+
+    let scopes = db.scope_graph(file);
+
+    // Signature-only type resolution: build a minimal type environment and resolve type refs from
+    // the `ItemTree` that are not checked as part of `typeck_body` (e.g. fields, abstract methods,
+    // type declaration headers).
+    let base_store = db.project_base_type_store(project);
+    let mut store = (&*base_store).clone();
+
+    let base_provider = if let Some(env) = jpms_env.as_deref() {
+        nova_types::ChainTypeProvider::new(vec![&env.classpath as &dyn TypeProvider, &*jdk])
+    } else {
+        match classpath.as_deref() {
+            Some(cp) => nova_types::ChainTypeProvider::new(vec![cp as &dyn TypeProvider, &*jdk]),
+            None => nova_types::ChainTypeProvider::new(vec![&*jdk as &dyn TypeProvider]),
+        }
+    };
+    let jdk_provider: &dyn TypeProvider = &*jdk;
+    let provider = JavaOnlyJdkTypeProvider::new(&base_provider, jdk_provider);
+    let mut loader = ExternalTypeLoader::new(&mut store, &provider);
+
+    let object_ty = Type::class(loader.store.well_known().object, vec![]);
+
+    let mut out = Vec::new();
+    let mut steps: u32 = 0;
+    for item in &tree.items {
+        cancel::checkpoint_cancelled_every(db, steps, 32);
+        steps = steps.wrapping_add(1);
+
+        collect_signature_type_diagnostics_in_item(
+            db,
+            &resolver,
+            &scopes,
+            tree,
+            *item,
+            &mut loader,
+            &object_ty,
+            &mut out,
+        );
+    }
+
+    out
+}
+
+fn collect_signature_type_diagnostics_in_item<'idx>(
+    db: &dyn NovaTypeck,
+    resolver: &nova_resolve::Resolver<'idx>,
+    scopes: &nova_resolve::ItemTreeScopeBuildResult,
+    tree: &nova_hir::item_tree::ItemTree,
+    item: nova_hir::item_tree::Item,
+    loader: &mut ExternalTypeLoader<'_>,
+    default_bound: &Type,
+    out: &mut Vec<Diagnostic>,
+) {
+    use nova_hir::ids::ItemId as HirItemId;
+    use nova_hir::item_tree::Item as TreeItem;
+    use nova_hir::item_tree::Member;
+
+    cancel::check_cancelled(db);
+
+    let item_id = match item {
+        TreeItem::Class(id) => HirItemId::Class(id),
+        TreeItem::Interface(id) => HirItemId::Interface(id),
+        TreeItem::Enum(id) => HirItemId::Enum(id),
+        TreeItem::Record(id) => HirItemId::Record(id),
+        TreeItem::Annotation(id) => HirItemId::Annotation(id),
+    };
+
+    let class_scope = scopes
+        .class_scopes
+        .get(&item_id)
+        .copied()
+        .unwrap_or(scopes.file_scope);
+
+    let type_params: &[nova_hir::item_tree::TypeParam] = match item_id {
+        HirItemId::Class(id) => tree.class(id).type_params.as_slice(),
+        HirItemId::Interface(id) => tree.interface(id).type_params.as_slice(),
+        HirItemId::Record(id) => tree.record(id).type_params.as_slice(),
+        HirItemId::Enum(_) | HirItemId::Annotation(_) => &[],
+    };
+
+    let mut class_vars = HashMap::new();
+    alloc_type_param_ids(loader, default_bound, type_params, &mut class_vars);
+
+    // Type parameter bounds.
+    for tp in type_params {
+        for (idx, bound) in tp.bounds.iter().enumerate() {
+            let base_span = tp.bounds_ranges.get(idx).copied();
+            let resolved = resolve_type_ref_text(
+                resolver,
+                &scopes.scopes,
+                class_scope,
+                loader,
+                &class_vars,
+                bound,
+                base_span,
+            );
+            out.extend(resolved.diagnostics);
+        }
+    }
+
+    // Type declaration header clauses (`extends`/`implements`/`permits`).
+    match item_id {
+        HirItemId::Class(id) => {
+            let class = tree.class(id);
+            for (idx, ext) in class.extends.iter().enumerate() {
+                let base_span = class.extends_ranges.get(idx).copied();
+                let resolved = resolve_type_ref_text(
+                    resolver,
+                    &scopes.scopes,
+                    class_scope,
+                    loader,
+                    &class_vars,
+                    ext,
+                    base_span,
+                );
+                out.extend(resolved.diagnostics);
+            }
+            for (idx, imp) in class.implements.iter().enumerate() {
+                let base_span = class.implements_ranges.get(idx).copied();
+                let resolved = resolve_type_ref_text(
+                    resolver,
+                    &scopes.scopes,
+                    class_scope,
+                    loader,
+                    &class_vars,
+                    imp,
+                    base_span,
+                );
+                out.extend(resolved.diagnostics);
+            }
+            for (idx, perm) in class.permits.iter().enumerate() {
+                let base_span = class.permits_ranges.get(idx).copied();
+                let resolved = resolve_type_ref_text(
+                    resolver,
+                    &scopes.scopes,
+                    class_scope,
+                    loader,
+                    &class_vars,
+                    perm,
+                    base_span,
+                );
+                out.extend(resolved.diagnostics);
+            }
+        }
+        HirItemId::Interface(id) => {
+            let iface = tree.interface(id);
+            for (idx, ext) in iface.extends.iter().enumerate() {
+                let base_span = iface.extends_ranges.get(idx).copied();
+                let resolved = resolve_type_ref_text(
+                    resolver,
+                    &scopes.scopes,
+                    class_scope,
+                    loader,
+                    &class_vars,
+                    ext,
+                    base_span,
+                );
+                out.extend(resolved.diagnostics);
+            }
+            for (idx, perm) in iface.permits.iter().enumerate() {
+                let base_span = iface.permits_ranges.get(idx).copied();
+                let resolved = resolve_type_ref_text(
+                    resolver,
+                    &scopes.scopes,
+                    class_scope,
+                    loader,
+                    &class_vars,
+                    perm,
+                    base_span,
+                );
+                out.extend(resolved.diagnostics);
+            }
+        }
+        HirItemId::Enum(id) => {
+            let enm = tree.enum_(id);
+            for (idx, imp) in enm.implements.iter().enumerate() {
+                let base_span = enm.implements_ranges.get(idx).copied();
+                let resolved = resolve_type_ref_text(
+                    resolver,
+                    &scopes.scopes,
+                    class_scope,
+                    loader,
+                    &class_vars,
+                    imp,
+                    base_span,
+                );
+                out.extend(resolved.diagnostics);
+            }
+            for (idx, perm) in enm.permits.iter().enumerate() {
+                let base_span = enm.permits_ranges.get(idx).copied();
+                let resolved = resolve_type_ref_text(
+                    resolver,
+                    &scopes.scopes,
+                    class_scope,
+                    loader,
+                    &class_vars,
+                    perm,
+                    base_span,
+                );
+                out.extend(resolved.diagnostics);
+            }
+        }
+        HirItemId::Record(id) => {
+            let record = tree.record(id);
+            for (idx, imp) in record.implements.iter().enumerate() {
+                let base_span = record.implements_ranges.get(idx).copied();
+                let resolved = resolve_type_ref_text(
+                    resolver,
+                    &scopes.scopes,
+                    class_scope,
+                    loader,
+                    &class_vars,
+                    imp,
+                    base_span,
+                );
+                out.extend(resolved.diagnostics);
+            }
+            for (idx, perm) in record.permits.iter().enumerate() {
+                let base_span = record.permits_ranges.get(idx).copied();
+                let resolved = resolve_type_ref_text(
+                    resolver,
+                    &scopes.scopes,
+                    class_scope,
+                    loader,
+                    &class_vars,
+                    perm,
+                    base_span,
+                );
+                out.extend(resolved.diagnostics);
+            }
+        }
+        HirItemId::Annotation(_) => {}
+    }
+
+    // Member types (fields + abstract method signatures).
+    let mut steps: u32 = 0;
+    for member in item_members(tree, item_id) {
+        cancel::checkpoint_cancelled_every(db, steps, 32);
+        steps = steps.wrapping_add(1);
+        match *member {
+            Member::Field(fid) => {
+                let field = tree.field(fid);
+                let resolved = resolve_type_ref_text(
+                    resolver,
+                    &scopes.scopes,
+                    class_scope,
+                    loader,
+                    &class_vars,
+                    &field.ty,
+                    Some(field.ty_range),
+                );
+                out.extend(resolved.diagnostics);
+            }
+            Member::Method(mid) => {
+                let method = tree.method(mid);
+                if method.body.is_some() {
+                    continue;
+                }
+
+                let scope = scopes
+                    .method_scopes
+                    .get(&mid)
+                    .copied()
+                    .unwrap_or(class_scope);
+
+                let mut vars = class_vars.clone();
+                alloc_type_param_ids(loader, default_bound, &method.type_params, &mut vars);
+
+                for tp in &method.type_params {
+                    for (idx, bound) in tp.bounds.iter().enumerate() {
+                        let base_span = tp.bounds_ranges.get(idx).copied();
+                        let resolved = resolve_type_ref_text(
+                            resolver,
+                            &scopes.scopes,
+                            scope,
+                            loader,
+                            &vars,
+                            bound,
+                            base_span,
+                        );
+                        out.extend(resolved.diagnostics);
+                    }
+                }
+
+                let resolved = resolve_type_ref_text(
+                    resolver,
+                    &scopes.scopes,
+                    scope,
+                    loader,
+                    &vars,
+                    &method.return_ty,
+                    Some(method.return_ty_range),
+                );
+                out.extend(resolved.diagnostics);
+
+                for param in &method.params {
+                    let resolved = resolve_type_ref_text(
+                        resolver,
+                        &scopes.scopes,
+                        scope,
+                        loader,
+                        &vars,
+                        &param.ty,
+                        Some(param.ty_range),
+                    );
+                    out.extend(resolved.diagnostics);
+                }
+
+                for (idx, thrown) in method.throws.iter().enumerate() {
+                    let base_span = method.throws_ranges.get(idx).copied();
+                    let resolved = resolve_type_ref_text(
+                        resolver,
+                        &scopes.scopes,
+                        scope,
+                        loader,
+                        &vars,
+                        thrown,
+                        base_span,
+                    );
+                    out.extend(resolved.diagnostics);
+                }
+            }
+            Member::Constructor(_) | Member::Initializer(_) => {}
+            Member::Type(child) => collect_signature_type_diagnostics_in_item(
+                db,
+                resolver,
+                scopes,
+                tree,
+                child,
+                loader,
+                default_bound,
+                out,
+            ),
+        }
+    }
+}
+
+fn alloc_type_param_ids(
+    loader: &mut ExternalTypeLoader<'_>,
+    default_bound: &Type,
+    type_params: &[nova_hir::item_tree::TypeParam],
+    vars: &mut HashMap<String, TypeVarId>,
+) {
+    for tp in type_params {
+        let id = loader
+            .store
+            .add_type_param(tp.name.clone(), vec![default_bound.clone()]);
+        vars.insert(tp.name.clone(), id);
+    }
 }
 
 fn type_at_offset_display(db: &dyn NovaTypeck, file: FileId, offset: u32) -> Option<String> {
