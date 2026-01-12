@@ -365,6 +365,60 @@ class A {
 }
 
 #[test]
+fn completion_in_import_offers_package_segment_and_replaces_only_segment() {
+    let (db, file, pos) = fixture(
+        r#"
+import java.u<|>;
+class A {}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "util" || i.label == "util.")
+        .expect("expected java.util package completion");
+
+    let text_without_caret = r#"
+import java.u;
+class A {}
+"#;
+
+    let u_offset = text_without_caret
+        .find("java.u")
+        .expect("expected java.u in fixture")
+        + "java.".len();
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+
+    assert_eq!(
+        edit.range.start,
+        offset_to_position(&text_without_caret, u_offset)
+    );
+    assert_eq!(edit.range.end, pos);
+}
+
+#[test]
+fn completion_in_import_includes_jdk_type() {
+    let (db, file, pos) = fixture(
+        r#"
+import java.util.<|>;
+class A {}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"List"),
+        "expected completion list to contain java.util.List; got {labels:?}"
+    );
+}
+
+#[test]
 fn goto_definition_finds_local_method() {
     let (db, file, pos) = fixture(
         r#"

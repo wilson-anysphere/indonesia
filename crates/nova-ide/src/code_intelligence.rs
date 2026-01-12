@@ -926,6 +926,216 @@ fn new_expression_type_completions(
     items
 }
 
+#[derive(Debug, Clone)]
+struct ImportContext {
+    /// Offset to start replacing for completions (the current segment after the last `.`).
+    replace_start: usize,
+    /// Prefix of the import path up to the cursor (binary-style, using `.` separators).
+    prefix: String,
+    /// The already-complete portion of the import path before the current segment.
+    base_prefix: String,
+    /// The in-progress segment being completed (text between `replace_start..cursor`).
+    segment_prefix: String,
+}
+
+fn skip_whitespace_forwards(text: &str, mut offset: usize) -> usize {
+    let bytes = text.as_bytes();
+    while offset < bytes.len() && (bytes[offset] as char).is_ascii_whitespace() {
+        offset += 1;
+    }
+    offset
+}
+
+fn import_context(text: &str, offset: usize) -> Option<ImportContext> {
+    if offset > text.len() {
+        return None;
+    }
+
+    // Best-effort: look only at the current line and require it to begin with an `import`
+    // keyword (ignoring leading whitespace). This avoids triggering on random `import` mentions
+    // elsewhere (comments/strings/etc.) and keeps the heuristic cheap.
+    let line_start = text[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let line_end = text[offset..]
+        .find('\n')
+        .map(|i| offset + i)
+        .unwrap_or(text.len());
+
+    let line = text.get(line_start..line_end)?;
+    let non_ws = line.find(|c: char| !c.is_ascii_whitespace())?;
+    let rest = &line[non_ws..];
+    if !rest.starts_with("import") {
+        return None;
+    }
+    // Ensure `import` is a standalone keyword (`importx` should not match).
+    let after_import = rest.get("import".len()..)?;
+    if after_import
+        .chars()
+        .next()
+        .is_some_and(|ch| !ch.is_ascii_whitespace())
+    {
+        return None;
+    }
+
+    let mut path_start = line_start + non_ws + "import".len();
+    path_start = skip_whitespace_forwards(text, path_start);
+
+    // Best-effort `import static ...;` support: treat it as a normal import by skipping `static`
+    // when present.
+    if text.get(path_start..)?.starts_with("static") {
+        let static_end = path_start + "static".len();
+        if text
+            .as_bytes()
+            .get(static_end)
+            .is_none_or(|b| (*b as char).is_ascii_whitespace())
+        {
+            path_start = skip_whitespace_forwards(text, static_end);
+        }
+    }
+
+    if offset < path_start {
+        return None;
+    }
+
+    // Restrict the import "statement" to the current line. If no semicolon exists yet (partially
+    // typed statement), treat end-of-line as the end.
+    let stmt_end = text
+        .get(path_start..line_end)?
+        .find(';')
+        .map(|i| path_start + i)
+        .unwrap_or(line_end);
+    if offset > stmt_end {
+        return None;
+    }
+
+    // Avoid trying to complete when the cursor is on whitespace inside the import.
+    let raw_prefix = text.get(path_start..offset)?;
+    if raw_prefix.chars().any(|c| c.is_ascii_whitespace()) {
+        return None;
+    }
+
+    let replace_start = match raw_prefix.rfind('.') {
+        Some(dot_rel) => path_start + dot_rel + 1,
+        None => path_start,
+    };
+
+    Some(ImportContext {
+        replace_start,
+        prefix: raw_prefix.to_string(),
+        base_prefix: text.get(path_start..replace_start)?.to_string(),
+        segment_prefix: text.get(replace_start..offset)?.to_string(),
+    })
+}
+
+fn import_completions(
+    text_index: &TextIndex<'_>,
+    offset: usize,
+    ctx: &ImportContext,
+) -> Vec<CompletionItem> {
+    const MAX_ITEMS: usize = 400;
+
+    let replace_range = Range::new(
+        text_index.offset_to_position(ctx.replace_start),
+        text_index.offset_to_position(offset),
+    );
+
+    let jdk = JDK_INDEX
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(JdkIndex::new()));
+
+    let packages = jdk
+        .packages_with_prefix(&ctx.prefix)
+        .or_else(|_| JdkIndex::new().packages_with_prefix(&ctx.prefix))
+        .unwrap_or_default();
+
+    let classes = jdk
+        .class_names_with_prefix(&ctx.prefix)
+        .or_else(|_| JdkIndex::new().class_names_with_prefix(&ctx.prefix))
+        .unwrap_or_default();
+
+    let mut items = Vec::new();
+
+    // Package segment completions.
+    let mut seen_pkgs: HashSet<String> = HashSet::new();
+    for pkg in packages {
+        if !pkg.starts_with(&ctx.base_prefix) {
+            continue;
+        }
+        let rest = &pkg[ctx.base_prefix.len()..];
+        let segment = rest.split('.').next().unwrap_or("");
+        if segment.is_empty() {
+            continue;
+        }
+        if !seen_pkgs.insert(segment.to_string()) {
+            continue;
+        }
+        items.push(CompletionItem {
+            label: segment.to_string(),
+            kind: Some(CompletionItemKind::MODULE),
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                range: replace_range,
+                new_text: format!("{segment}."),
+            })),
+            ..Default::default()
+        });
+        if items.len() >= MAX_ITEMS {
+            break;
+        }
+    }
+
+    // Type/class completions (as remainder completions).
+    let mut seen_types: HashSet<String> = HashSet::new();
+    for name in classes {
+        if items.len() >= MAX_ITEMS {
+            break;
+        }
+        if !name.starts_with(&ctx.base_prefix) {
+            continue;
+        }
+        let mut remainder = name[ctx.base_prefix.len()..].to_string();
+        if remainder.is_empty() {
+            continue;
+        }
+        // Translate binary nested names (`$`) to Java source nested form (`.`).
+        remainder = remainder.replace('$', ".");
+
+        if !seen_types.insert(remainder.clone()) {
+            continue;
+        }
+
+        items.push(CompletionItem {
+            label: remainder.clone(),
+            kind: Some(CompletionItemKind::CLASS),
+            detail: Some(name),
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                range: replace_range,
+                new_text: remainder,
+            })),
+            ..Default::default()
+        });
+    }
+
+    // Optional star import (`import foo.bar.*;`). Only offer when the cursor is at the start of a
+    // segment (e.g. after a dot).
+    if items.len() < MAX_ITEMS
+        && ctx.segment_prefix.is_empty()
+        && !ctx.base_prefix.is_empty()
+        && ctx.base_prefix.ends_with('.')
+    {
+        items.push(CompletionItem {
+            label: "*".to_string(),
+            kind: Some(CompletionItemKind::KEYWORD),
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                range: replace_range,
+                new_text: "*".to_string(),
+            })),
+            ..Default::default()
+        });
+    }
+
+    items
+}
+
 /// Core (non-framework) completions for a Java source file.
 ///
 /// Framework completions are provided via the unified `nova-ext` framework providers and
@@ -991,6 +1201,19 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
     let Some(offset) = text_index.position_to_offset(position) else {
         return Vec::new();
     };
+
+    if db
+        .file_path(file)
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
+    {
+        if let Some(ctx) = import_context(text, offset) {
+            let items = import_completions(&text_index, offset, &ctx);
+            if !items.is_empty() {
+                return decorate_completions(&text_index, ctx.replace_start, offset, items);
+            }
+        }
+    }
+
     let (prefix_start, prefix) = identifier_prefix(text, offset);
 
     if let Some(path) = db.file_path(file) {
