@@ -25,6 +25,7 @@ pub use completions::{
 
 pub use config::{
     completion_span_for_properties_file, completion_span_for_value_placeholder,
+    completion_span_for_yaml_file,
     completions_for_properties_file, completions_for_value_placeholder, completions_for_yaml_file,
     diagnostics_for_config_file, find_references_for_value_placeholder,
     goto_definition_for_value_placeholder, goto_usages_for_config_key, ConfigLocation,

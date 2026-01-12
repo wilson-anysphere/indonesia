@@ -259,6 +259,41 @@ server.p<|>
 }
 
 #[test]
+fn spring_yaml_key_completion_replaces_full_segment_prefix() {
+    let config_path = PathBuf::from("/workspace/src/main/resources/application.yml");
+
+    let config_text = r#"spring:
+  main:
+    banner-mode: console
+    banner-m<|>
+"#;
+
+    let (db, file, pos) = fixture_multi(config_path, config_text, vec![]);
+
+    let config_without_caret = config_text.replace("<|>", "");
+    let key_start = config_without_caret
+        .rfind("banner-m")
+        .expect("expected banner-m key in fixture");
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "banner-mode")
+        .expect("expected banner-mode completion item");
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+
+    assert_eq!(
+        edit.range.start,
+        offset_to_position(&config_without_caret, key_start)
+    );
+    assert_eq!(edit.range.end, pos);
+}
+
+#[test]
 fn spring_find_references_from_config_key_to_java_usage() {
     let config_path = PathBuf::from("/workspace/src/main/resources/application.properties");
     let java_path = PathBuf::from("/workspace/src/main/java/C.java");

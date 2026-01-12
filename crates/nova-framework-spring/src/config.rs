@@ -501,6 +501,19 @@ pub fn completion_span_for_properties_file(path: &Path, text: &str, offset: usiz
     None
 }
 
+/// Compute the replacement span for completions inside `application.yml` / `application.yaml`.
+///
+/// For key completions, the span covers the current mapping key token (start of
+/// key to cursor). For value completions (`key: <cursor>`), the span covers the
+/// scalar value token.
+#[must_use]
+pub fn completion_span_for_yaml_file(text: &str, offset: usize) -> Option<Span> {
+    if let Some(value_start) = yaml_value_completion_start(text, offset) {
+        return Some(Span::new(value_start, offset));
+    }
+    yaml_key_completion_span(text, offset)
+}
+
 /// Provide Spring configuration key completions inside `@Value("${...}")`.
 #[must_use]
 pub fn completions_for_value_placeholder(
@@ -1030,6 +1043,80 @@ fn yaml_value_completion_context(text: &str, offset: usize) -> Option<(String, S
     };
 
     Some((format!("{parent_prefix}{key}"), prefix))
+}
+
+fn yaml_value_completion_start(text: &str, offset: usize) -> Option<usize> {
+    let (line_start, _line_end) = line_bounds(text, offset);
+    let current_line = text.get(line_start..)?;
+    let current_line = current_line
+        .split_once('\n')
+        .map(|(l, _)| l)
+        .unwrap_or(current_line);
+    let current_line = current_line.strip_suffix('\r').unwrap_or(current_line);
+
+    let current_indent = current_line.bytes().take_while(|b| *b == b' ').count();
+
+    // Adjust for sequences (`- key: value`).
+    let mut base_offset = line_start + current_indent;
+    let mut after_indent = &current_line[current_indent..];
+    if let Some(rest) = after_indent.strip_prefix('-') {
+        base_offset += 1;
+        after_indent = rest;
+        if let Some(rest) = after_indent.strip_prefix(' ') {
+            base_offset += 1;
+            after_indent = rest;
+        }
+    }
+
+    let rel_cursor = offset.saturating_sub(base_offset);
+    let colon_rel = after_indent.find(':')?;
+    if rel_cursor <= colon_rel {
+        return None;
+    }
+
+    let mut value_rel_start = colon_rel + 1;
+    while value_rel_start < after_indent.len() && after_indent.as_bytes()[value_rel_start] == b' '
+    {
+        value_rel_start += 1;
+    }
+    let value_abs_start = base_offset + value_rel_start;
+    (offset >= value_abs_start).then_some(value_abs_start)
+}
+
+fn yaml_key_completion_span(text: &str, offset: usize) -> Option<Span> {
+    let (line_start, _line_end) = line_bounds(text, offset);
+    let current_line = text.get(line_start..)?;
+    let current_line = current_line
+        .split_once('\n')
+        .map(|(l, _)| l)
+        .unwrap_or(current_line);
+    let current_line = current_line.strip_suffix('\r').unwrap_or(current_line);
+
+    let indent = current_line.bytes().take_while(|b| *b == b' ').count();
+    let mut base_offset = line_start + indent;
+    let mut after_indent = &current_line[indent..];
+    if let Some(rest) = after_indent.strip_prefix('-') {
+        base_offset += 1;
+        after_indent = rest;
+        if let Some(rest) = after_indent.strip_prefix(' ') {
+            base_offset += 1;
+            after_indent = rest;
+        }
+    }
+
+    if offset < base_offset || base_offset > line_start + current_line.len() {
+        return None;
+    }
+
+    let rel_cursor = offset - base_offset;
+    let token_end = after_indent
+        .find(|c: char| c == ':' || c.is_whitespace())
+        .unwrap_or(after_indent.len());
+    if rel_cursor > token_end {
+        return None;
+    }
+
+    Some(Span::new(base_offset, offset))
 }
 
 fn next_yaml_segment(full_key: &str, parent_prefix: &str) -> Option<String> {
