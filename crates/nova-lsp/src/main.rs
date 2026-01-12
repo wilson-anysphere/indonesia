@@ -927,6 +927,18 @@ fn reload_config_best_effort(
         let resolved = path.canonicalize().unwrap_or(path);
         match nova_config::NovaConfig::load_from_path(&resolved) {
             Ok(config) => return Ok(config),
+            Err(nova_config::ConfigError::Io { source, .. })
+                if source.kind() == io::ErrorKind::NotFound =>
+            {
+                // Best-effort: if the config file was deleted, fall back to defaults instead of
+                // keeping stale state indefinitely.
+                tracing::warn!(
+                    target = "nova.lsp",
+                    path = %resolved.display(),
+                    "config file not found; falling back to defaults"
+                );
+                return Ok(nova_config::NovaConfig::default());
+            }
             Err(err) => return Err(err.to_string()),
         }
     }
@@ -939,6 +951,16 @@ fn reload_config_best_effort(
         env::set_var("NOVA_CONFIG_PATH", &resolved);
         match nova_config::NovaConfig::load_from_path(&resolved) {
             Ok(config) => return Ok(config),
+            Err(nova_config::ConfigError::Io { source, .. })
+                if source.kind() == io::ErrorKind::NotFound =>
+            {
+                tracing::warn!(
+                    target = "nova.lsp",
+                    path = %resolved.display(),
+                    "config file not found; falling back to defaults"
+                );
+                return Ok(nova_config::NovaConfig::default());
+            }
             Err(err) => return Err(err.to_string()),
         }
     }
@@ -3853,6 +3875,9 @@ fn handle_notification(
                         // Best-effort: extensions configuration is sourced from `nova_config`, so keep
                         // the registry in sync when users edit `nova.toml`.
                         state.load_extensions();
+                        // JDK resolution reads `nova_config` (e.g. `[jdk].home`). Clear the cached
+                        // index so changes take effect without requiring a restart.
+                        state.jdk_index = None;
                     }
                     Err(err) => {
                         tracing::warn!(target = "nova.lsp", "failed to reload config: {err}");
@@ -3910,6 +3935,7 @@ fn handle_notification(
                     // Best-effort: extensions configuration is sourced from `nova_config`, so keep
                     // the registry in sync when users toggle settings.
                     state.load_extensions();
+                    state.jdk_index = None;
                 }
                 Err(err) => {
                     tracing::warn!(target = "nova.lsp", "failed to reload config: {err}");

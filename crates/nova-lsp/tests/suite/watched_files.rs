@@ -421,3 +421,114 @@ fn did_change_watched_files_reloads_nova_config() {
     let status = child.wait().expect("wait");
     assert!(status.success());
 }
+
+#[test]
+fn did_change_watched_files_falls_back_to_default_config_when_config_is_deleted() {
+    let _lock = crate::support::stdio_server_lock();
+    let temp = TempDir::new().expect("tempdir");
+    let config_path = temp.path().join("nova.toml");
+    let config_uri = uri_for_path(&config_path);
+
+    std::fs::write(&config_path, "[extensions]\nenabled = false\n").expect("write nova.toml");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/extensions/status",
+            "params": null
+        }),
+    );
+    let resp = read_response_with_id(&mut stdout, 2);
+    assert_eq!(
+        resp.pointer("/result/enabled").and_then(|v| v.as_bool()),
+        Some(false),
+        "expected initial config to disable extensions"
+    );
+
+    // Delete the config on disk but don't notify; the server should keep the cached config.
+    std::fs::remove_file(&config_path).expect("remove nova.toml");
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "nova/extensions/status",
+            "params": null
+        }),
+    );
+    let resp = read_response_with_id(&mut stdout, 3);
+    assert_eq!(
+        resp.pointer("/result/enabled").and_then(|v| v.as_bool()),
+        Some(false),
+        "expected cached config to remain in effect until didChangeWatchedFiles"
+    );
+
+    // Notify about the deletion; the server should fall back to defaults.
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "workspace/didChangeWatchedFiles",
+            "params": {
+                "changes": [{ "uri": config_uri, "type": 3 }]
+            }
+        }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "nova/extensions/status",
+            "params": null
+        }),
+    );
+    let resp = read_response_with_id(&mut stdout, 4);
+    assert_eq!(
+        resp.pointer("/result/enabled").and_then(|v| v.as_bool()),
+        Some(true),
+        "expected didChangeWatchedFiles to fall back to defaults when nova.toml is deleted"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 5, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 5);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
