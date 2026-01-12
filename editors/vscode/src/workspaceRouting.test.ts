@@ -72,6 +72,33 @@ describe('routeWorkspaceFolderUri', () => {
     ).toBe(folders[0].uri);
   });
 
+  it('routes workspace/executeCommand by arguments[].uri', () => {
+    const { folders, root } = makeWorkspaceFolders();
+    const fileInB = pathToFileURL(path.join(root, 'b', 'src', 'Main.java')).toString();
+
+    expect(
+      routeWorkspaceFolderUri({
+        workspaceFolders: folders,
+        activeDocumentUri: undefined,
+        method: 'workspace/executeCommand',
+        params: { command: 'nova.runTest', arguments: [{ uri: fileInB }] },
+      }),
+    ).toBe(folders[1].uri);
+  });
+
+  it('routes workspace/executeCommand by arguments[].projectRoot when uri is unavailable', () => {
+    const { folders } = makeWorkspaceFolders();
+
+    expect(
+      routeWorkspaceFolderUri({
+        workspaceFolders: folders,
+        activeDocumentUri: undefined,
+        method: 'workspace/executeCommand',
+        params: { command: 'nova.test', arguments: [{ projectRoot: folders[0].fsPath }] },
+      }),
+    ).toBe(folders[0].uri);
+  });
+
   it('falls back to active document uri when params contain no routing hints', () => {
     const { folders, root } = makeWorkspaceFolders();
     const fileInB = pathToFileURL(path.join(root, 'b', 'src', 'Main.java')).toString();
@@ -130,4 +157,3 @@ describe('routeWorkspaceFolderUri', () => {
     ).toBeUndefined();
   });
 });
-

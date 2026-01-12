@@ -31,7 +31,7 @@ export function routeWorkspaceFolderUri(options: RouteWorkspaceFolderOptions): s
     return undefined;
   }
 
-  const hint = extractRoutingHint(options.params);
+  const hint = extractRoutingHint(options.method, options.params);
 
   if (hint.kind === 'projectRoot') {
     const match = matchWorkspaceFolderForFsPath(folders, hint.projectRoot) ?? matchWorkspaceFolderForUri(folders, hint.projectRoot);
@@ -52,7 +52,26 @@ export function routeWorkspaceFolderUri(options: RouteWorkspaceFolderOptions): s
   return folders.length === 1 ? folders[0].uri : undefined;
 }
 
-function extractRoutingHint(params: unknown): RoutingHint {
+function extractRoutingHint(method: string, params: unknown): RoutingHint {
+  const direct = extractRoutingHintFromValue(params);
+  if (direct.kind !== 'none') {
+    return direct;
+  }
+
+  // `workspace/executeCommand` requests wrap user arguments as `ExecuteCommandParams.arguments`.
+  // These arguments often contain the only useful routing hint (uri / textDocument / projectRoot),
+  // so inspect them when present.
+  if (method === 'workspace/executeCommand') {
+    const fromArgs = extractRoutingHintFromExecuteCommandArguments(params);
+    if (fromArgs.kind !== 'none') {
+      return fromArgs;
+    }
+  }
+
+  return { kind: 'none' };
+}
+
+function extractRoutingHintFromValue(params: unknown): RoutingHint {
   if (!params || typeof params !== 'object') {
     return { kind: 'none' };
   }
@@ -78,6 +97,33 @@ function extractRoutingHint(params: unknown): RoutingHint {
   }
 
   return { kind: 'none' };
+}
+
+function extractRoutingHintFromExecuteCommandArguments(params: unknown): RoutingHint {
+  if (!params || typeof params !== 'object') {
+    return { kind: 'none' };
+  }
+
+  const record = params as Record<string, unknown>;
+  const args = record.arguments;
+  if (!Array.isArray(args) || args.length === 0) {
+    return { kind: 'none' };
+  }
+
+  // Prefer a URI-based hint when available since it can be more precise than `projectRoot`.
+  let projectRootHint: string | undefined;
+
+  for (const arg of args) {
+    const hint = extractRoutingHintFromValue(arg);
+    if (hint.kind === 'uri') {
+      return hint;
+    }
+    if (hint.kind === 'projectRoot' && !projectRootHint) {
+      projectRootHint = hint.projectRoot;
+    }
+  }
+
+  return projectRootHint ? { kind: 'projectRoot', projectRoot: projectRootHint } : { kind: 'none' };
 }
 
 function normalizeString(value: unknown): string | undefined {
