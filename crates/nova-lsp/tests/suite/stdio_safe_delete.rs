@@ -32,7 +32,7 @@ fn stdio_server_supports_safe_delete_preview_then_apply() {
     let _lock = crate::support::stdio_server_lock();
     let fixture = r#"
  class A {
-     public void used() {
+      public void used() {
     }
 
     public void entry() {
@@ -237,6 +237,131 @@ fn stdio_server_supports_safe_delete_preview_then_apply() {
         &json!({ "jsonrpc": "2.0", "id": 6, "method": "shutdown" }),
     );
     let _shutdown_resp = read_response_with_id(&mut stdout, 6);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
+fn stdio_server_safe_delete_targets_most_nested_method_under_cursor() {
+    let _lock = crate::support::stdio_server_lock();
+
+    // The cursor is placed on `inner`, which is declared inside a local class inside `outer`.
+    // The `outer` method's declaration range *also* covers this offset; we must ensure the
+    // server targets `inner` (the most-nested method) rather than `outer`.
+    let fixture = r#"
+class A {
+    void outer() {
+        class Local {
+            void inner() {}
+
+            void callInner() {
+                inner();
+            }
+        }
+
+        new Local().callInner();
+    }
+}
+"#;
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // 1) initialize
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    // 2) open document (required for safe delete symbol IDs to be stable in the stdio server)
+    let uri: Uri = "file:///test/A.java".parse().unwrap();
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": { "uri": uri, "languageId": "java", "version": 1, "text": fixture }
+            }
+        }),
+    );
+
+    // 3) request code actions at the `inner` method declaration (inside a local class)
+    let decl_offset = fixture
+        .find("void inner")
+        .expect("method decl")
+        .saturating_add("void ".len());
+    let line_index = nova_core::LineIndex::new(fixture);
+    let decl_pos = line_index.position(
+        fixture,
+        nova_core::TextSize::from(u32::try_from(decl_offset).expect("u32 offset")),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": { "uri": uri },
+                "range": {
+                    "start": { "line": decl_pos.line, "character": decl_pos.character },
+                    "end": { "line": decl_pos.line, "character": decl_pos.character }
+                },
+                "context": { "diagnostics": [] }
+            }
+        }),
+    );
+
+    let code_action_resp = read_response_with_id(&mut stdout, 2);
+    let actions = code_action_resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .expect("code actions array");
+    let safe_delete_action = actions
+        .iter()
+        .find(|action| {
+            action
+                .get("title")
+                .and_then(|v| v.as_str())
+                .is_some_and(|t| t.starts_with("Safe delete"))
+        })
+        .expect("safe delete action");
+    assert_eq!(
+        safe_delete_action
+            .pointer("/data/report/target/name")
+            .and_then(|v| v.as_str()),
+        Some("inner")
+    );
+
+    // 4) shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 

@@ -1311,48 +1311,14 @@ pub fn extract_variable(
 
         // For explicit-typed extraction we must be confident about the type. If we don't have
         // type-checker type information and our parser-only inference fell back to the generic
-        // "Object" type, we generally want to avoid guessing.
+        // "Object" type, we intentionally refuse the explicit-type variant (the `var` variant is
+        // still offered). This keeps code actions high-signal in unit-test mode (`TextDatabase`)
+        // where we don't have full type information.
         //
         // Note: if the type-checker *does* report `Object`, treat it as a real inferred type and
         // allow it.
-        //
-        // However, if the extracted expression is in a value-required context (e.g. inside another
-        // expression), it cannot be `void`, and `Object` is a safe explicit type fallback (via
-        // boxing where needed). The main case we must still reject is extracting the *entire*
-        // expression of an expression statement (`foo();`), since the expression could be `void`.
-        //
-        // Also reject expressions that require a target type (lambdas/method references/array
-        // initializers), since `Object` is not a valid fallback type for those constructs.
         if typeck_ty.is_none() && parser_ty == "Object" {
-            fn requires_target_type(expr: &ast::Expression) -> bool {
-                match expr {
-                    ast::Expression::ParenthesizedExpression(p) => {
-                        p.expression().is_some_and(|e| requires_target_type(&e))
-                    }
-                    ast::Expression::LambdaExpression(_)
-                    | ast::Expression::MethodReferenceExpression(_)
-                    | ast::Expression::ConstructorReferenceExpression(_)
-                    | ast::Expression::ArrayInitializer(_) => true,
-                    _ => false,
-                }
-            }
-
-            if requires_target_type(&expr) {
-                return Err(RefactorError::TypeInferenceFailed);
-            }
-            if let ast::Statement::ExpressionStatement(expr_stmt) = &stmt {
-                if let Some(stmt_expr) = expr_stmt.expression() {
-                    let stmt_expr_range = trimmed_syntax_range(stmt_expr.syntax());
-                    let stmt_expr_range_ws = trim_range(text, syntax_range(stmt_expr.syntax()));
-                    if (stmt_expr_range.start == selection.start
-                        && stmt_expr_range.end == selection.end)
-                        || (stmt_expr_range_ws.start == selection.start
-                            && stmt_expr_range_ws.end == selection.end)
-                    {
-                        return Err(RefactorError::TypeInferenceFailed);
-                    }
-                }
-            }
+            return Err(RefactorError::TypeInferenceFailed);
         }
 
         // When emitting an explicit type (instead of `var`), prefer parser-inferred names when
