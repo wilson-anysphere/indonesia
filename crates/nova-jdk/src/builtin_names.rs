@@ -51,6 +51,7 @@ mod tests {
 
     use super::BUILTIN_JDK_BINARY_NAMES;
     use crate::JdkIndex;
+    use nova_types::MINIMAL_JDK_BINARY_NAMES;
 
     #[test]
     fn builtin_jdk_names_are_sorted_and_unique() {
@@ -80,6 +81,20 @@ mod tests {
             assert!(
                 name_set.contains(name),
                 "expected builtin index to contain {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn builtin_index_covers_minimal_type_store_names() {
+        // `nova-types` has a small "minimal JDK" type model that is used in many unit tests and
+        // also as a fallback for typechecking behavior. Nova's built-in JDK name index should
+        // include at least those types so name resolution works in dependency-free mode.
+        let builtin: HashSet<&str> = BUILTIN_JDK_BINARY_NAMES.iter().copied().collect();
+        for &name in MINIMAL_JDK_BINARY_NAMES {
+            assert!(
+                builtin.contains(name),
+                "BUILTIN_JDK_BINARY_NAMES is missing required minimal JDK type {name}"
             );
         }
     }
