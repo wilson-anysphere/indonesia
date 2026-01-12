@@ -2432,6 +2432,13 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         loader: &mut ExternalTypeLoader<'_>,
         binary_name: &str,
     ) -> Option<ClassId> {
+        // Mirror resolver behavior: application class loaders cannot define classes in `java.*`,
+        // so even if the workspace contains a `java.*` definition we should not load it for
+        // downstream type checking (it would otherwise "rescue" unresolved `java.*` references).
+        if binary_name.starts_with("java.") {
+            return None;
+        }
+
         if self.workspace_loaded.contains(binary_name) {
             return Some(loader.store.intern_class_id(binary_name));
         }
@@ -5952,6 +5959,17 @@ fn define_source_types<'idx>(
         else {
             continue;
         };
+
+        // Mirror the resolver's `java.*` handling: application class loaders cannot define
+        // `java.*` packages, so even if a workspace source file declares a `java.*` type we
+        // must not expose its members to downstream type checking (it would otherwise be able to
+        // "rescue" unresolved `java.*` references).
+        //
+        // Keep the placeholder `ClassDef` allocated by `intern_class_id` so `ClassId`s remain
+        // stable for any already-interned references, but do not define a real class body.
+        if name.starts_with("java.") {
+            continue;
+        }
 
         let class_id = loader.store.intern_class_id(&name);
         let kind = match item {
