@@ -56,18 +56,21 @@ pub struct SearchResult {
     pub score: MatchScore,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 struct CandidateKey<'a> {
     id: SymbolId,
     score: MatchScore,
     rank_key: RankKey,
-    name: &'a str,
-    qualified_name: &'a str,
-    location_file: &'a str,
-    location_line: u32,
-    location_column: u32,
-    ast_id: u32,
+    sym: &'a Symbol,
 }
+
+impl PartialEq for CandidateKey<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for CandidateKey<'_> {}
 
 impl Ord for CandidateKey<'_> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
@@ -80,33 +83,33 @@ impl Ord for CandidateKey<'_> {
         }
 
         // Shorter names rank higher for the same fuzzy score.
-        ord = other.name.len().cmp(&self.name.len());
+        ord = other.sym.name.len().cmp(&self.sym.name.len());
         if ord != Ordering::Equal {
             return ord;
         }
 
         // Stable disambiguators.
-        ord = other.name.cmp(self.name);
+        ord = other.sym.name.cmp(&self.sym.name);
         if ord != Ordering::Equal {
             return ord;
         }
-        ord = other.qualified_name.cmp(self.qualified_name);
+        ord = other.sym.qualified_name.cmp(&self.sym.qualified_name);
         if ord != Ordering::Equal {
             return ord;
         }
-        ord = other.location_file.cmp(self.location_file);
+        ord = other.sym.location.file.cmp(&self.sym.location.file);
         if ord != Ordering::Equal {
             return ord;
         }
-        ord = other.location_line.cmp(&self.location_line);
+        ord = other.sym.location.line.cmp(&self.sym.location.line);
         if ord != Ordering::Equal {
             return ord;
         }
-        ord = other.location_column.cmp(&self.location_column);
+        ord = other.sym.location.column.cmp(&self.sym.location.column);
         if ord != Ordering::Equal {
             return ord;
         }
-        ord = other.ast_id.cmp(&self.ast_id);
+        ord = other.sym.ast_id.cmp(&self.sym.ast_id);
         if ord != Ordering::Equal {
             return ord;
         }
@@ -339,12 +342,7 @@ impl SymbolSearchIndex {
                     id,
                     score,
                     rank_key: score_key,
-                    name: sym.name.as_str(),
-                    qualified_name: sym.qualified_name.as_str(),
-                    location_file: sym.location.file.as_str(),
-                    location_line: sym.location.line,
-                    location_column: sym.location.column,
-                    ast_id: sym.ast_id,
+                    sym,
                 }
             }
 
@@ -425,7 +423,7 @@ impl SymbolSearchIndex {
                 .into_iter()
                 .map(|Reverse(res)| SearchResult {
                     id: res.id,
-                    symbol: self.symbols[res.id as usize].symbol.clone(),
+                    symbol: res.sym.clone(),
                     score: res.score,
                 })
                 .collect();
@@ -831,12 +829,7 @@ mod tests {
                 id,
                 score,
                 rank_key: score.rank_key(),
-                name: sym.name.as_str(),
-                qualified_name: sym.qualified_name.as_str(),
-                location_file: sym.location.file.as_str(),
-                location_line: sym.location.line,
-                location_column: sym.location.column,
-                ast_id: sym.ast_id,
+                sym,
             });
         };
 
@@ -870,7 +863,7 @@ mod tests {
             .into_iter()
             .map(|res| SearchResult {
                 id: res.id,
-                symbol: index.symbols[res.id as usize].symbol.clone(),
+                symbol: res.sym.clone(),
                 score: res.score,
             })
             .collect();
