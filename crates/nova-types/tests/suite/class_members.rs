@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use nova_types_bridge::ExternalTypeLoader;
 use nova_types::{
     resolve_constructor_call, resolve_field, CallKind, FieldStub, MethodResolution, MethodStub,
     Type, TypeDefStub, TypeEnv, TypeProvider, TypeStore,
