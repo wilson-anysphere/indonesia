@@ -7735,7 +7735,7 @@ fn record_lightweight_expr(
                     java_syntax::ast::SwitchArmBody::Stmt(stmt) => record_lightweight_stmt(
                         file,
                         text,
-                        stmt,
+                        stmt.as_ref(),
                         type_scopes,
                         scope_result,
                         resolver,
