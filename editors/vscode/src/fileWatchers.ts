@@ -31,9 +31,8 @@ const BUILD_SYSTEM_GLOB_PATTERNS = [
   '**/gradlew.bat',
   '**/gradle/wrapper/gradle-wrapper.properties',
   '**/gradle/wrapper/gradle-wrapper.jar',
-  '**/libs.versions.toml',
-  // Gradle version catalogs can be named `*.versions.toml` and live in `gradle/`.
-  '**/gradle/*.versions.toml',
+  // Gradle version catalogs can be named `*.versions.toml` and may live anywhere.
+  '**/*.versions.toml',
 
   // Bazel build configuration.
   '**/WORKSPACE',
