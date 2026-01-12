@@ -176,8 +176,8 @@ Nova will need to extend LSP for Java-specific needs:
 │                                                                  │
 │  BUILD EXTENSIONS                                                │
 │  • nova/buildProject - trigger build                            │
-│  • nova/buildProgress - build progress notifications            │
-│  • nova/buildDiagnostics - build errors                         │
+│  • nova/build/status - poll build status                        │
+│  • nova/build/diagnostics - build errors/diagnostics            │
 │                                                                  │
 │  REFACTORING EXTENSIONS                                          │
 │  • nova/refactor/preview - preview refactoring changes          │
