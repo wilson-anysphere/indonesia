@@ -288,6 +288,35 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_reuses_workspace_salsa_for_cross_file_import_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
+        fs::create_dir_all(root.join("src/foo")).unwrap();
+        fs::create_dir_all(root.join("src/bar")).unwrap();
+        let file_a = root.join("src/foo/A.java");
+        let file_b = root.join("src/bar/B.java");
+        fs::write(&file_a, "package foo; public class A {}".as_bytes()).unwrap();
+        fs::write(
+            &file_b,
+            "package bar; import foo.A; public class B { A a; }".as_bytes(),
+        )
+        .unwrap();
+
+        let workspace = crate::Workspace::open(&root).unwrap();
+        let snapshot = workspace.snapshot();
+        let file_id_b = snapshot.file_id(&file_b).expect("file id for B");
+
+        let diagnostics = nova_ide::file_diagnostics(&snapshot, file_id_b);
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code.as_ref() == "unresolved-import"),
+            "expected cross-file import to resolve when using workspace snapshot salsa db, got: {diagnostics:?}"
+        );
+    }
+
+    #[test]
     fn from_engine_prefers_salsa_file_contents_over_vfs_reads() {
         let dir = tempfile::tempdir().unwrap();
         // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
