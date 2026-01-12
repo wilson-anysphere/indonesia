@@ -2019,6 +2019,14 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 fn exists_as_jar(path: &Path) -> bool {
+    let is_jar = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"));
+    if !is_jar {
+        return false;
+    }
+
     // Maven dependency artifacts are typically `.jar` files, but some build systems (and test
     // fixtures) can "explode" jars into directories (often still ending with `.jar`).
     // Missing artifacts are treated as absent so downstream indexing doesn't try to open
