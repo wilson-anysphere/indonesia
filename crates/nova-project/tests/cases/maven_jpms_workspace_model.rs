@@ -129,3 +129,72 @@ fn maven_workspace_model_populates_module_path_for_jpms_projects() {
     assert_eq!(model.modules, model2.modules);
     assert_eq!(model.jpms_modules, model2.jpms_modules);
 }
+
+#[test]
+fn maven_workspace_model_keeps_dependency_jars_on_classpath_when_jpms_disabled() {
+    let tmp = tempdir().expect("tempdir");
+    let workspace_root = tmp.path().join("workspace");
+    let maven_repo = tmp.path().join("repo");
+    fs::create_dir_all(&workspace_root).expect("mkdir workspace");
+    fs::create_dir_all(&maven_repo).expect("mkdir repo");
+
+    let guava_jar = maven_repo.join("com/google/guava/guava/33.0.0-jre/guava-33.0.0-jre.jar");
+    fs::create_dir_all(guava_jar.parent().expect("jar parent")).expect("mkdir jar parent");
+    fs::write(&guava_jar, b"").expect("write jar placeholder");
+
+    fs::write(
+        workspace_root.join("pom.xml"),
+        r#"<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>app</artifactId>
+  <version>1.0-SNAPSHOT</version>
+
+  <properties>
+    <maven.compiler.source>17</maven.compiler.source>
+    <maven.compiler.target>17</maven.compiler.target>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.google.guava</groupId>
+      <artifactId>guava</artifactId>
+      <version>33.0.0-jre</version>
+    </dependency>
+  </dependencies>
+ </project>
+"#,
+    )
+    .expect("write pom.xml");
+
+    let src_dir = workspace_root.join("src/main/java/com/example");
+    fs::create_dir_all(&src_dir).expect("mkdir src/main/java");
+    fs::write(src_dir.join("Main.java"), "package com.example; class Main {}")
+        .expect("write Main.java");
+
+    let options = LoadOptions {
+        maven_repo: Some(maven_repo),
+        ..LoadOptions::default()
+    };
+    let model =
+        load_workspace_model_with_options(&workspace_root, &options).expect("load workspace model");
+    assert_eq!(model.build_system, BuildSystem::Maven);
+    assert_eq!(model.modules.len(), 1);
+
+    let module = &model.modules[0];
+
+    assert!(
+        module
+            .module_path
+            .iter()
+            .all(|e| e.kind != ClasspathEntryKind::Jar),
+        "expected no jars on module-path when JPMS is disabled"
+    );
+    assert!(
+        module
+            .classpath
+            .iter()
+            .any(|e| e.kind == ClasspathEntryKind::Jar && e.path == guava_jar),
+        "expected Guava jar entry to remain on classpath when JPMS is disabled"
+    );
+}
