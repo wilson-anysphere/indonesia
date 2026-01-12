@@ -4108,6 +4108,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror 1.0.69",
+ "toml",
  "walkdir",
  "zip 2.4.2",
 ]

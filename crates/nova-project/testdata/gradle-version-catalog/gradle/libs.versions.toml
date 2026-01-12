@@ -1,0 +1,12 @@
+[versions]
+guava = "33.0.0-jre"
+slf4j = "2.0.12"
+
+[libraries]
+guava = { module = "com.google.guava:guava", version.ref = "guava" }
+slf4j-api = { group = "org.slf4j", name = "slf4j-api", version.ref = "slf4j" }
+junit-jupiter-api = { module = "org.junit.jupiter:junit-jupiter-api", version = "5.10.0" }
+
+[bundles]
+test-libs = ["junit-jupiter-api"]
+

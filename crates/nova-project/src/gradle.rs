@@ -5,6 +5,7 @@ use std::sync::OnceLock;
 use regex::Regex;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use toml::Value;
 use walkdir::WalkDir;
 
 use crate::discover::{LoadOptions, ProjectError};
@@ -340,6 +341,7 @@ pub(crate) fn load_gradle_project(
             root_java = java;
         }
     }
+    let version_catalog = load_gradle_version_catalog(root);
 
     for module_name in module_names {
         let project_path = if module_name == "." {
@@ -491,7 +493,10 @@ pub(crate) fn load_gradle_project(
         }
 
         // Dependency extraction is best-effort; useful for later external jar resolution.
-        dependencies.extend(parse_gradle_dependencies(&module_root));
+        dependencies.extend(parse_gradle_dependencies(
+            &module_root,
+            version_catalog.as_ref(),
+        ));
 
         // Best-effort: add local jars/directories referenced via `files(...)` / `fileTree(...)`.
         // This intentionally does not attempt full Gradle dependency resolution.
@@ -620,6 +625,7 @@ pub(crate) fn load_gradle_workspace_model(
         .gradle_user_home
         .clone()
         .or_else(default_gradle_user_home);
+    let version_catalog = load_gradle_version_catalog(root);
 
     let mut module_configs = Vec::new();
     for module_ref in module_refs {
@@ -783,7 +789,6 @@ pub(crate) fn load_gradle_workspace_model(
         // Best-effort: add local jars/directories referenced via `files(...)` / `fileTree(...)`.
         // This intentionally does not attempt full Gradle dependency resolution.
         classpath.extend(parse_gradle_local_classpath_entries(&module_root));
-
         for entry in &options.classpath_overrides {
             classpath.push(ClasspathEntry {
                 kind: if entry.extension().is_some_and(|ext| ext == "jar") {
@@ -794,7 +799,7 @@ pub(crate) fn load_gradle_workspace_model(
                 path: entry.clone(),
             });
         }
-        let mut dependencies = parse_gradle_dependencies(&module_root);
+        let mut dependencies = parse_gradle_dependencies(&module_root, version_catalog.as_ref());
 
         // Sort/dedup before resolving jars so we don't scan the cache repeatedly
         // for the same coordinates.
@@ -1403,7 +1408,132 @@ fn parse_java_version_assignment(line: &str, key: &str) -> Option<JavaVersion> {
     JavaVersion::parse(rest)
 }
 
-fn parse_gradle_dependencies(module_root: &Path) -> Vec<Dependency> {
+const GRADLE_DEPENDENCY_CONFIGS: &str =
+    r"(?:implementation|api|compileOnly|runtimeOnly|testImplementation|testRuntimeOnly|testCompileOnly|annotationProcessor|testAnnotationProcessor|kapt|kaptTest)";
+
+#[derive(Debug, Clone, Default)]
+struct GradleVersionCatalog {
+    versions: HashMap<String, String>,
+    libraries: HashMap<String, GradleVersionCatalogLibrary>,
+    bundles: HashMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Clone)]
+struct GradleVersionCatalogLibrary {
+    group_id: String,
+    artifact_id: String,
+    version: Option<String>,
+}
+
+fn load_gradle_version_catalog(workspace_root: &Path) -> Option<GradleVersionCatalog> {
+    let catalog_path = workspace_root.join("gradle").join("libs.versions.toml");
+    let contents = std::fs::read_to_string(catalog_path).ok()?;
+    parse_gradle_version_catalog_from_toml(&contents)
+}
+
+fn parse_gradle_version_catalog_from_toml(contents: &str) -> Option<GradleVersionCatalog> {
+    let root: Value = toml::from_str(contents).ok()?;
+    let root = root.as_table()?;
+
+    let mut catalog = GradleVersionCatalog::default();
+
+    if let Some(versions) = root.get("versions").and_then(Value::as_table) {
+        for (k, v) in versions {
+            if let Some(v) = v.as_str() {
+                catalog.versions.insert(k.to_string(), v.to_string());
+            }
+        }
+    }
+
+    if let Some(libraries) = root.get("libraries").and_then(Value::as_table) {
+        for (alias, value) in libraries {
+            if let Some(lib) = parse_gradle_version_catalog_library(value, &catalog.versions) {
+                catalog.libraries.insert(alias.to_string(), lib);
+            }
+        }
+    }
+
+    if let Some(bundles) = root.get("bundles").and_then(Value::as_table) {
+        for (bundle_alias, value) in bundles {
+            let Some(items) = value.as_array() else {
+                continue;
+            };
+            let libs = items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>();
+            if !libs.is_empty() {
+                catalog.bundles.insert(bundle_alias.to_string(), libs);
+            }
+        }
+    }
+
+    Some(catalog)
+}
+
+fn parse_gradle_version_catalog_library(
+    value: &Value,
+    versions: &HashMap<String, String>,
+) -> Option<GradleVersionCatalogLibrary> {
+    match value {
+        // Not part of the requirements, but cheap to support.
+        Value::String(text) => {
+            let (group_id, artifact_id, version) = parse_maybe_maven_coord(text)?;
+            Some(GradleVersionCatalogLibrary {
+                group_id,
+                artifact_id,
+                version: Some(version),
+            })
+        }
+        Value::Table(table) => {
+            let (group_id, artifact_id) = if let Some(module) =
+                table.get("module").and_then(Value::as_str)
+            {
+                let (group_id, artifact_id) = module.split_once(':')?;
+                (group_id.to_string(), artifact_id.to_string())
+            } else {
+                let group_id = table.get("group").and_then(Value::as_str)?;
+                let artifact_id = table.get("name").and_then(Value::as_str)?;
+                (group_id.to_string(), artifact_id.to_string())
+            };
+
+            let version = match table.get("version") {
+                Some(Value::String(v)) => Some(v.to_string()),
+                Some(Value::Table(version_table)) => version_table
+                    .get("ref")
+                    .and_then(Value::as_str)
+                    .and_then(|alias| versions.get(alias))
+                    .cloned(),
+                _ => None,
+            };
+
+            Some(GradleVersionCatalogLibrary {
+                group_id,
+                artifact_id,
+                version,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn parse_maybe_maven_coord(text: &str) -> Option<(String, String, String)> {
+    let text = text.trim();
+    let mut parts = text.split(':');
+    let group_id = parts.next()?.trim().to_string();
+    let artifact_id = parts.next()?.trim().to_string();
+    let version = parts.next()?.trim().to_string();
+    if group_id.is_empty() || artifact_id.is_empty() || version.is_empty() {
+        return None;
+    }
+    Some((group_id, artifact_id, version))
+}
+
+fn parse_gradle_dependencies(
+    module_root: &Path,
+    version_catalog: Option<&GradleVersionCatalog>,
+) -> Vec<Dependency> {
     let candidates = ["build.gradle.kts", "build.gradle"]
         .into_iter()
         .map(|name| module_root.join(name))
@@ -1416,7 +1546,7 @@ fn parse_gradle_dependencies(module_root: &Path) -> Vec<Dependency> {
             continue;
         };
 
-        out.extend(parse_gradle_dependencies_from_text(&contents));
+        out.extend(parse_gradle_dependencies_from_text(&contents, version_catalog));
     }
     out
 }
@@ -1538,7 +1668,10 @@ fn parse_gradle_local_classpath_entries_from_text(
     out
 }
 
-fn parse_gradle_dependencies_from_text(contents: &str) -> Vec<Dependency> {
+fn parse_gradle_dependencies_from_text(
+    contents: &str,
+    version_catalog: Option<&GradleVersionCatalog>,
+) -> Vec<Dependency> {
     let mut deps = Vec::new();
 
     // `implementation "g:a:v"` and similar.
@@ -1547,7 +1680,7 @@ fn parse_gradle_dependencies_from_text(contents: &str) -> Vec<Dependency> {
         // Keep this list conservative: only configurations that are commonly used for
         // Java compilation or annotation processing. This is best-effort dependency extraction,
         // not a full Gradle parser.
-        let configs = r"(?:implementation|api|compileOnly|runtimeOnly|testImplementation|testRuntimeOnly|testCompileOnly|annotationProcessor|testAnnotationProcessor|kapt|kaptTest)";
+        let configs = GRADLE_DEPENDENCY_CONFIGS;
 
         Regex::new(&format!(
             r#"(?i)\b{configs}\s*\(?\s*['"]([^:'"]+):([^:'"]+):([^'"]+)['"]"#,
@@ -1573,7 +1706,7 @@ fn parse_gradle_dependencies_from_text(contents: &str) -> Vec<Dependency> {
     // language parser.
     static RE_MAP: OnceLock<Regex> = OnceLock::new();
     let re_map = RE_MAP.get_or_init(|| {
-        let configs = r"(?:implementation|api|compileOnly|runtimeOnly|testImplementation|testRuntimeOnly|testCompileOnly|annotationProcessor|testAnnotationProcessor|kapt|kaptTest)";
+        let configs = GRADLE_DEPENDENCY_CONFIGS;
 
         // Notes:
         // - `\s` matches newlines in Rust regex, which lets us handle typical multi-line map args.
@@ -1595,8 +1728,119 @@ fn parse_gradle_dependencies_from_text(contents: &str) -> Vec<Dependency> {
             type_: None,
         });
     }
+
+    // Version catalog references (`implementation(libs.foo)` / `implementation libs.foo`).
+    if let Some(version_catalog) = version_catalog {
+        deps.extend(resolve_version_catalog_dependencies(contents, version_catalog));
+    }
     sort_dedup_dependencies(&mut deps);
     deps
+}
+
+fn resolve_version_catalog_dependencies(
+    contents: &str,
+    version_catalog: &GradleVersionCatalog,
+) -> Vec<Dependency> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        let configs = GRADLE_DEPENDENCY_CONFIGS;
+        Regex::new(&format!(
+            r#"(?i)\b{configs}\s*\(?\s*libs\.([A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)(?:\.get\(\))?\s*(?:\)|\s|$)"#,
+        ))
+        .expect("valid regex")
+    });
+
+    let mut deps = Vec::new();
+    for caps in re.captures_iter(contents) {
+        let Some(reference) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        deps.extend(resolve_version_catalog_reference(version_catalog, reference));
+    }
+    deps
+}
+
+fn resolve_version_catalog_reference(
+    version_catalog: &GradleVersionCatalog,
+    reference: &str,
+) -> Vec<Dependency> {
+    let reference = reference.trim();
+    if reference.is_empty() {
+        return Vec::new();
+    }
+
+    if let Some(bundle_accessor) = reference.strip_prefix("bundles.") {
+        let Some(bundle) =
+            resolve_version_catalog_key(&version_catalog.bundles, bundle_accessor)
+        else {
+            return Vec::new();
+        };
+
+        let mut deps = Vec::new();
+        for lib_alias in bundle {
+            let Some(lib) = version_catalog
+                .libraries
+                .get(lib_alias)
+                .or_else(|| resolve_version_catalog_key(&version_catalog.libraries, lib_alias))
+            else {
+                continue;
+            };
+            deps.extend(version_catalog_library_to_dependency(lib));
+        }
+        return deps;
+    }
+
+    let Some(lib) = resolve_version_catalog_key(&version_catalog.libraries, reference) else {
+        return Vec::new();
+    };
+
+    version_catalog_library_to_dependency(lib).into_iter().collect()
+}
+
+fn version_catalog_library_to_dependency(lib: &GradleVersionCatalogLibrary) -> Option<Dependency> {
+    let version = lib.version.clone()?;
+    Some(Dependency {
+        group_id: lib.group_id.clone(),
+        artifact_id: lib.artifact_id.clone(),
+        version: Some(version),
+        scope: None,
+        classifier: None,
+        type_: None,
+    })
+}
+
+fn resolve_version_catalog_key<'a, T>(
+    map: &'a HashMap<String, T>,
+    accessor: &str,
+) -> Option<&'a T> {
+    for candidate in version_catalog_key_candidates(accessor) {
+        if let Some(v) = map.get(&candidate) {
+            return Some(v);
+        }
+    }
+    None
+}
+
+fn version_catalog_key_candidates(accessor: &str) -> Vec<String> {
+    let accessor = accessor.trim();
+    if accessor.is_empty() {
+        return Vec::new();
+    }
+
+    let segments = accessor.split('.').collect::<Vec<_>>();
+    let mut out = Vec::new();
+
+    let push_unique = |out: &mut Vec<String>, s: String| {
+        if !out.iter().any(|existing| existing == &s) {
+            out.push(s);
+        }
+    };
+
+    push_unique(&mut out, segments.join("."));
+    push_unique(&mut out, segments.join("-"));
+    push_unique(&mut out, segments.join("_"));
+
+    out
 }
 
 fn default_gradle_user_home() -> Option<PathBuf> {
@@ -1796,7 +2040,7 @@ dependencies {
 }
 "#;
 
-        let mut deps = parse_gradle_dependencies_from_text(script);
+        let mut deps = parse_gradle_dependencies_from_text(script, None);
         sort_dedup_dependencies(&mut deps);
 
         let got: BTreeSet<_> = deps
@@ -1856,7 +2100,7 @@ dependencies {
 }
 "#;
 
-        let deps = parse_gradle_dependencies_from_text(build_script);
+        let deps = parse_gradle_dependencies_from_text(build_script, None);
         let got: BTreeSet<_> = deps
             .into_iter()
             .map(|d| (d.group_id, d.artifact_id, d.version))
