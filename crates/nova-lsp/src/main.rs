@@ -1153,7 +1153,7 @@ struct AnalysisState {
     decompiled_store: Arc<DecompiledDocumentStore>,
     file_paths: HashMap<nova_db::FileId, PathBuf>,
     file_exists: HashMap<nova_db::FileId, bool>,
-    file_contents: HashMap<nova_db::FileId, String>,
+    file_contents: HashMap<nova_db::FileId, Arc<String>>,
     salsa: nova_db::SalsaDatabase,
 }
 
@@ -1191,17 +1191,20 @@ impl AnalysisState {
         text: String,
         version: i32,
     ) -> nova_db::FileId {
+        let text = Arc::new(text);
         let path = self.path_for_uri(&uri);
-        let id = self.vfs.open_document(path.clone(), text.clone(), version);
+        let id = self
+            .vfs
+            .open_document_arc(path.clone(), Arc::clone(&text), version);
         if let Some(local) = path.as_local_path() {
             self.file_paths.insert(id, local.to_path_buf());
             self.salsa
                 .set_file_path(id, local.to_string_lossy().to_string());
         }
         self.file_exists.insert(id, true);
-        self.file_contents.insert(id, text.clone());
+        self.file_contents.insert(id, Arc::clone(&text));
         self.salsa.set_file_exists(id, true);
-        self.salsa.set_file_text(id, text);
+        self.salsa.set_file_text_arc(id, text);
         id
     }
 
@@ -1216,10 +1219,15 @@ impl AnalysisState {
             .apply_document_changes_lsp(uri, new_version, changes)?;
         if let ChangeEvent::DocumentChanged { file_id, path, .. } = &evt {
             self.file_exists.insert(*file_id, true);
-            if let Ok(text) = self.vfs.read_to_string(path) {
-                self.file_contents.insert(*file_id, text.clone());
+            if let Some(text) = self.vfs.open_document_text_arc(path) {
+                self.file_contents.insert(*file_id, Arc::clone(&text));
                 self.salsa.set_file_exists(*file_id, true);
-                self.salsa.set_file_text(*file_id, text);
+                self.salsa.set_file_text_arc(*file_id, text);
+            } else if let Ok(text) = self.vfs.read_to_string(path) {
+                let text = Arc::new(text);
+                self.file_contents.insert(*file_id, Arc::clone(&text));
+                self.salsa.set_file_exists(*file_id, true);
+                self.salsa.set_file_text_arc(*file_id, text);
             }
         }
         Ok(evt)
@@ -1242,10 +1250,11 @@ impl AnalysisState {
         let (file_id, path) = self.file_id_for_uri(uri);
         match self.vfs.read_to_string(&path) {
             Ok(text) => {
+                let text = Arc::new(text);
                 self.file_exists.insert(file_id, true);
-                self.file_contents.insert(file_id, text.clone());
+                self.file_contents.insert(file_id, Arc::clone(&text));
                 self.salsa.set_file_exists(file_id, true);
-                self.salsa.set_file_text(file_id, text);
+                self.salsa.set_file_text_arc(file_id, text);
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 self.file_exists.insert(file_id, false);
@@ -1310,10 +1319,6 @@ impl AnalysisState {
 
 impl Default for AnalysisState {
     fn default() -> Self {
-        let salsa = nova_db::SalsaDatabase::new();
-        let project = nova_db::ProjectId::from_raw(0);
-        salsa.set_jdk_index(project, Arc::new(nova_jdk::JdkIndex::new()));
-        salsa.set_classpath_index(project, None);
         let decompiled_store = match DecompiledDocumentStore::from_env() {
             Ok(store) => Arc::new(store),
             Err(err) => {
@@ -1333,8 +1338,13 @@ impl Default for AnalysisState {
         };
 
         let fs = LspFs::new(LocalFs::new(), decompiled_store.clone());
+        let vfs = Vfs::new(fs);
+        let salsa = nova_db::SalsaDatabase::new_with_open_documents(vfs.open_documents());
+        let project = nova_db::ProjectId::from_raw(0);
+        salsa.set_jdk_index(project, Arc::new(nova_jdk::JdkIndex::new()));
+        salsa.set_classpath_index(project, None);
         Self {
-            vfs: Vfs::new(fs),
+            vfs,
             decompiled_store,
             file_paths: HashMap::new(),
             file_exists: HashMap::new(),
@@ -1346,10 +1356,6 @@ impl Default for AnalysisState {
 
 impl AnalysisState {
     fn new_with_memory(memory: &MemoryManager) -> Self {
-        let salsa = nova_db::SalsaDatabase::new_with_memory_manager(memory);
-        let project = nova_db::ProjectId::from_raw(0);
-        salsa.set_jdk_index(project, Arc::new(nova_jdk::JdkIndex::new()));
-        salsa.set_classpath_index(project, None);
         let decompiled_store = match DecompiledDocumentStore::from_env() {
             Ok(store) => Arc::new(store),
             Err(err) => {
@@ -1369,8 +1375,16 @@ impl AnalysisState {
         };
 
         let fs = LspFs::new(LocalFs::new(), decompiled_store.clone());
+        let vfs = Vfs::new(fs);
+        let salsa = nova_db::SalsaDatabase::new_with_memory_manager_with_open_documents(
+            memory,
+            vfs.open_documents(),
+        );
+        let project = nova_db::ProjectId::from_raw(0);
+        salsa.set_jdk_index(project, Arc::new(nova_jdk::JdkIndex::new()));
+        salsa.set_classpath_index(project, None);
         Self {
-            vfs: Vfs::new(fs),
+            vfs,
             decompiled_store,
             file_paths: HashMap::new(),
             file_exists: HashMap::new(),
@@ -1384,7 +1398,7 @@ impl nova_db::Database for AnalysisState {
     fn file_content(&self, file_id: nova_db::FileId) -> &str {
         self.file_contents
             .get(&file_id)
-            .map(String::as_str)
+            .map(|text| text.as_str())
             .unwrap_or("")
     }
 
@@ -2028,7 +2042,7 @@ impl ServerState {
             search.remove_file(&path);
             return;
         }
-        let Some(text) = self.analysis.file_contents.get(&file_id).cloned() else {
+        let Some(text) = self.analysis.file_contents.get(&file_id) else {
             return;
         };
 
@@ -2036,7 +2050,7 @@ impl ServerState {
             .semantic_search
             .write()
             .unwrap_or_else(|err| err.into_inner());
-        search.index_file(path, text);
+        search.index_file(path, text.as_str().to_owned());
     }
 
     fn semantic_search_sync_file_id(&mut self, file_id: DbFileId) {
@@ -2057,7 +2071,7 @@ impl ServerState {
             return;
         }
 
-        let Some(text) = self.analysis.file_contents.get(&file_id).cloned() else {
+        let Some(text) = self.analysis.file_contents.get(&file_id) else {
             return;
         };
 
@@ -2065,7 +2079,7 @@ impl ServerState {
             .semantic_search
             .write()
             .unwrap_or_else(|err| err.into_inner());
-        search.index_file(path, text);
+        search.index_file(path, text.as_str().to_owned());
     }
 
     fn semantic_search_remove_uri(&mut self, uri: &LspUri) {
@@ -2353,7 +2367,7 @@ impl ServerState {
             let Some(text) = self.analysis.file_contents.get(&file_id) else {
                 continue;
             };
-            overlays.insert(uri, Arc::<str>::from(text.to_owned()));
+            overlays.insert(uri, Arc::<str>::from(text.as_str()));
         }
         let snapshot =
             RefactorWorkspaceSnapshot::build(uri, &overlays).map_err(|e| e.to_string())?;
@@ -3517,23 +3531,25 @@ fn resolve_completion_item_with_state(
     state: &ServerState,
 ) -> lsp_types::CompletionItem {
     let uri = completion_item_uri(&item);
-    let text = uri
-        .and_then(|uri| load_document_text(state, uri))
-        .or_else(|| {
-            // Best-effort fallback: resolve against the only open document when the completion
-            // item doesn't carry a URI.
-            let open = state.analysis.vfs.open_documents().snapshot();
-            if open.len() != 1 {
-                return None;
-            }
-            let file_id = open.into_iter().next()?;
-            state.analysis.file_contents.get(&file_id).cloned()
-        });
-
-    match text {
-        Some(text) => nova_lsp::resolve_completion_item(item, &text),
-        None => item,
+    if let Some(uri) = uri {
+        if let Some(text) = load_document_text(state, uri) {
+            return nova_lsp::resolve_completion_item(item, &text);
+        }
     }
+
+    // Best-effort fallback: resolve against the only open document when the completion
+    // item doesn't carry a URI.
+    let open = state.analysis.vfs.open_documents().snapshot();
+    if open.len() != 1 {
+        return item;
+    }
+    let Some(file_id) = open.into_iter().next() else {
+        return item;
+    };
+    let Some(text) = state.analysis.file_contents.get(&file_id) else {
+        return item;
+    };
+    nova_lsp::resolve_completion_item(item, text.as_str())
 }
 
 fn completion_item_uri(item: &lsp_types::CompletionItem) -> Option<&str> {
@@ -3687,7 +3703,12 @@ fn handle_notification(
                     path_from_uri(params.text_document.uri.as_str()),
                 ) {
                     if dist.contains_path(&path) {
-                        if let Some(text) = state.analysis.file_contents.get(file_id).cloned() {
+                        if let Some(text) = state
+                            .analysis
+                            .file_contents
+                            .get(file_id)
+                            .map(|text| text.as_str().to_owned())
+                        {
                             let frontend = Arc::clone(&dist.frontend);
                             let _ = dist.runtime.spawn(async move {
                                 if let Err(err) = frontend.did_change_file(path, text).await {
@@ -3742,10 +3763,14 @@ fn handle_notification(
                         // If the document is not open, record the saved contents as our best view
                         // of the file until we receive a file-watch refresh.
                         let (file_id, _path) = state.analysis.file_id_for_uri(&uri);
+                        let text = Arc::new(text);
                         state.analysis.file_exists.insert(file_id, true);
-                        state.analysis.file_contents.insert(file_id, text.clone());
+                        state
+                            .analysis
+                            .file_contents
+                            .insert(file_id, Arc::clone(&text));
                         state.analysis.salsa.set_file_exists(file_id, true);
-                        state.analysis.salsa.set_file_text(file_id, text);
+                        state.analysis.salsa.set_file_text_arc(file_id, text);
                     }
                 }
                 None => {
@@ -3854,8 +3879,7 @@ fn handle_notification(
                                         .analysis
                                         .file_contents
                                         .get(&file_id)
-                                        .cloned()
-                                        .map(|text| (path, text))
+                                        .map(|text| (path, text.as_str().to_owned()))
                                 }
                             }
                             None => None,
@@ -4316,8 +4340,8 @@ fn handle_code_action(
                 // stable across the code-action → safeDelete request flow.
                 let path = VfsPath::from(&uri);
                 if state.analysis.vfs.overlay().is_open(&path) {
-                    if let Some(text) = state.analysis.vfs.overlay().document_text(&path) {
-                        if let Some(offset) = position_to_offset_utf16(&text, cursor) {
+                    if let Some(text) = state.analysis.vfs.open_document_text_arc(&path) {
+                        if let Some(offset) = position_to_offset_utf16(text.as_str(), cursor) {
                             let mut files: BTreeMap<String, String> = BTreeMap::new();
                             for file_id in state.analysis.vfs.open_documents().snapshot() {
                                 let Some(path) = state.analysis.vfs.path_for_id(file_id) else {
@@ -4329,7 +4353,7 @@ fn handle_code_action(
                                 let Some(text) = state.analysis.file_contents.get(&file_id) else {
                                     continue;
                                 };
-                                files.insert(uri, text.to_owned());
+                                files.insert(uri, text.as_str().to_owned());
                             }
                             let index = Index::new(files);
 
@@ -7360,7 +7384,7 @@ fn open_document_files(state: &ServerState) -> BTreeMap<String, String> {
         let Some(text) = state.analysis.file_contents.get(&file_id) else {
             continue;
         };
-        files.insert(uri, text.to_owned());
+        files.insert(uri, text.as_str().to_owned());
     }
     files
 }
@@ -7653,6 +7677,59 @@ mod tests {
 
         let looked_up = analysis.ensure_loaded(&uri);
         assert_eq!(looked_up, original);
+    }
+
+    #[test]
+    fn open_document_shares_text_arc_between_vfs_and_salsa() {
+        let mut analysis = AnalysisState::default();
+        let dir = tempfile::tempdir().unwrap();
+        let abs = nova_core::AbsPathBuf::new(dir.path().join("Main.java")).unwrap();
+        let uri: lsp_types::Uri = nova_core::path_to_file_uri(&abs).unwrap().parse().unwrap();
+
+        let file_id = analysis.open_document(uri.clone(), "hello world".to_string(), 1);
+
+        let path = analysis.path_for_uri(&uri);
+        let overlay = analysis.vfs.open_document_text_arc(&path).unwrap();
+        let salsa = analysis
+            .salsa
+            .with_snapshot(|snap| snap.file_content(file_id));
+        assert!(Arc::ptr_eq(&overlay, &salsa));
+    }
+
+    #[test]
+    fn apply_changes_updates_salsa_with_overlay_arc() {
+        let mut analysis = AnalysisState::default();
+        let dir = tempfile::tempdir().unwrap();
+        let abs = nova_core::AbsPathBuf::new(dir.path().join("Main.java")).unwrap();
+        let uri: lsp_types::Uri = nova_core::path_to_file_uri(&abs).unwrap().parse().unwrap();
+
+        let file_id = analysis.open_document(uri.clone(), "hello world".to_string(), 1);
+
+        let change = lsp_types::TextDocumentContentChangeEvent {
+            range: Some(lsp_types::Range {
+                start: lsp_types::Position {
+                    line: 0,
+                    character: 6,
+                },
+                end: lsp_types::Position {
+                    line: 0,
+                    character: 11,
+                },
+            }),
+            range_length: None,
+            text: "nova".to_string(),
+        };
+        analysis
+            .apply_document_changes(&uri, 2, &[change])
+            .expect("apply changes");
+
+        let path = analysis.path_for_uri(&uri);
+        let overlay = analysis.vfs.open_document_text_arc(&path).unwrap();
+        let salsa = analysis
+            .salsa
+            .with_snapshot(|snap| snap.file_content(file_id));
+        assert_eq!(salsa.as_str(), "hello nova");
+        assert!(Arc::ptr_eq(&overlay, &salsa));
     }
 
     #[test]

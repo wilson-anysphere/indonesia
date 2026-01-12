@@ -2159,8 +2159,24 @@ impl Database {
         Self::default()
     }
 
+    pub fn new_with_open_documents(open_docs: Arc<OpenDocuments>) -> Self {
+        let mut db = Self::default();
+        db.open_docs = open_docs;
+        db
+    }
+
     pub fn new_with_memory_manager(manager: &MemoryManager) -> Self {
         let db = Self::new();
+        db.register_salsa_memo_evictor(manager);
+        db.register_salsa_cancellation_on_memory_pressure(manager);
+        db
+    }
+
+    pub fn new_with_memory_manager_with_open_documents(
+        manager: &MemoryManager,
+        open_docs: Arc<OpenDocuments>,
+    ) -> Self {
+        let db = Self::new_with_open_documents(open_docs);
         db.register_salsa_memo_evictor(manager);
         db.register_salsa_cancellation_on_memory_pressure(manager);
         db
@@ -2543,6 +2559,155 @@ impl Database {
         use std::collections::hash_map::Entry;
 
         let text = Arc::new(text.into());
+        let content_len_override = if self.open_docs.is_open(file) {
+            Some(0)
+        } else {
+            None
+        };
+        self.input_footprint
+            .record_file_text(file, &text, &text, None, content_len_override);
+        let default_project = ProjectId::from_raw(0);
+        let default_root = SourceRootId::from_raw(0);
+        let (
+            set_default_project,
+            set_default_root,
+            set_default_rel_path,
+            rel_path,
+            project_files_update,
+            set_default_classpath_index,
+            project,
+            init_dirty,
+        ) = {
+            let mut inputs = self.inputs.lock();
+            inputs.file_exists.insert(file, true);
+            inputs.file_content.insert(file, text.clone());
+            inputs.file_prev_content.insert(file, text.clone());
+            inputs.file_last_edit.insert(file, None);
+            if inputs.file_ids.insert(file) {
+                inputs.file_ids_dirty = true;
+            }
+
+            let set_default_project = !inputs.file_project.contains_key(&file);
+            if set_default_project {
+                inputs.file_project.insert(file, default_project);
+            }
+
+            let set_default_root = !inputs.source_root.contains_key(&file);
+            if set_default_root {
+                inputs.source_root.insert(file, default_root);
+            }
+
+            let (set_default_rel_path, rel_path) =
+                if let Some(path) = inputs.file_rel_path.get(&file) {
+                    (false, path.clone())
+                } else {
+                    let path = Arc::new(format!("file-{}.java", file.to_raw()));
+                    inputs.file_rel_path.insert(file, path.clone());
+                    (true, path)
+                };
+
+            let project = *inputs.file_project.get(&file).unwrap_or(&default_project);
+
+            // Provide a minimal `project_files` input so workspace-wide queries can run
+            // in single-file / test scenarios where the host hasn't populated a full
+            // workspace model. Keep deterministic ordering by sorting by `file_rel_path`.
+            let mut project_files_update: Option<Arc<Vec<FileId>>> = None;
+            match inputs.project_files.get(&project) {
+                Some(existing) if existing.as_ref().contains(&file) => {}
+                Some(existing) => {
+                    let mut files = existing.as_ref().clone();
+                    files.push(file);
+                    files.sort_by_key(|file| {
+                        inputs
+                            .file_rel_path
+                            .get(file)
+                            .map(|p| p.as_ref().clone())
+                            .unwrap_or_else(|| format!("file-{}.java", file.to_raw()))
+                    });
+                    files.dedup();
+                    let files = Arc::new(files);
+                    inputs.project_files.insert(project, files.clone());
+                    project_files_update = Some(files);
+                }
+                None => {
+                    let files = Arc::new(vec![file]);
+                    inputs.project_files.insert(project, files.clone());
+                    project_files_update = Some(files);
+                }
+            }
+
+            let set_default_classpath_index = !inputs.classpath_index.contains_key(&project);
+            if set_default_classpath_index {
+                // Optional input used by name resolution; default to `None` so
+                // resolve/import queries can be used without requiring explicit
+                // classpath setup.
+                inputs.classpath_index.insert(project, None);
+            }
+
+            let init_dirty = match inputs.file_is_dirty.entry(file) {
+                Entry::Vacant(entry) => {
+                    entry.insert(false);
+                    true
+                }
+                Entry::Occupied(_) => false,
+            };
+
+            (
+                set_default_project,
+                set_default_root,
+                set_default_rel_path,
+                rel_path,
+                project_files_update.map(|files| (project, files)),
+                set_default_classpath_index,
+                project,
+                init_dirty,
+            )
+        };
+
+        // Keep Salsa input memory tracking in sync for implicit defaults.
+        self.input_footprint
+            .record_file_rel_path_len(file, rel_path.len() as u64);
+        if let Some((project, files)) = project_files_update.as_ref() {
+            let bytes = (files.len() as u64) * (std::mem::size_of::<FileId>() as u64);
+            self.input_footprint
+                .record_project_files_bytes(*project, bytes);
+        }
+
+        let mut db = self.inner.lock();
+        if init_dirty {
+            db.set_file_is_dirty(file, false);
+        }
+        db.set_file_exists(file, true);
+        if set_default_project {
+            db.set_file_project(file, default_project);
+        }
+        if set_default_root {
+            db.set_source_root(file, default_root);
+        }
+        if set_default_rel_path {
+            db.set_file_rel_path(file, rel_path);
+        }
+        if let Some((project, files)) = project_files_update {
+            db.set_project_files(project, files);
+        }
+        if set_default_classpath_index {
+            db.set_classpath_index(project, None);
+        }
+        db.set_file_content(file, text.clone());
+        db.set_file_prev_content(file, text);
+        db.set_file_last_edit(file, None);
+        drop(db);
+
+        // Keep index tracking in sync for implicit defaults.
+        if set_default_classpath_index {
+            self.classpath_index_tracker
+                .set_project_ptr(project, None, 0);
+        }
+    }
+
+    pub fn set_file_text_arc(&self, file: FileId, text: Arc<String>) {
+        use std::collections::hash_map::Entry;
+
         let content_len_override = if self.open_docs.is_open(file) {
             Some(0)
         } else {
