@@ -284,7 +284,7 @@ class Use {
 }
 
 #[test]
-fn jpms_typeck_does_not_allow_classpath_types_from_named_modules() {
+fn jpms_typeck_allows_classpath_types_from_named_modules_via_all_unnamed_readability() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
     let tmp = TempDir::new().unwrap();
@@ -292,8 +292,7 @@ fn jpms_typeck_does_not_allow_classpath_types_from_named_modules() {
     db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
 
     // Simulate WorkspaceLoader flattening: the legacy classpath index contains dep.jar,
-    // but in JPMS mode it should be treated as the unnamed module (not readable by
-    // workspace modules).
+    // and in JPMS mode it should be treated as the unnamed module.
     let classpath = ClasspathIndex::build(&[CpEntry::Jar(test_dep_jar())], None).unwrap();
     db.set_classpath_index(project, Some(ArcEq::new(Arc::new(classpath))));
 
@@ -319,10 +318,10 @@ fn jpms_typeck_does_not_allow_classpath_types_from_named_modules() {
         .jpms_compilation_env(project)
         .expect("expected JPMS compilation env to be built");
     assert!(
-        !env.env
+        env.env
             .graph
             .can_read(&ModuleName::new("workspace.a"), &ModuleName::unnamed()),
-        "workspace.a should not read the unnamed module"
+        "workspace.a should read the unnamed module (classpath) when JPMS classpath entries are present"
     );
     assert!(
         env.classpath.module_of("com.example.dep.Foo").is_none(),
@@ -360,10 +359,305 @@ class Use {
 
     let diags = db.type_diagnostics(file);
     assert!(
-        diags
-            .iter()
-            .any(|d| d.code.as_ref() == "unresolved-type"
-                && d.message.contains("com.example.dep.Foo")),
-        "expected unresolved-type diagnostic for com.example.dep.Foo, got {diags:?}"
+        !diags.iter().any(|d| d.code.as_ref() == "unresolved-type"
+            && d.message.contains("com.example.dep.Foo")),
+        "expected com.example.dep.Foo to resolve without unresolved-type diagnostics, got {diags:?}"
+    );
+}
+
+#[test]
+fn jpms_typeck_requires_transitive_allows_resolution_across_workspace_modules() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let mod_a_root = tmp.path().join("mod-a");
+    let mod_b_root = tmp.path().join("mod-b");
+    let mod_c_root = tmp.path().join("mod-c");
+
+    let info_a =
+        lower_module_info_source_strict("module workspace.a { requires workspace.b; }").unwrap();
+    let info_b = lower_module_info_source_strict(
+        "module workspace.b { requires transitive workspace.c; }",
+    )
+    .unwrap();
+    let info_c =
+        lower_module_info_source_strict("module workspace.c { exports com.example.c; }").unwrap();
+
+    let mut cfg = base_project_config(tmp.path().to_path_buf());
+    cfg.jpms_modules = vec![
+        JpmsModuleRoot {
+            name: ModuleName::new("workspace.a"),
+            root: mod_a_root.clone(),
+            module_info: mod_a_root.join("module-info.java"),
+            info: info_a,
+        },
+        JpmsModuleRoot {
+            name: ModuleName::new("workspace.b"),
+            root: mod_b_root.clone(),
+            module_info: mod_b_root.join("module-info.java"),
+            info: info_b,
+        },
+        JpmsModuleRoot {
+            name: ModuleName::new("workspace.c"),
+            root: mod_c_root.clone(),
+            module_info: mod_c_root.join("module-info.java"),
+            info: info_c,
+        },
+    ];
+    db.set_project_config(project, Arc::new(cfg));
+
+    let file_c = FileId::from_raw(1);
+    set_file(
+        &mut db,
+        project,
+        file_c,
+        "mod-c/src/main/java/com/example/c/C.java",
+        r#"
+package com.example.c;
+
+public class C {}
+"#,
+    );
+
+    let file_a = FileId::from_raw(2);
+    set_file(
+        &mut db,
+        project,
+        file_a,
+        "mod-a/src/main/java/com/example/a/Use.java",
+        r#"
+package com.example.a;
+
+class Use {
+    void m() {
+        com.example.c.C c = null;
+    }
+}
+"#,
+    );
+
+    db.set_project_files(project, Arc::new(vec![file_a, file_c]));
+
+    let env = db
+        .jpms_compilation_env(project)
+        .expect("expected JPMS compilation env to be built");
+    assert!(
+        env.env
+            .graph
+            .can_read(&ModuleName::new("workspace.a"), &ModuleName::new("workspace.c")),
+        "workspace.a should read workspace.c via requires transitive"
+    );
+
+    let diags = db.type_diagnostics(file_a);
+    assert!(
+        !diags.iter().any(|d| d.code.as_ref() == "unresolved-type"
+            && d.message.contains("com.example.c.C")),
+        "expected com.example.c.C to resolve via requires transitive, got {diags:?}"
+    );
+}
+
+#[test]
+fn jpms_typeck_requires_non_transitive_blocks_resolution_across_workspace_modules() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let mod_a_root = tmp.path().join("mod-a");
+    let mod_b_root = tmp.path().join("mod-b");
+    let mod_c_root = tmp.path().join("mod-c");
+
+    let info_a =
+        lower_module_info_source_strict("module workspace.a { requires workspace.b; }").unwrap();
+    let info_b =
+        lower_module_info_source_strict("module workspace.b { requires workspace.c; }").unwrap();
+    let info_c =
+        lower_module_info_source_strict("module workspace.c { exports com.example.c; }").unwrap();
+
+    let mut cfg = base_project_config(tmp.path().to_path_buf());
+    cfg.jpms_modules = vec![
+        JpmsModuleRoot {
+            name: ModuleName::new("workspace.a"),
+            root: mod_a_root.clone(),
+            module_info: mod_a_root.join("module-info.java"),
+            info: info_a,
+        },
+        JpmsModuleRoot {
+            name: ModuleName::new("workspace.b"),
+            root: mod_b_root.clone(),
+            module_info: mod_b_root.join("module-info.java"),
+            info: info_b,
+        },
+        JpmsModuleRoot {
+            name: ModuleName::new("workspace.c"),
+            root: mod_c_root.clone(),
+            module_info: mod_c_root.join("module-info.java"),
+            info: info_c,
+        },
+    ];
+    db.set_project_config(project, Arc::new(cfg));
+
+    let file_c = FileId::from_raw(1);
+    set_file(
+        &mut db,
+        project,
+        file_c,
+        "mod-c/src/main/java/com/example/c/C.java",
+        r#"
+package com.example.c;
+
+public class C {}
+"#,
+    );
+
+    let file_a = FileId::from_raw(2);
+    set_file(
+        &mut db,
+        project,
+        file_a,
+        "mod-a/src/main/java/com/example/a/Use.java",
+        r#"
+package com.example.a;
+
+class Use {
+    void m() {
+        com.example.c.C c = null;
+    }
+}
+"#,
+    );
+
+    db.set_project_files(project, Arc::new(vec![file_a, file_c]));
+
+    let env = db
+        .jpms_compilation_env(project)
+        .expect("expected JPMS compilation env to be built");
+    assert!(
+        !env.env
+            .graph
+            .can_read(&ModuleName::new("workspace.a"), &ModuleName::new("workspace.c")),
+        "workspace.a should not read workspace.c without requires transitive"
+    );
+
+    let diags = db.type_diagnostics(file_a);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "unresolved-type"
+            && d.message.contains("com.example.c.C")),
+        "expected unresolved-type diagnostic for com.example.c.C, got {diags:?}"
+    );
+}
+
+#[test]
+fn jpms_typeck_qualified_exports_are_enforced_between_workspace_modules() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let mod_a_root = tmp.path().join("mod-a");
+    let mod_b_root = tmp.path().join("mod-b");
+    let mod_c_root = tmp.path().join("mod-c");
+
+    let info_a =
+        lower_module_info_source_strict("module workspace.a { requires workspace.b; }").unwrap();
+    let info_b = lower_module_info_source_strict(
+        "module workspace.b { exports com.example.b.hidden to workspace.c; }",
+    )
+    .unwrap();
+    let info_c =
+        lower_module_info_source_strict("module workspace.c { requires workspace.b; }").unwrap();
+
+    let mut cfg = base_project_config(tmp.path().to_path_buf());
+    cfg.jpms_modules = vec![
+        JpmsModuleRoot {
+            name: ModuleName::new("workspace.a"),
+            root: mod_a_root.clone(),
+            module_info: mod_a_root.join("module-info.java"),
+            info: info_a,
+        },
+        JpmsModuleRoot {
+            name: ModuleName::new("workspace.b"),
+            root: mod_b_root.clone(),
+            module_info: mod_b_root.join("module-info.java"),
+            info: info_b,
+        },
+        JpmsModuleRoot {
+            name: ModuleName::new("workspace.c"),
+            root: mod_c_root.clone(),
+            module_info: mod_c_root.join("module-info.java"),
+            info: info_c,
+        },
+    ];
+    db.set_project_config(project, Arc::new(cfg));
+
+    let file_hidden = FileId::from_raw(1);
+    set_file(
+        &mut db,
+        project,
+        file_hidden,
+        "mod-b/src/main/java/com/example/b/hidden/Hidden.java",
+        r#"
+package com.example.b.hidden;
+
+public class Hidden {}
+"#,
+    );
+
+    let file_a = FileId::from_raw(2);
+    set_file(
+        &mut db,
+        project,
+        file_a,
+        "mod-a/src/main/java/com/example/a/UseA.java",
+        r#"
+package com.example.a;
+
+class UseA {
+    void m() {
+        com.example.b.hidden.Hidden h = null;
+    }
+}
+"#,
+    );
+
+    let file_c = FileId::from_raw(3);
+    set_file(
+        &mut db,
+        project,
+        file_c,
+        "mod-c/src/main/java/com/example/c/UseC.java",
+        r#"
+package com.example.c;
+
+class UseC {
+    void m() {
+        com.example.b.hidden.Hidden h = null;
+    }
+}
+"#,
+    );
+
+    db.set_project_files(project, Arc::new(vec![file_a, file_c, file_hidden]));
+
+    let diags_a = db.type_diagnostics(file_a);
+    assert!(
+        diags_a.iter().any(|d| d.code.as_ref() == "unresolved-type"
+            && d.message.contains("com.example.b.hidden.Hidden")),
+        "expected unresolved-type diagnostic for com.example.b.hidden.Hidden in workspace.a, got {diags_a:?}"
+    );
+
+    let diags_c = db.type_diagnostics(file_c);
+    assert!(
+        !diags_c.iter().any(|d| d.code.as_ref() == "unresolved-type"
+            && d.message.contains("com.example.b.hidden.Hidden")),
+        "expected com.example.b.hidden.Hidden to resolve in workspace.c (qualified export), got {diags_c:?}"
     );
 }
