@@ -13,4 +13,3 @@ fn minimal_text_edits_coalesces_same_offset_inserts_across_mixed_newlines() {
     let applied = apply_text_edits(original, &edits).unwrap();
     assert_eq!(applied, formatted);
 }
-
