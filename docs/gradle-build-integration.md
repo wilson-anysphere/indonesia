@@ -216,8 +216,17 @@ Today this is already wired in the reload heuristics:
 
 ## How the snapshot is generated in practice
 
-The snapshot is written whenever `nova-build` executes Gradle for compile config extraction. Common
-call sites include:
+The snapshot is written as a side effect of *some* Gradle queries (not every Gradle invocation).
+In particular:
+
+- `GradleBuild::projects(...)` updates the `projects` mapping, and
+- per-project / batch compile-config extraction updates `javaCompileConfigs`.
+
+Note: calling `BuildManager::java_compile_config_gradle(..., project_path=None)` for a **single**
+project build currently executes Gradle but does **not** necessarily write the snapshot (unless it
+uses the batch multi-project path internally).
+
+Common call sites include:
 
 - **LSP build/classpath endpoints**: `crates/nova-lsp/src/extensions/build.rs`
   - `handle_java_classpath` (classpath + source roots + language level) calls
