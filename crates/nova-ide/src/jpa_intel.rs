@@ -312,7 +312,7 @@ fn fingerprint_sources(
         // This means the cache may produce stale results if a database were to
         // mutate strings in place *and* keep the allocation stable.
         text.len().hash(&mut hasher);
-        (text.as_ptr() as usize).hash(&mut hasher);
+        text.as_ptr().hash(&mut hasher);
     }
     Some(hasher.finish())
 }

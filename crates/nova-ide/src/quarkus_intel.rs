@@ -257,7 +257,7 @@ fn fingerprint_sources(db: &dyn Database, files: &[(PathBuf, FileId)]) -> u64 {
         // prohibitively expensive. The database swaps the backing `String` on
         // edits, so (ptr,len) is a cheap best-effort invalidation signal.
         text.len().hash(&mut hasher);
-        (text.as_ptr() as usize).hash(&mut hasher);
+        text.as_ptr().hash(&mut hasher);
     }
     hasher.finish()
 }

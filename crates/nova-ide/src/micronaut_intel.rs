@@ -231,7 +231,7 @@ fn workspace_signature(db: &dyn Database, root: &Path, cancel: &CancellationToke
         path.hash(&mut hasher);
         let text = db.file_content(id);
         text.len().hash(&mut hasher);
-        (text.as_ptr() as usize).hash(&mut hasher);
+        text.as_ptr().hash(&mut hasher);
     }
 
     Some(hasher.finish())

@@ -93,7 +93,7 @@ impl JpaAnalyzer {
                 // Cheap invalidation signal: hash the string pointer + length.
                 // See docs/09-framework-support.md for the motivation.
                 text.len().hash(&mut hasher);
-                (text.as_ptr() as usize).hash(&mut hasher);
+                text.as_ptr().hash(&mut hasher);
             } else {
                 0usize.hash(&mut hasher);
                 0usize.hash(&mut hasher);

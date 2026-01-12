@@ -362,7 +362,7 @@ fn workspace_fingerprint(db: &dyn Database, files: &[WorkspaceJavaFile]) -> u64 
         // underlying `String`, so `(len, ptr)` acts as a proxy for content identity.
         let text = db.file_content(file.file_id);
         text.len().hash(&mut hasher);
-        (text.as_ptr() as usize).hash(&mut hasher);
+        text.as_ptr().hash(&mut hasher);
     }
     hasher.finish()
 }

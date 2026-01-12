@@ -637,7 +637,7 @@ impl FrameworkWorkspaceCache {
 
             path.hash(&mut hasher);
             text.len().hash(&mut hasher);
-            (text.as_ptr() as usize).hash(&mut hasher);
+            text.as_ptr().hash(&mut hasher);
 
             files.push((path.to_path_buf(), file_id, kind));
         }
@@ -793,7 +793,7 @@ impl FrameworkWorkspaceCache {
             path.hash(&mut hasher);
             let text = db.file_content(*file_id);
             text.len().hash(&mut hasher);
-            (text.as_ptr() as usize).hash(&mut hasher);
+            text.as_ptr().hash(&mut hasher);
         }
         let fingerprint = hasher.finish();
 

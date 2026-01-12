@@ -644,7 +644,7 @@ fn sources_fingerprint(
         // proxy for content identity.
         let text = db.file_content(src.file_id);
         text.len().hash(&mut hasher);
-        (text.as_ptr() as usize).hash(&mut hasher);
+        text.as_ptr().hash(&mut hasher);
     }
     Some(hasher.finish())
 }
