@@ -1,11 +1,19 @@
 #![no_main]
 
+use std::sync::mpsc;
+use std::sync::Mutex;
+use std::sync::OnceLock;
+use std::time::Duration;
+
 use libfuzzer_sys::fuzz_target;
 
 use nova_remote_proto::v3::{
     self, Capabilities, CompressionAlgo, ProtocolVersion, SupportedVersions, WireFrame, WorkerHello,
 };
 use tokio::io::AsyncWriteExt as _;
+
+const MAX_INPUT_SIZE: usize = 256 * 1024; // 256 KiB
+const TIMEOUT: Duration = Duration::from_secs(1);
 
 fn default_hello() -> WorkerHello {
     WorkerHello {
@@ -45,32 +53,78 @@ async fn write_wire_frame(
     Ok(())
 }
 
-fuzz_target!(|data: &[u8]| {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("build tokio runtime");
+struct Runner {
+    input_tx: mpsc::SyncSender<Vec<u8>>,
+    output_rx: Mutex<mpsc::Receiver<()>>,
+}
 
-    rt.block_on(async move {
-        let (router_io, mut worker_io) = tokio::io::duplex(64 * 1024);
+fn runner() -> &'static Runner {
+    static RUNNER: OnceLock<Runner> = OnceLock::new();
+    RUNNER.get_or_init(|| {
+        let (input_tx, input_rx) = mpsc::sync_channel::<Vec<u8>>(0);
+        let (output_tx, output_rx) = mpsc::sync_channel::<()>(0);
 
-        let router_task = tokio::spawn(async move {
-            nova_remote_rpc::RpcConnection::handshake_as_router(router_io, None).await
+        std::thread::spawn(move || {
+            for input in input_rx {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime");
+
+                rt.block_on(async move {
+                    let (router_io, mut worker_io) = tokio::io::duplex(64 * 1024);
+
+                    let router_task = tokio::spawn(async move {
+                        nova_remote_rpc::RpcConnection::handshake_as_router(router_io, None).await
+                    });
+
+                    // Establish a valid handshake so the post-handshake read loop processes `data`.
+                    let _ =
+                        write_wire_frame(&mut worker_io, &WireFrame::Hello(default_hello())).await;
+
+                    // Feed arbitrary bytes into the post-handshake framed transport.
+                    let _ = worker_io.write_all(&input).await;
+                    let _ = worker_io.shutdown().await;
+
+                    // Avoid hanging if the handshake blocks for any reason (e.g. if the runtime changes).
+                    let _ = tokio::time::timeout(std::time::Duration::from_millis(50), router_task)
+                        .await;
+
+                    // Give the spawned read loop a chance to process the buffered input before we drop the
+                    // runtime (which would abort outstanding tasks).
+                    tokio::task::yield_now().await;
+                });
+
+                let _ = output_tx.send(());
+            }
         });
 
-        // Establish a valid handshake so the post-handshake read loop processes `data`.
-        let _ = write_wire_frame(&mut worker_io, &WireFrame::Hello(default_hello())).await;
+        Runner {
+            input_tx,
+            output_rx: Mutex::new(output_rx),
+        }
+    })
+}
 
-        // Feed arbitrary bytes into the post-handshake framed transport.
-        let _ = worker_io.write_all(data).await;
-        let _ = worker_io.shutdown().await;
+fuzz_target!(|data: &[u8]| {
+    let data = &data[..data.len().min(MAX_INPUT_SIZE)];
 
-        // Avoid hanging if the handshake blocks for any reason (e.g. if the runtime changes).
-        let _ = tokio::time::timeout(std::time::Duration::from_millis(50), router_task).await;
+    let runner = runner();
+    runner
+        .input_tx
+        .send(data.to_vec())
+        .expect("v3_framed_transport worker thread exited");
 
-        // Give the spawned read loop a chance to process the buffered input before we drop the
-        // runtime (which would abort outstanding tasks).
-        tokio::task::yield_now().await;
-    });
+    match runner
+        .output_rx
+        .lock()
+        .expect("v3_framed_transport worker receiver poisoned")
+        .recv_timeout(TIMEOUT)
+    {
+        Ok(()) => {}
+        Err(mpsc::RecvTimeoutError::Timeout) => panic!("v3_framed_transport fuzz target timed out"),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("v3_framed_transport worker thread panicked")
+        }
+    }
 });
-

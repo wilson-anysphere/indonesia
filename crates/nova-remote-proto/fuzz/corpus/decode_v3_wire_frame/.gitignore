@@ -1,0 +1,9 @@
+# Keep the checked-in seed corpus small.
+#
+# libFuzzer will write new corpus entries directly into the corpus directory.
+# These are typically extensionless (e.g. sha1-like names or `id:...`), while
+# our checked-in seeds are `*.cbor`.
+*
+!*.cbor
+!.gitignore
+
