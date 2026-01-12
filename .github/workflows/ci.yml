@@ -31,7 +31,7 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: Cargo.lock preflight (metadata --locked)
-        run: cargo metadata --locked --format-version 1 --no-deps > /dev/null
+        run: cargo metadata --locked --format-version 1 > /dev/null
       - name: fmt
         run: cargo fmt --all -- --check
       - name: repo invariants (nova-devtools)

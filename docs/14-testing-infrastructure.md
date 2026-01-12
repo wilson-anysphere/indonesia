@@ -59,7 +59,7 @@ From the repo root (these are the exact commands CI runs; on shared agent hosts 
 #
 # Note: `cargo fmt` does not accept `--locked`, so CI first runs a `cargo metadata --locked`
 # preflight to fail fast if Cargo.lock is out of date.
-cargo metadata --locked --format-version 1 --no-deps > /dev/null
+cargo metadata --locked --format-version 1 > /dev/null
 cargo fmt --all -- --check
 ./scripts/check-repo-invariants.sh
 cargo clippy --locked --all-targets --all-features -- -D warnings
@@ -103,7 +103,7 @@ Nova’s PR gates include `ci.yml`, `perf.yml`, and `javac.yml`. To run the same
 
 ```bash
 # ci.yml (rust)
-cargo metadata --locked --format-version 1 --no-deps > /dev/null
+cargo metadata --locked --format-version 1 > /dev/null
 cargo fmt --all -- --check
 ./scripts/check-repo-invariants.sh
 cargo clippy --locked --all-targets --all-features -- -D warnings
