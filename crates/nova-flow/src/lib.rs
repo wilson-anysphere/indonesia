@@ -7,4 +7,4 @@ mod flow;
 
 pub use crate::cfg::{BasicBlock, BlockId, ControlFlowGraph, Terminator};
 pub use crate::diagnostics::{FlowConfig, FlowDiagnosticKind};
-pub use crate::flow::{analyze, FlowAnalysisResult, NullState};
+pub use crate::flow::{analyze, analyze_with, build_cfg, build_cfg_with, FlowAnalysisResult, NullState};

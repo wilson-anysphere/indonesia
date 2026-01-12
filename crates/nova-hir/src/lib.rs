@@ -242,6 +242,7 @@ pub mod framework {
 
 /// Flow-oriented method-body IR used by `nova-flow`.
 pub mod body;
+pub mod body_lowering;
 
 // ---------------------------------------------------------------------
 // Token-based per-file summary (early-cutoff demo).

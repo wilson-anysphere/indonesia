@@ -543,3 +543,69 @@ class A {
         "expected parameter inlay hint for endIndex; got {param_labels:?}"
     );
 }
+
+#[test]
+fn diagnostics_include_unreachable_code() {
+    let (db, file) = fixture_file(
+        r#"
+class A {
+  void m() {
+    return;
+    int x = 1;
+  }
+}
+"#,
+    );
+
+    let diags = file_diagnostics(&db, file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == "FLOW_UNREACHABLE" && d.severity == Severity::Warning),
+        "expected unreachable-code diagnostic; got {diags:#?}"
+    );
+}
+
+#[test]
+fn diagnostics_include_use_before_assignment() {
+    let (db, file) = fixture_file(
+        r#"
+class A {
+  void m() {
+    int x;
+    int y = x;
+  }
+}
+"#,
+    );
+
+    let diags = file_diagnostics(&db, file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == "FLOW_UNASSIGNED" && d.severity == Severity::Error),
+        "expected use-before-assignment diagnostic; got {diags:#?}"
+    );
+}
+
+#[test]
+fn diagnostics_include_possible_null_dereference() {
+    let (db, file) = fixture_file(
+        r#"
+class A {
+  void m() {
+    String s = null;
+    s.length();
+  }
+}
+"#,
+    );
+
+    let diags = file_diagnostics(&db, file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == "FLOW_NULL_DEREF" && d.severity == Severity::Warning),
+        "expected null-dereference diagnostic; got {diags:#?}"
+    );
+}

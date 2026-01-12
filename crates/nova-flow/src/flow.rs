@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 use nova_hir::body::{
     BinaryOp, Body, ExprId, ExprKind, LocalId, LocalKind, StmtId, StmtKind, UnaryOp,
@@ -35,20 +35,41 @@ pub struct FlowAnalysisResult {
 
 #[must_use]
 pub fn analyze(body: &Body, config: FlowConfig) -> FlowAnalysisResult {
-    let cfg = build_cfg(body);
-    let reachable = cfg.reachable_blocks();
+    analyze_with(body, config, &mut || {})
+}
+
+#[must_use]
+pub fn analyze_with(
+    body: &Body,
+    config: FlowConfig,
+    check_cancelled: &mut dyn FnMut(),
+) -> FlowAnalysisResult {
+    check_cancelled();
+
+    let cfg = build_cfg_with(body, check_cancelled);
+    let reachable = cfg.reachable_blocks_with(check_cancelled);
 
     let mut diagnostics = Vec::new();
 
     if config.report_unreachable {
-        diagnostics.extend(unreachable_diagnostics(body, &cfg, &reachable));
+        diagnostics.extend(unreachable_diagnostics(body, &cfg, &reachable, check_cancelled));
     }
 
-    diagnostics.extend(definite_assignment_diagnostics(body, &cfg, &reachable));
+    diagnostics.extend(definite_assignment_diagnostics(
+        body,
+        &cfg,
+        &reachable,
+        check_cancelled,
+    ));
 
     if config.report_possible_null_deref {
-        diagnostics.extend(null_deref_diagnostics(body, &cfg, &reachable));
+        diagnostics.extend(null_deref_diagnostics(body, &cfg, &reachable, check_cancelled));
     }
+
+    // Best-effort: avoid duplicate reports when the same statement is reached
+    // multiple ways (e.g. via desugarings that may reuse `StmtId`s).
+    let mut seen = HashSet::new();
+    diagnostics.retain(|d| seen.insert((d.code.clone(), d.span)));
 
     FlowAnalysisResult {
         cfg,
@@ -61,9 +82,11 @@ fn unreachable_diagnostics(
     body: &Body,
     cfg: &ControlFlowGraph,
     reachable: &[bool],
+    check_cancelled: &mut dyn FnMut(),
 ) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     for (idx, bb) in cfg.blocks.iter().enumerate() {
+        check_cancelled();
         if reachable[idx] {
             continue;
         }
@@ -88,32 +111,44 @@ fn unreachable_diagnostics(
 // === CFG construction ===
 
 #[derive(Debug, Clone, Copy)]
-struct LoopContext {
+struct BreakContext {
     break_target: BlockId,
-    continue_target: BlockId,
+    continue_target: Option<BlockId>,
 }
 
-fn build_cfg(body: &Body) -> ControlFlowGraph {
-    let mut builder = HirCfgBuilder::new(body);
+#[must_use]
+pub fn build_cfg(body: &Body) -> ControlFlowGraph {
+    build_cfg_with(body, &mut || {})
+}
+
+#[must_use]
+pub fn build_cfg_with(body: &Body, check_cancelled: &mut dyn FnMut()) -> ControlFlowGraph {
+    let mut builder = HirCfgBuilder::new(body, check_cancelled);
     let entry = builder.cfg.new_block();
     let root = body.root();
     let _ = builder.build_stmt(root, entry);
     builder.cfg.build(entry)
 }
 
-struct HirCfgBuilder<'a> {
+struct HirCfgBuilder<'a, 'c> {
     body: &'a Body,
     cfg: CfgBuilder,
-    loop_stack: Vec<LoopContext>,
+    break_stack: Vec<BreakContext>,
+    check_cancelled: &'c mut dyn FnMut(),
 }
 
-impl<'a> HirCfgBuilder<'a> {
-    fn new(body: &'a Body) -> Self {
+impl<'a, 'c> HirCfgBuilder<'a, 'c> {
+    fn new(body: &'a Body, check_cancelled: &'c mut dyn FnMut()) -> Self {
         Self {
             body,
             cfg: CfgBuilder::new(),
-            loop_stack: Vec::new(),
+            break_stack: Vec::new(),
+            check_cancelled,
         }
+    }
+
+    fn check_cancelled(&mut self) {
+        (self.check_cancelled)();
     }
 
     fn build_seq(&mut self, stmts: &[StmtId], entry: BlockId) -> Option<BlockId> {
@@ -121,6 +156,7 @@ impl<'a> HirCfgBuilder<'a> {
         let mut unreachable_current: Option<BlockId> = None;
 
         for &stmt in stmts {
+            self.check_cancelled();
             if let Some(cur) = reachable_current {
                 reachable_current = self.build_stmt(stmt, cur);
                 continue;
@@ -139,6 +175,7 @@ impl<'a> HirCfgBuilder<'a> {
     }
 
     fn build_stmt(&mut self, stmt: StmtId, entry: BlockId) -> Option<BlockId> {
+        self.check_cancelled();
         let stmt_data = self.body.stmt(stmt);
         match &stmt_data.kind {
             StmtKind::Block(stmts) => self.build_seq(stmts, entry),
@@ -222,13 +259,13 @@ impl<'a> HirCfgBuilder<'a> {
                     },
                 );
 
-                self.loop_stack.push(LoopContext {
+                self.break_stack.push(BreakContext {
                     break_target: after_bb,
-                    continue_target: cond_bb,
+                    continue_target: Some(cond_bb),
                 });
 
                 let body_fallthrough = self.build_stmt(*body, body_bb);
-                self.loop_stack.pop();
+                self.break_stack.pop();
 
                 if let Some(bb) = body_fallthrough {
                     self.cfg.set_terminator(
@@ -239,6 +276,50 @@ impl<'a> HirCfgBuilder<'a> {
                         },
                     );
                 }
+
+                Some(after_bb)
+            }
+
+            StmtKind::DoWhile { body, condition } => {
+                let body_bb = self.cfg.new_block();
+                let cond_bb = self.cfg.new_block();
+                let after_bb = self.cfg.new_block();
+
+                self.cfg.set_terminator(
+                    entry,
+                    Terminator::Goto {
+                        target: body_bb,
+                        from: None,
+                    },
+                );
+
+                self.break_stack.push(BreakContext {
+                    break_target: after_bb,
+                    continue_target: Some(cond_bb),
+                });
+
+                let body_fallthrough = self.build_stmt(*body, body_bb);
+                self.break_stack.pop();
+
+                if let Some(bb) = body_fallthrough {
+                    self.cfg.set_terminator(
+                        bb,
+                        Terminator::Goto {
+                            target: cond_bb,
+                            from: None,
+                        },
+                    );
+                }
+
+                self.cfg.set_terminator(
+                    cond_bb,
+                    Terminator::If {
+                        condition: *condition,
+                        then_target: body_bb,
+                        else_target: after_bb,
+                        from: stmt,
+                    },
+                );
 
                 Some(after_bb)
             }
@@ -296,13 +377,13 @@ impl<'a> HirCfgBuilder<'a> {
                     }
                 }
 
-                self.loop_stack.push(LoopContext {
+                self.break_stack.push(BreakContext {
                     break_target: after_bb,
-                    continue_target: update_bb,
+                    continue_target: Some(update_bb),
                 });
 
                 let body_fallthrough = self.build_stmt(*body, body_bb);
-                self.loop_stack.pop();
+                self.break_stack.pop();
 
                 if let Some(bb) = body_fallthrough {
                     self.cfg.set_terminator(
@@ -330,38 +411,128 @@ impl<'a> HirCfgBuilder<'a> {
                 Some(after_bb)
             }
 
+            StmtKind::Switch { expression, arms } => {
+                let after_bb = self.cfg.new_block();
+                let arm_entries: Vec<_> = arms.iter().map(|_| self.cfg.new_block()).collect();
+
+                let has_default = arms.iter().any(|arm| arm.has_default);
+                let mut targets = arm_entries.clone();
+                if !has_default {
+                    targets.push(after_bb);
+                }
+
+                self.cfg.set_terminator(
+                    entry,
+                    Terminator::Switch {
+                        expression: *expression,
+                        targets,
+                        from: stmt,
+                    },
+                );
+
+                self.break_stack.push(BreakContext {
+                    break_target: after_bb,
+                    continue_target: None,
+                });
+
+                for (idx, arm) in arms.iter().enumerate() {
+                    self.check_cancelled();
+                    let arm_entry = arm_entries[idx];
+                    let fallthrough = self.build_stmt(arm.body, arm_entry);
+                    let Some(end) = fallthrough else { continue };
+
+                    let next_target = if arm.is_arrow {
+                        after_bb
+                    } else {
+                        arm_entries
+                            .get(idx + 1)
+                            .copied()
+                            .unwrap_or(after_bb)
+                    };
+
+                    self.cfg.set_terminator(
+                        end,
+                        Terminator::Goto {
+                            target: next_target,
+                            from: None,
+                        },
+                    );
+                }
+
+                self.break_stack.pop();
+                Some(after_bb)
+            }
+
             StmtKind::Try {
                 body,
                 catches,
                 finally,
             } => {
-                // Best-effort: model the happy path only. Catch blocks are built
-                // as disconnected control-flow regions (unreachable in this CFG
-                // without exception edges), which keeps CFG construction robust
-                // for partially-invalid code.
-                let body_fallthrough = self.build_stmt(*body, entry);
-                let Some(body_end) = body_fallthrough else {
-                    // Still build the rest so we can surface unreachable warnings.
-                    for catch in catches {
-                        let bb = self.cfg.new_block();
-                        let _ = self.build_stmt(*catch, bb);
-                    }
-                    if let Some(finally) = finally {
-                        let bb = self.cfg.new_block();
-                        let _ = self.build_stmt(*finally, bb);
-                    }
-                    return None;
-                };
+                let after_bb = self.cfg.new_block();
+                let finally_bb = finally.as_ref().map(|_| self.cfg.new_block());
 
-                for catch in catches {
-                    let bb = self.cfg.new_block();
-                    let _ = self.build_stmt(*catch, bb);
+                let body_entry = self.cfg.new_block();
+                let catch_entries: Vec<_> = catches.iter().map(|_| self.cfg.new_block()).collect();
+
+                if catch_entries.is_empty() {
+                    self.cfg.set_terminator(
+                        entry,
+                        Terminator::Goto {
+                            target: body_entry,
+                            from: Some(stmt),
+                        },
+                    );
+                } else {
+                    let mut targets = Vec::with_capacity(1 + catch_entries.len());
+                    targets.push(body_entry);
+                    targets.extend(catch_entries.iter().copied());
+                    self.cfg.set_terminator(
+                        entry,
+                        Terminator::Multi {
+                            targets,
+                            from: stmt,
+                        },
+                    );
                 }
 
-                match finally {
-                    Some(finally) => self.build_stmt(*finally, body_end),
-                    None => Some(body_end),
+                let join = finally_bb.unwrap_or(after_bb);
+
+                if let Some(end) = self.build_stmt(*body, body_entry) {
+                    self.cfg.set_terminator(
+                        end,
+                        Terminator::Goto {
+                            target: join,
+                            from: None,
+                        },
+                    );
                 }
+
+                for (catch, catch_entry) in catches.iter().copied().zip(catch_entries.into_iter()) {
+                    self.check_cancelled();
+                    if let Some(end) = self.build_stmt(catch, catch_entry) {
+                        self.cfg.set_terminator(
+                            end,
+                            Terminator::Goto {
+                                target: join,
+                                from: None,
+                            },
+                        );
+                    }
+                }
+
+                if let (Some(finally_stmt), Some(finally_entry)) = (*finally, finally_bb) {
+                    if let Some(end) = self.build_stmt(finally_stmt, finally_entry) {
+                        self.cfg.set_terminator(
+                            end,
+                            Terminator::Goto {
+                                target: after_bb,
+                                from: None,
+                            },
+                        );
+                    }
+                }
+
+                Some(after_bb)
             }
 
             StmtKind::Return(value) => {
@@ -388,7 +559,7 @@ impl<'a> HirCfgBuilder<'a> {
 
             StmtKind::Break => {
                 let target = self
-                    .loop_stack
+                    .break_stack
                     .last()
                     .map(|ctx| ctx.break_target)
                     .unwrap_or(entry);
@@ -404,9 +575,10 @@ impl<'a> HirCfgBuilder<'a> {
 
             StmtKind::Continue => {
                 let target = self
-                    .loop_stack
-                    .last()
-                    .map(|ctx| ctx.continue_target)
+                    .break_stack
+                    .iter()
+                    .rev()
+                    .find_map(|ctx| ctx.continue_target)
                     .unwrap_or(entry);
                 self.cfg.set_terminator(
                     entry,
@@ -434,6 +606,7 @@ fn definite_assignment_states(
     body: &Body,
     cfg: &ControlFlowGraph,
     reachable: &[bool],
+    check_cancelled: &mut dyn FnMut(),
 ) -> (Vec<Vec<bool>>, Vec<Vec<bool>>) {
     let n_blocks = cfg.blocks.len();
     let n_locals = body.locals().len();
@@ -446,12 +619,14 @@ fn definite_assignment_states(
 
     let mut worklist = VecDeque::new();
     for idx in 0..n_blocks {
+        check_cancelled();
         if reachable[idx] {
             worklist.push_back(BlockId(idx));
         }
     }
 
     while let Some(bb) = worklist.pop_front() {
+        check_cancelled();
         if !reachable[bb.index()] {
             continue;
         }
@@ -525,11 +700,13 @@ fn definite_assignment_diagnostics(
     body: &Body,
     cfg: &ControlFlowGraph,
     reachable: &[bool],
+    check_cancelled: &mut dyn FnMut(),
 ) -> Vec<Diagnostic> {
-    let (in_states, _) = definite_assignment_states(body, cfg, reachable);
+    let (in_states, _) = definite_assignment_states(body, cfg, reachable, check_cancelled);
     let mut diags = Vec::new();
 
     for (idx, bb) in cfg.blocks.iter().enumerate() {
+        check_cancelled();
         if !reachable[idx] {
             continue;
         }
@@ -575,7 +752,9 @@ fn transfer_stmt_definite_assignment(
         StmtKind::Block(_) => unreachable!("block statements are flattened in CFG"),
         StmtKind::If { .. }
         | StmtKind::While { .. }
+        | StmtKind::DoWhile { .. }
         | StmtKind::For { .. }
+        | StmtKind::Switch { .. }
         | StmtKind::Try { .. }
         | StmtKind::Return(_)
         | StmtKind::Throw(_)
@@ -593,13 +772,14 @@ fn transfer_terminator_definite_assignment(
 ) {
     match *term {
         Terminator::If { condition, .. } => check_expr_assigned(body, condition, state, diags),
+        Terminator::Switch { expression, .. } => check_expr_assigned(body, expression, state, diags),
         Terminator::Return { value, .. } => {
             if let Some(value) = value {
                 check_expr_assigned(body, value, state, diags);
             }
         }
         Terminator::Throw { exception, .. } => check_expr_assigned(body, exception, state, diags),
-        Terminator::Goto { .. } | Terminator::Exit => {}
+        Terminator::Goto { .. } | Terminator::Multi { .. } | Terminator::Exit => {}
     }
 }
 
@@ -626,17 +806,22 @@ fn check_expr_assigned(body: &Body, expr: ExprId, state: &[bool], diags: &mut Ve
             check_expr_assigned(body, *receiver, state, diags)
         }
         ExprKind::Call { receiver, args, .. } => {
-            check_expr_assigned(body, *receiver, state, diags);
+            if let Some(receiver) = receiver {
+                check_expr_assigned(body, *receiver, state, diags);
+            }
             for arg in args {
                 check_expr_assigned(body, *arg, state, diags);
+            }
+        }
+        ExprKind::New { args, .. } | ExprKind::Invalid { children: args } => {
+            for child in args {
+                check_expr_assigned(body, *child, state, diags);
             }
         }
         ExprKind::Null
         | ExprKind::Bool(_)
         | ExprKind::Int(_)
-        | ExprKind::String(_)
-        | ExprKind::New { .. }
-        | ExprKind::Invalid => {}
+        | ExprKind::String(_) => {}
     }
 }
 
@@ -646,6 +831,7 @@ fn null_states(
     body: &Body,
     cfg: &ControlFlowGraph,
     reachable: &[bool],
+    check_cancelled: &mut dyn FnMut(),
 ) -> (Vec<Vec<NullState>>, Vec<Vec<NullState>>) {
     let n_blocks = cfg.blocks.len();
     let n_locals = body.locals().len();
@@ -655,12 +841,14 @@ fn null_states(
 
     let mut worklist = VecDeque::new();
     for idx in 0..n_blocks {
+        check_cancelled();
         if reachable[idx] {
             worklist.push_back(BlockId(idx));
         }
     }
 
     while let Some(bb) = worklist.pop_front() {
+        check_cancelled();
         if !reachable[bb.index()] {
             continue;
         }
@@ -732,21 +920,21 @@ fn edge_narrow_null(
         then_target,
         else_target,
         ..
-    } = cfg.block(pred).terminator
+    } = &cfg.block(pred).terminator
     else {
         return state;
     };
 
-    let branch = if succ == then_target {
+    let branch = if succ == *then_target {
         Some(true)
-    } else if succ == else_target {
+    } else if succ == *else_target {
         Some(false)
     } else {
         None
     };
     let Some(branch) = branch else { return state };
 
-    let Some((local, on_true, on_false)) = null_test(body, condition) else {
+    let Some((local, on_true, on_false)) = null_test(body, *condition) else {
         return state;
     };
 
@@ -805,8 +993,10 @@ fn transfer_nullability(
     // Terminators don't update null state (narrowing happens on edges), but we
     // still need to walk them for completeness in case we add side effects
     // later.
-    match block.terminator {
+    match &block.terminator {
         Terminator::If { .. }
+        | Terminator::Switch { .. }
+        | Terminator::Multi { .. }
         | Terminator::Return { .. }
         | Terminator::Throw { .. }
         | Terminator::Goto { .. }
@@ -833,7 +1023,9 @@ fn transfer_stmt_nullability(body: &Body, stmt: StmtId, state: &mut [NullState])
         StmtKind::Block(_) => unreachable!("block statements are flattened in CFG"),
         StmtKind::If { .. }
         | StmtKind::While { .. }
+        | StmtKind::DoWhile { .. }
         | StmtKind::For { .. }
+        | StmtKind::Switch { .. }
         | StmtKind::Try { .. }
         | StmtKind::Return(_)
         | StmtKind::Throw(_)
@@ -855,7 +1047,7 @@ fn expr_null_state(body: &Body, expr: ExprId, state: &[NullState]) -> NullState 
             .unwrap_or(NullState::Unknown),
         ExprKind::Unary { expr, .. } => expr_null_state(body, *expr, state),
         ExprKind::Binary { .. } => NullState::NonNull,
-        ExprKind::FieldAccess { .. } | ExprKind::Call { .. } | ExprKind::Invalid => {
+        ExprKind::FieldAccess { .. } | ExprKind::Call { .. } | ExprKind::Invalid { .. } => {
             NullState::Unknown
         }
     }
@@ -865,11 +1057,13 @@ fn null_deref_diagnostics(
     body: &Body,
     cfg: &ControlFlowGraph,
     reachable: &[bool],
+    check_cancelled: &mut dyn FnMut(),
 ) -> Vec<Diagnostic> {
-    let (in_states, _) = null_states(body, cfg, reachable);
+    let (in_states, _) = null_states(body, cfg, reachable, check_cancelled);
     let mut diags = Vec::new();
 
     for (idx, bb) in cfg.blocks.iter().enumerate() {
+        check_cancelled();
         if !reachable[idx] {
             continue;
         }
@@ -912,7 +1106,9 @@ fn transfer_stmt_null_deref(
         StmtKind::Block(_) => unreachable!("block statements are flattened in CFG"),
         StmtKind::If { .. }
         | StmtKind::While { .. }
+        | StmtKind::DoWhile { .. }
         | StmtKind::For { .. }
+        | StmtKind::Switch { .. }
         | StmtKind::Try { .. }
         | StmtKind::Return(_)
         | StmtKind::Throw(_)
@@ -932,6 +1128,9 @@ fn transfer_terminator_null_deref(
         Terminator::If { condition, .. } => {
             let _ = check_expr_null_deref(body, condition, state, diags);
         }
+        Terminator::Switch { expression, .. } => {
+            let _ = check_expr_null_deref(body, expression, state, diags);
+        }
         Terminator::Return { value, .. } => {
             if let Some(value) = value {
                 let _ = check_expr_null_deref(body, value, state, diags);
@@ -940,7 +1139,7 @@ fn transfer_terminator_null_deref(
         Terminator::Throw { exception, .. } => {
             let _ = check_expr_null_deref(body, exception, state, diags);
         }
-        Terminator::Goto { .. } | Terminator::Exit => {}
+        Terminator::Goto { .. } | Terminator::Multi { .. } | Terminator::Exit => {}
     }
 }
 
@@ -957,9 +1156,19 @@ fn check_expr_null_deref(
             .copied()
             .unwrap_or(NullState::Unknown),
         ExprKind::Null => NullState::Null,
-        ExprKind::New { .. } => NullState::NonNull,
+        ExprKind::New { args, .. } => {
+            for arg in args {
+                let _ = check_expr_null_deref(body, *arg, state, diags);
+            }
+            NullState::NonNull
+        }
         ExprKind::Bool(_) | ExprKind::Int(_) | ExprKind::String(_) => NullState::NonNull,
-        ExprKind::Invalid => NullState::Unknown,
+        ExprKind::Invalid { children } => {
+            for child in children {
+                let _ = check_expr_null_deref(body, *child, state, diags);
+            }
+            NullState::Unknown
+        }
         ExprKind::Unary { expr, .. } => check_expr_null_deref(body, *expr, state, diags),
         ExprKind::Binary { lhs, rhs, .. } => {
             let _ = check_expr_null_deref(body, *lhs, state, diags);
@@ -978,12 +1187,15 @@ fn check_expr_null_deref(
             NullState::Unknown
         }
         ExprKind::Call { receiver, args, .. } => {
-            let recv_state = check_expr_null_deref(body, *receiver, state, diags);
+            let recv_state = receiver
+                .as_ref()
+                .map(|recv| check_expr_null_deref(body, *recv, state, diags))
+                .unwrap_or(NullState::NonNull);
             for arg in args {
                 let _ = check_expr_null_deref(body, *arg, state, diags);
             }
 
-            if recv_state != NullState::NonNull {
+            if receiver.is_some() && recv_state != NullState::NonNull {
                 diags.push(diagnostic(
                     FlowDiagnosticKind::PossibleNullDereference,
                     Some(expr_data.span),
@@ -1041,7 +1253,7 @@ mod tests {
         let x_use = b.expr(ExprKind::Local(x));
         let use_receiver = b.expr(ExprKind::Local(use_fn));
         let use_call = b.expr(ExprKind::Call {
-            receiver: use_receiver,
+            receiver: Some(use_receiver),
             name: "call".into(),
             args: vec![x_use],
         });
@@ -1095,7 +1307,7 @@ mod tests {
 
         let x_call = b.expr(ExprKind::Local(x));
         let call = b.expr(ExprKind::Call {
-            receiver: x_call,
+            receiver: Some(x_call),
             name: "foo".into(),
             args: vec![],
         });

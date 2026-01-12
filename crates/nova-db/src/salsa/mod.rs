@@ -30,6 +30,7 @@
 //! ```
 
 mod cancellation;
+mod flow;
 mod hir;
 mod ide;
 mod indexing;
@@ -41,6 +42,7 @@ mod syntax;
 mod typeck;
 mod workspace;
 
+pub use flow::NovaFlow;
 pub use hir::NovaHir;
 pub use ide::NovaIde;
 pub use indexing::NovaIndexing;
@@ -358,6 +360,7 @@ pub type Snapshot = ra_salsa::Snapshot<RootDatabase>;
     inputs::NovaInputsStorage,
     syntax::NovaSyntaxStorage,
     semantic::NovaSemanticStorage,
+    flow::NovaFlowStorage,
     hir::NovaHirStorage,
     resolve::NovaResolveStorage,
     typeck::NovaTypeckStorage,
@@ -1007,7 +1010,15 @@ impl crate::SourceDatabase for Database {
 
 /// Convenience trait alias that composes Nova's query groups.
 pub trait NovaDatabase:
-    NovaInputs + NovaSyntax + NovaSemantic + NovaIde + NovaHir + NovaResolve + NovaTypeck + NovaIndexing
+    NovaInputs
+    + NovaSyntax
+    + NovaSemantic
+    + NovaFlow
+    + NovaHir
+    + NovaResolve
+    + NovaTypeck
+    + NovaIde
+    + NovaIndexing
 {
 }
 
@@ -1016,6 +1027,7 @@ impl<T> NovaDatabase for T where
         + NovaSyntax
         + NovaSemantic
         + NovaIde
+        + NovaFlow
         + NovaHir
         + NovaResolve
         + NovaTypeck

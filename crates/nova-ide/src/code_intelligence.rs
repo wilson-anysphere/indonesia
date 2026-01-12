@@ -17,10 +17,13 @@ use lsp_types::{
     SignatureInformation, SymbolKind, TextEdit, TypeHierarchyItem,
 };
 
-use nova_core::{path_to_file_uri, AbsPathBuf};
+use nova_core::{path_to_file_uri, AbsPathBuf, Name};
 use nova_db::{Database, FileId, NovaTypeck, SalsaDatabase};
+use nova_flow::FlowConfig;
 use nova_fuzzy::FuzzyMatcher;
+use nova_hir::body_lowering::lower_flow_body;
 use nova_jdk::JdkIndex;
+use nova_syntax::ast::{self, AstNode};
 use nova_types::{
     CallKind, ClassId, ClassKind, Diagnostic, MethodCall, MethodDef, MethodResolution,
     PrimitiveType, ResolvedMethod, Severity, Span, TyContext, Type, TypeEnv, TypeStore,
@@ -411,6 +414,9 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
     let text = db.file_content(file);
+    let is_java = db
+        .file_path(file)
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"));
 
     if let Some(path) = db.file_path(file) {
         if is_spring_properties_file(path) || is_spring_yaml_file(path) {
@@ -442,25 +448,19 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
         )
     }));
 
-    if db
-        .file_path(file)
-        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
-    {
-        let parse = nova_syntax::parse_java(text);
-        diagnostics.extend(parse.errors.into_iter().map(|e| {
+    let java_parse = is_java.then(|| nova_syntax::parse_java(text));
+    if let Some(parse) = java_parse.as_ref() {
+        diagnostics.extend(parse.errors.iter().map(|e| {
             Diagnostic::error(
                 "SYNTAX",
-                e.message,
+                e.message.clone(),
                 Some(Span::new(e.range.start as usize, e.range.end as usize)),
             )
         }));
     }
 
     // 2) Demand-driven type-checking diagnostics (best-effort, Salsa-backed).
-    if db
-        .file_path(file)
-        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
-    {
+    if is_java {
         let project = nova_db::ProjectId::from_raw(0);
         let jdk = JDK_INDEX
             .as_ref()
@@ -472,6 +472,11 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
         salsa.set_file_text(file, text.to_string());
         let snap = salsa.snapshot();
         diagnostics.extend(snap.type_diagnostics(file));
+    }
+
+    // 2b) Control-flow + definite assignment diagnostics (best-effort).
+    if let Some(parse) = java_parse.as_ref() {
+        diagnostics.extend(flow_diagnostics(parse));
     }
 
     // 3) Unresolved references (best-effort).
@@ -562,6 +567,72 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
                     .map(|d| d.diagnostic.clone()),
             );
         }
+    }
+
+    diagnostics
+}
+
+fn flow_diagnostics(parse: &nova_syntax::JavaParseResult) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    let root = parse.syntax();
+    let config = FlowConfig::default();
+
+    for method in root.descendants().filter_map(ast::MethodDeclaration::cast) {
+        let Some(body) = method.body() else {
+            continue;
+        };
+
+        let params = method
+            .parameter_list()
+            .into_iter()
+            .flat_map(|list| list.parameters().collect::<Vec<_>>())
+            .filter_map(|param| {
+                let token = param.name_token()?;
+                let range = token.text_range();
+                Some((
+                    Name::new(token.text()),
+                    Span::new(u32::from(range.start()) as usize, u32::from(range.end()) as usize),
+                ))
+            })
+            .collect::<Vec<_>>();
+
+        let body = lower_flow_body(&body, params);
+        diagnostics.extend(nova_flow::analyze(&body, config).diagnostics);
+    }
+
+    for ctor in root
+        .descendants()
+        .filter_map(ast::ConstructorDeclaration::cast)
+    {
+        let Some(body) = ctor.body() else {
+            continue;
+        };
+
+        let params = ctor
+            .parameter_list()
+            .into_iter()
+            .flat_map(|list| list.parameters().collect::<Vec<_>>())
+            .filter_map(|param| {
+                let token = param.name_token()?;
+                let range = token.text_range();
+                Some((
+                    Name::new(token.text()),
+                    Span::new(u32::from(range.start()) as usize, u32::from(range.end()) as usize),
+                ))
+            })
+            .collect::<Vec<_>>();
+
+        let body = lower_flow_body(&body, params);
+        diagnostics.extend(nova_flow::analyze(&body, config).diagnostics);
+    }
+
+    for init in root.descendants().filter_map(ast::InitializerBlock::cast) {
+        let Some(body) = init.body() else {
+            continue;
+        };
+
+        let body = lower_flow_body(&body, std::iter::empty());
+        diagnostics.extend(nova_flow::analyze(&body, config).diagnostics);
     }
 
     diagnostics

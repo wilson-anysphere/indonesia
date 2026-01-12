@@ -45,20 +45,20 @@ pub enum LocalKind {
     Local,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Local {
     pub name: Name,
     pub kind: LocalKind,
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Expr {
     pub kind: ExprKind,
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExprKind {
     Local(LocalId),
     Null,
@@ -67,6 +67,7 @@ pub enum ExprKind {
     String(String),
     New {
         class_name: String,
+        args: Vec<ExprId>,
     },
     Unary {
         op: UnaryOp,
@@ -82,11 +83,13 @@ pub enum ExprKind {
         name: Name,
     },
     Call {
-        receiver: ExprId,
+        receiver: Option<ExprId>,
         name: Name,
         args: Vec<ExprId>,
     },
-    Invalid,
+    Invalid {
+        children: Vec<ExprId>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,13 +105,13 @@ pub enum BinaryOp {
     OrOr,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stmt {
     pub kind: StmtKind,
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StmtKind {
     Block(Vec<StmtId>),
     Let {
@@ -129,11 +132,19 @@ pub enum StmtKind {
         condition: ExprId,
         body: StmtId,
     },
+    DoWhile {
+        body: StmtId,
+        condition: ExprId,
+    },
     For {
         init: Option<StmtId>,
         condition: Option<ExprId>,
         update: Option<StmtId>,
         body: StmtId,
+    },
+    Switch {
+        expression: ExprId,
+        arms: Vec<SwitchArm>,
     },
     Try {
         body: StmtId,
@@ -147,7 +158,19 @@ pub enum StmtKind {
     Nop,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitchArm {
+    /// Expressions that appear in `case` labels (e.g. `case 1, 2 -> ...`).
+    pub values: Vec<ExprId>,
+    /// Whether this arm includes a `default` label (`default:` or `case null, default ->`).
+    pub has_default: bool,
+    /// Body statement for this arm.
+    pub body: StmtId,
+    /// Whether this arm uses the `->` syntax (no fallthrough).
+    pub is_arrow: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Body {
     locals: Vec<Local>,
     exprs: Vec<Expr>,
@@ -156,6 +179,14 @@ pub struct Body {
 }
 
 impl Body {
+    /// Create an empty body with a single empty block root.
+    #[must_use]
+    pub fn empty(range: Span) -> Self {
+        let mut builder = BodyBuilder::new();
+        let root = builder.stmt_with_span(StmtKind::Block(Vec::new()), range);
+        builder.finish(root)
+    }
+
     #[must_use]
     pub fn locals(&self) -> &[Local] {
         &self.locals
@@ -191,30 +222,36 @@ impl BodyBuilder {
     }
 
     pub fn local(&mut self, name: impl Into<Name>, kind: LocalKind) -> LocalId {
+        self.local_with_span(name, kind, Span::new(0, 0))
+    }
+
+    pub fn local_with_span(&mut self, name: impl Into<Name>, kind: LocalKind, span: Span) -> LocalId {
         let id = LocalId(self.locals.len() as u32);
         self.locals.push(Local {
             name: name.into(),
             kind,
-            span: Span::new(0, 0),
+            span,
         });
         id
     }
 
     pub fn expr(&mut self, kind: ExprKind) -> ExprId {
+        self.expr_with_span(kind, Span::new(0, 0))
+    }
+
+    pub fn expr_with_span(&mut self, kind: ExprKind, span: Span) -> ExprId {
         let id = ExprId(self.exprs.len() as u32);
-        self.exprs.push(Expr {
-            kind,
-            span: Span::new(0, 0),
-        });
+        self.exprs.push(Expr { kind, span });
         id
     }
 
     pub fn stmt(&mut self, kind: StmtKind) -> StmtId {
+        self.stmt_with_span(kind, Span::new(0, 0))
+    }
+
+    pub fn stmt_with_span(&mut self, kind: StmtKind, span: Span) -> StmtId {
         let id = StmtId(self.stmts.len() as u32);
-        self.stmts.push(Stmt {
-            kind,
-            span: Span::new(0, 0),
-        });
+        self.stmts.push(Stmt { kind, span });
         id
     }
 
