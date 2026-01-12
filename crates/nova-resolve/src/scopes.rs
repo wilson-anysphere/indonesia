@@ -433,10 +433,7 @@ impl<'a> ScopeBuilder<'a> {
         // statements (order-sensitive), while `body_scopes` is expected to point at
         // the lexical scope for the body root statement itself.
         self.build_stmt_scopes(parent, owner, body, body.root);
-        self.stmt_scopes
-            .get(&body.root)
-            .copied()
-            .unwrap_or(parent)
+        self.stmt_scopes.get(&body.root).copied().unwrap_or(parent)
     }
 
     fn build_stmt_scopes(

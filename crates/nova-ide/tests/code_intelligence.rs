@@ -682,12 +682,14 @@ class A {
 
     assert!(
         !diags.iter().any(|d| d.code == "FLOW_UNREACHABLE"
-            && d.span.is_some_and(|span| span.start < x_end && span.end > x_start)),
+            && d.span
+                .is_some_and(|span| span.start < x_end && span.end > x_start)),
         "expected finally block to be reachable; got {diags:#?}"
     );
     assert!(
         diags.iter().any(|d| d.code == "FLOW_UNREACHABLE"
-            && d.span.is_some_and(|span| span.start < y_end && span.end > y_start)),
+            && d.span
+                .is_some_and(|span| span.start < y_end && span.end > y_start)),
         "expected statement after try/finally to be unreachable; got {diags:#?}"
     );
 }
@@ -723,12 +725,14 @@ class A {
 
     assert!(
         !diags.iter().any(|d| d.code == "FLOW_UNREACHABLE"
-            && d.span.is_some_and(|span| span.start < x_end && span.end > x_start)),
+            && d.span
+                .is_some_and(|span| span.start < x_end && span.end > x_start)),
         "expected inner finally block to be reachable; got {diags:#?}"
     );
     assert!(
         !diags.iter().any(|d| d.code == "FLOW_UNREACHABLE"
-            && d.span.is_some_and(|span| span.start < y_end && span.end > y_start)),
+            && d.span
+                .is_some_and(|span| span.start < y_end && span.end > y_start)),
         "expected outer finally block to be reachable; got {diags:#?}"
     );
 }
@@ -763,7 +767,8 @@ class A {
     assert!(
         diags.iter().any(|d| d.code == "FLOW_UNASSIGNED"
             && d.severity == Severity::Error
-            && d.span.is_some_and(|span| span.start < end && span.end > start)),
+            && d.span
+                .is_some_and(|span| span.start < end && span.end > start)),
         "expected use-before-assignment diagnostic after break; got {diags:#?}"
     );
 }

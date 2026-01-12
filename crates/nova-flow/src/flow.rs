@@ -655,7 +655,10 @@ impl<'a, 'c> HirCfgBuilder<'a, 'c> {
                             _ => {
                                 self.cfg.set_terminator(
                                     end,
-                                    Terminator::Multi { targets, from: stmt },
+                                    Terminator::Multi {
+                                        targets,
+                                        from: stmt,
+                                    },
                                 );
                             }
                         }

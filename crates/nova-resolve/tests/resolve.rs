@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use nova_classpath::{ClasspathEntry, ClasspathIndex};
 use nova_core::{FileId, Name, PackageName, QualifiedName, StaticMemberId, TypeIndex, TypeName};
-use nova_hir::queries::{self, HirDatabase};
 use nova_hir::hir;
+use nova_hir::queries::{self, HirDatabase};
 use nova_jdk::JdkIndex;
 use nova_resolve::{
     build_scopes, BodyOwner, LocalRef, NameResolution, Resolution, Resolver, TypeResolution,
