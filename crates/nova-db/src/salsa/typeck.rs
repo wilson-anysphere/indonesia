@@ -4163,16 +4163,14 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     stack.push(*block);
                 }
                 HirExpr::Switch { arms, .. } => {
-                    // Switch expressions can contain arm bodies lowered as statements/blocks stored
-                    // in `body.stmts`, but those statement IDs are only referenced from the
-                    // expression and are not reachable from the root statement tree.
-                    //
-                    // Explicit ctor invocations nested inside them are still invalid, so include
-                    // them in the traversal.
+                    // Switch expressions can contain nested statement blocks inside arm bodies.
+                    // These statement IDs live in `body.stmts` but are not reachable from the root
+                    // statement tree, so include them explicitly to detect illegal constructor
+                    // invocations nested inside switch expressions.
                     for arm in arms {
                         match &arm.body {
-                            SwitchArmBody::Block(stmt) | SwitchArmBody::Stmt(stmt) => {
-                                stack.push(*stmt);
+                            SwitchArmBody::Block(stmt_id) | SwitchArmBody::Stmt(stmt_id) => {
+                                stack.push(*stmt_id);
                             }
                             SwitchArmBody::Expr(_) => {}
                         }

@@ -3623,7 +3623,7 @@ fn reload_project_and_sync(
             .lock()
             .expect("workspace project state mutex poisoned");
         state.load_options.nova_config = workspace_config.clone();
-        state.load_options.nova_config_path = loaded_config_path;
+        state.load_options.nova_config_path = loaded_config_path.clone();
     }
 
     // 1) Load/reload workspace model via the shared `WorkspaceLoader`.
@@ -4006,8 +4006,6 @@ fn reload_project_and_sync(
         state.project_roots = project_roots;
     }
 
-    let nova_config_path = nova_config::discover_config_path(workspace_root);
-
     {
         let mut cfg = watch_config
             .write()
@@ -4018,7 +4016,7 @@ fn reload_project_and_sync(
             watch_generated_roots.clone(),
         );
         cfg.set_module_roots(watch_module_roots.clone());
-        cfg.set_nova_config_path(nova_config_path.clone());
+        cfg.set_nova_config_path(loaded_config_path.clone());
     }
 
     // If the watcher is running, schedule a refresh so it reconciles watched paths/roots with the
@@ -4055,19 +4053,6 @@ fn reload_project_and_sync(
     // We intentionally do not fail workspace loading when JDK discovery or indexing fails: Nova
     // can still operate with a tiny built-in JDK index (used by unit tests / bootstrapping), but
     // many IDE features (decompilation, richer type info) benefit from a real platform index.
-    let (workspace_config, loaded_config_path) = nova_config::load_for_workspace(workspace_root)
-        .unwrap_or_else(|_| {
-            // If config loading fails, fall back to defaults; the workspace should still open.
-            (nova_config::NovaConfig::default(), nova_config_path.clone())
-        });
-
-    {
-        let mut state = project_state
-            .lock()
-            .expect("workspace project state mutex poisoned");
-        state.load_options.nova_config = workspace_config.clone();
-        state.load_options.nova_config_path = loaded_config_path;
-    }
     let jdk_config = {
         // Nova config paths are expected to be relative to the workspace root when possible.
         // `NovaConfig::jdk_config` returns raw `PathBuf`s from the config file, so resolve them
