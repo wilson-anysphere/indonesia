@@ -1195,21 +1195,37 @@ impl WorkspaceEngine {
                                                 // ignored directories to reduce the risk of
                                                 // triggering full rescans for normal file edits.
                                                 let in_ignored_dir = local.components().any(|c| {
-                                                    c.as_os_str() == std::ffi::OsStr::new(".git")
-                                                        || c.as_os_str()
+                                                    let component = c.as_os_str();
+                                                    if component == std::ffi::OsStr::new(".git")
+                                                        || component
                                                             == std::ffi::OsStr::new(".gradle")
-                                                        || c.as_os_str()
-                                                            == std::ffi::OsStr::new("build")
-                                                        || c.as_os_str()
+                                                        || component == std::ffi::OsStr::new("build")
+                                                        || component
                                                             == std::ffi::OsStr::new("target")
-                                                        || c.as_os_str()
+                                                        || component
+                                                            == std::ffi::OsStr::new("node_modules")
+                                                        || component
                                                             == std::ffi::OsStr::new(".nova")
-                                                        || c.as_os_str()
+                                                        || component
                                                             == std::ffi::OsStr::new(".idea")
+                                                        || component
+                                                            == std::ffi::OsStr::new("bazel-out")
+                                                        || component
+                                                            == std::ffi::OsStr::new("bazel-bin")
+                                                        || component
+                                                            == std::ffi::OsStr::new("bazel-testlogs")
+                                                    {
+                                                        return true;
+                                                    }
+
+                                                    component.to_str().is_some_and(|component| {
+                                                        component.starts_with("bazel-")
+                                                    })
                                                 });
 
                                                 local.extension().is_none() && !in_ignored_dir
                                             };
+                                        let mut category: Option<ChangeCategory> = None;
                                         let is_directory_change = match &change {
                                             FileChange::Created { path }
                                             | FileChange::Modified { path } => path
@@ -1224,6 +1240,15 @@ impl WorkspaceEngine {
                                                             if err.kind()
                                                                 == std::io::ErrorKind::NotFound =>
                                                         {
+                                                            // The directory is already gone, so
+                                                            // `metadata` can't tell whether this was
+                                                            // a file or directory deletion. Restrict
+                                                            // this heuristic to source-tree changes
+                                                            // so build-file deletes (e.g. `BUILD`,
+                                                            // `WORKSPACE`) still flow through normal
+                                                            // build reload categorization.
+                                                            category =
+                                                                categorize_event(&config, &change);
                                                             // Directory deletes are often observed
                                                             // *after* the directory is removed, so
                                                             // metadata fails. As a safety net,
@@ -1231,7 +1256,8 @@ impl WorkspaceEngine {
                                                             // ignored directories as potential
                                                             // directory-level operations and fall
                                                             // back to a rescan.
-                                                            is_heuristic_directory_change_for_missing_path(local)
+                                                            category == Some(ChangeCategory::Source)
+                                                                && is_heuristic_directory_change_for_missing_path(local)
                                                         }
                                                         Err(_) => false,
                                                     },
@@ -1271,14 +1297,19 @@ impl WorkspaceEngine {
                                                         Some(Err(err))
                                                             if err.kind() == std::io::ErrorKind::NotFound
                                                     );
-                                                    from_missing
-                                                        && to_missing
-                                                        && from_local.is_some_and(
-                                                            is_heuristic_directory_change_for_missing_path,
-                                                        )
-                                                        && to_local.is_some_and(
-                                                            is_heuristic_directory_change_for_missing_path,
-                                                        )
+                                                    if from_missing && to_missing {
+                                                        category =
+                                                            categorize_event(&config, &change);
+                                                        category == Some(ChangeCategory::Source)
+                                                            && from_local.is_some_and(
+                                                                is_heuristic_directory_change_for_missing_path,
+                                                            )
+                                                            && to_local.is_some_and(
+                                                                is_heuristic_directory_change_for_missing_path,
+                                                            )
+                                                    } else {
+                                                        false
+                                                    }
                                                 }
                                             }
                                         };
@@ -1288,7 +1319,10 @@ impl WorkspaceEngine {
                                             break;
                                         }
 
-                                        if let Some(cat) = categorize_event(&config, &change) {
+                                        if category.is_none() {
+                                            category = categorize_event(&config, &change);
+                                        }
+                                        if let Some(cat) = category {
                                             debouncer.push(&cat, change, now);
                                         }
                                     }
