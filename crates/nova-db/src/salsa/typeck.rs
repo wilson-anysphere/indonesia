@@ -27,6 +27,7 @@ use super::cancellation as cancel;
 use super::resolve::NovaResolve;
 use super::stats::HasQueryStats;
 use super::ArcEq;
+use super::HasClassInterner;
 
 use nova_classpath::ModuleAwareClasspathIndex;
 use nova_modules::{ModuleGraph, ModuleName};
@@ -84,7 +85,7 @@ pub struct BodyTypeckResult {
 }
 
 #[ra_salsa::query_group(NovaTypeckStorage)]
-pub trait NovaTypeck: NovaResolve + HasQueryStats {
+pub trait NovaTypeck: NovaResolve + HasQueryStats + HasClassInterner {
     /// Per-body expression scope mapping used for lexical name resolution inside bodies.
     ///
     /// This is memoized independently from `typeck_body` so demand-driven, per-expression type

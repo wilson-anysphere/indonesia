@@ -30,6 +30,7 @@
 //! ```
 
 mod cancellation;
+mod class_ids;
 mod diagnostics;
 mod flow;
 mod hir;
@@ -57,6 +58,7 @@ pub use stats::{HasQueryStats, QueryStat, QueryStatReport, QueryStats, QueryStat
 pub use syntax::{NovaSyntax, SyntaxTree};
 pub use typeck::{BodyTypeckResult, FileExprId, NovaTypeck};
 pub use workspace::{WorkspaceLoadError, WorkspaceLoader};
+pub use class_ids::{ClassIdInterner, ClassKey, HasClassInterner};
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
@@ -626,6 +628,7 @@ pub struct RootDatabase {
     file_paths: Arc<RwLock<HashMap<FileId, Arc<String>>>>,
     item_tree_store: Option<Arc<ItemTreeStore>>,
     syntax_tree_store: Option<Arc<SyntaxTreeStore>>,
+    class_interner: Arc<ParkingMutex<ClassIdInterner>>,
     memo_footprint: Arc<SalsaMemoFootprint>,
 }
 
@@ -649,6 +652,7 @@ impl RootDatabase {
             file_paths: Arc::new(RwLock::new(HashMap::new())),
             item_tree_store: None,
             syntax_tree_store: None,
+            class_interner: Arc::new(ParkingMutex::new(ClassIdInterner::default())),
             memo_footprint: Arc::new(SalsaMemoFootprint::default()),
         };
 
@@ -780,6 +784,19 @@ impl HasSyntaxTreeStore for ra_salsa::Snapshot<RootDatabase> {
         std::ops::Deref::deref(self).syntax_tree_store.clone()
     }
 }
+
+impl HasClassInterner for RootDatabase {
+    fn class_interner(&self) -> &Arc<ParkingMutex<ClassIdInterner>> {
+        &self.class_interner
+    }
+}
+
+impl HasClassInterner for ra_salsa::Snapshot<RootDatabase> {
+    fn class_interner(&self) -> &Arc<ParkingMutex<ClassIdInterner>> {
+        &std::ops::Deref::deref(self).class_interner
+    }
+}
+
 impl ra_salsa::Database for RootDatabase {
     fn salsa_event(&self, event: ra_salsa::Event) {
         match event.kind {
@@ -842,6 +859,7 @@ impl ra_salsa::ParallelDatabase for RootDatabase {
             persistence: self.persistence.clone(),
             file_paths: self.file_paths.clone(),
             item_tree_store: self.item_tree_store.clone(),
+            class_interner: self.class_interner.clone(),
             syntax_tree_store: self.syntax_tree_store.clone(),
             memo_footprint: self.memo_footprint.clone(),
         })
@@ -987,6 +1005,7 @@ impl MemoryEvictor for SalsaMemoEvictor {
             let persistence = db.persistence.clone();
             let file_paths = db.file_paths.clone();
             let item_tree_store = db.item_tree_store.clone();
+            let class_interner = db.class_interner.clone();
             let syntax_tree_store = db.syntax_tree_store.clone();
             let mut fresh = RootDatabase {
                 storage: ra_salsa::Storage::default(),
@@ -994,6 +1013,7 @@ impl MemoryEvictor for SalsaMemoEvictor {
                 persistence,
                 file_paths,
                 item_tree_store,
+                class_interner,
                 syntax_tree_store,
                 memo_footprint: self.footprint.clone(),
             };
@@ -1634,6 +1654,7 @@ impl Database {
             let persistence = db.persistence.clone();
             let file_paths = db.file_paths.clone();
             let item_tree_store = db.item_tree_store.clone();
+            let class_interner = db.class_interner.clone();
             let syntax_tree_store = db.syntax_tree_store.clone();
             let mut fresh = RootDatabase {
                 storage: ra_salsa::Storage::default(),
@@ -1641,6 +1662,7 @@ impl Database {
                 persistence,
                 file_paths,
                 item_tree_store,
+                class_interner,
                 syntax_tree_store,
                 memo_footprint: self.memo_footprint.clone(),
             };
