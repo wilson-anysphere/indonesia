@@ -342,10 +342,53 @@ function buildConstStringEnvFromVariableStatements(
       continue;
     }
     for (const decl of declList.declarations) {
-      if (!ts.isIdentifier(decl.name) || !decl.initializer) {
+      if (!decl.initializer) {
         continue;
       }
-      declarations.push({ name: decl.name.text, initializer: decl.initializer });
+
+      if (ts.isIdentifier(decl.name)) {
+        declarations.push({ name: decl.name.text, initializer: decl.initializer });
+        continue;
+      }
+
+      // Handle simple object destructuring, e.g.
+      //   const { type } = DidRenameFilesNotification;
+      //   const { method } = DidRenameFilesNotification.type;
+      if (ts.isObjectBindingPattern(decl.name)) {
+        for (const element of decl.name.elements) {
+          if (element.dotDotDotToken) {
+            continue;
+          }
+          if (!ts.isIdentifier(element.name)) {
+            continue;
+          }
+          const localName = element.name.text;
+
+          let propertyNameText: string | undefined;
+          if (!element.propertyName) {
+            propertyNameText = localName;
+          } else if (ts.isIdentifier(element.propertyName)) {
+            propertyNameText = element.propertyName.text;
+          } else if (ts.isStringLiteral(element.propertyName) || ts.isNoSubstitutionTemplateLiteral(element.propertyName)) {
+            propertyNameText = element.propertyName.text;
+          } else if (ts.isComputedPropertyName(element.propertyName)) {
+            propertyNameText = evalConstString(element.propertyName.expression, baseEnv);
+          }
+
+          if (!propertyNameText) {
+            continue;
+          }
+
+          // Keep this intentionally simple: only support identifier property names.
+          // (file-operation notifications are keyed by identifier properties like `type` and `method`.)
+          if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(propertyNameText)) {
+            continue;
+          }
+
+          const synthetic = ts.factory.createPropertyAccessExpression(decl.initializer, propertyNameText);
+          declarations.push({ name: localName, initializer: synthetic });
+        }
+      }
     }
   }
 
@@ -355,7 +398,7 @@ function buildConstStringEnvFromVariableStatements(
   while (changed) {
     changed = false;
     for (const decl of declarations) {
-      if (env.has(decl.name)) {
+      if (resolved.has(decl.name)) {
         continue;
       }
       const value = resolveNotificationMethod(decl.initializer, env, imports);
