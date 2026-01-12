@@ -1213,11 +1213,31 @@ fn lambda_parameter_iteration_typed() {
         other => panic!("expected lambda expression, got {other:?}"),
     };
 
-    let params = lambda.parameters().unwrap();
-    let list = params.parameter_list().unwrap();
-    let names: Vec<_> = list
+    let names: Vec<_> = lambda
+        .parameters()
+        .unwrap()
         .parameters()
         .map(|param| param.name_token().unwrap().text().to_string())
         .collect();
     assert_eq!(names, vec!["x", "y"]);
+}
+
+#[test]
+fn lambda_parameter_iteration_single_param_form() {
+    let parse = parse_java_expression_fragment("x -> x", 0);
+    assert!(parse.parse.errors.is_empty());
+
+    let fragment = ExpressionFragment::cast(parse.parse.syntax()).expect("ExpressionFragment");
+    let lambda = match fragment.expression().expect("expression") {
+        Expression::LambdaExpression(lambda) => lambda,
+        other => panic!("expected lambda expression, got {other:?}"),
+    };
+
+    let names: Vec<_> = lambda
+        .parameters()
+        .unwrap()
+        .parameters()
+        .map(|param| param.name_token().unwrap().text().to_string())
+        .collect();
+    assert_eq!(names, vec!["x"]);
 }

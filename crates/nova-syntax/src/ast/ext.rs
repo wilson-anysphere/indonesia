@@ -178,6 +178,16 @@ impl super::ModuleBody {
     }
 }
 
+impl super::LambdaParameters {
+    pub fn parameters(&self) -> impl Iterator<Item = super::LambdaParameter> {
+        if let Some(list) = self.parameter_list() {
+            list.parameters().collect::<Vec<_>>().into_iter()
+        } else {
+            self.parameter().into_iter().collect::<Vec<_>>().into_iter()
+        }
+    }
+}
+
 impl super::RequiresDirective {
     pub fn is_transitive(&self) -> bool {
         support::token(self.syntax(), SyntaxKind::TransitiveKw).is_some()
