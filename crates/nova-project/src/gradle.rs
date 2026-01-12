@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use regex::Regex;
+use walkdir::WalkDir;
 
 use crate::discover::{LoadOptions, ProjectError};
 use crate::{
@@ -38,6 +39,13 @@ pub(crate) fn load_gradle_project(
     let mut dependencies = Vec::new();
     let mut classpath = Vec::new();
     let mut dependency_entries = Vec::new();
+
+    // Best-effort Gradle cache resolution. This does not execute Gradle; it only
+    // adds jars that already exist in the local Gradle cache.
+    let gradle_user_home = options
+        .gradle_user_home
+        .clone()
+        .or_else(default_gradle_user_home);
 
     // Best-effort: parse Java level and deps from build scripts.
     let root_java = parse_gradle_java_config(root).unwrap_or_default();
@@ -110,6 +118,23 @@ pub(crate) fn load_gradle_project(
         dependencies.extend(parse_gradle_dependencies(&module_root));
     }
 
+    // Sort/dedup before resolving jars so we don't scan the cache repeatedly for
+    // the same coordinates.
+    sort_dedup_dependencies(&mut dependencies);
+
+    // Best-effort jar discovery for pinned Maven coordinates already present in
+    // the Gradle cache (no transitive resolution / variants / etc).
+    if let Some(gradle_user_home) = gradle_user_home.as_deref() {
+        for dep in &dependencies {
+            for jar_path in gradle_dependency_jar_paths(gradle_user_home, dep) {
+                dependency_entries.push(ClasspathEntry {
+                    kind: ClasspathEntryKind::Jar,
+                    path: jar_path,
+                });
+            }
+        }
+    }
+
     // Add user-provided classpath entries for unresolved dependencies (Gradle).
     for entry in &options.classpath_overrides {
         dependency_entries.push(ClasspathEntry {
@@ -126,7 +151,7 @@ pub(crate) fn load_gradle_project(
     sort_dedup_output_dirs(&mut output_dirs);
     sort_dedup_classpath(&mut dependency_entries);
     sort_dedup_classpath(&mut classpath);
-    sort_dedup_dependencies(&mut dependencies);
+    // `dependencies` was already sorted/deduped above.
 
     let jpms_modules = crate::jpms::discover_jpms_modules(&modules);
     let (mut module_path, classpath_deps) =
@@ -176,6 +201,13 @@ pub(crate) fn load_gradle_workspace_model(
         Some((java, path)) => (java, LanguageLevelProvenance::BuildFile(path)),
         None => (JavaConfig::default(), LanguageLevelProvenance::Default),
     };
+
+    // Best-effort Gradle cache resolution. This does not execute Gradle; it only
+    // adds jars that already exist in the local Gradle cache.
+    let gradle_user_home = options
+        .gradle_user_home
+        .clone()
+        .or_else(default_gradle_user_home);
 
     let mut module_configs = Vec::new();
     for module_ref in module_refs {
@@ -268,10 +300,27 @@ pub(crate) fn load_gradle_workspace_model(
 
         let mut dependencies = parse_gradle_dependencies(&module_root);
 
+        // Sort/dedup before resolving jars so we don't scan the cache repeatedly
+        // for the same coordinates.
+        sort_dedup_dependencies(&mut dependencies);
+
+        // Best-effort jar discovery for pinned Maven coordinates already present
+        // in the Gradle cache (no transitive resolution / variants / etc).
+        if let Some(gradle_user_home) = gradle_user_home.as_deref() {
+            for dep in &dependencies {
+                for jar_path in gradle_dependency_jar_paths(gradle_user_home, dep) {
+                    classpath.push(ClasspathEntry {
+                        kind: ClasspathEntryKind::Jar,
+                        path: jar_path,
+                    });
+                }
+            }
+        }
+
         sort_dedup_source_roots(&mut source_roots);
         sort_dedup_output_dirs(&mut output_dirs);
         sort_dedup_classpath(&mut classpath);
-        sort_dedup_dependencies(&mut dependencies);
+        // `dependencies` was already sorted/deduped above.
 
         module_configs.push(WorkspaceModuleConfig {
             id: format!("gradle:{}", module_ref.project_path),
@@ -802,6 +851,92 @@ fn parse_gradle_dependencies_from_text(contents: &str) -> Vec<Dependency> {
         });
     }
     deps
+}
+
+fn default_gradle_user_home() -> Option<PathBuf> {
+    if let Some(home) = std::env::var_os("GRADLE_USER_HOME").filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(home));
+    }
+
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)?;
+    Some(home.join(".gradle"))
+}
+
+/// Best-effort jar discovery for Gradle dependencies.
+///
+/// This does **not** run Gradle and does **not** resolve transitive dependencies
+/// or perform variant/attribute selection. It only attempts to locate jar files
+/// for explicitly-versioned Maven coordinates that already exist in the local
+/// Gradle cache.
+fn gradle_dependency_jar_paths(gradle_user_home: &Path, dep: &Dependency) -> Vec<PathBuf> {
+    let Some(version) = dep.version.as_deref() else {
+        return Vec::new();
+    };
+    if dep.group_id.is_empty() || dep.artifact_id.is_empty() || version.is_empty() {
+        return Vec::new();
+    }
+
+    let base = gradle_user_home
+        .join("caches/modules-2/files-2.1")
+        .join(&dep.group_id)
+        .join(&dep.artifact_id)
+        .join(version);
+    if !base.is_dir() {
+        return Vec::new();
+    }
+
+    let prefix = format!("{}-{}", dep.artifact_id, version);
+
+    let mut preferred = Vec::new();
+    let mut others = Vec::new();
+
+    for entry in WalkDir::new(&base).into_iter().filter_map(Result::ok) {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.into_path();
+
+        if !is_jar_path(&path) || is_auxiliary_gradle_jar(&path) {
+            continue;
+        }
+
+        let file_name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+
+        if file_name.starts_with(&prefix) {
+            preferred.push(path);
+        } else {
+            others.push(path);
+        }
+    }
+
+    let mut out = if !preferred.is_empty() {
+        preferred
+    } else {
+        others
+    };
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn is_jar_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
+}
+
+fn is_auxiliary_gradle_jar(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    let name = name.to_ascii_lowercase();
+    name.ends_with("-sources.jar") || name.ends_with("-javadoc.jar")
 }
 
 fn push_source_root(

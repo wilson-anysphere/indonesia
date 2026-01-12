@@ -9,11 +9,17 @@ pub struct LoadOptions {
     /// Additional classpath entries (directories or jars) to include.
     ///
     /// This is primarily intended for Gradle projects where dependency resolution
-    /// isn't implemented yet.
+    /// is best-effort (Nova does not invoke Gradle).
     pub classpath_overrides: Vec<PathBuf>,
 
     /// Override Maven local repository (`~/.m2/repository`) location.
     pub maven_repo: Option<PathBuf>,
+
+    /// Override Gradle user home (`~/.gradle`) location.
+    ///
+    /// When unset, Nova uses `GRADLE_USER_HOME` if present, otherwise falls back
+    /// to `$HOME/.gradle` when `$HOME` is known.
+    pub gradle_user_home: Option<PathBuf>,
 
     /// Nova-specific configuration (e.g. generated source roots).
     pub nova_config: NovaConfig,
