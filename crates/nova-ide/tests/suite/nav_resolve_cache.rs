@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use nova_db::InMemoryFileStore;
 use nova_ide::goto_definition;
@@ -7,8 +8,8 @@ use crate::text_fixture::{offset_to_position, CARET};
 
 #[test]
 fn workspace_index_is_cached_across_navigation_requests() {
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
         .expect("system time after epoch")
         .as_nanos();
     let root = PathBuf::from(format!("/nav-resolve-cache-test-{unique}"));

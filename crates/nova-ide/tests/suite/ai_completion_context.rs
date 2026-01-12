@@ -2,7 +2,7 @@ use nova_db::InMemoryFileStore;
 use nova_ide::multi_token_completion_context;
 use std::path::PathBuf;
 
-use crate::text_fixture::{offset_to_position, CARET};
+use crate::framework_harness::{offset_to_position, CARET};
 
 fn fixture(text_with_caret: &str) -> (InMemoryFileStore, nova_db::FileId, lsp_types::Position) {
     let caret_offset = text_with_caret

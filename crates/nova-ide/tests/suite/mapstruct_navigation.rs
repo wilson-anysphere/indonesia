@@ -7,7 +7,7 @@ use nova_db::InMemoryFileStore;
 use nova_ide::{declaration, implementation, Database as IdeDatabase};
 use tempfile::TempDir;
 
-use crate::text_fixture::offset_to_position;
+use crate::framework_harness::offset_to_position;
 
 #[test]
 fn mapstruct_implementation_falls_back_to_generated_impl_method() {

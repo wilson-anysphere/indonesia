@@ -3,7 +3,7 @@ use lsp_types::{
 };
 use nova_ide::code_action::diagnostic_quick_fixes;
 
-use crate::text_fixture::offset_to_position;
+use crate::framework_harness::offset_to_position;
 
 #[test]
 fn create_class_quick_fix_inserts_skeleton_at_eof() {

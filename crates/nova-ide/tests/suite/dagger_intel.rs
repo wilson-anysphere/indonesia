@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use nova_db::{Database as _, InMemoryFileStore};
 use nova_ide::{file_diagnostics, goto_definition};
 
-use crate::text_fixture::offset_to_position as offset_to_lsp_position;
+use crate::framework_harness::offset_to_position as offset_to_lsp_position;
 
 fn fixtures_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../nova-framework-dagger/tests/fixtures")

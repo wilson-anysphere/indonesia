@@ -4,7 +4,7 @@ use lsp_types::{HoverContents, Position, Range};
 use nova_db::InMemoryFileStore;
 use nova_ide::{completions, find_references, hover};
 
-use crate::text_fixture::{offset_to_position, CARET};
+use crate::framework_harness::{offset_to_position, CARET};
 
 fn fixture_utf16(text_with_caret: &str) -> (InMemoryFileStore, nova_db::FileId, Position) {
     let caret_offset = text_with_caret

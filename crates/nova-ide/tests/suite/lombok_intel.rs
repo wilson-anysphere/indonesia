@@ -8,7 +8,7 @@ use nova_db::{FileId, InMemoryFileStore};
 use nova_ide::{completions, implementation};
 use tempfile::TempDir;
 
-use crate::text_fixture::{offset_to_position, CARET};
+use crate::framework_harness::{offset_to_position, CARET};
 
 fn fixture(text_with_caret: &str) -> (InMemoryFileStore, FileId, Position) {
     let caret_offset = text_with_caret

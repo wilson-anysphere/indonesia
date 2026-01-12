@@ -7,7 +7,7 @@ use nova_ide::{completions, file_diagnostics};
 use tempfile::tempdir;
 use zip::write::FileOptions;
 
-use crate::text_fixture::{offset_to_position, CARET};
+use crate::framework_harness::{offset_to_position, CARET};
 
 fn maven_repo_root() -> PathBuf {
     std::env::var_os("HOME")

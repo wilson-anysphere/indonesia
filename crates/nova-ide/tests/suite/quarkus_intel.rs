@@ -4,7 +4,7 @@ use nova_ide::{completions, file_diagnostics};
 use nova_types::Severity;
 use tempfile::TempDir;
 
-use crate::text_fixture::{offset_to_position, CARET};
+use crate::framework_harness::{offset_to_position, CARET};
 
 fn write_quarkus_pom(root: &std::path::Path) {
     std::fs::create_dir_all(root).unwrap();

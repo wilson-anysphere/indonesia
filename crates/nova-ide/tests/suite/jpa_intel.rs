@@ -4,7 +4,7 @@ use lsp_types::Position;
 use nova_db::InMemoryFileStore;
 use nova_ide::{completions, file_diagnostics, goto_definition};
 
-use crate::text_fixture::{offset_to_position, CARET};
+use crate::framework_harness::{offset_to_position, CARET};
 
 fn fixture_multi(
     primary_path: PathBuf,

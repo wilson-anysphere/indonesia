@@ -5,7 +5,7 @@ use nova_framework_spring::{SPRING_AMBIGUOUS_BEAN, SPRING_CIRCULAR_DEP, SPRING_N
 use nova_ide::{completions, file_diagnostics, find_references, goto_definition};
 use nova_types::Severity;
 
-use crate::text_fixture::{offset_to_position, CARET};
+use crate::framework_harness::{offset_to_position, CARET};
 
 fn fixture_multi(
     primary_path: PathBuf,

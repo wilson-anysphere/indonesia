@@ -4,7 +4,7 @@ use nova_db::InMemoryFileStore;
 use nova_ide::{completion_cache, completions};
 use tempfile::TempDir;
 
-use crate::text_fixture::{offset_to_position, CARET};
+use crate::framework_harness::{offset_to_position, CARET};
 
 #[test]
 fn completion_env_is_reused_across_completion_requests() {

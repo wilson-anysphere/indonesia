@@ -8,7 +8,7 @@ use nova_db::{FileId, InMemoryFileStore};
 use nova_ide::goto_definition;
 use tempfile::TempDir;
 
-use crate::text_fixture::offset_to_position;
+use crate::framework_harness::offset_to_position;
 
 struct FileIdFixture {
     _temp_dir: TempDir,

@@ -3,7 +3,7 @@ use nova_ide::{completions, file_diagnostics};
 use nova_types::Severity;
 use std::path::PathBuf;
 
-use crate::text_fixture::{offset_to_position, CARET};
+use crate::framework_harness::{offset_to_position, CARET};
 
 fn fixture_multi(
     primary_path: PathBuf,
