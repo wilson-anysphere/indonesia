@@ -49,10 +49,6 @@ pub(crate) fn load_maven_project(
     discovered_modules.sort_by(|a, b| a.root.cmp(&b.root));
     discovered_modules.dedup_by(|a, b| a.root == b.root);
 
-    // Treat workspaces with multiple POM modules (including aggregator roots) as "multi-module"
-    // so we can keep synthesized dependency jar placeholders from exploding the classpath.
-    let multi_module_workspace = discovered_modules.len() > 1;
-
     let workspace_modules =
         build_workspace_module_index(root, include_root_module, &discovered_modules);
 
@@ -179,12 +175,6 @@ pub(crate) fn load_maven_project(
             }
 
             if let Some(jar_path) = maven_dependency_jar_path(&maven_repo, dep) {
-                // Multi-module workspaces can have very large dependency closures. Only include
-                // jars that exist on disk to keep classpaths lean (see
-                // `maven-managed-coordinates-placeholder` fixture).
-                if multi_module_workspace && !jar_path.is_file() && !jar_path.is_dir() {
-                    continue;
-                }
                 dependency_entries.push(ClasspathEntry {
                     // Maven dependency artifacts are typically jar files, but some build systems
                     // (and test fixtures) can "explode" jars into directories (often still ending
@@ -269,10 +259,6 @@ pub(crate) fn load_maven_workspace_model(
         discover_modules_recursive(root, &root_pom, Arc::clone(&root_effective), &mut resolver)?;
     discovered_modules.sort_by(|a, b| a.root.cmp(&b.root));
     discovered_modules.dedup_by(|a, b| a.root == b.root);
-
-    // Treat workspaces with multiple POM modules (including aggregator roots) as "multi-module"
-    // so we can keep synthesized dependency jar placeholders from exploding per-module classpaths.
-    let multi_module_workspace = discovered_modules.len() > 1;
 
     let workspace_modules =
         build_workspace_module_index(root, include_root_module, &discovered_modules);
@@ -501,11 +487,6 @@ pub(crate) fn load_maven_workspace_model(
             }
 
             if let Some(jar_path) = maven_dependency_jar_path(&maven_repo, dep) {
-                // Multi-module workspaces can have very large dependency closures. Only include
-                // jars that exist on disk to keep per-module classpaths lean.
-                if multi_module_workspace && !jar_path.is_file() && !jar_path.is_dir() {
-                    continue;
-                }
                 classpath.push(ClasspathEntry {
                     // Support "exploded jar" directories on disk; omit missing artifacts so
                     // downstream indexing doesn't fail trying to open them.
