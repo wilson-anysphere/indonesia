@@ -8,6 +8,30 @@
 //!
 //! It also supports **packaging** a project's persistent cache into a single archive
 //! (`tar.zst`) so teams/CI can share prebuilt indexes.
+//!
+//! ## On-disk layout (inventory)
+//!
+//! Project-scoped caches live under `<cache_root>/<project_hash>/`:
+//! - `metadata.bin` + `metadata.json`:
+//!   - [`CacheMetadata`], schema [`CACHE_METADATA_SCHEMA_VERSION`]
+//!   - `metadata.bin` is a `nova-storage` (`rkyv`) archive (`ArtifactKind::ProjectMetadata`)
+//! - `indexes/`:
+//!   - project indexes persisted by `nova-index` as `nova-storage` archives (`*.idx`)
+//! - `indexes/segments/`:
+//!   - incremental index segments (`ArtifactKind::ProjectIndexSegment`) + `manifest.json`
+//! - `ast/metadata.bin` + `ast/*.ast`:
+//!   - [`AstArtifactCache`] entries persisted via `serde` + `bincode`
+//!   - gated by [`AST_ARTIFACT_SCHEMA_VERSION`] plus `nova-syntax`/`nova-hir` schema versions
+//! - `queries/<query>/index.json` + `queries/<query>/*.bin`:
+//!   - [`DerivedArtifactCache`] entries persisted via `serde` + `bincode`
+//! - `queries/query_cache/*.bin`:
+//!   - [`QueryDiskCache`] entries persisted via `serde` + `bincode`
+//! - `classpath/`:
+//!   - per-entry classpath stub caches (see `nova-classpath`)
+//!
+//! Shared dependency caches live under `<cache_root>/deps/`:
+//! - `<sha256>/classpath.idx`:
+//!   - dependency index bundles persisted by `nova-deps-cache` as `nova-storage` archives
 
 mod ast_cache;
 mod cache_dir;

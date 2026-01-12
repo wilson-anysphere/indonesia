@@ -39,6 +39,8 @@ impl CacheDir {
         std::fs::create_dir_all(root.join("indexes"))?;
         std::fs::create_dir_all(root.join("queries"))?;
         std::fs::create_dir_all(root.join("ast"))?;
+        // Per-entry classpath caches (e.g. class directory stubs) live here.
+        std::fs::create_dir_all(root.join("classpath"))?;
 
         Ok(Self {
             project_root,
@@ -69,6 +71,11 @@ impl CacheDir {
 
     pub fn ast_dir(&self) -> PathBuf {
         self.root.join("ast")
+    }
+
+    /// Per-entry classpath caches (e.g. class directory stubs) for this project.
+    pub fn classpath_dir(&self) -> PathBuf {
+        self.root.join("classpath")
     }
 
     pub fn metadata_path(&self) -> PathBuf {

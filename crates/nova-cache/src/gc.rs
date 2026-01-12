@@ -53,6 +53,10 @@ pub struct CacheGcPolicy {
 pub struct CacheGcReport {
     pub before_total_bytes: u64,
     pub after_total_bytes: u64,
+    /// Best-effort number of bytes freed (sum of `size_bytes` for deleted caches).
+    pub deleted_bytes: u64,
+    /// Number of cache directories successfully removed.
+    pub deleted_caches: usize,
     pub deleted: Vec<ProjectCacheInfo>,
     pub failed: Vec<CacheGcFailure>,
 }
@@ -294,9 +298,15 @@ pub fn gc_project_caches(
         }
     }
 
+    let deleted_bytes = deleted
+        .iter()
+        .fold(0u64, |acc, cache| acc.saturating_add(cache.size_bytes));
+
     Ok(CacheGcReport {
         before_total_bytes,
         after_total_bytes: remaining_bytes,
+        deleted_bytes,
+        deleted_caches: deleted.len(),
         deleted,
         failed,
     })

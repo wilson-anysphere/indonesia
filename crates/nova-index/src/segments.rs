@@ -6,6 +6,12 @@ use std::path::{Path, PathBuf};
 use crate::persistence::IndexPersistenceError;
 
 pub const SEGMENT_MANIFEST_SCHEMA_VERSION: u32 = 1;
+/// Safety cap for `indexes/segments/manifest.json`.
+///
+/// The segment manifest is expected to be small (it stores file paths + fingerprints), but it is
+/// still user-writable disk state. Treat unexpectedly-large manifests as corruption and force a
+/// rebuild rather than attempting to allocate unbounded memory.
+const MAX_SEGMENT_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SegmentManifest {
@@ -81,8 +87,20 @@ pub fn load_manifest(indexes_dir: &Path) -> Result<Option<SegmentManifest>, Inde
     if !path.exists() {
         return Ok(None);
     }
-    let bytes = std::fs::read(path)?;
-    Ok(Some(serde_json::from_slice(&bytes)?))
+
+    let file = std::fs::File::open(&path)?;
+    let meta = file.metadata()?;
+    if meta.len() > MAX_SEGMENT_MANIFEST_BYTES {
+        return Err(std::io::Error::other(format!(
+            "segment manifest too large: {} bytes (limit {} bytes)",
+            meta.len(),
+            MAX_SEGMENT_MANIFEST_BYTES
+        ))
+        .into());
+    }
+
+    let reader = std::io::BufReader::new(file);
+    Ok(Some(serde_json::from_reader(reader)?))
 }
 
 pub fn save_manifest(

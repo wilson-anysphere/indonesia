@@ -4,7 +4,6 @@ version.workspace = true
 edition = "2021"
 
 [dependencies]
-bincode = "1.3.3"
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "1.0.56"
 walkdir = "2.5.0"
@@ -14,9 +13,11 @@ nova-cache = { path = "../nova-cache" }
 nova-classfile = { path = "../nova-classfile" }
 nova-core = { path = "../nova-core" }
 nova-deps-cache = { path = "../nova-deps-cache" }
+nova-storage = { path = "../nova-storage" }
 nova-project = { path = "../nova-project" }
 nova-modules = { path = "../nova-modules" }
 nova-types = { path = "../nova-types" }
+rkyv = { version = "0.7", features = ["validation"] }
 
 [dev-dependencies]
 criterion = "0.5"

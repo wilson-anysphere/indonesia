@@ -3441,7 +3441,6 @@ dependencies = [
 name = "nova-classpath"
 version = "0.1.0"
 dependencies = [
- "bincode",
  "criterion",
  "nova-cache",
  "nova-classfile",
@@ -3449,7 +3448,9 @@ dependencies = [
  "nova-deps-cache",
  "nova-modules",
  "nova-project",
+ "nova-storage",
  "nova-types",
+ "rkyv",
  "serde",
  "tempfile",
  "thiserror 1.0.69",

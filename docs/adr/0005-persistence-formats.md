@@ -93,3 +93,26 @@ Negative:
   - schema mismatch.
 - Decide compression policy for cold storage (compressed blobs vs mmap-ready hot indexes).
 - Prioritize migrating large, frequently-read indexes to `rkyv` first; smaller caches may remain `bincode`-based until mmap-style access is required.
+
+## Current persisted artifacts (inventory)
+
+This is the concrete on-disk inventory corresponding to the policy above. Caches are **derived**
+artifacts; any incompatibility or corruption is treated as a miss and triggers recomputation.
+
+Project-scoped caches live under `<cache_root>/<project_hash>/`:
+
+| Artifact | Location | Format | Version gating |
+|---|---|---|---|
+| Project cache metadata | `metadata.bin` + `metadata.json` | `nova-storage` (`rkyv`) + JSON | `CACHE_METADATA_SCHEMA_VERSION` + `NOVA_VERSION` |
+| Project indexes | `indexes/*.idx` | `nova-storage` (`rkyv`) | `INDEX_SCHEMA_VERSION` + `NOVA_VERSION` (+ platform: endian/pointer-width) |
+| Incremental index segments | `indexes/segments/*.idx` + `indexes/segments/manifest.json` | `nova-storage` (`rkyv`) + JSON | `INDEX_SCHEMA_VERSION` / `SEGMENT_MANIFEST_SCHEMA_VERSION` + `NOVA_VERSION` |
+| AST/HIR warm-start artifacts | `ast/metadata.bin` + `ast/*.ast` | `serde` + `bincode` | `AST_ARTIFACT_SCHEMA_VERSION` + (`SYNTAX_SCHEMA_VERSION`, `HIR_SCHEMA_VERSION`) + `NOVA_VERSION` |
+| Derived query artifacts | `queries/<query>/*.bin` + `queries/<query>/index.json` | `serde` + `bincode` + JSON | `DERIVED_CACHE_SCHEMA_VERSION` + per-query schema version + `NOVA_VERSION` |
+| In-memory query cache spill | `queries/query_cache/*.bin` | `serde` + `bincode` | `QUERY_DISK_CACHE_SCHEMA_VERSION` + `NOVA_VERSION` |
+| Per-entry classpath stubs (recommended) | `classpath/classpath-entry-*.bin` | `nova-storage` (`rkyv`) | per-artifact schema version + `NOVA_VERSION` |
+
+Shared dependency caches live under `<cache_root>/deps/`:
+
+| Artifact | Location | Format | Version gating |
+|---|---|---|---|
+| Dependency index bundle | `<sha256>/classpath.idx` | `nova-storage` (`rkyv`) | `DEPS_INDEX_SCHEMA_VERSION` + `NOVA_VERSION` (+ platform: endian/pointer-width) |

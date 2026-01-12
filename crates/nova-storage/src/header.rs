@@ -30,6 +30,8 @@ pub enum ArtifactKind {
     ProjectMetadata = 102,
     /// JDK symbol index cache stored in the global deps cache.
     JdkSymbolIndex = 103,
+    /// Per-entry classpath stubs (e.g. class directory indexes).
+    ClasspathEntryStubs = 104,
 }
 
 impl ArtifactKind {
@@ -44,6 +46,7 @@ impl ArtifactKind {
             101 => Some(Self::DepsIndexBundle),
             102 => Some(Self::ProjectMetadata),
             103 => Some(Self::JdkSymbolIndex),
+            104 => Some(Self::ClasspathEntryStubs),
             _ => None,
         }
     }

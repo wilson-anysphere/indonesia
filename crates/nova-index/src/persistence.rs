@@ -3596,6 +3596,16 @@ fn write_shard_manifest(shards_root: &Path, shard_count: u32) -> Result<(), Inde
 
 fn read_shard_manifest(shards_root: &Path) -> Option<u32> {
     let manifest_path = shard_manifest_path(shards_root);
+    // Safety: the shard-count manifest should be a tiny text file. Guard against corrupted
+    // manifests that would otherwise allocate unbounded memory.
+    let meta = std::fs::symlink_metadata(&manifest_path).ok()?;
+    if meta.file_type().is_symlink() || !meta.is_file() {
+        return None;
+    }
+    if meta.len() > 1024 {
+        return None;
+    }
+
     let text = std::fs::read_to_string(manifest_path).ok()?;
     let line = text.lines().next()?.trim();
     line.parse::<u32>().ok()

@@ -7,6 +7,7 @@ fn bincode_options() -> impl bincode::Options {
     bincode::DefaultOptions::new()
         .with_fixint_encoding()
         .with_little_endian()
+        .with_no_limit()
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -127,10 +128,10 @@ fn derived_artifact_cache_persisted_query_schema_version_mismatch_is_cache_miss(
     let query_dir = temp.path().join("type_of");
     let entry_path = std::fs::read_dir(&query_dir)
         .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().and_then(|e| e.to_str()) == Some("bin"))
+        .expect("bin entry");
 
     let bytes = std::fs::read(&entry_path).unwrap();
     let mut persisted: PersistedDerivedValueOwned<Value> =

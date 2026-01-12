@@ -110,6 +110,8 @@ fn gc_deletes_oldest_until_within_budget() {
 
     assert_eq!(report.deleted.len(), 1);
     assert_eq!(report.deleted[0].name, "old");
+    assert_eq!(report.deleted_caches, 1);
+    assert_eq!(report.deleted_bytes, report.deleted[0].size_bytes);
     assert!(report.after_total_bytes <= budget);
     assert!(report.failed.is_empty());
 }
@@ -147,6 +149,7 @@ fn gc_respects_keep_latest_n_even_if_budget_too_small() {
             .collect::<Vec<_>>(),
         vec!["old"]
     );
+    assert_eq!(report.deleted_caches, 1);
     assert!(report.failed.is_empty());
 }
 
@@ -174,6 +177,7 @@ fn gc_removes_stale_caches_first_when_max_age_is_set() {
     assert!(fresh.exists());
     assert_eq!(report.deleted.len(), 1);
     assert_eq!(report.deleted[0].name, "old");
+    assert_eq!(report.deleted_caches, 1);
     assert!(report.failed.is_empty());
 }
 

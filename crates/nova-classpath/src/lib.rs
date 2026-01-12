@@ -59,8 +59,6 @@ pub enum ClasspathError {
     Zip(#[from] zip::result::ZipError),
     #[error("classfile error: {0}")]
     ClassFile(#[from] nova_classfile::Error),
-    #[error("bincode error: {0}")]
-    Bincode(#[from] Box<bincode::ErrorKind>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,7 +103,20 @@ fn record_deps_cache_hit(stats: Option<&IndexingStats>) {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[archive(check_bytes)]
 pub struct ClasspathFingerprint(u64);
 
 impl ClasspathFingerprint {
@@ -313,7 +324,18 @@ fn is_ignored_class(internal_name: &str) -> bool {
         || internal_name.ends_with("/package-info")
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[archive(check_bytes)]
 pub struct ClasspathFieldStub {
     pub name: String,
     pub descriptor: String,
@@ -322,7 +344,18 @@ pub struct ClasspathFieldStub {
     pub annotations: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[archive(check_bytes)]
 pub struct ClasspathMethodStub {
     pub name: String,
     pub descriptor: String,
@@ -331,7 +364,18 @@ pub struct ClasspathMethodStub {
     pub annotations: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[archive(check_bytes)]
 pub struct ClasspathClassStub {
     pub binary_name: String,
     pub internal_name: String,
@@ -1649,6 +1693,59 @@ mod tests {
         .unwrap();
 
         assert_eq!(stubs_first.len(), stubs_cached.len());
+    }
+
+    #[test]
+    fn corrupted_classpath_entry_cache_is_ignored_and_rebuilt() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let tmp = TempDir::new().unwrap();
+        let entry = ClasspathEntry::Jar(test_jar()).normalize().unwrap();
+        let fingerprint = entry.fingerprint().unwrap();
+
+        let build_calls = AtomicUsize::new(0);
+
+        let stubs_first = persist::load_or_build_entry(tmp.path(), &entry, fingerprint, || {
+            build_calls.fetch_add(1, Ordering::Relaxed);
+            index_entry(&entry, None, None)
+        })
+        .unwrap();
+        assert_eq!(build_calls.load(Ordering::Relaxed), 1);
+
+        // Ensure we're actually hitting the persisted cache.
+        let stubs_cached = persist::load_or_build_entry(tmp.path(), &entry, fingerprint, || {
+            panic!("expected cache hit, but builder was invoked")
+        })
+        .unwrap();
+        assert_eq!(stubs_first.len(), stubs_cached.len());
+
+        // Truncate the persisted cache file to simulate corruption.
+        let cache_path = tmp
+            .path()
+            .join(format!("classpath-entry-{}.bin", fingerprint.to_hex()));
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&cache_path)
+            .unwrap();
+        file.set_len(10).unwrap();
+        drop(file);
+
+        let stubs_rebuilt = persist::load_or_build_entry(tmp.path(), &entry, fingerprint, || {
+            build_calls.fetch_add(1, Ordering::Relaxed);
+            index_entry(&entry, None, None)
+        })
+        .unwrap();
+        assert_eq!(build_calls.load(Ordering::Relaxed), 2);
+        assert_eq!(stubs_first.len(), stubs_rebuilt.len());
+
+        let bytes = std::fs::read(&cache_path).unwrap();
+        let header =
+            nova_storage::StorageHeader::decode(&bytes[..nova_storage::HEADER_LEN]).unwrap();
+        assert_eq!(
+            header.kind,
+            nova_storage::ArtifactKind::ClasspathEntryStubs
+        );
+        assert_eq!(header.schema_version, 2);
     }
 
     #[test]

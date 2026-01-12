@@ -34,6 +34,17 @@
 //! - `rw` / `read-write` / `on` ⇒ [`PersistenceMode::ReadWrite`]
 //!
 //! Defaults to `rw` in release builds and `off` in debug builds.
+//!
+//! ## Persisted artifact formats (summary)
+//!
+//! The concrete on-disk formats are owned by the lower-level cache crates:
+//! - `nova-cache` defines the per-project directory layout and persists project metadata.
+//! - `nova-index` persists large project indexes via `nova-storage` (`rkyv`) archives.
+//! - `nova-deps-cache` persists dependency bundles (JAR/JMOD stubs) via `nova-storage` archives.
+//! - `nova-cache`'s `AstArtifactCache` / `DerivedArtifactCache` use `serde` + `bincode` for
+//!   smaller per-file/per-query derived values.
+//!
+//! See `nova-cache` crate docs for an inventory of the current cache directory layout.
 
 use std::collections::BTreeMap;
 use std::path::Path;

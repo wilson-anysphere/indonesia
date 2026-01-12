@@ -92,6 +92,7 @@ pub fn prune_cache(cache_dir: &CacheDir, policy: PrunePolicy) -> Result<PruneRep
     prune_ast(cache_dir, cutoff_millis, &policy, &mut report);
     prune_queries(cache_dir, cutoff_millis, &policy, &mut report);
     prune_indexes(cache_dir, cutoff_millis, &policy, &mut report);
+    prune_classpath(cache_dir, cutoff_millis, &policy, &mut report);
 
     if let Some(limit) = policy.max_total_bytes {
         enforce_total_size(cache_dir, limit, &policy, &mut report);
@@ -412,6 +413,77 @@ fn prune_indexes(
     }
 }
 
+fn prune_classpath(
+    cache_dir: &CacheDir,
+    cutoff_millis: Option<u64>,
+    policy: &PrunePolicy,
+    report: &mut PruneReport,
+) {
+    let classpath_dir = cache_dir.classpath_dir();
+    if !classpath_dir.is_dir() {
+        return;
+    }
+
+    let dir_entries = match std::fs::read_dir(&classpath_dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            report.push_error(&classpath_dir, "read_dir", err);
+            return;
+        }
+    };
+
+    for entry in dir_entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                report.push_error(&classpath_dir, "read_dir_entry", err);
+                continue;
+            }
+        };
+
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(err) => {
+                report.push_error(entry.path(), "file_type", err);
+                continue;
+            }
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        // Lockfiles are out-of-band coordination primitives; never prune them.
+        if file_name.ends_with(".lock") {
+            continue;
+        }
+
+        let size = file_size_bytes(&path, report).unwrap_or(0);
+
+        // Always delete crashed atomic-write temp files, regardless of age policy.
+        if file_name.ends_with(".tmp") || file_name.contains(".tmp.") {
+            if delete_file(&path, policy, report) {
+                report.record_delete(size, policy.dry_run);
+            }
+            continue;
+        }
+
+        let Some(cutoff) = cutoff_millis else {
+            continue;
+        };
+
+        let last_used = file_modified_millis(&path, report).unwrap_or(0);
+        if last_used < cutoff {
+            if delete_file(&path, policy, report) {
+                report.record_delete(size, policy.dry_run);
+            }
+        }
+    }
+}
+
 fn enforce_total_size(
     cache_dir: &CacheDir,
     limit: u64,
@@ -428,6 +500,7 @@ fn enforce_total_size(
 
     gather_ast_candidates(cache_dir, report, &mut candidates);
     gather_query_candidates(cache_dir, report, &mut candidates);
+    gather_classpath_candidates(cache_dir, report, &mut candidates);
     gather_legacy_index_candidates(cache_dir, report, &mut candidates);
 
     candidates.sort_by(|a, b| {
@@ -500,6 +573,7 @@ struct EvictionCandidate {
 enum CandidateKind {
     AstArtifact { artifact_file: String },
     QueryEntry,
+    ClasspathEntry,
     LegacyIndex,
 }
 
@@ -620,6 +694,63 @@ fn gather_query_candidates(
             size_bytes: size,
             last_used_millis: last_used,
             kind: CandidateKind::QueryEntry,
+        });
+    }
+}
+
+fn gather_classpath_candidates(
+    cache_dir: &CacheDir,
+    report: &mut PruneReport,
+    out: &mut Vec<EvictionCandidate>,
+) {
+    let classpath_dir = cache_dir.classpath_dir();
+    if !classpath_dir.is_dir() {
+        return;
+    }
+
+    let dir_entries = match std::fs::read_dir(&classpath_dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            report.push_error(&classpath_dir, "read_dir", err);
+            return;
+        }
+    };
+
+    for entry in dir_entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                report.push_error(&classpath_dir, "read_dir_entry", err);
+                continue;
+            }
+        };
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(err) => {
+                report.push_error(entry.path(), "file_type", err);
+                continue;
+            }
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+
+        let path = entry.path();
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".lock"))
+        {
+            continue;
+        }
+
+        let size = file_size_bytes(&path, report).unwrap_or(0);
+        let last_used = file_modified_millis(&path, report).unwrap_or(0);
+        out.push(EvictionCandidate {
+            path,
+            size_bytes: size,
+            last_used_millis: last_used,
+            kind: CandidateKind::ClasspathEntry,
         });
     }
 }
