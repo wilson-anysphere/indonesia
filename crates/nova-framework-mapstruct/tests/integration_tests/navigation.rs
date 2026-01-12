@@ -161,3 +161,4 @@ fn goto_definition_update_method_to_generated_impl() {
         "expected update method signature, got line: {line}"
     );
 }
+

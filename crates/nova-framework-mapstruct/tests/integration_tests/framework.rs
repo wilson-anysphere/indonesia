@@ -507,4 +507,3 @@ public class Car {
     let span = hp.replace_span.expect("replace_span");
     assert_eq!(&mapper[span.start..span.end], "ho");
 }
-

@@ -176,4 +176,3 @@ async fn attach_terminate_uses_virtual_machine_exit() {
         "expected VirtualMachine.Exit to be called with 0, got {exit_codes:?}"
     );
 }
-

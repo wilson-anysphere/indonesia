@@ -250,8 +250,8 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Maturity:** scaffolding
 - **Known gaps vs intended docs:**
   - Registers analyzers for Lombok/Dagger/MapStruct/Micronaut/Quarkus by default.
-  - Spring/JPA analyzers are feature-gated placeholders until those crates expose `FrameworkAnalyzer` implementations.
-  - Not yet wired into `nova-ide`/`nova-lsp`; currently mostly used by crate-local tests.
+  - Spring/JPA analyzers are feature-gated (`spring`/`jpa`) to avoid pulling heavier dependencies unless needed.
+  - Not yet wired into `nova-ide`/`nova-lsp`; many call sites still build their own registries.
 
 ### `nova-framework-dagger`
 - **Purpose:** best-effort Dagger DI graph extraction + diagnostics/navigation (text-based).
