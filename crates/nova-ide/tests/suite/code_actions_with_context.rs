@@ -246,3 +246,58 @@ fn code_actions_with_context_cast_wraps_binary_expression_in_parentheses() {
     let cast_fix = cast_fix.expect("expected Cast to String quickfix");
     assert_eq!(first_edit_new_text(cast_fix), "(String) (a + b)");
 }
+
+#[test]
+fn code_actions_with_context_includes_return_mismatch_quickfix_for_cursor_at_span_start() {
+    let mut db = InMemoryFileStore::new();
+    let file = db.file_id_for_path(PathBuf::from("/test.java"));
+    let source = r#"class A {
+  String m() {
+    Object o = "";
+    return o;
+  }
+}
+"#;
+    db.set_file_text(file, source.to_string());
+
+    let stmt_start = source
+        .find("return o;")
+        .expect("expected return statement");
+    let expr_start = stmt_start + "return ".len();
+    let expr_end = expr_start + "o".len();
+
+    let range = Range::new(
+        offset_to_position(source, expr_start),
+        offset_to_position(source, expr_end),
+    );
+
+    let diag = lsp_types::Diagnostic {
+        range,
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String("return-mismatch".to_string())),
+        message: "return type mismatch: expected String, found Object".to_string(),
+        ..lsp_types::Diagnostic::default()
+    };
+
+    let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
+    let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
+
+    let actions = ide.code_actions_lsp_with_context(
+        CancellationToken::new(),
+        file,
+        Some(Span::new(expr_start, expr_start)),
+        &[diag],
+    );
+
+    let cast_fix = actions.iter().find_map(|action| match action {
+        lsp_types::CodeActionOrCommand::CodeAction(action)
+            if action.kind == Some(lsp_types::CodeActionKind::QUICKFIX)
+                && action.title == "Cast to String" =>
+        {
+            Some(action)
+        }
+        _ => None,
+    });
+    let cast_fix = cast_fix.expect("expected Cast to String quickfix at cursor boundary");
+    assert_eq!(first_edit_new_text(cast_fix), "(String) (o)");
+}
