@@ -2936,8 +2936,22 @@ fn is_build_tool_input_file(path: &Path) -> bool {
     }
 
     // Gradle version catalogs can define dependency versions.
-    if !in_ignored_dir && name.ends_with(".versions.toml") {
-        return true;
+    //
+    // Keep semantics aligned with Gradle build-file fingerprinting (`nova-build-model`), which:
+    // - always includes the conventional `libs.versions.toml`
+    // - includes additional catalogs only when they are direct children of a `gradle/` directory
+    if !in_ignored_dir {
+        if name == "libs.versions.toml" {
+            return true;
+        }
+        if name.ends_with(".versions.toml")
+            && path
+                .parent()
+                .and_then(|parent| parent.file_name())
+                .is_some_and(|dir| dir == "gradle")
+        {
+            return true;
+        }
     }
 
     // Gradle dependency locking can change resolved classpaths without modifying build scripts.
@@ -3596,8 +3610,8 @@ mod tests {
         );
 
         assert!(
-            should_refresh_build_config(&root, &[root.join("deps.versions.toml")]),
-            "expected root deps.versions.toml to trigger build-tool refresh"
+            !should_refresh_build_config(&root, &[root.join("deps.versions.toml")]),
+            "expected root deps.versions.toml to be ignored (non-canonical version catalog location)"
         );
 
         assert!(
@@ -3606,11 +3620,11 @@ mod tests {
         );
 
         assert!(
-            should_refresh_build_config(
+            !should_refresh_build_config(
                 &root,
                 &[root.join("gradle").join("sub").join("nested.versions.toml")]
             ),
-            "expected gradle/sub/nested.versions.toml to trigger build-tool refresh"
+            "expected gradle/sub/nested.versions.toml to be ignored (only direct children of gradle/ are treated as version catalogs)"
         );
 
         assert!(

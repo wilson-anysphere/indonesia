@@ -242,7 +242,20 @@ pub fn is_build_file(path: &Path) -> bool {
     }
 
     // Gradle version catalogs can define dependency versions.
-    if name.ends_with(".versions.toml") {
+    //
+    // Keep semantics aligned with Gradle build-file fingerprinting (`nova-build-model`), which:
+    // - always includes the conventional `libs.versions.toml`
+    // - includes additional catalogs only when they are direct children of a `gradle/` directory
+    //   (to avoid treating random `*.versions.toml` files elsewhere in the repo as build inputs).
+    if name == "libs.versions.toml" {
+        return true;
+    }
+    if name.ends_with(".versions.toml")
+        && path
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .is_some_and(|dir| dir == "gradle")
+    {
         return true;
     }
 
@@ -383,7 +396,6 @@ mod tests {
             root.join("some").join("pkg").join("BUILD.bazel"),
             root.join("tools").join("defs.bzl"),
             root.join("libs.versions.toml"),
-            root.join("deps.versions.toml"),
             root.join("dependencies.gradle"),
             root.join("dependencies.gradle.kts"),
             root.join("gradle").join("libs.versions.toml"),
@@ -420,6 +432,9 @@ mod tests {
             root.join(".bsp").join("server.txt"),
             root.join("foo.lockfile"),
             root.join(".gradle").join("gradle.lockfile"),
+            // Version catalogs must be either `libs.versions.toml` or direct children of `gradle/`.
+            root.join("deps.versions.toml"),
+            root.join("gradle").join("sub").join("nested.versions.toml"),
             // Wrapper jars must be in their canonical wrapper locations.
             root.join("gradle-wrapper.jar"),
             root.join(".mvn").join("maven-wrapper.jar"),
