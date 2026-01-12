@@ -313,15 +313,24 @@ run_cargo() {
   fi
 
   if [[ -n "${jobs}" ]]; then
-    # `-j/--jobs` is only valid for build-like subcommands. In particular, `cargo metadata`
-    # errors out with "unexpected argument '-j'".
+    # `-j/--jobs` is only valid for cargo's built-in build-like subcommands. Many
+    # external `cargo-*` subcommands (e.g. `cargo fmt`, `cargo fuzz`) do NOT accept
+    # `-j` and will fail with "unexpected argument '-j'".
     #
-    # Some higher-level scripts (e.g. `scripts/check-repo-invariants.sh`) run `cargo metadata`
-    # via this wrapper; allow callers to set `NOVA_CARGO_JOBS` globally without breaking those
-    # scripts by skipping `-j` for `metadata`.
-    if [[ "${subcommand}" != "metadata" ]]; then
-      cargo_cmd+=(-j "${jobs}")
-    fi
+    # For `cargo fuzz`, we still want to cap the number of Rust compilation jobs
+    # (it invokes `cargo build` internally). Cargo supports `build.jobs` via the
+    # `CARGO_BUILD_JOBS` env var, and cargo-fuzz forwards the environment to those
+    # nested cargo invocations.
+    case "${subcommand}" in
+      metadata|fmt)
+        ;;
+      fuzz)
+        export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-${jobs}}"
+        ;;
+      *)
+        cargo_cmd+=(-j "${jobs}")
+        ;;
+    esac
   fi
 
   cargo_cmd+=("$@")
