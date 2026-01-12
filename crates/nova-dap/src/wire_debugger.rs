@@ -935,11 +935,12 @@ impl Debugger {
             return self.pinned_variables(cancel).await;
         }
 
-        if let Some(handle) = self
-            .objects
-            .handle_from_variables_reference(variables_reference)
-        {
-            return self.object_variables(cancel, handle, start, count).await;
+        if let Some(handle) = ObjectHandle::from_variables_reference(variables_reference) {
+            return if self.objects.object_id(handle).is_some() {
+                self.object_variables(cancel, handle, start, count).await
+            } else {
+                Ok(vec![evicted_variable()])
+            };
         }
 
         let Some(var_ref) = self.var_handles.get(variables_reference).cloned() else {
@@ -3576,7 +3577,7 @@ impl Debugger {
     ) -> Result<Vec<serde_json::Value>> {
         check_cancel(cancel)?;
         let Some(object_id) = self.objects.object_id(handle) else {
-            return Ok(Vec::new());
+            return Ok(vec![evicted_variable()]);
         };
 
         let runtime_type = self.objects.runtime_type(handle).unwrap_or_default();
@@ -4781,6 +4782,22 @@ fn invalid_collected_variable() -> Value {
     variable_json(
         "<collected>".to_string(),
         "<collected>".to_string(),
+        None,
+        0,
+        None,
+        Some(json!({
+            "kind": "virtual",
+            "attributes": ["invalid"],
+        })),
+        None,
+        None,
+    )
+}
+
+fn evicted_variable() -> Value {
+    variable_json(
+        "<evicted>".to_string(),
+        "<evicted>".to_string(),
         None,
         0,
         None,

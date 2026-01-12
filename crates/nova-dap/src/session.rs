@@ -55,15 +55,25 @@ impl<C: JdwpClient> DebugSession<C> {
             return Ok(self.pinned_variables()?);
         }
 
-        let handle = self
-            .objects
-            .handle_from_variables_reference(variables_reference)
-            .ok_or(DebugError::UnknownVariablesReference(variables_reference))?;
+        let Some(handle) = ObjectHandle::from_variables_reference(variables_reference) else {
+            return Err(DebugError::UnknownVariablesReference(variables_reference));
+        };
 
-        let object_id = self
-            .objects
-            .object_id(handle)
-            .ok_or(DebugError::UnknownObjectHandle(variables_reference))?;
+        let Some(object_id) = self.objects.object_id(handle) else {
+            return Ok(vec![Variable {
+                name: "<evicted>".to_string(),
+                value: "<evicted>".to_string(),
+                type_: None,
+                variables_reference: 0,
+                evaluate_name: None,
+                presentation_hint: Some(VariablePresentationHint {
+                    kind: Some("virtual".to_string()),
+                    attributes: Some(vec!["invalid".to_string()]),
+                    visibility: None,
+                    lazy: None,
+                }),
+            }]);
+        };
 
         match self.jdwp.object_children(object_id) {
             Ok(children) => children
