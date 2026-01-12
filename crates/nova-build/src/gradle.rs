@@ -220,11 +220,22 @@ impl GradleBuild {
             return Ok(union);
         }
 
-        let main_output_fallback =
-            gradle_output_dir_cached(project_root, project_path, cache, &fingerprint)?;
+        let project_dir_from_payload = json
+            .project_dir
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from);
+
+        let main_output_fallback = match project_dir_from_payload.as_ref() {
+            Some(dir) => dir.join("build").join("classes").join("java").join("main"),
+            None => gradle_output_dir_cached(project_root, project_path, cache, &fingerprint)?,
+        };
         let test_output_fallback = gradle_test_output_dir_from_main(&main_output_fallback);
-        let project_dir =
-            gradle_project_dir_cached(project_root, project_path, cache, &fingerprint)?;
+        let project_dir = match project_dir_from_payload {
+            Some(dir) => dir,
+            None => gradle_project_dir_cached(project_root, project_path, cache, &fingerprint)?,
+        };
         let mut config =
             normalize_gradle_java_compile_config(json, main_output_fallback, test_output_fallback);
         if config.main_source_roots.is_empty() {
@@ -632,6 +643,8 @@ fn collect_source_roots(project_dir: &Path, source_set: &str) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::ExitStatus;
+    use std::sync::Mutex;
 
     #[test]
     fn gradle_output_dir_maps_project_path_to_directory() {
@@ -853,6 +866,121 @@ NOVA_JSON_END
         assert!(cfg.enable_preview);
         assert_eq!(cfg.module_path, vec![named, automatic]);
     }
+
+    #[derive(Debug)]
+    struct StaticGradleRunner {
+        invocations: Mutex<Vec<Vec<String>>>,
+        output: CommandOutput,
+    }
+
+    impl StaticGradleRunner {
+        fn new(output: CommandOutput) -> Self {
+            Self {
+                invocations: Mutex::new(Vec::new()),
+                output,
+            }
+        }
+
+        fn invocations(&self) -> Vec<Vec<String>> {
+            self.invocations
+                .lock()
+                .expect("lock poisoned")
+                .clone()
+        }
+    }
+
+    impl CommandRunner for StaticGradleRunner {
+        fn run(
+            &self,
+            _cwd: &Path,
+            _program: &Path,
+            args: &[String],
+        ) -> std::io::Result<CommandOutput> {
+            self.invocations
+                .lock()
+                .expect("lock poisoned")
+                .push(args.to_vec());
+            Ok(self.output.clone())
+        }
+    }
+
+    fn exit_status(code: i32) -> ExitStatus {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            ExitStatus::from_raw(code << 8)
+        }
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::ExitStatusExt;
+            ExitStatus::from_raw(code as u32)
+        }
+    }
+
+    fn output(code: i32, stdout: &str, stderr: &str) -> CommandOutput {
+        CommandOutput {
+            status: exit_status(code),
+            stdout: stdout.to_string(),
+            stderr: stderr.to_string(),
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn java_compile_config_uses_project_dir_from_payload_for_fallbacks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_root = tmp.path().join("workspace");
+        std::fs::create_dir_all(&project_root).unwrap();
+        std::fs::write(project_root.join("settings.gradle"), "").unwrap();
+
+        // Simulate a custom Gradle projectDir mapping where `:app` does *not*
+        // correspond to `<root>/app`.
+        let app_dir = project_root.join("custom").join("app");
+        std::fs::create_dir_all(app_dir.join("src/main/java")).unwrap();
+        std::fs::create_dir_all(app_dir.join("src/test/java")).unwrap();
+
+        let payload = serde_json::json!({
+            "projectPath": ":app",
+            "projectDir": app_dir.to_string_lossy().to_string(),
+            "compileClasspath": [],
+            "testCompileClasspath": [],
+            "mainSourceRoots": [],
+            "testSourceRoots": [],
+            "mainOutputDirs": null,
+            "testOutputDirs": null,
+        });
+        let stdout = format!(
+            "NOVA_JSON_BEGIN\n{}\nNOVA_JSON_END\n",
+            serde_json::to_string(&payload).unwrap()
+        );
+
+        let runner = Arc::new(StaticGradleRunner::new(output(0, &stdout, "")));
+        let gradle = GradleBuild::with_runner(GradleConfig::default(), runner.clone());
+        let cache = BuildCache::new(tmp.path().join("cache"));
+
+        let cfg = gradle
+            .java_compile_config(&project_root, Some(":app"), &cache)
+            .unwrap();
+
+        assert_eq!(
+            cfg.main_output_dir,
+            Some(app_dir.join("build/classes/java/main"))
+        );
+        assert_eq!(
+            cfg.test_output_dir,
+            Some(app_dir.join("build/classes/java/test"))
+        );
+        assert_eq!(cfg.main_source_roots, vec![app_dir.join("src/main/java")]);
+        assert_eq!(cfg.test_source_roots, vec![app_dir.join("src/test/java")]);
+
+        // Sanity check: we invoked the project-scoped task.
+        let invocations = runner.invocations();
+        assert_eq!(invocations.len(), 1);
+        assert!(invocations[0]
+            .iter()
+            .any(|arg| arg == ":app:printNovaJavaCompileConfig"));
+    }
 }
 
 pub fn parse_gradle_classpath_output(output: &str) -> Vec<PathBuf> {
@@ -1062,6 +1190,10 @@ fn split_path_list(value: &str) -> Vec<PathBuf> {
 #[serde(rename_all = "camelCase")]
 struct GradleJavaCompileConfigJson {
     #[serde(default)]
+    project_path: Option<String>,
+    #[serde(default)]
+    project_dir: Option<String>,
+    #[serde(default)]
     compile_classpath: Option<Vec<String>>,
     #[serde(default)]
     test_compile_classpath: Option<Vec<String>>,
@@ -1098,6 +1230,8 @@ fn normalize_gradle_java_compile_config(
     test_output_fallback: PathBuf,
 ) -> JavaCompileConfig {
     let GradleJavaCompileConfigJson {
+        project_path: _,
+        project_dir: _,
         compile_classpath,
         test_compile_classpath,
         main_source_roots,
@@ -1438,6 +1572,8 @@ allprojects { proj ->
     proj.tasks.register("printNovaJavaCompileConfig") {
         doLast {
             def payload = [:]
+            payload.projectPath = proj.path
+            payload.projectDir = proj.projectDir.absolutePath
 
             def cfg = proj.configurations.findByName("compileClasspath")
             if (cfg == null) {
