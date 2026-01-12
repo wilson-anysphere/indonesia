@@ -5723,6 +5723,11 @@ fn collect_switch_contexts(
             hir::Stmt::Expr { expr, .. } => {
                 walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
             }
+            hir::Stmt::Yield { expr, .. } => {
+                if let Some(expr) = expr {
+                    walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
+                }
+            }
             hir::Stmt::Assert {
                 condition, message, ..
             } => {
@@ -6014,6 +6019,22 @@ fn collect_switch_contexts(
                     walk_stmt(body, *stmt, owner, scope_result, resolver, item_trees, out)
                 }
             },
+            hir::Expr::Switch {
+                selector,
+                body: switch_body,
+                ..
+            } => {
+                walk_expr(body, *selector, owner, scope_result, resolver, item_trees, out);
+                walk_stmt(
+                    body,
+                    *switch_body,
+                    owner,
+                    scope_result,
+                    resolver,
+                    item_trees,
+                    out,
+                );
+            }
             hir::Expr::Invalid { children, .. } => {
                 for child in children {
                     walk_expr(body, *child, owner, scope_result, resolver, item_trees, out);
@@ -7074,6 +7095,47 @@ fn record_lightweight_stmt(
             references,
             spans,
         ),
+        Stmt::Assert(stmt) => {
+            record_lightweight_expr(
+                file,
+                text,
+                &stmt.condition,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            if let Some(message) = &stmt.message {
+                record_lightweight_expr(
+                    file,
+                    text,
+                    message,
+                    type_scopes,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+        }
+        Stmt::Yield(stmt) => {
+            if let Some(expr) = &stmt.expr {
+                record_lightweight_expr(
+                    file,
+                    text,
+                    expr,
+                    type_scopes,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+        }
         Stmt::Return(ret) => {
             if let Some(expr) = &ret.expr {
                 record_lightweight_expr(
@@ -7390,6 +7452,30 @@ fn record_lightweight_expr(
     use java_syntax::ast::Expr;
 
     match expr {
+        Expr::Switch(expr) => {
+            record_lightweight_expr(
+                file,
+                text,
+                expr.selector.as_ref(),
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            record_lightweight_block(
+                file,
+                text,
+                &expr.body,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
         Expr::Cast(expr) => {
             record_type_names_in_range(
                 file,

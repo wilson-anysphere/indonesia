@@ -588,6 +588,7 @@ fn expr_scope_for_offset(
             | Expr::Assign { range, .. }
             | Expr::Conditional { range, .. }
             | Expr::Lambda { range, .. }
+            | Expr::Switch { range, .. }
             | Expr::Invalid { range, .. }
             | Expr::Missing { range } => *range,
         };
@@ -676,6 +677,14 @@ fn expr_scope_for_offset(
                     visit_stmt(body, *stmt, offset, best_expr, best_stmt)
                 }
             },
+            Expr::Switch {
+                selector,
+                body: switch_body,
+                ..
+            } => {
+                visit_expr(body, *selector, offset, best_expr, best_stmt);
+                visit_stmt(body, *switch_body, offset, best_expr, best_stmt);
+            }
             Expr::Invalid { children, .. } => {
                 for child in children {
                     visit_expr(body, *child, offset, best_expr, best_stmt);
@@ -704,6 +713,7 @@ fn expr_scope_for_offset(
             Stmt::Block { range, .. }
             | Stmt::Let { range, .. }
             | Stmt::Expr { range, .. }
+            | Stmt::Yield { range, .. }
             | Stmt::Return { range, .. }
             | Stmt::If { range, .. }
             | Stmt::While { range, .. }
@@ -743,6 +753,11 @@ fn expr_scope_for_offset(
                 }
             }
             Stmt::Expr { expr, .. } => visit_expr(body, *expr, offset, best_expr, best_stmt),
+            Stmt::Yield { expr, .. } => {
+                if let Some(expr) = expr {
+                    visit_expr(body, *expr, offset, best_expr, best_stmt);
+                }
+            }
             Stmt::Assert {
                 condition, message, ..
             } => {
