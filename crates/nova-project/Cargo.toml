@@ -24,6 +24,7 @@ hex = "0.4"
 toml = "0.8"
 nova-archive = { path = "../nova-archive" }
 nova-build-model = { path = "../nova-build-model" }
+nova-core = { path = "../nova-core" }
 nova-classfile = { path = "../nova-classfile" }
 nova-config = { path = "../nova-config" }
 nova-hir = { path = "../nova-hir" }

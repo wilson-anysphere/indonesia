@@ -3551,6 +3551,7 @@ dependencies = [
  "nova-syntax",
  "once_cell",
  "proptest",
+ "serde",
  "smol_str",
  "text-size",
 ]
@@ -4113,6 +4114,7 @@ dependencies = [
  "nova-build-model",
  "nova-classfile",
  "nova-config",
+ "nova-core",
  "nova-hir",
  "nova-modules",
  "nova-syntax",

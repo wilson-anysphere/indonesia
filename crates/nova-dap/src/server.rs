@@ -8,9 +8,9 @@ use crate::stream_debug::{run_stream_debug, StreamDebugArguments, STREAM_DEBUG_C
 use anyhow::Context;
 use nova_bugreport::{global_crash_store, BugReportBuilder, BugReportOptions, PerfStats};
 use nova_config::NovaConfig;
+use nova_core::{AttachConfig, LaunchConfig};
 use nova_db::InMemoryFileStore;
 use nova_jdwp::{JdwpClient, JdwpEvent, TcpJdwpClient};
-use nova_project::{AttachConfig, LaunchConfig};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
