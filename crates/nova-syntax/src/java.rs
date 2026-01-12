@@ -3794,4 +3794,28 @@ mod tests {
             "expected array initializer"
         );
     }
+
+    #[test]
+    fn parse_block_lowers_multidimensional_array_initializer_in_var_decl() {
+        let text = "{ int[][] a = { {1}, {2} }; }";
+        let block = parse_block(text, 0);
+
+        assert_eq!(block.statements.len(), 1);
+        let ast::Stmt::LocalVar(local) = &block.statements[0] else {
+            panic!("expected local variable statement");
+        };
+        let Some(ast::Expr::ArrayInitializer(init)) = &local.initializer else {
+            panic!("expected array initializer");
+        };
+        assert_eq!(init.items.len(), 2);
+
+        let ast::Expr::ArrayInitializer(first) = &init.items[0] else {
+            panic!("expected nested array initializer");
+        };
+        let ast::Expr::ArrayInitializer(second) = &init.items[1] else {
+            panic!("expected nested array initializer");
+        };
+        assert!(matches!(first.items.first(), Some(ast::Expr::IntLiteral(_))));
+        assert!(matches!(second.items.first(), Some(ast::Expr::IntLiteral(_))));
+    }
 }

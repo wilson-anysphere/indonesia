@@ -719,6 +719,85 @@ class C { void m(){ int[] a = new int[] {1,2}; } }
 }
 
 #[test]
+fn array_initializer_multidimensional_typechecks() {
+    let src = r#"
+class C { void m(){ int[][] a = { {1}, {2} }; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| {
+            d.code.as_ref() != "type-mismatch"
+                && d.code.as_ref() != "invalid-array-initializer"
+                && d.code.as_ref() != "array-initializer-type-mismatch"
+        }),
+        "expected multidimensional array initializer to type-check; got {diags:?}"
+    );
+
+    let offset = src
+        .find("{ {1}, {2} }")
+        .expect("snippet should contain array initializer");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "int[][]");
+}
+
+#[test]
+fn array_creation_multidimensional_with_initializer_typechecks() {
+    let src = r#"
+class C { void m(){ int[][] a = new int[][] { {1}, {2} }; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| {
+            d.code.as_ref() != "type-mismatch"
+                && d.code.as_ref() != "invalid-array-initializer"
+                && d.code.as_ref() != "array-initializer-type-mismatch"
+        }),
+        "expected multidimensional array creation with initializer to type-check; got {diags:?}"
+    );
+
+    let offset = src
+        .find("new int[][] { {1}, {2} }")
+        .expect("snippet should contain array creation")
+        + "new ".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "int[][]");
+}
+
+#[test]
+fn array_initializer_items_target_type_lambdas() {
+    let src = r#"
+class C { void m(){ Runnable[] rs = { () -> {}, () -> {} }; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| {
+            d.code.as_ref() != "type-mismatch"
+                && d.code.as_ref() != "invalid-array-initializer"
+                && d.code.as_ref() != "lambda-arity-mismatch"
+        }),
+        "expected lambda array initializer to type-check; got {diags:?}"
+    );
+
+    let offset = src
+        .find("() -> {}")
+        .expect("snippet should contain lambda expression");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Runnable");
+}
+
+#[test]
 fn rejects_non_statement_expression() {
     let src = r#"
 class C {
