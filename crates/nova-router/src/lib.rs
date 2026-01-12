@@ -850,6 +850,7 @@ struct RouterState {
     notify: Notify,
     handshake_semaphore: Arc<Semaphore>,
     connection_semaphore: Arc<Semaphore>,
+    shard_snapshot_semaphore: Arc<Semaphore>,
     bound_listen_addr_tx: watch::Sender<Option<ListenAddr>>,
 }
 
@@ -885,6 +886,9 @@ impl DistributedRouter {
         let connection_limit = config.max_worker_connections.max(1);
         let handshake_semaphore = Arc::new(Semaphore::new(handshake_limit));
         let connection_semaphore = Arc::new(Semaphore::new(connection_limit));
+        let shard_snapshot_semaphore = Arc::new(Semaphore::new(
+            MAX_CONCURRENT_SHARD_FILE_SNAPSHOTS.max(1),
+        ));
 
         info!(
             listen_addr = ?config.listen_addr,
@@ -917,6 +921,7 @@ impl DistributedRouter {
             notify: Notify::new(),
             handshake_semaphore,
             connection_semaphore,
+            shard_snapshot_semaphore,
             bound_listen_addr_tx,
         });
 
@@ -993,8 +998,7 @@ impl DistributedRouter {
         }
 
         let mut join_set = JoinSet::new();
-        let snapshot_semaphore =
-            Arc::new(Semaphore::new(MAX_CONCURRENT_SHARD_FILE_SNAPSHOTS.max(1)));
+        let snapshot_semaphore = Arc::clone(&self.state.shard_snapshot_semaphore);
         for shard_id in 0..(self.state.layout.source_roots.len() as ShardId) {
             let state = self.state.clone();
             let root = self.state.layout.source_roots[shard_id as usize]
@@ -2113,6 +2117,19 @@ async fn handle_new_connection(
                 return;
             };
 
+            // Bound peak memory: collecting + sending full file snapshots can allocate many
+            // megabytes per shard. Use the shared snapshot semaphore so startup (cached index
+            // rehydration) doesn't race with explicit indexing runs.
+            let snapshot_permit: OwnedSemaphorePermit = match refresh_state
+                .shard_snapshot_semaphore
+                .clone()
+                .acquire_owned()
+                .await
+            {
+                Ok(permit) => permit,
+                Err(_) => return,
+            };
+
             let files = match collect_java_files(&root).await {
                 Ok(files) => files,
                 Err(err) => {
@@ -2128,14 +2145,59 @@ async fn handle_new_connection(
             };
 
             let revision = refresh_state.global_revision.load(Ordering::SeqCst);
-            let resp = worker_call(&refresh_handle, Request::LoadFiles { revision, files }).await;
-            if let Err(err) = resp {
-                warn!(
-                    shard_id,
-                    worker_id = refresh_handle.worker_id,
-                    error = ?err,
-                    "failed to rehydrate worker file map"
-                );
+
+            // Start the RPC call (which serializes/writes the full snapshot) while holding the
+            // permit, then drop it before waiting for the response so other shards can begin
+            // snapshotting.
+            let pending: PendingCall = match timeout(
+                WORKER_RPC_WRITE_TIMEOUT,
+                refresh_handle
+                    .conn
+                    .start_call(Request::LoadFiles { revision, files }),
+            )
+            .await
+            {
+                Ok(Ok(pending)) => pending,
+                Ok(Err(err)) => {
+                    warn!(
+                        shard_id,
+                        worker_id = refresh_handle.worker_id,
+                        error = ?err,
+                        "failed to send load files request to worker"
+                    );
+                    return;
+                }
+                Err(_) => {
+                    let _ = refresh_handle.conn.shutdown().await;
+                    warn!(
+                        shard_id,
+                        worker_id = refresh_handle.worker_id,
+                        "timed out writing load files request to worker"
+                    );
+                    return;
+                }
+            };
+
+            drop(snapshot_permit);
+
+            match timeout(WORKER_RPC_READ_TIMEOUT, pending.wait()).await {
+                Ok(Ok(_resp)) => {}
+                Ok(Err(err)) => {
+                    warn!(
+                        shard_id,
+                        worker_id = refresh_handle.worker_id,
+                        error = ?err,
+                        "failed to rehydrate worker file map"
+                    );
+                }
+                Err(_) => {
+                    let _ = refresh_handle.conn.shutdown().await;
+                    warn!(
+                        shard_id,
+                        worker_id = refresh_handle.worker_id,
+                        "timed out waiting for load files response from worker"
+                    );
+                }
             }
         });
     }
