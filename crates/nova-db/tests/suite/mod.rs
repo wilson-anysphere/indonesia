@@ -1,8 +1,11 @@
 mod hir_lowering;
+mod java_parse_no_reparse;
 mod line_index;
 mod project_database;
 mod resolve;
+mod resilience_broken_code;
 mod salsa_db_view;
 mod salsa_indexing;
 mod typeck;
+mod typeck_jpms;
 mod workspace_loader;
