@@ -174,7 +174,10 @@ fn is_unterminated_lex_error(token: &SyntaxToken) -> bool {
         return false;
     }
     let text = token.text();
-    text.starts_with("\"\"\"") || text.starts_with('"') || text.starts_with('\'') || text.starts_with("/*")
+    text.starts_with("\"\"\"")
+        || text.starts_with('"')
+        || text.starts_with('\'')
+        || text.starts_with("/*")
 }
 
 fn next_significant(tokens: &[SyntaxToken], mut idx: usize) -> Option<&SyntaxToken> {
