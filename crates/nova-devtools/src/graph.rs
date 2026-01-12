@@ -55,12 +55,17 @@ fn build_dot(
     layer_colors.insert("ide", "#CE93D8");
     layer_colors.insert("protocol", "#EF9A9A");
 
+    let mut crates_by_layer: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for krate in workspace.packages.keys() {
         let layer = config
             .crates
             .get(krate)
             .map(String::as_str)
             .unwrap_or("<unmapped>");
+        crates_by_layer
+            .entry(layer.to_string())
+            .or_default()
+            .push(krate.clone());
         let fill = layer_colors.get(layer).copied().unwrap_or("#EEEEEE");
         if layer == "<unmapped>" {
             diagnostics.push(
@@ -75,6 +80,26 @@ fn build_dot(
         out.push_str(&format!(
             "  \"{krate}\" [label=\"{krate}\\n({layer})\",style=filled,fillcolor=\"{fill}\"];\n"
         ));
+    }
+
+    for crates in crates_by_layer.values_mut() {
+        crates.sort();
+    }
+
+    // Cluster crates by layer to make the graph easier to read at a glance.
+    // (Node fill colors already show layers; clusters help visually group them.)
+    for (layer, crates) in &crates_by_layer {
+        let cluster_id = layer.replace(['<', '>'], "").replace('-', "_");
+        out.push_str(&format!("  subgraph cluster_{cluster_id} {{\n"));
+        out.push_str(&format!("    label=\"{layer}\";\n"));
+        out.push_str("    style=rounded;\n");
+        if let Some(color) = layer_colors.get(layer.as_str()) {
+            out.push_str(&format!("    color=\"{color}\";\n"));
+        }
+        for krate in crates {
+            out.push_str(&format!("    \"{krate}\";\n"));
+        }
+        out.push_str("  }\n");
     }
 
     for edge in &workspace.edges {
@@ -259,5 +284,41 @@ mod tests {
         assert!(diagnostics.is_empty());
         assert!(dot.contains("color=\"#444444\""));
         assert!(!dot.contains("violation"));
+    }
+
+    #[test]
+    fn clusters_are_emitted_per_layer() {
+        let config = LayerMapConfig {
+            version: Some(1),
+            layers: BTreeMap::from([("core".to_string(), 0), ("protocol".to_string(), 1)]),
+            crates: BTreeMap::from([
+                ("a".to_string(), "core".to_string()),
+                ("b".to_string(), "protocol".to_string()),
+            ]),
+            policy: PolicyConfig {
+                allow_same_layer: true,
+                dev: DevPolicyConfig::default(),
+            },
+        };
+
+        let workspace = WorkspaceGraph {
+            packages: BTreeMap::from([
+                ("a".to_string(), PathBuf::from("crates/a/Cargo.toml")),
+                ("b".to_string(), PathBuf::from("crates/b/Cargo.toml")),
+            ]),
+            edges: Vec::new(),
+        };
+
+        let mut diagnostics = Vec::new();
+        let dot = build_dot(
+            Path::new("crate-layers.toml"),
+            &workspace,
+            &config,
+            &mut diagnostics,
+        );
+
+        assert!(diagnostics.is_empty());
+        assert!(dot.contains("subgraph cluster_core"));
+        assert!(dot.contains("subgraph cluster_protocol"));
     }
 }

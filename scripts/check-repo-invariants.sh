@@ -15,7 +15,16 @@ trap 'rm -f "$tmp"' EXIT
 # Generate metadata once and reuse it across all checks.
 cargo metadata --format-version=1 --no-deps --locked >"$tmp"
 
-cargo run -p nova-devtools -- check-deps --metadata-path "$tmp"
-cargo run -p nova-devtools -- check-layers --metadata-path "$tmp"
-cargo run -p nova-devtools -- check-architecture-map --metadata-path "$tmp" --strict
-cargo run -p nova-devtools -- check-protocol-extensions
+# Build once, then run the binary directly to avoid repeated `cargo run` overhead in CI.
+cargo build -p nova-devtools
+
+target_dir="${CARGO_TARGET_DIR:-target}"
+bin="${target_dir}/debug/nova-devtools"
+if [[ "${OS:-}" == "Windows_NT" ]]; then
+  bin="${bin}.exe"
+fi
+
+"${bin}" check-deps --metadata-path "$tmp"
+"${bin}" check-layers --metadata-path "$tmp"
+"${bin}" check-architecture-map --metadata-path "$tmp" --strict
+"${bin}" check-protocol-extensions
