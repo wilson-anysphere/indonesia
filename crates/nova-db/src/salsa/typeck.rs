@@ -733,6 +733,37 @@ fn type_of_expr_demand_result(
     if expr.expr.idx() < body.exprs.len() {
         let target_expr = expr.expr;
         let target_range = body.exprs[target_expr].range();
+        let target_offset = target_range.start;
+        let can_prune_stmts = !target_range.is_empty();
+
+        let stmt_range = |stmt: nova_hir::hir::StmtId| match &body.stmts[stmt] {
+            HirStmt::Block { range, .. }
+            | HirStmt::Let { range, .. }
+            | HirStmt::Expr { range, .. }
+            | HirStmt::Yield { range, .. }
+            | HirStmt::Assert { range, .. }
+            | HirStmt::Return { range, .. }
+            | HirStmt::If { range, .. }
+            | HirStmt::While { range, .. }
+            | HirStmt::For { range, .. }
+            | HirStmt::ForEach { range, .. }
+            | HirStmt::Synchronized { range, .. }
+            | HirStmt::Switch { range, .. }
+            | HirStmt::Try { range, .. }
+            | HirStmt::Throw { range, .. }
+            | HirStmt::Break { range, .. }
+            | HirStmt::Continue { range, .. }
+            | HirStmt::Empty { range, .. } => *range,
+        };
+
+        let stmt_may_contain_target = |stmt: nova_hir::hir::StmtId| {
+            if !can_prune_stmts {
+                return true;
+            }
+            let range = stmt_range(stmt);
+            // Keep pruning best-effort: parse recovery can yield empty/degenerate spans.
+            range.is_empty() || (range.start <= target_offset && target_offset < range.end)
+        };
 
         // If the target expression is nested inside a larger statement-level expression (e.g.
         // within a lambda argument to a method call), infer that enclosing expression first so
@@ -754,9 +785,34 @@ fn type_of_expr_demand_result(
 
             let mut stack = vec![body.root];
             while let Some(stmt) = stack.pop() {
+                if !stmt_may_contain_target(stmt) {
+                    continue;
+                }
                 match &body.stmts[stmt] {
                     HirStmt::Block { statements, .. } => {
-                        stack.extend(statements.iter().rev().copied());
+                        if can_prune_stmts {
+                            // Avoid scanning unrelated statements in large blocks (common case for
+                            // IDE hovers). If we can identify at least one statement that contains
+                            // the target offset, only visit those; otherwise fall back to scanning
+                            // the full block to remain resilient under parse recovery.
+                            let mut candidates = Vec::new();
+                            for &child in statements {
+                                let range = stmt_range(child);
+                                if !range.is_empty()
+                                    && range.start <= target_offset
+                                    && target_offset < range.end
+                                {
+                                    candidates.push(child);
+                                }
+                            }
+                            if candidates.is_empty() {
+                                stack.extend(statements.iter().rev().copied());
+                            } else {
+                                stack.extend(candidates.into_iter().rev());
+                            }
+                        } else {
+                            stack.extend(statements.iter().rev().copied());
+                        }
                     }
                     HirStmt::Let {
                         local, initializer, ..
@@ -10702,6 +10758,7 @@ fn find_enclosing_target_typed_expr_in_stmt_inner(
         HirStmt::Block { range, .. }
         | HirStmt::Let { range, .. }
         | HirStmt::Expr { range, .. }
+        | HirStmt::Yield { range, .. }
         | HirStmt::Assert { range, .. }
         | HirStmt::Yield { range, .. }
         | HirStmt::Return { range, .. }
@@ -10717,8 +10774,12 @@ fn find_enclosing_target_typed_expr_in_stmt_inner(
         | HirStmt::Continue { range, .. }
         | HirStmt::Empty { range, .. } => *range,
     };
-    let may_contain = stmt_range.start <= target_range.start && target_range.end <= stmt_range.end;
-    if !may_contain {
+    // Best-effort pruning: only skip when we have a non-empty range and the target start is
+    // clearly outside it. Parse recovery can produce degenerate spans that don't strictly contain
+    // children.
+    if !stmt_range.is_empty()
+        && !(stmt_range.start <= target_range.start && target_range.start < stmt_range.end)
+    {
         return;
     }
 
@@ -10875,9 +10936,16 @@ fn find_enclosing_target_typed_expr_in_expr(
     target_range: Span,
     best: &mut Option<(HirExprId, usize)>,
 ) {
-    let range = body.exprs[expr].range();
-    let may_contain = range.start <= target_range.start && target_range.end <= range.end;
-    if !may_contain {
+    let expr_node = &body.exprs[expr];
+    let range = expr_node.range();
+
+    // Best-effort pruning: avoid pruning `Invalid` nodes (parse recovery can yield surprising
+    // spans) and only skip when we have a non-empty range and the target start is clearly outside.
+    let can_prune = !matches!(expr_node, HirExpr::Invalid { .. });
+    if can_prune
+        && !range.is_empty()
+        && !(range.start <= target_range.start && target_range.start < range.end)
+    {
         return;
     }
 
@@ -10939,6 +11007,14 @@ fn find_enclosing_target_typed_expr_in_expr(
                     target_range,
                     best,
                 );
+            }
+        }
+        HirExpr::ArrayInitializer { items, .. } => {
+            for item in items {
+                find_enclosing_target_typed_expr_in_expr(body, *item, target, target_range, best);
+            }
+            if let Some(init) = initializer {
+                find_enclosing_target_typed_expr_in_expr(body, *init, target, target_range, best);
             }
         }
         HirExpr::ArrayInitializer { items, .. } => {
