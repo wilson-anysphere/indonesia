@@ -579,6 +579,19 @@ fn lexer_text_block_templates_lex_without_error_tokens() {
 }
 
 #[test]
+fn lexer_text_block_templates_allow_line_continuation_escape() {
+    // Text blocks allow a backslash followed by a line terminator (line continuation). Ensure the
+    // template lexer doesn't treat it as an unterminated escape sequence.
+    let input = "STR.\"\"\"\nhello \\\nworld\n\"\"\"";
+    let (tokens, errors) = lex_with_errors(input);
+    assert_eq!(errors, Vec::new());
+    assert!(
+        !tokens.iter().any(|t| t.kind == SyntaxKind::Error),
+        "did not expect error tokens, got: {tokens:?}"
+    );
+}
+
+#[test]
 fn lexer_translates_unicode_escapes_before_tokenization() {
     // `\u003B` is `;`, and `\u005C` is `\` so the second literal exercises the "translated
     // backslash starts another escape" rule: `\u005Cu003B` => `;`.

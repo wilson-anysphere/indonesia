@@ -470,6 +470,23 @@ impl<'a> Lexer<'a> {
                     self.bump_char();
 
                     match self.peek_char() {
+                        Some('\n' | '\r') if delimiter.is_text_block() => {
+                            // Text blocks allow backslash + line terminator as a line continuation.
+                            // (`""" ... \` + newline.)
+                            //
+                            // We don't interpret the escape here; we just ensure it doesn't
+                            // terminate lexing with a spurious error.
+                            let first = self.peek_char().expect("guard ensures Some");
+                            self.bump_char();
+                            if first == '\r' && self.peek_char() == Some('\n') {
+                                self.bump_char();
+                            }
+                        }
+                        None if delimiter.is_text_block() => {
+                            // Text blocks can contain a trailing backslash; if the template itself
+                            // is unterminated, the EOF handler will report it.
+                            break;
+                        }
                         Some('\n' | '\r') | None => {
                             // A backslash at end-of-line or end-of-file can't start an escape.
                             self.push_error("unterminated string template", start, self.pos);
