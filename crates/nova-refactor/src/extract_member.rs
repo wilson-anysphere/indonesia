@@ -14,6 +14,8 @@ pub enum ExtractError {
     ParseError,
     #[error("selection does not resolve to an expression")]
     InvalidSelection,
+    #[error("expression kind is not supported for extraction")]
+    UnsupportedExpression,
     #[error("expression has side effects and cannot be extracted safely")]
     SideEffectfulExpression,
     #[error("expression depends on method-local variables or parameters")]
@@ -100,6 +102,9 @@ fn extract_impl(
 
     let root = parsed.syntax();
     let expr = find_expression(root.clone(), selection).ok_or(ExtractError::InvalidSelection)?;
+    if !is_supported_expression(&expr) {
+        return Err(ExtractError::UnsupportedExpression);
+    }
     if has_side_effects(expr.syntax()) {
         return Err(ExtractError::SideEffectfulExpression);
     }
@@ -206,6 +211,20 @@ fn find_expression(root: nova_syntax::SyntaxNode, selection: TextRange) -> Optio
         }
     }
     None
+}
+
+fn is_supported_expression(expr: &ast::Expression) -> bool {
+    // Some Java expressions are only type-correct in the context where they appear (notably lambdas
+    // and method references). `extract_member` currently synthesizes a standalone member
+    // declaration type from limited syntactic heuristics; for these expressions that can easily
+    // produce uncompilable code (e.g. `Object value = () -> {}`), so we reject them.
+    !matches!(
+        expr,
+        ast::Expression::LambdaExpression(_)
+            | ast::Expression::MethodReferenceExpression(_)
+            | ast::Expression::ConstructorReferenceExpression(_)
+            | ast::Expression::ArrayInitializer(_)
+    )
 }
 
 fn has_side_effects(expr: &nova_syntax::SyntaxNode) -> bool {

@@ -311,3 +311,51 @@ class A {
 "#
     );
 }
+
+#[test]
+fn extract_field_rejects_lambda_expression() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    void m() {
+        Runnable r = /*[*/() -> { }/*]*/;
+    }
+}
+"#,
+    );
+
+    let err = extract_field("A.java", &code, range, ExtractOptions::default()).unwrap_err();
+    assert_eq!(err, ExtractError::UnsupportedExpression);
+}
+
+#[test]
+fn extract_constant_rejects_method_reference_expression() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    void m() {
+        java.util.function.Function<Object, String> f = /*[*/String::valueOf/*]*/;
+    }
+}
+"#,
+    );
+
+    let err = extract_constant("A.java", &code, range, ExtractOptions::default()).unwrap_err();
+    assert_eq!(err, ExtractError::UnsupportedExpression);
+}
+
+#[test]
+fn extract_field_rejects_array_initializer_expression() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    void m() {
+        int[] xs = /*[*/{ 1, 2 }/*]*/;
+    }
+}
+"#,
+    );
+
+    let err = extract_field("A.java", &code, range, ExtractOptions::default()).unwrap_err();
+    assert_eq!(err, ExtractError::UnsupportedExpression);
+}
