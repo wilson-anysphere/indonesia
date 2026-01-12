@@ -82,6 +82,13 @@ npm run compile
     - copies the bundle **archive path** (if available) or folder path to your clipboard
     - prints both paths to the **Nova Bug Report** output channel
 
+- **Nova: Show Request Metrics** (`nova.showRequestMetrics`)
+  - Fetches request metrics via `nova/metrics` (available in safe mode).
+  - Pretty-prints the JSON payload to the **Nova Metrics** output channel, with an action to copy the JSON to your clipboard.
+
+- **Nova: Reset Request Metrics** (`nova.resetRequestMetrics`)
+  - Resets request metrics via `nova/resetMetrics` (available in safe mode).
+
 - **Nova: Discover Tests** (`nova.discoverTests`)
   - Sends `nova/test/discover` and prints discovered test IDs.
   - Also refreshes the VS Code Test Explorer tree.

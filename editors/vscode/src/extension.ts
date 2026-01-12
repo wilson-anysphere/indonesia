@@ -7,6 +7,7 @@ import { getCompletionContextId, requestMoreCompletions } from './aiCompletionMo
 import { registerNovaDebugAdapter } from './debugAdapter';
 import { registerNovaDebugConfigurations } from './debugConfigurations';
 import { registerNovaHotSwap } from './hotSwap';
+import { registerNovaMetricsCommands } from './metricsCommands';
 import { registerNovaTestDebugRunProfile } from './testDebug';
 import { ServerManager, type NovaServerSettings } from './serverManager';
 import { buildNovaLspLaunchConfig, resolveNovaConfigPath } from './lspArgs';
@@ -233,6 +234,7 @@ export async function activate(context: vscode.ExtensionContext) {
   registerNovaDebugAdapter(context, { serverManager, output: serverOutput });
   registerNovaDebugConfigurations(context, sendNovaRequest);
   registerNovaHotSwap(context, sendNovaRequest);
+  registerNovaMetricsCommands(context, sendNovaRequest);
 
   const readServerSettings = (): NovaServerSettings => {
     const cfg = vscode.workspace.getConfiguration('nova');
