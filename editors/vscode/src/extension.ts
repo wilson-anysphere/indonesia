@@ -1350,7 +1350,12 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand(BUG_REPORT_COMMAND, async () => {
       try {
-        const c = await requireClient();
+        await requireClient();
+        const method = 'nova/bugReport';
+        if (isNovaRequestSupported(method) === false) {
+          void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage(method));
+          return;
+        }
 
         const reproduction = await promptForBugReportReproduction();
         if (reproduction === undefined) {
@@ -1373,9 +1378,12 @@ export async function activate(context: vscode.ExtensionContext) {
         const resp = await vscode.window.withProgress(
           { location: vscode.ProgressLocation.Notification, title: 'Nova: Generating bug report…' },
           async () => {
-            return await c.sendRequest<BugReportResponse>('nova/bugReport', params);
+            return await sendNovaRequest<BugReportResponse>(method, params);
           },
         );
+        if (!resp) {
+          return;
+        }
 
         const bundlePath = resp?.path;
         const archivePath = resp?.archivePath;
