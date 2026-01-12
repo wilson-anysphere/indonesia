@@ -317,4 +317,43 @@ mod tests {
         assert_eq!(server_port.ty.as_deref(), Some("java.lang.Integer"));
         assert_eq!(server_port.default_value.as_deref(), Some("8080"));
     }
+
+    #[test]
+    fn ingest_classpath_ignores_missing_archives() {
+        let dir = tempdir().unwrap();
+
+        let jar_path = dir.path().join("metadata.jar");
+        let mut jar = zip::ZipWriter::new(std::fs::File::create(&jar_path).unwrap());
+        let options = FileOptions::<()>::default();
+        jar.start_file("META-INF/spring-configuration-metadata.json", options)
+            .unwrap();
+        jar.write_all(
+            br#"{
+              "properties": [
+                {
+                  "name": "server.port",
+                  "type": "java.lang.Integer",
+                  "defaultValue": 8080
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+        jar.finish().unwrap();
+
+        let missing = dir.path().join("does-not-exist.jar");
+
+        let mut index = MetadataIndex::new();
+        index
+            .ingest_classpath(&[
+                ClasspathEntry::Jar(missing),
+                ClasspathEntry::Jar(jar_path),
+            ])
+            .unwrap();
+
+        assert!(
+            index.property_meta("server.port").is_some(),
+            "expected metadata ingestion to ignore missing archives and still ingest metadata from existing jars"
+        );
+    }
 }

@@ -191,8 +191,14 @@ impl Archive {
             result
         }
 
-        let mut file = File::open(&self.path)
-            .with_context(|| format!("failed to open archive {}", self.path.display()))?;
+        let mut file = match File::open(&self.path) {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("failed to open archive {}", self.path.display()));
+            }
+        };
         let mut header = [0u8; 2];
         let is_jmod_magic = file.read_exact(&mut header).is_ok() && header == *b"JM";
         file.seek(SeekFrom::Start(0))
@@ -221,8 +227,14 @@ impl Archive {
 
         // JMOD fallback: interpret the zip offsets relative to the start of the embedded zip
         // payload (after the `JM<version>` header).
-        let file = File::open(&self.path)
-            .with_context(|| format!("failed to open archive {}", self.path.display()))?;
+        let file = match File::open(&self.path) {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("failed to open archive {}", self.path.display()));
+            }
+        };
         let reader = OffsetReader::new(file, JMOD_HEADER_LEN)
             .with_context(|| format!("failed to seek {}", self.path.display()))?;
         let mut zip = ZipArchive::new(reader)
