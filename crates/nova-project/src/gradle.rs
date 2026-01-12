@@ -1542,7 +1542,7 @@ fn parse_gradle_settings_included_projects(contents: &str) -> Vec<String> {
     projects
 }
 
-fn parse_gradle_settings_included_builds(contents: &str) -> Vec<String> {
+pub(crate) fn parse_gradle_settings_included_builds(contents: &str) -> Vec<String> {
     // Best-effort extraction of Gradle composite builds:
     // - Groovy: `includeBuild 'build-logic'`
     // - Groovy/Kotlin: `includeBuild("build-logic")`

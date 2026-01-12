@@ -442,7 +442,17 @@ fn gradle_workspace_root(start: &Path) -> Option<PathBuf> {
 
     loop {
         if has_gradle_settings(dir) {
-            return Some(dir.to_path_buf());
+            // Gradle composite builds (`includeBuild(...)`) commonly nest included builds under the
+            // main workspace (e.g. `includeBuild("build-logic")`). These included builds often have
+            // their own `settings.gradle(.kts)`, but from Nova's perspective they should be part of
+            // the *outer* workspace.
+            //
+            // Without this, opening a file under `<workspace>/build-logic/**` would incorrectly
+            // treat the included build as the workspace root, preventing the caller from loading a
+            // project model that includes the composite build relationship.
+            if !is_included_build_root(dir) {
+                return Some(dir.to_path_buf());
+            }
         }
 
         if nearest_build.is_none() && has_gradle_build(dir) {
@@ -478,6 +488,44 @@ fn has_gradle_settings(dir: &Path) -> bool {
 
 fn has_gradle_build(dir: &Path) -> bool {
     dir.join("build.gradle").is_file() || dir.join("build.gradle.kts").is_file()
+}
+
+fn is_included_build_root(settings_root: &Path) -> bool {
+    // `load_project*` starts from a canonical path, but keep this best-effort and fall back to the
+    // raw path when canonicalization fails (e.g. broken symlinks).
+    let canonical_root = std::fs::canonicalize(settings_root).unwrap_or_else(|_| settings_root.to_path_buf());
+
+    let mut ancestor = settings_root.parent();
+    while let Some(dir) = ancestor {
+        if has_gradle_settings(dir) && gradle_settings_includes_build(dir, &canonical_root) {
+            return true;
+        }
+        ancestor = dir.parent();
+    }
+
+    false
+}
+
+fn gradle_settings_includes_build(workspace_root: &Path, build_root: &Path) -> bool {
+    for settings_name in ["settings.gradle.kts", "settings.gradle"] {
+        let settings_path = workspace_root.join(settings_name);
+        if !settings_path.is_file() {
+            continue;
+        }
+        let Ok(contents) = std::fs::read_to_string(&settings_path) else {
+            continue;
+        };
+
+        for dir_rel in gradle::parse_gradle_settings_included_builds(&contents) {
+            let candidate = workspace_root.join(dir_rel);
+            let candidate = std::fs::canonicalize(&candidate).unwrap_or(candidate);
+            if candidate == build_root {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 fn simple_workspace_root(start: &Path) -> Option<PathBuf> {
