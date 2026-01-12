@@ -10491,6 +10491,7 @@ fn find_enclosing_target_typed_expr_in_stmt_inner(
         | HirStmt::Let { range, .. }
         | HirStmt::Expr { range, .. }
         | HirStmt::Assert { range, .. }
+        | HirStmt::Yield { range, .. }
         | HirStmt::Return { range, .. }
         | HirStmt::If { range, .. }
         | HirStmt::While { range, .. }
@@ -10534,6 +10535,11 @@ fn find_enclosing_target_typed_expr_in_stmt_inner(
         } => {
             find_enclosing_target_typed_expr_in_expr(body, *condition, target, target_range, best);
             if let Some(expr) = message {
+                find_enclosing_target_typed_expr_in_expr(body, *expr, target, target_range, best);
+            }
+        }
+        HirStmt::Yield { expr, .. } => {
+            if let Some(expr) = expr {
                 find_enclosing_target_typed_expr_in_expr(body, *expr, target, target_range, best);
             }
         }
@@ -10714,6 +10720,11 @@ fn find_enclosing_target_typed_expr_in_expr(
                 );
             }
         }
+        HirExpr::ArrayInitializer { items, .. } => {
+            for item in items {
+                find_enclosing_target_typed_expr_in_expr(body, *item, target, target_range, best);
+            }
+        }
         HirExpr::Unary { expr, .. } => {
             find_enclosing_target_typed_expr_in_expr(body, *expr, target, target_range, best);
         }
@@ -10748,6 +10759,20 @@ fn find_enclosing_target_typed_expr_in_expr(
                 );
             }
         },
+        HirExpr::Switch {
+            selector,
+            body: switch_body,
+            ..
+        } => {
+            find_enclosing_target_typed_expr_in_expr(body, *selector, target, target_range, best);
+            find_enclosing_target_typed_expr_in_stmt_inner(
+                body,
+                *switch_body,
+                target,
+                target_range,
+                best,
+            );
+        }
         HirExpr::Invalid { children, .. } => {
             for child in children {
                 find_enclosing_target_typed_expr_in_expr(body, *child, target, target_range, best);
