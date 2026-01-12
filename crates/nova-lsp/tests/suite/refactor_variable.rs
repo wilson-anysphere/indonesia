@@ -352,6 +352,29 @@ class C {
 }
 
 #[test]
+fn extract_variable_code_action_not_offered_in_try_with_resources_resource_initializer() {
+    let fixture = r#"
+class C {
+    void m() throws Exception {
+        try (java.io.ByteArrayInputStream r = new java.io.ByteArrayInputStream(new byte[/*start*/1 + 2/*end*/])) {
+            r.read();
+        }
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let uri = Uri::from_str("file:///Test.java").unwrap();
+    let range = lsp_types::Range {
+        start: offset_to_position(&source, selection.start),
+        end: offset_to_position(&source, selection.end),
+    };
+
+    let actions = extract_variable_code_actions(&uri, &source, range);
+    assert!(actions.is_empty());
+}
+
+#[test]
 fn inline_variable_code_actions_apply_expected_edits() {
     let source = r#"
 class C {
@@ -374,7 +397,9 @@ class C {
     let single = actions
         .iter()
         .find_map(|action| match action {
-            lsp_types::CodeActionOrCommand::CodeAction(action) if action.title == "Inline variable" => {
+            lsp_types::CodeActionOrCommand::CodeAction(action)
+                if action.title == "Inline variable" =>
+            {
                 Some(action.clone())
             }
             _ => None,
