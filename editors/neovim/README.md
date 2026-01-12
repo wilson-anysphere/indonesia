@@ -10,38 +10,38 @@ The repo includes a copy/paste-ready config file at [`editors/neovim/init.lua`](
 - [`neovim/nvim-lspconfig`](https://github.com/neovim/nvim-lspconfig)
 - `nova-lsp` available on your `$PATH`
 
-## `nvim-lspconfig` configuration
+## Quick start
+
+1. Install [`neovim/nvim-lspconfig`](https://github.com/neovim/nvim-lspconfig).
+2. Copy [`editors/neovim/init.lua`](./init.lua) to your Neovim config directory:
+   - Linux/macOS: `~/.config/nvim/init.lua`
+   - Windows: `%LOCALAPPDATA%\nvim\init.lua`
+3. Ensure `nova-lsp` is available on your `$PATH`.
+
+The template includes:
+
+- `nova-lsp --stdio` for `java` buffers via `nvim-lspconfig`
+- Root detection via `pom.xml`, `build.gradle`, `settings.gradle`, `.git`
+- `:NovaOrganizeImports` + `<leader>oi` helper mapping (standard LSP `source.organizeImports`)
+
+## `nvim-lspconfig` configuration (inline snippet)
 
 ```lua
 local lspconfig = require('lspconfig')
 local configs = require('lspconfig.configs')
 local util = require('lspconfig.util')
 
-if not configs.nova_lsp then
-  configs.nova_lsp = {
+if not configs.nova then
+  configs.nova = {
     default_config = {
       cmd = { 'nova-lsp', '--stdio' },
       filetypes = { 'java' },
-      root_dir = function(fname)
-        return util.root_pattern(
-          'pom.xml',
-          'build.gradle',
-          'build.gradle.kts',
-          'settings.gradle',
-          'settings.gradle.kts',
-          'MODULE.bazel',
-          'WORKSPACE',
-          'WORKSPACE.bazel',
-          '.git',
-          '.nova'
-        )(fname) or util.path.dirname(fname)
-      end,
-      single_file_support = true,
+      root_dir = util.root_pattern('pom.xml', 'build.gradle', 'settings.gradle', '.git'),
     },
   }
 end
 
-lspconfig.nova_lsp.setup({})
+lspconfig.nova.setup({})
 ```
 
 ## Calling Nova custom requests (optional)

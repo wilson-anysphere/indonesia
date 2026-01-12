@@ -1,37 +1,51 @@
 ;;; nova.el --- Nova LSP configuration (template) -*- lexical-binding: t; -*-
 
-;; This file is a minimal template for connecting Emacs to `nova-lsp` for Java.
+;; This is a minimal template that connects Emacs to `nova-lsp` for Java.
 ;;
-;; Installation (one option):
-;;   1) Copy this file somewhere on your `load-path`
-;;   2) Add: (require 'nova)
+;; Copy this file somewhere on your `load-path` (for example `~/.emacs.d/lisp/nova.el`)
+;; and then, in your init:
+;;   (require 'nova)
+;;   (nova-eglot-setup)      ;; recommended (Emacs 29+)
+;; or:
+;;   (nova-lsp-mode-setup)   ;; if you prefer lsp-mode
 
-;;; Option A: eglot (recommended)
-;;
-;; Eglot is built-in in Emacs 29+ and is available from GNU ELPA for Emacs 28.
-(when (require 'eglot nil t)
-  (add-to-list 'eglot-server-programs
-               '(java-mode . ("nova-lsp" "--stdio")))
-  (add-hook 'java-mode-hook #'eglot-ensure))
+(defgroup nova nil
+  "Run the Nova language server."
+  :group 'tools)
 
-;;; Option B: lsp-mode (optional)
-;;
-;; Uncomment if you prefer `lsp-mode` instead of eglot.
-;;
-;; (with-eval-after-load 'lsp-mode
-;;   (lsp-register-client
-;;    (make-lsp-client
-;;     :new-connection (lsp-stdio-connection '("nova-lsp" "--stdio"))
-;;     :major-modes '(java-mode)
-;;     :server-id 'nova-lsp)))
-;;
-;; (add-hook 'java-mode-hook #'lsp)
+(defcustom nova-lsp-command '("nova-lsp" "--stdio")
+  "Command used to start `nova-lsp`."
+  :type '(repeat string)
+  :group 'nova)
 
-;;; Organize imports
-;;
-;; Uses the standard LSP code action kind `source.organizeImports`.
+;;;###autoload
+(defun nova-eglot-setup ()
+  "Configure `eglot` to use `nova-lsp` for Java."
+  (with-eval-after-load 'eglot
+    (add-to-list 'eglot-server-programs
+                 `((java-mode java-ts-mode) . ,nova-lsp-command)))
+
+  (add-hook 'java-mode-hook #'eglot-ensure)
+  (when (boundp 'java-ts-mode-hook)
+    (add-hook 'java-ts-mode-hook #'eglot-ensure)))
+
+;;;###autoload
+(defun nova-lsp-mode-setup ()
+  "Configure `lsp-mode` to use `nova-lsp` for Java."
+  (with-eval-after-load 'lsp-mode
+    (lsp-register-client
+     (make-lsp-client
+      :new-connection (lsp-stdio-connection (lambda () nova-lsp-command))
+      :activation-fn (lsp-activate-on "java")
+      :server-id 'nova-lsp)))
+
+  (add-hook 'java-mode-hook #'lsp)
+  (when (boundp 'java-ts-mode-hook)
+    (add-hook 'java-ts-mode-hook #'lsp)))
+
+;; Uses the standard LSP code action kind `source.organizeImports` (when available).
 (defun nova-organize-imports ()
-  "Organize imports in the current buffer via LSP code actions."
+  "Organize imports in the current buffer via the active LSP client."
   (interactive)
   (cond
    ((and (fboundp 'eglot-code-action-organize-imports)
@@ -44,5 +58,5 @@
     (user-error "No active LSP client (eglot or lsp-mode)"))))
 
 (provide 'nova)
-;;; nova.el ends here
 
+;;; nova.el ends here
