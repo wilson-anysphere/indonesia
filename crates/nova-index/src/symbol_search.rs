@@ -20,7 +20,7 @@ thread_local! {
 /// A single symbol definition within the workspace.
 ///
 /// This is re-exported from `nova-index` as [`crate::SearchSymbol`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Symbol {
     pub name: String,
     pub qualified_name: String,
@@ -28,6 +28,75 @@ pub struct Symbol {
     pub container_name: Option<String>,
     pub location: SymbolLocation,
     pub ast_id: u32,
+}
+
+impl Serialize for Symbol {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+
+        // Include both `location` and the legacy `locations: [location]` shape.
+        // Newer callers should prefer `location`, but older tooling may still
+        // look for `locations[0]`.
+        let mut state = serializer.serialize_struct("Symbol", 7)?;
+        state.serialize_field("name", &self.name)?;
+        state.serialize_field("qualified_name", &self.qualified_name)?;
+        state.serialize_field("kind", &self.kind)?;
+        state.serialize_field("container_name", &self.container_name)?;
+        state.serialize_field("location", &self.location)?;
+        state.serialize_field("locations", &std::slice::from_ref(&self.location))?;
+        state.serialize_field("ast_id", &self.ast_id)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Symbol {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        struct SymbolWire {
+            name: String,
+            #[serde(default, alias = "qualifiedName")]
+            qualified_name: Option<String>,
+            #[serde(default)]
+            kind: Option<IndexSymbolKind>,
+            #[serde(default, alias = "containerName")]
+            container_name: Option<String>,
+            #[serde(default)]
+            location: Option<SymbolLocation>,
+            #[serde(default)]
+            locations: Vec<SymbolLocation>,
+            #[serde(default, alias = "astId")]
+            ast_id: Option<u32>,
+        }
+
+        let wire = SymbolWire::deserialize(deserializer)?;
+        let name = wire.name;
+        let qualified_name = wire
+            .qualified_name
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| name.clone());
+        let kind = wire.kind.unwrap_or(IndexSymbolKind::Class);
+        let location = wire
+            .location
+            .or_else(|| wire.locations.into_iter().next())
+            .unwrap_or_default();
+        let ast_id = wire.ast_id.unwrap_or(0);
+
+        Ok(Self {
+            name,
+            qualified_name,
+            kind,
+            container_name: wire.container_name,
+            location,
+            ast_id,
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1484,5 +1553,32 @@ mod tests {
         assert_eq!(results[1].symbol.container_name.as_deref(), Some("pkg"));
         assert_eq!(results[0].symbol.qualified_name, "pkg.Foo");
         assert_eq!(results[1].symbol.qualified_name, "pkg.Foo");
+    }
+
+    #[test]
+    fn search_symbol_serde_accepts_legacy_locations_shape() {
+        // Prior to Task 19, workspace symbol results used `locations: Vec<SymbolLocation>`.
+        // Accept this legacy shape for backwards compatibility (picking `locations[0]`).
+        let legacy = r#"{"name":"Foo","locations":[{"file":"A.java","line":1,"column":2}]}"#;
+        let sym: Symbol = serde_json::from_str(legacy).expect("deserialize legacy symbol shape");
+
+        assert_eq!(sym.name, "Foo");
+        assert_eq!(sym.qualified_name, "Foo");
+        assert_eq!(sym.kind, IndexSymbolKind::Class);
+        assert_eq!(sym.container_name, None);
+        assert_eq!(sym.location.file, "A.java");
+        assert_eq!(sym.location.line, 1);
+        assert_eq!(sym.location.column, 2);
+        assert_eq!(sym.ast_id, 0);
+
+        let value = serde_json::to_value(&sym).expect("serialize");
+        assert!(value.get("location").is_some());
+        assert!(
+            value
+                .get("locations")
+                .and_then(|v| v.as_array())
+                .is_some_and(|v| v.len() == 1),
+            "expected legacy `locations: [location]` field in JSON; got {value}"
+        );
     }
 }
