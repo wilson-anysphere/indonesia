@@ -62,9 +62,9 @@ fn collect_gradle_build_files_rec(
                 continue;
             }
             // Bazel output trees are typically created at the workspace root and can be enormous.
-            // Skip any top-level `bazel-*` entries (`bazel-out`, `bazel-bin`, `bazel-testlogs`,
+            // Skip any `bazel-*` entries (`bazel-out`, `bazel-bin`, `bazel-testlogs`,
             // `bazel-<workspace>`, etc).
-            if dir == root && file_name.starts_with("bazel-") {
+            if file_name.starts_with("bazel-") {
                 continue;
             }
             if file_name == ".git"
@@ -253,6 +253,15 @@ mod tests {
         write_file(&root.join(".nova/build.gradle"), b"should-be-ignored");
         write_file(&root.join(".idea/build.gradle"), b"should-be-ignored");
         write_file(&root.join("bazel-out/build.gradle"), b"should-be-ignored");
+        // Ignore Bazel output trees anywhere, not just at the root.
+        write_file(
+            &root.join("nested/bazel-out/build.gradle"),
+            b"should-be-ignored",
+        );
+        write_file(
+            &root.join("nested/bazel-myworkspace/build.gradle"),
+            b"should-be-ignored",
+        );
 
         let files = collect_gradle_build_files(root).unwrap();
         let rel: BTreeSet<PathBuf> = files
