@@ -368,7 +368,7 @@ These are “black-box-ish” tests around Nova’s protocol surfaces.
 
 #### 3a) LSP (stdio) end-to-end tests
 
-**Where:** integration test harness `crates/nova-lsp/tests/harness/stdio.rs` (run via `cargo test -p nova-lsp --test stdio`),
+**Where:** integration test harness `crates/nova-lsp/tests/harness/stdio.rs` (run via `cargo test --locked -p nova-lsp --test stdio`),
 plus supporting modules under `crates/nova-lsp/tests/**` (spawns the `nova-lsp` binary and talks JSON-RPC over stdio).
 
 **Run locally:**
