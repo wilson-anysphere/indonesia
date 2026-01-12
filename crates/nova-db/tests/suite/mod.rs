@@ -6,5 +6,6 @@ mod resolve;
 mod resilience_broken_code;
 mod salsa_db_view;
 mod salsa_indexing;
+mod salsa_item_tree_store;
 mod typeck_jpms;
 mod workspace_loader;
