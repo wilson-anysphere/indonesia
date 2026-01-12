@@ -1076,6 +1076,47 @@ fn record_body_references(
         }
     }
 
+    fn qualified_name_for_field_access(
+        body: &hir::Body,
+        receiver: hir::ExprId,
+        name: &str,
+    ) -> Option<QualifiedName> {
+        fn collect(body: &hir::Body, expr: hir::ExprId, out: &mut Vec<String>) -> bool {
+            match &body.exprs[expr] {
+                hir::Expr::Name { name, .. } => {
+                    out.push(name.clone());
+                    true
+                }
+                hir::Expr::FieldAccess {
+                    receiver, name, ..
+                } => {
+                    if !collect(body, *receiver, out) {
+                        return false;
+                    }
+                    out.push(name.clone());
+                    true
+                }
+                _ => false,
+            }
+        }
+
+        let mut segments = Vec::new();
+        if !collect(body, receiver, &mut segments) {
+            return None;
+        }
+        segments.push(name.to_string());
+
+        let mut dotted = String::new();
+        for (idx, seg) in segments.iter().enumerate() {
+            if idx > 0 {
+                dotted.push('.');
+            }
+            dotted.push_str(seg);
+        }
+
+        Some(QualifiedName::from_dotted(&dotted))
+    }
+
     // Track call callee expressions so we can treat `obj.method()` as a method reference span for
     // the `method` token (rather than a field access span).
     let mut call_callees: HashSet<hir::ExprId> = HashSet::new();
@@ -1130,6 +1171,36 @@ fn record_body_references(
             } => {
                 if call_callees.contains(&expr_id) {
                     return;
+                }
+
+                // First, try interpreting the full `receiver.name` chain as a qualified type name.
+                // This catches nested/qualified type usages in expression position like:
+                //   - `Outer.Inner.m()`
+                //   - `com.example.Foo.staticM()`
+                if let Some(path) = qualified_name_for_field_access(body, *receiver, name.as_str())
+                {
+                    if let Some(resolved) = resolver.resolve_qualified_type_resolution_in_scope(
+                        &scope_result.scopes,
+                        scope,
+                        &path,
+                    ) {
+                        match resolved {
+                            TypeResolution::Source(item) => {
+                                if let Some(&symbol) =
+                                    resolution_to_symbol.get(&ResolutionKey::Type(item))
+                                {
+                                    let range = TextRange::new(name_range.start, name_range.end);
+                                    record(file, symbol, range, references, spans);
+                                }
+                                return;
+                            }
+                            TypeResolution::External(_) => {
+                                // Treat external types as types too, but only record workspace
+                                // symbols for refactorings.
+                                return;
+                            }
+                        }
+                    }
                 }
 
                 let Some(receiver_ty) =
