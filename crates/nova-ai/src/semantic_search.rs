@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use nova_core::ProjectDatabase;
 use nova_fuzzy::{fuzzy_match, MatchKind};
@@ -23,7 +23,30 @@ pub struct SearchResult {
 /// lightweight trigram/fuzzy matcher so semantic search remains available
 /// without any model dependencies.
 pub trait SemanticSearch: Send + Sync {
-    fn index_project(&mut self, db: &dyn ProjectDatabase);
+    /// Clear any indexed state.
+    fn clear(&mut self) {}
+
+    /// Add or replace a single file in the index.
+    fn index_file(&mut self, _path: PathBuf, _text: String) {}
+
+    /// Remove a single file from the index.
+    fn remove_file(&mut self, _path: &Path) {}
+
+    /// Index an entire project database.
+    ///
+    /// The default implementation rebuilds the index by calling [`SemanticSearch::clear`]
+    /// followed by [`SemanticSearch::index_file`] for every file returned by
+    /// [`ProjectDatabase::project_files`].
+    fn index_project(&mut self, db: &dyn ProjectDatabase) {
+        self.clear();
+        for path in db.project_files() {
+            let Some(text) = db.file_text(&path) else {
+                continue;
+            };
+            self.index_file(path, text);
+        }
+    }
+
     fn search(&self, query: &str) -> Vec<SearchResult>;
 }
 
@@ -71,12 +94,11 @@ impl SemanticSearch for NoopSemanticSearch {
 
 #[derive(Debug, Default)]
 pub struct TrigramSemanticSearch {
-    docs: Vec<IndexedDocument>,
+    docs: HashMap<PathBuf, IndexedDocument>,
 }
 
 #[derive(Debug)]
 struct IndexedDocument {
-    path: PathBuf,
     original: String,
     normalized: String,
     trigrams: Vec<u32>,
@@ -95,22 +117,24 @@ impl TrigramSemanticSearch {
 }
 
 impl SemanticSearch for TrigramSemanticSearch {
-    fn index_project(&mut self, db: &dyn ProjectDatabase) {
+    fn clear(&mut self) {
         self.docs.clear();
+    }
 
-        for path in db.project_files() {
-            let Some(text) = db.file_text(&path) else {
-                continue;
-            };
-
-            let (normalized, trigrams) = Self::index_text(&text);
-            self.docs.push(IndexedDocument {
-                path,
+    fn index_file(&mut self, path: PathBuf, text: String) {
+        let (normalized, trigrams) = Self::index_text(&text);
+        self.docs.insert(
+            path,
+            IndexedDocument {
                 original: text,
                 normalized,
                 trigrams,
-            });
-        }
+            },
+        );
+    }
+
+    fn remove_file(&mut self, path: &Path) {
+        self.docs.remove(path);
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
@@ -121,13 +145,14 @@ impl SemanticSearch for TrigramSemanticSearch {
             .docs
             .iter()
             .filter_map(|doc| {
-                let score = score_match(query, &normalized_query, &query_trigrams, doc);
+                let (path, doc) = doc;
+                let score = score_match(query, &normalized_query, &query_trigrams, path, doc);
                 if score <= 0.0 {
                     return None;
                 }
 
                 Some(SearchResult {
-                    path: doc.path.clone(),
+                    path: path.clone(),
                     range: 0..doc.original.len(),
                     kind: "file".to_string(),
                     score,
@@ -212,6 +237,7 @@ fn score_match(
     raw_query: &str,
     normalized_query: &str,
     query_trigrams: &[u32],
+    path: &Path,
     doc: &IndexedDocument,
 ) -> f32 {
     if normalized_query.is_empty() {
@@ -226,7 +252,7 @@ fn score_match(
     }
 
     // A small boost if the query matches the file path.
-    let path_str = doc.path.to_string_lossy();
+    let path_str = path.to_string_lossy();
     if let Some(score_path) = fuzzy_match(raw_query, &path_str) {
         score += match score_path.kind {
             MatchKind::Prefix => 0.25,
@@ -267,13 +293,14 @@ fn snippet(original: &str, normalized: &str, query: &str) -> String {
 #[cfg(feature = "embeddings")]
 mod embeddings {
     use super::{SearchResult, SemanticSearch};
-    use nova_core::ProjectDatabase;
     use nova_fuzzy::{fuzzy_match, MatchKind};
     use std::cmp::Ordering;
+    use std::collections::BTreeMap;
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     use std::ops::Range;
     use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
 
     use hnsw_rs::prelude::*;
 
@@ -324,18 +351,34 @@ mod embeddings {
 
     #[derive(Debug, Clone)]
     struct EmbeddedDoc {
-        path: PathBuf,
         range: Range<usize>,
         kind: String,
         snippet: String,
         embedding: Vec<f32>,
     }
 
-    pub struct EmbeddingSemanticSearch<E: Embedder> {
-        embedder: E,
-        docs: Vec<EmbeddedDoc>,
+    struct EmbeddedIndex {
         hnsw: Option<Hnsw<'static, f32, DistCosine>>,
         dims: usize,
+        id_to_doc: Vec<(PathBuf, usize)>,
+        dirty: bool,
+    }
+
+    impl EmbeddedIndex {
+        fn empty() -> Self {
+            Self {
+                hnsw: None,
+                dims: 0,
+                id_to_doc: Vec::new(),
+                dirty: false,
+            }
+        }
+    }
+
+    pub struct EmbeddingSemanticSearch<E: Embedder> {
+        embedder: E,
+        docs_by_path: BTreeMap<PathBuf, Vec<EmbeddedDoc>>,
+        index: Mutex<EmbeddedIndex>,
         ef_search: usize,
     }
 
@@ -343,9 +386,8 @@ mod embeddings {
         pub fn new(embedder: E) -> Self {
             Self {
                 embedder,
-                docs: Vec::new(),
-                hnsw: None,
-                dims: 0,
+                docs_by_path: BTreeMap::new(),
+                index: Mutex::new(EmbeddedIndex::empty()),
                 ef_search: 64,
             }
         }
@@ -354,82 +396,113 @@ mod embeddings {
             self.ef_search = ef_search.max(1);
             self
         }
-    }
 
-    impl<E: Embedder> SemanticSearch for EmbeddingSemanticSearch<E> {
-        fn index_project(&mut self, db: &dyn ProjectDatabase) {
-            self.docs.clear();
-            self.hnsw = None;
-            self.dims = 0;
+        fn invalidate_index(&self) {
+            let mut index = self.index.lock().expect("semantic search mutex poisoned");
+            index.hnsw = None;
+            index.dims = 0;
+            index.id_to_doc.clear();
+            index.dirty = true;
+        }
 
-            let mut pending: Vec<(PathBuf, Range<usize>, String, String, String)> = Vec::new();
+        fn rebuild_index_locked(&self, index: &mut EmbeddedIndex) {
+            index.hnsw = None;
+            index.dims = 0;
+            index.id_to_doc.clear();
 
-            for path in db.project_files() {
-                let Some(text) = db.file_text(&path) else {
-                    continue;
-                };
-                if text.is_empty() {
-                    continue;
-                }
-
-                let mut extracted = if is_java_file(&path) {
-                    extract_java_methods(&path, &text)
-                } else {
-                    Vec::new()
-                };
-
-                if extracted.is_empty() {
-                    // Fallback to file-level indexing.
-                    let preview = text.chars().take(2_000).collect::<String>();
-                    extracted.push((
-                        path.clone(),
-                        0..text.len(),
-                        "file".to_string(),
-                        preview.clone(),
-                        format!("{}\n{}", path.to_string_lossy(), preview),
-                    ));
-                }
-
-                pending.extend(extracted);
-            }
-
-            if pending.is_empty() {
+            let max_elements = self
+                .docs_by_path
+                .values()
+                .map(|docs| docs.len())
+                .sum::<usize>();
+            if max_elements == 0 {
+                index.dirty = false;
                 return;
             }
 
-            // HNSW needs a fixed dimensionality, so we discover it from the first non-empty embedding.
-            let max_elements = pending.len();
+            let mut dims = 0usize;
             let mut hnsw: Option<Hnsw<'static, f32, DistCosine>> = None;
 
-            for (path, range, kind, snippet, embed_text) in pending {
+            let mut next_id = 0usize;
+            for (path, docs) in &self.docs_by_path {
+                for (local_idx, doc) in docs.iter().enumerate() {
+                    if doc.embedding.is_empty() {
+                        continue;
+                    }
+
+                    if dims == 0 {
+                        dims = doc.embedding.len();
+                        hnsw = Some(Hnsw::new(
+                            /*max_nb_connection=*/ 16,
+                            /*max_elements=*/ max_elements,
+                            /*nb_layer=*/ 16,
+                            /*ef_construction=*/ 200,
+                            DistCosine {},
+                        ));
+                    }
+
+                    if doc.embedding.len() != dims || dims == 0 {
+                        continue;
+                    }
+
+                    if let Some(ref mut hnsw) = hnsw {
+                        hnsw.insert((&doc.embedding, next_id));
+                    }
+                    index.id_to_doc.push((path.clone(), local_idx));
+                    next_id += 1;
+                }
+            }
+
+            if let Some(ref mut hnsw) = hnsw {
+                hnsw.set_searching_mode(true);
+            }
+
+            index.hnsw = hnsw;
+            index.dims = dims;
+            index.dirty = false;
+        }
+
+        fn docs_for_file(&self, path: &PathBuf, text: &str) -> Vec<(Range<usize>, String, String, String)> {
+            if text.is_empty() {
+                return Vec::new();
+            }
+
+            let mut extracted = if is_java_file(path) {
+                extract_java_methods(path, text)
+            } else {
+                Vec::new()
+            };
+
+            if extracted.is_empty() {
+                let preview = text.chars().take(2_000).collect::<String>();
+                extracted.push((
+                    0..text.len(),
+                    "file".to_string(),
+                    preview.clone(),
+                    format!("{}\n{}", path.to_string_lossy(), preview),
+                ));
+            }
+
+            extracted
+        }
+    }
+
+    impl<E: Embedder> SemanticSearch for EmbeddingSemanticSearch<E> {
+        fn clear(&mut self) {
+            self.docs_by_path.clear();
+            let mut index = self.index.lock().expect("semantic search mutex poisoned");
+            *index = EmbeddedIndex::empty();
+        }
+
+        fn index_file(&mut self, path: PathBuf, text: String) {
+            let mut docs = Vec::new();
+            for (range, kind, snippet, embed_text) in self.docs_for_file(&path, &text) {
                 let mut embedding = self.embedder.embed(&embed_text);
                 if embedding.is_empty() {
                     continue;
                 }
                 l2_normalize(&mut embedding);
-
-                if self.dims == 0 {
-                    self.dims = embedding.len();
-                    hnsw = Some(Hnsw::new(
-                        /*max_nb_connection=*/ 16,
-                        /*max_elements=*/ max_elements,
-                        /*nb_layer=*/ 16,
-                        /*ef_construction=*/ 200,
-                        DistCosine {},
-                    ));
-                }
-
-                if embedding.len() != self.dims {
-                    continue;
-                }
-
-                let id = self.docs.len();
-                if let Some(ref mut hnsw) = hnsw {
-                    hnsw.insert((&embedding, id));
-                }
-
-                self.docs.push(EmbeddedDoc {
-                    path,
+                docs.push(EmbeddedDoc {
                     range,
                     kind,
                     snippet,
@@ -437,25 +510,49 @@ mod embeddings {
                 });
             }
 
-            if let Some(ref mut hnsw) = hnsw {
-                // HNSW is not safe to mutate concurrently with search; enter a
-                // dedicated searching mode after building the index.
-                hnsw.set_searching_mode(true);
+            docs.sort_by(|a, b| {
+                a.range
+                    .start
+                    .cmp(&b.range.start)
+                    .then_with(|| a.range.end.cmp(&b.range.end))
+                    .then_with(|| a.kind.cmp(&b.kind))
+            });
+
+            if docs.is_empty() {
+                if self.docs_by_path.remove(&path).is_some() {
+                    self.invalidate_index();
+                }
+                return;
             }
-            self.hnsw = hnsw;
+
+            self.docs_by_path.insert(path, docs);
+            self.invalidate_index();
+        }
+
+        fn remove_file(&mut self, path: &Path) {
+            let removed = self.docs_by_path.remove(path).is_some();
+            if removed {
+                self.invalidate_index();
+            }
         }
 
         fn search(&self, query: &str) -> Vec<SearchResult> {
-            let Some(hnsw) = &self.hnsw else {
-                return Vec::new();
-            };
-
             let mut query_embedding = self.embedder.embed(query);
             if query_embedding.is_empty() {
                 return Vec::new();
             }
             l2_normalize(&mut query_embedding);
-            if query_embedding.len() != self.dims || self.dims == 0 {
+
+            let mut index = self.index.lock().expect("semantic search mutex poisoned");
+            if index.dirty {
+                self.rebuild_index_locked(&mut index);
+            }
+
+            let Some(hnsw) = &index.hnsw else {
+                return Vec::new();
+            };
+
+            if query_embedding.len() != index.dims || index.dims == 0 {
                 return Vec::new();
             }
 
@@ -463,12 +560,19 @@ mod embeddings {
 
             let neighbours = hnsw.search(&query_embedding, 50, self.ef_search);
             for n in neighbours {
-                let Some(doc) = self.docs.get(n.d_id) else {
+                let Some((path, local_idx)) = index.id_to_doc.get(n.d_id) else {
                     continue;
                 };
+                let Some(docs) = self.docs_by_path.get(path) else {
+                    continue;
+                };
+                let Some(doc) = docs.get(*local_idx) else {
+                    continue;
+                };
+
                 // Re-score with exact cosine similarity for deterministic ranking.
                 let mut score = cosine_similarity(&query_embedding, &doc.embedding);
-                let path_str = doc.path.to_string_lossy();
+                let path_str = path.to_string_lossy();
                 if let Some(score_path) = fuzzy_match(query, &path_str) {
                     score += match score_path.kind {
                         MatchKind::Prefix => 0.15,
@@ -476,7 +580,7 @@ mod embeddings {
                     };
                 }
                 results.push(SearchResult {
-                    path: doc.path.clone(),
+                    path: path.clone(),
                     range: doc.range.clone(),
                     kind: doc.kind.clone(),
                     score,
@@ -486,7 +590,24 @@ mod embeddings {
 
             results.sort_by(|a, b| {
                 match b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal) {
-                    Ordering::Equal => a.path.cmp(&b.path),
+                    Ordering::Equal => {
+                        let by_path = a.path.cmp(&b.path);
+                        if by_path != Ordering::Equal {
+                            return by_path;
+                        }
+
+                        let by_start = a.range.start.cmp(&b.range.start);
+                        if by_start != Ordering::Equal {
+                            return by_start;
+                        }
+
+                        let by_end = a.range.end.cmp(&b.range.end);
+                        if by_end != Ordering::Equal {
+                            return by_end;
+                        }
+
+                        a.kind.cmp(&b.kind)
+                    }
                     other => other,
                 }
             });
@@ -505,7 +626,7 @@ mod embeddings {
     fn extract_java_methods(
         path: &PathBuf,
         source: &str,
-    ) -> Vec<(PathBuf, Range<usize>, String, String, String)> {
+    ) -> Vec<(Range<usize>, String, String, String)> {
         use nova_syntax::{parse_java, SyntaxKind};
 
         let parse = parse_java(source);
@@ -534,7 +655,6 @@ mod embeddings {
             let embed_text = format!("{}\n{doc}\n{signature}\n{body}", path.to_string_lossy());
 
             out.push((
-                path.clone(),
                 start..end,
                 "method".to_string(),
                 snippet,
