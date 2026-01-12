@@ -3246,6 +3246,43 @@ mod tests {
     }
 
     #[test]
+    fn parse_block_lowers_explicit_constructor_invocation_spans_are_file_relative() {
+        let offset = 100;
+        let text = "{ this(); }";
+        let block = parse_block(text, offset);
+        assert_eq!(block.statements.len(), 1);
+        let ast::Stmt::Expr(expr_stmt) = &block.statements[0] else {
+            panic!("expected expression statement");
+        };
+        assert_eq!(expr_stmt.range, Span::new(offset + 2, offset + 9));
+        let ast::Expr::Call(call) = &expr_stmt.expr else {
+            panic!("expected call expression");
+        };
+        assert_eq!(call.range, Span::new(offset + 2, offset + 8));
+        let ast::Expr::This(range) = call.callee.as_ref() else {
+            panic!("expected this callee");
+        };
+        assert_eq!(*range, Span::new(offset + 2, offset + 6));
+
+        let offset = 200;
+        let text = "{ super(); }";
+        let block = parse_block(text, offset);
+        assert_eq!(block.statements.len(), 1);
+        let ast::Stmt::Expr(expr_stmt) = &block.statements[0] else {
+            panic!("expected expression statement");
+        };
+        assert_eq!(expr_stmt.range, Span::new(offset + 2, offset + 10));
+        let ast::Expr::Call(call) = &expr_stmt.expr else {
+            panic!("expected call expression");
+        };
+        assert_eq!(call.range, Span::new(offset + 2, offset + 9));
+        let ast::Expr::Super(range) = call.callee.as_ref() else {
+            panic!("expected super callee");
+        };
+        assert_eq!(*range, Span::new(offset + 2, offset + 7));
+    }
+
+    #[test]
     fn parse_block_lowers_instanceof() {
         let text = "{ o instanceof String; }";
         let block = parse_block(text, 0);
