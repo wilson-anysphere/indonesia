@@ -408,6 +408,17 @@ mod tests {
     }
 
     #[test]
+    fn overlay_precedence_over_virtual_document_store_for_read_bytes() {
+        let vfs = Vfs::new(LocalFs::new());
+        let path = VfsPath::decompiled(HASH_64, "com.example.Foo");
+
+        vfs.store_virtual_document(path.clone(), "store".to_string());
+        vfs.open_document(path.clone(), "overlay".to_string(), 1);
+
+        assert_eq!(vfs.read_bytes(&path).unwrap(), b"overlay".to_vec());
+    }
+
+    #[test]
     fn vfs_exists_reports_virtual_document_presence() {
         let vfs = Vfs::new(LocalFs::new());
         let path = VfsPath::decompiled(HASH_64, "com.example.Foo");
