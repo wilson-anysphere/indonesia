@@ -46,6 +46,34 @@ fn registry_reports_cdi_diagnostics_for_the_correct_file() {
 }
 
 #[test]
+fn registry_skips_cdi_diagnostics_for_non_java_files() {
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+    db.add_dependency(project, "io.quarkus", "quarkus-arc");
+
+    // Deliberately Java-like content in a non-Java file.
+    let not_java = db.add_file_with_path_and_text(
+        project,
+        "src/main/resources/not-java.txt",
+        r#"
+            import jakarta.enterprise.context.ApplicationScoped;
+            import jakarta.inject.Inject;
+
+            @ApplicationScoped
+            public class ServiceA {
+              @Inject ServiceB missing;
+            }
+        "#,
+    );
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(QuarkusAnalyzer::new()));
+
+    let diags = registry.framework_diagnostics(&db, not_java);
+    assert!(diags.is_empty(), "expected no diagnostics, got: {diags:#?}");
+}
+
+#[test]
 fn registry_completes_config_property_names_from_application_properties() {
     let mut db = MemoryDatabase::new();
     let project = db.add_project();
