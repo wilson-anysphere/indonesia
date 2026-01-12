@@ -44,6 +44,7 @@ fn stable_ids_across_edits() {
     set_file(&mut db, project, file_a, "src/A.java", "class A {}");
     set_file(&mut db, project, file_c, "src/C.java", "class C {}");
     db.set_project_files(project, Arc::new(vec![file_a, file_c]));
+    db.set_all_file_ids(Arc::new(vec![file_a, file_c]));
 
     let a1 = db
         .class_id_for_workspace_type(project, TypeName::from("A"))
@@ -56,6 +57,7 @@ fn stable_ids_across_edits() {
     let file_b = FileId::from_raw(3);
     set_file(&mut db, project, file_b, "src/B.java", "class B {}");
     db.set_project_files(project, Arc::new(vec![file_a, file_b, file_c]));
+    db.set_all_file_ids(Arc::new(vec![file_a, file_b, file_c]));
 
     let a2 = db
         .class_id_for_workspace_type(project, TypeName::from("A"))
@@ -85,6 +87,7 @@ fn order_independent_querying_yields_same_ids() {
         set_file(&mut db, project, file_b, "src/B.java", "class B {}");
         set_file(&mut db, project, file_c, "src/C.java", "class C {}");
         db.set_project_files(project, Arc::new(vec![file_a, file_b, file_c]));
+        db.set_all_file_ids(Arc::new(vec![file_a, file_b, file_c]));
         db
     }
 
