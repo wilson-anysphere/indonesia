@@ -3809,6 +3809,25 @@ enum E {
 }
 
 #[test]
+fn enum_inherits_methods_from_java_lang_enum() {
+    let src = r#"
+enum E {
+    A;
+    void m() {
+        this.ordinal();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected Enum.ordinal() call to resolve via java.lang.Enum, got {diags:?}"
+    );
+}
+
+#[test]
 fn interface_fields_are_static_fields_unqualified() {
     let src = r#"
 interface I {
@@ -3847,6 +3866,25 @@ class C {
             .iter()
             .all(|d| d.code.as_ref() != "static-context" && d.code.as_ref() != "unresolved-field"),
         "expected annotation constant access to resolve as a static field; got {diags:?}"
+    );
+}
+
+#[test]
+fn annotation_inherits_methods_from_java_lang_annotation_annotation() {
+    let src = r#"
+@interface A { }
+class Use {
+    void m(A a) {
+        a.annotationType();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected annotationType() call to resolve via java.lang.annotation.Annotation, got {diags:?}"
     );
 }
 
@@ -9617,6 +9655,24 @@ class C {
             .iter()
             .all(|d| d.code.as_ref() != "unresolved-constructor"),
         "expected record varargs constructor call to resolve; got {diags:?}"
+    );
+}
+
+#[test]
+fn record_inherits_object_methods_via_java_lang_record() {
+    let src = r#"
+record R(int x) {
+    void m() {
+        this.toString();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected Record to inherit Object methods via java.lang.Record, got {diags:?}"
     );
 }
 

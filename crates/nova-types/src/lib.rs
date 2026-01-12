@@ -805,10 +805,11 @@ pub const MINIMAL_JDK_BINARY_NAMES: &[&str] = &[
     "java.util.function.Supplier",
     "java.util.function.Consumer",
     "java.util.function.Predicate",
-    // java.lang (additional core supertypes used by semantic analysis)
+    // Additional core language constructs (kept in the minimal-JDK baseline to
+    // give `enum`, `record`, and `@interface` meaningful implicit supertypes even
+    // without an on-disk JDK).
     "java.lang.Enum",
     "java.lang.Record",
-    // java.lang.annotation
     "java.lang.annotation.Annotation",
 ];
 
@@ -881,12 +882,6 @@ impl TypeStore {
         let integer = store
             .lookup_class("java.lang.Integer")
             .expect("minimal JDK must contain java.lang.Integer");
-        let cloneable = store
-            .lookup_class("java.lang.Cloneable")
-            .expect("minimal JDK must contain java.lang.Cloneable");
-        let serializable = store
-            .lookup_class("java.io.Serializable")
-            .expect("minimal JDK must contain java.io.Serializable");
         let enum_ = store
             .lookup_class("java.lang.Enum")
             .expect("minimal JDK must contain java.lang.Enum");
@@ -896,6 +891,12 @@ impl TypeStore {
         let annotation = store
             .lookup_class("java.lang.annotation.Annotation")
             .expect("minimal JDK must contain java.lang.annotation.Annotation");
+        let cloneable = store
+            .lookup_class("java.lang.Cloneable")
+            .expect("minimal JDK must contain java.lang.Cloneable");
+        let serializable = store
+            .lookup_class("java.io.Serializable")
+            .expect("minimal JDK must contain java.io.Serializable");
 
         let object_ty = Type::class(object, vec![]);
         let string_ty = Type::class(string, vec![]);
@@ -981,19 +982,6 @@ impl TypeStore {
             ClassDef {
                 name: "java.lang.Record".to_string(),
                 kind: ClassKind::Class,
-                type_params: vec![],
-                super_class: Some(object_ty.clone()),
-                interfaces: vec![],
-                fields: vec![],
-                constructors: vec![],
-                methods: vec![],
-            },
-        );
-        store.define_class(
-            annotation,
-            ClassDef {
-                name: "java.lang.annotation.Annotation".to_string(),
-                kind: ClassKind::Interface,
                 type_params: vec![],
                 super_class: Some(object_ty.clone()),
                 interfaces: vec![],
@@ -1123,6 +1111,7 @@ impl TypeStore {
                 },
             ];
         }
+
         let number = store
             .lookup_class("java.lang.Number")
             .expect("minimal JDK must contain java.lang.Number");
@@ -1791,6 +1780,29 @@ impl TypeStore {
                 is_abstract: false,
             });
         }
+
+        // java.lang.annotation.Annotation
+        store.define_class(
+            annotation,
+            ClassDef {
+                name: "java.lang.annotation.Annotation".to_string(),
+                kind: ClassKind::Interface,
+                type_params: vec![],
+                super_class: Some(object_ty.clone()),
+                interfaces: vec![],
+                fields: vec![],
+                constructors: vec![],
+                methods: vec![MethodDef {
+                    name: "annotationType".to_string(),
+                    type_params: vec![],
+                    params: vec![],
+                    return_type: Type::class(class, vec![Type::Wildcard(WildcardBound::Unbounded)]),
+                    is_static: false,
+                    is_varargs: false,
+                    is_abstract: true,
+                }],
+            },
+        );
 
         store.well_known = Some(WellKnownTypes {
             object,

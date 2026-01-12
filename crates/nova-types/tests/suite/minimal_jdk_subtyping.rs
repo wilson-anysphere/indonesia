@@ -1,4 +1,4 @@
-use nova_types::{is_subtype, Type, TypeEnv, TypeStore};
+use nova_types::{is_subtype, ClassKind, Type, TypeEnv, TypeStore};
 
 #[test]
 fn minimal_jdk_interfaces_are_subtypes_of_object() {
@@ -38,4 +38,34 @@ fn intersection_subtyping_is_order_independent() {
     // But neither component alone is a subtype of the full intersection.
     assert!(!is_subtype(&env, &cloneable, &ab));
     assert!(!is_subtype(&env, &serializable, &ab));
+}
+
+#[test]
+fn minimal_jdk_has_enum_record_and_annotation() {
+    let env = TypeStore::with_minimal_jdk();
+    let object = Type::class(env.well_known().object, vec![]);
+
+    let enum_id = env
+        .class_id("java.lang.Enum")
+        .expect("Enum must exist in minimal JDK");
+    let record_id = env
+        .class_id("java.lang.Record")
+        .expect("Record must exist in minimal JDK");
+    let annotation_id = env
+        .class_id("java.lang.annotation.Annotation")
+        .expect("java.lang.annotation.Annotation must exist in minimal JDK");
+
+    assert!(
+        is_subtype(&env, &Type::class(enum_id, vec![]), &object),
+        "Enum should be a subtype of Object"
+    );
+    assert!(
+        is_subtype(&env, &Type::class(record_id, vec![]), &object),
+        "Record should be a subtype of Object"
+    );
+
+    let annotation_def = env
+        .class(annotation_id)
+        .expect("Annotation must have a ClassDef in minimal JDK");
+    assert_eq!(annotation_def.kind, ClassKind::Interface);
 }
