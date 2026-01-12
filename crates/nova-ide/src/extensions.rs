@@ -14,8 +14,8 @@ use nova_refactor::{
     TextDatabase,
 };
 use nova_scheduler::CancellationToken;
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 use crate::text::TextIndex;
 pub use crate::framework_db_adapter::FrameworkIdeDatabase;
@@ -56,6 +56,7 @@ impl AsDynNovaDb for dyn nova_db::Database + Send + Sync {
 pub struct FrameworkAnalyzerAdapter<A> {
     id: String,
     analyzer: A,
+    applicability_cache: Mutex<HashMap<ProjectId, bool>>,
 }
 
 impl<A> FrameworkAnalyzerAdapter<A> {
@@ -63,11 +64,51 @@ impl<A> FrameworkAnalyzerAdapter<A> {
         Self {
             id: id.into(),
             analyzer,
+            applicability_cache: Mutex::new(HashMap::new()),
         }
     }
 
     pub fn into_arc(self) -> Arc<Self> {
         Arc::new(self)
+    }
+}
+
+impl<A> FrameworkAnalyzerAdapter<A>
+where
+    A: FrameworkAnalyzer,
+{
+    fn cached_applicability(&self, project: ProjectId) -> Option<bool> {
+        self.applicability_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&project)
+            .copied()
+    }
+
+    fn ensure_applicability(
+        &self,
+        ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>,
+    ) -> bool {
+        if let Some(value) = self.cached_applicability(ctx.project) {
+            return value;
+        }
+
+        if ctx.cancel.is_cancelled() {
+            return false;
+        }
+
+        let applicable =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.analyzer.applies_to(ctx.db.as_ref(), ctx.project)
+            }))
+            .unwrap_or(false);
+
+        self.applicability_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(ctx.project, applicable);
+
+        applicable
     }
 }
 
@@ -104,7 +145,11 @@ where
     }
 
     fn is_applicable(&self, ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>) -> bool {
-        self.analyzer.applies_to(ctx.db.as_ref(), ctx.project)
+        if ctx.cancel.is_cancelled() {
+            return false;
+        }
+
+        self.cached_applicability(ctx.project).unwrap_or(true)
     }
 
     fn provide_diagnostics(
@@ -112,6 +157,12 @@ where
         ctx: ExtensionContext<dyn FrameworkDatabase + Send + Sync>,
         params: DiagnosticParams,
     ) -> Vec<Diagnostic> {
+        if !self.ensure_applicability(&ctx) {
+            return Vec::new();
+        }
+        if ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
         self.analyzer
             .diagnostics_with_cancel(ctx.db.as_ref(), params.file, &ctx.cancel)
     }
@@ -126,7 +177,11 @@ where
     }
 
     fn is_applicable(&self, ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>) -> bool {
-        self.analyzer.applies_to(ctx.db.as_ref(), ctx.project)
+        if ctx.cancel.is_cancelled() {
+            return false;
+        }
+
+        self.cached_applicability(ctx.project).unwrap_or(true)
     }
 
     fn provide_completions(
@@ -134,6 +189,12 @@ where
         ctx: ExtensionContext<dyn FrameworkDatabase + Send + Sync>,
         params: CompletionParams,
     ) -> Vec<CompletionItem> {
+        if !self.ensure_applicability(&ctx) {
+            return Vec::new();
+        }
+        if ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
         let completion_ctx = FrameworkCompletionContext {
             project: ctx.project,
             file: params.file,
@@ -153,7 +214,11 @@ where
     }
 
     fn is_applicable(&self, ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>) -> bool {
-        self.analyzer.applies_to(ctx.db.as_ref(), ctx.project)
+        if ctx.cancel.is_cancelled() {
+            return false;
+        }
+
+        self.cached_applicability(ctx.project).unwrap_or(true)
     }
 
     fn provide_navigation(
@@ -161,6 +226,12 @@ where
         ctx: ExtensionContext<dyn FrameworkDatabase + Send + Sync>,
         params: NavigationParams,
     ) -> Vec<NavigationTarget> {
+        if !self.ensure_applicability(&ctx) {
+            return Vec::new();
+        }
+        if ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
         let symbol = match params.symbol {
             Symbol::File(file) => FrameworkSymbol::File(file),
             Symbol::Class(class) => FrameworkSymbol::Class(class),
@@ -187,7 +258,11 @@ where
     }
 
     fn is_applicable(&self, ctx: &ExtensionContext<dyn FrameworkDatabase + Send + Sync>) -> bool {
-        self.analyzer.applies_to(ctx.db.as_ref(), ctx.project)
+        if ctx.cancel.is_cancelled() {
+            return false;
+        }
+
+        self.cached_applicability(ctx.project).unwrap_or(true)
     }
 
     fn provide_inlay_hints(
@@ -195,6 +270,12 @@ where
         ctx: ExtensionContext<dyn FrameworkDatabase + Send + Sync>,
         params: InlayHintParams,
     ) -> Vec<InlayHint> {
+        if !self.ensure_applicability(&ctx) {
+            return Vec::new();
+        }
+        if ctx.cancel.is_cancelled() {
+            return Vec::new();
+        }
         self.analyzer
             .inlay_hints_with_cancel(ctx.db.as_ref(), params.file, &ctx.cancel)
             .into_iter()
@@ -947,6 +1028,8 @@ mod tests {
     use nova_ext::{CodeActionProvider, CompletionProvider, DiagnosticProvider, InlayHintProvider};
     use nova_framework::{Database, FrameworkAnalyzer, MemoryDatabase};
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
 
     struct FrameworkTestAnalyzer;
 
@@ -1441,6 +1524,143 @@ class A {
         assert!(
             builtin_idx < extension_idx,
             "expected built-in hints to come first; got {labels:?}"
+        );
+    }
+
+    #[test]
+    fn framework_analyzer_adapter_is_applicable_is_fast_and_does_not_call_applies_to() {
+        struct SlowAppliesToAnalyzer {
+            calls: Arc<AtomicUsize>,
+        }
+
+        impl FrameworkAnalyzer for SlowAppliesToAnalyzer {
+            fn applies_to(&self, _db: &dyn Database, _project: ProjectId) -> bool {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(100));
+                true
+            }
+
+            fn diagnostics(&self, _db: &dyn Database, _file: nova_ext::FileId) -> Vec<Diagnostic> {
+                vec![Diagnostic::warning("FW", "framework", Some(Span::new(0, 1)))]
+            }
+        }
+
+        let mut db = MemoryDatabase::new();
+        let project = db.add_project();
+        let file = db.add_file(project);
+
+        let db: Arc<dyn Database + Send + Sync> = Arc::new(db);
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let adapter =
+            FrameworkAnalyzerAdapter::new("framework.slow", SlowAppliesToAnalyzer { calls: calls.clone() })
+                .into_arc();
+
+        let ctx = ExtensionContext::new(
+            Arc::clone(&db),
+            Arc::new(NovaConfig::default()),
+            project,
+            CancellationToken::new(),
+        );
+
+        let provider: &dyn DiagnosticProvider<dyn Database + Send + Sync> = adapter.as_ref();
+        let applicable = provider.is_applicable(&ctx);
+
+        assert!(applicable, "expected optimistic applicability");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "is_applicable must not call FrameworkAnalyzer::applies_to"
+        );
+
+        // Ensure the slow `applies_to` call happens under the registry watchdog rather than
+        // blocking `is_applicable`.
+        let mut registry: ExtensionRegistry<dyn Database + Send + Sync> = ExtensionRegistry::default();
+        registry.options_mut().diagnostic_timeout = Duration::from_millis(10);
+        registry
+            .register_diagnostic_provider(adapter.clone())
+            .unwrap();
+
+        let start = Instant::now();
+        let out = registry.diagnostics(ctx, DiagnosticParams { file });
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(80),
+            "expected watchdog timeout to bound latency; elapsed={elapsed:?}"
+        );
+        assert!(
+            out.is_empty(),
+            "slow applies_to should cause a timeout and contribute no diagnostics"
+        );
+
+        // Allow any in-flight `applies_to` call to finish so other tests don't inherit wedged
+        // watchdog workers.
+        std::thread::sleep(Duration::from_millis(120));
+    }
+
+    #[test]
+    fn framework_analyzer_adapter_applies_to_panics_are_trapped_and_cached_as_inapplicable() {
+        struct PanickingAppliesToAnalyzer {
+            calls: Arc<AtomicUsize>,
+        }
+
+        impl FrameworkAnalyzer for PanickingAppliesToAnalyzer {
+            fn applies_to(&self, _db: &dyn Database, _project: ProjectId) -> bool {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                panic!("boom");
+            }
+
+            fn diagnostics(&self, _db: &dyn Database, _file: nova_ext::FileId) -> Vec<Diagnostic> {
+                vec![Diagnostic::warning("FW", "framework", Some(Span::new(0, 1)))]
+            }
+        }
+
+        let mut db = MemoryDatabase::new();
+        let project = db.add_project();
+        let file = db.add_file(project);
+
+        let db: Arc<dyn Database + Send + Sync> = Arc::new(db);
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let adapter =
+            FrameworkAnalyzerAdapter::new("framework.panic", PanickingAppliesToAnalyzer { calls: calls.clone() })
+                .into_arc();
+
+        let mut registry: ExtensionRegistry<dyn Database + Send + Sync> = ExtensionRegistry::default();
+        registry
+            .register_diagnostic_provider(adapter.clone())
+            .unwrap();
+
+        let ctx = ExtensionContext::new(
+            Arc::clone(&db),
+            Arc::new(NovaConfig::default()),
+            project,
+            CancellationToken::new(),
+        );
+
+        // First call: optimistic `is_applicable` allows provider invocation, which should trap the
+        // panic and treat the analyzer as inapplicable.
+        let out = registry.diagnostics(
+            ExtensionContext::new(
+                Arc::clone(&db),
+                Arc::new(NovaConfig::default()),
+                project,
+                CancellationToken::new(),
+            ),
+            DiagnosticParams { file },
+        );
+        assert!(out.is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // Second call: applicability should now be cached, so the provider is filtered out before
+        // the watchdog path runs.
+        let out2 = registry.diagnostics(ctx, DiagnosticParams { file });
+        assert!(out2.is_empty());
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "expected cached applicability to prevent repeated applies_to calls"
         );
     }
 }
