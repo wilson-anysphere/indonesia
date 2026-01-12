@@ -1,7 +1,5 @@
 use nova_test_utils::javac::{javac_available, run_javac_snippet};
 
-mod suite;
-
 #[test]
 fn integration_tests_are_consolidated_into_this_harness() {
     let tests_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
@@ -22,7 +20,7 @@ fn integration_tests_are_consolidated_into_this_harness() {
     }
 
     root_rs_files.sort();
-    assert_eq!(root_rs_files, vec!["javac_differential.rs"]);
+    assert_eq!(root_rs_files, vec!["harness.rs"]);
 }
 
 #[test]
@@ -61,7 +59,7 @@ fn ignored_tests_are_restricted_to_javac_smoke() {
             let trimmed = line.trim_start();
             if trimmed.starts_with("#[ignore") || trimmed.starts_with("#[ ignore") {
                 panic!(
-                    "Found #[ignore] in {} at line {}. Only javac smoke tests in tests/javac_differential.rs should be ignored.",
+                    "Found #[ignore] in {} at line {}. Only javac smoke tests in tests/suite/javac_differential.rs should be ignored.",
                     file.display(),
                     idx + 1
                 );
