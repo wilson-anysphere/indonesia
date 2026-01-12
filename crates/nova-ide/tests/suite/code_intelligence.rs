@@ -2173,6 +2173,46 @@ fn completion_type_position_adds_import_edit_for_workspace_type_without_imports(
 }
 
 #[test]
+fn completion_includes_string_after_instanceof() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m(Object o) {
+    if (o instanceof Str<|>) {}
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"String"),
+        "expected completion list to contain String; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_instanceof_does_not_suggest_primitives() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m(Object o) {
+    if (o instanceof Str<|>) {}
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        !labels.contains(&"int"),
+        "expected completion list to not contain primitive int; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_includes_workspace_annotation_types_after_at_sign() {
     let anno_path = PathBuf::from("/workspace/src/main/java/p/MyAnno.java");
     let main_path = PathBuf::from("/workspace/src/main/java/p/Main.java");

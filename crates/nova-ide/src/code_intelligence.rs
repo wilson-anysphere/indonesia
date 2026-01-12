@@ -4,10 +4,12 @@
 //! and semantic models. For this repository we keep the implementation lightweight
 //! and text-based so that user-visible IDE features can be exercised end-to-end.
 use std::borrow::Cow;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, CompletionItem,
@@ -2867,6 +2869,75 @@ fn child_package_segment(package: &str, parent: &str) -> Option<String> {
     Some(rest.split('.').next().unwrap_or(rest).to_string())
 }
 
+#[derive(Clone)]
+struct CachedClasspathIndex {
+    fingerprint: u64,
+    index: Arc<nova_classpath::ClasspathIndex>,
+}
+
+static CLASSPATH_INDEX_CACHE: Lazy<Mutex<HashMap<PathBuf, CachedClasspathIndex>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+fn classpath_index_for_file(
+    db: &dyn Database,
+    file: FileId,
+) -> Option<Arc<nova_classpath::ClasspathIndex>> {
+    let path = db.file_path(file)?;
+    if !path.exists() {
+        return None;
+    }
+
+    let root = framework_cache::project_root_for_path(path);
+    let config = framework_cache::project_config(&root)?;
+
+    let mut hasher = DefaultHasher::new();
+    for entry in config.classpath.iter().chain(config.module_path.iter()) {
+        entry.path.hash(&mut hasher);
+        std::mem::discriminant(&entry.kind).hash(&mut hasher);
+    }
+    for dir in &config.output_dirs {
+        dir.path.hash(&mut hasher);
+    }
+    let fingerprint = hasher.finish();
+
+    let mut cache = CLASSPATH_INDEX_CACHE.lock().ok()?;
+    if let Some(cached) = cache.get(&root) {
+        if cached.fingerprint == fingerprint {
+            return Some(cached.index.clone());
+        }
+    }
+
+    let mut entries: Vec<nova_classpath::ClasspathEntry> = config
+        .classpath
+        .iter()
+        .chain(config.module_path.iter())
+        .filter(|entry| match entry.kind {
+            nova_project::ClasspathEntryKind::Directory => entry.path.is_dir(),
+            nova_project::ClasspathEntryKind::Jar => entry.path.is_file(),
+            #[allow(unreachable_patterns)]
+            _ => false,
+        })
+        .filter_map(framework_cache::to_classpath_entry)
+        .collect();
+
+    for output_dir in &config.output_dirs {
+        if output_dir.path.is_dir() {
+            entries.push(nova_classpath::ClasspathEntry::ClassDir(output_dir.path.clone()));
+        }
+    }
+
+    let index = nova_classpath::ClasspathIndex::build(&entries, None).ok()?;
+    let index = Arc::new(index);
+    cache.insert(
+        root,
+        CachedClasspathIndex {
+            fingerprint,
+            index: index.clone(),
+        },
+    );
+    Some(index)
+}
+
 fn is_new_expression_type_completion_context(text: &str, prefix_start: usize) -> bool {
     let new_end = skip_whitespace_backwards(text, prefix_start);
     if new_end < 3 {
@@ -2889,6 +2960,109 @@ fn is_new_expression_type_completion_context(text: &str, prefix_start: usize) ->
     }
 
     true
+}
+
+fn dotted_qualifier_before(text: &str, prefix_start: usize) -> Option<String> {
+    if prefix_start == 0 {
+        return None;
+    }
+    let bytes = text.as_bytes();
+    if bytes.get(prefix_start.checked_sub(1)?) != Some(&b'.') {
+        return None;
+    }
+    let dot = prefix_start - 1;
+    let mut start = dot;
+    while start > 0 {
+        let ch = bytes[start - 1] as char;
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.' {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    Some(text[start..dot].to_string())
+}
+
+fn parse_reference_type_span(tokens: &[Token], start_idx: usize) -> Option<(usize, Span)> {
+    let start_tok = tokens.get(start_idx)?;
+    if start_tok.kind != TokenKind::Ident {
+        return None;
+    }
+
+    let mut end_idx = start_idx;
+    let mut i = start_idx + 1;
+
+    // Qualified type name: Ident ('.' Ident)*
+    while i + 1 < tokens.len() {
+        if tokens[i].kind == TokenKind::Symbol('.') && tokens[i + 1].kind == TokenKind::Ident {
+            end_idx = i + 1;
+            i += 2;
+        } else {
+            break;
+        }
+    }
+
+    // Generic type arguments: '<' ... '>'
+    if tokens.get(i).is_some_and(|t| t.kind == TokenKind::Symbol('<')) {
+        let mut depth = 0i32;
+        while i < tokens.len() {
+            match tokens[i].kind {
+                TokenKind::Symbol('<') => depth += 1,
+                TokenKind::Symbol('>') => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end_idx = i;
+                        i += 1;
+                        break;
+                    }
+                }
+                // Recovery: if we fail to find the closing `>`, don't consume the entire file.
+                TokenKind::Symbol(')' | ';' | '{' | '}') if depth > 0 => break,
+                _ => {}
+            }
+            end_idx = i;
+            i += 1;
+        }
+    }
+
+    // Array suffix: '[]'*
+    while i + 1 < tokens.len() {
+        if tokens[i].kind == TokenKind::Symbol('[') && tokens[i + 1].kind == TokenKind::Symbol(']')
+        {
+            end_idx = i + 1;
+            i += 2;
+        } else {
+            break;
+        }
+    }
+
+    Some((
+        end_idx,
+        Span::new(tokens[start_idx].span.start, tokens[end_idx].span.end),
+    ))
+}
+
+fn instanceof_type_span(text: &str, offset: usize) -> Option<Span> {
+    let tokens = tokenize(text);
+    let instanceof_idx = tokens.iter().rposition(|t| {
+        t.kind == TokenKind::Ident && t.text == "instanceof" && t.span.end <= offset
+    })?;
+
+    let mut i = instanceof_idx + 1;
+    // Skip optional `final` modifier (Java 16+ pattern matching).
+    while tokens
+        .get(i)
+        .is_some_and(|t| t.kind == TokenKind::Ident && t.text == "final")
+    {
+        i += 1;
+    }
+
+    let (_end_idx, span) = parse_reference_type_span(&tokens, i)?;
+    Some(span)
+}
+
+fn is_instanceof_type_completion_context(text: &str, offset: usize) -> bool {
+    instanceof_type_span(text, offset).is_some_and(|span| span.start <= offset && offset <= span.end)
 }
 
 fn constructor_completion_item(label: String, detail: Option<String>) -> CompletionItem {
@@ -3148,6 +3322,146 @@ fn new_expression_type_completions(
         item.insert_text = Some(insert_text);
         item.insert_text_format = insert_text_format;
     }
+    items
+}
+
+fn instanceof_type_completions(
+    db: &dyn Database,
+    file: FileId,
+    text: &str,
+    text_index: &TextIndex<'_>,
+    prefix: &str,
+    prefix_start: usize,
+) -> Vec<CompletionItem> {
+    const WORKSPACE_LIMIT: usize = 200;
+    const TOTAL_LIMIT: usize = 200;
+
+    let imports = parse_java_imports(text);
+    let qualifier = dotted_qualifier_before(text, prefix_start);
+
+    let mut items = Vec::new();
+    let mut seen = HashSet::new();
+
+    // 1) Workspace types.
+    items.extend(workspace_type_completions(
+        db,
+        prefix,
+        &mut seen,
+        WORKSPACE_LIMIT,
+    ));
+
+    // 2) Explicit imports.
+    for ty in &imports.explicit_types {
+        let simple = ty.rsplit('.').next().unwrap_or(ty).to_string();
+        if !prefix.is_empty() && !simple.starts_with(prefix) {
+            continue;
+        }
+        if !seen.insert(simple.clone()) {
+            continue;
+        }
+        items.push(CompletionItem {
+            label: simple.clone(),
+            kind: Some(CompletionItemKind::CLASS),
+            detail: Some(ty.clone()),
+            insert_text: Some(simple),
+            ..Default::default()
+        });
+    }
+
+    let jdk = JDK_INDEX
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(JdkIndex::new()));
+    let classpath = classpath_index_for_file(db, file);
+
+    let mut add_binary_type = |binary: String| {
+        let simple = simple_name_from_binary(&binary);
+        if !prefix.is_empty() && !simple.starts_with(prefix) {
+            return;
+        }
+        if !seen.insert(simple.clone()) {
+            return;
+        }
+
+        let mut item = CompletionItem {
+            label: simple.clone(),
+            kind: Some(CompletionItemKind::CLASS),
+            detail: Some(binary.clone()),
+            insert_text: Some(simple),
+            ..Default::default()
+        };
+
+        if java_type_needs_import(&imports, &binary) {
+            item.additional_text_edits = Some(vec![java_import_text_edit(text, text_index, &binary)]);
+        }
+
+        items.push(item);
+    };
+
+    let search_packages: Vec<String> = if let Some(qualifier) = qualifier.clone() {
+        vec![qualifier]
+    } else {
+        let mut pkgs = imports.star_packages.clone();
+        pkgs.push("java.lang".to_string());
+        pkgs.push("java.util".to_string());
+        pkgs.sort();
+        pkgs.dedup();
+        pkgs
+    };
+
+    // 3) JDK types.
+    for pkg in &search_packages {
+        let pkg_prefix = format!("{pkg}.");
+        let query_prefix = format!("{pkg_prefix}{prefix}");
+        let Ok(names) = jdk.class_names_with_prefix(&query_prefix) else {
+            continue;
+        };
+
+        let mut added_for_pkg = 0usize;
+        for name in names {
+            if added_for_pkg >= MAX_NEW_TYPE_JDK_CANDIDATES_PER_PACKAGE {
+                break;
+            }
+            if !name.starts_with(&pkg_prefix) {
+                continue;
+            }
+            let rest = &name[pkg_prefix.len()..];
+            if rest.contains('.') || rest.contains('$') {
+                continue;
+            }
+            add_binary_type(name);
+            added_for_pkg += 1;
+        }
+    }
+
+    // 4) Classpath types.
+    if let Some(classpath) = classpath.as_ref() {
+        for pkg in &search_packages {
+            let pkg_prefix = format!("{pkg}.");
+            let query_prefix = format!("{pkg_prefix}{prefix}");
+            let names = classpath.class_names_with_prefix(&query_prefix);
+
+            let mut added_for_pkg = 0usize;
+            for name in names {
+                if added_for_pkg >= MAX_NEW_TYPE_JDK_CANDIDATES_PER_PACKAGE {
+                    break;
+                }
+                if !name.starts_with(&pkg_prefix) {
+                    continue;
+                }
+                let rest = &name[pkg_prefix.len()..];
+                if rest.contains('.') || rest.contains('$') {
+                    continue;
+                }
+                add_binary_type(name);
+                added_for_pkg += 1;
+            }
+        }
+    }
+
+    let ranking_ctx = CompletionRankingContext::default();
+    rank_completions(prefix, &mut items, &ranking_ctx);
+    items.truncate(TOTAL_LIMIT);
     items
 }
 
@@ -4979,6 +5293,15 @@ pub(crate) fn core_completions(
         return decorate_completions(&text_index, prefix_start, offset, items);
     }
 
+    if is_instanceof_type_completion_context(text, offset) {
+        return decorate_completions(
+            &text_index,
+            prefix_start,
+            offset,
+            instanceof_type_completions(db, file, text, &text_index, &prefix, prefix_start),
+        );
+    }
+
     let before = skip_whitespace_backwards(text, prefix_start);
     if before > 0 && text.as_bytes()[before - 1] == b'@' {
         if cancel.is_cancelled() {
@@ -5521,6 +5844,15 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
 
     if let Some(items) = import_path_completions(db, text, offset, &prefix) {
         return decorate_completions(&text_index, prefix_start, offset, items);
+    }
+
+    if is_instanceof_type_completion_context(text, offset) {
+        return decorate_completions(
+            &text_index,
+            prefix_start,
+            offset,
+            instanceof_type_completions(db, file, text, &text_index, &prefix, prefix_start),
+        );
     }
 
     let before = skip_whitespace_backwards(text, prefix_start);
