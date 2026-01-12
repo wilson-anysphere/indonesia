@@ -580,7 +580,7 @@ from `main`, otherwise benching the base commit in a git worktree). For full ope
 - Threshold configs:
   - `perf/thresholds.toml` (bench comparisons; enforced by CI)
   - `perf/runtime-thresholds.toml` (runtime snapshot comparisons via `nova perf compare-runtime`; not currently a CI gate)
-- CI workflow: `.github/workflows/perf.yml`
+  - CI workflow: `.github/workflows/perf.yml`
 
 **Run locally (benchmark):**
 

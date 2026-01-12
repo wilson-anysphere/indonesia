@@ -270,6 +270,7 @@ cargo bench --locked -p nova-syntax --bench parse_java
 cargo bench --locked -p nova-format --bench format
 cargo bench --locked -p nova-refactor --bench refactor
 cargo bench --locked -p nova-classpath --bench index
+cargo bench --locked -p nova-ide --bench completion
 
 # Agent / multi-runner
 bash scripts/cargo_agent.sh bench --locked -p nova-core --bench critical_paths
@@ -277,6 +278,7 @@ bash scripts/cargo_agent.sh bench --locked -p nova-syntax --bench parse_java
 bash scripts/cargo_agent.sh bench --locked -p nova-format --bench format
 bash scripts/cargo_agent.sh bench --locked -p nova-refactor --bench refactor
 bash scripts/cargo_agent.sh bench --locked -p nova-classpath --bench index
+bash scripts/cargo_agent.sh bench --locked -p nova-ide --bench completion
 ```
 
 For capture/compare tooling and threshold configuration, see [`perf/README.md`](perf/README.md).
