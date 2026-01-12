@@ -334,6 +334,14 @@ impl RpcConnection {
         Fut: Future<Output = RouterAdmission> + Send,
     {
         sanitize_capabilities(&mut cfg.capabilities);
+        if cfg.capabilities.max_frame_len == 0 || cfg.capabilities.max_packet_len == 0 {
+            return Err(RpcTransportError::HandshakeFailed {
+                message: format!(
+                    "router capabilities must advertise non-zero max_frame_len/max_packet_len (got max_frame_len={}, max_packet_len={})",
+                    cfg.capabilities.max_frame_len, cfg.capabilities.max_packet_len
+                ),
+            });
+        }
 
         let hello_frame_bytes =
             read_frame_payload(&mut stream, cfg.pre_handshake_max_frame_len).await?;
@@ -375,6 +383,24 @@ impl RpcConnection {
                 })
             }
         };
+
+        if hello.capabilities.max_frame_len == 0 || hello.capabilities.max_packet_len == 0 {
+            let message = format!(
+                "invalid worker capability limits: max_frame_len={}, max_packet_len={}",
+                hello.capabilities.max_frame_len, hello.capabilities.max_packet_len
+            );
+            let reject = HandshakeReject {
+                code: RejectCode::InvalidRequest,
+                message: message.clone(),
+            };
+            let _ = write_wire_frame(
+                &mut stream,
+                cfg.pre_handshake_max_frame_len,
+                &WireFrame::Reject(reject),
+            )
+            .await;
+            return Err(RpcTransportError::HandshakeFailed { message });
+        }
 
         if let Some(expected) = cfg.expected_auth_token.as_deref() {
             if hello.auth_token.as_deref() != Some(expected) {

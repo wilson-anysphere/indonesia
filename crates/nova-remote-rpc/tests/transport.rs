@@ -100,6 +100,27 @@ async fn handshake_rejects_unsupported_version() {
 }
 
 #[tokio::test]
+async fn handshake_rejects_zero_max_frame_len() {
+    let (router_io, mut worker_io) = tokio::io::duplex(64 * 1024);
+
+    let router_task =
+        tokio::spawn(async move { RpcConnection::handshake_as_router(router_io, None).await });
+
+    let mut worker_hello = hello(None);
+    worker_hello.capabilities.max_frame_len = 0;
+
+    write_wire_frame(&mut worker_io, &WireFrame::Hello(worker_hello)).await;
+    let frame = read_wire_frame(&mut worker_io, DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN).await;
+    match frame {
+        WireFrame::Reject(reject) => assert_eq!(reject.code, RejectCode::InvalidRequest),
+        other => panic!("expected reject frame, got {other:?}"),
+    }
+
+    let router_res = router_task.await.unwrap();
+    assert!(router_res.is_err());
+}
+
+#[tokio::test]
 async fn handshake_allows_router_to_reject_before_welcome() {
     let (router_io, mut worker_io) = tokio::io::duplex(64 * 1024);
 
