@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri, WorkspaceEdit,
 };
+use nova_core::{Name, PackageName, TypeIndex};
 use nova_types::{Diagnostic, Span};
 
 /// Generate quick fixes for unresolved type diagnostics.
@@ -95,31 +96,49 @@ fn single_file_workspace_edit(uri: &Uri, edits: Vec<TextEdit>) -> WorkspaceEdit 
 }
 
 fn import_candidates(unresolved_name: &str) -> Vec<String> {
+    let jdk = crate::code_intelligence::jdk_index();
+    import_candidates_with_index(unresolved_name, jdk.as_ref())
+}
+
+fn import_candidates_with_index(unresolved_name: &str, index: &dyn TypeIndex) -> Vec<String> {
     let needle = unresolved_name.trim();
     if needle.is_empty() {
         return Vec::new();
     }
 
-    let jdk = crate::code_intelligence::jdk_index();
-    let names = jdk.class_names_with_prefix("").unwrap_or_default();
+    // NOTE: This list is intentionally small and ordered by rough "how likely is a missing import
+    // from here?" heuristics. We still sort/dedupe the final output for deterministic results.
+    //
+    // Keep this bounded: quick-fix code actions run on latency-sensitive paths, and probing the
+    // entire JDK index (e.g. by enumerating all class names) can be extremely expensive.
+    const COMMON_PACKAGES: &[&str] = &[
+        "java.util",
+        "java.io",
+        "java.time",
+        "java.nio",
+        "java.net",
+        "java.util.concurrent",
+        "java.util.stream",
+        "java.lang",
+    ];
+
+    let name = Name::from(needle);
 
     let mut out = Vec::new();
-    for name in names {
-        let simple = name
-            .rsplit(|c| c == '.' || c == '$')
-            .next()
-            .unwrap_or(name.as_str());
-        if simple != needle {
+    for pkg in COMMON_PACKAGES {
+        let pkg = PackageName::from_dotted(pkg);
+        let Some(ty) = index.resolve_type_in_package(&pkg, &name) else {
             continue;
-        }
+        };
 
         // JDK indices use binary names for nested types (`Outer$Inner`). Java imports use source
         // names (`Outer.Inner`), so replace `$` with `.` as a best-effort.
-        out.push(name.replace('$', "."));
+        out.push(ty.as_str().replace('$', "."));
     }
 
     out.sort();
     out.dedup();
+    out.truncate(5);
     out
 }
 
@@ -422,5 +441,20 @@ fn _position_to_offset_utf16(text: &str, position: Position) -> Option<usize> {
         Some(offset)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nova_jdk::JdkIndex;
+
+    use super::*;
+
+    #[test]
+    fn import_candidates_list_includes_java_util_list() {
+        // Use the built-in (dependency-free) JDK index so this test stays fast and deterministic.
+        let jdk = JdkIndex::new();
+        let candidates = import_candidates_with_index("List", &jdk);
+        assert_eq!(candidates, vec!["java.util.List".to_string()]);
     }
 }
