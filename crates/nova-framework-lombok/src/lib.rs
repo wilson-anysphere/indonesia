@@ -23,7 +23,7 @@ impl LombokAnalyzer {
 
     fn class_uses_lombok(class: &ClassData) -> bool {
         // Heuristic: any recognized Lombok annotation.
-        const LOMBOK_ANNOTATIONS: [&str; 17] = [
+        const LOMBOK_ANNOTATIONS: [&str; 18] = [
             "Getter",
             "Setter",
             "Data",
@@ -31,6 +31,7 @@ impl LombokAnalyzer {
             "Builder",
             "SuperBuilder",
             "With",
+            "Wither",
             "NoArgsConstructor",
             "AllArgsConstructor",
             "RequiredArgsConstructor",
@@ -76,7 +77,8 @@ impl LombokAnalyzer {
     }
 
     fn generate_wither(class: ClassId, field: &FieldData, span: Option<Span>) -> VirtualMember {
-        // Best-effort Lombok realism: `@With` generates immutable-style "wither" methods.
+        // Best-effort Lombok realism: `@With` (and the legacy `@Wither`) generate immutable-style
+        // "wither" methods.
         //
         // Lombok supports finals (common with `@Value`); only static fields are excluded.
         VirtualMember::Method(VirtualMethod {
@@ -262,8 +264,10 @@ impl FrameworkAnalyzer for LombokAnalyzer {
             .annotation_span("Setter")
             .or_else(|| class_data.annotation_span("Data"));
 
-        let class_withers = class_data.has_annotation("With");
-        let class_wither_span = class_data.annotation_span("With");
+        let class_withers = class_data.has_annotation("With") || class_data.has_annotation("Wither");
+        let class_wither_span = class_data
+            .annotation_span("With")
+            .or_else(|| class_data.annotation_span("Wither"));
 
         for field in &class_data.fields {
             let field_getter = field.has_annotation("Getter");
@@ -290,11 +294,13 @@ impl FrameworkAnalyzer for LombokAnalyzer {
                 }
             }
 
-            let field_wither = field.has_annotation("With");
+            let field_wither = field.has_annotation("With") || field.has_annotation("Wither");
             let want_wither = !field.is_static && (field_wither || class_withers);
             if want_wither {
-                let span = if field_wither {
+                let span = if field.has_annotation("With") {
                     field.annotation_span("With")
+                } else if field.has_annotation("Wither") {
+                    field.annotation_span("Wither")
                 } else {
                     class_wither_span
                 };
@@ -676,6 +682,47 @@ mod tests {
     }
 
     #[test]
+    fn resolves_wither_from_class_wither_annotation() {
+        let mut db = MemoryDatabase::new();
+        let project = db.add_project();
+        db.add_dependency(project, "org.projectlombok", "lombok");
+
+        let class_id = db.add_class(
+            project,
+            ClassData {
+                name: "Foo".into(),
+                annotations: vec![Annotation::new("Wither")],
+                fields: vec![FieldData {
+                    name: "x".into(),
+                    ty: Type::int(),
+                    is_static: false,
+                    is_final: false,
+                    annotations: vec![],
+                }],
+                ..ClassData::default()
+            },
+        );
+
+        let mut registry = AnalyzerRegistry::new();
+        registry.register(Box::new(LombokAnalyzer::new()));
+
+        let foo_ty = Type::class(class_id, vec![]);
+        let members = complete_member_names(&db, &registry, &foo_ty);
+        assert!(members.iter().any(|m| m == "withX"), "{members:?}");
+
+        let resolved = resolve_method_call(
+            &db,
+            &registry,
+            &foo_ty,
+            CallKind::Instance,
+            "withX",
+            &[Type::int()],
+        )
+        .expect("withX(int) should resolve");
+        assert_eq!(resolved, foo_ty);
+    }
+
+    #[test]
     fn resolves_wither_from_field_annotation() {
         let mut db = MemoryDatabase::new();
         let project = db.add_project();
@@ -692,6 +739,47 @@ mod tests {
                     is_static: false,
                     is_final: false,
                     annotations: vec![Annotation::new("With")],
+                }],
+                ..ClassData::default()
+            },
+        );
+
+        let mut registry = AnalyzerRegistry::new();
+        registry.register(Box::new(LombokAnalyzer::new()));
+
+        let foo_ty = Type::class(class_id, vec![]);
+        let members = complete_member_names(&db, &registry, &foo_ty);
+        assert!(members.iter().any(|m| m == "withX"), "{members:?}");
+
+        let resolved = resolve_method_call(
+            &db,
+            &registry,
+            &foo_ty,
+            CallKind::Instance,
+            "withX",
+            &[Type::int()],
+        )
+        .expect("withX(int) should resolve");
+        assert_eq!(resolved, foo_ty);
+    }
+
+    #[test]
+    fn resolves_wither_from_field_wither_annotation() {
+        let mut db = MemoryDatabase::new();
+        let project = db.add_project();
+        db.add_dependency(project, "org.projectlombok", "lombok");
+
+        let class_id = db.add_class(
+            project,
+            ClassData {
+                name: "Foo".into(),
+                annotations: vec![],
+                fields: vec![FieldData {
+                    name: "x".into(),
+                    ty: Type::int(),
+                    is_static: false,
+                    is_final: false,
+                    annotations: vec![Annotation::new("Wither")],
                 }],
                 ..ClassData::default()
             },

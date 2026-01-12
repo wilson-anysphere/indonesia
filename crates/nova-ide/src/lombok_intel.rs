@@ -436,6 +436,7 @@ fn is_lombok_annotation(name: &str) -> bool {
             | "Builder"
             | "SuperBuilder"
             | "With"
+            | "Wither"
             | "NoArgsConstructor"
             | "AllArgsConstructor"
             | "RequiredArgsConstructor"
