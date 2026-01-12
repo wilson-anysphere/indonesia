@@ -52,9 +52,14 @@ bash "${ROOT_DIR}/scripts/check-fuzz-java-corpus-sync.sh"
 #
 # This prevents accidental reintroduction of the dependency edge (which risks dependency cycles and
 # heavier builds).
-if git grep -n -E -- '^[[:space:]]*nova-project[[:space:]]*=' -- crates/nova-build/Cargo.toml >/dev/null; then
+#
+# Note: we intentionally match any non-comment occurrence of `nova-project` so this also catches:
+# - `nova-project = { ... }`
+# - `[dependencies.nova-project]`
+# - `nova-project.workspace = true`
+if git grep -n -E -- '^[[:space:]]*[^#][^#]*\\bnova-project\\b' -- crates/nova-build/Cargo.toml >/dev/null; then
   echo "repo invariant failed: nova-build must not depend on nova-project (use nova-build-model instead)" >&2
-  git grep -n -E -- '^[[:space:]]*nova-project[[:space:]]*=' -- crates/nova-build/Cargo.toml >&2
+  git grep -n -E -- '^[[:space:]]*[^#][^#]*\\bnova-project\\b' -- crates/nova-build/Cargo.toml >&2
   exit 1
 fi
 
@@ -106,7 +111,7 @@ fi
 # These crates intentionally consolidate their integration tests into a single root harness for
 # compile-time/memory efficiency (each `tests/*.rs` file is its own integration test binary).
 framework_harness_checks=(
-  "crates/nova-framework-spring/tests:crates/nova-framework-spring/tests/harness.rs:move additional files into crates/nova-framework-spring/tests/suite/ and add them to crates/nova-framework-spring/tests/suite/mod.rs"
+  "crates/nova-framework-spring/tests:crates/nova-framework-spring/tests/integration.rs:move additional files into crates/nova-framework-spring/tests/suite/ and add them to crates/nova-framework-spring/tests/suite/mod.rs"
   "crates/nova-framework-builtins/tests:crates/nova-framework-builtins/tests/builtins_tests.rs:move additional files into crates/nova-framework-builtins/tests/builtins/ and add them to crates/nova-framework-builtins/tests/builtins/mod.rs"
   "crates/nova-framework-micronaut/tests:crates/nova-framework-micronaut/tests/integration_tests.rs:move additional files into crates/nova-framework-micronaut/tests/integration_tests/ and add them to crates/nova-framework-micronaut/tests/integration_tests/mod.rs"
 )
