@@ -43,12 +43,22 @@ fn spring_analyzer_sees_dependency_metadata_via_framework_db_synthetic_files() {
     let workspace_dir = tempdir().expect("workspace tempdir");
     let repo_dir = tempdir().expect("repo tempdir");
 
+    // Canonicalize temp paths for cross-platform stability (macOS `/var` → `/private/var`).
+    let workspace_root = workspace_dir
+        .path()
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_dir.path().to_path_buf());
+    let repo_root = repo_dir
+        .path()
+        .canonicalize()
+        .unwrap_or_else(|_| repo_dir.path().to_path_buf());
+
     // Make `nova_project::load_project` resolve dependencies from our temp repo.
-    let mvn_dir = workspace_dir.path().join(".mvn");
+    let mvn_dir = workspace_root.join(".mvn");
     std::fs::create_dir_all(&mvn_dir).expect("create .mvn");
     std::fs::write(
         mvn_dir.join("maven.config"),
-        format!("-Dmaven.repo.local={}", repo_dir.path().display()),
+        format!("-Dmaven.repo.local={}", repo_root.display()),
     )
     .expect("write maven.config");
 
@@ -61,17 +71,11 @@ fn spring_analyzer_sees_dependency_metadata_via_framework_db_synthetic_files() {
     { "name": "server.port", "type": "java.lang.Integer" }
   ]
 }"#;
-    let _jar_path = write_metadata_jar(
-        repo_dir.path(),
-        group_id,
-        artifact_id,
-        version,
-        metadata_json,
-    );
+    let _jar_path = write_metadata_jar(&repo_root, group_id, artifact_id, version, metadata_json);
 
     // Minimal Maven project that declares the dependency.
     std::fs::write(
-        workspace_dir.path().join("pom.xml"),
+        workspace_root.join("pom.xml"),
         format!(
             r#"<project>
   <modelVersion>4.0.0</modelVersion>
@@ -91,9 +95,7 @@ fn spring_analyzer_sees_dependency_metadata_via_framework_db_synthetic_files() {
     .expect("write pom.xml");
 
     // Ensure the config file path exists on disk so workspace root discovery prefers build markers.
-    let config_path = workspace_dir
-        .path()
-        .join("src/main/resources/application.properties");
+    let config_path = workspace_root.join("src/main/resources/application.properties");
     std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir -p");
     std::fs::write(&config_path, "").expect("touch application.properties");
 
