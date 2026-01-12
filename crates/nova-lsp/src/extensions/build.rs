@@ -543,6 +543,37 @@ fn normalize_gradle_project_path(project_path: Option<&str>) -> Option<Cow<'_, s
     }
 }
 
+fn composite_gradle_build_root_project_path(project_path: &str) -> Option<&str> {
+    // Keep logic aligned with `nova-project`'s Gradle composite build modeling.
+    //
+    // Gradle's `buildSrc` and `includeBuild(...)` are separate builds, but `nova-project` exposes
+    // them as synthetic project paths so they can participate in a workspace-wide module model:
+    // - buildSrc root: `:__buildSrc`
+    // - buildSrc subprojects: `:__buildSrc:subproject`
+    // - included build root: `:__includedBuild_<name>`
+    // - included build subprojects: `:__includedBuild_<name>:subproject`
+    //
+    // When invoking Gradle tasks we must call Gradle *within the composite build root* and use the
+    // inner Gradle project path (e.g. `:subproject`), not the synthetic prefix.
+    const BUILDSRC_PREFIX: &str = ":__buildSrc";
+
+    if let Some(rest) = project_path.strip_prefix(BUILDSRC_PREFIX) {
+        if rest.is_empty() || rest.starts_with(':') {
+            return Some(BUILDSRC_PREFIX);
+        }
+    }
+
+    if !project_path.starts_with(":__includedBuild_") {
+        return None;
+    }
+
+    let rest = project_path.strip_prefix(':').unwrap_or(project_path);
+    match rest.find(':') {
+        Some(idx) => Some(&project_path[..idx + 1]),
+        None => Some(project_path),
+    }
+}
+
 fn paths_to_strings<'a>(paths: impl IntoIterator<Item = &'a PathBuf>) -> Vec<String> {
     paths
         .into_iter()
@@ -1351,6 +1382,8 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                                 .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
                         let mut gradle_project_paths_by_root: BTreeMap<PathBuf, String> =
                             BTreeMap::new();
+                        let mut gradle_roots_by_project_path: BTreeMap<String, PathBuf> =
+                            BTreeMap::new();
                         for module in &workspace_model.modules {
                             let nova_project::WorkspaceModuleBuildId::Gradle { project_path } =
                                 &module.build_id
@@ -1360,6 +1393,9 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                             gradle_project_paths_by_root
                                 .entry(module.root.clone())
                                 .or_insert_with(|| project_path.clone());
+                            gradle_roots_by_project_path
+                                .entry(project_path.clone())
+                                .or_insert_with(|| module.root.clone());
                         }
 
                         // Prefer fetching all Gradle module configs in a single Gradle invocation
@@ -1392,14 +1428,41 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                                     ))
                                 })?;
 
-                            let cfg = if project_path == ":" {
-                                manager.java_compile_config_gradle(&project_root, None)
-                            } else if let Some(cfg) = gradle_configs_by_path.remove(&project_path) {
-                                Ok(cfg)
+                            let composite_root_project_path =
+                                composite_gradle_build_root_project_path(&project_path);
+                            let composite_build_root =
+                                composite_root_project_path.and_then(|root_project_path| {
+                                    gradle_roots_by_project_path.get(root_project_path)
+                                });
+                            let (invocation_root, invocation_project_path) =
+                                match composite_build_root {
+                                    Some(build_root) => {
+                                        let inner = project_path
+                                            .strip_prefix(composite_root_project_path.unwrap())
+                                            .unwrap_or_default();
+                                        let inner = if inner.is_empty() { None } else { Some(inner) };
+                                        (build_root.as_path(), inner)
+                                    }
+                                    None => (project_root.as_path(), Some(project_path.as_str())),
+                                };
+
+                            let cfg = if invocation_root == project_root.as_path() {
+                                if project_path == ":" {
+                                    manager.java_compile_config_gradle(&project_root, None)
+                                } else if let Some(cfg) =
+                                    gradle_configs_by_path.remove(&project_path)
+                                {
+                                    Ok(cfg)
+                                } else {
+                                    manager.java_compile_config_gradle(
+                                        &project_root,
+                                        Some(project_path.as_str()),
+                                    )
+                                }
                             } else {
                                 manager.java_compile_config_gradle(
-                                    &project_root,
-                                    Some(project_path.as_str()),
+                                    invocation_root,
+                                    invocation_project_path,
                                 )
                             }
                             .map_err(map_build_error)?;
@@ -2008,7 +2071,7 @@ mod tests {
     #[test]
     fn load_build_metadata_resolves_gradle_project_dir_override() {
         let tmp = TempDir::new().unwrap();
-        let root = tmp.path();
+        let root = tmp.path().canonicalize().unwrap();
         std::fs::write(
             root.join("settings.gradle"),
             "include ':app'\nproject(':app').projectDir = file('modules/application')\n",
@@ -2763,6 +2826,163 @@ esac\n",
             .lines()
             .count();
         assert_eq!(count, 1, "expected 1 gradle invocation, got {count}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn project_model_resolves_buildsrc_via_composite_build_root() {
+        let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
+        let original_path = std::env::var("PATH").unwrap_or_default();
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        fs::write(root.join("settings.gradle"), "include ':app'\n").unwrap();
+        fs::write(root.join("build.gradle"), "").unwrap();
+
+        fs::create_dir_all(root.join("app")).unwrap();
+        fs::write(root.join("app/build.gradle"), "plugins { id 'java' }\n").unwrap();
+
+        // `buildSrc` is a separate Gradle build; `nova-project` models it via a synthetic Gradle
+        // project path `:__buildSrc` which should *not* be used as a task prefix when invoking the
+        // root build.
+        fs::create_dir_all(root.join("buildSrc/src/main/java")).unwrap();
+        fs::write(
+            root.join("buildSrc/build.gradle"),
+            "plugins { id 'java' }\n",
+        )
+        .unwrap();
+
+        let bin_dir = root.join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let counter = root.join("gradle-invocations.txt");
+
+        let app_dep = root.join("app.jar");
+        let buildsrc_dep = root.join("buildsrc.jar");
+        fs::write(&app_dep, "").unwrap();
+        fs::write(&buildsrc_dep, "").unwrap();
+
+        let batch_payload = serde_json::json!({
+            "projects": [
+                { "path": ":", "projectDir": root.to_string_lossy(), "config": { "compileClasspath": serde_json::Value::Null } },
+                { "path": ":app", "projectDir": root.join("app").to_string_lossy(), "config": { "compileClasspath": [app_dep.to_string_lossy()] } },
+            ]
+        });
+        let buildsrc_payload = serde_json::json!({
+            "compileClasspath": [buildsrc_dep.to_string_lossy()]
+        });
+
+        let root_path = root.to_string_lossy();
+        let buildsrc_root = root.join("buildSrc");
+        let buildsrc_root_path = buildsrc_root.to_string_lossy();
+
+        write_executable(
+            &bin_dir.join("gradle"),
+            &format!(
+                "#!/bin/sh\n\
+set -eu\n\
+\n\
+echo 1 >> \"{counter}\"\n\
+\n\
+cwd=\"$(pwd)\"\n\
+\n\
+last=\"\"\n\
+for arg in \"$@\"; do\n\
+  last=\"$arg\"\n\
+done\n\
+\n\
+if [ \"$cwd\" = \"{root_path}\" ]; then\n\
+  case \"$last\" in\n\
+    printNovaAllJavaCompileConfigs)\n\
+      cat <<'EOF'\n\
+NOVA_ALL_JSON_BEGIN\n\
+{batch_payload}\n\
+NOVA_ALL_JSON_END\n\
+EOF\n\
+      ;;\n\
+    :__buildSrc:printNovaJavaCompileConfig)\n\
+      echo \"unexpected gradle task (synthetic buildSrc project path used as task prefix): $last\" >&2\n\
+      exit 1\n\
+      ;;\n\
+    *)\n\
+      echo \"unexpected gradle task in root build: $last\" >&2\n\
+      exit 1\n\
+      ;;\n\
+  esac\n\
+elif [ \"$cwd\" = \"{buildsrc_root_path}\" ]; then\n\
+  case \"$last\" in\n\
+    printNovaJavaCompileConfig)\n\
+      cat <<'EOF'\n\
+NOVA_JSON_BEGIN\n\
+{buildsrc_payload}\n\
+NOVA_JSON_END\n\
+EOF\n\
+      ;;\n\
+    *)\n\
+      echo \"unexpected gradle task in buildSrc build: $last\" >&2\n\
+      exit 1\n\
+      ;;\n\
+  esac\n\
+else\n\
+  echo \"unexpected gradle cwd: $cwd\" >&2\n\
+  exit 1\n\
+fi\n",
+                counter = counter.to_string_lossy(),
+                root_path = root_path,
+                buildsrc_root_path = buildsrc_root_path,
+                batch_payload = batch_payload,
+                buildsrc_payload = buildsrc_payload,
+            ),
+        );
+
+        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));
+
+        let value = handle_project_model(serde_json::json!({
+            "projectRoot": root.to_string_lossy().to_string(),
+        }))
+        .unwrap();
+
+        std::env::set_var("PATH", original_path);
+
+        let result: ProjectModelResult = serde_json::from_value(value).unwrap();
+        assert_eq!(result.project_root, root.to_string_lossy().to_string());
+        assert_eq!(result.units.len(), 2);
+
+        let mut units_by_path: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for unit in result.units {
+            match unit {
+                ProjectModelUnit::Gradle {
+                    project_path,
+                    compile_classpath,
+                    ..
+                } => {
+                    units_by_path.insert(project_path, compile_classpath);
+                }
+                other => panic!("expected Gradle unit, got {other:?}"),
+            }
+        }
+
+        let app_dep_str = app_dep.to_string_lossy().to_string();
+        let buildsrc_dep_str = buildsrc_dep.to_string_lossy().to_string();
+
+        assert!(
+            units_by_path
+                .get(":app")
+                .is_some_and(|cp| cp.iter().any(|p| p == &app_dep_str)),
+            "expected :app unit to include jar from mocked `gradle`: {units_by_path:?}"
+        );
+        assert!(
+            units_by_path
+                .get(":__buildSrc")
+                .is_some_and(|cp| cp.iter().any(|p| p == &buildsrc_dep_str)),
+            "expected :__buildSrc unit to include jar from mocked `gradle`: {units_by_path:?}"
+        );
+
+        let count = fs::read_to_string(&counter)
+            .unwrap_or_default()
+            .lines()
+            .count();
+        assert_eq!(count, 2, "expected 2 gradle invocations, got {count}");
     }
 
     #[test]
