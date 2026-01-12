@@ -334,8 +334,8 @@ If `java`/`javac` are missing, the test prints a message and returns early.
 **What:** Tests that exercise a “compile with `javac`” harness to validate our own diagnostics/parsing logic
 against the reference compiler.
 
-These tests are `#[ignore]` by default so `cargo test` (and `.github/workflows/ci.yml`) can run without a
-JDK. CI runs them separately in `.github/workflows/javac.yml`.
+These tests are `#[ignore]` by default so `ci.yml`’s default test suite (`cargo nextest run --workspace --profile ci`)
+can run without a JDK. CI runs them separately in `.github/workflows/javac.yml`.
 
 **Where:**
 
@@ -629,7 +629,8 @@ Note: `.github/workflows/release.yml` exists for packaging and release automatio
 ## Fixture hygiene & determinism rules
 
 - **Keep fixtures small.** Prefer a minimal reproducer over a full real project when possible.
-- **No network in non-ignored tests.** Unit/integration tests that run in `cargo test` (and therefore `ci.yml`)
+- **No network in non-ignored tests.** Unit/integration tests that run in `ci.yml`’s default suite
+  (`cargo nextest run --workspace --profile ci` + doctests)
   should not download dependencies, clone repositories, or call external services.
 - **Use `#[ignore]` only when unavoidable.** If a test is expensive, flaky on CI runners, or requires external
   toolchains (JDK, Maven), mark it ignored and provide a script/README for running it locally.
