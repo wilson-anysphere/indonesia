@@ -237,21 +237,6 @@ pub fn extract_variable(
         });
     }
 
-    // Java `assert` expressions are evaluated only when assertions are enabled.
-    // Extract Variable would introduce a new statement *before* the `assert`, forcing
-    // evaluation even when assertions are disabled and potentially changing behavior
-    // (including throwing exceptions).
-    if expr
-        .syntax()
-        .ancestors()
-        .find_map(ast::AssertStatement::cast)
-        .is_some()
-    {
-        return Err(RefactorError::ExtractNotSupported {
-            reason: "cannot extract from assert statement",
-        });
-    }
-
     if let Some(reason) = constant_expression_only_context_reason(&expr) {
         return Err(RefactorError::ExtractNotSupported { reason });
     }
@@ -353,7 +338,15 @@ pub fn extract_variable(
         match best_type_at_range_display(db, &params.file, text, expr_range) {
             // `Object` is our parser-only fallback for unknown expressions. Only let typeck
             // override a non-`Object` parser inference when it found something more specific.
-            Some(typeck_ty) if typeck_ty != "Object" || parser_ty == "Object" => typeck_ty,
+            //
+            // Note: `null` is a real type in the type system, but it is not a valid type for a
+            // Java variable declaration (`null x = null;` does not compile). Prefer parser/context
+            // inference in that case.
+            Some(typeck_ty)
+                if typeck_ty != "null" && (typeck_ty != "Object" || parser_ty == "Object") =>
+            {
+                typeck_ty
+            }
             _ => parser_ty,
         }
     };
