@@ -1,14 +1,89 @@
-use std::collections::{BTreeSet, HashMap};
+use std::cmp::Ordering;
+use std::collections::{hash_map::DefaultHasher, BTreeSet, HashMap, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::{Arc, Mutex};
 
 use lsp_types::Uri;
 use nova_core::{path_to_file_uri, AbsPathBuf};
 use nova_db::{Database, FileId};
 use nova_index::{InheritanceEdge, InheritanceIndex};
 use nova_types::Span;
+use once_cell::sync::Lazy;
 
 use crate::parse::{parse_file, MethodDef, ParsedFile, TypeDef};
+
+const MAX_CACHED_WORKSPACES: usize = 8;
+
+/// Best-effort, stable-ish identifier for a workspace, derived from the set of Java files.
+///
+/// This is intentionally opaque; it exists solely as an LRU cache key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct WorkspaceId(u64);
+
+#[derive(Clone, Debug)]
+struct CachedEntry {
+    fingerprint: u64,
+    index: Arc<WorkspaceHierarchyIndex>,
+}
+
+/// Tiny LRU cache used by workspace-scoped indexes.
+#[derive(Debug)]
+struct LruCache<K, V> {
+    capacity: usize,
+    map: HashMap<K, V>,
+    order: VecDeque<K>,
+}
+
+impl<K, V> LruCache<K, V>
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
+{
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            map: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    fn get_cloned(&mut self, key: &K) -> Option<V> {
+        let value = self.map.get(key)?.clone();
+        self.touch(key);
+        Some(value)
+    }
+
+    fn insert(&mut self, key: K, value: V) {
+        self.map.insert(key.clone(), value);
+        self.touch(&key);
+        self.evict_if_needed();
+    }
+
+    fn touch(&mut self, key: &K) {
+        if let Some(pos) = self.order.iter().position(|k| k == key) {
+            self.order.remove(pos);
+        }
+        self.order.push_back(key.clone());
+    }
+
+    fn evict_if_needed(&mut self) {
+        while self.map.len() > self.capacity {
+            let Some(key) = self.order.pop_front() else {
+                break;
+            };
+            self.map.remove(&key);
+        }
+    }
+}
+
+static WORKSPACE_HIERARCHY_INDEX_CACHE: Lazy<Mutex<LruCache<WorkspaceId, CachedEntry>>> =
+    Lazy::new(|| Mutex::new(LruCache::new(MAX_CACHED_WORKSPACES)));
+
+#[cfg(test)]
+static WORKSPACE_HIERARCHY_REBUILDS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 #[derive(Clone, Debug)]
 pub(crate) struct TypeInfo {
@@ -38,6 +113,9 @@ pub(crate) struct WorkspaceHierarchyIndex {
 
 impl WorkspaceHierarchyIndex {
     pub(crate) fn new(db: &dyn Database) -> Self {
+        #[cfg(test)]
+        WORKSPACE_HIERARCHY_REBUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
         let mut file_ids: Vec<FileId> = db
             .all_file_ids()
             .into_iter()
@@ -112,6 +190,49 @@ impl WorkspaceHierarchyIndex {
         }
     }
 
+    /// Returns a cached workspace index when the current workspace fingerprint matches.
+    ///
+    /// This is a best-effort cache intended to avoid re-parsing all Java source files for repeated
+    /// call/type hierarchy requests. Invalidation is done via a cheap `(path, len, ptr)` fingerprint
+    /// per Java file (see [`workspace_identity`]).
+    pub(crate) fn get_cached(db: &dyn Database) -> Arc<Self> {
+        let (workspace_id, fingerprint) = workspace_identity(db);
+
+        {
+            let mut cache = WORKSPACE_HIERARCHY_INDEX_CACHE
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            if let Some(entry) = cache
+                .get_cloned(&workspace_id)
+                .filter(|entry| entry.fingerprint == fingerprint)
+            {
+                return entry.index;
+            }
+        }
+
+        let built = Arc::new(Self::new(db));
+
+        let mut cache = WORKSPACE_HIERARCHY_INDEX_CACHE
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        if let Some(entry) = cache
+            .get_cloned(&workspace_id)
+            .filter(|entry| entry.fingerprint == fingerprint)
+        {
+            return entry.index;
+        }
+
+        cache.insert(
+            workspace_id,
+            CachedEntry {
+                fingerprint,
+                index: Arc::clone(&built),
+            },
+        );
+
+        built
+    }
+
     pub(crate) fn file_ids(&self) -> &[FileId] {
         &self.file_ids
     }
@@ -184,6 +305,62 @@ impl WorkspaceHierarchyIndex {
     }
 }
 
+fn workspace_identity(db: &dyn Database) -> (WorkspaceId, u64) {
+    #[derive(Clone, Copy)]
+    struct JavaFile<'a> {
+        file_id: FileId,
+        path: Option<&'a Path>,
+    }
+
+    let mut files: Vec<JavaFile<'_>> = db
+        .all_file_ids()
+        .into_iter()
+        .filter(|id| is_java_file(db, *id))
+        .map(|file_id| JavaFile {
+            file_id,
+            path: db.file_path(file_id),
+        })
+        .collect();
+
+    // Deterministic ordering: stable paths first, then virtual buffers (by FileId).
+    files.sort_by(|a, b| match (&a.path, &b.path) {
+        (Some(a_path), Some(b_path)) => a_path
+            .cmp(b_path)
+            .then(a.file_id.to_raw().cmp(&b.file_id.to_raw())),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => a.file_id.to_raw().cmp(&b.file_id.to_raw()),
+    });
+
+    let mut workspace_hasher = DefaultHasher::new();
+    let mut fingerprint_hasher = DefaultHasher::new();
+
+    for file in files {
+        match file.path {
+            Some(path) => {
+                path.hash(&mut workspace_hasher);
+                path.hash(&mut fingerprint_hasher);
+            }
+            None => {
+                file.file_id.to_raw().hash(&mut workspace_hasher);
+                file.file_id.to_raw().hash(&mut fingerprint_hasher);
+            }
+        }
+
+        // Avoid hashing full file contents on every request: we only need a cheap signal that the
+        // workspace has changed. For `InMemoryFileStore`, edits replace the underlying `String`, so
+        // `(len, ptr)` is a reasonable proxy for content identity.
+        let text = db.file_content(file.file_id);
+        text.len().hash(&mut fingerprint_hasher);
+        (text.as_ptr() as usize).hash(&mut fingerprint_hasher);
+    }
+
+    (
+        WorkspaceId(workspace_hasher.finish()),
+        fingerprint_hasher.finish(),
+    )
+}
+
 fn method_info_from_def(
     file_id: FileId,
     uri: &Uri,
@@ -220,4 +397,63 @@ fn uri_for_path(path: &Path) -> Option<Uri> {
     let abs = AbsPathBuf::new(path.to_path_buf()).ok()?;
     let uri = path_to_file_uri(&abs).ok()?;
     Uri::from_str(&uri).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use nova_db::InMemoryFileStore;
+
+    fn reset_rebuild_counter() {
+        WORKSPACE_HIERARCHY_REBUILDS.store(0, std::sync::atomic::Ordering::Relaxed);
+        // Ensure the cache doesn't carry state across unrelated unit tests.
+        let mut cache = WORKSPACE_HIERARCHY_INDEX_CACHE
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        cache.map.clear();
+        cache.order.clear();
+    }
+
+    #[test]
+    fn workspace_hierarchy_index_is_cached_across_type_hierarchy_requests() {
+        reset_rebuild_counter();
+
+        let mut db = InMemoryFileStore::new();
+
+        let file_a = db.file_id_for_path("/A.java");
+        db.set_file_text(file_a, "class A {}".to_string());
+
+        let file_b = db.file_id_for_path("/B.java");
+        db.set_file_text(file_b, "class B extends A {}".to_string());
+
+        let pos_b = lsp_types::Position::new(0, 6); // `B` in `class B`.
+
+        let items = crate::prepare_type_hierarchy(&db, file_b, pos_b)
+            .expect("expected type hierarchy items");
+        assert_eq!(items[0].name, "B");
+
+        let items_again = crate::prepare_type_hierarchy(&db, file_b, pos_b)
+            .expect("expected type hierarchy items");
+        assert_eq!(items_again[0].name, "B");
+
+        assert_eq!(
+            WORKSPACE_HIERARCHY_REBUILDS.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "expected hierarchy index to rebuild once for repeated requests without edits"
+        );
+
+        // Edit a file and ensure the cache invalidates.
+        db.set_file_text(file_a, "class A { int x; }".to_string());
+
+        let items_after_edit = crate::prepare_type_hierarchy(&db, file_b, pos_b)
+            .expect("expected type hierarchy items");
+        assert_eq!(items_after_edit[0].name, "B");
+
+        assert_eq!(
+            WORKSPACE_HIERARCHY_REBUILDS.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "expected hierarchy index to rebuild after a file edit"
+        );
+    }
 }

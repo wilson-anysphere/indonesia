@@ -9244,7 +9244,7 @@ pub fn prepare_call_hierarchy(
         // Workspace-aware resolution for receiver calls (`a.foo()`) and for
         // receiverless calls that aren't defined in the current file (e.g.
         // inherited methods).
-        let index = crate::workspace_hierarchy::WorkspaceHierarchyIndex::new(db);
+        let index = crate::workspace_hierarchy::WorkspaceHierarchyIndex::get_cached(db);
         if let Some(parsed) = index.file(file) {
             if let Some(parsed_call) = parsed
                 .calls
@@ -9371,7 +9371,7 @@ fn call_hierarchy_outgoing_calls_impl(
     }
 
     // 2) Workspace-aware resolution for receiver calls (`a.bar()`).
-    let index = crate::workspace_hierarchy::WorkspaceHierarchyIndex::new(db);
+    let index = crate::workspace_hierarchy::WorkspaceHierarchyIndex::get_cached(db);
     let Some(parsed) = index.file(file) else {
         outgoing.sort_by(|a, b| {
             a.to.name
@@ -9555,7 +9555,7 @@ fn call_hierarchy_incoming_calls_impl(
     method_name: &str,
     target_name_span_override: Option<Span>,
 ) -> Vec<CallHierarchyIncomingCall> {
-    let index = crate::workspace_hierarchy::WorkspaceHierarchyIndex::new(db);
+    let index = crate::workspace_hierarchy::WorkspaceHierarchyIndex::get_cached(db);
 
     // Resolve the target method's definition (file + name span).
     let Some(target_parsed) = index.file(file) else {
@@ -9919,7 +9919,7 @@ pub fn prepare_type_hierarchy(
     let text_index = TextIndex::new(text);
     let offset = text_index.position_to_offset(position)?;
 
-    let index = crate::workspace_hierarchy::WorkspaceHierarchyIndex::new(db);
+    let index = crate::workspace_hierarchy::WorkspaceHierarchyIndex::get_cached(db);
 
     // Prefer type declarations at the cursor.
     let mut type_name: Option<String> = None;
@@ -9960,7 +9960,7 @@ pub fn type_hierarchy_supertypes(
     class_name: &str,
 ) -> Vec<TypeHierarchyItem> {
     let _ = file; // Workspace-scoped.
-    let index = crate::workspace_hierarchy::WorkspaceHierarchyIndex::new(db);
+    let index = crate::workspace_hierarchy::WorkspaceHierarchyIndex::get_cached(db);
 
     let mut out = Vec::new();
     for super_name in index.resolve_super_types(class_name) {
@@ -9988,7 +9988,7 @@ pub fn type_hierarchy_subtypes(
     class_name: &str,
 ) -> Vec<TypeHierarchyItem> {
     let _ = file; // Workspace-scoped.
-    let index = crate::workspace_hierarchy::WorkspaceHierarchyIndex::new(db);
+    let index = crate::workspace_hierarchy::WorkspaceHierarchyIndex::get_cached(db);
 
     let mut out = Vec::new();
     for subtype in index.resolve_sub_types(class_name) {
