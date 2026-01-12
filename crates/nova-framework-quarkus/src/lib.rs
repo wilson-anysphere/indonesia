@@ -242,28 +242,12 @@ where
 
 fn is_java_file(db: &dyn Database, file: FileId) -> bool {
     let Some(path) = db.file_path(file) else {
-        // Best-effort fallback for virtual buffers when the DB doesn't expose `file_path`.
-        //
-        // This intentionally uses a lightweight heuristic rather than treating all path-less files
-        // as Java, which helps avoid spurious diagnostics/completions for non-Java editor buffers.
-        let Some(text) = db.file_text(file) else {
-            return false;
-        };
-        return looks_like_java_source(text);
+        return false;
     };
 
     path.extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| ext.eq_ignore_ascii_case("java"))
-}
-
-fn looks_like_java_source(text: &str) -> bool {
-    // Lightweight heuristic used when the database doesn't provide file paths.
-    text.contains("package ")
-        || text.contains("import ")
-        || text.contains("class ")
-        || text.contains("interface ")
-        || text.contains("enum ")
 }
 
 fn collect_project_java_files(
