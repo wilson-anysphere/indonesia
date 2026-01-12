@@ -363,8 +363,8 @@ bash scripts/cargo_agent.sh test --locked -p nova-dap
 #### 3c) DAP end-to-end tests (real JVM; optional)
 
 **What:** A smoke test that attaches to a real JVM via JDWP, sets a breakpoint, and waits for a stop.
-This requires a local JDK (`java` + `javac` on `PATH`). If the tools are missing, the test prints a
-message and returns early so normal CI stays stable.
+This requires a local JDK (`java` + `javac` on `PATH`) and enabling the `real-jvm-tests` feature.
+If the tools are missing, the test prints a message and returns early so normal CI stays stable.
 
 **Where:**
 
@@ -374,7 +374,7 @@ message and returns early so normal CI stays stable.
 **Run locally:**
 
 ```bash
-bash scripts/cargo_agent.sh test --locked -p nova-dap --test tests suite::real_jvm -- --nocapture
+bash scripts/cargo_agent.sh test --locked -p nova-dap --features real-jvm-tests --test tests suite::real_jvm -- --nocapture
 ```
 
 If `java`/`javac` are missing, the test prints a message and returns early.

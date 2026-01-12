@@ -32,7 +32,7 @@ Note: CI uses `cargo nextest run` for the main suite and still runs raw `cargo t
 - Node.js + npm (for the VS Code extension; CI uses Node 20)
 - Java (JDK 17 recommended) — optional, but required for:
   - `javac` differential tests (`.github/workflows/javac.yml`)
-  - DAP real-JVM smoke test (`bash scripts/cargo_agent.sh test --locked -p nova-dap --test tests suite::real_jvm …`)
+  - DAP real-JVM smoke test (`bash scripts/cargo_agent.sh test --locked -p nova-dap --features real-jvm-tests --test tests suite::real_jvm …`)
   - best-effort real-project build validation (`./scripts/javac-validate.sh`)
 
 ## Common workflows
