@@ -53,11 +53,9 @@ use nova_memory::{
     MemoryBudget, MemoryBudgetOverrides, MemoryCategory, MemoryEvent, MemoryManager,
 };
 use nova_refactor::{
-    code_action_for_edit, move_package_workspace_edit, organize_imports, rename as semantic_rename,
-    workspace_edit_to_lsp, workspace_edit_to_lsp_document_changes_with_uri_mapper,
-    FileId as RefactorFileId, JavaSymbolKind, MovePackageParams, OrganizeImportsParams,
-    RefactorDatabase, RenameParams as RefactorRenameParams, SafeDeleteTarget,
-    SemanticRefactorError, TextDatabase,
+    code_action_for_edit, organize_imports, rename as semantic_rename, workspace_edit_to_lsp,
+    FileId as RefactorFileId, JavaSymbolKind, OrganizeImportsParams, RefactorDatabase,
+    RenameParams as RefactorRenameParams, SafeDeleteTarget, SemanticRefactorError,
 };
 use nova_vfs::{ChangeEvent, DocumentError, FileSystem, LocalFs, Vfs, VfsPath};
 use nova_workspace::Workspace;
@@ -4573,51 +4571,6 @@ fn handle_rename(
         return Err((-32602, "no symbol at cursor".to_string()));
     };
 
-    if matches!(
-        snapshot.db().symbol_kind(symbol),
-        Some(JavaSymbolKind::Package)
-    ) {
-        let def = snapshot
-            .db()
-            .symbol_definition(symbol)
-            .ok_or_else(|| (-32602, "no symbol at cursor".to_string()))?;
-
-        let files = snapshot.files_for_move_refactors();
-        let edit = move_package_workspace_edit(
-            &files,
-            MovePackageParams {
-                old_package: def.name,
-                new_package: params.new_name,
-            },
-        )
-        .map_err(|e| (-32602, e.to_string()))?;
-
-        let project_root = snapshot.project_root().to_path_buf();
-        let db = TextDatabase::new(files.into_iter().map(|(path, text)| {
-            (
-                RefactorFileId::new(path.to_string_lossy().into_owned()),
-                text,
-            )
-        }));
-
-        return workspace_edit_to_lsp_document_changes_with_uri_mapper(&db, &edit, |file| {
-            let path = PathBuf::from(&file.0);
-            let abs = if path.is_absolute() {
-                path
-            } else {
-                project_root.join(path)
-            };
-
-            // `workspace_edit_to_lsp_document_changes_with_uri_mapper` requires a fallible mapper;
-            // for package moves we can reliably map filesystem paths to `file://` URIs.
-            let uri = VfsPath::from(abs)
-                .to_uri()
-                .and_then(|uri| uri.parse::<LspUri>().ok())
-                .unwrap_or_else(|| "file:///".parse().expect("valid fallback uri"));
-            Ok(uri)
-        })
-        .map_err(|e| (-32603, e.to_string()));
-    }
     let edit = semantic_rename(
         snapshot.db(),
         RefactorRenameParams {
@@ -4630,6 +4583,8 @@ fn handle_rename(
             (-32602, format!("rename conflicts: {conflicts:?}"))
         }
         err @ SemanticRefactorError::RenameNotSupported { .. } => (-32602, err.to_string()),
+        err @ SemanticRefactorError::MoveJava(_) => (-32602, err.to_string()),
+        err @ SemanticRefactorError::InvalidFileId { .. } => (-32602, err.to_string()),
         other => (-32603, other.to_string()),
     })?;
 
