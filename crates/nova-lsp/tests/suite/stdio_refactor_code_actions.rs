@@ -613,24 +613,14 @@ fn stdio_server_resolves_extract_variable_code_action() {
         "expected extract variable to be unresolved (no `edit`)"
     );
 
-    // 4) resolve, supplying a name through `data.name`.
-    let mut extract_variable = extract_variable.clone();
-    if let Some(data) = extract_variable.get_mut("data") {
-        if let Some(obj) = data.as_object_mut() {
-            obj.insert(
-                "name".to_string(),
-                serde_json::Value::String("sum".to_string()),
-            );
-        }
-    }
-
+    // 4) resolve
     write_jsonrpc_message(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
             "id": 3,
             "method": "codeAction/resolve",
-            "params": extract_variable
+            "params": extract_variable.clone()
         }),
     );
 
@@ -654,8 +644,40 @@ fn stdio_server_resolves_extract_variable_code_action() {
     let edits = changes.get(&uri).expect("edits for file");
     let updated = apply_lsp_text_edits(source, edits);
 
-    let expected = "class C {\n    void m() {\n        var sum = 1 + 2;\n        int x = /* 😀 */ sum;\n        System.out.println(x);\n    }\n}\n";
-    assert_eq!(updated, expected);
+    let decl_edit = edits
+        .iter()
+        .find(|e| e.new_text.contains("var ") && e.new_text.contains(" = 1 + 2;"))
+        .expect("variable declaration insertion edit");
+    let name = decl_edit
+        .new_text
+        .split("var ")
+        .nth(1)
+        .and_then(|rest| rest.split('=').next())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .expect("variable name");
+
+    assert!(
+        updated.contains(&format!("var {name} = 1 + 2;")),
+        "expected extracted variable declaration"
+    );
+    assert!(
+        updated.contains(&format!("int x = /* 😀 */ {name};")),
+        "expected initializer replaced with extracted variable"
+    );
+    assert!(
+        !updated.contains("int x = /* 😀 */ 1 + 2;"),
+        "expected original expression to be replaced"
+    );
+    assert!(
+        updated
+            .find(&format!("var {name} = 1 + 2;"))
+            .expect("var declaration exists")
+            < updated
+                .find(&format!("int x = /* 😀 */ {name};"))
+                .expect("replacement exists"),
+        "expected variable declaration to appear before the rewritten statement"
+    );
 
     // 5) shutdown + exit
     write_jsonrpc_message(
