@@ -437,6 +437,11 @@ fn parse_decompiled_uri(uri: &str) -> Option<VfsPath> {
         return None;
     }
 
+    // Align with `nova_decompile::parse_decompiled_uri`: reject names that normalize to empty.
+    if normalize_decompiled_binary_name(binary_name.to_string()).is_empty() {
+        return None;
+    }
+
     // Reject any remaining traversal segments (e.g. `hash/../X.java`).
     if rest.split('/').any(|segment| segment == "..") {
         return None;
@@ -910,6 +915,12 @@ mod tests {
     fn decompiled_uri_rejects_dotdot_segments() {
         let uri = format!("nova:///decompiled/{HASH_64}/../X.java");
         assert_eq!(VfsPath::uri(uri.as_str()), VfsPath::Uri(uri));
+    }
+
+    #[test]
+    fn decompiled_uri_rejects_binary_name_that_normalizes_to_empty() {
+        let uri = format!("nova:///decompiled/{HASH_64}/..java");
+        assert_eq!(VfsPath::uri(uri.clone()), VfsPath::Uri(uri));
     }
 
     #[test]
