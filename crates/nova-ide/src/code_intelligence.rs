@@ -1300,6 +1300,9 @@ pub fn core_file_diagnostics(
         ));
     }
 
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
     diagnostics
 }
 
@@ -3185,6 +3188,9 @@ pub(crate) fn core_completions(
     if let Some(kind) = java_comment_kind_at_offset(text, offset) {
         if kind == JavaCommentKind::Doc {
             if let Some(items) = javadoc_tag_snippet_completions(text, &text_index, offset) {
+                if cancel.is_cancelled() {
+                    return Vec::new();
+                }
                 return items;
             }
         }
@@ -3194,11 +3200,17 @@ pub(crate) fn core_completions(
         return Vec::new();
     }
 
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
     let (prefix_start, prefix) = identifier_prefix(text, offset);
 
     // Prefer `import static Foo.<member>` completions over generic import path completions so we
     // surface static members (e.g. `max`) instead of only offering `*`.
     if let Some(items) = static_import_completions(text, offset, prefix_start, &prefix) {
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
         return decorate_completions(&text_index, prefix_start, offset, items);
     }
 
@@ -3206,38 +3218,61 @@ pub(crate) fn core_completions(
     // because the syntax overlaps (`import java.util.<cursor>` would otherwise be treated as a dot
     // completion on the identifier `java`).
     if let Some(ctx) = import_context(text, offset) {
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
         let items = import_completions(db, &text_index, offset, &ctx);
         if !items.is_empty() {
+            if cancel.is_cancelled() {
+                return Vec::new();
+            }
             return decorate_completions(&text_index, ctx.replace_start, offset, items);
         }
     }
 
     if let Some(ctx) = package_decl_completion_context(text, offset) {
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
         let items = package_decl_completions(db, file, &ctx);
         if !items.is_empty() {
+            if cancel.is_cancelled() {
+                return Vec::new();
+            }
             return decorate_completions(&text_index, ctx.segment_start, offset, items);
         }
     }
 
     // Java annotation element (attribute) completions inside `@Anno(...)`.
     if let Some(items) = annotation_attribute_completions(db, text, offset, prefix_start, &prefix) {
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
         return decorate_completions(&text_index, prefix_start, offset, items);
     }
     if is_new_expression_type_completion_context(text, prefix_start) {
-        return decorate_completions(
-            &text_index,
-            prefix_start,
-            offset,
-            new_expression_type_completions(db, file, text, &text_index, &prefix),
-        );
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
+        let items = new_expression_type_completions(db, file, text, &text_index, &prefix);
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
+        return decorate_completions(&text_index, prefix_start, offset, items);
     }
 
     if let Some(items) = import_path_completions(db, text, offset, &prefix) {
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
         return decorate_completions(&text_index, prefix_start, offset, items);
     }
 
     let before = skip_whitespace_backwards(text, prefix_start);
     if before > 0 && text.as_bytes()[before - 1] == b'@' {
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
         return decorate_completions(
             &text_index,
             prefix_start,
@@ -3247,19 +3282,31 @@ pub(crate) fn core_completions(
     }
 
     if let Some(ctx) = dot_completion_context(text, prefix_start) {
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
         let receiver = ctx
             .receiver
             .as_ref()
             .map(|r| r.expr.clone())
             .unwrap_or_else(|| receiver_before_dot(text, ctx.dot_offset));
         let mut items = if receiver.is_empty() {
+            if cancel.is_cancelled() {
+                return Vec::new();
+            }
             infer_receiver_type_before_dot(db, file, ctx.dot_offset)
                 .map(|ty| member_completions_for_receiver_type(db, file, &ty, &prefix))
                 .unwrap_or_default()
         } else {
+            if cancel.is_cancelled() {
+                return Vec::new();
+            }
             member_completions(db, file, &receiver, &prefix, ctx.dot_offset)
         };
         if let Some(receiver) = ctx.receiver.as_ref() {
+            if cancel.is_cancelled() {
+                return Vec::new();
+            }
             items.extend(postfix_completions(
                 text,
                 &text_index,
@@ -3275,17 +3322,29 @@ pub(crate) fn core_completions(
         // Best-effort error recovery: if we can't produce any member/postfix completions, fall back
         // to general completion rather than returning an empty list.
         if !items.is_empty() {
+            if cancel.is_cancelled() {
+                return Vec::new();
+            }
             return decorate_completions(&text_index, prefix_start, offset, items);
         }
     }
 
     if type_position_completion_applicable(text, prefix_start, &prefix) {
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
         let items = type_name_completions(db, file, text, &text_index, &prefix);
         if !items.is_empty() {
+            if cancel.is_cancelled() {
+                return Vec::new();
+            }
             return decorate_completions(&text_index, prefix_start, offset, items);
         }
     }
 
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
     decorate_completions(
         &text_index,
         prefix_start,
