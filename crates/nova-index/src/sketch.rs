@@ -2099,7 +2099,7 @@ pub fn normalize_type_signature(text: &str) -> String {
                 continue;
             };
             let next = chars.peek().copied();
-            if no_space_around(prev_ch) || next.map_or(false, no_space_around) {
+            if no_space_around(prev_ch) || next.is_some_and(no_space_around) {
                 continue;
             }
             // Only emit a single space when it isn't adjacent to punctuation we normalize.
