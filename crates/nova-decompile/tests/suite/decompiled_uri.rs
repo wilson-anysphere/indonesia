@@ -157,6 +157,12 @@ fn legacy_uri_helpers_reject_traversal() {
 }
 
 #[test]
+fn legacy_uri_helpers_parse_single_slash_form() {
+    let uri = "nova-decompile:/com/example/Foo.class";
+    assert_eq!(class_internal_name_from_uri(uri).as_deref(), Some(FOO_INTERNAL_NAME));
+}
+
+#[test]
 fn canonicalize_decompiled_uri_upgrades_legacy_scheme() {
     let legacy = uri_for_class_internal_name(FOO_INTERNAL_NAME);
     let canonical = canonicalize_decompiled_uri(&legacy, FOO_CLASS).expect("canonicalize");

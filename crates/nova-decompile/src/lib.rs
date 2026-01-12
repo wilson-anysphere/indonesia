@@ -645,8 +645,23 @@ pub fn class_internal_name_from_uri(uri: &str) -> Option<String> {
     if uri.contains('?') || uri.contains('#') {
         return None;
     }
-    let prefix = format!("{DECOMPILE_URI_SCHEME}:///");
-    let path = uri.strip_prefix(&prefix)?;
+    let rest = uri
+        .strip_prefix(DECOMPILE_URI_SCHEME)?
+        .strip_prefix(':')?;
+
+    // Extract the path component, rejecting URIs with a non-empty authority.
+    // Mirror `nova-vfs` legacy decompile URI parsing so downstream sees the same internal name.
+    let path = if let Some(after_slashes) = rest.strip_prefix("//") {
+        if !after_slashes.starts_with('/') {
+            return None;
+        }
+        after_slashes
+    } else if rest.starts_with('/') {
+        rest
+    } else {
+        return None;
+    };
+
     let path = path.trim_matches(|c| c == '/' || c == '\\');
     if path.is_empty() {
         return None;

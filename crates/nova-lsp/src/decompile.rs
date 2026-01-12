@@ -14,8 +14,6 @@ use nova_decompile::{
 };
 use std::io;
 
-const DECOMPILE_URI_PREFIX: &str = "nova-decompile:///";
-
 /// A source of `.class` bytes for a given internal path (e.g. `com/example/Foo.class`).
 pub trait ClassfileProvider {
     fn read_classfile(&self, internal_path: &str) -> io::Result<Option<Vec<u8>>>;
@@ -25,7 +23,7 @@ pub trait ClassfileProvider {
 /// (`nova-decompile:///...`).
 pub fn is_decompile_uri(uri: &str) -> bool {
     debug_assert_eq!(DECOMPILE_URI_SCHEME, "nova-decompile");
-    uri.starts_with(DECOMPILE_URI_PREFIX)
+    class_internal_name_from_uri(uri).is_some()
 }
 
 /// Returns whether the URI refers to a canonical ADR0006 decompiled virtual
