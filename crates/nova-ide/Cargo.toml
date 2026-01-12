@@ -61,6 +61,10 @@ tempfile = "3"
 name = "tests"
 path = "tests/tests.rs"
 
+[[test]]
+name = "file_navigation_cache"
+path = "tests/file_navigation_cache.rs"
+
 [[bench]]
 name = "completion"
 harness = false

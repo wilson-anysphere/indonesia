@@ -1,8 +1,11 @@
 // Integration test harness for `nova-ide`.
 //
-// Keep all integration tests as submodules of this harness (e.g. under `tests/suite/`) rather
-// than adding new top-level `tests/*.rs` files, which would compile as additional test binaries
-// and significantly increase build/link time (see AGENTS.md).
+// Keep integration tests as submodules of this harness (e.g. under `tests/suite/`) rather than
+// adding new top-level `tests/*.rs` files, which would compile as additional test binaries and
+// significantly increase build/link time (see AGENTS.md).
+//
+// Exception: `tests/file_navigation_cache.rs` is intentionally a standalone test binary so it can
+// run in a fresh process (it validates global-cache behavior).
 mod framework_harness;
 mod suite;
 mod text_fixture;
@@ -30,8 +33,8 @@ fn tests_root_contains_only_tests_rs_harness() {
 
     assert_eq!(
         root_rs_files,
-        vec!["tests.rs".to_string()],
-        "unexpected root integration test files in {tests_dir:?}; keep a single tests.rs harness and put modules under tests/suite/"
+        vec!["file_navigation_cache.rs".to_string(), "tests.rs".to_string()],
+        "unexpected root integration test files in {tests_dir:?}; keep `tests.rs` (suite harness) and `file_navigation_cache.rs` (isolated cache test) and put other tests under tests/suite/"
     );
 }
 
