@@ -3214,7 +3214,11 @@ fn is_nova_config_file(path: &Path) -> bool {
     if matches!(name, "nova.toml" | ".nova.toml" | "nova.config.toml") {
         return true;
     }
-    name == "config.toml" && path.ends_with(Path::new(".nova/config.toml"))
+    name == "config.toml"
+        && path
+            .strip_prefix(".nova")
+            .ok()
+            .is_some_and(|rest| rest == Path::new("config.toml"))
 }
 
 fn is_build_tool_input_file(path: &Path) -> bool {

@@ -222,7 +222,15 @@ fn is_in_noisy_dir(path: &Path) -> bool {
 pub fn is_build_file(path: &Path) -> bool {
     // Some Nova build integrations write snapshot state under `.nova/queries`. These affect
     // generated root discovery and/or classpath resolution, so treat them like build files.
-    if path.ends_with(nova_build_model::GRADLE_SNAPSHOT_REL_PATH) {
+    //
+    // These files are only meaningful at the workspace root (or a watched module root), so require
+    // that `.nova/` is the first path component.
+    if path
+        .strip_prefix(".nova")
+        .ok()
+        .and_then(|rest| rest.strip_prefix("queries").ok())
+        .is_some_and(|rest| rest == Path::new("gradle.json"))
+    {
         return true;
     }
 
@@ -234,11 +242,11 @@ pub fn is_build_file(path: &Path) -> bool {
     // `.nova/apt-cache/generated-roots.json`. Updates to this file should
     // trigger a project reload so newly discovered generated roots are watched.
     if name == "generated-roots.json"
-        && path.ends_with(
-            &Path::new(".nova")
-                .join("apt-cache")
-                .join("generated-roots.json"),
-        )
+        && path
+            .strip_prefix(".nova")
+            .ok()
+            .and_then(|rest| rest.strip_prefix("apt-cache").ok())
+            .is_some_and(|rest| rest == Path::new("generated-roots.json"))
     {
         return true;
     }
@@ -246,7 +254,12 @@ pub fn is_build_file(path: &Path) -> bool {
     // Nova internal config is stored under `.nova/config.toml`. This is primarily a legacy
     // fallback for `nova_config::discover_config_path`, but still needs to be watched so changes
     // take effect without restarting.
-    if name == "config.toml" && path.ends_with(&Path::new(".nova").join("config.toml")) {
+    if name == "config.toml"
+        && path
+            .strip_prefix(".nova")
+            .ok()
+            .is_some_and(|rest| rest == Path::new("config.toml"))
+    {
         return true;
     }
 
@@ -530,8 +543,9 @@ mod tests {
             .join("apt-cache")
             .join("generated-roots.json");
 
+        let rel = path.strip_prefix(&root).unwrap_or(&path);
         assert!(
-            is_build_file(&path),
+            is_build_file(rel),
             "expected {} to be treated as a build file",
             path.display()
         );
@@ -615,8 +629,7 @@ mod tests {
 
     #[test]
     fn gradle_snapshot_file_is_a_build_file() {
-        let path = Path::new("/x").join(nova_build_model::GRADLE_SNAPSHOT_REL_PATH);
-        assert!(is_build_file(&path));
+        assert!(is_build_file(Path::new(nova_build_model::GRADLE_SNAPSHOT_REL_PATH)));
     }
 
     #[test]

@@ -271,11 +271,10 @@ fn is_apt_generated_roots_snapshot(path: &Path) -> bool {
     // source roots from annotation processing. This file is read on project load, but may change
     // independently of build files or `nova.toml`, so treat it as a configuration-triggering file
     // for reloads.
-    path.ends_with(
-        Path::new(".nova")
-            .join("apt-cache")
-            .join("generated-roots.json"),
-    )
+    path.strip_prefix(".nova")
+        .ok()
+        .and_then(|rest| rest.strip_prefix("apt-cache").ok())
+        .is_some_and(|rest| rest == Path::new("generated-roots.json"))
 }
 
 fn path_relative_to_workspace_or_modules<'a>(
@@ -664,7 +663,11 @@ pub fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
     // Treat it as a build file so project reloads are triggered immediately when the snapshot is
     // updated.
     if matches!(build_system, BuildSystem::Gradle)
-        && path.ends_with(nova_build_model::GRADLE_SNAPSHOT_REL_PATH)
+        && path
+            .strip_prefix(".nova")
+            .ok()
+            .and_then(|rest| rest.strip_prefix("queries").ok())
+            .is_some_and(|rest| rest == Path::new("gradle.json"))
     {
         return true;
     }
@@ -675,15 +678,20 @@ pub fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
 
     // Nova internal config/snapshots live under `.nova/`, which is otherwise treated as a noisy
     // directory. Keep these files as reload triggers.
-    if name == "config.toml" && path.ends_with(Path::new(".nova").join("config.toml")) {
+    if name == "config.toml"
+        && path
+            .strip_prefix(".nova")
+            .ok()
+            .is_some_and(|rest| rest == Path::new("config.toml"))
+    {
         return true;
     }
     if name == "generated-roots.json"
-        && path.ends_with(
-            Path::new(".nova")
-                .join("apt-cache")
-                .join("generated-roots.json"),
-        )
+        && path
+            .strip_prefix(".nova")
+            .ok()
+            .and_then(|rest| rest.strip_prefix("apt-cache").ok())
+            .is_some_and(|rest| rest == Path::new("generated-roots.json"))
     {
         return true;
     }
