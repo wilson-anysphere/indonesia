@@ -148,9 +148,16 @@ impl ModuleGraph {
         out.insert(ModuleName::new(JAVA_BASE));
 
         // The unnamed module (classpath) and automatic modules read every *named*
-        // module. We also treat automatic modules as a best-effort stand-in for
+        // module.
+        //
+        // We also treat automatic modules as a best-effort stand-in for
         // `requires transitive *`, so any module that can read an automatic
         // module ends up reading every named module as well.
+        //
+        // Note: unlike automatic modules, readability does *not* propagate
+        // through the unnamed module. This matches `--add-reads <module>=ALL-UNNAMED`
+        // semantics used by build tools: named modules may read the classpath, but
+        // do not automatically gain readability to all named modules.
         if from.is_unnamed() {
             self.add_all_named_modules(&mut out);
             return out;
@@ -170,7 +177,7 @@ impl ModuleGraph {
                 continue;
             };
 
-            if matches!(info.kind, ModuleKind::Unnamed | ModuleKind::Automatic) {
+            if matches!(info.kind, ModuleKind::Automatic) {
                 self.add_all_named_modules(&mut out);
                 break;
             }

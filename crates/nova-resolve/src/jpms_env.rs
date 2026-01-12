@@ -167,7 +167,31 @@ pub fn build_jpms_compilation_environment_with_options(
     cache_dir: Option<&Path>,
     options: IndexOptions,
 ) -> Result<JpmsCompilationEnvironment> {
-    let env = build_jpms_environment(jdk, workspace, module_path_entries)?;
+    let mut env = build_jpms_environment(jdk, workspace, module_path_entries)?;
+
+    // Many build tools keep non-modular JARs on the classpath even for JPMS
+    // compilation (e.g. Gradle `modularity.inferModulePath`). In practice they
+    // also apply `--add-reads <module>=ALL-UNNAMED` so that workspace modules can
+    // still access types from the classpath's unnamed module.
+    if let Some(workspace) = workspace {
+        if !classpath_entries.is_empty() {
+            for root in &workspace.jpms_modules {
+                let Some(mut info) = env.graph.get(&root.name).cloned() else {
+                    continue;
+                };
+
+                if !info.requires.iter().any(|req| req.module.is_unnamed()) {
+                    info.requires.push(nova_modules::Requires {
+                        module: ModuleName::unnamed(),
+                        is_transitive: false,
+                        is_static: false,
+                    });
+                    env.graph.insert(info);
+                }
+            }
+        }
+    }
+
     let classpath = nova_classpath::ModuleAwareClasspathIndex::build_mixed_with_options(
         module_path_entries,
         classpath_entries,
@@ -442,6 +466,132 @@ mod tests {
         assert_eq!(
             env.classpath.module_kind_of("com.example.dep.Foo"),
             ModuleNameKind::None
+        );
+    }
+
+    #[test]
+    fn jpms_modules_can_read_all_unnamed_when_classpath_present() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        let mod_a = tmp.path().join("mod-a");
+        std::fs::create_dir_all(&mod_a).unwrap();
+        let src_a = "module workspace.a { }";
+        std::fs::write(mod_a.join("module-info.java"), src_a).unwrap();
+        let info_a = lower_module_info_source_strict(src_a).unwrap();
+
+        let ws = ProjectConfig {
+            workspace_root: root.clone(),
+            build_system: BuildSystem::Simple,
+            java: JavaConfig::default(),
+            modules: vec![Module {
+                name: "dummy".to_string(),
+                root,
+                annotation_processing: Default::default(),
+            }],
+            jpms_modules: vec![JpmsModuleRoot {
+                name: ModuleName::new("workspace.a"),
+                root: mod_a.clone(),
+                module_info: mod_a.join("module-info.java"),
+                info: info_a,
+            }],
+            jpms_workspace: None,
+            source_roots: Vec::new(),
+            module_path: Vec::new(),
+            classpath: Vec::new(),
+            output_dirs: Vec::new(),
+            dependencies: Vec::new(),
+            workspace_model: None,
+        };
+
+        let module_path: [ClasspathEntry; 0] = [];
+        let classpath = [ClasspathEntry::Jar(test_dep_jar())];
+
+        let jdk = JdkIndex::new();
+        let env =
+            build_jpms_compilation_environment(&jdk, Some(&ws), &module_path, &classpath, None)
+                .unwrap();
+
+        let from_a = ModuleName::new("workspace.a");
+        assert!(env.env.graph.can_read(&from_a, &env.env.unnamed));
+
+        let ty = QualifiedName::from_dotted("com.example.dep.Foo");
+        let resolver_a = JpmsResolver::new(&jdk, &env.env.graph, &env.classpath, from_a);
+        assert_eq!(
+            resolver_a.resolve_qualified_name(&ty),
+            Some(TypeName::from("com.example.dep.Foo"))
+        );
+    }
+
+    #[test]
+    fn jpms_resolver_still_enforces_requires_for_module_path_types_with_classpath_present() {
+        let tmp = TempDir::new().unwrap();
+
+        let mod_a = tmp.path().join("mod-a");
+        let mod_b = tmp.path().join("mod-b");
+        std::fs::create_dir_all(&mod_a).unwrap();
+        std::fs::create_dir_all(&mod_b).unwrap();
+
+        let src_a = "module workspace.a { }";
+        let src_b = "module workspace.b { requires dep; }";
+
+        std::fs::write(mod_a.join("module-info.java"), src_a).unwrap();
+        std::fs::write(mod_b.join("module-info.java"), src_b).unwrap();
+
+        let info_a = lower_module_info_source_strict(src_a).unwrap();
+        let info_b = lower_module_info_source_strict(src_b).unwrap();
+
+        let ws = ProjectConfig {
+            workspace_root: tmp.path().to_path_buf(),
+            build_system: BuildSystem::Simple,
+            java: JavaConfig::default(),
+            modules: vec![Module {
+                name: "dummy".to_string(),
+                root: tmp.path().to_path_buf(),
+                annotation_processing: Default::default(),
+            }],
+            jpms_modules: vec![
+                JpmsModuleRoot {
+                    name: ModuleName::new("workspace.a"),
+                    root: mod_a.clone(),
+                    module_info: mod_a.join("module-info.java"),
+                    info: info_a,
+                },
+                JpmsModuleRoot {
+                    name: ModuleName::new("workspace.b"),
+                    root: mod_b.clone(),
+                    module_info: mod_b.join("module-info.java"),
+                    info: info_b,
+                },
+            ],
+            jpms_workspace: None,
+            source_roots: Vec::new(),
+            module_path: Vec::new(),
+            classpath: Vec::new(),
+            output_dirs: Vec::new(),
+            dependencies: Vec::new(),
+            workspace_model: None,
+        };
+
+        let module_path = [ClasspathEntry::Jar(test_dep_jar())];
+        let classpath = [ClasspathEntry::Jar(test_named_module_jar())];
+
+        let jdk = JdkIndex::new();
+        let env =
+            build_jpms_compilation_environment(&jdk, Some(&ws), &module_path, &classpath, None)
+                .unwrap();
+
+        let ty = QualifiedName::from_dotted("com.example.dep.Foo");
+
+        let from_a = ModuleName::new("workspace.a");
+        let resolver_a = JpmsResolver::new(&jdk, &env.env.graph, &env.classpath, from_a);
+        assert_eq!(resolver_a.resolve_qualified_name(&ty), None);
+
+        let from_b = ModuleName::new("workspace.b");
+        let resolver_b = JpmsResolver::new(&jdk, &env.env.graph, &env.classpath, from_b);
+        assert_eq!(
+            resolver_b.resolve_qualified_name(&ty),
+            Some(TypeName::from("com.example.dep.Foo"))
         );
     }
 
