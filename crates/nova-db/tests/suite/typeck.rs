@@ -1293,6 +1293,61 @@ class C {
 }
 
 #[test]
+fn this_types_as_enclosing_class() {
+    let src = r#"
+class C {
+    int x;
+    void m() {
+        int y = this.x;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-field"),
+        "expected `this` to type as the enclosing class and resolve fields; got {diags:?}"
+    );
+}
+
+#[test]
+fn this_in_static_method_is_error() {
+    let src = r#"
+class C {
+    static void m() {
+        this.toString();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "this-in-static-context"),
+        "expected `this-in-static-context` diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn super_in_static_method_is_error() {
+    let src = r#"
+class C {
+    static void m() {
+        super.toString();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "super-in-static-context"),
+        "expected `super-in-static-context` diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn cross_file_type_reference_resolves_in_same_package() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);

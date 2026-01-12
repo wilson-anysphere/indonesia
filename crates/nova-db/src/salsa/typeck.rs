@@ -2891,26 +2891,61 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 ty: Type::Null,
                 is_type_ref: false,
             },
-            HirExpr::This { .. } => ExprInfo {
-                ty: self.enclosing_class_type(loader).unwrap_or(Type::Unknown),
-                is_type_ref: false,
-            },
-            HirExpr::Super { .. } => {
-                let ty = match self.enclosing_class_type(loader) {
-                    Some(Type::Class(class_ty)) => {
-                        if let Some(def) = loader.store.class(class_ty.def) {
-                            def.super_class.clone().unwrap_or_else(|| {
-                                Type::class(loader.store.well_known().object, vec![])
-                            })
-                        } else {
-                            Type::Unknown
-                        }
+            HirExpr::This { range } => {
+                if self.is_static_context() {
+                    self.diagnostics.push(Diagnostic::error(
+                        "this-in-static-context",
+                        "cannot use `this` in a static context",
+                        Some(*range),
+                    ));
+                    ExprInfo {
+                        ty: Type::Error,
+                        is_type_ref: false,
                     }
-                    _ => Type::Unknown,
-                };
-                ExprInfo {
-                    ty,
-                    is_type_ref: false,
+                } else {
+                    ExprInfo {
+                        ty: self.enclosing_class_type(loader).unwrap_or(Type::Unknown),
+                        is_type_ref: false,
+                    }
+                }
+            }
+            HirExpr::Super { range } => {
+                if self.is_static_context() {
+                    self.diagnostics.push(Diagnostic::error(
+                        "super-in-static-context",
+                        "cannot use `super` in a static context",
+                        Some(*range),
+                    ));
+                    ExprInfo {
+                        ty: Type::Error,
+                        is_type_ref: false,
+                    }
+                } else {
+                    let object_ty = loader
+                        .store
+                        .lookup_class("java.lang.Object")
+                        .map(|id| Type::class(id, vec![]))
+                        .unwrap_or(Type::Unknown);
+
+                    let ty = match self.enclosing_class_type(loader) {
+                        Some(enclosing) => {
+                            self.ensure_type_loaded(loader, &enclosing);
+                            match enclosing {
+                                Type::Class(class_ty) => loader
+                                    .store
+                                    .class(class_ty.def)
+                                    .and_then(|def| def.super_class.clone())
+                                    .unwrap_or(object_ty),
+                                _ => Type::Unknown,
+                            }
+                        }
+                        None => Type::Unknown,
+                    };
+
+                    ExprInfo {
+                        ty,
+                        is_type_ref: false,
+                    }
                 }
             }
             HirExpr::Name { name, range } => self.infer_name(loader, expr, name.as_str(), *range),
@@ -3827,6 +3862,13 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         let recv_info = self.infer_expr(loader, receiver);
         let recv_ty = recv_info.ty.clone();
 
+        if recv_ty == Type::Error {
+            return ExprInfo {
+                ty: Type::Error,
+                is_type_ref: false,
+            };
+        }
+
         // Best-effort array `length` support.
         if !recv_info.is_type_ref && matches!(recv_ty, Type::Array(_)) && name == "length" {
             return ExprInfo {
@@ -3976,6 +4018,12 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         match &self.body.exprs[callee] {
             HirExpr::FieldAccess { receiver, name, .. } => {
                 let recv_info = self.infer_expr(loader, *receiver);
+                if recv_info.ty == Type::Error {
+                    return ExprInfo {
+                        ty: Type::Error,
+                        is_type_ref: false,
+                    };
+                }
                 let call_kind = if recv_info.is_type_ref {
                     CallKind::Static
                 } else {
