@@ -1573,6 +1573,24 @@ export async function activate(context: vscode.ExtensionContext) {
   const attachObservability = (languageClient: LanguageClient, startPromise: Promise<void> | undefined) => {
     detachObservability();
 
+    // Keep capability-gated state in sync even if the underlying language client restarts
+    // automatically (default vscode-languageclient behaviour).
+    observabilityDisposables.push(
+      languageClient.onDidChangeState((event) => {
+        // If the language server restarted, don't update global state from a stale client instance.
+        if (client !== languageClient) {
+          return;
+        }
+        if (event.newState === State.Starting || event.newState === State.Stopped) {
+          resetNovaExperimentalCapabilities();
+          return;
+        }
+        if (event.newState === State.Running) {
+          setNovaExperimentalCapabilities(languageClient.initializeResult);
+        }
+      }),
+    );
+
     observabilityDisposables.push(
       languageClient.onNotification('nova/safeModeChanged', (payload: unknown) => {
         const enabled = parseSafeModeEnabled(payload);
