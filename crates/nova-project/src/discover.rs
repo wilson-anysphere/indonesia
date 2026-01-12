@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use nova_config::NovaConfig;
 
-use crate::{bazel, gradle, maven, simple, BuildSystem, ProjectConfig, WorkspaceProjectModel};
+use crate::{bazel, gradle, maven, simple, BuildSystem, Module, ProjectConfig, WorkspaceProjectModel};
 
 #[derive(Debug, Clone, Default)]
 pub struct LoadOptions {
@@ -223,9 +223,12 @@ pub fn reload_project(
             // signal to reload the full project configuration.
             //
             // `is_build_file` contains ignore heuristics for common output directories (e.g.
-            // `build/`, `.gradle/`). Use paths relative to the workspace root so absolute parent
-            // directories (like `/home/user/build/...`) don't spuriously trip those heuristics.
-            let rel = path.strip_prefix(workspace_root).unwrap_or(path.as_path());
+            // `build/`, `.gradle/`). Use paths relative to the relevant workspace/module root so
+            // absolute parent directories (like `/home/user/build/...`) don't spuriously trip
+            // those heuristics. This is especially important for:
+            // - workspaces nested under `build/` (common in tmp dirs)
+            // - Gradle composite builds where included builds live outside the main workspace root
+            let rel = path_relative_to_workspace_or_modules(workspace_root, &config.modules, path);
             is_build_file(BuildSystem::Maven, rel)
                 || is_build_file(BuildSystem::Gradle, rel)
                 || is_build_file(BuildSystem::Bazel, rel)
@@ -261,6 +264,30 @@ fn is_apt_generated_roots_snapshot(path: &Path) -> bool {
             .join("apt-cache")
             .join("generated-roots.json"),
     )
+}
+
+fn path_relative_to_workspace_or_modules<'a>(
+    workspace_root: &Path,
+    modules: &[Module],
+    path: &'a Path,
+) -> &'a Path {
+    // Prefer the most specific matching root so relative paths remain stable even when:
+    // - the workspace root contains an ignored directory name (e.g. `/tmp/build/ws`)
+    // - a Gradle composite build includes modules outside the main workspace root
+    let mut best: Option<&'a Path> = None;
+    let mut best_root_len: usize = 0;
+
+    for root in std::iter::once(workspace_root).chain(modules.iter().map(|m| m.root.as_path())) {
+        if let Ok(stripped) = path.strip_prefix(root) {
+            let len = root.components().count();
+            if len > best_root_len {
+                best_root_len = len;
+                best = Some(stripped);
+            }
+        }
+    }
+
+    best.unwrap_or(path)
 }
 
 fn load_project_from_workspace_root(
@@ -1020,6 +1047,82 @@ mod tests {
                 .iter()
                 .any(|root| root.path == snapshot_src),
             "expected Gradle snapshot to be ignored after lockfile change invalidated fingerprint"
+        );
+    }
+
+    #[test]
+    fn reload_project_reloads_when_included_build_gradle_lockfile_changes_even_when_included_root_contains_build_dir(
+    ) {
+        let tmp = tempdir().expect("tempdir");
+        let workspace_root = tmp.path().join("workspace");
+        let included_root = tmp.path().join("build").join("included");
+        std::fs::create_dir_all(&workspace_root).expect("mkdir workspace");
+        std::fs::create_dir_all(&included_root).expect("mkdir included build");
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching project loading behavior.
+        let workspace_root = workspace_root
+            .canonicalize()
+            .expect("canonicalize workspace root");
+        let included_root = included_root.canonicalize().expect("canonicalize included root");
+
+        // Composite build that includes a sibling build under a `build/` directory.
+        std::fs::write(
+            workspace_root.join("settings.gradle"),
+            "includeBuild(\"../build/included\")\n",
+        )
+        .expect("write settings.gradle");
+        std::fs::write(included_root.join("build.gradle"), "").expect("write included build.gradle");
+
+        // Ensure the included build is materialized as a module so its root can be used for
+        // relative-path build file detection.
+        let included_src = included_root.join("src/main/java");
+        std::fs::create_dir_all(&included_src).expect("mkdir included src");
+        std::fs::write(included_src.join("Inc.java"), "class Inc {}".as_bytes())
+            .expect("write included src file");
+
+        let lockfile_path = included_root.join("gradle.lockfile");
+        std::fs::write(&lockfile_path, "locked=1\n").expect("write included gradle.lockfile");
+
+        let gradle_home = tempdir().expect("gradle home");
+        let options = LoadOptions {
+            gradle_user_home: Some(gradle_home.path().to_path_buf()),
+            ..LoadOptions::default()
+        };
+        let cfg = load_project_with_options(&workspace_root, &options).expect("load project");
+        assert_eq!(cfg.build_system, BuildSystem::Gradle);
+        assert!(
+            cfg.modules.iter().any(|m| m.root == included_root),
+            "expected included build root to be discovered as a module"
+        );
+
+        let workspace_main_src = cfg.workspace_root.join("src/main/java");
+        assert!(
+            !cfg.source_roots
+                .iter()
+                .any(|root| root.path == workspace_main_src),
+            "expected root src/main/java to be absent before it exists on disk"
+        );
+
+        // Create a new conventional source root that should only be picked up if `reload_project`
+        // decides to rescan the workspace.
+        std::fs::create_dir_all(&workspace_main_src).expect("mkdir root src/main/java");
+        std::fs::write(
+            workspace_main_src.join("Main.java"),
+            "class Main {}".as_bytes(),
+        )
+        .expect("write Main.java");
+
+        // If Gradle lockfile changes in the included build are classified correctly as build file
+        // changes, `reload_project` should rescan and discover the new source root.
+        std::fs::write(&lockfile_path, "locked=2\n").expect("update included gradle.lockfile");
+
+        let mut options_reload = options.clone();
+        let cfg2 = reload_project(&cfg, &mut options_reload, &[lockfile_path.clone()])
+            .expect("reload with included gradle.lockfile change");
+        assert!(
+            cfg2.source_roots
+                .iter()
+                .any(|root| root.path == workspace_main_src),
+            "expected reload to discover newly-created root src/main/java"
         );
     }
 
