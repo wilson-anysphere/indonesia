@@ -78,13 +78,13 @@ fi
 # NOTE: Use `git grep` so we only check tracked files (avoids local scratch noise).
 #
 # These patterns are intentionally written to match *invocations* like:
-#   cargo test ... --test foo
-#   cargo test ... --test=foo
+#   cargo test ... --test=<name>
+#   cargo test ... --test=<name> <filter>
 # so we can keep the patterns in this script without self-matching.
 banned_test_target_patterns=(
-  # `nova-lsp` navigation tests were folded into `--test stdio_server` (run with a test-name filter).
+  # `nova-lsp` navigation tests were folded into `--test=stdio_server` (run with a test-name filter).
   '--test(=|[[:space:]]+)navigation\\b'
-  # `nova-format` formatter tests are consolidated into `--test harness`.
+  # `nova-format` formatter tests are consolidated into `--test=harness`.
   '--test(=|[[:space:]]+)format_fixtures\\b'
   '--test(=|[[:space:]]+)format_snapshots\\b'
   # `nova-syntax` suites were folded into the `harness` test binary.
@@ -92,7 +92,7 @@ banned_test_target_patterns=(
   '--test(=|[[:space:]]+)golden_corpus\\b'
   # `nova-dap` real JVM tests live under the consolidated `tests` harness.
   '--test(=|[[:space:]]+)real_jvm\\b'
-  # `nova-cli` real-project tests are part of the `cli` harness.
+  # `nova-cli` real-project tests are part of the consolidated `harness`.
   '--test(=|[[:space:]]+)real_projects\\b'
 )
 
