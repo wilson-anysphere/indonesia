@@ -19,6 +19,7 @@ For ADR authoring conventions, see: [`docs/adr/README.md`](adr/README.md).
   - `serde`/`bincode` for small caches and metadata
   ([ADR 0005](adr/0005-persistence-formats.md))
 - Canonical identifiers: structured VFS paths + normalized URIs (`file`, `jar`/`jmod`, `nova`) ([ADR 0006](adr/0006-uri-normalization.md))
+- Type identity: stable `ClassId` + project-level type environments ([ADR 0011](adr/0011-stable-classid-and-project-type-environments.md), [ADR 0012](adr/0012-classid-interning.md))
 - Extension system: provider-based extensions (native + sandboxed WASM) ([ADR 0010](adr/0010-extension-system.md))
 - Router↔worker remote RPC: CBOR-framed v3 protocol with negotiation, multiplexing, and chunking ([ADR 0009](adr/0009-remote-rpc-protocol.md))
 
@@ -31,9 +32,11 @@ For ADR authoring conventions, see: [`docs/adr/README.md`](adr/README.md).
 5. [0005 — Persistence formats and compatibility policy](adr/0005-persistence-formats.md)
 6. [0006 — Path/URI normalization and virtual document schemes](adr/0006-uri-normalization.md)
 7. [0007 — Crate boundaries and dependency policy](adr/0007-crate-boundaries-and-dependencies.md)
-8. [0008 — Distributed mode security (router↔worker)](adr/0008-distributed-mode-security.md)
-9. [0009 — Router↔worker remote RPC protocol (v3)](adr/0009-remote-rpc-protocol.md)
-10. [0010 — Extension system (native + WASM providers)](adr/0010-extension-system.md)
+ 8. [0008 — Distributed mode security (router↔worker)](adr/0008-distributed-mode-security.md)
+ 9. [0009 — Router↔worker remote RPC protocol (v3)](adr/0009-remote-rpc-protocol.md)
+ 10. [0010 — Extension system (native + WASM providers)](adr/0010-extension-system.md)
+11. [0011 — Stable `ClassId` and project-level type environments](adr/0011-stable-classid-and-project-type-environments.md)
+12. [0012 — `ClassId` stability and interning policy](adr/0012-classid-interning.md)
 
 ## Where to look in code
 
