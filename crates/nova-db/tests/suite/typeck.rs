@@ -8149,6 +8149,26 @@ class C {
 }
 
 #[test]
+fn type_use_annotation_types_do_not_break_qualified_type_resolution() {
+    let src = r#"
+class Outer {
+    class Inner {}
+}
+
+class C {
+    Outer.@Missing Inner x;
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        !diags.iter().any(|d| d.code.as_ref() == "unresolved-type"),
+        "expected type-use annotation types to be ignored without breaking qualified type resolution; got {diags:?}"
+    );
+}
+
+#[test]
 fn type_use_annotation_types_are_ignored_with_block_comment_after_at() {
     let src = r#"
 import java.util.List;

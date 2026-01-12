@@ -2838,8 +2838,24 @@ impl<'a> Parser<'a> {
         } else {
             self.builder.start_node(SyntaxKind::NamedType.into());
             self.expect_ident_like("expected type name");
-            while self.at(SyntaxKind::Dot) && self.nth(1).is_some_and(|k| k.is_identifier_like()) {
-                self.bump();
+            loop {
+                if !self.at(SyntaxKind::Dot) {
+                    break;
+                }
+                self.bump(); // '.'
+                self.eat_trivia();
+                // Java 8+: type-use annotations can appear before qualified name segments:
+                // `Outer.@A Inner`.
+                while self.at_type_annotation_start() {
+                    self.parse_annotation();
+                    self.eat_trivia();
+                }
+                if !self.at_ident_like() {
+                    // `expect_ident_like` does not consume tokens on failure, so ensure we don't
+                    // loop forever on malformed inputs like `Outer.@A`.
+                    self.error_here("expected type name segment");
+                    break;
+                }
                 self.expect_ident_like("expected type name segment");
             }
             if self.at(SyntaxKind::Less) {
