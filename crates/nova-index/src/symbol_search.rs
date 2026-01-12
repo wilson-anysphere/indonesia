@@ -1573,6 +1573,8 @@ mod tests {
 
         let value = serde_json::to_value(&sym).expect("serialize");
         assert!(value.get("location").is_some());
+        let location: SymbolLocation =
+            serde_json::from_value(value["location"].clone()).expect("deserialize location");
         assert!(
             value
                 .get("locations")
@@ -1580,5 +1582,20 @@ mod tests {
                 .is_some_and(|v| v.len() == 1),
             "expected legacy `locations: [location]` field in JSON; got {value}"
         );
+        let locations: Vec<SymbolLocation> =
+            serde_json::from_value(value["locations"].clone()).expect("deserialize locations");
+        assert_eq!(locations.as_slice(), &[location]);
+    }
+
+    #[test]
+    fn search_symbol_serde_prefers_location_when_both_location_and_locations_present() {
+        let both = r#"{"name":"Foo","location":{"file":"B.java","line":3,"column":4},"locations":[{"file":"A.java","line":1,"column":2}]}"#;
+        let sym: Symbol = serde_json::from_str(both)
+            .expect("deserialize symbol shape containing both `location` and `locations`");
+
+        // Prefer the non-legacy `location` field when both are present.
+        assert_eq!(sym.location.file, "B.java");
+        assert_eq!(sym.location.line, 3);
+        assert_eq!(sym.location.column, 4);
     }
 }
