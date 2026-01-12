@@ -85,7 +85,7 @@ impl<'env> TyContext<'env> {
             }
 
             match ty {
-                Type::Named(name) => match ctx.lookup_class(&name) {
+                Type::Named(name) => match ctx.lookup_class_by_source_name(&name) {
                     Some(id) => normalize_inner(ctx, Type::class(id, vec![]), depth - 1, object),
                     None => Type::Named(name),
                 },

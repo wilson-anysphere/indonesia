@@ -333,6 +333,40 @@ public interface I {}
 }
 
 #[test]
+fn source_types_resolve_nested_interfaces_even_when_defined_in_later_files() {
+    let mut store = TypeStore::with_minimal_jdk();
+    let mut source = SourceTypeProvider::new();
+
+    // The interface name in source syntax uses `.` for nested types (`Outer.Inner`), but the
+    // `TypeStore` tracks nested types by their binary name (`Outer$Inner`). We still want the
+    // relationship to resolve once the nested type is later added to the store.
+    source.update_file(
+        &mut store,
+        PathBuf::from("/a/Impl.java"),
+        r#"
+package a;
+class Impl implements p.Outer.Inner {}
+"#,
+    );
+    source.update_file(
+        &mut store,
+        PathBuf::from("/p/Outer.java"),
+        r#"
+package p;
+public class Outer {
+  public interface Inner {}
+}
+"#,
+    );
+
+    assert!(is_subtype(
+        &store,
+        &Type::Named("a.Impl".to_string()),
+        &Type::Named("p.Outer.Inner".to_string())
+    ));
+}
+
+#[test]
 fn source_types_do_not_misinterpret_uppercase_package_segments_as_nested_types() {
     let mut store = TypeStore::with_minimal_jdk();
     let mut source = SourceTypeProvider::new();

@@ -532,6 +532,56 @@ pub trait TypeEnv {
     fn type_param(&self, id: TypeVarId) -> Option<&TypeParamDef>;
     fn lookup_class(&self, name: &str) -> Option<ClassId>;
     fn well_known(&self) -> &WellKnownTypes;
+
+    /// Look up a class by a Java source name.
+    ///
+    /// This behaves like [`TypeEnv::lookup_class`], but also supports source-syntax nested
+    /// type names written with `.` separators (e.g. `java.util.Map.Entry`) by translating the
+    /// nested suffix into the binary `$` form (`java.util.Map$Entry`).
+    fn lookup_class_by_source_name(&self, name: &str) -> Option<ClassId> {
+        if let Some(id) = self.lookup_class(name) {
+            return Some(id);
+        }
+
+        // Avoid rewriting binary names; only attempt nested resolution for source names.
+        if name.contains('$') || !name.contains('.') {
+            return None;
+        }
+
+        let segments: Vec<&str> = name.split('.').collect();
+        if segments.len() < 2 {
+            return None;
+        }
+
+        // Prefer the longest possible package prefix first (minimal nesting), mirroring Java's
+        // general package-vs-type disambiguation preference.
+        for outer_idx in (0..segments.len() - 1).rev() {
+            let (pkg, rest) = segments.split_at(outer_idx);
+            let Some((outer, nested)) = rest.split_first() else {
+                continue;
+            };
+            if nested.is_empty() {
+                continue;
+            }
+
+            let mut candidate = String::new();
+            if !pkg.is_empty() {
+                candidate.push_str(&pkg.join("."));
+                candidate.push('.');
+            }
+            candidate.push_str(outer);
+            for seg in nested {
+                candidate.push('$');
+                candidate.push_str(seg);
+            }
+
+            if let Some(id) = self.lookup_class(&candidate) {
+                return Some(id);
+            }
+        }
+
+        None
+    }
 }
 
 /// Hook for adding project / classpath types.
@@ -1912,12 +1962,12 @@ pub fn is_subtype(env: &dyn TypeEnv, sub: &Type, super_: &Type) -> bool {
 
     // Resolve `Type::Named("java.lang.String")` into a known JDK class type when possible.
     if let Type::Named(name) = sub {
-        if let Some(id) = env.lookup_class(name) {
+        if let Some(id) = env.lookup_class_by_source_name(name) {
             return is_subtype(env, &Type::class(id, vec![]), super_);
         }
     }
     if let Type::Named(name) = super_ {
-        if let Some(id) = env.lookup_class(name) {
+        if let Some(id) = env.lookup_class_by_source_name(name) {
             return is_subtype(env, sub, &Type::class(id, vec![]));
         }
     }
@@ -2040,7 +2090,7 @@ fn is_subtype_class(env: &dyn TypeEnv, sub: &Type, super_: &Type) -> bool {
         // Allow supertypes to be recorded as `Type::Named` (common for source-derived
         // environments where referenced types may not have been interned yet).
         if let Type::Named(name) = &current {
-            if let Some(id) = env.lookup_class(name) {
+            if let Some(id) = env.lookup_class_by_source_name(name) {
                 current = Type::class(id, vec![]);
             }
         }
@@ -2543,7 +2593,7 @@ pub fn cast_conversion(env: &dyn TypeEnv, from: &Type, to: &Type) -> Option<Conv
 fn canonicalize_named(env: &dyn TypeEnv, ty: &Type) -> Type {
     match ty {
         Type::Named(name) => env
-            .lookup_class(name)
+            .lookup_class_by_source_name(name)
             .map(|id| Type::class(id, vec![]))
             .unwrap_or_else(|| ty.clone()),
         other => other.clone(),
@@ -2671,7 +2721,7 @@ fn erasure(env: &dyn TypeEnv, ty: &Type) -> Type {
             .unwrap_or_else(|| Type::class(env.well_known().object, vec![])),
         Type::Wildcard(_) => Type::class(env.well_known().object, vec![]),
         Type::Named(name) => env
-            .lookup_class(name)
+            .lookup_class_by_source_name(name)
             .map(|id| Type::class(id, vec![]))
             .unwrap_or_else(|| Type::class(env.well_known().object, vec![])),
         other => other.clone(),
@@ -2821,7 +2871,7 @@ fn type_arg_upper_bound_for_lub(env: &dyn TypeEnv, ty: &Type) -> Type {
 fn canonicalize_for_lub(env: &dyn TypeEnv, ty: &Type) -> Type {
     match ty {
         Type::Named(name) => env
-            .lookup_class(name)
+            .lookup_class_by_source_name(name)
             .map(|id| Type::class(id, vec![]))
             .unwrap_or_else(|| ty.clone()),
         Type::Wildcard(bound) => wildcard_upper_bound(env, bound),
@@ -2844,7 +2894,7 @@ fn intersection_component_rank(env: &dyn TypeEnv, ty: &Type) -> u8 {
             Some(ClassKind::Class) | None => 1,
         },
         Type::Named(name) => env
-            .lookup_class(name)
+            .lookup_class_by_source_name(name)
             .and_then(|id| env.class(id))
             .map(|c| c.kind)
             .map(|k| match k {
@@ -3120,7 +3170,7 @@ fn collect_supertypes_for_lub(env: &dyn TypeEnv, ty: &Type) -> HashMap<ClassId, 
             out
         }
         Type::Named(name) => env
-            .lookup_class(name)
+            .lookup_class_by_source_name(name)
             .map(|id| collect_supertypes_for_lub(env, &Type::class(id, vec![])))
             .unwrap_or_else(|| HashMap::from([(env.well_known().object, object)])),
         Type::VirtualInner { .. } => HashMap::from([(env.well_known().object, object)]),
@@ -3324,7 +3374,7 @@ pub fn resolve_field(
 ) -> Option<FieldDef> {
     let mut receiver = receiver.clone();
     if let Type::Named(n) = &receiver {
-        if let Some(id) = env.lookup_class(n) {
+        if let Some(id) = env.lookup_class_by_source_name(n) {
             receiver = Type::class(id, vec![]);
         }
     }
@@ -3338,7 +3388,7 @@ pub fn resolve_field(
                     Type::Class(_) => queue.push_back(ty),
                     Type::Array(_) => queue.push_back(Type::class(env.well_known().object, vec![])),
                     Type::Named(n) => {
-                        if let Some(id) = env.lookup_class(&n) {
+                        if let Some(id) = env.lookup_class_by_source_name(&n) {
                             queue.push_back(Type::class(id, vec![]));
                         } else {
                             queue.push_back(Type::Named(n));
@@ -3779,7 +3829,7 @@ fn collect_method_candidates(
             Type::Class(_) => queue.push_back(ty.clone()),
             Type::Array(_) => queue.push_back(Type::class(env.well_known().object, vec![])),
             Type::Named(n) => {
-                if let Some(id) = env.lookup_class(n) {
+                if let Some(id) = env.lookup_class_by_source_name(n) {
                     queue.push_back(Type::class(id, vec![]));
                 }
             }
@@ -4907,7 +4957,7 @@ pub fn infer_type_arguments(
 
     let mut receiver = call.receiver.clone();
     if let Type::Named(name) = &receiver {
-        if let Some(id) = env.lookup_class(name) {
+        if let Some(id) = env.lookup_class_by_source_name(name) {
             receiver = Type::class(id, vec![]);
         }
     }
@@ -4949,7 +4999,7 @@ pub fn infer_diamond_type_args(
     if let Some(target_ty) = target {
         let target_class = match target_ty {
             Type::Class(ct) => Some(ct.clone()),
-            Type::Named(name) => env.lookup_class(name).map(|id| ClassType {
+            Type::Named(name) => env.lookup_class_by_source_name(name).map(|id| ClassType {
                 def: id,
                 args: vec![],
             }),
