@@ -171,7 +171,7 @@ pub struct SymbolIndex {
     // Name → Symbol locations
     by_name: HashMap<SmolStr, Vec<SymbolLocation>>,
     // Type → Implementations
-    implementations: HashMap<TypeId, Vec<TypeId>>,
+    implementations: HashMap<ClassId, Vec<ClassId>>,
     // Method → Callers
     call_graph: HashMap<MethodId, Vec<CallSite>>,
 }
