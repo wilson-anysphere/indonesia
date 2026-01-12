@@ -7,6 +7,7 @@ use nova_db::{FileId as DbFileId, ProjectId};
 use nova_hir::hir;
 use nova_hir::ids::{FieldId, ItemId, MethodId};
 use nova_hir::item_tree::{Item, Member};
+use nova_hir::item_tree::Modifiers as HirModifiers;
 use nova_hir::queries::HirDatabase;
 use nova_resolve::{
     BodyOwner, DefMap, LocalRef, ParamOwner, ParamRef, Resolution, Resolver, ScopeBuildResult,
@@ -15,7 +16,7 @@ use nova_resolve::{
 use nova_syntax::{ast, AstNode};
 
 use crate::edit::{FileId, TextRange};
-use crate::semantic::{RefactorDatabase, Reference, SymbolDefinition};
+use crate::semantic::{RefactorDatabase, Reference, SymbolDefinition, TypeSymbolInfo};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SymbolId(u32);
@@ -44,6 +45,7 @@ pub enum JavaSymbolKind {
 struct SymbolData {
     def: SymbolDefinition,
     kind: JavaSymbolKind,
+    type_info: Option<TypeInfo>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -64,6 +66,14 @@ struct SymbolCandidate {
     name_range: TextRange,
     scope: u32,
     kind: JavaSymbolKind,
+    type_info: Option<TypeInfo>,
+}
+
+#[derive(Clone, Debug)]
+struct TypeInfo {
+    package: Option<String>,
+    is_top_level: bool,
+    is_public: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -145,6 +155,7 @@ pub struct RefactorJavaDatabase {
     spans: Vec<(FileId, TextRange, SymbolId)>,
 
     resolution_to_symbol: HashMap<ResolutionKey, SymbolId>,
+    top_level_types: HashMap<(Option<String>, String), SymbolId>,
 }
 
 impl RefactorJavaDatabase {
@@ -226,10 +237,17 @@ impl RefactorJavaDatabase {
                             name_range,
                             scope,
                             kind: JavaSymbolKind::Package,
+                            type_info: None,
                         });
                     }
                 }
             }
+
+            let package = tree
+                .package
+                .as_ref()
+                .map(|pkg| pkg.name.as_str())
+                .filter(|pkg| !pkg.is_empty());
 
             // Type/field/method symbols live in item tree (file-level) scopes.
             for item in &tree.items {
@@ -241,6 +259,8 @@ impl RefactorJavaDatabase {
                     &scope_result,
                     scope_result.file_scope,
                     item_id,
+                    true,
+                    package,
                     &mut scope_interner,
                     &mut candidates,
                     &mut method_groups,
@@ -270,6 +290,7 @@ impl RefactorJavaDatabase {
                         name_range: TextRange::new(param.name_range.start, param.name_range.end),
                         scope,
                         kind: JavaSymbolKind::Parameter,
+                        type_info: None,
                     });
                 }
             }
@@ -295,6 +316,7 @@ impl RefactorJavaDatabase {
                         name_range: TextRange::new(param.name_range.start, param.name_range.end),
                         scope,
                         kind: JavaSymbolKind::Parameter,
+                        type_info: None,
                     });
                 }
             }
@@ -339,6 +361,7 @@ impl RefactorJavaDatabase {
                         name_range: TextRange::new(local.name_range.start, local.name_range.end),
                         scope,
                         kind: JavaSymbolKind::Local,
+                        type_info: None,
                     });
                 }
             }
@@ -402,6 +425,7 @@ impl RefactorJavaDatabase {
                             ),
                             scope,
                             kind: JavaSymbolKind::Local,
+                            type_info: None,
                         });
                     }
                 });
@@ -452,9 +476,17 @@ impl RefactorJavaDatabase {
         let mut references: Vec<Vec<Reference>> = Vec::new();
         let mut spans: Vec<(FileId, TextRange, SymbolId)> = Vec::new();
         let mut resolution_to_symbol: HashMap<ResolutionKey, SymbolId> = HashMap::new();
+        let mut top_level_types: HashMap<(Option<String>, String), SymbolId> = HashMap::new();
 
         for (idx, candidate) in candidates.into_iter().enumerate() {
             let symbol = SymbolId::new(idx as u32);
+            if let Some(info) = &candidate.type_info {
+                if info.is_top_level {
+                    top_level_types
+                        .entry((info.package.clone(), candidate.name.clone()))
+                        .or_insert(symbol);
+                }
+            }
             symbols.push(SymbolData {
                 def: SymbolDefinition {
                     file: candidate.file.clone(),
@@ -463,6 +495,7 @@ impl RefactorJavaDatabase {
                     scope: candidate.scope,
                 },
                 kind: candidate.kind,
+                type_info: candidate.type_info.clone(),
             });
             references.push(Vec::new());
             spans.push((candidate.file, candidate.name_range, symbol));
@@ -516,10 +549,24 @@ impl RefactorJavaDatabase {
                 continue;
             };
 
+            let file_text = files.get(file).map(|t| t.as_ref()).unwrap_or("");
+
             let tree = item_trees
                 .get(file_id)
                 .cloned()
                 .unwrap_or_else(|| snap.hir_item_tree(*file_id));
+
+            // Type references in imports, signatures, annotations, etc (outside method bodies).
+            record_non_body_type_references(
+                file,
+                file_text,
+                tree.as_ref(),
+                scope_result,
+                &resolver,
+                &resolution_to_symbol,
+                &mut references,
+                &mut spans,
+            );
 
             let mut method_ids: Vec<_> = scope_result.method_scopes.keys().copied().collect();
             method_ids.sort();
@@ -527,7 +574,7 @@ impl RefactorJavaDatabase {
                 let body = snap.hir_body(method);
                 record_body_references(
                     file,
-                    files.get(file).map(|t| t.as_ref()).unwrap_or(""),
+                    file_text,
                     BodyOwner::Method(method),
                     &body,
                     scope_result,
@@ -547,7 +594,7 @@ impl RefactorJavaDatabase {
                 let body = snap.hir_constructor_body(ctor);
                 record_body_references(
                     file,
-                    files.get(file).map(|t| t.as_ref()).unwrap_or(""),
+                    file_text,
                     BodyOwner::Constructor(ctor),
                     &body,
                     scope_result,
@@ -567,7 +614,7 @@ impl RefactorJavaDatabase {
                 let body = snap.hir_initializer_body(init);
                 record_body_references(
                     file,
-                    files.get(file).map(|t| t.as_ref()).unwrap_or(""),
+                    file_text,
                     BodyOwner::Initializer(init),
                     &body,
                     scope_result,
@@ -615,6 +662,7 @@ impl RefactorJavaDatabase {
             references,
             spans,
             resolution_to_symbol,
+            top_level_types,
         }
     }
 
@@ -790,6 +838,8 @@ fn collect_type_candidates(
     scope_result: &ScopeBuildResult,
     decl_scope: nova_resolve::ScopeId,
     item: ItemId,
+    is_top_level: bool,
+    package: Option<&str>,
     scope_interner: &mut ScopeInterner,
     candidates: &mut Vec<SymbolCandidate>,
     method_groups: &mut Vec<MethodGroupInfo>,
@@ -797,6 +847,13 @@ fn collect_type_candidates(
 ) {
     // Type declaration.
     let (name, name_range) = item_name_and_range(tree, item);
+    let is_public = match item {
+        ItemId::Class(id) => tree.class(id).modifiers.raw & HirModifiers::PUBLIC != 0,
+        ItemId::Interface(id) => tree.interface(id).modifiers.raw & HirModifiers::PUBLIC != 0,
+        ItemId::Enum(id) => tree.enum_(id).modifiers.raw & HirModifiers::PUBLIC != 0,
+        ItemId::Record(id) => tree.record(id).modifiers.raw & HirModifiers::PUBLIC != 0,
+        ItemId::Annotation(id) => tree.annotation(id).modifiers.raw & HirModifiers::PUBLIC != 0,
+    };
     let scope = scope_interner.intern(db_file, decl_scope);
     candidates.push(SymbolCandidate {
         key: ResolutionKey::Type(item),
@@ -805,6 +862,11 @@ fn collect_type_candidates(
         name_range,
         scope,
         kind: JavaSymbolKind::Type,
+        type_info: Some(TypeInfo {
+            package: package.map(|p| p.to_string()),
+            is_top_level,
+            is_public,
+        }),
     });
 
     let Some(&class_scope) = scope_result.class_scopes.get(&item) else {
@@ -826,6 +888,7 @@ fn collect_type_candidates(
                     name_range: TextRange::new(field.name_range.start, field.name_range.end),
                     scope: class_scope_interned,
                     kind: JavaSymbolKind::Field,
+                    type_info: None,
                 });
             }
             Member::Method(method_id) => {
@@ -854,6 +917,8 @@ fn collect_type_candidates(
                     scope_result,
                     class_scope,
                     child_id,
+                    false,
+                    package,
                     scope_interner,
                     candidates,
                     method_groups,
@@ -883,6 +948,7 @@ fn collect_type_candidates(
             name_range: rep_range,
             scope: class_scope_interned,
             kind: JavaSymbolKind::Method,
+            type_info: None,
         });
 
         method_groups.push(MethodGroupInfo {
@@ -901,6 +967,10 @@ impl RefactorDatabase for RefactorJavaDatabase {
 
     fn all_files(&self) -> Vec<FileId> {
         self.files.keys().cloned().collect()
+    }
+
+    fn file_exists(&self, file: &FileId) -> bool {
+        self.files.contains_key(file)
     }
 
     fn symbol_at(&self, file: &FileId, offset: usize) -> Option<SymbolId> {
@@ -922,6 +992,23 @@ impl RefactorDatabase for RefactorJavaDatabase {
 
     fn symbol_kind(&self, symbol: SymbolId) -> Option<JavaSymbolKind> {
         self.symbols.get(symbol.as_usize()).map(|s| s.kind)
+    }
+
+    fn type_symbol_info(&self, symbol: SymbolId) -> Option<TypeSymbolInfo> {
+        let sym = self.symbols.get(symbol.as_usize())?;
+        let info = sym.type_info.as_ref()?;
+        Some(TypeSymbolInfo {
+            package: info.package.clone(),
+            is_top_level: info.is_top_level,
+            is_public: info.is_public,
+        })
+    }
+
+    fn find_top_level_type_in_package(&self, package: Option<&str>, name: &str) -> Option<SymbolId> {
+        let pkg = package.filter(|p| !p.is_empty()).map(|p| p.to_string());
+        self.top_level_types
+            .get(&(pkg, name.to_string()))
+            .copied()
     }
 
     fn resolve_name_in_scope(&self, scope: u32, name: &str) -> Option<SymbolId> {
@@ -1022,6 +1109,562 @@ impl RefactorDatabase for RefactorJavaDatabase {
             .get(symbol.as_usize())
             .cloned()
             .unwrap_or_default()
+    }
+}
+
+fn record_non_body_type_references(
+    file: &FileId,
+    file_text: &str,
+    tree: &nova_hir::item_tree::ItemTree,
+    scope_result: &ScopeBuildResult,
+    resolver: &Resolver<'_>,
+    resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+    references: &mut [Vec<Reference>],
+    spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+) {
+    // Import clauses are scoped to the compilation unit.
+    for import in &tree.imports {
+        record_type_references_in_range(
+            file,
+            file_text,
+            TextRange::new(import.range.start, import.range.end),
+            scope_result.file_scope,
+            &scope_result.scopes,
+            resolver,
+            resolution_to_symbol,
+            references,
+            spans,
+        );
+    }
+
+    for item in &tree.items {
+        let item_id = item_to_item_id(*item);
+        let Some(&class_scope) = scope_result.class_scopes.get(&item_id) else {
+            continue;
+        };
+        record_non_body_type_references_in_item(
+            file,
+            file_text,
+            tree,
+            item_id,
+            class_scope,
+            scope_result,
+            resolver,
+            resolution_to_symbol,
+            references,
+            spans,
+        );
+    }
+}
+
+fn record_non_body_type_references_in_item(
+    file: &FileId,
+    file_text: &str,
+    tree: &nova_hir::item_tree::ItemTree,
+    item: ItemId,
+    class_scope: nova_resolve::ScopeId,
+    scope_result: &ScopeBuildResult,
+    resolver: &Resolver<'_>,
+    resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+    references: &mut [Vec<Reference>],
+    spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+) {
+    fn record_span(
+        file: &FileId,
+        file_text: &str,
+        span: nova_types::Span,
+        scope: nova_resolve::ScopeId,
+        scopes: &nova_resolve::ScopeGraph,
+        resolver: &Resolver<'_>,
+        resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+        references: &mut [Vec<Reference>],
+        spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+    ) {
+        record_type_references_in_range(
+            file,
+            file_text,
+            TextRange::new(span.start, span.end),
+            scope,
+            scopes,
+            resolver,
+            resolution_to_symbol,
+            references,
+            spans,
+        );
+    }
+
+    fn record_annotations(
+        file: &FileId,
+        file_text: &str,
+        annotations: &[nova_hir::item_tree::AnnotationUse],
+        scope: nova_resolve::ScopeId,
+        scopes: &nova_resolve::ScopeGraph,
+        resolver: &Resolver<'_>,
+        resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+        references: &mut [Vec<Reference>],
+        spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+    ) {
+        for ann in annotations {
+            record_span(
+                file,
+                file_text,
+                ann.range,
+                scope,
+                scopes,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
+    }
+
+    fn record_type_param_bounds(
+        file: &FileId,
+        file_text: &str,
+        type_params: &[nova_hir::item_tree::TypeParam],
+        scope: nova_resolve::ScopeId,
+        scopes: &nova_resolve::ScopeGraph,
+        resolver: &Resolver<'_>,
+        resolution_to_symbol: &HashMap<ResolutionKey, SymbolId>,
+        references: &mut [Vec<Reference>],
+        spans: &mut Vec<(FileId, TextRange, SymbolId)>,
+    ) {
+        for param in type_params {
+            for bound in &param.bounds_ranges {
+                record_span(
+                    file,
+                    file_text,
+                    *bound,
+                    scope,
+                    scopes,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+        }
+    }
+
+    match item {
+        ItemId::Class(id) => {
+            let data = tree.class(id);
+            record_annotations(
+                file,
+                file_text,
+                &data.annotations,
+                class_scope,
+                &scope_result.scopes,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            record_type_param_bounds(
+                file,
+                file_text,
+                &data.type_params,
+                class_scope,
+                &scope_result.scopes,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            for span in &data.extends_ranges {
+                record_span(
+                    file,
+                    file_text,
+                    *span,
+                    class_scope,
+                    &scope_result.scopes,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+            for span in &data.implements_ranges {
+                record_span(
+                    file,
+                    file_text,
+                    *span,
+                    class_scope,
+                    &scope_result.scopes,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+            for span in &data.permits_ranges {
+                record_span(
+                    file,
+                    file_text,
+                    *span,
+                    class_scope,
+                    &scope_result.scopes,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+        }
+        ItemId::Interface(id) => {
+            let data = tree.interface(id);
+            record_annotations(
+                file,
+                file_text,
+                &data.annotations,
+                class_scope,
+                &scope_result.scopes,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            record_type_param_bounds(
+                file,
+                file_text,
+                &data.type_params,
+                class_scope,
+                &scope_result.scopes,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            for span in &data.extends_ranges {
+                record_span(
+                    file,
+                    file_text,
+                    *span,
+                    class_scope,
+                    &scope_result.scopes,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+            for span in &data.permits_ranges {
+                record_span(
+                    file,
+                    file_text,
+                    *span,
+                    class_scope,
+                    &scope_result.scopes,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+        }
+        ItemId::Enum(id) => {
+            let data = tree.enum_(id);
+            record_annotations(
+                file,
+                file_text,
+                &data.annotations,
+                class_scope,
+                &scope_result.scopes,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            for span in &data.implements_ranges {
+                record_span(
+                    file,
+                    file_text,
+                    *span,
+                    class_scope,
+                    &scope_result.scopes,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+            for span in &data.permits_ranges {
+                record_span(
+                    file,
+                    file_text,
+                    *span,
+                    class_scope,
+                    &scope_result.scopes,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+        }
+        ItemId::Record(id) => {
+            let data = tree.record(id);
+            record_annotations(
+                file,
+                file_text,
+                &data.annotations,
+                class_scope,
+                &scope_result.scopes,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            record_type_param_bounds(
+                file,
+                file_text,
+                &data.type_params,
+                class_scope,
+                &scope_result.scopes,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            for span in &data.implements_ranges {
+                record_span(
+                    file,
+                    file_text,
+                    *span,
+                    class_scope,
+                    &scope_result.scopes,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+            for span in &data.permits_ranges {
+                record_span(
+                    file,
+                    file_text,
+                    *span,
+                    class_scope,
+                    &scope_result.scopes,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+            for component in &data.components {
+                record_span(
+                    file,
+                    file_text,
+                    component.ty_range,
+                    class_scope,
+                    &scope_result.scopes,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+        }
+        ItemId::Annotation(id) => {
+            let data = tree.annotation(id);
+            record_annotations(
+                file,
+                file_text,
+                &data.annotations,
+                class_scope,
+                &scope_result.scopes,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
+    }
+
+    for member in item_members(tree, item) {
+        match member {
+            Member::Field(field_id) => {
+                let field = tree.field(*field_id);
+                record_annotations(
+                    file,
+                    file_text,
+                    &field.annotations,
+                    class_scope,
+                    &scope_result.scopes,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+                record_span(
+                    file,
+                    file_text,
+                    field.ty_range,
+                    class_scope,
+                    &scope_result.scopes,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+            Member::Method(method_id) => {
+                let method = tree.method(*method_id);
+                record_annotations(
+                    file,
+                    file_text,
+                    &method.annotations,
+                    class_scope,
+                    &scope_result.scopes,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+                record_type_param_bounds(
+                    file,
+                    file_text,
+                    &method.type_params,
+                    class_scope,
+                    &scope_result.scopes,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+                record_span(
+                    file,
+                    file_text,
+                    method.return_ty_range,
+                    class_scope,
+                    &scope_result.scopes,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+                for param in &method.params {
+                    record_annotations(
+                        file,
+                        file_text,
+                        &param.annotations,
+                        class_scope,
+                        &scope_result.scopes,
+                        resolver,
+                        resolution_to_symbol,
+                        references,
+                        spans,
+                    );
+                    record_span(
+                        file,
+                        file_text,
+                        param.ty_range,
+                        class_scope,
+                        &scope_result.scopes,
+                        resolver,
+                        resolution_to_symbol,
+                        references,
+                        spans,
+                    );
+                }
+                for span in &method.throws_ranges {
+                    record_span(
+                        file,
+                        file_text,
+                        *span,
+                        class_scope,
+                        &scope_result.scopes,
+                        resolver,
+                        resolution_to_symbol,
+                        references,
+                        spans,
+                    );
+                }
+            }
+            Member::Constructor(ctor_id) => {
+                let ctor = tree.constructor(*ctor_id);
+                record_annotations(
+                    file,
+                    file_text,
+                    &ctor.annotations,
+                    class_scope,
+                    &scope_result.scopes,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+                record_type_param_bounds(
+                    file,
+                    file_text,
+                    &ctor.type_params,
+                    class_scope,
+                    &scope_result.scopes,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+                for param in &ctor.params {
+                    record_annotations(
+                        file,
+                        file_text,
+                        &param.annotations,
+                        class_scope,
+                        &scope_result.scopes,
+                        resolver,
+                        resolution_to_symbol,
+                        references,
+                        spans,
+                    );
+                    record_span(
+                        file,
+                        file_text,
+                        param.ty_range,
+                        class_scope,
+                        &scope_result.scopes,
+                        resolver,
+                        resolution_to_symbol,
+                        references,
+                        spans,
+                    );
+                }
+                for span in &ctor.throws_ranges {
+                    record_span(
+                        file,
+                        file_text,
+                        *span,
+                        class_scope,
+                        &scope_result.scopes,
+                        resolver,
+                        resolution_to_symbol,
+                        references,
+                        spans,
+                    );
+                }
+            }
+            Member::Initializer(_) => {}
+            Member::Type(child) => {
+                let child_id = item_to_item_id(*child);
+                let Some(&child_scope) = scope_result.class_scopes.get(&child_id) else {
+                    continue;
+                };
+                record_non_body_type_references_in_item(
+                    file,
+                    file_text,
+                    tree,
+                    child_id,
+                    child_scope,
+                    scope_result,
+                    resolver,
+                    resolution_to_symbol,
+                    references,
+                    spans,
+                );
+            }
+        }
     }
 }
 
@@ -1597,9 +2240,78 @@ fn record_type_references_in_range(
     let Some(slice) = file_text.get(range.start..range.end) else {
         return;
     };
+    let bytes = slice.as_bytes();
     let mut i = 0usize;
 
     while i < slice.len() {
+        // Skip comments/strings so we don't accidentally record identifiers that appear in trivia
+        // (e.g. `@Named("Foo")` should not rename `"Foo"`).
+        let b = bytes[i];
+        match b {
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
+                // Line comment.
+                i += 2;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'*' => {
+                // Block comment.
+                i += 2;
+                while i + 1 < bytes.len() {
+                    if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+            b'"' => {
+                // String literal or text block (`""" ... """`).
+                if i + 2 < bytes.len() && bytes[i + 1] == b'"' && bytes[i + 2] == b'"' {
+                    i += 3;
+                    while i + 2 < bytes.len() {
+                        if bytes[i] == b'"' && bytes[i + 1] == b'"' && bytes[i + 2] == b'"' {
+                            i += 3;
+                            break;
+                        }
+                        i += 1;
+                    }
+                } else {
+                    i += 1;
+                    while i < bytes.len() {
+                        match bytes[i] {
+                            b'\\' => i = (i + 2).min(bytes.len()),
+                            b'"' => {
+                                i += 1;
+                                break;
+                            }
+                            _ => i += 1,
+                        }
+                    }
+                }
+                continue;
+            }
+            b'\'' => {
+                // Char literal.
+                i += 1;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'\\' => i = (i + 2).min(bytes.len()),
+                        b'\'' => {
+                            i += 1;
+                            break;
+                        }
+                        _ => i += 1,
+                    }
+                }
+                continue;
+            }
+            _ => {}
+        }
+
         let ch = slice[i..].chars().next().unwrap();
         if !is_ident_start_char(ch) {
             i += ch.len_utf8();
@@ -1642,32 +2354,56 @@ fn record_type_references_in_range(
             continue;
         }
 
-        // Replace `$` with `.` so we can resolve binary nested names as source-like nesting.
-        let token_for_path = token.replace('$', ".");
-        let path = QualifiedName::from_dotted(&token_for_path);
-        let Some(TypeResolution::Source(item)) =
-            resolver.resolve_qualified_type_resolution_in_scope(scopes, scope, &path)
-        else {
+        let mut segments: Vec<(usize, usize)> = Vec::new();
+        let mut seg_start = 0usize;
+        for (idx, ch) in token.char_indices() {
+            if ch == '.' || ch == '$' {
+                if seg_start < idx {
+                    segments.push((seg_start, idx));
+                }
+                seg_start = idx + ch.len_utf8();
+            }
+        }
+        if seg_start < token.len() {
+            segments.push((seg_start, token.len()));
+        }
+        if segments.is_empty() {
             continue;
-        };
+        }
 
-        let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Type(item)) else {
-            continue;
-        };
+        // Resolve each prefix so we can record references to nested/outer types. For a token like
+        // `Outer.Inner`, both `Outer` and `Inner` are type references.
+        for prefix_len in 1..=segments.len() {
+            let mut prefix = String::new();
+            for (idx, (start, end)) in segments.iter().copied().take(prefix_len).enumerate() {
+                if idx > 0 {
+                    prefix.push('.');
+                }
+                prefix.push_str(&token[start..end]);
+            }
 
-        let simple_start = token
-            .rfind(|c| c == '.' || c == '$')
-            .map(|idx| token_start + idx + 1)
-            .unwrap_or(token_start);
-        let simple_end = token_end;
+            let path = QualifiedName::from_dotted(&prefix);
+            let Some(TypeResolution::Source(item)) =
+                resolver.resolve_qualified_type_resolution_in_scope(scopes, scope, &path)
+            else {
+                continue;
+            };
 
-        let abs_range = TextRange::new(range.start + simple_start, range.start + simple_end);
-        // Record the reference span for rename operations.
-        references[symbol.as_usize()].push(Reference {
-            file: file.clone(),
-            range: abs_range,
-        });
-        spans.push((file.clone(), abs_range, symbol));
+            let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Type(item)) else {
+                continue;
+            };
+
+            let (start, end) = segments[prefix_len - 1];
+            let abs_range = TextRange::new(
+                range.start + token_start + start,
+                range.start + token_start + end,
+            );
+            references[symbol.as_usize()].push(Reference {
+                file: file.clone(),
+                range: abs_range,
+            });
+            spans.push((file.clone(), abs_range, symbol));
+        }
     }
 }
 

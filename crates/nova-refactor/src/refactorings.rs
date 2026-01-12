@@ -82,24 +82,25 @@ pub fn rename(
     }
 
     match kind {
-        Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter) => {
+        Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter | JavaSymbolKind::Type) => {
             let conflicts = check_rename_conflicts(db, params.symbol, &params.new_name);
             if !conflicts.is_empty() {
                 return Err(RefactorError::Conflicts(conflicts));
             }
         }
-        Some(JavaSymbolKind::Field | JavaSymbolKind::Method | JavaSymbolKind::Type) => {
+        Some(JavaSymbolKind::Field | JavaSymbolKind::Method) => {
             // Best-effort: conflict checking is currently scope-based and tuned for local/parameter
-            // renames. Allow member/type renames without additional validation for now.
+            // renames. Allow member renames without additional validation for now.
         }
         Some(JavaSymbolKind::Package) | None => {
             return Err(RefactorError::RenameNotSupported { kind })
         }
     }
 
+    let new_name = params.new_name;
     let mut changes = vec![SemanticChange::Rename {
         symbol: params.symbol,
-        new_name: params.new_name.clone(),
+        new_name: new_name.clone(),
     }];
 
     // Java annotation shorthand `@Anno(expr)` is desugared as `@Anno(value = expr)`. If the
@@ -109,11 +110,34 @@ pub fn rename(
         changes.extend(annotation_value_shorthand_updates(
             db,
             params.symbol,
-            &params.new_name,
+            &new_name,
         ));
     }
 
-    Ok(materialize(db, changes)?)
+    let mut edit = materialize(db, changes)?;
+
+    // Optional file rename for public top-level types:
+    // `p/Foo.java` -> `p/Bar.java` when renaming `Foo` -> `Bar`.
+    if matches!(kind, Some(JavaSymbolKind::Type)) {
+        if let Some(info) = db.type_symbol_info(params.symbol) {
+            if info.is_top_level && info.is_public {
+                if let Some(def) = db.symbol_definition(params.symbol) {
+                    if let Some((from, to)) =
+                        type_file_rename_candidate(&def.file, &def.name, &new_name)
+                    {
+                        // File existence conflicts are checked in `check_rename_conflicts`.
+                        edit.file_ops.push(crate::edit::FileOp::Rename { from, to });
+                        // Materialize emitted edits against the pre-rename file id. Remap them so
+                        // `WorkspaceEdit::normalize()` accepts the file op.
+                        edit.remap_text_edits_across_renames()?;
+                        edit.normalize()?;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(edit)
 }
 
 fn annotation_value_shorthand_updates(
@@ -314,41 +338,102 @@ fn check_rename_conflicts(
         return conflicts;
     };
 
-    let Some(scope) = db.symbol_scope(symbol) else {
-        return conflicts;
-    };
+    match db.symbol_kind(symbol) {
+        Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter) => {
+            let Some(scope) = db.symbol_scope(symbol) else {
+                return conflicts;
+            };
 
-    if let Some(existing) = db.resolve_name_in_scope(scope, new_name) {
-        if existing != symbol {
-            conflicts.push(Conflict::NameCollision {
-                file: def.file.clone(),
-                name: new_name.to_string(),
-                existing_symbol: existing,
-            });
-        }
-    }
+            if let Some(existing) = db.resolve_name_in_scope(scope, new_name) {
+                if existing != symbol {
+                    conflicts.push(Conflict::NameCollision {
+                        file: def.file.clone(),
+                        name: new_name.to_string(),
+                        existing_symbol: existing,
+                    });
+                }
+            }
 
-    if let Some(shadowed) = db.would_shadow(scope, new_name) {
-        if shadowed != symbol {
-            conflicts.push(Conflict::Shadowing {
-                file: def.file.clone(),
-                name: new_name.to_string(),
-                shadowed_symbol: shadowed,
-            });
-        }
-    }
+            if let Some(shadowed) = db.would_shadow(scope, new_name) {
+                if shadowed != symbol {
+                    conflicts.push(Conflict::Shadowing {
+                        file: def.file.clone(),
+                        name: new_name.to_string(),
+                        shadowed_symbol: shadowed,
+                    });
+                }
+            }
 
-    for usage in db.find_references(symbol) {
-        if !db.is_visible_from(symbol, &usage.file, new_name) {
-            conflicts.push(Conflict::VisibilityLoss {
-                file: usage.file.clone(),
-                usage_range: usage.range,
-                name: new_name.to_string(),
-            });
+            for usage in db.find_references(symbol) {
+                if !db.is_visible_from(symbol, &usage.file, new_name) {
+                    conflicts.push(Conflict::VisibilityLoss {
+                        file: usage.file.clone(),
+                        usage_range: usage.range,
+                        name: new_name.to_string(),
+                    });
+                }
+            }
         }
+        Some(JavaSymbolKind::Type) => {
+            if let Some(info) = db.type_symbol_info(symbol) {
+                if info.is_top_level {
+                    if let Some(existing) =
+                        db.find_top_level_type_in_package(info.package.as_deref(), new_name)
+                    {
+                        if existing != symbol {
+                            conflicts.push(Conflict::NameCollision {
+                                file: def.file.clone(),
+                                name: new_name.to_string(),
+                                existing_symbol: existing,
+                            });
+                        }
+                    }
+
+                    if info.is_public {
+                        if let Some((from, to)) = type_file_rename_candidate(&def.file, &def.name, new_name)
+                        {
+                            if db.file_exists(&to) {
+                                conflicts.push(Conflict::FileAlreadyExists { file: to });
+                            } else {
+                                // `from` is always an existing file (it contains the type definition).
+                                let _ = from;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
     }
 
     conflicts
+}
+
+fn type_file_rename_candidate(
+    file: &FileId,
+    old_name: &str,
+    new_name: &str,
+) -> Option<(FileId, FileId)> {
+    if new_name == old_name {
+        return None;
+    }
+    // Only rename `Foo.java` -> `Bar.java` when the file name matches the public top-level type.
+    let path = file.0.as_str();
+    let (dir, base) = path.rsplit_once('/').unwrap_or(("", path));
+    let expected = format!("{old_name}.java");
+    if base != expected {
+        return None;
+    }
+    let new_base = format!("{new_name}.java");
+    let new_path = if dir.is_empty() {
+        new_base
+    } else {
+        format!("{dir}/{new_base}")
+    };
+    if new_path == file.0 {
+        return None;
+    }
+    Some((file.clone(), FileId::new(new_path)))
 }
 
 pub struct ExtractVariableParams {

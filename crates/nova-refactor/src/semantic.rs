@@ -75,6 +75,9 @@ pub enum Conflict {
         usage_range: TextRange,
         name: String,
     },
+    FileAlreadyExists {
+        file: FileId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -89,6 +92,14 @@ pub struct SymbolDefinition {
 pub struct Reference {
     pub file: FileId,
     pub range: TextRange,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypeSymbolInfo {
+    /// Dotted Java package name (`com.example`). `None` represents the default package.
+    pub package: Option<String>,
+    pub is_top_level: bool,
+    pub is_public: bool,
 }
 
 /// Abstraction over Nova's semantic database/index.
@@ -118,9 +129,21 @@ pub trait RefactorDatabase {
         None
     }
 
+    fn file_exists(&self, file: &FileId) -> bool {
+        self.file_text(file).is_some()
+    }
+
     fn symbol_definition(&self, symbol: SymbolId) -> Option<SymbolDefinition>;
     fn symbol_scope(&self, symbol: SymbolId) -> Option<u32>;
     fn symbol_kind(&self, _symbol: SymbolId) -> Option<JavaSymbolKind> {
+        None
+    }
+
+    fn type_symbol_info(&self, _symbol: SymbolId) -> Option<TypeSymbolInfo> {
+        None
+    }
+
+    fn find_top_level_type_in_package(&self, _package: Option<&str>, _name: &str) -> Option<SymbolId> {
         None
     }
 
