@@ -19,4 +19,3 @@ mod workspace_bsp;
 mod workspace_compile_info_for_file_bsp;
 #[cfg(feature = "bsp")]
 mod workspace_inverse_sources;
-
