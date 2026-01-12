@@ -253,6 +253,20 @@ assert_eq!(
 );
 ```
 
+#### End-to-end testing of `nova-workspace`’s watcher pipeline
+
+`nova-workspace` runs a background watcher thread + driver thread that batch/debounce `WatchEvent`s
+and then calls into higher-level APIs like `WorkspaceEngine::apply_filesystem_events` and
+`WorkspaceEngine::request_project_reload`.
+
+To test this pipeline deterministically (without relying on OS watcher timing), `WorkspaceEngine`
+exposes a test-only helper (`#[cfg(test)]`) that lets tests inject any `FileWatcher`
+implementation:
+
+- `WorkspaceEngine::start_watching_with_watcher(Box<dyn FileWatcher>, WatchDebounceConfig)`
+
+See the `manual_watcher_*` tests in `crates/nova-workspace/src/engine.rs` for examples.
+
 ### 2) Bypass the watcher and call "apply events" APIs directly
 
 For higher-level workspace behavior, many tests can skip the watcher entirely and call the
