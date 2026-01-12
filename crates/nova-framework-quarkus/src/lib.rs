@@ -327,9 +327,8 @@ fn config_property_prefix_at<'a>(source: &'a str, offset: usize) -> Option<(&'a 
     }
 
     // Ensure the nearest preceding annotation is `@ConfigProperty` (qualified or not).
-    let before_ident = &source[..ident_start];
-    let at_idx = before_ident.rfind('@')?;
-    let after_at = &before_ident[at_idx + 1..];
+    let at_idx = find_previous_at_outside_literals(source, ident_start)?;
+    let after_at = &source[at_idx + 1..ident_start];
 
     let mut ann_end = 0usize;
     for (idx, ch) in after_at.char_indices() {
@@ -392,6 +391,29 @@ fn is_escaped_quote(bytes: &[u8], idx: usize) -> bool {
 
 fn is_ident_continue(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'
+}
+
+fn find_previous_at_outside_literals(source: &str, before: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let mut in_string = false;
+    let mut in_char = false;
+
+    let mut i = before.min(bytes.len());
+    while i > 0 {
+        i -= 1;
+        match bytes[i] {
+            b'"' if !is_escaped_quote(bytes, i) && !in_char => {
+                in_string = !in_string;
+            }
+            b'\'' if !is_escaped_quote(bytes, i) && !in_string => {
+                in_char = !in_char;
+            }
+            b'@' if !in_string && !in_char => return Some(i),
+            _ => {}
+        }
+    }
+
+    None
 }
 
 #[derive(Debug, Clone)]
