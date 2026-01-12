@@ -727,7 +727,10 @@ mod tests {
     #[test]
     fn gradle_build_file_detection_includes_nova_gradle_snapshot() {
         assert!(
-            is_build_file(BuildSystem::Gradle, Path::new(".nova/queries/gradle.json")),
+            is_build_file(
+                BuildSystem::Gradle,
+                Path::new(nova_build_model::GRADLE_SNAPSHOT_REL_PATH)
+            ),
             ".nova/queries/gradle.json should be treated as a Gradle build marker"
         );
         assert!(
@@ -809,15 +812,12 @@ mod tests {
             "snapshot root should not be present before creating the gradle snapshot"
         );
 
-        let snapshot_path = workspace_root
-            .join(".nova")
-            .join("queries")
-            .join("gradle.json");
+        let snapshot_path = workspace_root.join(nova_build_model::GRADLE_SNAPSHOT_REL_PATH);
         std::fs::create_dir_all(snapshot_path.parent().expect("snapshot parent"))
             .expect("mkdir .nova/queries");
 
         let snapshot = serde_json::json!({
-            "schemaVersion": 1,
+            "schemaVersion": nova_build_model::GRADLE_SNAPSHOT_SCHEMA_VERSION,
             "buildFingerprint": fingerprint,
             "projects": [{"path": ":", "projectDir": "."}],
             "javaCompileConfigs": {

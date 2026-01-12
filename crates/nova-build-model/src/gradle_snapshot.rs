@@ -9,6 +9,12 @@ pub const GRADLE_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 /// Relative path to the workspace-local Gradle snapshot file.
 pub const GRADLE_SNAPSHOT_REL_PATH: &str = ".nova/queries/gradle.json";
 
+/// Glob pattern matching the workspace-local Gradle snapshot file.
+///
+/// This is primarily used by build file watching logic (e.g. editor integrations) so changes to
+/// the snapshot can trigger a reload.
+pub const GRADLE_SNAPSHOT_GLOB: &str = "**/.nova/queries/gradle.json";
+
 /// Workspace-local Gradle snapshot file (`.nova/queries/gradle.json`).
 ///
 /// This file is written by `nova-build` after invoking Gradle and is read by `nova-project` to

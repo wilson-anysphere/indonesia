@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use nova_project::{
     is_build_file, load_project_with_options, reload_project, BuildSystem, LoadOptions,
 };
+use nova_build_model::GRADLE_SNAPSHOT_REL_PATH;
 
 fn join(root: &Path, rel: &str) -> PathBuf {
     rel.split('/')
@@ -35,7 +36,7 @@ fn gradle_is_build_file_recognizes_expected_paths() {
         "gradle/deps.versions.toml",
         "gradle/conventions.gradle",
         "gradle/conventions.gradle.kts",
-        ".nova/queries/gradle.json",
+        GRADLE_SNAPSHOT_REL_PATH,
     ];
     for rel in positives {
         let path = join(root, rel);

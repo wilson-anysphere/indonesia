@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use nova_build_model::{BuildSystemBackend, PathPattern};
+use nova_build_model::{BuildSystemBackend, PathPattern, GRADLE_SNAPSHOT_GLOB};
 use nova_project::{
     BazelBuildSystem, GradleBuildSystem, LoadOptions, MavenBuildSystem, SimpleBuildSystem,
 };
@@ -87,7 +87,7 @@ fn watch_files_contains_canonical_markers() {
         .contains(&PathPattern::Glob("**/dependency-locks/**/*.lockfile")));
     assert!(gradle
         .watch_files()
-        .contains(&PathPattern::Glob("**/.nova/queries/gradle.json")));
+        .contains(&PathPattern::Glob(GRADLE_SNAPSHOT_GLOB)));
 
     let bazel = BazelBuildSystem::new(LoadOptions::default());
     assert!(bazel

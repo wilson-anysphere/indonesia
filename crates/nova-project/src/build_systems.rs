@@ -136,7 +136,7 @@ impl BuildSystemBackend for GradleBuildSystem {
                 PathPattern::Glob("**/gradle/wrapper/gradle-wrapper.jar"),
                 // `nova-build` emits a file-based Gradle snapshot handoff here; treat it like a build
                 // file so editors can trigger a reload when it changes.
-                PathPattern::Glob("**/.nova/queries/gradle.json"),
+                PathPattern::Glob(nova_build_model::GRADLE_SNAPSHOT_GLOB),
             ]
             .into_iter()
             .chain(common_watch_files())
