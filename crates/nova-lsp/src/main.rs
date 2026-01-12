@@ -21,6 +21,7 @@ use lsp_types::{
 use nova_ai::context::{
     ContextDiagnostic, ContextDiagnosticKind, ContextDiagnosticSeverity, ContextRequest,
 };
+use nova_ai::ExcludedPathMatcher;
 use nova_ai::NovaAi;
 #[cfg(feature = "ai")]
 use nova_ai::{
@@ -3774,7 +3775,13 @@ fn handle_code_action(
         }
     }
     // AI code actions (gracefully degrade when AI isn't configured).
-    if state.ai.is_some() {
+    let ai_enabled = state.ai.is_some();
+    let ai_excluded = ai_enabled
+        && path_from_uri(&params.text_document.uri)
+            .as_deref()
+            .is_some_and(|path| is_excluded_by_ai_privacy(state, path));
+
+    if ai_enabled && !ai_excluded {
         // Explain error (diagnostic-driven).
         if let Some(diagnostic) = params.context.diagnostics.first() {
             let code = text.map(|t| extract_snippet(t, &diagnostic.range, 2));
@@ -5183,13 +5190,14 @@ fn handle_completion(
     };
 
     let path = path_from_uri(uri.as_str()).unwrap_or_else(|| PathBuf::from(uri.as_str()));
+    let ai_excluded = is_excluded_by_ai_privacy(state, &path);
     let mut db = InMemoryFileStore::new();
     let file: DbFileId = db.file_id_for_path(&path);
     db.set_file_text(file, text.clone());
 
     #[cfg(feature = "ai")]
     let (completion_context_id, has_more) = {
-        let has_more = state.completion_service.completion_engine().supports_ai();
+        let has_more = !ai_excluded && state.completion_service.completion_engine().supports_ai();
         let completion_context_id = if has_more {
             let document_uri = Some(uri.as_str().to_string());
             let ctx = multi_token_completion_context(&db, file, position);
@@ -6042,6 +6050,15 @@ fn path_from_uri(uri: &str) -> Option<PathBuf> {
     }
 }
 
+fn is_excluded_by_ai_privacy(state: &ServerState, path: &Path) -> bool {
+    match ExcludedPathMatcher::from_config(&state.ai_config.privacy) {
+        Ok(matcher) => matcher.is_match(path),
+        // Best-effort fail-closed: if privacy configuration is invalid, avoid starting any AI work
+        // based on potentially sensitive files.
+        Err(_) => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6452,6 +6469,17 @@ fn run_ai_explain_error(
         .as_ref()
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
 
+    if let Some(uri) = args.uri.as_deref() {
+        if let Some(path) = path_from_uri(uri) {
+            if is_excluded_by_ai_privacy(state, &path) {
+                return Err((
+                    -32600,
+                    "AI is disabled for files matched by ai.privacy.excluded_paths".to_string(),
+                ));
+            }
+        }
+    }
+
     send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Explain this error")?;
     send_progress_report(rpc_out, work_done_token.as_ref(), "Building context…", None)?;
     send_log_message(rpc_out, "AI: explaining error…")?;
@@ -6508,6 +6536,17 @@ fn run_ai_generate_method_body(
         .as_ref()
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
 
+    if let Some(uri) = args.uri.as_deref() {
+        if let Some(path) = path_from_uri(uri) {
+            if is_excluded_by_ai_privacy(state, &path) {
+                return Err((
+                    -32600,
+                    "AI is disabled for files matched by ai.privacy.excluded_paths".to_string(),
+                ));
+            }
+        }
+    }
+
     send_progress_begin(
         rpc_out,
         work_done_token.as_ref(),
@@ -6551,6 +6590,17 @@ fn run_ai_generate_tests(
         .runtime
         .as_ref()
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
+
+    if let Some(uri) = args.uri.as_deref() {
+        if let Some(path) = path_from_uri(uri) {
+            if is_excluded_by_ai_privacy(state, &path) {
+                return Err((
+                    -32600,
+                    "AI is disabled for files matched by ai.privacy.excluded_paths".to_string(),
+                ));
+            }
+        }
+    }
 
     send_progress_begin(rpc_out, work_done_token.as_ref(), "AI: Generate tests")?;
     send_progress_report(rpc_out, work_done_token.as_ref(), "Building context…", None)?;
