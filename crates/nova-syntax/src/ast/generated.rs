@@ -2591,6 +2591,10 @@ impl StringTemplate {
         support::token(&self.syntax, SyntaxKind::StringTemplateStart)
     }
 
+    pub fn text_tokens(&self) -> impl Iterator<Item = SyntaxToken> + '_ {
+        support::tokens(&self.syntax, SyntaxKind::StringTemplateText)
+    }
+
     pub fn parts(&self) -> impl Iterator<Item = StringTemplateInterpolation> + '_ {
         support::children::<StringTemplateInterpolation>(&self.syntax)
     }
@@ -2620,8 +2624,16 @@ impl AstNode for StringTemplateInterpolation {
 }
 
 impl StringTemplateInterpolation {
+    pub fn expr_start_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, SyntaxKind::StringTemplateExprStart)
+    }
+
     pub fn expression(&self) -> Option<Expression> {
         support::child::<Expression>(&self.syntax)
+    }
+
+    pub fn expr_end_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, SyntaxKind::StringTemplateExprEnd)
     }
 }
 

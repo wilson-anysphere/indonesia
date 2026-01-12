@@ -529,12 +529,15 @@ StringTemplateExpression {
 
 StringTemplate {
   start_token: Token(StringTemplateStart)?
+  text_tokens: Token(StringTemplateText)*
   parts: StringTemplateInterpolation*
   end_token: Token(StringTemplateEnd)?
 }
 
 StringTemplateInterpolation {
+  expr_start_token: Token(StringTemplateExprStart)?
   expression: Expression?
+  expr_end_token: Token(StringTemplateExprEnd)?
 }
 
 ClassLiteralExpression {
