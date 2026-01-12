@@ -176,13 +176,13 @@ pub struct SymbolSearchIndex {
 impl SymbolSearchIndex {
     pub fn build(symbols: Vec<Symbol>) -> Self {
         let mut entries = Vec::with_capacity(symbols.len());
-        for sym in symbols {
-            entries.push(SymbolEntry::new(sym));
-        }
-
         let mut builder = TrigramIndexBuilder::new();
-        for (id, entry) in entries.iter().enumerate() {
+        let mut prefix1: Vec<Vec<SymbolId>> = vec![Vec::new(); 256];
+
+        for (id, sym) in symbols.into_iter().enumerate() {
+            let entry = SymbolEntry::new(sym);
             let id = id as SymbolId;
+
             // `workspace/symbol` commonly sets `qualified_name == name`. Avoid
             // redundant trigram extraction in that case.
             if entry.qualified_name_differs {
@@ -190,12 +190,7 @@ impl SymbolSearchIndex {
             } else {
                 builder.insert(id, &entry.symbol.name);
             }
-        }
-        let trigram = builder.build();
 
-        let mut prefix1: Vec<Vec<SymbolId>> = vec![Vec::new(); 256];
-        for (id, entry) in entries.iter().enumerate() {
-            let id = id as SymbolId;
             let name_key = entry
                 .symbol
                 .name
@@ -220,7 +215,11 @@ impl SymbolSearchIndex {
                     }
                 }
             }
+
+            entries.push(entry);
         }
+
+        let trigram = builder.build();
 
         Self {
             symbols: entries,
