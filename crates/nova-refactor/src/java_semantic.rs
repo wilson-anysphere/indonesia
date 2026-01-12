@@ -2098,20 +2098,6 @@ fn record_body_references(
                     _ => None,
                 }
             }
-            hir::Expr::FieldAccess { receiver, name, .. } => {
-                // Qualified types like `Outer.Inner` or `com.example.Foo` can appear in expression
-                // position as the receiver for static member accesses (`Outer.Inner.m()`), method
-                // references (`Outer.Inner::m`), etc.
-                //
-                // Treat such field-access chains as types so downstream member-resolution can look
-                // up members on the resolved type.
-                let path = qualified_name_for_field_access(body, *receiver, name.as_str())?;
-                resolver.resolve_qualified_type_resolution_in_scope(
-                    &scope_result.scopes,
-                    scope,
-                    &path,
-                )
-            }
             hir::Expr::New { class, .. } => {
                 let scope = type_resolution_scope(&scope_result.scopes, scope);
                 resolve_type_text(&scope_result.scopes, scope, resolver, class)
