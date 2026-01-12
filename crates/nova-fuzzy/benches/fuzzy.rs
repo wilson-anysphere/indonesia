@@ -1,6 +1,8 @@
-use std::time::Instant;
+use std::time::Duration;
 
-use nova_fuzzy::{fuzzy_match, FuzzyMatcher, TrigramIndexBuilder};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use nova_core::SymbolId;
+use nova_fuzzy::{FuzzyMatcher, TrigramIndexBuilder};
 
 fn lcg(seed: &mut u64) -> u64 {
     // Deterministic, cheap RNG (not cryptographically secure).
@@ -20,82 +22,106 @@ fn gen_ident(seed: &mut u64) -> String {
             s.push(ch);
         }
         if (x & 0x3f) == 0 {
-            // sprinkle in separators/camel case.
+            // Sprinkle in separators/camel case.
             s.push('_');
         }
     }
     s
 }
 
-fn trigram_build_and_query() {
+fn build_trigram_index(symbol_count: usize) -> nova_fuzzy::TrigramIndex {
     let mut seed = 0x1234_5678_9abc_def0u64;
-    let count: usize = std::env::var("NOVA_FUZZY_BENCH_SYMBOLS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(200_000);
-
-    let symbols: Vec<String> = (0..count).map(|_| gen_ident(&mut seed)).collect();
-
-    let start = Instant::now();
     let mut builder = TrigramIndexBuilder::new();
-    for (i, s) in symbols.iter().enumerate() {
-        builder.insert(i as u32, s);
-    }
-    let index = builder.build();
-    eprintln!(
-        "trigram_build_{count}: {:.2?}",
-        Instant::now().duration_since(start)
-    );
 
-    let start = Instant::now();
-    let mut total = 0usize;
-    for _ in 0..1_000 {
-        total += index.candidates("abc").len();
-    }
-    eprintln!(
-        "trigram_query_{count} (1000 iters): {:.2?} (total_candidates={total})",
-        Instant::now().duration_since(start)
-    );
+    for i in 0..symbol_count {
+        let base = gen_ident(&mut seed);
 
-    // End-to-end symbol search: candidates + fuzzy scoring + best-of sorting.
-    let query = "abc";
-    let iters = 200usize;
-    let start = Instant::now();
-    let mut matcher = FuzzyMatcher::new(query);
-    let mut best = Vec::new();
-    for _ in 0..iters {
-        best.clear();
-        let candidates = index.candidates(query);
-        for id in candidates {
-            if let Some(score) = matcher.score(&symbols[id as usize]) {
-                best.push((score.rank_key(), id));
-            }
-        }
-        best.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-        best.truncate(20);
-        std::hint::black_box(&best);
+        // Add some repeated prefixes to make candidate lists less sparse and more
+        // representative of real code (e.g. getters/setters).
+        //
+        // Keep this deterministic and stable across runs.
+        let symbol = match i % 64 {
+            0 => format!("get_value_{base}"),
+            2 => format!("get_{base}"),
+            4 => format!("set_value_{base}"),
+            6 => format!("set_{base}"),
+            _ => base,
+        };
+
+        builder.insert(i as SymbolId, &symbol);
     }
-    eprintln!(
-        "fuzzy_search_{count} ({iters} iters, query={query:?}): {:.2?}",
-        Instant::now().duration_since(start)
-    );
+
+    builder.build()
 }
 
-fn fuzzy_score() {
-    let start = Instant::now();
-    let mut acc = 0i32;
-    for _ in 0..200_000 {
-        if let Some(score) = fuzzy_match("hm", "HashMap") {
-            acc ^= score.score;
-        }
-    }
-    eprintln!(
-        "fuzzy_score_hashmap (200k iters): {:.2?} (acc={acc})",
-        Instant::now().duration_since(start)
-    );
+#[derive(Clone, Copy)]
+struct FuzzyScoreCase {
+    query: &'static str,
+    candidate: &'static str,
 }
 
-fn main() {
-    trigram_build_and_query();
-    fuzzy_score();
+fn bench_fuzzy_score(c: &mut Criterion) {
+    let mut group = c.benchmark_group("fuzzy_score");
+    group.measurement_time(Duration::from_secs(2));
+    group.warm_up_time(Duration::from_secs(1));
+    group.sample_size(20);
+
+    let cases = [
+        (
+            "short",
+            FuzzyScoreCase {
+                query: "hm",
+                candidate: "HashMap",
+            },
+        ),
+        (
+            "medium",
+            FuzzyScoreCase {
+                query: "hashmp",
+                candidate: "HashMap",
+            },
+        ),
+    ];
+
+    for (id, case) in cases {
+        group.bench_with_input(BenchmarkId::from_parameter(id), &case, |b, case| {
+            let mut matcher = FuzzyMatcher::new(case.query);
+            b.iter(|| black_box(matcher.score(black_box(case.candidate))))
+        });
+    }
+
+    group.finish();
 }
+
+fn bench_trigram_candidates(c: &mut Criterion) {
+    // Keep the corpus size large enough to be representative but small enough
+    // to keep `cargo bench` runs reasonable in CI-ish environments.
+    const SYMBOLS: usize = 100_000;
+    let index = build_trigram_index(SYMBOLS);
+
+    let mut group = c.benchmark_group("trigram_candidates");
+    group.measurement_time(Duration::from_secs(2));
+    group.warm_up_time(Duration::from_secs(1));
+    group.sample_size(20);
+
+    // query_len_3: single trigram → single posting list lookup.
+    let query_len_3 = "get";
+    // query_len_4_or_5: multi-trigram intersection (3 trigrams).
+    let query_len_4_or_5 = "get_v";
+
+    let cases = [
+        ("query_len_3", query_len_3),
+        ("query_len_4_or_5", query_len_4_or_5),
+    ];
+
+    for (id, query) in cases {
+        group.bench_with_input(BenchmarkId::from_parameter(id), &query, |b, query| {
+            b.iter(|| black_box(index.candidates(black_box(*query))))
+        });
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, bench_fuzzy_score, bench_trigram_candidates);
+criterion_main!(benches);
