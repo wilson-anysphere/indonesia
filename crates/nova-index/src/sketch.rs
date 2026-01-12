@@ -177,8 +177,32 @@ impl Index {
             match best {
                 None => best = Some(sym),
                 Some(current) => {
-                    if sym.decl_range.len() < current.decl_range.len() {
+                    let sym_len = sym.decl_range.len();
+                    let current_len = current.decl_range.len();
+                    if sym_len < current_len {
                         best = Some(sym);
+                        continue;
+                    }
+                    if sym_len == current_len {
+                        // Tie-breaker: when multiple symbols share the same declaration range
+                        // (e.g. `int a, b;`), prefer the one whose *name* covers the cursor.
+                        //
+                        // We intentionally treat `name_range.end` as inclusive here so callers can
+                        // pass cursor offsets that sit "between" characters (common in LSP).
+                        let sym_on_name =
+                            offset >= sym.name_range.start && offset <= sym.name_range.end;
+                        let current_on_name =
+                            offset >= current.name_range.start && offset <= current.name_range.end;
+                        if sym_on_name && !current_on_name {
+                            best = Some(sym);
+                            continue;
+                        }
+                        if sym_on_name && current_on_name
+                            && sym.name_range.len() < current.name_range.len()
+                        {
+                            best = Some(sym);
+                            continue;
+                        }
                     }
                 }
             }

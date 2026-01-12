@@ -93,3 +93,26 @@ class A {
     assert_eq!(sym.kind, SymbolKind::Field);
     assert_eq!(sym.name, "field");
 }
+
+#[test]
+fn symbol_at_offset_prefers_correct_field_in_multi_declarator_statement() {
+    let file = "file:///Test.java";
+    let source = r#"
+class A {
+    int a, b;
+}
+"#;
+
+    let mut files = BTreeMap::new();
+    files.insert(file.to_string(), source.to_string());
+
+    let index = Index::new(files);
+
+    let offset_on_b = source.find("b;").expect("b declarator");
+    let sym = index
+        .symbol_at_offset(file, offset_on_b, Some(&[SymbolKind::Field]))
+        .expect("field at offset");
+    assert_eq!(sym.kind, SymbolKind::Field);
+    assert_eq!(sym.name, "b");
+}
+
