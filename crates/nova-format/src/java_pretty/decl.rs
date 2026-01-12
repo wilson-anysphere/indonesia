@@ -1,6 +1,7 @@
 use crate::comment_printer::{fmt_comment, FmtCtx};
 use crate::doc::Doc;
 use crate::{Comment, CommentKind, TokenKey};
+use nova_core::{TextRange, TextSize};
 use nova_syntax::{ast, AstNode, SyntaxKind, SyntaxNode};
 
 use super::{fallback, print, JavaPrettyFormatter};
@@ -78,10 +79,6 @@ impl<'a> JavaPrettyFormatter<'a> {
             Doc::nil()
         };
 
-        // Anything we still print via `fallback::byte_range`/raw slices has already emitted comment
-        // tokens, so mark them as consumed so we can debug-assert that nothing is silently dropped.
-        self.comments.consume_in_range(decl.text_range());
-
         let trailing = last_sig
             .as_ref()
             .map(|tok| self.comments.take_trailing_doc(TokenKey::from(tok), 0))
@@ -99,50 +96,93 @@ impl<'a> JavaPrettyFormatter<'a> {
         let inner_start = u32::from(l_brace.text_range().end());
         let inner_end = u32::from(r_brace.text_range().start());
 
-        let member_inner = match body.kind() {
+        struct MemberLayout<'a> {
+            members: Vec<SyntaxNode>,
+            doc: Doc<'a>,
+        }
+
+        let member_layout: Option<MemberLayout<'a>> = match body.kind() {
             SyntaxKind::ClassBody => ast::ClassBody::cast(body.clone())
                 .map(|b| b.members().map(|m| m.syntax().clone()).collect::<Vec<_>>())
-                .and_then(|members| self.print_member_list(&members)),
+                .and_then(|members| {
+                    let doc = self.print_member_list(&members)?;
+                    Some(MemberLayout { members, doc })
+                }),
             SyntaxKind::InterfaceBody => ast::InterfaceBody::cast(body.clone())
                 .map(|b| b.members().map(|m| m.syntax().clone()).collect::<Vec<_>>())
-                .and_then(|members| self.print_member_list(&members)),
+                .and_then(|members| {
+                    let doc = self.print_member_list(&members)?;
+                    Some(MemberLayout { members, doc })
+                }),
             SyntaxKind::RecordBody => ast::RecordBody::cast(body.clone())
                 .map(|b| b.members().map(|m| m.syntax().clone()).collect::<Vec<_>>())
-                .and_then(|members| self.print_member_list(&members)),
+                .and_then(|members| {
+                    let doc = self.print_member_list(&members)?;
+                    Some(MemberLayout { members, doc })
+                }),
             SyntaxKind::AnnotationBody => ast::AnnotationBody::cast(body.clone())
                 .map(|b| b.members().map(|m| m.syntax().clone()).collect::<Vec<_>>())
-                .and_then(|members| self.print_member_list(&members)),
-            // Enum bodies have additional punctuation (constants list + optional semicolon) which is
-            // not handled by the member-splitting logic yet.
+                .and_then(|members| {
+                    let doc = self.print_member_list(&members)?;
+                    Some(MemberLayout { members, doc })
+                }),
             _ => None,
         };
 
-        // Inline comments immediately after `{` (e.g. `{/* c */int x;}`) are stored as trailing
-        // comments of the `{` token. When formatting a member list, we want those comments to be
-        // emitted at the start of the first member line instead.
-        let leading_from_l_brace = if member_inner.is_some() {
-            self.comments
-                .take_trailing_as_leading_doc(TokenKey::from(l_brace), 0)
+        let leading_for_l_brace = self.comments.take_leading_doc(TokenKey::from(l_brace), 0);
+        let open = Doc::concat([leading_for_l_brace, Doc::text("{")]);
+
+        let inner_doc = if let Some(layout) = member_layout {
+            let last_end = u32::from(layout.members[layout.members.len() - 1].text_range().end());
+
+            let mut parts: Vec<Doc<'a>> = Vec::new();
+
+            // Inline comments immediately after `{` (e.g. `{/* c */int x;}`) are stored as trailing
+            // comments of the `{` token. When formatting a member list we want those comments to be
+            // emitted at the start of the first member line instead (and ensure block comments are
+            // followed by a space).
+            let leading_from_l_brace = self
+                .comments
+                .take_trailing_as_leading_doc(TokenKey::from(l_brace), 0);
+            if !leading_from_l_brace.is_nil() {
+                parts.push(leading_from_l_brace);
+            }
+
+            parts.push(layout.doc);
+
+            // Anything between the last member and the closing `}` that starts on a new line (e.g.
+            // comments before the closing brace) is not associated with a specific member node, so
+            // print it verbatim to avoid losing it. Skip content on the same line as the final
+            // member because trailing comments for that line are already emitted via `CommentStore`
+            // when formatting the member itself.
+            if last_end < inner_end {
+                if let Some(suffix_start) = find_first_line_break(self.source, last_end, inner_end)
+                {
+                    if let Some(suffix) =
+                        self.print_verbatim_tokens(body, suffix_start, inner_end, true)
+                    {
+                        self.comments.consume_in_range(TextRange::new(
+                            TextSize::from(suffix_start),
+                            TextSize::from(inner_end),
+                        ));
+                        parts.push(suffix);
+                    }
+                }
+            }
+
+            Doc::concat(parts)
+        } else if let Some(inner) = self.print_verbatim_tokens(body, inner_start, inner_end, false) {
+            self.comments.consume_in_range(TextRange::new(
+                TextSize::from(inner_start),
+                TextSize::from(inner_end),
+            ));
+            inner
         } else {
-            Doc::nil()
+            return Doc::concat([open, Doc::hardline(), Doc::text("}")]);
         };
 
-        let inner = member_inner
-            .or_else(|| self.print_verbatim_tokens(body, inner_start, inner_end, false))
-            .map(|inner| {
-                if leading_from_l_brace.is_nil() {
-                    inner
-                } else {
-                    Doc::concat([leading_from_l_brace, inner])
-                }
-            });
-        if inner.is_none() {
-            return Doc::concat([Doc::text("{"), Doc::hardline(), Doc::text("}")]);
-        }
-
-        let inner_doc = inner.unwrap();
         Doc::concat([
-            Doc::text("{"),
+            open,
             Doc::concat([Doc::hardline(), inner_doc]).indent(),
             Doc::hardline(),
             Doc::text("}"),
@@ -426,6 +466,52 @@ fn is_synthetic_missing(kind: SyntaxKind) -> bool {
             | SyntaxKind::MissingRBracket
             | SyntaxKind::MissingGreater
     )
+}
+
+fn find_first_line_break(source: &str, start: u32, end: u32) -> Option<u32> {
+    let len = source.len();
+    let mut start = start as usize;
+    let mut end = end as usize;
+
+    start = start.min(len);
+    end = end.min(len);
+    if start > end {
+        std::mem::swap(&mut start, &mut end);
+    }
+
+    let bytes = source.as_bytes();
+    let mut i = start;
+    while i < end {
+        let mut pos = match bytes[i] {
+            b'\n' => {
+                // If we started scanning at `\n` inside a CRLF sequence, prefer the `\r` byte so we
+                // start at the beginning of the line-break token.
+                if i > start && bytes[i - 1] == b'\r' {
+                    i - 1
+                } else {
+                    i
+                }
+            }
+            b'\r' => i,
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+
+        // `print_verbatim_tokens` only processes tokens whose `text_range` is fully within the
+        // `[start, end]` bounds. The Java lexer typically groups trailing spaces and the following
+        // line break into a single whitespace token, so starting *inside* that token would skip the
+        // newline entirely. Back up over trailing indentation so we start at the whitespace token
+        // boundary.
+        while pos > start && matches!(bytes[pos - 1], b' ' | b'\t') {
+            pos -= 1;
+        }
+
+        return Some(pos as u32);
+    }
+
+    None
 }
 
 fn fmt_multiline_comment<'a>(text: &'a str, kind: SyntaxKind) -> Doc<'a> {
