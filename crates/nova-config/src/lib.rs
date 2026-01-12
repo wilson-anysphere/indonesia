@@ -273,6 +273,7 @@ pub struct LoggingConfig {
 
     /// Number of log lines kept in memory for bug reports.
     #[serde(default = "LoggingConfig::default_buffer_lines")]
+    #[schemars(range(min = 1))]
     pub buffer_lines: usize,
 }
 

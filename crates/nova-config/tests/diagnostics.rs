@@ -546,6 +546,26 @@ level = "warn,nova=foo"
 }
 
 #[test]
+fn warns_when_logging_buffer_lines_is_zero() {
+    let text = r#"
+[logging]
+buffer_lines = 0
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert!(diagnostics.errors.is_empty());
+    assert_eq!(
+        diagnostics.warnings,
+        vec![ConfigWarning::InvalidValue {
+            toml_path: "logging.buffer_lines".to_string(),
+            message: "must be >= 1 (0 is treated as 1)".to_string(),
+        }]
+    );
+}
+
+#[test]
 fn warns_when_audit_log_enabled_without_ai_enabled() {
     let text = r#"
 [ai.audit_log]

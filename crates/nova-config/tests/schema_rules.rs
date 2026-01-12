@@ -315,3 +315,16 @@ fn json_schema_requires_non_empty_paths_in_arrays() {
         Some(1)
     );
 }
+
+#[test]
+fn json_schema_requires_positive_logging_buffer_lines() {
+    let schema = json_schema();
+    let value = serde_json::to_value(schema).expect("schema serializes");
+
+    assert_eq!(
+        value
+            .pointer("/definitions/LoggingConfig/properties/buffer_lines/minimum")
+            .and_then(|v| v.as_f64()),
+        Some(1.0)
+    );
+}

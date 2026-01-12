@@ -115,6 +115,13 @@ fn validate_jdk(
 }
 
 fn validate_logging(config: &NovaConfig, out: &mut ValidationDiagnostics) {
+    if config.logging.buffer_lines == 0 {
+        out.warnings.push(ConfigWarning::InvalidValue {
+            toml_path: "logging.buffer_lines".to_string(),
+            message: "must be >= 1 (0 is treated as 1)".to_string(),
+        });
+    }
+
     let normalized = LoggingConfig::normalize_level_directives(&config.logging.level);
     if !config.logging.level.trim().is_empty()
         && tracing_subscriber::EnvFilter::try_new(normalized.clone()).is_err()

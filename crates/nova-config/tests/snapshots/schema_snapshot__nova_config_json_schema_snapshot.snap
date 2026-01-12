@@ -1159,7 +1159,7 @@ expression: schema
           "default": 2000,
           "type": "integer",
           "format": "uint",
-          "minimum": 0.0
+          "minimum": 1.0
         },
         "file": {
           "description": "Append logs to the given file path (in addition to the in-memory buffer).\n\nIf the file cannot be opened, file logging is disabled while other sinks remain active.",
