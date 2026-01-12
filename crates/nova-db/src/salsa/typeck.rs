@@ -1294,8 +1294,14 @@ fn resolve_expected_return_type<'idx>(
     match owner {
         DefWithBodyId::Method(m) => {
             let method = tree.method(m);
-            let resolved =
-                resolve_type_ref_text(resolver, scopes, scope_id, loader, &method.return_ty, None);
+            let resolved = resolve_type_ref_text(
+                resolver,
+                scopes,
+                scope_id,
+                loader,
+                &method.return_ty,
+                Some(method.return_ty_range),
+            );
             (resolved.ty, resolved.diagnostics)
         }
         DefWithBodyId::Constructor(_) | DefWithBodyId::Initializer(_) => (Type::Void, Vec::new()),
@@ -1320,7 +1326,14 @@ fn resolve_param_types<'idx>(
     };
 
     for param in params {
-        let resolved = resolve_type_ref_text(resolver, scopes, scope_id, loader, &param.ty, None);
+        let resolved = resolve_type_ref_text(
+            resolver,
+            scopes,
+            scope_id,
+            loader,
+            &param.ty,
+            Some(param.ty_range),
+        );
         diags.extend(resolved.diagnostics);
         out.push(resolved.ty);
     }

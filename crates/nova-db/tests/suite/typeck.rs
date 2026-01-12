@@ -150,3 +150,35 @@ class Test {
         "expected Nova to report a type-mismatch diagnostic; got {diags:?}"
     );
 }
+
+#[test]
+fn unresolved_signature_types_are_anchored() {
+    let src = r#"
+class C {
+    DoesNotExist id(AlsoMissing x) { return null; }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+
+    let unresolved: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code.as_ref() == "unresolved-type")
+        .collect();
+    assert!(
+        unresolved.len() >= 2,
+        "expected at least two unresolved-type diagnostics, got {diags:?}"
+    );
+
+    for diag in unresolved {
+        let span = diag
+            .span
+            .expect("unresolved-type diagnostic should have a span");
+        let snippet = &src[span.start..span.end];
+        assert!(
+            snippet == "DoesNotExist" || snippet == "AlsoMissing",
+            "expected span to cover the unresolved type name, got {snippet:?} for {span:?}"
+        );
+    }
+}
