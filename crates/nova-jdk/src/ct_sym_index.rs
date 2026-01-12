@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use nova_classfile::{parse_module_info_class, ClassFile};
 use nova_modules::{ModuleGraph, ModuleInfo, ModuleName, JAVA_BASE};
+use zip::ZipArchive;
 
 use crate::ct_sym;
 use crate::index::{
@@ -31,6 +32,7 @@ pub(crate) struct CtSymReleaseIndex {
     #[allow(dead_code)]
     release: u32,
     ct_sym_path: PathBuf,
+    archive: Mutex<ZipArchive<std::fs::File>>,
 
     modules: Vec<ModuleName>,
     module_graph: Option<ModuleGraph>,
@@ -59,7 +61,7 @@ impl CtSymReleaseIndex {
         release: u32,
     ) -> Result<Self, JdkIndexError> {
         let ct_sym_path = ct_sym_path.as_ref().to_path_buf();
-        let archive = ct_sym::open_archive(&ct_sym_path)?;
+        let mut archive = ct_sym::open_archive(&ct_sym_path)?;
 
         // Collect file names up-front so we can iterate without holding a borrow
         // on the archive. We also re-use this archive for module-info reads.
@@ -162,7 +164,8 @@ impl CtSymReleaseIndex {
         } else {
             let mut graph = ModuleGraph::new();
             for zip_path in &module_info_zip_paths {
-                let Some(bytes) = ct_sym::read_entry_bytes(&ct_sym_path, zip_path)? else {
+                let Some(bytes) = ct_sym::read_entry_bytes_from_archive(&mut archive, zip_path)?
+                else {
                     continue;
                 };
 
@@ -176,6 +179,7 @@ impl CtSymReleaseIndex {
         Ok(Self {
             release,
             ct_sym_path,
+            archive: Mutex::new(archive),
             modules,
             module_graph,
             class_to_module,
@@ -280,7 +284,7 @@ impl CtSymReleaseIndex {
             return Ok(None);
         };
 
-        let Some(bytes) = ct_sym::read_entry_bytes(&self.ct_sym_path, zip_path)? else {
+        let Some(bytes) = self.read_zip_entry(zip_path)? else {
             self.missing
                 .lock()
                 .expect("mutex poisoned")
@@ -323,7 +327,7 @@ impl CtSymReleaseIndex {
             return Ok(None);
         };
 
-        let Some(bytes) = ct_sym::read_entry_bytes(&self.ct_sym_path, zip_path)? else {
+        let Some(bytes) = self.read_zip_entry(zip_path)? else {
             self.missing
                 .lock()
                 .expect("mutex poisoned")
@@ -404,6 +408,11 @@ impl CtSymReleaseIndex {
             .lock()
             .expect("mutex poisoned")
             .insert(stub.binary_name.clone(), stub);
+    }
+
+    fn read_zip_entry(&self, zip_path: &str) -> Result<Option<Vec<u8>>, JdkIndexError> {
+        let mut archive = self.archive.lock().expect("mutex poisoned");
+        Ok(ct_sym::read_entry_bytes_from_archive(&mut archive, zip_path)?)
     }
 
     fn packages_sorted(&self) -> Result<&Vec<String>, JdkIndexError> {

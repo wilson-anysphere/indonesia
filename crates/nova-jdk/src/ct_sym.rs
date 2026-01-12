@@ -82,7 +82,13 @@ pub(crate) fn read_entry_bytes(
 ) -> Result<Option<Vec<u8>>, CtSymError> {
     let file = File::open(ct_sym_path)?;
     let mut archive = ZipArchive::new(file)?;
+    read_entry_bytes_from_archive(&mut archive, zip_path)
+}
 
+pub(crate) fn read_entry_bytes_from_archive(
+    archive: &mut ZipArchive<File>,
+    zip_path: &str,
+) -> Result<Option<Vec<u8>>, CtSymError> {
     let mut try_read = |name: &str| -> Result<Option<Vec<u8>>, CtSymError> {
         match archive.by_name(name) {
             Ok(mut zf) => {
