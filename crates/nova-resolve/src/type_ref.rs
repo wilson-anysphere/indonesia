@@ -870,120 +870,12 @@ impl<'a, 'idx> Parser<'a, 'idx> {
 
     fn resolve_annotation_name(&mut self, name_range: Range<usize>) {
         // Type-use annotation names can appear anywhere inside a type reference (`@A String`,
-        // `Outer.@A Inner`, `String @A []`, ...).
+        // `Outer.@A Inner`, `String @A []`, ...). Nova does not currently model these in
+        // `nova_types::Type`, so type refs should parse/resolve as if the annotation were absent.
         //
-        // Type-use annotations are ignored in the resulting `Type` (Nova doesn't model them yet),
-        // but we still want best-effort diagnostics for missing annotation *types* when we can
-        // anchor spans reliably.
-        //
-        // `TypeRef.text` is frequently whitespace-stripped by the syntax layer. If callers provide
-        // a span from the original source, its length may not match the stripped text and
-        // diagnostics would be mis-anchored. Only diagnose when the lengths match exactly.
-        let Some(base_span) = self.base_span else {
-            return;
-        };
-        if base_span.len() != self.text.len() {
-            return;
-        }
-
-        let Some(name_text) = self.text.get(name_range.clone()) else {
-            return;
-        };
-        if name_text.is_empty() {
-            return;
-        }
-
-        if !name_text.contains('.') {
-            let ident = Name::from(name_text);
-            match self
-                .resolver
-                .resolve_type_name_detailed(self.scopes, self.scope, &ident)
-            {
-                TypeNameResolution::Resolved(_) => return,
-                TypeNameResolution::Ambiguous(candidates) => {
-                    let mut candidate_names: Vec<String> = candidates
-                        .iter()
-                        .filter_map(|c| {
-                            self.resolver
-                                .type_name_for_resolution(self.scopes, c)
-                                .map(|n| n.as_str().to_string())
-                        })
-                        .collect();
-                    candidate_names.sort();
-                    candidate_names.dedup();
-
-                    let mut msg = format!("ambiguous type `{name_text}`");
-                    if !candidate_names.is_empty() {
-                        msg.push_str(": ");
-                        msg.push_str(&candidate_names.join(", "));
-                    }
-
-                    self.diagnostics.push(Diagnostic::error(
-                        "ambiguous-type",
-                        msg,
-                        self.anchor_span(name_range),
-                    ));
-                    return;
-                }
-                TypeNameResolution::Unresolved => {
-                    self.diagnostics.push(Diagnostic::error(
-                        "unresolved-type",
-                        format!("unresolved type `{name_text}`"),
-                        self.anchor_span(name_range),
-                    ));
-                    return;
-                }
-            }
-        }
-
-        let qname = QualifiedName::from_dotted(name_text);
-        if self
-            .resolver
-            .resolve_qualified_type_in_scope(self.scopes, self.scope, &qname)
-            .is_some()
-        {
-            return;
-        }
-
-        // If the resolution failed because the first segment is ambiguous (e.g. `Map.Entry`
-        // where `Map` is ambiguous), avoid misreporting an `unresolved-type` diagnostic.
-        if let Some(first_segment) = name_text.split('.').next() {
-            let first = Name::from(first_segment);
-            if let TypeNameResolution::Ambiguous(candidates) = self
-                .resolver
-                .resolve_type_name_detailed(self.scopes, self.scope, &first)
-            {
-                let mut candidate_names: Vec<String> = candidates
-                    .iter()
-                    .filter_map(|c| {
-                        self.resolver
-                            .type_name_for_resolution(self.scopes, c)
-                            .map(|n| n.as_str().to_string())
-                    })
-                    .collect();
-                candidate_names.sort();
-                candidate_names.dedup();
-
-                let mut msg = format!("ambiguous type `{first_segment}`");
-                if !candidate_names.is_empty() {
-                    msg.push_str(": ");
-                    msg.push_str(&candidate_names.join(", "));
-                }
-
-                self.diagnostics.push(Diagnostic::error(
-                    "ambiguous-type",
-                    msg,
-                    self.anchor_span(name_range),
-                ));
-                return;
-            }
-        }
-
-        self.diagnostics.push(Diagnostic::error(
-            "unresolved-type",
-            format!("unresolved type `{name_text}`"),
-            self.anchor_span(name_range),
-        ));
+        // We intentionally **do not** emit diagnostics for unresolved type-use annotation names:
+        // they are best-effort ignored throughout semantic analysis.
+        let _ = name_range;
     }
 
     fn find_best_annotation_name_end(
