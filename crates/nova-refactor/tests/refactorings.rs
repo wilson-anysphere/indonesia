@@ -4433,6 +4433,51 @@ class Test {
 }
 
 #[test]
+fn rename_type_updates_nested_type_qualifiers_in_expression_level_type_positions() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Outer {
+  static class Inner {}
+}
+
+class Use {
+  <T> void m() {}
+
+  void f(Object x) {
+    Object y = (Outer.Inner) x;
+    boolean b = x instanceof Outer.Inner;
+    Outer.Inner[] a = new Outer.Inner[1];
+    new Outer.Inner[1].getClass();
+    this.<Outer.Inner>m();
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("class Outer").unwrap() + "class ".len() + 1;
+    let symbol = db.symbol_at(&file, offset).expect("symbol at Outer");
+    assert_eq!(db.symbol_kind(symbol), Some(JavaSymbolKind::Type));
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "Renamed".into(),
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    assert!(after.contains("class Renamed"));
+    assert!(after.contains("(Renamed.Inner)"), "{after}");
+    assert!(after.contains("instanceof Renamed.Inner"), "{after}");
+    assert!(after.contains("Renamed.Inner[] a = new Renamed.Inner[1];"), "{after}");
+    assert!(after.contains("new Renamed.Inner[1].getClass();"), "{after}");
+    assert!(after.contains("this.<Renamed.Inner>m();"), "{after}");
+    assert!(!after.contains("Outer.Inner"), "{after}");
+}
+
+#[test]
 fn inline_variable_all_usages_replaces_and_deletes_declaration() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
