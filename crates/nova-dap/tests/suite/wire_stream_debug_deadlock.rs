@@ -12,7 +12,7 @@ async fn stream_debug_does_not_deadlock_event_task_and_cancels_cleanly() {
     // Delay the JDWP reply used by stream-debug evaluation (InvokeMethod), then emit a breakpoint
     // event while the reply is pending. Historically, holding the debugger mutex while awaiting
     // InvokeMethod could deadlock the event forwarding task.
-    let _jdwp = client
+    let jdwp = client
         .attach_mock_jdwp_with_config(MockJdwpServerConfig {
             delayed_replies: vec![DelayedReply {
                 command_set: 3,
@@ -58,21 +58,35 @@ async fn stream_debug_does_not_deadlock_event_task_and_cancels_cleanly() {
         .await;
 
     // Ensure the adapter can still process events while stream-debug is awaiting InvokeMethod.
-    // If the request handler holds the debugger lock, this will time out.
-    let second_stop = client
-        .wait_for_event_matching(
-            "stopped during stream debug InvokeMethod",
-            Duration::from_secs(2),
-            |msg| {
-                msg.get("type").and_then(|v| v.as_str()) == Some("event")
-                    && msg.get("event").and_then(|v| v.as_str()) == Some("stopped")
-            },
-        )
-        .await;
-    assert_eq!(
-        second_stop.pointer("/body/reason").and_then(|v| v.as_str()),
-        Some("breakpoint"),
-        "unexpected stopped event while stream debug in-flight: {second_stop}"
+    //
+    // The mock emits a breakpoint stop event during the delayed InvokeMethod reply. Stream debug
+    // runs the invoke on the *same* thread that is currently stopped, so this event should be
+    // treated as an internal-evaluation breakpoint hit:
+    // - auto-resume the thread to avoid hanging InvokeMethod
+    // - suppress any DAP `stopped` events so user breakpoint UX is not affected
+    //
+    // If the request handler incorrectly holds the debugger lock, the event-forwarding task won't
+    // be able to resume the thread and `thread_resume_calls` won't increment.
+    let baseline_resumes = jdwp.thread_resume_calls();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if jdwp.thread_resume_calls() > baseline_resumes {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("timeout waiting for ThreadReference.Resume during stream debug InvokeMethod");
+
+    let stopped = tokio::time::timeout(
+        Duration::from_millis(200),
+        client.wait_for_event("stopped"),
+    )
+    .await;
+    assert!(
+        stopped.is_err(),
+        "streamDebug should not emit stopped events for internal evaluation breakpoint hits"
     );
 
     let cancel_seq = client

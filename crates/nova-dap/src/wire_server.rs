@@ -3061,8 +3061,7 @@ async fn handle_request_inner(
                 return;
             }
 
-            let args: StreamDebugArguments = match serde_json::from_value(request.arguments.clone())
-            {
+            let args: StreamDebugArguments = match serde_json::from_value(request.arguments.clone()) {
                 Ok(args) => args,
                 Err(err) => {
                     send_response(
@@ -3106,7 +3105,11 @@ async fn handle_request_inner(
             // IMPORTANT: Do not hold the debugger mutex across compilation / JDWP InvokeMethod.
             // Stream debug can execute user code and trigger async JDWP events, which the event
             // forwarding task must be able to process concurrently.
-            let (jdwp, thread_id, _jdwp_frame_id) = {
+            //
+            // While the invoke is in flight, mark the evaluation thread as being in internal
+            // evaluation mode so the JDWP event task can auto-resume any breakpoint hits without
+            // emitting DAP stop/output events or mutating hit-count breakpoint state.
+            let (jdwp, thread_id, _jdwp_frame_id, _eval_guard) = {
                 let guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
                     Some(guard) => guard,
                     None => {
@@ -3172,8 +3175,8 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                         return;
                     }
                 }
-
-                (dbg.jdwp_client(), thread_id, jdwp_frame_id)
+                let eval_guard = dbg.begin_internal_evaluation(thread_id);
+                (dbg.jdwp_client(), thread_id, jdwp_frame_id, eval_guard)
             };
 
             let max_sample_size = config.max_sample_size.min(i32::MAX as usize) as i32;
@@ -4832,10 +4835,46 @@ fn spawn_event_task(
             let mut exception_context: Option<(JdwpClient, ObjectId)> = None;
             let mut step_value: Option<VmStoppedValue> = None;
             let mut suppress_stopped_event = false;
+            let mut internal_eval_stop_event = false;
 
             {
                 let mut guard = debugger.lock().await;
                 if let Some(dbg) = guard.as_mut() {
+                    // Stream debug uses JDWP `InvokeMethod`, which resumes the stopped thread
+                    // to execute user code. That code can hit breakpoints (or exceptions),
+                    // which would normally be treated as a real stop by the adapter.
+                    //
+                    // While internal evaluation is in progress for a given thread, suppress
+                    // these stop events, avoid mutating breakpoint state, and immediately
+                    // resume the thread so the invoke can complete.
+                    match &event {
+                        nova_jdwp::wire::JdwpEvent::Breakpoint { thread, request_id, .. } => {
+                            if dbg.is_internal_evaluation_thread(*thread) {
+                                internal_eval_stop_event = true;
+                                // Logpoints use `SuspendPolicy::NONE`, so there is no thread
+                                // suspension to resume.
+                                if !dbg.breakpoint_is_logpoint(*request_id) {
+                                    let _ = dbg.jdwp_client().thread_resume(*thread).await;
+                                }
+                            }
+                        }
+                        nova_jdwp::wire::JdwpEvent::SingleStep { thread, .. }
+                        | nova_jdwp::wire::JdwpEvent::Exception { thread, .. } => {
+                            if dbg.is_internal_evaluation_thread(*thread) {
+                                internal_eval_stop_event = true;
+                                let _ = dbg.jdwp_client().thread_resume(*thread).await;
+                            }
+                        }
+                        _ => {}
+                    }
+
+                    if internal_eval_stop_event {
+                        // Skip all other stop-event processing. In particular, do *not* call
+                        // `handle_breakpoint_event` (hit counts/conditions/logpoints) and do not
+                        // update smart-step state.
+                        continue;
+                    }
+
                     dbg.handle_vm_event(&event).await;
 
                     if let nova_jdwp::wire::JdwpEvent::Breakpoint {

@@ -1,9 +1,10 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     future::Future,
     hash::Hash,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex as StdMutex},
     time::Duration,
 };
 
@@ -268,6 +269,7 @@ pub struct Debugger {
     jdwp: JdwpClient,
     inspector: Inspector,
     objects: ObjectRegistry,
+    internal_eval_threads: Arc<StdMutex<HashSet<ThreadId>>>,
     breakpoints: HashMap<String, Vec<BreakpointEntry>>,
     requested_breakpoints: HashMap<String, Vec<BreakpointSpec>>,
     function_breakpoints: Vec<BreakpointEntry>,
@@ -300,6 +302,20 @@ pub struct Debugger {
 
     frame_handles: HandleTable<FrameKey, FrameHandle>,
     var_handles: HandleTable<VarKey, VarRef>,
+}
+
+#[derive(Debug)]
+pub(crate) struct InternalEvaluationGuard {
+    thread: ThreadId,
+    threads: Arc<StdMutex<HashSet<ThreadId>>>,
+}
+
+impl Drop for InternalEvaluationGuard {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.threads.lock() {
+            guard.remove(&self.thread);
+        }
+    }
 }
 
 fn check_cancel(token: &CancellationToken) -> Result<()> {
@@ -345,6 +361,7 @@ impl Debugger {
             inspector: Inspector::new(jdwp.clone()),
             objects: ObjectRegistry::new(),
             jdwp,
+            internal_eval_threads: Arc::new(StdMutex::new(HashSet::new())),
             breakpoints: HashMap::new(),
             requested_breakpoints: HashMap::new(),
             function_breakpoints: Vec::new(),
@@ -426,6 +443,21 @@ impl Debugger {
 
     pub fn jdwp_client(&self) -> JdwpClient {
         self.jdwp.clone()
+    }
+    pub(crate) fn begin_internal_evaluation(&self, thread: ThreadId) -> InternalEvaluationGuard {
+        if let Ok(mut guard) = self.internal_eval_threads.lock() {
+            guard.insert(thread);
+        }
+        InternalEvaluationGuard {
+            thread,
+            threads: self.internal_eval_threads.clone(),
+        }
+    }
+
+    pub(crate) fn is_internal_evaluation_thread(&self, thread: ThreadId) -> bool {
+        self.internal_eval_threads
+            .lock()
+            .is_ok_and(|guard| guard.contains(&thread))
     }
 
     /// Resolve a DAP `frameId` to the underlying JDWP thread/frame identifiers.

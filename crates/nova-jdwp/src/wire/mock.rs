@@ -90,6 +90,15 @@ pub struct MockJdwpServerConfig {
     /// auto-resume ignored breakpoint hits (e.g. logpoints/conditions) don't
     /// end up in an infinite resume/stop loop.
     pub breakpoint_events: usize,
+    /// Maximum number of breakpoint events to emit during `ObjectReference.InvokeMethod` calls.
+    ///
+    /// When this budget is non-zero, the mock will emit a breakpoint stop event while an
+    /// invoke-method request is in flight and delay the invoke-method reply until the
+    /// debugger sends a `ThreadReference.Resume` for the target thread.
+    ///
+    /// This simulates the real JDWP behavior where `InvokeMethod` temporarily resumes the
+    /// thread to execute user code and may be interrupted by breakpoint hits.
+    pub invoke_method_breakpoint_events: usize,
     /// Maximum number of single-step events to emit after a `VirtualMachine.Resume`.
     pub step_events: usize,
     /// Maximum number of `ClassPrepare` events to emit after a resume.
@@ -131,6 +140,7 @@ impl Default for MockJdwpServerConfig {
             // Preserve historical behavior: keep emitting stop events after every resume
             // unless tests opt into a finite budget via `spawn_with_config`.
             breakpoint_events: usize::MAX,
+            invoke_method_breakpoint_events: 0,
             step_events: usize::MAX,
             class_prepare_events: 0,
             emit_exception_breakpoint_method_exit_composite: false,
@@ -504,6 +514,8 @@ struct State {
     smart_step_stack: StdMutex<Vec<MockFrame>>,
     smart_step_next_call: AtomicUsize,
     breakpoint_events_remaining: AtomicUsize,
+    invoke_method_breakpoint_events_remaining: AtomicUsize,
+    pending_invoke_method_reply: tokio::sync::Mutex<Option<PendingInvokeMethodReply>>,
     step_events_remaining: AtomicUsize,
     class_prepare_events_remaining: AtomicUsize,
     field_access_events_remaining: AtomicUsize,
@@ -530,6 +542,7 @@ impl State {
     fn new(config: MockJdwpServerConfig) -> Self {
         let all_classes_loaded = config.all_classes_initially_loaded;
         let breakpoint_events = config.breakpoint_events;
+        let invoke_method_breakpoint_events = config.invoke_method_breakpoint_events;
         let step_events = config.step_events;
         let class_prepare_events = config.class_prepare_events;
         let field_access_events = config.field_access_events;
@@ -603,6 +616,10 @@ impl State {
             }]),
             smart_step_next_call: AtomicUsize::new(0),
             breakpoint_events_remaining: AtomicUsize::new(breakpoint_events),
+            invoke_method_breakpoint_events_remaining: AtomicUsize::new(
+                invoke_method_breakpoint_events,
+            ),
+            pending_invoke_method_reply: tokio::sync::Mutex::new(None),
             step_events_remaining: AtomicUsize::new(step_events),
             class_prepare_events_remaining: AtomicUsize::new(class_prepare_events),
             field_access_events_remaining: AtomicUsize::new(field_access_events),
@@ -638,6 +655,14 @@ impl State {
 
     fn take_breakpoint_event(&self) -> bool {
         self.breakpoint_events_remaining
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+    }
+
+    fn take_invoke_method_breakpoint_event(&self) -> bool {
+        self.invoke_method_breakpoint_events_remaining
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
                 remaining.checked_sub(1)
             })
@@ -691,6 +716,14 @@ impl State {
             })
             .is_ok()
     }
+}
+
+#[derive(Debug, Clone)]
+struct PendingInvokeMethodReply {
+    packet_id: u32,
+    thread: ThreadId,
+    error_code: u16,
+    payload: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1013,6 +1046,103 @@ async fn handle_packet(
     let sizes = id_sizes;
     let mut r = JdwpReader::new(&packet.payload);
     let cap = |idx: usize| state.capabilities.get(idx).copied().unwrap_or(false);
+    let mut resume_thread_id: Option<ThreadId> = None;
+
+    // Special case: simulate a breakpoint hit while an `InvokeMethod` request is in flight.
+    //
+    // This is used by `nova-dap` tests to emulate the real JDWP behavior where `InvokeMethod`
+    // temporarily resumes a suspended thread to execute user code, which can then hit a
+    // breakpoint and suspend the thread mid-invoke. The invoke reply is only delivered after the
+    // debugger explicitly resumes the thread again.
+    //
+    // We intercept all JDWP invoke-method variants:
+    // - ClassType.InvokeMethod (3/3)
+    // - InterfaceType.InvokeMethod (5/1)
+    // - ObjectReference.InvokeMethod (9/6)
+    let is_invoke_method = matches!(
+        (packet.command_set, packet.command),
+        (3, 3) | (5, 1) | (9, 6)
+    );
+    if is_invoke_method && state.config.invoke_method_breakpoint_events > 0 {
+        let breakpoint_request = { *state.breakpoint_request.lock().await };
+        let breakpoint_suspend_policy = { *state.breakpoint_suspend_policy.lock().await };
+
+        if let Some(breakpoint_request) = breakpoint_request {
+            // Parse the invoke request body without consuming `r` so we can fall back to the
+            // default handler if needed.
+            let mut invoke_r = JdwpReader::new(&packet.payload);
+            let parsed = (|| {
+                let thread_id = match (packet.command_set, packet.command) {
+                    // ObjectReference.InvokeMethod
+                    (9, 6) => {
+                        let _object_id = invoke_r.read_object_id(sizes)?;
+                        let thread_id = invoke_r.read_object_id(sizes)?;
+                        let _class_id = invoke_r.read_reference_type_id(sizes)?;
+                        let _method_id = invoke_r.read_id(sizes.method_id)?;
+                        thread_id
+                    }
+                    // ClassType.InvokeMethod
+                    (3, 3) => {
+                        let _class_id = invoke_r.read_reference_type_id(sizes)?;
+                        let thread_id = invoke_r.read_object_id(sizes)?;
+                        let _method_id = invoke_r.read_id(sizes.method_id)?;
+                        thread_id
+                    }
+                    // InterfaceType.InvokeMethod
+                    (5, 1) => {
+                        let _interface_id = invoke_r.read_reference_type_id(sizes)?;
+                        let thread_id = invoke_r.read_object_id(sizes)?;
+                        let _method_id = invoke_r.read_id(sizes.method_id)?;
+                        thread_id
+                    }
+                    _ => unreachable!("unexpected invoke-method command"),
+                };
+                let arg_count = invoke_r.read_u32()? as usize;
+                let mut args = Vec::with_capacity(arg_count);
+                for _ in 0..arg_count {
+                    args.push(invoke_r.read_tagged_value(sizes)?);
+                }
+                let _options = invoke_r.read_u32()?;
+                Ok::<_, super::types::JdwpError>((thread_id, args))
+            })();
+
+            if let Ok((thread_id, args)) = parsed {
+                if state.take_invoke_method_breakpoint_event() {
+                    // Emit a breakpoint event packet.
+                    let suspend_policy = breakpoint_suspend_policy.unwrap_or(1);
+                    let mut w = JdwpWriter::new();
+                    w.write_u8(suspend_policy);
+                    w.write_u32(1); // event count
+                    w.write_u8(2); // Breakpoint
+                    w.write_i32(breakpoint_request);
+                    w.write_object_id(thread_id, id_sizes);
+                    w.write_location(&default_location(), id_sizes);
+                    let payload = w.into_vec();
+                    let packet_id = state.alloc_packet_id();
+                    let event_packet = encode_command(packet_id, 64, 100, &payload);
+
+                    // Queue the invoke reply to be delivered after a ThreadReference.Resume.
+                    let return_value = args.first().cloned().unwrap_or(JdwpValue::Void);
+                    let mut reply_w = JdwpWriter::new();
+                    reply_w.write_tagged_value(&return_value, sizes);
+                    reply_w.write_object_id(0, sizes); // exception
+                    let pending = PendingInvokeMethodReply {
+                        packet_id: packet.id,
+                        thread: thread_id,
+                        error_code: 0,
+                        payload: reply_w.into_vec(),
+                    };
+                    *state.pending_invoke_method_reply.lock().await = Some(pending);
+
+                    // Write the breakpoint event immediately, then return without replying to the
+                    // invoke request yet.
+                    let mut guard = writer.lock().await;
+                    guard.write_all(&event_packet).await?;
+                    return Ok(());
+                }
+            }
+        }
+    }
 
     let (reply_error_code, reply_payload) = match (packet.command_set, packet.command) {
         // VirtualMachine.IDSizes
@@ -1267,7 +1397,8 @@ async fn handle_packet(
         }
         // ThreadReference.Resume
         (11, 3) => {
-            let _thread_id = r.read_object_id(sizes).unwrap_or(0);
+            let thread_id = r.read_object_id(sizes).unwrap_or(0);
+            resume_thread_id = Some(thread_id);
             state.thread_resume_calls.fetch_add(1, Ordering::Relaxed);
             (0, Vec::new())
         }
@@ -2842,6 +2973,25 @@ async fn handle_packet(
 
         let mut follow_up = Vec::new();
         let mut close_after = false;
+        let mut suppress_stop_events = false;
+
+        // If a pending invoke-method reply exists and this resume matches its thread, deliver the
+        // reply and suppress the mock's automatic stop-event emission. This prevents tests from
+        // entering infinite resume/stop loops while an invoke is finishing.
+        if packet.command_set == 11 && packet.command == 3 {
+            if let Some(thread_id) = resume_thread_id {
+                let mut pending = state.pending_invoke_method_reply.lock().await;
+                if pending.as_ref().is_some_and(|p| p.thread == thread_id) {
+                    let pending = pending.take().unwrap();
+                    follow_up.extend(encode_reply(
+                        pending.packet_id,
+                        pending.error_code,
+                        &pending.payload,
+                    ));
+                    suppress_stop_events = true;
+                }
+            }
+        }
 
         if let Some(request_id) = thread_start_request {
             {
@@ -2914,17 +3064,19 @@ async fn handle_packet(
             }
         }
 
-        if let Some(stop_packet) = make_stop_event_packet(
-            state,
-            id_sizes,
-            breakpoint_request,
-            breakpoint_suspend_policy,
-            step_request,
-            step_suspend_policy,
-            method_exit_request,
-            exception_request,
-        ) {
-            follow_up.extend(stop_packet);
+        if !suppress_stop_events {
+            if let Some(stop_packet) = make_stop_event_packet(
+                state,
+                id_sizes,
+                breakpoint_request,
+                breakpoint_suspend_policy,
+                step_request,
+                step_suspend_policy,
+                method_exit_request,
+                exception_request,
+            ) {
+                follow_up.extend(stop_packet);
+            }
         }
 
         if let Some(request) = vm_disconnect_request {
