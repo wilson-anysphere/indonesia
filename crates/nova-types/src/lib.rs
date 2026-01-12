@@ -3406,15 +3406,18 @@ fn infer_type_arguments_from_call(
 }
 
 fn glb_all(env: &dyn TypeEnv, tys: &[Type], object: &Type) -> Type {
-    let mut it = tys.iter();
-    let Some(first) = it.next() else {
+    if tys.is_empty() {
         return object.clone();
-    };
-    let mut acc = first.clone();
-    for t in it {
-        acc = glb(env, &acc, t);
     }
-    acc
+
+    // Sort first for determinism even when our subtyping relation is best-effort
+    // (e.g. error recovery types like Unknown/Error, or Named vs resolved Class types).
+    let mut sorted = tys.to_vec();
+    sorted.sort_by_cached_key(|t| type_sort_key(env, t));
+
+    let mut it = sorted.into_iter();
+    let first = it.next().unwrap_or_else(|| object.clone());
+    it.fold(first, |acc, t| glb(env, &acc, &t))
 }
 
 fn lub_all(env: &dyn TypeEnv, tys: &[Type], object: &Type) -> Type {
