@@ -71,6 +71,68 @@ test('package.json contributes Nova Frameworks view context-menu commands', asyn
   }
 });
 
+test('package.json contributes Nova Frameworks view + refresh command', async () => {
+  const pkgPath = path.resolve(__dirname, '../../package.json');
+  const raw = await fs.readFile(pkgPath, 'utf8');
+  const pkg = JSON.parse(raw) as {
+    activationEvents?: unknown;
+    contributes?: { commands?: unknown; views?: unknown; menus?: unknown };
+  };
+
+  const activationEvents = Array.isArray(pkg.activationEvents) ? pkg.activationEvents : [];
+  const commands = Array.isArray(pkg.contributes?.commands) ? pkg.contributes.commands : [];
+
+  const refresh = commands.find((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return false;
+    }
+    return (entry as { command?: unknown }).command === 'nova.frameworks.refresh';
+  }) as { command?: unknown; title?: unknown; icon?: unknown } | undefined;
+
+  assert.ok(refresh, 'expected nova.frameworks.refresh command to be contributed');
+  assert.equal(refresh.title, 'Nova: Refresh Frameworks');
+  assert.ok(activationEvents.includes('onCommand:nova.frameworks.refresh'));
+
+  const viewContainers = pkg.contributes?.views;
+  assert.ok(viewContainers && typeof viewContainers === 'object');
+  const explorerViews = (viewContainers as { explorer?: unknown }).explorer;
+  assert.ok(Array.isArray(explorerViews));
+  const frameworksView = (explorerViews as unknown[]).find((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return false;
+    }
+    return (entry as { id?: unknown }).id === 'novaFrameworks';
+  }) as { id?: unknown; name?: unknown } | undefined;
+
+  assert.ok(frameworksView, 'expected novaFrameworks view to be contributed under explorer');
+  assert.equal(frameworksView.name, 'Nova Frameworks');
+
+  const menus = pkg.contributes?.menus;
+  assert.ok(menus && typeof menus === 'object');
+  const viewTitle = (menus as { 'view/title'?: unknown })['view/title'];
+  assert.ok(Array.isArray(viewTitle));
+  assert.ok(
+    (viewTitle as unknown[]).some((entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return false;
+      }
+      const command = (entry as { command?: unknown }).command;
+      const when = (entry as { when?: unknown }).when;
+      return command === 'nova.frameworks.refresh' && typeof when === 'string' && when.includes('view == novaFrameworks');
+    }),
+    'expected nova.frameworks.refresh to be present in view/title menu for novaFrameworks',
+  );
+
+  const icon = refresh.icon;
+  assert.ok(icon && typeof icon === 'object', 'expected refresh command to include light/dark icon paths');
+  const light = (icon as { light?: unknown }).light;
+  const dark = (icon as { dark?: unknown }).dark;
+  assert.ok(typeof light === 'string' && light.length > 0);
+  assert.ok(typeof dark === 'string' && dark.length > 0);
+  await fs.stat(path.resolve(path.dirname(pkgPath), light));
+  await fs.stat(path.resolve(path.dirname(pkgPath), dark));
+});
+
 test('package.json contributes Nova framework search command', async () => {
   const pkgPath = path.resolve(__dirname, '../../package.json');
   const raw = await fs.readFile(pkgPath, 'utf8');
