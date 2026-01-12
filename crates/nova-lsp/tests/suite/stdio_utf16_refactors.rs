@@ -514,7 +514,7 @@ class C {
     let insertion_offset = source
         .rfind("\r\n}")
         .expect("newline before class closing brace");
-    let inserted_method = "\n\n    private void extracted(int a, int b) {\n        System.out.println(\"😀\" + a + b);\n    }";
+    let inserted_method = "\r\n\r\n    private void extracted(int a, int b) {\r\n        System.out.println(\"😀\" + a + b);\r\n    }";
     let mut expected = source.clone();
     expected.insert_str(insertion_offset, inserted_method);
     expected.replace_range(selection.start..selection.end, "extracted(a, b);");

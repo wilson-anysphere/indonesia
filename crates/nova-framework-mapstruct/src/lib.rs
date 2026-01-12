@@ -388,7 +388,12 @@ pub fn analyze_workspace(
             let mut mapped: HashSet<String> =
                 source_props.intersection(&target_props).cloned().collect();
             for mapping in &method.mappings {
-                let target = mapping.target.split('.').next().unwrap_or(&mapping.target).trim();
+                let target = mapping
+                    .target
+                    .split('.')
+                    .next()
+                    .unwrap_or(&mapping.target)
+                    .trim();
                 if !target.is_empty() {
                     mapped.insert(target.to_string());
                 }
@@ -632,9 +637,7 @@ fn mapping_property_completions(
     }
 
     // Compute the current segment prefix within the string literal value.
-    let before_cursor = file_text
-        .get(value_span.start..cursor)
-        .unwrap_or_default();
+    let before_cursor = file_text.get(value_span.start..cursor).unwrap_or_default();
     let segment_start_rel = before_cursor.rfind('.').map(|idx| idx + 1).unwrap_or(0);
     let segment_start = value_span.start + segment_start_rel;
     let prefix = file_text.get(segment_start..cursor).unwrap_or_default();
@@ -1136,7 +1139,10 @@ fn parse_mappings_container_annotation(annotation: &ParsedAnnotation) -> Vec<Pro
         .collect()
 }
 
-fn nested_annotations_named(annotation: &ParsedAnnotation, simple_name: &str) -> Vec<ParsedAnnotation> {
+fn nested_annotations_named(
+    annotation: &ParsedAnnotation,
+    simple_name: &str,
+) -> Vec<ParsedAnnotation> {
     let Some(haystack) = annotation.text.as_deref() else {
         return Vec::new();
     };
@@ -1228,7 +1234,10 @@ fn nested_annotations_named(annotation: &ParsedAnnotation, simple_name: &str) ->
         }
 
         let snippet = &haystack[start..ann_end];
-        let span = Span::new(annotation.span.start + start, annotation.span.start + ann_end);
+        let span = Span::new(
+            annotation.span.start + start,
+            annotation.span.start + ann_end,
+        );
         if let Some(parsed) = parse_annotation_text(snippet, span) {
             out.push(parsed);
         }
@@ -1330,7 +1339,11 @@ fn parse_java_type(raw: &str, default_package: Option<&str>) -> JavaType {
     JavaType { package: pkg, name }
 }
 
-fn parse_java_type_with_imports(raw: &str, default_package: Option<&str>, imports: &JavaImports) -> JavaType {
+fn parse_java_type_with_imports(
+    raw: &str,
+    default_package: Option<&str>,
+    imports: &JavaImports,
+) -> JavaType {
     let raw = raw.trim();
     if raw.is_empty() {
         return JavaType {
@@ -1669,7 +1682,8 @@ fn find_property_definition_span(
             .child_by_field_name("body")
             .or_else(|| match decl_kind {
                 "interface_declaration" => find_named_child(node, "interface_body"),
-                _ => find_named_child(node, "class_body").or_else(|| find_named_child(node, "record_body")),
+                _ => find_named_child(node, "class_body")
+                    .or_else(|| find_named_child(node, "record_body")),
             });
         let Some(body) = body else {
             return;
@@ -1826,7 +1840,8 @@ fn collect_properties_in_class(root: Node<'_>, source: &str, class_name: &str) -
             .child_by_field_name("body")
             .or_else(|| match decl_kind {
                 "interface_declaration" => find_named_child(node, "interface_body"),
-                _ => find_named_child(node, "class_body").or_else(|| find_named_child(node, "record_body")),
+                _ => find_named_child(node, "class_body")
+                    .or_else(|| find_named_child(node, "record_body")),
             });
         let Some(body) = body else {
             return;
@@ -1933,7 +1948,8 @@ fn collect_property_types_in_class(
             .child_by_field_name("body")
             .or_else(|| match decl_kind {
                 "interface_declaration" => find_named_child(node, "interface_body"),
-                _ => find_named_child(node, "class_body").or_else(|| find_named_child(node, "record_body")),
+                _ => find_named_child(node, "class_body")
+                    .or_else(|| find_named_child(node, "record_body")),
             });
         let Some(body) = body else {
             return;
@@ -2012,7 +2028,8 @@ fn collect_property_types_in_class(
                         let Some(params_node) = params_node else {
                             continue;
                         };
-                        let params = parse_formal_parameters(params_node, source, default_package, imports);
+                        let params =
+                            parse_formal_parameters(params_node, source, default_package, imports);
                         if let Some(first) = params.first() {
                             props.entry(prop).or_insert(first.ty.clone());
                         }

@@ -139,12 +139,15 @@ local_only = false
     );
 
     assert!(
-        !actions.iter().any(|a| a.get("title").and_then(|t| t.as_str())
-            == Some("Generate method body with AI")),
+        !actions.iter().any(
+            |a| a.get("title").and_then(|t| t.as_str()) == Some("Generate method body with AI")
+        ),
         "generate-method-body action should be hidden when code edits are disallowed"
     );
     assert!(
-        !actions.iter().any(|a| a.get("title").and_then(|t| t.as_str()) == Some("Generate tests with AI")),
+        !actions
+            .iter()
+            .any(|a| a.get("title").and_then(|t| t.as_str()) == Some("Generate tests with AI")),
         "generate-tests action should be hidden when code edits are disallowed"
     );
 
@@ -286,12 +289,15 @@ excluded_paths = ["secret/**"]
     );
 
     assert!(
-        !actions.iter().any(|a| a.get("title").and_then(|t| t.as_str())
-            == Some("Generate method body with AI")),
+        !actions.iter().any(
+            |a| a.get("title").and_then(|t| t.as_str()) == Some("Generate method body with AI")
+        ),
         "generate-method-body action should be hidden for excluded paths"
     );
     assert!(
-        !actions.iter().any(|a| a.get("title").and_then(|t| t.as_str()) == Some("Generate tests with AI")),
+        !actions
+            .iter()
+            .any(|a| a.get("title").and_then(|t| t.as_str()) == Some("Generate tests with AI")),
         "generate-tests action should be hidden for excluded paths"
     );
 
@@ -972,6 +978,9 @@ fn stdio_server_extracts_utf16_ranges_for_ai_code_actions() {
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
         .env("NOVA_AI_PROVIDER", "http")
+        // Ensure patch-based AI code actions are allowed so this test exercises UTF-16 range
+        // extraction rather than privacy gating.
+        .env("NOVA_AI_LOCAL_ONLY", "1")
         .env(
             "NOVA_AI_ENDPOINT",
             format!("{}/complete", ai_server.base_url()),
@@ -1099,6 +1108,9 @@ fn stdio_server_rejects_surrogate_pair_interior_ranges_for_ai_code_actions() {
         .env_remove("NOVA_DISABLE_AI")
         .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
         .env("NOVA_AI_PROVIDER", "http")
+        // Ensure patch-based AI code actions are allowed so this test exercises UTF-16 range
+        // validation rather than privacy gating.
+        .env("NOVA_AI_LOCAL_ONLY", "1")
         .env(
             "NOVA_AI_ENDPOINT",
             format!("{}/complete", ai_server.base_url()),
@@ -1257,7 +1269,9 @@ local_only = false
         &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
     );
 
-    // open doc containing an empty method body so the AI code action is offered.
+    // Open a document. We won't expect patch-based AI code actions to be advertised in this mode,
+    // but we still validate that attempting to execute the command is rejected by the privacy
+    // policy (defense in depth).
     let uri = "file:///Test.java";
     let text = "class Test {\n    void run() {\n    }\n}\n";
     write_jsonrpc_message(
@@ -1276,15 +1290,8 @@ local_only = false
         }),
     );
 
-    let method_snippet = "    void run() {\n    }\n";
-    let method_start = text.find(method_snippet).expect("method snippet start");
-    let method_end = method_start + method_snippet.len();
-    let pos = TextPos::new(text);
-    let start = pos.lsp_position(method_start).expect("start position");
-    let end = pos.lsp_position(method_end).expect("end position");
-    let range = Range { start, end };
-
-    // request code actions; ensure we can find the "Generate method body with AI" action.
+    // Request code actions: the patch-based AI code-edit actions should be hidden in cloud mode
+    // with anonymization enabled (default).
     write_jsonrpc_message(
         &mut stdin,
         &json!({
@@ -1293,7 +1300,7 @@ local_only = false
             "method": "textDocument/codeAction",
             "params": {
                 "textDocument": { "uri": uri },
-                "range": range,
+                "range": { "start": { "line": 1, "character": 0 }, "end": { "line": 1, "character": 0 } },
                 "context": { "diagnostics": [] }
             }
         }),
@@ -1303,24 +1310,18 @@ local_only = false
         .get("result")
         .and_then(|v| v.as_array())
         .expect("code actions array");
-
-    let gen_method = actions
-        .iter()
-        .find(|a| a.get("title").and_then(|t| t.as_str()) == Some("Generate method body with AI"))
-        .unwrap_or_else(|| panic!("missing generate method body action in {actions:#?}"));
-
-    let cmd = gen_method
-        .get("command")
-        .and_then(|c| c.get("command"))
-        .and_then(|v| v.as_str())
-        .expect("command string");
-    assert_eq!(cmd, nova_ide::COMMAND_GENERATE_METHOD_BODY);
-
-    let args = gen_method
-        .get("command")
-        .and_then(|c| c.get("arguments"))
-        .cloned()
-        .expect("arguments");
+    assert!(
+        actions.iter().all(
+            |a| a.get("title").and_then(|t| t.as_str()) != Some("Generate method body with AI")
+        ),
+        "expected no code-edit actions in cloud anonymized mode, got: {actions:#?}"
+    );
+    assert!(
+        actions
+            .iter()
+            .all(|a| a.get("title").and_then(|t| t.as_str()) != Some("Generate tests with AI")),
+        "expected no code-edit actions in cloud anonymized mode, got: {actions:#?}"
+    );
 
     // Execute command: in cloud mode, anonymization is enabled by default and code edits should be
     // rejected before any model call is made.
@@ -1331,8 +1332,12 @@ local_only = false
             "id": 3,
             "method": "workspace/executeCommand",
             "params": {
-                "command": cmd,
-                "arguments": args
+                "command": nova_ide::COMMAND_GENERATE_METHOD_BODY,
+                "arguments": [{
+                    "method_signature": "void run()",
+                    "context": null,
+                    "uri": uri
+                }]
             }
         }),
     );
@@ -1344,7 +1349,9 @@ local_only = false
         .and_then(|m| m.as_str())
         .expect("expected executeCommand to return an error");
     assert!(
-        err_msg.contains("AI code edits are disabled when identifier anonymization is enabled in cloud mode"),
+        err_msg.contains(
+            "AI code edits are disabled when identifier anonymization is enabled in cloud mode"
+        ),
         "expected CodeEditPolicyError in error message, got: {err_msg}"
     );
     assert_eq!(
