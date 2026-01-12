@@ -161,6 +161,26 @@ class C {
 }
 
 #[test]
+fn rejects_non_statement_expression_in_for_update() {
+    let src = r#"
+class C {
+    void m() {
+        for (;; 1) {}
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-statement-expression"),
+        "expected invalid-statement-expression diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn return_in_instance_initializer_is_error() {
     let src = r#"
 class C {
