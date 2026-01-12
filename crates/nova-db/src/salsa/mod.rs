@@ -705,8 +705,8 @@ impl SalsaInputFootprint {
             return;
         }
 
-        // Salsa file texts are *inputs* (not caches) and are effectively
-        // non-evictable: they must remain available to compute query results.
+        // Salsa file texts are *inputs* (not caches) and are effectively non-evictable: they must
+        // remain available to compute query results.
         //
         // We track them under `Other` rather than `QueryCache` to avoid
         // conflating inputs with memoized results, but still want them to drive

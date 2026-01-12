@@ -432,6 +432,11 @@ fn find_best_expr_in_expr(
                 find_best_expr_in_expr(body, *item, offset, owner, best);
             }
         }
+        HirExpr::ArrayInitializer { items, .. } => {
+            for item in items {
+                find_best_expr_in_expr(body, *item, offset, owner, best);
+            }
+        }
         HirExpr::Unary { expr, .. } => find_best_expr_in_expr(body, *expr, offset, owner, best),
         HirExpr::Binary { lhs, rhs, .. } => {
             find_best_expr_in_expr(body, *lhs, offset, owner, best);
