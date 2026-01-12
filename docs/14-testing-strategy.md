@@ -654,7 +654,7 @@ pub mod test_utils {
         
         pub fn add_file(&mut self, name: &str, content: &str) -> FileId {
             let file = self.db.create_file(name);
-            self.db.set_file_content(file, content.into());
+            self.db.set_file_text(file, content.into());
             self.files.insert(name.into(), file);
             file
         }

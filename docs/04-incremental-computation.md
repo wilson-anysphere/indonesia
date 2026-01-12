@@ -335,7 +335,7 @@ pub trait Database: Send + Sync {
     fn snapshot(&self) -> Snapshot<Self>;
     
     /// Set an input query value (requires mutable access)
-    fn set_file_content(&mut self, file: FileId, content: String);
+    fn set_file_text(&mut self, file: FileId, text: String);
 }
 
 /// Snapshot provides read-only access
@@ -399,7 +399,7 @@ impl NovaServer {
         
         // Apply changes
         for change in params.changes {
-            db.set_file_content(params.file, change.text);
+            db.set_file_text(params.file, change.text);
         }
         
         // Release lock - snapshots see new state
