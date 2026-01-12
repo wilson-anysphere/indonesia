@@ -2587,6 +2587,15 @@ async fn handle_packet(
 
             match res {
                 Ok((array_id, first_index, values)) => {
+                    // Protect the mock server from unbounded allocations if a buggy or malicious
+                    // test client sends an extremely large `first_index`.
+                    //
+                    // This mock stores array values in a growable `Vec<JdwpValue>`, which is not
+                    // how a real JVM represents arrays (they have a fixed length). Still, we want
+                    // the mock to fail gracefully rather than abort the process on OOM.
+                    const MAX_MOCK_ARRAY_ELEMENTS: usize =
+                        crate::MAX_JDWP_PACKET_BYTES / std::mem::size_of::<JdwpValue>();
+                    let mut ok = true;
                     {
                         let mut arrays = state.array_values.lock().await;
                         let array = arrays.entry(array_id).or_insert_with(|| {
@@ -2608,20 +2617,34 @@ async fn handle_packet(
                                 continue;
                             }
                             let idx = idx as usize;
+                            if idx >= MAX_MOCK_ARRAY_ELEMENTS {
+                                ok = false;
+                                break;
+                            }
                             if idx >= array.len() {
-                                array.resize(idx + 1, JdwpValue::Int(0));
+                                let new_len = idx + 1;
+                                let additional = new_len - array.len();
+                                if array.try_reserve_exact(additional).is_err() {
+                                    ok = false;
+                                    break;
+                                }
+                                array.resize(new_len, JdwpValue::Int(0));
                             }
                             array[idx] = value.clone();
                         }
                     }
-                    state.array_reference_set_values_calls.lock().await.push(
-                        ArrayReferenceSetValuesCall {
-                            array_id,
-                            first_index,
-                            values,
-                        },
-                    );
-                    (0, Vec::new())
+                    if !ok {
+                        (1, Vec::new())
+                    } else {
+                        state.array_reference_set_values_calls.lock().await.push(
+                            ArrayReferenceSetValuesCall {
+                                array_id,
+                                first_index,
+                                values,
+                            },
+                        );
+                        (0, Vec::new())
+                    }
                 }
                 Err(_) => (1, Vec::new()),
             }
