@@ -4147,8 +4147,7 @@ fn inline_variable_preserves_crlf_newlines_and_removes_decl_cleanly() {
 #[test]
 fn inline_variable_preserves_no_final_newline() {
     let file = FileId::new("Test.java");
-    let src =
-        "class Test {
+    let src = "class Test {
   void m() {
     int a = 1 + 2;
     System.out.println(a);
@@ -4180,8 +4179,7 @@ fn inline_variable_preserves_no_final_newline() {
         !after.ends_with('\n') && !after.ends_with('\r'),
         "expected refactoring to preserve lack of final newline, got: {after:?}"
     );
-    let expected =
-        "class Test {
+    let expected = "class Test {
   void m() {
     System.out.println((1 + 2));
     System.out.println((1 + 2));
@@ -7484,9 +7482,7 @@ fn rename_field_does_not_rename_unrelated_java_bean_methods() {
     let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
 
     let offset = src.find("String other").unwrap() + "String ".len() + 1;
-    let symbol = db
-        .symbol_at(&file, offset)
-        .expect("symbol at field other");
+    let symbol = db.symbol_at(&file, offset).expect("symbol at field other");
 
     let edit = rename(
         &db,

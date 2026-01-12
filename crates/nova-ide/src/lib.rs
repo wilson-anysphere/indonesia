@@ -62,7 +62,8 @@ pub use file_navigation::{declaration, implementation, type_definition};
 #[cfg(any(test, debug_assertions))]
 #[doc(hidden)]
 pub use file_navigation::{
-    file_navigation_index_build_count_for_file_for_tests, file_navigation_index_build_count_for_tests,
+    file_navigation_index_build_count_for_file_for_tests,
+    file_navigation_index_build_count_for_tests,
 };
 pub use refactor::inline_method_code_actions;
 

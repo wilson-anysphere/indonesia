@@ -164,7 +164,11 @@ impl From<&nova_build_model::ClasspathEntry> for ClasspathEntry {
                     return ClasspathEntry::ClassDir(value.path.clone());
                 }
 
-                let ext = value.path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
+                let ext = value
+                    .path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .unwrap_or("");
                 if ext.eq_ignore_ascii_case("jmod") {
                     ClasspathEntry::Jmod(value.path.clone())
                 } else {
@@ -2072,7 +2076,10 @@ mod tests {
             kind: nova_build_model::ClasspathEntryKind::Jar,
             path: PathBuf::from("foo.JMOD"),
         };
-        assert!(matches!(ClasspathEntry::from(&entry), ClasspathEntry::Jmod(_)));
+        assert!(matches!(
+            ClasspathEntry::from(&entry),
+            ClasspathEntry::Jmod(_)
+        ));
     }
 
     #[test]
@@ -2084,7 +2091,9 @@ mod tests {
             kind: nova_build_model::ClasspathEntryKind::Jar,
             path: exploded.clone(),
         };
-        assert!(matches!(ClasspathEntry::from(&entry), ClasspathEntry::ClassDir(p) if p == exploded));
+        assert!(
+            matches!(ClasspathEntry::from(&entry), ClasspathEntry::ClassDir(p) if p == exploded)
+        );
     }
 
     #[test]

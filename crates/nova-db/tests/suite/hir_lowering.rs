@@ -191,7 +191,10 @@ fn assert_has_diagnostic_code(diags: &[nova_types::Diagnostic], code: &str) {
     );
 }
 
-fn flow_diagnostics_for_constructor(source: &str, wants_params: bool) -> Vec<nova_types::Diagnostic> {
+fn flow_diagnostics_for_constructor(
+    source: &str,
+    wants_params: bool,
+) -> Vec<nova_types::Diagnostic> {
     let mut db = SalsaRootDatabase::default();
     let file = FileId::from_raw(0);
     db.set_file_text(file, source);

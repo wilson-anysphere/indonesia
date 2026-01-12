@@ -59,7 +59,10 @@ async fn read_until_event(
 }
 
 fn assert_success(resp: &Value, context: &str) {
-    let ok = resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+    let ok = resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     assert!(ok, "{context} response was not successful: {resp}");
 }
 
@@ -71,7 +74,8 @@ async fn outgoing_queue_backpressure_does_not_deadlock_under_output_spam() {
     // apply backpressure.
     let (client, server_stream) = tokio::io::duplex(8 * 1024);
     let (server_read, server_write) = tokio::io::split(server_stream);
-    let server_task = tokio::spawn(async move { wire_server::run(server_read, server_write).await });
+    let server_task =
+        tokio::spawn(async move { wire_server::run(server_read, server_write).await });
 
     let (client_read, client_write) = tokio::io::split(client);
     let mut reader = DapReader::new(client_read);
@@ -150,4 +154,3 @@ async fn outgoing_queue_backpressure_does_not_deadlock_under_output_spam() {
         .unwrap()
         .unwrap();
 }
-

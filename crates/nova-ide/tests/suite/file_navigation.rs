@@ -494,7 +494,10 @@ class Main { void test(){ Foo a = new Foo<Bar, $1Baz>(), b = new Foo(); $0Baz.to
     let pos = fixture.marker_position(0);
     let got = declaration(&fixture.db, file, pos);
 
-    assert!(got.is_none(), "expected no variable declaration for generic type argument");
+    assert!(
+        got.is_none(),
+        "expected no variable declaration for generic type argument"
+    );
 }
 
 #[test]

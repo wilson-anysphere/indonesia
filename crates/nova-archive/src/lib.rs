@@ -213,7 +213,8 @@ impl Archive {
                 Err(_) => {}
             },
             Err(err) if !is_jmod_magic => {
-                return Err(err).with_context(|| format!("failed to read zip {}", self.path.display()))
+                return Err(err)
+                    .with_context(|| format!("failed to read zip {}", self.path.display()))
             }
             Err(_) => {}
         }

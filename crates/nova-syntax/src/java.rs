@@ -1554,7 +1554,9 @@ impl Lowerer {
         }
 
         let (modifiers, annotations) = self.lower_decl_modifiers(node);
-        let ty_node = node.children().find(|child| child.kind() == SyntaxKind::Type);
+        let ty_node = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::Type);
         let ty = ty_node
             .as_ref()
             .map(|n| self.lower_type_ref(n))

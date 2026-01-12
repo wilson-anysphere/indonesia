@@ -1,4 +1,6 @@
-use nova_refactor::{rename, Conflict, FileId, RefactorJavaDatabase, RenameParams, SemanticRefactorError};
+use nova_refactor::{
+    rename, Conflict, FileId, RefactorJavaDatabase, RenameParams, SemanticRefactorError,
+};
 
 #[test]
 fn rename_type_conflict_detected_across_workspace() {
@@ -36,4 +38,3 @@ fn rename_type_conflict_detected_across_workspace() {
         "expected NameCollision conflict: {conflicts:?}"
     );
 }
-

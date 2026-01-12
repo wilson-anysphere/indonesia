@@ -2,8 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use nova_project::{
-    load_project_with_options, reload_project, LoadOptions,
-    GENERATED_ROOTS_SNAPSHOT_SCHEMA_VERSION, SourceRootKind, SourceRootOrigin,
+    load_project_with_options, reload_project, LoadOptions, SourceRootKind, SourceRootOrigin,
+    GENERATED_ROOTS_SNAPSHOT_SCHEMA_VERSION,
 };
 use tempfile::tempdir;
 

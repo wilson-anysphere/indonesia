@@ -1,15 +1,15 @@
-#[cfg(feature = "bazel")]
-mod bazel_model;
 mod bazel_bsp_feature;
 mod bazel_heuristic;
 mod bazel_ignore;
+#[cfg(feature = "bazel")]
+mod bazel_model;
 mod bazel_reload;
-mod build_system_backends;
 mod build_file_detection;
+mod build_system_backends;
 mod discovery;
 mod gradle_buildsrc;
-mod gradle_canonical_paths;
 mod gradle_cache;
+mod gradle_canonical_paths;
 mod gradle_dependencies;
 mod gradle_jpms_workspace_model;
 mod gradle_reload_build_files;
@@ -20,8 +20,8 @@ mod gradle_version_catalog;
 mod jpms;
 mod maven_jpms_workspace_model;
 mod maven_missing_jars;
-mod maven_resolution;
 mod maven_repo_config;
+mod maven_resolution;
 mod maven_settings_repo;
 mod maven_snapshot;
 mod maven_workspace_module_transitive_deps;

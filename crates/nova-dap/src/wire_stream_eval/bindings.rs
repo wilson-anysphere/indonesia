@@ -74,8 +74,9 @@ impl StreamEvalFrameBindings {
     /// Returns invocation arguments in the same order as the generated helper method signature:
     /// `(__this, <locals...>, <fields...>, <static_fields...>)`.
     pub fn args_for_helper(&self) -> Vec<JdwpValue> {
-        let mut out =
-            Vec::with_capacity(1 + self.locals.len() + self.fields.len() + self.static_fields.len());
+        let mut out = Vec::with_capacity(
+            1 + self.locals.len() + self.fields.len() + self.static_fields.len(),
+        );
         out.push(self.this.value.clone());
         out.extend(self.locals.iter().map(|b| b.value.clone()));
         out.extend(self.fields.iter().map(|b| b.value.clone()));

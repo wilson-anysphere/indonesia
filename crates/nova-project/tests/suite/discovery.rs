@@ -1353,9 +1353,9 @@ fn loads_gradle_includebuild_subproject_workspace_model() {
         .expect("expected build-logic/plugins module to be discovered via includeBuild settings");
     assert_eq!(plugins.id, "gradle::__includedBuild_build-logic:plugins");
 
-    let java_file =
-        model.workspace_root
-            .join("build-logic/plugins/src/main/java/com/example/buildlogic/plugins/Plugin.java");
+    let java_file = model
+        .workspace_root
+        .join("build-logic/plugins/src/main/java/com/example/buildlogic/plugins/Plugin.java");
     let match_java = model
         .module_for_path(&java_file)
         .expect("module for build-logic/plugins java file");

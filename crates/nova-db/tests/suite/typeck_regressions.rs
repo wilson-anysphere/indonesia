@@ -35,7 +35,10 @@ fn setup_db(text: &str) -> (SalsaRootDatabase, FileId) {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
     let tmp = TempDir::new().unwrap();
-    db.set_project_config(project, Arc::new(base_project_config(tmp.path().to_path_buf())));
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
     db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
     db.set_classpath_index(project, None);
 

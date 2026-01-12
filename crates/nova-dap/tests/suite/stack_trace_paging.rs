@@ -139,7 +139,10 @@ async fn dap_stack_trace_paging_keeps_frame_ids_valid_across_pages() {
     let scopes_after = client
         .request("scopes", json!({ "frameId": page1_frame_id }))
         .await;
-    assert_eq!(scopes_after.get("success").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(
+        scopes_after.get("success").and_then(|v| v.as_bool()),
+        Some(true)
+    );
 
     // Re-request the same page; the frame id should be stable.
     let page1b = client

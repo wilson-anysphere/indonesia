@@ -2034,7 +2034,9 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
                     }
                     for edit in &doc_edit.edits {
                         match edit {
-                            lsp_types::OneOf::Left(edit) => all_new_texts.push(edit.new_text.clone()),
+                            lsp_types::OneOf::Left(edit) => {
+                                all_new_texts.push(edit.new_text.clone())
+                            }
                             lsp_types::OneOf::Right(edit) => {
                                 all_new_texts.push(edit.text_edit.new_text.clone())
                             }
@@ -2045,9 +2047,9 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
             lsp_types::DocumentChanges::Operations(ops) => {
                 for op in ops {
                     match op {
-                        lsp_types::DocumentChangeOperation::Op(
-                            lsp_types::ResourceOp::Create(create),
-                        ) if create.uri == expected_test_uri => {
+                        lsp_types::DocumentChangeOperation::Op(lsp_types::ResourceOp::Create(
+                            create,
+                        )) if create.uri == expected_test_uri => {
                             saw_create = true;
                         }
                         lsp_types::DocumentChangeOperation::Edit(doc_edit) => {
@@ -2083,7 +2085,9 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
     }
 
     assert!(
-        all_new_texts.iter().any(|text| text.contains("ExampleTest")),
+        all_new_texts
+            .iter()
+            .any(|text| text.contains("ExampleTest")),
         "expected edits to contain ExampleTest, got: {edit:#?}"
     );
 

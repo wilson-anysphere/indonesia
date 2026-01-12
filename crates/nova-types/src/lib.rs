@@ -2881,7 +2881,10 @@ fn type_sort_key(env: &dyn TypeEnv, ty: &Type) -> String {
                 .map(|t| (intersection_component_rank(env, t), type_sort_key(env, t)))
                 .collect();
             keys.sort();
-            keys.into_iter().map(|(_, k)| k).collect::<Vec<_>>().join(" & ")
+            keys.into_iter()
+                .map(|(_, k)| k)
+                .collect::<Vec<_>>()
+                .join(" & ")
         }
     }
 }

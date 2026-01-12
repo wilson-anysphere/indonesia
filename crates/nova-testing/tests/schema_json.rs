@@ -8,8 +8,8 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-mod support;
 mod suite;
+mod support;
 
 /// Golden JSON fixtures for the stable editor-facing schema in `nova_testing::schema`.
 ///

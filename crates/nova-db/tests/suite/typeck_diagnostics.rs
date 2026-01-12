@@ -108,9 +108,7 @@ class C { void m(){ throw 1; } }
     let (db, file) = setup_db(src);
     let diags = db.diagnostics(file);
     assert!(
-        diags
-            .iter()
-            .any(|d| d.code.as_ref() == "invalid-throw"),
+        diags.iter().any(|d| d.code.as_ref() == "invalid-throw"),
         "expected invalid-throw diagnostic; got: {diags:?}"
     );
 }
@@ -140,7 +138,9 @@ class C { void m(){ try {} catch (Exception e) {} } }
     let (db, file) = setup_db(src);
     let diags = db.diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "invalid-catch-type"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "invalid-catch-type"),
         "expected no invalid-catch-type diagnostic; got: {diags:?}"
     );
     assert!(

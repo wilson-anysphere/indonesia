@@ -47,10 +47,7 @@ impl WatchConfig {
     ) -> Self {
         Self {
             workspace_root: normalize_watch_path(workspace_root),
-            source_roots: source_roots
-                .into_iter()
-                .map(normalize_watch_path)
-                .collect(),
+            source_roots: source_roots.into_iter().map(normalize_watch_path).collect(),
             generated_source_roots: generated_source_roots
                 .into_iter()
                 .map(normalize_watch_path)
@@ -94,15 +91,17 @@ pub fn categorize_event(config: &WatchConfig, change: &FileChange) -> Option<Cha
         // Many build files are detected based on path components (e.g. ignoring `build/` output
         // directories). Use paths relative to the workspace root so absolute parent directories
         // (like `/home/user/build/...`) don't accidentally trip ignore heuristics.
-        let rel = path.strip_prefix(&config.workspace_root).unwrap_or_else(|_| {
-            config
-                .module_roots
-                .iter()
-                .chain(config.source_roots.iter())
-                .chain(config.generated_source_roots.iter())
-                .find_map(|root| path.strip_prefix(root).ok())
-                .unwrap_or(path.as_path())
-        });
+        let rel = path
+            .strip_prefix(&config.workspace_root)
+            .unwrap_or_else(|_| {
+                config
+                    .module_roots
+                    .iter()
+                    .chain(config.source_roots.iter())
+                    .chain(config.generated_source_roots.iter())
+                    .find_map(|root| path.strip_prefix(root).ok())
+                    .unwrap_or(path.as_path())
+            });
         if is_build_file(rel) {
             return Some(ChangeCategory::Build);
         }
@@ -578,7 +577,9 @@ mod tests {
     fn gradle_snapshot_file_change_is_categorized_as_build() {
         let config = WatchConfig::new(PathBuf::from("/x"));
         let event = FileChange::Modified {
-            path: VfsPath::local(PathBuf::from("/x").join(nova_build_model::GRADLE_SNAPSHOT_REL_PATH)),
+            path: VfsPath::local(
+                PathBuf::from("/x").join(nova_build_model::GRADLE_SNAPSHOT_REL_PATH),
+            ),
         };
         assert_eq!(
             categorize_event(&config, &event),
@@ -747,7 +748,10 @@ mod tests {
         let event = FileChange::Modified {
             path: VfsPath::local(PathBuf::from("/tmp/ws/gen/A.java")),
         };
-        assert_eq!(categorize_event(&config, &event), Some(ChangeCategory::Source));
+        assert_eq!(
+            categorize_event(&config, &event),
+            Some(ChangeCategory::Source)
+        );
     }
 
     #[test]
@@ -763,7 +767,10 @@ mod tests {
             // normalization logic is exercised.
             path: VfsPath::Local(PathBuf::from("/tmp/ws/module/../gen/A.java")),
         };
-        assert_eq!(categorize_event(&config, &event), Some(ChangeCategory::Source));
+        assert_eq!(
+            categorize_event(&config, &event),
+            Some(ChangeCategory::Source)
+        );
     }
 
     #[test]
@@ -772,7 +779,10 @@ mod tests {
         let event = FileChange::Modified {
             path: VfsPath::local(PathBuf::from("/tmp/ws/A.java")),
         };
-        assert_eq!(categorize_event(&config, &event), Some(ChangeCategory::Source));
+        assert_eq!(
+            categorize_event(&config, &event),
+            Some(ChangeCategory::Source)
+        );
     }
 
     #[cfg(windows)]
@@ -788,7 +798,10 @@ mod tests {
         let event = FileChange::Modified {
             path: VfsPath::local(PathBuf::from(r"C:\ws\src\A.java")),
         };
-        assert_eq!(categorize_event(&config, &event), Some(ChangeCategory::Source));
+        assert_eq!(
+            categorize_event(&config, &event),
+            Some(ChangeCategory::Source)
+        );
     }
 
     #[test]

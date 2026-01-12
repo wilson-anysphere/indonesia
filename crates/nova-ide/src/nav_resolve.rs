@@ -1409,8 +1409,7 @@ fn colon_colon_before_generic_invocation(bytes: &[u8], close_angle_idx: usize) -
                     }
                     // Note: `bool::then_some` eagerly evaluates its argument, so avoid
                     // `cond.then_some(k - 2)` (underflows when `k < 2`).
-                    return (k >= 2 && bytes[k - 1] == b':' && bytes[k - 2] == b':')
-                        .then(|| k - 2);
+                    return (k >= 2 && bytes[k - 1] == b':' && bytes[k - 2] == b':').then(|| k - 2);
                 }
             }
             _ => {}

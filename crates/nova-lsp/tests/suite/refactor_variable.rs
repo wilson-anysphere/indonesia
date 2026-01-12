@@ -754,10 +754,7 @@ class C {
 "#;
 
     let uri = Uri::from_str("file:///Test.java").unwrap();
-    let outer_offset = source
-        .rfind("println(a)")
-        .expect("outer println call")
-        + "println(".len();
+    let outer_offset = source.rfind("println(a)").expect("outer println call") + "println(".len();
     let position = offset_to_position(source, outer_offset);
 
     let actions = inline_variable_code_actions(&uri, source, position);

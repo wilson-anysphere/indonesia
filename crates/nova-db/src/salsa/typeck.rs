@@ -5529,7 +5529,10 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     then_ty
                 } else if let (Some(a), Some(b)) = {
                     let env_ro: &dyn TypeEnv = &*loader.store;
-                    (primitive_like(env_ro, &then_ty), primitive_like(env_ro, &else_ty))
+                    (
+                        primitive_like(env_ro, &then_ty),
+                        primitive_like(env_ro, &else_ty),
+                    )
                 } {
                     // Best-effort: conditional expressions participate in unboxing + numeric
                     // promotion (JLS 15.25). We approximate this by treating boxed primitives as

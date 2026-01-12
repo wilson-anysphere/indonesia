@@ -90,14 +90,20 @@ fn main() {
     if spam_stdout_lines > 0 {
         let mut stdout = io::BufWriter::new(io::stdout());
         for idx in 0..spam_stdout_lines {
-            let _ = writeln!(stdout, "nova-dap test helper stdout spam idx={idx} pid={pid}");
+            let _ = writeln!(
+                stdout,
+                "nova-dap test helper stdout spam idx={idx} pid={pid}"
+            );
         }
         let _ = stdout.flush();
     }
     if spam_stderr_lines > 0 {
         let mut stderr = io::BufWriter::new(io::stderr());
         for idx in 0..spam_stderr_lines {
-            let _ = writeln!(stderr, "nova-dap test helper stderr spam idx={idx} pid={pid}");
+            let _ = writeln!(
+                stderr,
+                "nova-dap test helper stderr spam idx={idx} pid={pid}"
+            );
         }
         let _ = stderr.flush();
     }

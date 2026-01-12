@@ -2098,7 +2098,10 @@ fn resolve_snapshot_jar_file_name(
     //
     // Collect all candidates deterministically so we can resolve timestamped SNAPSHOTs even when
     // only a repo-scoped metadata file exists.
-    let mut metadata_names = vec!["maven-metadata-local.xml".to_string(), "maven-metadata.xml".to_string()];
+    let mut metadata_names = vec![
+        "maven-metadata-local.xml".to_string(),
+        "maven-metadata.xml".to_string(),
+    ];
     if let Ok(entries) = std::fs::read_dir(version_dir) {
         let mut extra = Vec::new();
         for entry in entries.filter_map(Result::ok) {

@@ -4323,7 +4323,11 @@ fn infer_ident_type_name(analysis: &Analysis, ident: &str, offset: usize) -> Opt
         }
     }
 
-    analysis.fields.iter().find(|f| f.name == ident).map(|f| f.ty.clone())
+    analysis
+        .fields
+        .iter()
+        .find(|f| f.name == ident)
+        .map(|f| f.ty.clone())
 }
 
 fn resolve_type_name_in_completion_env(
@@ -4455,7 +4459,13 @@ fn infer_switch_selector_type_id(
             let qualifier_id = if qualifier == "super" {
                 let class = enclosing_class(analysis, offset)?;
                 let extends = class.extends.as_deref()?;
-                resolve_type_name_in_completion_env(types, workspace_index, package, imports, extends)
+                resolve_type_name_in_completion_env(
+                    types,
+                    workspace_index,
+                    package,
+                    imports,
+                    extends,
+                )
             } else {
                 infer_ident_type_name(analysis, qualifier, offset)
                     .and_then(|ty_name| {
@@ -7853,7 +7863,9 @@ fn comma_in_type_list_kind(tokens: &[Token], comma_idx: usize) -> Option<TypePos
         i -= 1;
         let tok = &tokens[i];
         match tok.kind {
-            TokenKind::Ident if tok.text == "implements" => return Some(TypePositionKind::Implements),
+            TokenKind::Ident if tok.text == "implements" => {
+                return Some(TypePositionKind::Implements)
+            }
             TokenKind::Ident if tok.text == "throws" => return Some(TypePositionKind::Throws),
             TokenKind::Ident if tok.text == "extends" => {
                 return Some(extends_keyword_kind(tokens, i));
@@ -8126,7 +8138,10 @@ fn type_name_completions(
     }
 
     let mut throwable_env: Option<(TypeStore, Type)> = None;
-    if matches!(position_kind, TypePositionKind::Throws | TypePositionKind::CatchParam) {
+    if matches!(
+        position_kind,
+        TypePositionKind::Throws | TypePositionKind::CatchParam
+    ) {
         let mut types = TypeStore::with_minimal_jdk();
         let base = ensure_class_id(&mut types, "java.lang.Throwable")
             .or_else(|| ensure_class_id(&mut types, "java.lang.Exception"))
@@ -8360,7 +8375,9 @@ fn workspace_type_decls_in_text(text: &str) -> Vec<WorkspaceTypeDecl> {
             continue;
         };
 
-        let name_tok = tokens.get(keyword_idx + 1).filter(|t| t.kind == TokenKind::Ident);
+        let name_tok = tokens
+            .get(keyword_idx + 1)
+            .filter(|t| t.kind == TokenKind::Ident);
         let Some(name_tok) = name_tok else {
             i += 1;
             continue;
@@ -8373,7 +8390,10 @@ fn workspace_type_decls_in_text(text: &str) -> Vec<WorkspaceTypeDecl> {
         // Scan the header up to the body start.
         let mut j = keyword_idx + 2;
         // Skip type parameters.
-        if tokens.get(j).is_some_and(|t| t.kind == TokenKind::Symbol('<')) {
+        if tokens
+            .get(j)
+            .is_some_and(|t| t.kind == TokenKind::Symbol('<'))
+        {
             let mut depth = 0i32;
             while j < tokens.len() {
                 match &tokens[j].kind {

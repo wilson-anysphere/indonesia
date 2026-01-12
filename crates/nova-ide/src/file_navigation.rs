@@ -1,6 +1,6 @@
-use std::collections::{BTreeMap, HashMap, VecDeque};
 #[cfg(any(test, debug_assertions))]
 use std::cell::Cell;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;

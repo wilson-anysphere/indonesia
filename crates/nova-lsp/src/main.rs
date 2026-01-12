@@ -7868,31 +7868,33 @@ mod tests {
         cfg.ai.privacy.excluded_paths = vec!["src/secrets/**".to_string()];
 
         let mut state = ServerState::new(cfg, None, MemoryBudgetOverrides::default());
-        state.semantic_search = Arc::new(RwLock::new(
-            Box::new(StaticSemanticSearch {
-                results: vec![
-                    nova_ai::SearchResult {
-                        path: PathBuf::from("src/secrets/Secret.java"),
-                        range: 0..0,
-                        kind: "file".to_string(),
-                        score: 1.0,
-                        snippet: "DO_NOT_LEAK".to_string(),
-                    },
-                    nova_ai::SearchResult {
-                        path: PathBuf::from("src/Main.java"),
-                        range: 0..0,
-                        kind: "file".to_string(),
-                        score: 0.5,
-                        snippet: "class Main {}".to_string(),
-                    },
-                ],
-            }) as Box<dyn nova_ai::SemanticSearch>,
-        ));
+        state.semantic_search = Arc::new(RwLock::new(Box::new(StaticSemanticSearch {
+            results: vec![
+                nova_ai::SearchResult {
+                    path: PathBuf::from("src/secrets/Secret.java"),
+                    range: 0..0,
+                    kind: "file".to_string(),
+                    score: 1.0,
+                    snippet: "DO_NOT_LEAK".to_string(),
+                },
+                nova_ai::SearchResult {
+                    path: PathBuf::from("src/Main.java"),
+                    range: 0..0,
+                    kind: "file".to_string(),
+                    score: 0.5,
+                    snippet: "class Main {}".to_string(),
+                },
+            ],
+        })
+            as Box<dyn nova_ai::SemanticSearch>));
 
         let req = build_context_request(&state, "class Main {}".to_string(), None);
         let enriched = maybe_add_related_code(&state, req);
         assert_eq!(enriched.related_code.len(), 1);
-        assert_eq!(enriched.related_code[0].path, PathBuf::from("src/Main.java"));
+        assert_eq!(
+            enriched.related_code[0].path,
+            PathBuf::from("src/Main.java")
+        );
     }
 
     #[test]

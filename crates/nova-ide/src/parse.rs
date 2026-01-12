@@ -290,9 +290,7 @@ fn find_statement_terminator(tokens: &[Token], start: usize, end: usize) -> Opti
             Some(']') => bracket_depth = bracket_depth.saturating_sub(1),
             Some('{') => brace_depth += 1,
             Some('}') => brace_depth = brace_depth.saturating_sub(1),
-            Some(';')
-                if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 =>
-            {
+            Some(';') if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
                 return Some(idx);
             }
             _ => {}
@@ -321,9 +319,7 @@ fn angle_block_contains_comma(tokens: &[Token], open_angle: usize, close_angle: 
             Some(']') => bracket_depth = bracket_depth.saturating_sub(1),
             Some('{') => brace_depth += 1,
             Some('}') => brace_depth = brace_depth.saturating_sub(1),
-            Some(',')
-                if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 =>
-            {
+            Some(',') if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
                 return true;
             }
             _ => {}
@@ -369,9 +365,7 @@ fn scan_comma_separated_decl_names(
             Some(']') => bracket_depth = bracket_depth.saturating_sub(1),
             Some('{') => brace_depth += 1,
             Some('}') => brace_depth = brace_depth.saturating_sub(1),
-            Some(',')
-                if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 =>
-            {
+            Some(',') if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
                 if let Some(name_tok) = tokens.get(i + 1) {
                     if let Some(name) = name_tok.ident() {
                         out.push((name.to_string(), name_tok.span));

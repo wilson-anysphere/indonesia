@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use crate::{CallKind, ClassId, ClassType, FieldDef, Type, TypeEnv, TypeParamDef, TypeVarId, WildcardBound};
+use crate::{
+    CallKind, ClassId, ClassType, FieldDef, Type, TypeEnv, TypeParamDef, TypeVarId, WildcardBound,
+};
 
 /// Per-invocation typing context used by overload resolution and related algorithms.
 ///
@@ -67,7 +69,12 @@ impl<'env> TyContext<'env> {
                 return uniq.into_iter().next().unwrap();
             }
 
-            uniq.sort_by_cached_key(|ty| (crate::intersection_component_rank(env, ty), crate::type_sort_key(env, ty)));
+            uniq.sort_by_cached_key(|ty| {
+                (
+                    crate::intersection_component_rank(env, ty),
+                    crate::type_sort_key(env, ty),
+                )
+            });
 
             Type::Intersection(uniq)
         }

@@ -823,8 +823,8 @@ impl ExtractMethod {
 
                 let replacement = if let Some(ret) = &analysis.return_value {
                     if ret.declared_in_selection {
-                        let modifiers = find_statement_selection(&method_body, selection)
-                            .and_then(|sel| {
+                        let modifiers =
+                            find_statement_selection(&method_body, selection).and_then(|sel| {
                                 local_var_modifiers_text_in_selection(
                                     source,
                                     &sel.statements,
@@ -2434,7 +2434,11 @@ fn collect_known_local_names(body: &Body) -> HashSet<String> {
         .collect()
 }
 
-fn resolve_local_decl_for_name(body: &Body, name: &str, use_pos: usize) -> Option<(Span, LocalKind)> {
+fn resolve_local_decl_for_name(
+    body: &Body,
+    name: &str,
+    use_pos: usize,
+) -> Option<(Span, LocalKind)> {
     let mut best: Option<(Span, LocalKind)> = None;
     for local in body.locals() {
         if local.name.as_str() != name {
@@ -3645,9 +3649,9 @@ fn local_var_modifiers_text_in_selection(
         let Some(list) = stmt.declarator_list() else {
             continue;
         };
-        let declares_name = list.declarators().any(|decl| {
-            decl.name_token().is_some_and(|tok| tok.text() == name)
-        });
+        let declares_name = list
+            .declarators()
+            .any(|decl| decl.name_token().is_some_and(|tok| tok.text() == name));
         if !declares_name {
             continue;
         }

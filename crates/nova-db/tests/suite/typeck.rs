@@ -6998,7 +6998,9 @@ class C {
 
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().all(|d| d.code.as_ref() != "invalid-catch-type"),
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "invalid-catch-type"),
         "expected no invalid-catch-type diagnostic for classpath Throwable subclass; got {diags:?}"
     );
     assert!(

@@ -485,7 +485,16 @@ async fn handle_request_inner(
                 "supportsHitConditionalBreakpoints": true,
                 "supportsLogPoints": true,
             });
-            send_response(out_tx, seq, request, true, Some(body), None, server_shutdown).await;
+            send_response(
+                out_tx,
+                seq,
+                request,
+                true,
+                Some(body),
+                None,
+                server_shutdown,
+            )
+            .await;
 
             if !*initialized_rx.borrow() {
                 send_event(out_tx, seq, "initialized", None, server_shutdown).await;
@@ -495,8 +504,16 @@ async fn handle_request_inner(
         "nova/metrics" => {
             match serde_json::to_value(nova_metrics::MetricsRegistry::global().snapshot()) {
                 Ok(snapshot) => {
-                    send_response(out_tx, seq, request, true, Some(snapshot), None, server_shutdown)
-                        .await
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        true,
+                        Some(snapshot),
+                        None,
+                        server_shutdown,
+                    )
+                    .await
                 }
                 Err(err) => {
                     send_response(
@@ -674,7 +691,8 @@ async fn handle_request_inner(
 
                 match dbg.continue_(cancel, None).await {
                     Ok(()) => {
-                        send_response(out_tx, seq, request, true, None, None, server_shutdown).await;
+                        send_response(out_tx, seq, request, true, None, None, server_shutdown)
+                            .await;
                         send_event(
                             out_tx,
                             seq,
@@ -1043,8 +1061,16 @@ async fn handle_request_inner(
                     let cp_joined = match join_classpath(&classpath) {
                         Ok(cp) => cp,
                         Err(err) => {
-                            send_response(out_tx, seq, request, false, None, Some(err), server_shutdown)
-                                .await;
+                            send_response(
+                                out_tx,
+                                seq,
+                                request,
+                                false,
+                                None,
+                                Some(err),
+                                server_shutdown,
+                            )
+                            .await;
                             return;
                         }
                     };
@@ -1336,8 +1362,16 @@ async fn handle_request_inner(
                             sess.kind = None;
                             sess.awaiting_configuration_done_resume = false;
                         }
-                        send_response(out_tx, seq, request, false, None, Some(msg), server_shutdown)
-                            .await;
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some(msg),
+                            server_shutdown,
+                        )
+                        .await;
                         return;
                     }
                 }
@@ -1450,7 +1484,9 @@ async fn handle_request_inner(
                         request,
                         false,
                         None,
-                        Some(format!("failed to resolve host {host_label:?}: no addresses found")),
+                        Some(format!(
+                            "failed to resolve host {host_label:?}: no addresses found"
+                        )),
                         server_shutdown,
                     )
                     .await;
@@ -1534,7 +1570,16 @@ async fn handle_request_inner(
                     .unwrap_or_else(|| {
                         format!("failed to attach to {host_label}:{port}: no addresses resolved")
                     });
-                send_response(out_tx, seq, request, false, None, Some(msg), server_shutdown).await;
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some(msg),
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
 
@@ -1825,7 +1870,13 @@ async fn handle_request_inner(
                             *guard = Some(proc);
                         }
 
-                        (resolved_hosts, port, attach_target_label, command.to_string(), pid)
+                        (
+                            resolved_hosts,
+                            port,
+                            attach_target_label,
+                            command.to_string(),
+                            pid,
+                        )
                     }
                     LaunchMode::Java => {
                         let main_class = args.main_class.as_deref().unwrap_or_default();
@@ -1872,8 +1923,16 @@ async fn handle_request_inner(
                         let cp_joined = match join_classpath(&classpath) {
                             Ok(cp) => cp,
                             Err(err) => {
-                                send_response(out_tx, seq, request, false, None, Some(err), server_shutdown)
-                                    .await;
+                                send_response(
+                                    out_tx,
+                                    seq,
+                                    request,
+                                    false,
+                                    None,
+                                    Some(err),
+                                    server_shutdown,
+                                )
+                                .await;
                                 return;
                             }
                         };
@@ -2172,8 +2231,16 @@ async fn handle_request_inner(
                             sess.debugger_id = None;
                             sess.awaiting_configuration_done_resume = false;
                         }
-                        send_response(out_tx, seq, request, false, None, Some(msg), server_shutdown)
-                            .await;
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some(msg),
+                            server_shutdown,
+                        )
+                        .await;
                         return;
                     }
                 }
@@ -2644,7 +2711,9 @@ async fn handle_request_inner(
             };
 
             match dbg.set_exception_breakpoints(caught, uncaught).await {
-                Ok(()) => send_response(out_tx, seq, request, true, None, None, server_shutdown).await,
+                Ok(()) => {
+                    send_response(out_tx, seq, request, true, None, None, server_shutdown).await
+                }
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
                         out_tx,
@@ -3229,7 +3298,9 @@ async fn handle_request_inner(
                     )
                     .await
                 }
-                Ok(body) => send_response(out_tx, seq, request, true, body, None, server_shutdown).await,
+                Ok(body) => {
+                    send_response(out_tx, seq, request, true, body, None, server_shutdown).await
+                }
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
                         out_tx,
@@ -3443,8 +3514,14 @@ async fn handle_request_inner(
                     if let Some(thread_id) = thread_id {
                         body.insert("threadId".to_string(), json!(thread_id));
                     }
-                    send_event(out_tx, seq, "continued", Some(Value::Object(body)), server_shutdown)
-                        .await;
+                    send_event(
+                        out_tx,
+                        seq,
+                        "continued",
+                        Some(Value::Object(body)),
+                        server_shutdown,
+                    )
+                    .await;
                 }
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
@@ -3515,8 +3592,14 @@ async fn handle_request_inner(
                     if let Some(thread_id) = thread_id {
                         body.insert("threadId".to_string(), json!(thread_id));
                     }
-                    send_event(out_tx, seq, "stopped", Some(Value::Object(body)), server_shutdown)
-                        .await;
+                    send_event(
+                        out_tx,
+                        seq,
+                        "stopped",
+                        Some(Value::Object(body)),
+                        server_shutdown,
+                    )
+                    .await;
                 }
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
@@ -3603,7 +3686,9 @@ async fn handle_request_inner(
             };
 
             match step_result {
-                Ok(()) => send_response(out_tx, seq, request, true, None, None, server_shutdown).await,
+                Ok(()) => {
+                    send_response(out_tx, seq, request, true, None, None, server_shutdown).await
+                }
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
                         out_tx,
@@ -3671,8 +3756,16 @@ async fn handle_request_inner(
                         evaluate_name: None,
                         presentation_hint: None,
                     };
-                    send_response(out_tx, seq, request, true, Some(json!(body)), None, server_shutdown)
-                        .await;
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        true,
+                        Some(json!(body)),
+                        None,
+                        server_shutdown,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -3686,8 +3779,16 @@ async fn handle_request_inner(
                     evaluate_name: None,
                     presentation_hint: None,
                 };
-                send_response(out_tx, seq, request, true, Some(json!(body)), None, server_shutdown)
-                    .await;
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    true,
+                    Some(json!(body)),
+                    None,
+                    server_shutdown,
+                )
+                .await;
                 return;
             };
 
@@ -3709,7 +3810,9 @@ async fn handle_request_inner(
                     )
                     .await
                 }
-                Ok(body) => send_response(out_tx, seq, request, true, body, None, server_shutdown).await,
+                Ok(body) => {
+                    send_response(out_tx, seq, request, true, body, None, server_shutdown).await
+                }
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
                         out_tx,
@@ -4107,23 +4210,23 @@ async fn handle_request_inner(
                 return;
             }
 
-            let args: DataBreakpointInfoArguments = match serde_json::from_value(request.arguments.clone())
-            {
-                Ok(args) => args,
-                Err(err) => {
-                    send_response(
-                        out_tx,
-                        seq,
-                        request,
-                        false,
-                        None,
-                        Some(format!("invalid dataBreakpointInfo arguments: {err}")),
-                        server_shutdown,
-                    )
-                    .await;
-                    return;
-                }
-            };
+            let args: DataBreakpointInfoArguments =
+                match serde_json::from_value(request.arguments.clone()) {
+                    Ok(args) => args,
+                    Err(err) => {
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some(format!("invalid dataBreakpointInfo arguments: {err}")),
+                            server_shutdown,
+                        )
+                        .await;
+                        return;
+                    }
+                };
 
             // `frameId` is optional in the DAP spec; the debugger can resolve the field based on
             // the variables reference alone.
@@ -4146,7 +4249,16 @@ async fn handle_request_inner(
                     .await;
                 }
                 Ok(body) => {
-                    send_response(out_tx, seq, request, true, Some(body), None, server_shutdown).await;
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        true,
+                        Some(body),
+                        None,
+                        server_shutdown,
+                    )
+                    .await;
                 }
                 Err(err) if is_cancelled_error(&err) => {
                     send_response(
@@ -5918,7 +6030,14 @@ fn spawn_event_task(
                     if let Some(text) = exception_text {
                         body.insert("text".to_string(), json!(text));
                     }
-                    send_event(&tx, &seq, "stopped", Some(Value::Object(body)), &server_shutdown).await;
+                    send_event(
+                        &tx,
+                        &seq,
+                        "stopped",
+                        Some(Value::Object(body)),
+                        &server_shutdown,
+                    )
+                    .await;
                 }
                 nova_jdwp::wire::JdwpEvent::FieldAccess {
                     thread,
@@ -5938,7 +6057,14 @@ fn spawn_event_task(
                             format_value(&value)
                         )),
                     );
-                    send_event(&tx, &seq, "stopped", Some(Value::Object(body)), &server_shutdown).await;
+                    send_event(
+                        &tx,
+                        &seq,
+                        "stopped",
+                        Some(Value::Object(body)),
+                        &server_shutdown,
+                    )
+                    .await;
                 }
                 nova_jdwp::wire::JdwpEvent::FieldModification {
                     thread,
@@ -5958,7 +6084,14 @@ fn spawn_event_task(
                             format_value(&value_to_be)
                         )),
                     );
-                    send_event(&tx, &seq, "stopped", Some(Value::Object(body)), &server_shutdown).await;
+                    send_event(
+                        &tx,
+                        &seq,
+                        "stopped",
+                        Some(Value::Object(body)),
+                        &server_shutdown,
+                    )
+                    .await;
                 }
                 nova_jdwp::wire::JdwpEvent::ThreadStart { thread, .. } => {
                     send_event(

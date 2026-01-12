@@ -24,9 +24,9 @@ use nova_project::{
     BuildSystem, ClasspathEntry, ClasspathEntryKind, JavaConfig, LoadOptions, OutputDir,
     OutputDirKind, ProjectConfig, ProjectError, SourceRoot, SourceRootKind, SourceRootOrigin,
 };
-use nova_scheduler::{Cancelled, Debouncer, KeyedDebouncer, PoolKind, Scheduler};
 #[cfg(test)]
 use nova_scheduler::SchedulerConfig;
+use nova_scheduler::{Cancelled, Debouncer, KeyedDebouncer, PoolKind, Scheduler};
 use nova_syntax::{JavaParseStore, SyntaxTreeStore};
 use nova_types::{CompletionItem, Diagnostic as NovaDiagnostic, Span};
 use nova_vfs::{
@@ -1377,9 +1377,7 @@ impl WorkspaceEngine {
         for event in events {
             match event {
                 FileChange::Moved { from, to } => {
-                    let (Some(from), Some(to)) =
-                        (from.as_local_path(), to.as_local_path())
-                    else {
+                    let (Some(from), Some(to)) = (from.as_local_path(), to.as_local_path()) else {
                         continue;
                     };
                     let from = normalize_local_path(from.to_path_buf());
@@ -2657,11 +2655,7 @@ fn publish_watch_root_error(
     err: WatchRootError,
 ) {
     match err {
-        WatchRootError::WatchFailed {
-            root,
-            mode,
-            error,
-        } => {
+        WatchRootError::WatchFailed { root, mode, error } => {
             publish_to_subscribers(
                 subscribers,
                 WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
@@ -7455,7 +7449,6 @@ public class Bar {}"#;
         })
         .await
         .expect("timed out waiting for rescan to refresh file_content");
-
     }
 
     #[test]

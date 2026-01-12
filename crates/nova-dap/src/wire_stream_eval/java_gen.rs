@@ -848,8 +848,14 @@ mod tests {
             "__NovaStreamEvalHelper",
             &[],
             &[("this".to_string(), "com.example.Foo".to_string())],
-            &[("nums".to_string(), "java.util.List<java.lang.Integer>".to_string())],
-            &[("MY_LIST".to_string(), "java.util.List<java.lang.Integer>".to_string())],
+            &[(
+                "nums".to_string(),
+                "java.util.List<java.lang.Integer>".to_string(),
+            )],
+            &[(
+                "MY_LIST".to_string(),
+                "java.util.List<java.lang.Integer>".to_string(),
+            )],
             &["nums.stream().count()".to_string()],
             None,
         );

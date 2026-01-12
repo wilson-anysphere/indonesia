@@ -4492,9 +4492,8 @@ fn record_syntax_only_references(
                 let name_range = syntax_token_range(&name_tok);
                 let element_name = Name::from(name_tok.text());
                 if let Some(methods) = anno_def.methods.get(&element_name) {
-                    if let Some(method) = methods
-                        .iter()
-                        .find(|m| tree.method(m.id).params.is_empty())
+                    if let Some(method) =
+                        methods.iter().find(|m| tree.method(m.id).params.is_empty())
                     {
                         record_reference(
                             file,

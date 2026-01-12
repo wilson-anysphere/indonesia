@@ -154,12 +154,8 @@ fn code_actions_with_context_includes_remove_unused_import_for_cursor_at_span_st
     let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
 
     let selection = Span::new(import_start, import_start);
-    let actions = ide.code_actions_lsp_with_context(
-        CancellationToken::new(),
-        file,
-        Some(selection),
-        &[diag],
-    );
+    let actions =
+        ide.code_actions_lsp_with_context(CancellationToken::new(), file, Some(selection), &[diag]);
 
     let action = actions
         .iter()

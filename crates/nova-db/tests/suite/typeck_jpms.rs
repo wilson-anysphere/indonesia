@@ -800,9 +800,9 @@ public class Hidden {}
 
     let diags = db.type_diagnostics(file_a);
     assert!(
-        diags
-            .iter()
-            .any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("b.internal.Hidden")),
+        diags.iter().any(
+            |d| d.code.as_ref() == "unresolved-type" && d.message.contains("b.internal.Hidden")
+        ),
         "expected unresolved-type for unexported package, got {diags:?}"
     );
 }

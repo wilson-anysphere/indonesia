@@ -1046,7 +1046,8 @@ fn append_included_build_subproject_module_refs(
                 continue;
             }
 
-            let project_path = format!("{}{}", included_build.project_path, subproject.project_path);
+            let project_path =
+                format!("{}{}", included_build.project_path, subproject.project_path);
             if used_project_paths.contains(&project_path) {
                 continue;
             }
@@ -1069,7 +1070,10 @@ fn append_included_build_subproject_module_refs(
 
             used_project_paths.insert(project_path.clone());
             existing_dirs.insert(dir_rel.clone());
-            module_refs.push(GradleModuleRef { project_path, dir_rel });
+            module_refs.push(GradleModuleRef {
+                project_path,
+                dir_rel,
+            });
         }
     }
 }

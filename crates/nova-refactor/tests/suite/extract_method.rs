@@ -93,9 +93,13 @@ fn extract_method_analyze_rejects_selection_start_past_eof_without_panicking() {
         insertion_strategy: InsertionStrategy::AfterCurrentMethod,
     };
 
-    let analysis = refactoring.analyze(source).expect("analyze should not error");
+    let analysis = refactoring
+        .analyze(source)
+        .expect("analyze should not error");
     assert!(
-        analysis.issues.contains(&ExtractMethodIssue::InvalidSelection),
+        analysis
+            .issues
+            .contains(&ExtractMethodIssue::InvalidSelection),
         "expected InvalidSelection issue; got {:?}",
         analysis.issues
     );
@@ -114,9 +118,13 @@ fn extract_method_analyze_rejects_selection_end_past_eof_without_panicking() {
         insertion_strategy: InsertionStrategy::AfterCurrentMethod,
     };
 
-    let analysis = refactoring.analyze(source).expect("analyze should not error");
+    let analysis = refactoring
+        .analyze(source)
+        .expect("analyze should not error");
     assert!(
-        analysis.issues.contains(&ExtractMethodIssue::InvalidSelection),
+        analysis
+            .issues
+            .contains(&ExtractMethodIssue::InvalidSelection),
         "expected InvalidSelection issue; got {:?}",
         analysis.issues
     );
@@ -2519,7 +2527,8 @@ class C {
 }
 
 #[test]
-fn extract_method_preserves_final_for_declared_return_value_when_name_is_shadowed_in_nested_scope() {
+fn extract_method_preserves_final_for_declared_return_value_when_name_is_shadowed_in_nested_scope()
+{
     let fixture = r#"
 class C {
     void m(boolean cond) {

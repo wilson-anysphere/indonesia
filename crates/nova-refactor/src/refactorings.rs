@@ -209,7 +209,11 @@ pub fn rename(
             // Java annotation shorthand `@Anno(expr)` is desugared as `@Anno(value = expr)`. If the
             // annotation element method `value()` is renamed, shorthand usages must be rewritten to
             // an explicit element-value pair using the new name.
-            changes.extend(annotation_value_shorthand_updates(db, params.symbol, &new_name));
+            changes.extend(annotation_value_shorthand_updates(
+                db,
+                params.symbol,
+                &new_name,
+            ));
 
             Ok(materialize(db, changes)?)
         }
@@ -916,10 +920,10 @@ pub fn extract_variable(
 
                     // Prefer typeck when it adds generics or array dimensions that parser didn't
                     // capture (e.g. diamond inference).
-                     if (typeck_has_type_args && !parser_has_type_args)
-                         || (typeck_has_arrays && !parser_has_arrays)
-                     {
-                         typeck_ty
+                    if (typeck_has_type_args && !parser_has_type_args)
+                        || (typeck_has_arrays && !parser_has_arrays)
+                    {
+                        typeck_ty
                     } else if typeck_ty_is_qualified_version_of(&parser_ty, &typeck_ty) {
                         // Avoid redundant package qualification like `java.util.List` when `List`
                         // is already a useful type name in this context.
@@ -1513,15 +1517,16 @@ pub fn inline_variable(
             return Err(RefactorError::InlineSideEffects);
         }
 
-        let container_stmts: Vec<ast::Statement> = if let Some(block) = ast::Block::cast(decl_parent.clone()) {
-            block.statements().collect()
-        } else if let Some(block) = ast::SwitchBlock::cast(decl_parent.clone()) {
-            block.statements().collect()
-        } else if let Some(group) = ast::SwitchGroup::cast(decl_parent.clone()) {
-            group.statements().collect()
-        } else {
-            return Err(RefactorError::InlineSideEffects);
-        };
+        let container_stmts: Vec<ast::Statement> =
+            if let Some(block) = ast::Block::cast(decl_parent.clone()) {
+                block.statements().collect()
+            } else if let Some(block) = ast::SwitchBlock::cast(decl_parent.clone()) {
+                block.statements().collect()
+            } else if let Some(group) = ast::SwitchGroup::cast(decl_parent.clone()) {
+                group.statements().collect()
+            } else {
+                return Err(RefactorError::InlineSideEffects);
+            };
 
         let mut decl_idx: Option<usize> = None;
         let mut usage_idx: Option<usize> = None;
