@@ -71,9 +71,29 @@ pub struct AiCodeActionExecutor<'a> {
 impl<'a> AiCodeActionExecutor<'a> {
     pub fn new(
         provider: &'a dyn PromptCompletionProvider,
-        config: CodeGenerationConfig,
+        mut config: CodeGenerationConfig,
         privacy: AiPrivacyConfig,
     ) -> Self {
+        // Treat `ai.privacy.excluded_paths` as a hard safety constraint for patch application.
+        //
+        // While `nova-ai-codegen` already enforces that excluded files are not present in the
+        // workspace snapshot (so they're never sent to an LLM), we also want to ensure that model
+        // output cannot create/modify files matching those patterns.
+        //
+        // This makes callers resilient even if they forget to thread excluded paths into
+        // `PatchSafetyConfig` (and keeps prompt safety constraints consistent with privacy config).
+        if !privacy.excluded_paths.is_empty() {
+            let mut seen = HashSet::new();
+            for pattern in &config.safety.excluded_path_globs {
+                seen.insert(pattern.clone());
+            }
+            for pattern in &privacy.excluded_paths {
+                if seen.insert(pattern.clone()) {
+                    config.safety.excluded_path_globs.push(pattern.clone());
+                }
+            }
+        }
+
         Self {
             provider,
             config,
@@ -1013,6 +1033,66 @@ mod tests {
         };
 
         let executor = AiCodeActionExecutor::new(&provider, config, AiPrivacyConfig::default());
+        let workspace = VirtualWorkspace::default();
+        let cancel = CancellationToken::new();
+
+        let action = AiCodeAction::GenerateTest {
+            file: "secret/Config.java".into(),
+            insert_range: Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 0,
+                },
+            },
+            target: None,
+            source_file: None,
+            source_snippet: None,
+            context: None,
+        };
+
+        let err = executor
+            .execute(action, &workspace, &root_uri(), &cancel, None)
+            .await
+            .unwrap_err();
+        assert_eq!(provider.call_count(), 1);
+
+        match err {
+            CodeActionError::Codegen(CodeGenerationError::Safety(SafetyError::ExcludedPath {
+                path,
+            })) => {
+                assert_eq!(path, "secret/Config.java");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn privacy_excluded_paths_are_enforced_for_patch_outputs() {
+        // Even if the workspace snapshot doesn't contain excluded files (so nothing sensitive is
+        // sent to the LLM), we should still ensure that LLM patch output cannot create/modify
+        // files matching `ai.privacy.excluded_paths`.
+        let patch = r#"{
+  "edits": [
+    {
+      "file": "secret/Config.java",
+      "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } },
+      "text": "public class Config {}\n"
+    }
+  ]
+}"#;
+
+        let provider = MockAiProvider::new(vec![Ok(patch.into())]);
+        let config = CodeGenerationConfig::default();
+        let privacy = AiPrivacyConfig {
+            excluded_paths: vec!["secret/**".into()],
+            ..AiPrivacyConfig::default()
+        };
+
+        let executor = AiCodeActionExecutor::new(&provider, config, privacy);
         let workspace = VirtualWorkspace::default();
         let cancel = CancellationToken::new();
 
