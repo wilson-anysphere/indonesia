@@ -1197,6 +1197,20 @@ where
         if let (Some(uri), Some(span)) = (uri, span) {
             let selection = source_index.span_to_lsp_range(span);
 
+            // Add diagnostic-driven quick fixes (parity with stdio server) using only the
+            // diagnostics provided by the LSP client (`CodeActionContext.diagnostics`).
+            let diag_actions = crate::code_action::diagnostic_quick_fixes(
+                source,
+                Some(uri.clone()),
+                selection.clone(),
+                context_diagnostics,
+            );
+            actions.extend(
+                diag_actions
+                    .into_iter()
+                    .map(lsp_types::CodeActionOrCommand::CodeAction),
+            );
+
             // Convert LSP diagnostics to Nova diagnostics so we can reuse existing quick-fix logic
             // without recomputing diagnostics for the whole file.
             let mut diagnostics = Vec::new();
@@ -1367,16 +1381,43 @@ where
 fn dedupe_code_actions_by_kind_and_title(actions: &mut Vec<lsp_types::CodeActionOrCommand>) {
     // Some quick-fix sources overlap (e.g. multiple passes offering the same "Create field"
     // action). Dedupe by (kind, title) to avoid noisy duplicate entries in the UI.
-    let mut seen: HashSet<(Option<lsp_types::CodeActionKind>, String)> = HashSet::new();
-    actions.retain(|action| {
-        let (kind, title) = match action {
+    //
+    // When duplicates occur, keep the more preferred variant (i.e. one with `is_preferred=true`)
+    // since LSP clients often surface preferred actions more prominently.
+    let existing = std::mem::take(actions);
+    let mut out: Vec<lsp_types::CodeActionOrCommand> = Vec::with_capacity(existing.len());
+    let mut seen: HashMap<(Option<lsp_types::CodeActionKind>, String), usize> = HashMap::new();
+
+    fn is_preferred(action: &lsp_types::CodeActionOrCommand) -> bool {
+        match action {
+            lsp_types::CodeActionOrCommand::CodeAction(action) => {
+                action.is_preferred.unwrap_or(false)
+            }
+            lsp_types::CodeActionOrCommand::Command(_) => false,
+        }
+    }
+
+    for action in existing {
+        let (kind, title) = match &action {
             lsp_types::CodeActionOrCommand::CodeAction(action) => {
                 (action.kind.clone(), action.title.clone())
             }
             lsp_types::CodeActionOrCommand::Command(command) => (None, command.title.clone()),
         };
-        seen.insert((kind, title))
-    });
+
+        let key = (kind, title);
+        if let Some(&idx) = seen.get(&key) {
+            if is_preferred(&action) && !is_preferred(&out[idx]) {
+                out[idx] = action;
+            }
+            continue;
+        }
+
+        seen.insert(key, out.len());
+        out.push(action);
+    }
+
+    *actions = out;
 }
 
 fn type_mismatch_quick_fixes(

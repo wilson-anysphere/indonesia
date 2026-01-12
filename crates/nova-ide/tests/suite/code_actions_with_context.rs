@@ -74,6 +74,54 @@ fn code_actions_with_context_includes_unused_import_quickfix_for_cursor_selectio
 }
 
 #[test]
+fn code_actions_with_context_includes_unresolved_import_quickfix_for_cursor_selection() {
+    let mut db = InMemoryFileStore::new();
+    let file = db.file_id_for_path(PathBuf::from("/test.java"));
+    let source = "import does.not.Exist;\nclass A {}\n";
+    db.set_file_text(file, source.to_string());
+
+    let diag_start = 0;
+    let diag_end = source
+        .find('\n')
+        .expect("import line should end with newline");
+    let range = Range::new(
+        offset_to_position(source, diag_start),
+        offset_to_position(source, diag_end),
+    );
+
+    let diag = lsp_types::Diagnostic {
+        range,
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String("unresolved-import".to_string())),
+        message: "unresolved import".to_string(),
+        ..lsp_types::Diagnostic::default()
+    };
+
+    let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
+    let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
+
+    let actions = ide.code_actions_lsp_with_context(
+        CancellationToken::new(),
+        file,
+        Some(Span::new(diag_start, diag_start)),
+        &[diag],
+    );
+
+    assert!(
+        actions.iter().any(|action| match action {
+            lsp_types::CodeActionOrCommand::CodeAction(action)
+                if action.title == "Remove unresolved import"
+                    && action.kind == Some(lsp_types::CodeActionKind::QUICKFIX) =>
+            {
+                true
+            }
+            _ => false,
+        }),
+        "expected to find `Remove unresolved import` quick fix; got {actions:?}"
+    );
+}
+
+#[test]
 fn code_actions_with_context_includes_type_mismatch_quickfix() {
     let mut db = InMemoryFileStore::new();
     let file = db.file_id_for_path(PathBuf::from("/test.java"));
