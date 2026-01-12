@@ -1585,31 +1585,51 @@ pub fn inline_variable(
 
         // 3) Reject inlining into short-circuit/conditional expression segments where the variable
         // usage may be evaluated conditionally.
-        for ancestor in usage_tok_parent.ancestors() {
-            if let Some(binary) = ast::BinaryExpression::cast(ancestor.clone()) {
-                if let Some(op) = binary_short_circuit_operator_kind(&binary) {
-                    if matches!(op, SyntaxKind::AmpAmp | SyntaxKind::PipePipe) {
-                        if let Some(rhs) = binary.rhs() {
-                            if contains_range(syntax_range(rhs.syntax()), usage.range) {
-                                return Err(RefactorError::InlineSideEffects);
-                            }
-                        }
-                    }
-                }
-            }
+         for ancestor in usage_tok_parent.ancestors() {
+             if let Some(binary) = ast::BinaryExpression::cast(ancestor.clone()) {
+                 if let Some(op) = binary_short_circuit_operator_kind(&binary) {
+                     if matches!(op, SyntaxKind::AmpAmp | SyntaxKind::PipePipe) {
+                         if let Some(rhs) = binary.rhs() {
+                             if contains_range(syntax_range(rhs.syntax()), usage.range) {
+                                 return Err(RefactorError::InlineSideEffects);
+                             }
+                         }
+                     }
+                 }
+             }
 
-            if let Some(cond_expr) = ast::ConditionalExpression::cast(ancestor.clone()) {
-                if let Some(then_branch) = cond_expr.then_branch() {
-                    if contains_range(syntax_range(then_branch.syntax()), usage.range) {
-                        return Err(RefactorError::InlineSideEffects);
-                    }
-                }
-                if let Some(else_branch) = cond_expr.else_branch() {
-                    if contains_range(syntax_range(else_branch.syntax()), usage.range) {
-                        return Err(RefactorError::InlineSideEffects);
-                    }
-                }
+             if let Some(cond_expr) = ast::ConditionalExpression::cast(ancestor.clone()) {
+                 if let Some(then_branch) = cond_expr.then_branch() {
+                     if contains_range(syntax_range(then_branch.syntax()), usage.range) {
+                         return Err(RefactorError::InlineSideEffects);
+                     }
+                 }
+                 if let Some(else_branch) = cond_expr.else_branch() {
+                     if contains_range(syntax_range(else_branch.syntax()), usage.range) {
+                         return Err(RefactorError::InlineSideEffects);
+                     }
+                 }
+             }
+         }
+
+        // 4) Prevent side-effect reordering within the usage statement itself.
+        //
+        // Example:
+        //   int a = foo();
+        //   System.out.println(bar() + a);
+        //
+        // Inlining `a` would produce `println(bar() + foo())`, which evaluates `bar()` before
+        // `foo()`, changing the original side-effect ordering (`foo()` ran before the entire
+        // `println(...)` statement).
+        let usage_start = usage.range.start;
+        if usage_stmt.syntax().descendants().any(|node| {
+            if !has_side_effects(&node) {
+                return false;
             }
+            let range = syntax_range(&node);
+            range.end <= usage_start
+        }) {
+            return Err(RefactorError::InlineSideEffects);
         }
     }
 
