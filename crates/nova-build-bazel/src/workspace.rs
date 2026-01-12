@@ -378,6 +378,8 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                     Err(err) => {
                         errors.push(format!("{preferred}: {err}"));
                         self.preferred_java_compile_info_targets.remove(&cache_key);
+                        // Avoid re-trying the same failing target immediately below.
+                        owners.retain(|t| t != &preferred);
                     }
                 }
             } else {
