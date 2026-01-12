@@ -973,6 +973,48 @@ mod tests {
     }
 
     #[test]
+    fn render_eval_source_uses_void_return_type_for_foreach_ordered_terminal() {
+        let src = render_eval_source(
+            None,
+            "NovaStreamEval_Test",
+            &[],
+            &["java.util.stream.Stream<Integer> s".to_string()],
+            &[],
+            Some("s.forEachOrdered(System.out::println)"),
+        );
+
+        assert!(
+            src.contains("public static void terminal"),
+            "expected void terminal method, got:\n{src}"
+        );
+        assert!(
+            !src.contains("return s.forEachOrdered"),
+            "should not emit `return <void expr>;`:\n{src}"
+        );
+    }
+
+    #[test]
+    fn render_eval_source_uses_void_return_type_for_int_stream_foreach_terminal() {
+        let src = render_eval_source(
+            None,
+            "NovaStreamEval_Test",
+            &[],
+            &[],
+            &[],
+            Some("java.util.stream.IntStream.range(0, 3).forEach(System.out::println)"),
+        );
+
+        assert!(
+            src.contains("public static void terminal"),
+            "expected void terminal method, got:\n{src}"
+        );
+        assert!(
+            !src.contains("return java.util.stream.IntStream.range"),
+            "should not emit `return <void expr>;`:\n{src}"
+        );
+    }
+
+    #[test]
     fn stream_eval_compile_failure_includes_stage_and_javac_diagnostics() {
         let source_path = Path::new("/tmp/NovaStreamEval_Test.java");
         let source = concat!(

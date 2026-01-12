@@ -496,4 +496,49 @@ mod tests {
         );
         assert!(src.contains("s.forEach(System.out::println);"));
     }
+
+    #[test]
+    fn java_source_generation_emits_void_methods_for_foreach_ordered_stages() {
+        let src = generate_stream_eval_helper_java_source(
+            "com.example",
+            &[],
+            &[
+                ("this".to_string(), "Object".to_string()),
+                ("s".to_string(), "java.util.stream.Stream<Integer>".to_string()),
+            ],
+            &["s.forEachOrdered(System.out::println)".to_string()],
+        );
+
+        assert!(
+            src.contains("public static void stage0"),
+            "expected stage0 to be void for forEachOrdered:\n{src}"
+        );
+        assert!(
+            !src.contains("return s.forEachOrdered"),
+            "should not emit `return <void expr>;`:\n{src}"
+        );
+        assert!(src.contains("s.forEachOrdered(System.out::println);"));
+    }
+
+    #[test]
+    fn java_source_generation_emits_void_methods_for_int_stream_foreach_stages() {
+        let src = generate_stream_eval_helper_java_source(
+            "com.example",
+            &[],
+            &[("this".to_string(), "Object".to_string())],
+            &["java.util.stream.IntStream.range(0, 3).forEach(System.out::println)".to_string()],
+        );
+
+        assert!(
+            src.contains("public static void stage0"),
+            "expected stage0 to be void for IntStream.forEach:\n{src}"
+        );
+        assert!(
+            !src.contains("return java.util.stream.IntStream.range"),
+            "should not emit `return <void expr>;`:\n{src}"
+        );
+        assert!(src.contains(
+            "java.util.stream.IntStream.range(0, 3).forEach(System.out::println);"
+        ));
+    }
 }
