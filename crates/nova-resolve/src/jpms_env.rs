@@ -12,7 +12,6 @@ use std::path::Path;
 use anyhow::{anyhow, Context, Result};
 use nova_classpath::{ClasspathEntry, IndexOptions};
 use nova_modules::{ModuleGraph, ModuleInfo, ModuleKind, ModuleName, JAVA_BASE};
-use nova_project::BuildSystem;
 
 #[derive(Debug, Clone)]
 pub struct JpmsEnvironment {
@@ -147,9 +146,7 @@ pub fn build_jpms_compilation_environment(
         .map(|workspace| workspace.java.target.0)
         .filter(|release| *release >= 1)
         .or(jdk.info().api_release);
-    let options = IndexOptions {
-        target_release,
-    };
+    let options = IndexOptions { target_release };
     build_jpms_compilation_environment_with_options(
         jdk,
         workspace,
@@ -176,10 +173,10 @@ pub fn build_jpms_compilation_environment_with_options(
     // still access types from the classpath's unnamed module.
     //
     // Nova's default JPMS model is strict (named modules do not read the unnamed
-    // module). We only apply this best-effort behavior for build systems where we
-    // expect it by default.
+    // module). We apply this best-effort behavior only when we're building a
+    // compilation environment for a workspace and a classpath is present.
     if let Some(workspace) = workspace {
-        if matches!(workspace.build_system, BuildSystem::Gradle) && !classpath_entries.is_empty() {
+        if !classpath_entries.is_empty() {
             for root in &workspace.jpms_modules {
                 let Some(mut info) = env.graph.get(&root.name).cloned() else {
                     continue;
@@ -804,9 +801,14 @@ mod tests {
         };
 
         let project_9 = mk_project(JavaVersion(9));
-        let env_9 =
-            build_jpms_compilation_environment(&jdk, Some(&project_9), &module_path, &classpath, None)
-                .unwrap();
+        let env_9 = build_jpms_compilation_environment(
+            &jdk,
+            Some(&project_9),
+            &module_path,
+            &classpath,
+            None,
+        )
+        .unwrap();
         let stub_9 = env_9
             .classpath
             .types
@@ -815,9 +817,14 @@ mod tests {
         assert_eq!(stub_9.interfaces, vec!["java.lang.Runnable".to_string()]);
 
         let project_8 = mk_project(JavaVersion::JAVA_8);
-        let env_8 =
-            build_jpms_compilation_environment(&jdk, Some(&project_8), &module_path, &classpath, None)
-                .unwrap();
+        let env_8 = build_jpms_compilation_environment(
+            &jdk,
+            Some(&project_8),
+            &module_path,
+            &classpath,
+            None,
+        )
+        .unwrap();
         let stub_8 = env_8
             .classpath
             .types
