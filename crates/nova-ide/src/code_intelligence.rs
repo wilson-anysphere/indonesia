@@ -5306,42 +5306,19 @@ fn infer_ident_type_name(analysis: &Analysis, ident: &str, offset: usize) -> Opt
     // 1) Local variables in the enclosing method (closest preceding declaration).
     // 2) Parameters of the enclosing method.
     // 3) Fields.
+    if let Some(var) = in_scope_local_var(analysis, ident, offset) {
+        return Some(var.ty.clone());
+    }
+
     if let Some(method) = analysis
         .methods
         .iter()
         .find(|m| span_contains(m.body_span, offset))
     {
-        let cursor_brace_stack = brace_stack_at_offset(&analysis.tokens, offset);
-        if let Some(var) = analysis
-            .vars
-            .iter()
-            .filter(|v| {
-                v.name == ident
-                    && v.name_span.start <= offset
-                    && span_contains(method.body_span, v.name_span.start)
-            })
-            .filter(|v| {
-                let var_brace_stack = brace_stack_at_offset(&analysis.tokens, v.name_span.start);
-                brace_stack_is_prefix(&var_brace_stack, &cursor_brace_stack)
-            })
-            .max_by_key(|v| v.name_span.start)
-        {
-            return Some(var.ty.clone());
-        }
-
         if let Some(param) = method.params.iter().find(|p| p.name == ident) {
             return Some(param.ty.clone());
         }
     } else {
-        if let Some(var) = analysis
-            .vars
-            .iter()
-            .filter(|v| v.name == ident && v.name_span.start <= offset)
-            .max_by_key(|v| v.name_span.start)
-        {
-            return Some(var.ty.clone());
-        }
-
         if let Some(param) = analysis
             .methods
             .iter()
@@ -9002,12 +8979,7 @@ fn infer_receiver_type_before_dot(
     }
 
     // Local vars.
-    if let Some(var) = analysis
-        .vars
-        .iter()
-        .filter(|v| v.name == inner && v.name_span.start <= dot_offset)
-        .max_by_key(|v| v.name_span.start)
-    {
+    if let Some(var) = in_scope_local_var(&analysis, inner, dot_offset) {
         return Some(var.ty.clone());
     }
 
@@ -15740,26 +15712,44 @@ fn receiver_is_value_receiver(analysis: &Analysis, receiver: &str, offset: usize
         .iter()
         .find(|m| span_contains(m.body_span, offset))
     {
-        if analysis.vars.iter().any(|v| {
-            v.name == receiver
-                && v.name_span.start <= offset
-                && span_contains(method.body_span, v.name_span.start)
-        }) {
+        if in_scope_local_var(analysis, receiver, offset).is_some() {
             return true;
         }
         if method.params.iter().any(|p| p.name == receiver) {
             return true;
         }
-    } else if analysis
-        .vars
-        .iter()
-        .any(|v| v.name == receiver && v.name_span.start <= offset)
-    {
+    } else {
         // Best-effort fallback when we can't determine the enclosing method (incomplete syntax).
-        return true;
+        if in_scope_local_var(analysis, receiver, offset).is_some() {
+            return true;
+        }
     }
 
     analysis.fields.iter().any(|f| f.name == receiver)
+}
+
+fn in_scope_local_var<'a>(analysis: &'a Analysis, name: &str, offset: usize) -> Option<&'a VarDecl> {
+    let cursor_brace_stack = brace_stack_at_offset(&analysis.tokens, offset);
+
+    analysis
+        .vars
+        .iter()
+        .filter(|v| v.name == name && v.name_span.start <= offset)
+        .filter(|v| {
+            let var_brace_stack = brace_stack_at_offset(&analysis.tokens, v.name_span.start);
+            if !brace_stack_is_prefix(&var_brace_stack, &cursor_brace_stack) {
+                return false;
+            }
+
+            if let Some(scope_end) = var_decl_scope_end_offset(&analysis.tokens, v.name_span.start) {
+                if offset >= scope_end {
+                    return false;
+                }
+            }
+
+            true
+        })
+        .max_by_key(|v| v.name_span.start)
 }
 
 fn infer_receiver(
@@ -15798,6 +15788,13 @@ fn infer_receiver(
         return (ty, CallKind::Instance);
     }
 
+    if let Some(var) = in_scope_local_var(analysis, receiver, offset) {
+        return (
+            parse_source_type_in_context(types, file_ctx, &var.ty),
+            CallKind::Instance,
+        );
+    }
+
     // Prefer locals/params from the enclosing method to avoid cross-method name collisions.
     //
     // When we can identify the enclosing method, only consider names that are actually in scope
@@ -15808,22 +15805,6 @@ fn infer_receiver(
         .iter()
         .find(|m| span_contains(m.body_span, offset))
     {
-        if let Some(var) = analysis
-            .vars
-            .iter()
-            .filter(|v| {
-                v.name == receiver
-                    && v.name_span.start <= offset
-                    && span_contains(method.body_span, v.name_span.start)
-            })
-            .max_by_key(|v| v.name_span.start)
-        {
-            return (
-                parse_source_type_in_context(types, file_ctx, &var.ty),
-                CallKind::Instance,
-            );
-        }
-
         if let Some(param) = method.params.iter().find(|p| p.name == receiver) {
             return (
                 parse_source_type_in_context(types, file_ctx, &param.ty),
@@ -15842,20 +15823,6 @@ fn infer_receiver(
         return (
             parse_source_type_in_context(types, file_ctx, receiver),
             CallKind::Static,
-        );
-    }
-
-    // Best-effort fallback: we couldn't determine the enclosing method, so scan locals declared
-    // before this point.
-    if let Some(var) = analysis
-        .vars
-        .iter()
-        .filter(|v| v.name == receiver && v.name_span.start <= offset)
-        .max_by_key(|v| v.name_span.start)
-    {
-        return (
-            parse_source_type_in_context(types, file_ctx, &var.ty),
-            CallKind::Instance,
         );
     }
 
@@ -15917,10 +15884,7 @@ fn infer_expr_type_at(
         TokenKind::Ident => match token.text.as_str() {
             "null" => Type::Null,
             "true" | "false" => Type::Primitive(PrimitiveType::Boolean),
-            ident => analysis
-                .vars
-                .iter()
-                .find(|v| v.name == ident)
+            ident => in_scope_local_var(analysis, ident, offset)
                 .map(|v| parse_source_type_in_context(types, file_ctx, &v.ty))
                 .or_else(|| {
                     analysis
