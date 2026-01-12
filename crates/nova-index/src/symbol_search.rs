@@ -282,10 +282,50 @@ impl SymbolSearchIndex {
 
             // Keep at most `limit` matches while scoring candidates, to avoid large
             // allocations and O(n log n) sorts for short queries.
-            let mut scored: BinaryHeap<Reverse<CandidateKey<'_>>> = BinaryHeap::new();
+            let mut scored: BinaryHeap<Reverse<CandidateKey<'_>>> = BinaryHeap::with_capacity(limit);
             let mut matcher = FuzzyMatcher::new(query);
 
             let mut push_scored = |id: SymbolId, score: MatchScore| {
+                // The heap is a max-heap of `Reverse<CandidateKey>`, so the root is the
+                // worst candidate (smallest `CandidateKey`).
+                let Some(&Reverse(worst)) = scored.peek() else {
+                    // Heap is empty (len == 0) → always push.
+                    let sym = &self.symbols[id as usize].symbol;
+                    scored.push(Reverse(CandidateKey {
+                        id,
+                        score,
+                        name: sym.name.as_str(),
+                        qualified_name: sym.qualified_name.as_str(),
+                        location_file: sym.location.file.as_str(),
+                        location_line: sym.location.line,
+                        location_column: sym.location.column,
+                        ast_id: sym.ast_id,
+                    }));
+                    return;
+                };
+
+                if scored.len() < limit {
+                    let sym = &self.symbols[id as usize].symbol;
+                    scored.push(Reverse(CandidateKey {
+                        id,
+                        score,
+                        name: sym.name.as_str(),
+                        qualified_name: sym.qualified_name.as_str(),
+                        location_file: sym.location.file.as_str(),
+                        location_line: sym.location.line,
+                        location_column: sym.location.column,
+                        ast_id: sym.ast_id,
+                    }));
+                    return;
+                }
+
+                // Fast path: if the score alone can't beat the current worst, we can
+                // skip building a full `CandidateKey` (saves some memory traffic on
+                // large candidate sets).
+                if score.rank_key() < worst.score.rank_key() {
+                    return;
+                }
+
                 let sym = &self.symbols[id as usize].symbol;
                 let key = CandidateKey {
                     id,
@@ -296,19 +336,6 @@ impl SymbolSearchIndex {
                     location_line: sym.location.line,
                     location_column: sym.location.column,
                     ast_id: sym.ast_id,
-                };
-
-                if scored.len() < limit {
-                    scored.push(Reverse(key));
-                    return;
-                }
-
-                // The heap is a max-heap of `Reverse<CandidateKey>`, so the root is the
-                // worst candidate (smallest `CandidateKey`).
-                let Some(&Reverse(worst)) = scored.peek() else {
-                    // Should be unreachable, but keep the logic resilient.
-                    scored.push(Reverse(key));
-                    return;
                 };
 
                 if key > worst {
@@ -338,13 +365,12 @@ impl SymbolSearchIndex {
                 }
             }
 
-            let mut results: Vec<CandidateKey<'_>> =
-                scored.into_iter().map(|Reverse(key)| key).collect();
-            results.sort_by(|a, b| b.cmp(a));
-
-            let results: Vec<SearchResult> = results
+            let results: Vec<SearchResult> = scored
+                // Ascending order of `Reverse<CandidateKey>` is descending order of
+                // `CandidateKey` ⇒ best-first.
+                .into_sorted_vec()
                 .into_iter()
-                .map(|res| SearchResult {
+                .map(|Reverse(res)| SearchResult {
                     id: res.id,
                     symbol: self.symbols[res.id as usize].symbol.clone(),
                     score: res.score,
