@@ -76,4 +76,13 @@ describe('Frameworks dashboard UX', () => {
     expect(contents).toContain('item.contextValue = NOVA_FRAMEWORK_ENDPOINT_CONTEXT;');
     expect(contents).toContain('item.contextValue = NOVA_FRAMEWORK_BEAN_CONTEXT;');
   });
+
+  it('Frameworks view resolves files via uriFromFileLike (remote-safe)', async () => {
+    const contents = await readSrcFile('frameworksView.ts');
+
+    // The Frameworks dashboard must resolve file-like paths against the workspace URI so it works
+    // in remote/multi-root scenarios. Avoid hard-coding `vscode.Uri.file(...)` in this view.
+    expect(contents).toContain('uriFromFileLike(');
+    expect(contents).not.toContain('vscode.Uri.file(');
+  });
 });
