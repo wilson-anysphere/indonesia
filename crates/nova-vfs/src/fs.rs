@@ -57,7 +57,7 @@ impl LocalFs {
         let mut out = Vec::new();
         for entry in fs::read_dir(path)? {
             let entry = entry?;
-            out.push(VfsPath::Local(entry.path()));
+            out.push(VfsPath::local(entry.path()));
         }
         Ok(out)
     }
@@ -144,6 +144,46 @@ impl FileSystem for LocalFs {
                 io::ErrorKind::Unsupported,
                 format!("URI directory listing not supported ({uri})"),
             )),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_dir_returns_normalized_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        std::fs::create_dir_all(root.join("x")).unwrap();
+        std::fs::write(root.join("Foo.java"), "class Foo {}".as_bytes()).unwrap();
+
+        // Use an *unnormalized* VfsPath so the test exercises `read_dir_local`'s output
+        // normalization rather than the `VfsPath::local` constructor.
+        let unnormalized_dir = VfsPath::Local(root.join("x").join(".."));
+
+        let fs = LocalFs::new();
+        let entries = fs.read_dir(&unnormalized_dir).unwrap();
+
+        assert!(
+            entries.contains(&VfsPath::local(root.join("Foo.java"))),
+            "expected directory listing to contain normalized file path"
+        );
+
+        // Local absolute paths should never contain dot segments after normalization.
+        for entry in entries {
+            let Some(path) = entry.as_local_path() else {
+                continue;
+            };
+            assert!(
+                !path
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::CurDir | std::path::Component::ParentDir)),
+                "unexpected dot segment in normalized directory entry: {}",
+                path.display()
+            );
         }
     }
 }
