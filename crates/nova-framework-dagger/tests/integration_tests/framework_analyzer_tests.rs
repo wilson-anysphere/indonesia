@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use nova_framework::{AnalyzerRegistry, Database, MemoryDatabase, Symbol};
 use nova_framework_dagger::DaggerAnalyzer;
+use nova_types::Severity;
 
 fn load_fixture_sources(name: &str) -> Vec<(PathBuf, String)> {
     let root: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -68,6 +69,10 @@ fn registry_diagnostics_reports_missing_binding_with_correct_span() {
         .find(|d| d.code.as_ref() == "DAGGER_MISSING_BINDING")
         .expect("missing binding diagnostic");
 
+    assert_eq!(diag.severity, Severity::Error);
+    assert!(diag.message.contains("Missing binding"));
+    assert!(diag.message.contains("Bar"));
+
     let span = diag.span.expect("missing binding diagnostic span");
     let text = db.file_text(foo_file).expect("Foo.java text");
     assert_eq!(
@@ -81,6 +86,53 @@ fn registry_diagnostics_reports_missing_binding_with_correct_span() {
     assert!(
         component_diags.is_empty(),
         "expected no diagnostics for AppComponent.java, got: {component_diags:#?}"
+    );
+}
+
+#[test]
+fn registry_diagnostics_reports_duplicate_binding_with_correct_span() {
+    let sources = load_fixture_sources("duplicate_binding");
+
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+    db.add_dependency(project, "com.google.dagger", "dagger");
+
+    let mut consumer_file = None;
+
+    for (path, text) in sources {
+        let file_id = db.add_file_with_path_and_text(project, path.clone(), text);
+        if path.ends_with("Consumer.java") {
+            consumer_file = Some(file_id);
+        }
+    }
+
+    let consumer_file = consumer_file.expect("Consumer.java file id");
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(DaggerAnalyzer::default()));
+
+    let diags = registry.framework_diagnostics(&db, consumer_file);
+    assert!(
+        diags.iter()
+            .any(|d| d.code.as_ref() == "DAGGER_DUPLICATE_BINDING"),
+        "expected DAGGER_DUPLICATE_BINDING diagnostic, got: {diags:#?}"
+    );
+
+    let diag = diags
+        .into_iter()
+        .find(|d| d.code.as_ref() == "DAGGER_DUPLICATE_BINDING")
+        .expect("duplicate binding diagnostic");
+
+    assert_eq!(diag.severity, Severity::Error);
+    assert!(diag.message.contains("Duplicate bindings"));
+    assert!(diag.message.contains("Foo"));
+
+    let span = diag.span.expect("duplicate binding diagnostic span");
+    let text = db.file_text(consumer_file).expect("Consumer.java text");
+    assert_eq!(
+        text.get(span.start..span.end).unwrap_or(""),
+        "Foo",
+        "expected span to cover injected type"
     );
 }
 
