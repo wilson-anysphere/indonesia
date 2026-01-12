@@ -4256,6 +4256,7 @@ dependencies = [
  "tokio",
  "tokio-rustls 0.26.4",
  "tracing",
+ "tracing-subscriber",
  "windows-sys 0.61.2",
 ]
 

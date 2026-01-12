@@ -2396,23 +2396,33 @@ async fn drain_worker_output<R>(shard_id: ShardId, label: &'static str, reader: 
 where
     R: AsyncRead + Unpin + Send + 'static,
 {
+    // Worker output can be adversarially large (e.g. a single "line" with no newline). Bound
+    // buffering so a misbehaving worker can't OOM the router via `read_until('\n')`.
+    const MAX_WORKER_OUTPUT_LINE_BYTES: usize = 64 * 1024;
+    const WORKER_OUTPUT_TRUNCATION_MARKER: &str = "<output truncated>";
+
+    fn bounded_worker_output(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
+        let output = String::from_utf8_lossy(bytes);
+        if output.len() <= MAX_WORKER_OUTPUT_LINE_BYTES {
+            return output;
+        }
+
+        let mut owned = output.into_owned();
+        let mut cut = MAX_WORKER_OUTPUT_LINE_BYTES;
+        while cut > 0 && !owned.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        owned.truncate(cut);
+        std::borrow::Cow::Owned(owned)
+    }
+
     let mut reader = BufReader::new(reader);
     let mut buf = Vec::new();
+    let mut discarding_until_newline = false;
+
     loop {
-        buf.clear();
-        match reader.read_until(b'\n', &mut buf).await {
-            Ok(0) => return,
-            Ok(_) => {
-                let line = String::from_utf8_lossy(&buf);
-                let line = line.trim_end_matches(&['\r', '\n'][..]);
-                info!(
-                    target = "nova.worker.output",
-                    shard_id,
-                    stream = label,
-                    line = %line,
-                    "worker output"
-                );
-            }
+        let available = match reader.fill_buf().await {
+            Ok(buf) => buf,
             Err(err) => {
                 warn!(
                     target = "nova.worker.output",
@@ -2423,7 +2433,106 @@ where
                 );
                 return;
             }
+        };
+
+        if available.is_empty() {
+            if !buf.is_empty() || discarding_until_newline {
+                let line = bounded_worker_output(&buf);
+                let line = line.trim_end_matches(&['\r', '\n'][..]);
+                let line = if discarding_until_newline {
+                    let mut out = line.to_string();
+                    out.push_str(WORKER_OUTPUT_TRUNCATION_MARKER);
+                    out
+                } else {
+                    line.to_string()
+                };
+                info!(
+                    target = "nova.worker.output",
+                    shard_id,
+                    stream = label,
+                    line = %line,
+                    "worker output"
+                );
+            }
+            return;
         }
+
+        let mut consumed = 0;
+        while consumed < available.len() {
+            if discarding_until_newline {
+                if let Some(pos) = available[consumed..].iter().position(|&b| b == b'\n') {
+                    consumed += pos + 1;
+
+                    let line = bounded_worker_output(&buf);
+                    let line = line.trim_end_matches(&['\r', '\n'][..]);
+                    let mut line = line.to_string();
+                    line.push_str(WORKER_OUTPUT_TRUNCATION_MARKER);
+                    info!(
+                        target = "nova.worker.output",
+                        shard_id,
+                        stream = label,
+                        line = %line,
+                        "worker output"
+                    );
+
+                    buf.clear();
+                    discarding_until_newline = false;
+                } else {
+                    consumed = available.len();
+                }
+                continue;
+            }
+
+            let newline_pos = available[consumed..].iter().position(|&b| b == b'\n');
+            let take = newline_pos
+                .map(|pos| pos + 1)
+                .unwrap_or(available.len() - consumed);
+
+            let remaining = MAX_WORKER_OUTPUT_LINE_BYTES.saturating_sub(buf.len());
+            if take <= remaining {
+                buf.extend_from_slice(&available[consumed..consumed + take]);
+                consumed += take;
+
+                if newline_pos.is_some() {
+                    let line = bounded_worker_output(&buf);
+                    let line = line.trim_end_matches(&['\r', '\n'][..]);
+                    info!(
+                        target = "nova.worker.output",
+                        shard_id,
+                        stream = label,
+                        line = %line,
+                        "worker output"
+                    );
+                    buf.clear();
+                }
+                continue;
+            }
+
+            // This line is longer than the maximum.
+            if remaining > 0 {
+                buf.extend_from_slice(&available[consumed..consumed + remaining]);
+            }
+            consumed += take;
+
+            if newline_pos.is_some() {
+                let line = bounded_worker_output(&buf);
+                let line = line.trim_end_matches(&['\r', '\n'][..]);
+                let mut line = line.to_string();
+                line.push_str(WORKER_OUTPUT_TRUNCATION_MARKER);
+                info!(
+                    target = "nova.worker.output",
+                    shard_id,
+                    stream = label,
+                    line = %line,
+                    "worker output"
+                );
+                buf.clear();
+            } else {
+                discarding_until_newline = true;
+            }
+        }
+
+        reader.consume(consumed);
     }
 }
 
@@ -2857,6 +2966,13 @@ async fn collect_java_files(root: &Path) -> Result<Vec<FileText>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+
+    use tokio::io::AsyncWriteExt;
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::layer::Context;
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::Layer;
 
     #[test]
     fn distributed_router_config_debug_does_not_expose_auth_token() {
@@ -2902,6 +3018,110 @@ mod tests {
         let index = GlobalSymbolIndex::new(symbols, 0);
         let results = index.search("foo", 10);
         assert_eq!(results[0].name, "foobar");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn drain_worker_output_truncates_overlong_lines() {
+        const MAX_WORKER_OUTPUT_LINE_BYTES: usize = 64 * 1024;
+        const WORKER_OUTPUT_TRUNCATION_MARKER: &str = "<output truncated>";
+
+        #[derive(Clone)]
+        struct CaptureLayer {
+            lines: Arc<Mutex<Vec<String>>>,
+        }
+
+        impl<S> Layer<S> for CaptureLayer
+        where
+            S: tracing::Subscriber,
+        {
+            fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
+                Some(tracing::level_filters::LevelFilter::INFO)
+            }
+
+            fn register_callsite(
+                &self,
+                _metadata: &'static tracing::Metadata<'static>,
+            ) -> tracing::subscriber::Interest {
+                tracing::subscriber::Interest::always()
+            }
+
+            fn enabled(&self, _metadata: &tracing::Metadata<'_>, _ctx: Context<'_, S>) -> bool {
+                true
+            }
+
+            fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+                struct Visitor {
+                    target: Option<String>,
+                    line: Option<String>,
+                }
+
+                impl Visit for Visitor {
+                    fn record_str(&mut self, field: &Field, value: &str) {
+                        match field.name() {
+                            "target" => self.target = Some(value.to_string()),
+                            "line" => self.line = Some(value.to_string()),
+                            _ => {}
+                        }
+                    }
+
+                    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                        match field.name() {
+                            "target" => self.target = Some(format!("{value:?}")),
+                            "line" => self.line = Some(format!("{value:?}")),
+                            _ => {}
+                        }
+                    }
+                }
+
+                let mut visitor = Visitor {
+                    target: None,
+                    line: None,
+                };
+                event.record(&mut visitor);
+                let meta_target = event.metadata().target();
+                let matches_target = meta_target == "nova.worker.output"
+                    || visitor.target.as_deref() == Some("nova.worker.output");
+                if matches_target {
+                    if let Some(line) = visitor.line {
+                        self.lines.lock().unwrap().push(line);
+                    }
+                }
+            }
+        }
+
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry().with(CaptureLayer { lines: lines.clone() });
+        let _guard = tracing::subscriber::set_default(subscriber);
+        tracing::callsite::rebuild_interest_cache();
+
+        tracing::info!(target = "nova.worker.output", line = %"probe", "worker output");
+        assert_eq!(lines.lock().unwrap().len(), 1, "capture layer did not receive probe event");
+        lines.lock().unwrap().clear();
+
+        let (mut writer, reader) = tokio::io::duplex(64 * 1024);
+        let task = tokio::spawn(drain_worker_output(1, "stdout", reader));
+
+        let oversized = vec![b'a'; 200 * 1024];
+        writer.write_all(&oversized).await.unwrap();
+        writer.write_all(b"\n").await.unwrap();
+        writer.shutdown().await.unwrap();
+
+        task.await.unwrap();
+
+        let captured = lines.lock().unwrap();
+        assert_eq!(captured.len(), 1, "expected exactly one logged line");
+
+        let line = &captured[0];
+        assert!(
+            line.contains(WORKER_OUTPUT_TRUNCATION_MARKER),
+            "expected truncation marker in output, got: {line:?}"
+        );
+        assert!(
+            line.len() <= MAX_WORKER_OUTPUT_LINE_BYTES + WORKER_OUTPUT_TRUNCATION_MARKER.len() + 2,
+            "expected logged line to be bounded (got {}, limit {})",
+            line.len(),
+            MAX_WORKER_OUTPUT_LINE_BYTES + WORKER_OUTPUT_TRUNCATION_MARKER.len() + 2
+        );
     }
 
     #[test]
