@@ -3,6 +3,15 @@ use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 use zip::ZipArchive;
 
+const MODULE_INFO_CLASS_CANDIDATES: [&str; 4] = [
+    "module-info.class",
+    "META-INF/versions/9/module-info.class",
+    "classes/module-info.class",
+    "classes/META-INF/versions/9/module-info.class",
+];
+
+const MANIFEST_CANDIDATES: [&str; 2] = ["META-INF/MANIFEST.MF", "classes/META-INF/MANIFEST.MF"];
+
 const JPMS_COMPILER_FLAG_NEEDLES: [&str; 12] = [
     "--module-path",
     "-p",
@@ -108,16 +117,13 @@ fn dedupe_paths(paths: &mut Vec<PathBuf>) {
 }
 
 fn directory_contains_module_info(dir: &Path) -> bool {
-    dir.join("module-info.class").is_file()
-        || dir.join("META-INF/versions/9/module-info.class").is_file()
-        || dir.join("classes/module-info.class").is_file()
-        || dir
-            .join("classes/META-INF/versions/9/module-info.class")
-            .is_file()
+    MODULE_INFO_CLASS_CANDIDATES
+        .iter()
+        .any(|candidate| dir.join(candidate).is_file())
 }
 
 fn directory_has_automatic_module_name(dir: &Path) -> bool {
-    for manifest_path in ["META-INF/MANIFEST.MF", "classes/META-INF/MANIFEST.MF"] {
+    for manifest_path in MANIFEST_CANDIDATES {
         let manifest_path = dir.join(manifest_path);
         let Ok(bytes) = std::fs::read(&manifest_path) else {
             continue;
@@ -141,12 +147,7 @@ fn archive_is_stable_module(path: &Path) -> bool {
         return false;
     };
 
-    for candidate in [
-        "module-info.class",
-        "META-INF/versions/9/module-info.class",
-        "classes/module-info.class",
-        "classes/META-INF/versions/9/module-info.class",
-    ] {
+    for candidate in MODULE_INFO_CLASS_CANDIDATES {
         if archive.by_name(candidate).is_ok() {
             return true;
         }
@@ -160,7 +161,7 @@ fn zip_manifest_main_attribute<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     key: &str,
 ) -> Option<String> {
-    for manifest_path in ["META-INF/MANIFEST.MF", "classes/META-INF/MANIFEST.MF"] {
+    for manifest_path in MANIFEST_CANDIDATES {
         let mut file = match archive.by_name(manifest_path) {
             Ok(file) => file,
             Err(zip::result::ZipError::FileNotFound) => continue,
