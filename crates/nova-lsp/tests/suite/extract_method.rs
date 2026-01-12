@@ -124,6 +124,10 @@ class C {
     };
 
     let edit = extract_method::execute(&source, args).expect("command should succeed");
+    // Ensure the edit round-trips through JSON serialization (as it would over LSP).
+    let edit: lsp_types::WorkspaceEdit =
+        serde_json::from_value(serde_json::to_value(&edit).expect("serialize workspace edit"))
+            .expect("deserialize workspace edit");
     let changes = edit.changes.expect("workspace edit should have changes");
     let edits = changes.get(&uri).expect("edits for uri must exist");
 
@@ -163,8 +167,18 @@ class C {
         end: offset_to_position(&source, selection.end),
     };
 
-    let action = extract_method::code_action(&source, uri, range);
-    assert!(action.is_some());
+    let action = extract_method::code_action(&source, uri.clone(), range.clone());
+    let action = action.expect("extract method action");
+    let command = action.command.expect("action should be represented as a command");
+    assert_eq!(command.command, "nova.extractMethod");
+    let args_value = command
+        .arguments
+        .and_then(|args| args.into_iter().next())
+        .expect("extract method args");
+    let decoded: ExtractMethodCommandArgs =
+        serde_json::from_value(args_value).expect("decode extract method args");
+    assert_eq!(decoded.uri, uri);
+    assert_eq!(decoded.range, range);
 }
 
 #[test]
@@ -195,6 +209,9 @@ class C {
     };
 
     let edit = extract_method::execute(&source, args).expect("command should succeed");
+    let edit: lsp_types::WorkspaceEdit =
+        serde_json::from_value(serde_json::to_value(&edit).expect("serialize workspace edit"))
+            .expect("deserialize workspace edit");
     let changes = edit.changes.expect("workspace edit should have changes");
     let edits = changes.get(&uri).expect("edits for uri must exist");
 
@@ -242,6 +259,9 @@ class C {
     };
 
     let edit = extract_method::execute(&source, args).expect("command should succeed");
+    let edit: lsp_types::WorkspaceEdit =
+        serde_json::from_value(serde_json::to_value(&edit).expect("serialize workspace edit"))
+            .expect("deserialize workspace edit");
     let changes = edit.changes.expect("workspace edit should have changes");
     let edits = changes.get(&uri).expect("edits for uri must exist");
 
