@@ -99,22 +99,40 @@ fn spring_analyzer_sees_dependency_metadata_via_framework_db_synthetic_files() {
     std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir -p");
     std::fs::write(&config_path, "").expect("touch application.properties");
 
+    let cancel = CancellationToken::new();
+    let analyzer = SpringAnalyzer::new();
+
+    // Diagnostics: known key should NOT be flagged as unknown when dependency metadata is present.
+    let mut db = InMemoryFileStore::new();
+    let file = db.file_id_for_path(&config_path);
+    db.set_file_text(file, "server.port=8080\n".to_string());
+    let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
+
+    let fw_db =
+        nova_ide::framework_db::framework_db_for_file(db, file, &cancel).expect("framework db");
+    let project = fw_db.project_of_file(file);
+    assert!(
+        analyzer.applies_to(fw_db.as_ref(), project),
+        "expected fake spring-boot dependency to make project applicable"
+    );
+
+    let diags = analyzer.diagnostics(fw_db.as_ref(), file);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == SPRING_UNKNOWN_CONFIG_KEY),
+        "expected no unknown-key diagnostics for server.port; got {diags:#?}"
+    );
+
     // Diagnostics: unknown key should be flagged when metadata from the dependency jar is available.
     let mut db = InMemoryFileStore::new();
     let file = db.file_id_for_path(&config_path);
     db.set_file_text(file, "unknown.key=foo\n".to_string());
     let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
 
-    let cancel = CancellationToken::new();
     let fw_db =
         nova_ide::framework_db::framework_db_for_file(db, file, &cancel).expect("framework db");
     let project = fw_db.project_of_file(file);
-
-    let analyzer = SpringAnalyzer::new();
-    assert!(
-        analyzer.applies_to(fw_db.as_ref(), project),
-        "expected fake spring-boot dependency to make project applicable"
-    );
 
     let diags = analyzer.diagnostics(fw_db.as_ref(), file);
     assert!(
