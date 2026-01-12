@@ -2042,9 +2042,25 @@ export async function activate(context: vscode.ExtensionContext) {
         )
       : selection;
 
+    const contextSnippet = (contextLines: number): string => {
+      const startLine = Math.max(0, defaultRange.start.line - contextLines);
+      const endLine = Math.min(doc.lineCount - 1, defaultRange.end.line + contextLines);
+      return doc.getText(
+        new vscode.Range(
+          new vscode.Position(startLine, 0),
+          new vscode.Position(endLine, doc.lineAt(endLine).text.length),
+        ),
+      );
+    };
+
     if (opts.kind === 'generateMethodBody') {
+      let inferredSignature = selectionText;
+      if (inferredSignature.includes('{')) {
+        inferredSignature = inferredSignature.split('{', 1)[0].trim();
+      }
+
       const methodSignature =
-        selectionText ||
+        inferredSignature ||
         (await vscode.window.showInputBox({ prompt: 'Nova AI: Enter a method signature to generate a body for' }))?.trim();
       if (!methodSignature) {
         return undefined;
@@ -2055,7 +2071,7 @@ export async function activate(context: vscode.ExtensionContext) {
         lspArguments: [
           {
             method_signature: methodSignature,
-            context: null,
+            context: contextSnippet(8),
             uri: doc.uri.toString(),
             range: toLspRange(defaultRange),
           },
@@ -2065,8 +2081,15 @@ export async function activate(context: vscode.ExtensionContext) {
       };
     }
 
+    const inferredTarget = selectionText
+      ? selectionText
+          .split(/\r?\n/g)
+          .map((line) => line.trim())
+          .find((line) => line.length > 0) ?? selectionText.trim()
+      : '';
+
     const target =
-      selectionText ||
+      inferredTarget ||
       (await vscode.window.showInputBox({ prompt: 'Nova AI: Enter a test target (method/class signature)' }))?.trim();
     if (!target) {
       return undefined;
@@ -2077,7 +2100,7 @@ export async function activate(context: vscode.ExtensionContext) {
       lspArguments: [
         {
           target,
-          context: null,
+          context: contextSnippet(8),
           uri: doc.uri.toString(),
           range: toLspRange(defaultRange),
         },
