@@ -1071,7 +1071,7 @@ fn convert_newlines(text: &str, style: NewlineStyle) -> String {
     }
 }
 
-fn display_path(path: &Path) -> String {
+pub(crate) fn display_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
@@ -1603,7 +1603,7 @@ fn distributed_listen_addr(_run_dir: &Path) -> ListenAddr {
     ListenAddr::NamedPipe(format!("nova-router-{}-{ts}", std::process::id()))
 }
 
-fn path_relative_to(root: &Path, path: &Path) -> Result<String> {
+pub(crate) fn path_relative_to(root: &Path, path: &Path) -> Result<String> {
     let rel = path.strip_prefix(root).with_context(|| {
         format!(
             "{} is not under workspace root {}",

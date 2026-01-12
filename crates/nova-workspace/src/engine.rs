@@ -2056,7 +2056,7 @@ mod tests {
     use nova_db::NovaInputs;
     use nova_memory::{MemoryBudget, MemoryCategory};
     use nova_index::{
-        AnnotationLocation, IndexSymbolKind, IndexedSymbol, InheritanceEdge, ReferenceLocation,
+        AnnotationLocation, IndexedSymbol, IndexSymbolKind, InheritanceEdge, ReferenceLocation,
         SymbolLocation,
     };
     use nova_project::BuildSystem;

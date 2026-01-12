@@ -580,6 +580,7 @@ impl<DB: ?Sized + Send + Sync + 'static> IdeExtensions<DB> {
 impl<DB> IdeExtensions<DB>
 where
     DB: Send + Sync + 'static + nova_db::Database + AsDynNovaDb,
+    FrameworkAnalyzerRegistryProvider: DiagnosticProvider<DB> + CompletionProvider<DB>,
 {
     pub fn with_default_registry(db: Arc<DB>, config: Arc<NovaConfig>, project: ProjectId) -> Self
     where
