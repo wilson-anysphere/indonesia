@@ -245,6 +245,62 @@ class Foo {
 }
 
 #[test]
+fn formats_package_trailing_comment_and_preserves_section_spacing() {
+    let input = "package foo; // c\nimport java.util.List;\nclass Foo{}\n";
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+package foo; // c
+
+import java.util.List;
+
+class Foo {
+}
+"###
+    );
+}
+
+#[test]
+fn formats_import_trailing_comment_and_preserves_section_spacing() {
+    let input = "import java.util.List; // c\nclass Foo{}\n";
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+import java.util.List; // c
+
+class Foo {
+}
+"###
+    );
+}
+
+#[test]
+fn preserves_comments_between_imports_without_inserting_blank_lines() {
+    let input = "import java.util.List;\n// c\nimport java.util.Map;\nclass Foo{int x;}\n";
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+import java.util.List;
+// c
+import java.util.Map;
+
+class Foo {
+    int x;
+}
+"###
+    );
+}
+
+#[test]
 fn formats_generic_spacing_and_disambiguation() {
     let input = r#"
 class Foo{
@@ -394,6 +450,26 @@ class Foo {
     void m() {
         if (true) {
         } // c
+    }
+}
+"###
+    );
+}
+
+#[test]
+fn does_not_join_closing_brace_with_standalone_line_comment_in_ast_formatter() {
+    let input = "class Foo{void m(){if(true){}\n// c\n}}\n";
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+class Foo {
+    void m() {
+        if (true) {
+        }
+        // c
     }
 }
 "###

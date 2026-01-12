@@ -85,14 +85,34 @@ fn format_compilation_unit(
         let at_top_level = state.indent_level == 0 && state.paren_depth == 0;
 
         if at_top_level && sections.pending_blank_after_imports {
-            if token.kind() != SyntaxKind::ImportKw {
-                state.ensure_blank_line(&mut out);
+            match token.kind() {
+                SyntaxKind::ImportKw => {
+                    // Another import continues the import section; keep comments (if any) between
+                    // imports and avoid inserting a blank line until we reach the first non-import
+                    // token.
+                    sections.pending_blank_after_imports = false;
+                }
+                SyntaxKind::LineComment | SyntaxKind::BlockComment | SyntaxKind::DocComment => {
+                    // Comments between imports belong to the import section; delay the blank line
+                    // until we see the next non-import token.
+                }
+                _ => {
+                    state.ensure_blank_line(&mut out);
+                    sections.pending_blank_after_imports = false;
+                }
             }
-            sections.pending_blank_after_imports = false;
         }
         if at_top_level && sections.pending_blank_after_package {
-            state.ensure_blank_line(&mut out);
-            sections.pending_blank_after_package = false;
+            match token.kind() {
+                SyntaxKind::LineComment | SyntaxKind::BlockComment | SyntaxKind::DocComment => {
+                    // Treat comments following the package declaration as part of the package
+                    // section and insert the separating blank line before the next declaration.
+                }
+                _ => {
+                    state.ensure_blank_line(&mut out);
+                    sections.pending_blank_after_package = false;
+                }
+            }
         }
 
         if state.pending_blank_line {
@@ -188,6 +208,25 @@ fn next_significant(tokens: &[SyntaxToken], mut idx: usize) -> Option<&SyntaxTok
         idx += 1;
     }
     None
+}
+
+fn next_non_whitespace_with_breaks(
+    tokens: &[SyntaxToken],
+    mut idx: usize,
+) -> (Option<&SyntaxToken>, bool) {
+    let mut saw_line_break = false;
+    idx = idx.saturating_add(1);
+    while idx < tokens.len() {
+        match tokens[idx].kind() {
+            SyntaxKind::Whitespace => {
+                saw_line_break |= count_line_breaks(tokens[idx].text()) > 0;
+                idx += 1;
+            }
+            kind if is_missing_token(kind) => idx += 1,
+            _ => return (Some(&tokens[idx]), saw_line_break),
+        }
+    }
+    (None, saw_line_break)
 }
 
 fn ensure_newline(out: &mut String, newline: &'static str) {
@@ -622,6 +661,9 @@ impl<'a> TokenFormatState<'a> {
                 self.write_indent(out);
                 out.push('}');
 
+                let (next_non_ws, saw_line_break) = next_non_whitespace_with_breaks(tokens, idx);
+                let next_kind = next_non_ws.map(|t| t.kind());
+
                 let join_next = matches!(
                     next_kind,
                     Some(
@@ -638,7 +680,8 @@ impl<'a> TokenFormatState<'a> {
                             | SyntaxKind::RParen
                             | SyntaxKind::RBracket
                     )
-                ) || matches!(next_kind, Some(SyntaxKind::LineComment));
+                ) || matches!(next_kind, Some(SyntaxKind::LineComment))
+                    && !saw_line_break;
                 if matches!(
                     next_kind,
                     Some(
@@ -668,16 +711,19 @@ impl<'a> TokenFormatState<'a> {
                 let in_for_header = self
                     .for_paren_depth
                     .is_some_and(|depth| self.paren_depth >= depth);
+                let (next_non_ws, saw_line_break) = next_non_whitespace_with_breaks(tokens, idx);
+                let next_kind = next_non_ws.map(|t| t.kind());
                 let next_is_comment = matches!(
                     next_kind,
                     Some(
                         SyntaxKind::LineComment | SyntaxKind::BlockComment | SyntaxKind::DocComment
                     )
                 );
-                if next_is_comment {
+
+                if next_is_comment && !saw_line_break {
                     // Keep trailing comments on the same line.
-                } else if in_for_header {
-                    if next.is_some()
+                } else if in_for_header && !next_is_comment {
+                    if next_non_ws.is_some()
                         && !matches!(next_kind, Some(SyntaxKind::RParen | SyntaxKind::Semicolon))
                     {
                         self.ensure_space(out);
