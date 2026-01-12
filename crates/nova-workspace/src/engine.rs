@@ -400,6 +400,11 @@ fn workspace_scheduler() -> Scheduler {
         .clone()
 }
 
+fn empty_file_content() -> Arc<String> {
+    static EMPTY: OnceLock<Arc<String>> = OnceLock::new();
+    EMPTY.get_or_init(|| Arc::new(String::new())).clone()
+}
+
 #[cfg(test)]
 #[derive(Debug, Default)]
 struct MemoryEnforceObserver {
@@ -1778,6 +1783,10 @@ impl WorkspaceEngine {
             self.query_db.set_file_is_dirty(file_id, false);
         }
 
+        if !exists && was_known && !open_docs.is_open(file_id) {
+            self.query_db.set_file_content(file_id, empty_file_content());
+        }
+
         self.update_project_files_membership(&vfs_path, file_id, exists);
         self.publish(WorkspaceEvent::FileChanged {
             file: vfs_path.clone(),
@@ -2982,6 +2991,9 @@ fn reload_project_and_sync(
     for old in previous_files {
         if !next_set.contains(&old) {
             query_db.set_file_exists(old, false);
+            if !open_docs.is_open(old) {
+                query_db.set_file_content(old, empty_file_content());
+            }
         }
     }
 
@@ -4413,6 +4425,7 @@ mod tests {
         engine.apply_filesystem_events(vec![NormalizedEvent::Deleted(file_b.clone())]);
         engine.query_db.with_snapshot(|snap| {
             assert!(!snap.file_exists(file_id));
+            assert_eq!(snap.file_content(file_id).as_str(), "");
             assert!(!snap.project_files(project).contains(&file_id));
         });
     }
@@ -4549,6 +4562,32 @@ mod tests {
                 snap.file_content(file_id).as_str(),
                 "class Main { overlay }"
             );
+        });
+    }
+
+    #[test]
+    fn filesystem_delete_event_does_not_clear_open_document_overlay() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+        let file = root.join("src/Main.java");
+        fs::write(&file, "class Main { disk }".as_bytes()).unwrap();
+
+        let workspace = crate::Workspace::open(root).unwrap();
+        let vfs_path = VfsPath::local(file.clone());
+        let file_id = workspace.open_document(
+            vfs_path.clone(),
+            "class Main { overlay }".to_string(),
+            1,
+        );
+
+        fs::remove_file(&file).unwrap();
+        workspace.apply_filesystem_events(vec![NormalizedEvent::Deleted(file.clone())]);
+
+        let engine = workspace.engine_for_tests();
+        engine.query_db.with_snapshot(|snap| {
+            assert!(snap.file_exists(file_id));
+            assert_eq!(snap.file_content(file_id).as_str(), "class Main { overlay }");
         });
     }
 
@@ -5149,6 +5188,34 @@ mod tests {
                 "expected classpath index to contain classes from {}",
                 dep_jar.display()
             );
+        });
+    }
+
+    #[test]
+    fn project_reload_clears_file_content_for_removed_files() {
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        let java = root.join("src/Main.java");
+        fs::write(&java, "class Main {}".as_bytes()).unwrap();
+
+        let workspace = crate::Workspace::open(&root).unwrap();
+        let engine = workspace.engine_for_tests();
+        let vfs_path = VfsPath::local(java.clone());
+        let file_id = engine.vfs.get_id(&vfs_path).expect("file id allocated");
+
+        engine.query_db.with_snapshot(|snap| {
+            assert!(snap.file_exists(file_id));
+            assert_eq!(snap.file_content(file_id).as_str(), "class Main {}");
+        });
+
+        fs::remove_file(&java).unwrap();
+        engine.reload_project_now(&[]).unwrap();
+
+        engine.query_db.with_snapshot(|snap| {
+            assert!(!snap.file_exists(file_id));
+            assert_eq!(snap.file_content(file_id).as_str(), "");
         });
     }
 

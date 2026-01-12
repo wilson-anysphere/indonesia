@@ -1086,7 +1086,6 @@ where
                 &cancel,
                 source,
                 &uri,
-                &cancel,
                 span,
                 &diagnostics,
             ));
