@@ -18,7 +18,7 @@
 //!   expansions like `ß → ss`. This makes matches like `"strasse"` ⇔ `"Straße"` and
 //!   composed/decomposed accent forms behave as users expect.
 //! - **Scoring unit:** the fuzzy scorer operates on **extended grapheme clusters**
-//!   (per [`unicode_segmentation`]), not bytes. This keeps multi-codepoint emoji
+//!   (via the `unicode-segmentation` crate), not bytes. This keeps multi-codepoint emoji
 //!   sequences stable as a single unit.
 //! - **ASCII fast path:** even with `unicode` enabled, if both `query` and
 //!   `candidate` are ASCII, the existing byte-based implementation is used
