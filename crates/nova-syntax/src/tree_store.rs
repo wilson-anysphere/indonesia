@@ -71,13 +71,21 @@ impl SyntaxTreeStore {
     }
 
     pub fn insert(&self, file: FileId, text: Arc<String>, parse: Arc<ParseResult>) {
+        let mut inner = self.inner.lock().unwrap();
+        let len_before = inner.len();
+        // Opportunistically drop closed documents so the store only retains
+        // items for currently-open files.
+        inner.retain(|file, _| self.open_docs.is_open(*file));
+
         // Only keep parses for documents that are currently open; otherwise we'd retain parse
         // results for the entire workspace and duplicate Salsa's memo tables.
         if !self.open_docs.is_open(file) {
+            if inner.len() != len_before {
+                self.update_tracker_locked(&inner);
+            }
             return;
         }
 
-        let mut inner = self.inner.lock().unwrap();
         inner.insert(file, StoredTree { text, parse });
         self.update_tracker_locked(&inner);
     }
@@ -86,13 +94,30 @@ impl SyntaxTreeStore {
     ///
     /// This uses pointer identity (`Arc::ptr_eq`) to avoid expensive hashing.
     pub fn get_if_current(&self, file: FileId, text: &Arc<String>) -> Option<Arc<ParseResult>> {
-        let inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap();
+
+        // Opportunistically drop closed documents so the store only retains
+        // items for currently-open files.
+        let len_before = inner.len();
+        inner.retain(|file, _| self.open_docs.is_open(*file));
+        if inner.len() != len_before {
+            self.update_tracker_locked(&inner);
+        }
+
+        if !self.open_docs.is_open(file) {
+            return None;
+        }
+
         let stored = inner.get(&file)?;
         if Arc::ptr_eq(&stored.text, text) {
-            Some(stored.parse.clone())
-        } else {
-            None
+            return Some(stored.parse.clone());
         }
+
+        // Stale entry (file still open but text changed). Drop it now so the
+        // next computed tree can replace it.
+        inner.remove(&file);
+        self.update_tracker_locked(&inner);
+        None
     }
 
     /// Returns the stored parse result if it corresponds to `text`.
