@@ -203,9 +203,8 @@ pub(crate) fn load_gradle_project(
     }
 
     maybe_insert_buildsrc_module_ref(&mut module_refs, root);
-    if settings_path.is_some() {
-        append_included_build_module_refs(&mut module_refs, include_builds);
-    }
+    let included_builds = append_included_build_module_refs(&mut module_refs, include_builds);
+    append_included_build_subproject_module_refs(&mut module_refs, root, &included_builds);
 
     let snapshot = load_gradle_snapshot(root);
     let mut snapshot_project_dirs: HashMap<String, PathBuf> = HashMap::new();
@@ -535,9 +534,8 @@ pub(crate) fn load_gradle_workspace_model(
     }
 
     maybe_insert_buildsrc_module_ref(&mut module_refs, root);
-    if settings_path.is_some() {
-        append_included_build_module_refs(&mut module_refs, include_builds);
-    }
+    let included_builds = append_included_build_module_refs(&mut module_refs, include_builds);
+    append_included_build_subproject_module_refs(&mut module_refs, root, &included_builds);
 
     let snapshot = load_gradle_snapshot(root);
     let mut snapshot_project_dirs: HashMap<String, PathBuf> = HashMap::new();
@@ -968,9 +966,12 @@ fn sanitize_included_build_name(name: &str) -> String {
     }
 }
 
-fn append_included_build_module_refs(module_refs: &mut Vec<GradleModuleRef>, dirs: Vec<String>) {
+fn append_included_build_module_refs(
+    module_refs: &mut Vec<GradleModuleRef>,
+    dirs: Vec<String>,
+) -> Vec<GradleModuleRef> {
     if dirs.is_empty() {
-        return;
+        return Vec::new();
     }
 
     let mut used_project_paths: BTreeSet<String> =
@@ -978,6 +979,7 @@ fn append_included_build_module_refs(module_refs: &mut Vec<GradleModuleRef>, dir
     let mut existing_dirs: BTreeSet<String> =
         module_refs.iter().map(|m| m.dir_rel.clone()).collect();
 
+    let mut added = Vec::new();
     for dir_rel in dirs {
         if existing_dirs.contains(&dir_rel) {
             continue;
@@ -999,10 +1001,76 @@ fn append_included_build_module_refs(module_refs: &mut Vec<GradleModuleRef>, dir
         used_project_paths.insert(project_path.clone());
         existing_dirs.insert(dir_rel.clone());
 
-        module_refs.push(GradleModuleRef {
+        let module_ref = GradleModuleRef {
             project_path,
             dir_rel,
-        });
+        };
+        module_refs.push(module_ref.clone());
+        added.push(module_ref);
+    }
+
+    added
+}
+
+fn append_included_build_subproject_module_refs(
+    module_refs: &mut Vec<GradleModuleRef>,
+    workspace_root: &Path,
+    included_builds: &[GradleModuleRef],
+) {
+    if included_builds.is_empty() {
+        return;
+    }
+
+    let mut used_project_paths: BTreeSet<String> =
+        module_refs.iter().map(|m| m.project_path.clone()).collect();
+    let mut existing_dirs: BTreeSet<String> =
+        module_refs.iter().map(|m| m.dir_rel.clone()).collect();
+
+    for included_build in included_builds {
+        let build_root = workspace_root.join(&included_build.dir_rel);
+        let settings_path = ["settings.gradle.kts", "settings.gradle"]
+            .into_iter()
+            .map(|name| build_root.join(name))
+            .find(|path| path.is_file());
+        let Some(settings_path) = settings_path else {
+            continue;
+        };
+        let Ok(contents) = std::fs::read_to_string(&settings_path) else {
+            continue;
+        };
+
+        for subproject in parse_gradle_settings_projects(&contents) {
+            // `append_included_build_module_refs` already adds the included build root module,
+            // so only append subprojects.
+            if subproject.project_path == ":" {
+                continue;
+            }
+
+            let project_path = format!("{}{}", included_build.project_path, subproject.project_path);
+            if used_project_paths.contains(&project_path) {
+                continue;
+            }
+
+            let combined_dir_rel = if subproject.dir_rel == "." {
+                included_build.dir_rel.clone()
+            } else {
+                format!(
+                    "{}/{}",
+                    included_build.dir_rel.trim_end_matches('/'),
+                    subproject.dir_rel
+                )
+            };
+            let Some(dir_rel) = normalize_dir_rel(&combined_dir_rel) else {
+                continue;
+            };
+            if existing_dirs.contains(&dir_rel) {
+                continue;
+            }
+
+            used_project_paths.insert(project_path.clone());
+            existing_dirs.insert(dir_rel.clone());
+            module_refs.push(GradleModuleRef { project_path, dir_rel });
+        }
     }
 }
 

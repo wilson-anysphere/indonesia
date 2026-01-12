@@ -1314,7 +1314,6 @@ fn loads_gradle_composite_workspace_model() {
     let root = testdata_path("gradle-composite/root");
     let included_root =
         std::fs::canonicalize(root.join("../included")).expect("canonicalize included build root");
-
     let gradle_home = tempdir().expect("tempdir");
     let options = LoadOptions {
         gradle_user_home: Some(gradle_home.path().to_path_buf()),
@@ -1331,6 +1330,37 @@ fn loads_gradle_composite_workspace_model() {
         .find(|m| m.root == included_root)
         .expect("expected included build module to be discovered via includeBuild");
     assert_eq!(included.id, "gradle::__includedBuild_included");
+}
+
+#[test]
+fn loads_gradle_includebuild_subproject_workspace_model() {
+    let root = testdata_path("gradle-includebuild");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+
+    let model =
+        load_workspace_model_with_options(&root, &options).expect("load gradle workspace model");
+    assert_eq!(model.build_system, BuildSystem::Gradle);
+
+    let plugins_root = model.workspace_root.join("build-logic/plugins");
+    let plugins = model
+        .modules
+        .iter()
+        .find(|m| m.root == plugins_root)
+        .expect("expected build-logic/plugins module to be discovered via includeBuild settings");
+    assert_eq!(plugins.id, "gradle::__includedBuild_build-logic:plugins");
+
+    let java_file =
+        model.workspace_root
+            .join("build-logic/plugins/src/main/java/com/example/buildlogic/plugins/Plugin.java");
+    let match_java = model
+        .module_for_path(&java_file)
+        .expect("module for build-logic/plugins java file");
+    assert_eq!(match_java.module.id, plugins.id);
+    assert_eq!(match_java.source_root.kind, SourceRootKind::Main);
 }
 
 #[test]
