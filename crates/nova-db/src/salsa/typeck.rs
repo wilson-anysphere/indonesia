@@ -70,6 +70,52 @@ impl TypeIndex for WorkspaceFirstIndex<'_> {
     }
 }
 
+/// `TypeProvider` wrapper that prevents classpath/module-path stubs from shadowing `java.*`.
+///
+/// `nova_resolve::Resolver` intentionally ignores the classpath for `java.*` names to mirror JVM
+/// restrictions (user class loaders cannot define classes in `java.*`). Type checking must match
+/// this behavior: otherwise an unresolved `java.*` type (represented as `Type::Named`) could be
+/// "rescued" by lazily loading a classpath stub via `ExternalTypeLoader::ensure_class`.
+#[derive(Clone, Copy)]
+struct JavaOnlyJdkTypeProvider<'a> {
+    /// Provider chain for non-`java.*` names (e.g. classpath -> jdk).
+    inner: &'a dyn TypeProvider,
+    /// JDK provider used exclusively for `java.*`.
+    jdk: &'a dyn TypeProvider,
+}
+
+impl<'a> JavaOnlyJdkTypeProvider<'a> {
+    fn new(inner: &'a dyn TypeProvider, jdk: &'a dyn TypeProvider) -> Self {
+        Self { inner, jdk }
+    }
+}
+
+impl TypeProvider for JavaOnlyJdkTypeProvider<'_> {
+    fn lookup_type(&self, binary_name: &str) -> Option<nova_types::TypeDefStub> {
+        if binary_name.starts_with("java.") {
+            self.jdk.lookup_type(binary_name)
+        } else {
+            self.inner.lookup_type(binary_name)
+        }
+    }
+
+    fn members(&self, binary_name: &str) -> Vec<nova_types::MemberStub> {
+        if binary_name.starts_with("java.") {
+            self.jdk.members(binary_name)
+        } else {
+            self.inner.members(binary_name)
+        }
+    }
+
+    fn supertypes(&self, binary_name: &str) -> Vec<String> {
+        if binary_name.starts_with("java.") {
+            self.jdk.supertypes(binary_name)
+        } else {
+            self.inner.supertypes(binary_name)
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FileExprId {
     pub owner: DefWithBodyId,
@@ -264,10 +310,17 @@ fn project_base_type_store(db: &dyn NovaTypeck, project: ProjectId) -> ArcEq<Typ
     // index, and pre-interning would then allow `TypeEnv` lookups (used as a best-effort fallback
     // during type-ref parsing) to "resolve" types that should be rejected by JPMS readability /
     // exports enforcement (see `tests/suite/typeck_jpms.rs`).
+    //
+    // Also mirror the resolver's `java.*` handling: application class loaders cannot define
+    // `java.*` packages, so classpath stubs should not be able to "rescue" unresolved `java.*`
+    // references.
     if db.jpms_compilation_env(project).is_none() {
         if let Some(cp) = db.classpath_index(project).as_deref() {
             for (idx, name) in cp.iter_binary_names().enumerate() {
                 cancel::checkpoint_cancelled_every(db, idx as u32, 4096);
+                if name.starts_with("java.") {
+                    continue;
+                }
                 store.intern_class_id(name);
             }
         }
@@ -332,7 +385,7 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
     // Build an env for this body.
     let base_store = db.project_base_type_store(project);
     let mut store = (&*base_store).clone();
-    let provider = if let Some(env) = jpms_env.as_deref() {
+    let base_provider = if let Some(env) = jpms_env.as_deref() {
         // In JPMS mode, ignore the legacy `classpath_index` input (which may contain
         // module-path entries mixed into the classpath) and instead use the JPMS-aware
         // compilation environment's module-aware index.
@@ -349,6 +402,8 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
             None => nova_types::ChainTypeProvider::new(vec![&*jdk as &dyn TypeProvider]),
         }
     };
+    let jdk_provider: &dyn TypeProvider = &*jdk;
+    let provider = JavaOnlyJdkTypeProvider::new(&base_provider, jdk_provider);
     let mut loader = ExternalTypeLoader::new(&mut store, &provider);
 
     // Define source types in this file so `Type::Class` ids are stable within this body.
