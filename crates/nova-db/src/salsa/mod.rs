@@ -678,7 +678,11 @@ impl RootDatabase {
     }
 
     pub fn set_file_path(&mut self, file: FileId, path: impl Into<String>) {
-        self.file_paths.write().insert(file, Arc::new(path.into()));
+        self.set_file_path_arc(file, Arc::new(path.into()));
+    }
+
+    pub fn set_file_path_arc(&mut self, file: FileId, path: Arc<String>) {
+        self.file_paths.write().insert(file, path);
     }
 
     pub fn persistence_stats(&self) -> crate::PersistenceStats {
@@ -1515,7 +1519,7 @@ impl Database {
         db.set_file_rel_path(file, Arc::clone(&rel_path));
         // Keep the non-tracked file path map in sync so existing persistence
         // caches (AST artifacts, derived caches) can reuse the same keys.
-        db.set_file_path(file, rel_path.as_ref().clone());
+        db.set_file_path_arc(file, rel_path.clone());
     }
 
     pub fn set_project_config(&self, project: ProjectId, config: Arc<ProjectConfig>) {
@@ -2657,6 +2661,24 @@ class Foo {
             assert!(snap.file_exists(file));
             assert_eq!(snap.source_root(file), SourceRootId::from_raw(0));
         });
+    }
+
+    #[test]
+    fn file_rel_path_is_shared_with_persistent_file_paths() {
+        let db = Database::new();
+        let file = FileId::from_raw(1);
+
+        db.set_file_rel_path(file, Arc::new("src/A.java".to_string()));
+
+        let snap = db.snapshot();
+        let rel_path = snap.file_rel_path(file);
+        let persistent_path = snap.file_path(file).expect("expected file path for FileId");
+
+        assert_eq!(&*rel_path, &*persistent_path);
+        assert!(
+            Arc::ptr_eq(&rel_path, &persistent_path),
+            "expected file_rel_path and file_path to share the same Arc"
+        );
     }
 
     #[test]
