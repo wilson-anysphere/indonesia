@@ -815,10 +815,11 @@ pub fn inline_variable(
         .ok_or_else(|| RefactorError::UnknownFile(def.file.clone()))?;
 
     let parsed = parse_java(text);
-    // `parse_java` may produce recoverable errors even for source we can still refactor
-    // correctly (e.g. some switch/case layouts). Inline-variable only relies on a small subset of
-    // the syntax tree (the declaration statement and usage sites), so proceed as long as we can
-    // find the nodes we need.
+    // `parse_java` may produce recoverable errors even for source we can still refactor correctly
+    // (e.g. some switch/case layouts). Inline Variable only relies on a small subset of the syntax
+    // tree (the declaration statement and usage tokens), so avoid failing fast on parse errors;
+    // downstream lookups will return `InlineNotSupported` if the required structure cannot be
+    // recovered.
 
     let root = parsed.syntax();
 
