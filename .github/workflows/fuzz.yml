@@ -56,6 +56,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: cargo-fuzz version
+        run: cargo +nightly fuzz --version
+        timeout-minutes: 1
+
       - name: nova-remote-proto/decode_framed_message
         working-directory: crates/nova-remote-proto
         run: cargo +nightly fuzz run --codegen-units 16 decode_framed_message -- -max_total_time=30 -max_len=262144
