@@ -135,8 +135,16 @@ pub(crate) fn load_bazel_workspace_model(
     ))
 }
 
-const BAZEL_ALWAYS_IGNORED_DIRS: [&str; 7] = [
-    ".git", ".hg", ".svn", ".idea", ".vscode", ".nova", "target",
+const BAZEL_ALWAYS_IGNORED_DIRS: [&str; 9] = [
+    ".git",
+    ".hg",
+    ".svn",
+    ".idea",
+    ".vscode",
+    ".nova",
+    "target",
+    "build",
+    "node_modules",
 ];
 
 fn bazel_ignored_path_prefixes(workspace_root: &Path) -> BTreeSet<PathBuf> {
@@ -188,6 +196,18 @@ fn bazel_walkdir_filter_entry(
 ) -> bool {
     if entry.depth() == 0 {
         return true;
+    }
+
+    // Bazel creates a symlink farm (or directories on some platforms) in the workspace root
+    // containing output artifacts (e.g. `bazel-out`, `bazel-bin`, `bazel-testlogs`, and
+    // `bazel-<workspace>`). These trees can be huge and may contain non-source BUILD files.
+    if entry.depth() == 1
+        && entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with("bazel-"))
+    {
+        return false;
     }
 
     // Fast path: prune common junk directories even when nested (e.g. `.git` submodules, nested
