@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use nova_format::NewlineStyle;
@@ -315,18 +315,31 @@ impl ExtractMethod {
             let flow_body = lower_flow_body_with(&method_body, flow_params, &mut || {});
 
             let mut typeck: Option<SingleFileTypecheck> = None;
+            // Flow IR statement spans include trivia in some cases (notably `if` statements),
+            // while user selections are typically trimmed to non-trivia tokens. When analyzing
+            // locals/CFG properties, expand the selection to cover the full syntax range of the
+            // selected statements so flow spans are treated as "contained".
+            let flow_selection = selection_info
+                .statements
+                .first()
+                .and_then(|first| {
+                    selection_info.statements.last().map(|last| {
+                        TextRange::new(syntax_range(first.syntax()).start, syntax_range(last.syntax()).end)
+                    })
+                })
+                .unwrap_or(selection);
 
             let (reads_in_selection, writes_in_selection) =
-                collect_reads_writes_in_flow_selection(&flow_body, selection);
+                collect_reads_writes_in_flow_selection(&flow_body, flow_selection);
 
-            let live_after_selection = live_locals_after_selection(&flow_body, selection);
+            let live_after_selection = live_locals_after_selection(&flow_body, flow_selection);
 
-            let return_value = compute_return_value(
+            let return_candidate = compute_return_value(
                 &mut typeck,
                 source,
                 &flow_body,
                 &declared_types,
-                selection,
+                flow_selection,
                 &writes_in_selection,
                 &live_after_selection,
                 &mut issues,
@@ -335,7 +348,7 @@ impl ExtractMethod {
             // Determine parameters in order of first appearance in the selection.
             let mut parameters = Vec::new();
             for (local, first_use) in reads_in_selection {
-                if local_declared_in_selection(&flow_body, local, selection) {
+                if local_declared_in_selection(&flow_body, local, flow_selection) {
                     continue;
                 }
                 let name = flow_body.locals()[local.index()].name.as_str().to_string();
@@ -350,6 +363,32 @@ impl ExtractMethod {
                 );
                 parameters.push(Parameter { name, ty });
             }
+
+            // If a return candidate is not declared inside the selection but is definitely
+            // assigned at the start of the selection, thread its pre-selection value through the
+            // extracted method as the first parameter.
+            if let Some((ret_local, ret)) = return_candidate.as_ref() {
+                if !ret.declared_in_selection {
+                    if definitely_assigned_at_selection_start(&flow_body, flow_selection, *ret_local)
+                        == Some(true)
+                    {
+                        if let Some(pos) = parameters.iter().position(|p| p.name == ret.name) {
+                            let param = parameters.remove(pos);
+                            parameters.insert(0, param);
+                        } else {
+                            parameters.insert(
+                                0,
+                                Parameter {
+                                    name: ret.name.clone(),
+                                    ty: ret.ty.clone(),
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+
+            let return_value = return_candidate.as_ref().map(|(_, ret)| ret.clone());
 
             let return_ty = return_value
                 .as_ref()
@@ -1988,7 +2027,7 @@ fn compute_return_value(
     writes_in_selection: &HashSet<LocalId>,
     live_after_selection: &HashSet<LocalId>,
     issues: &mut Vec<ExtractMethodIssue>,
-) -> Option<ReturnValue> {
+) -> Option<(LocalId, ReturnValue)> {
     let mut candidates: Vec<LocalId> = writes_in_selection
         .iter()
         .copied()
@@ -2008,11 +2047,14 @@ fn compute_return_value(
             let name = body.locals()[local.index()].name.as_str().to_string();
             let fallback_offset = first_local_use_after(body, *local, selection.end);
             let ty = type_for_local(typeck, source, body, types, *local, fallback_offset, issues);
-            Some(ReturnValue {
-                name,
-                ty,
-                declared_in_selection: local_declared_in_selection(body, *local, selection),
-            })
+            Some((
+                *local,
+                ReturnValue {
+                    name,
+                    ty,
+                    declared_in_selection: local_declared_in_selection(body, *local, selection),
+                },
+            ))
         }
         many => {
             let mut names: Vec<String> = many
@@ -2087,6 +2129,30 @@ fn last_stmt_in_selection(
         if best
             .as_ref()
             .is_none_or(|(end, start, idx, _)| key > (*end, *start, *idx))
+        {
+            best = Some((key.0, key.1, key.2, stmt_id));
+        }
+    }
+
+    best.map(|(_, _, _, id)| id)
+}
+
+fn first_stmt_in_selection(
+    body: &Body,
+    selection: TextRange,
+    locations: &HashMap<StmtId, StmtLocation>,
+) -> Option<StmtId> {
+    let mut best: Option<(usize, usize, usize, StmtId)> = None; // (start, end, stmt_idx, id)
+
+    for stmt_id in locations.keys().copied() {
+        let span = body.stmt(stmt_id).span;
+        if !span_within_range(span, selection) {
+            continue;
+        }
+        let key = (span.start, span.end, stmt_id.index());
+        if best
+            .as_ref()
+            .is_none_or(|(start, end, idx, _)| key < (*start, *end, *idx))
         {
             best = Some((key.0, key.1, key.2, stmt_id));
         }
@@ -2250,6 +2316,150 @@ fn add_expr_uses(body: &Body, expr: ExprId, live: &mut HashSet<LocalId>) {
                 add_expr_uses(body, *child, live);
             }
         }
+    }
+}
+
+// === Definite assignment (for Extract Method parameter threading) ===
+
+fn definitely_assigned_at_selection_start(
+    body: &Body,
+    selection: TextRange,
+    local: LocalId,
+) -> Option<bool> {
+    let cfg = build_cfg_with(body, &mut || {});
+    let reachable = cfg.reachable_blocks();
+    let (in_states, _) = compute_cfg_definite_assignment(body, &cfg, &reachable);
+
+    let stmt_locations = collect_stmt_locations(&cfg);
+    let first_stmt = first_stmt_in_selection(body, selection, &stmt_locations)?;
+    let location = stmt_locations.get(&first_stmt).copied()?;
+
+    let (block_id, stmt_index) = match location {
+        StmtLocation::InBlock { block, index } => (block, Some(index)),
+        StmtLocation::Terminator { block } => (block, None),
+    };
+
+    let mut state = in_states.get(block_id.index())?.clone();
+    let block = cfg.block(block_id);
+    match stmt_index {
+        Some(index) => {
+            for stmt in block.stmts.iter().take(index) {
+                transfer_stmt_definite_assignment(body, *stmt, &mut state);
+            }
+        }
+        None => {
+            for stmt in &block.stmts {
+                transfer_stmt_definite_assignment(body, *stmt, &mut state);
+            }
+        }
+    }
+
+    state.get(local.index()).copied()
+}
+
+fn compute_cfg_definite_assignment(
+    body: &Body,
+    cfg: &nova_flow::ControlFlowGraph,
+    reachable: &[bool],
+) -> (Vec<Vec<bool>>, Vec<Vec<bool>>) {
+    let n_blocks = cfg.blocks.len();
+    let n_locals = body.locals().len();
+
+    let mut in_states = vec![vec![true; n_locals]; n_blocks];
+    let mut out_states = vec![vec![true; n_locals]; n_blocks];
+
+    let init = initial_assigned(body);
+    in_states[cfg.entry.index()] = init.clone();
+
+    let mut worklist = VecDeque::new();
+    for idx in 0..n_blocks {
+        if reachable[idx] {
+            worklist.push_back(nova_flow::BlockId(idx));
+        }
+    }
+
+    while let Some(bb) = worklist.pop_front() {
+        if !reachable[bb.index()] {
+            continue;
+        }
+
+        let new_in = if bb == cfg.entry {
+            init.clone()
+        } else {
+            meet_assigned(
+                n_locals,
+                cfg.predecessors(bb).iter().filter_map(|pred| {
+                    if reachable[pred.index()] {
+                        Some(&out_states[pred.index()])
+                    } else {
+                        None
+                    }
+                }),
+            )
+        };
+
+        if new_in != in_states[bb.index()] {
+            in_states[bb.index()] = new_in.clone();
+        }
+
+        let new_out = transfer_definite_assignment(body, cfg, bb, &new_in);
+        if new_out != out_states[bb.index()] {
+            out_states[bb.index()] = new_out;
+            for succ in cfg.successors(bb) {
+                worklist.push_back(succ);
+            }
+        }
+    }
+
+    (in_states, out_states)
+}
+
+fn initial_assigned(body: &Body) -> Vec<bool> {
+    body.locals()
+        .iter()
+        .map(|local| matches!(local.kind, LocalKind::Param))
+        .collect()
+}
+
+fn meet_assigned<'a>(
+    n_locals: usize,
+    mut inputs: impl Iterator<Item = &'a Vec<bool>>,
+) -> Vec<bool> {
+    let Some(first) = inputs.next() else {
+        return vec![false; n_locals];
+    };
+    let mut out = first.clone();
+    for inp in inputs {
+        for (slot, v) in out.iter_mut().zip(inp.iter().copied()) {
+            *slot &= v;
+        }
+    }
+    out
+}
+
+fn transfer_definite_assignment(
+    body: &Body,
+    cfg: &nova_flow::ControlFlowGraph,
+    bb: nova_flow::BlockId,
+    in_state: &[bool],
+) -> Vec<bool> {
+    let mut state = in_state.to_vec();
+    let block = cfg.block(bb);
+    for stmt in &block.stmts {
+        transfer_stmt_definite_assignment(body, *stmt, &mut state);
+    }
+    state
+}
+
+fn transfer_stmt_definite_assignment(body: &Body, stmt: StmtId, state: &mut [bool]) {
+    match &body.stmt(stmt).kind {
+        StmtKind::Let { local, initializer } => {
+            state[local.index()] = initializer.is_some();
+        }
+        StmtKind::Assign { target, .. } => {
+            state[target.index()] = true;
+        }
+        _ => {}
     }
 }
 

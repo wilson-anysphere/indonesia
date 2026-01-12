@@ -359,12 +359,11 @@ class C {
 class C {
     <T> T m(T t) {
         T r = null;
-        r = compute(t);
+        r = compute(r, t);
         return r;
     }
 
-    private <T> T compute(T t) {
-        T r;
+    private <T> T compute(T r, T t) {
         r = t;
         return r;
     }
@@ -405,13 +404,96 @@ class C {
     int m(int a) {
         int b = 1;
         int r = 0;
-        r = compute(a, b);
+        r = compute(r, a, b);
         return r;
     }
 
-    private int compute(int a, int b) {
-        int r;
+    private int compute(int r, int a, int b) {
         r = a + b;
+        return r;
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn extract_method_return_candidate_parameter_is_threaded_through() {
+    let fixture = r#"
+class C {
+    void m(int x, boolean cond) {
+        /*start*/if (cond) x = 1;/*end*/
+        System.out.println(x);
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m(int x, boolean cond) {
+        x = extracted(x, cond);
+        System.out.println(x);
+    }
+
+    private int extracted(int x, boolean cond) {
+        if (cond) x = 1;
+        return x;
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn extract_method_return_candidate_local_initialized_before_selection() {
+    let fixture = r#"
+class C {
+    void m(boolean cond) {
+        int r = 0;
+        /*start*/if (cond) r = 1;/*end*/
+        System.out.println(r);
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m(boolean cond) {
+        int r = 0;
+        r = extracted(r, cond);
+        System.out.println(r);
+    }
+
+    private int extracted(int r, boolean cond) {
+        if (cond) r = 1;
         return r;
     }
 }
