@@ -322,7 +322,7 @@ run_cargo() {
     # `CARGO_BUILD_JOBS` env var, and cargo-fuzz forwards the environment to those
     # nested cargo invocations.
     case "${subcommand}" in
-      generate-lockfile|metadata|fmt)
+      generate-lockfile|metadata|fmt|binstall)
         ;;
       fuzz)
         export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-${jobs}}"
