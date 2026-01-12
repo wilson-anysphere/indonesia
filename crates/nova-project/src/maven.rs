@@ -79,6 +79,7 @@ pub(crate) fn load_maven_project(
         if module_java.target > workspace_java.target {
             workspace_java.target = module_java.target;
         }
+        workspace_java.enable_preview |= module_java.enable_preview;
 
         let module_display_name = if module_root == root {
             module
@@ -310,7 +311,7 @@ pub(crate) fn load_maven_workspace_model(
         };
 
         let module_pom_path = module_root.join("pom.xml");
-        let java_provenance = if module.raw_pom.java.is_some() {
+        let java_provenance = if pom_declares_java_config(&module.raw_pom) {
             LanguageLevelProvenance::BuildFile(module_pom_path)
         } else if root_effective.java.is_some() {
             LanguageLevelProvenance::BuildFile(root_pom_path.clone())
@@ -574,12 +575,70 @@ struct RawPom {
     version: Option<String>,
     packaging: Option<String>,
     properties: BTreeMap<String, String>,
-    java: Option<JavaConfig>,
+    compiler_plugin: Option<RawMavenCompilerPluginConfig>,
     dependencies: Vec<Dependency>,
     dependency_management: Vec<Dependency>,
     modules: Vec<String>,
     parent: Option<PomParent>,
     profiles: Vec<RawProfile>,
+}
+
+#[derive(Debug, Default, Clone)]
+struct RawMavenCompilerPluginConfig {
+    release: Option<String>,
+    source: Option<String>,
+    target: Option<String>,
+    compiler_args: Vec<String>,
+}
+
+impl RawMavenCompilerPluginConfig {
+    fn is_empty(&self) -> bool {
+        self.release.is_none()
+            && self.source.is_none()
+            && self.target.is_none()
+            && self.compiler_args.is_empty()
+    }
+
+    fn merge(&mut self, other: RawMavenCompilerPluginConfig) {
+        if other.release.is_some() {
+            self.release = other.release;
+        }
+        if other.source.is_some() {
+            self.source = other.source;
+        }
+        if other.target.is_some() {
+            self.target = other.target;
+        }
+        self.compiler_args.extend(other.compiler_args);
+    }
+
+    fn enable_preview(&self, props: &BTreeMap<String, String>) -> bool {
+        self.compiler_args.iter().any(|arg| {
+            let resolved = resolve_placeholders(arg, props);
+            resolved.trim() == "--enable-preview"
+        })
+    }
+
+    fn release(&self, props: &BTreeMap<String, String>) -> Option<JavaVersion> {
+        self.release
+            .as_deref()
+            .map(|v| resolve_placeholders(v, props))
+            .and_then(|v| JavaVersion::parse(&v))
+    }
+
+    fn source(&self, props: &BTreeMap<String, String>) -> Option<JavaVersion> {
+        self.source
+            .as_deref()
+            .map(|v| resolve_placeholders(v, props))
+            .and_then(|v| JavaVersion::parse(&v))
+    }
+
+    fn target(&self, props: &BTreeMap<String, String>) -> Option<JavaVersion> {
+        self.target
+            .as_deref()
+            .map(|v| resolve_placeholders(v, props))
+            .and_then(|v| JavaVersion::parse(&v))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -605,6 +664,7 @@ struct EffectivePom {
     version: Option<String>,
     java: Option<JavaConfig>,
     properties: BTreeMap<String, String>,
+    compiler_plugin: Option<RawMavenCompilerPluginConfig>,
     dependency_management: BTreeMap<(String, String), Dependency>,
     dependencies: Vec<Dependency>,
 }
@@ -672,9 +732,16 @@ impl EffectivePom {
             }
         }
 
+        let mut compiler_plugin = parent.and_then(|p| p.compiler_plugin.clone());
+        if let Some(raw_config) = raw.compiler_plugin.clone() {
+            match compiler_plugin.as_mut() {
+                Some(existing) => existing.merge(raw_config),
+                None => compiler_plugin = Some(raw_config),
+            }
+        }
+
         // Resolve Java config after properties are merged.
-        let java = java_from_properties(&properties)
-            .or(raw.java)
+        let java = java_from_maven_config(&properties, compiler_plugin.as_ref())
             .or_else(|| parent.and_then(|p| p.java));
 
         let mut dependency_management = parent
@@ -768,6 +835,7 @@ impl EffectivePom {
             version,
             java,
             properties,
+            compiler_plugin,
             dependency_management,
             dependencies,
         }
@@ -1084,7 +1152,7 @@ fn parse_pom(path: &Path) -> Result<RawPom, ProjectError> {
         pom.properties = parse_properties(&props_node);
     }
 
-    pom.java = java_from_properties(&pom.properties);
+    pom.compiler_plugin = parse_maven_compiler_plugin_config(&project);
 
     // dependencies
     if let Some(deps_node) = child_element(&project, "dependencies") {
@@ -1206,10 +1274,104 @@ fn parse_dependencies(deps_node: &roxmltree::Node<'_, '_>) -> Vec<Dependency> {
         .collect()
 }
 
-fn java_from_properties(props: &BTreeMap<String, String>) -> Option<JavaConfig> {
-    // Java language level is commonly expressed via properties that reference other properties,
-    // e.g. `<maven.compiler.release>${java.version}</maven.compiler.release>`. Resolve nested
-    // placeholders before parsing the version numbers.
+fn pom_declares_java_config(pom: &RawPom) -> bool {
+    pom.properties.contains_key("maven.compiler.release")
+        || pom.properties.contains_key("maven.compiler.source")
+        || pom.properties.contains_key("maven.compiler.target")
+        || pom.compiler_plugin.is_some()
+}
+
+fn parse_maven_compiler_plugin_config(
+    project: &roxmltree::Node<'_, '_>,
+) -> Option<RawMavenCompilerPluginConfig> {
+    let build = child_element(project, "build")?;
+
+    // pluginManagement provides defaults; build/plugins overrides them.
+    let mut config = RawMavenCompilerPluginConfig::default();
+    let mut found_any = false;
+
+    if let Some(plugin_mgmt) = child_element(&build, "pluginManagement") {
+        if let Some(plugins) = child_element(&plugin_mgmt, "plugins") {
+            if let Some(from_pm) = parse_maven_compiler_plugin_config_from_plugins(&plugins) {
+                config.merge(from_pm);
+                found_any = true;
+            }
+        }
+    }
+
+    if let Some(plugins) = child_element(&build, "plugins") {
+        if let Some(from_plugins) = parse_maven_compiler_plugin_config_from_plugins(&plugins) {
+            config.merge(from_plugins);
+            found_any = true;
+        }
+    }
+
+    if found_any && !config.is_empty() {
+        Some(config)
+    } else {
+        None
+    }
+}
+
+fn parse_maven_compiler_plugin_config_from_plugins(
+    plugins: &roxmltree::Node<'_, '_>,
+) -> Option<RawMavenCompilerPluginConfig> {
+    let mut out = RawMavenCompilerPluginConfig::default();
+    let mut found_any = false;
+
+    for plugin in plugins
+        .children()
+        .filter(|n| n.is_element() && n.has_tag_name("plugin"))
+    {
+        let artifact_id = child_text(&plugin, "artifactId");
+        if artifact_id.as_deref() != Some("maven-compiler-plugin") {
+            continue;
+        }
+
+        let Some(configuration) = child_element(&plugin, "configuration") else {
+            continue;
+        };
+
+        let mut cfg = RawMavenCompilerPluginConfig::default();
+        cfg.release = child_text(&configuration, "release");
+        cfg.source = child_text(&configuration, "source");
+        cfg.target = child_text(&configuration, "target");
+
+        if let Some(compiler_args) = child_element(&configuration, "compilerArgs") {
+            for arg in compiler_args
+                .children()
+                .filter(|n| n.is_element() && n.has_tag_name("arg"))
+            {
+                if let Some(value) = arg.text().map(str::trim).filter(|t| !t.is_empty()) {
+                    cfg.compiler_args.push(value.to_string());
+                }
+            }
+        }
+
+        if let Some(argument) = child_text(&configuration, "compilerArgument") {
+            cfg.compiler_args
+                .extend(argument.split_whitespace().map(|s| s.to_string()));
+        }
+
+        if !cfg.is_empty() {
+            out.merge(cfg);
+            found_any = true;
+        }
+    }
+
+    if found_any && !out.is_empty() {
+        Some(out)
+    } else {
+        None
+    }
+}
+
+fn java_from_maven_config(
+    props: &BTreeMap<String, String>,
+    compiler_plugin: Option<&RawMavenCompilerPluginConfig>,
+) -> Option<JavaConfig> {
+    let enable_preview = compiler_plugin.is_some_and(|cfg| cfg.enable_preview(props));
+
     let resolved_java_version = |key: &str| {
         props
             .get(key)
@@ -1218,11 +1380,34 @@ fn java_from_properties(props: &BTreeMap<String, String>) -> Option<JavaConfig> 
     };
 
     let release = resolved_java_version("maven.compiler.release");
+
+    // `maven.compiler.release` property always wins over plugin config.
     if let Some(v) = release {
         return Some(JavaConfig {
             source: v,
             target: v,
-            enable_preview: false,
+            enable_preview,
+        });
+    }
+
+    let plugin_release = compiler_plugin.and_then(|cfg| cfg.release(props));
+    if let Some(v) = plugin_release {
+        return Some(JavaConfig {
+            source: v,
+            target: v,
+            enable_preview,
+        });
+    }
+
+    let plugin_source = compiler_plugin.and_then(|cfg| cfg.source(props));
+    let plugin_target = compiler_plugin.and_then(|cfg| cfg.target(props));
+    if plugin_source.is_some() || plugin_target.is_some() {
+        let source = plugin_source.or(plugin_target).expect("checked");
+        let target = plugin_target.or(Some(source)).unwrap_or(source);
+        return Some(JavaConfig {
+            source,
+            target,
+            enable_preview,
         });
     }
 
@@ -1233,12 +1418,12 @@ fn java_from_properties(props: &BTreeMap<String, String>) -> Option<JavaConfig> 
         (Some(source), Some(target)) => Some(JavaConfig {
             source,
             target,
-            enable_preview: false,
+            enable_preview,
         }),
         (Some(v), None) | (None, Some(v)) => Some(JavaConfig {
             source: v,
             target: v,
-            enable_preview: false,
+            enable_preview,
         }),
         (None, None) => None,
     }

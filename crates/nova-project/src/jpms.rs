@@ -235,6 +235,15 @@ fn module_candidate_from_module_path_entry(path: &Path) -> Option<ModuleCandidat
 }
 
 fn is_stable_named_module(path: &Path) -> bool {
+    // Best-effort: build loaders often synthesize dependency jar paths without
+    // downloading them. If we can't inspect the archive contents, treat the
+    // dependency as a module-path candidate so JPMS-enabled workspaces still
+    // receive a module-path entry (and don't silently "lose" dependencies).
+    if !path.exists() {
+        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+        return ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("jmod");
+    }
+
     let archive = Archive::new(path.to_path_buf());
 
     let has_module_info = archive

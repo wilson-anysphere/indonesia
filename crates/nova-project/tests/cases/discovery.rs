@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use nova_project::{
     load_project, load_workspace_model, BuildSystem, ClasspathEntryKind, JavaVersion,
-    OutputDirKind, SourceRootKind, SourceRootOrigin,
+    LanguageLevelProvenance, OutputDirKind, SourceRootKind, SourceRootOrigin,
 };
 
 fn testdata_path(rel: &str) -> PathBuf {
@@ -594,4 +594,26 @@ fn loads_gradle_custom_source_sets_workspace_model() {
     assert_eq!(match_it.module.id, "gradle::app");
     assert_eq!(match_it.source_root.kind, SourceRootKind::Test);
     assert_eq!(match_it.source_root.origin, SourceRootOrigin::Source);
+}
+
+#[test]
+fn loads_maven_compiler_plugin_language_level() {
+    let root = testdata_path("maven-compiler-plugin-java");
+    let config = load_project(&root).expect("load maven project");
+
+    assert_eq!(config.build_system, BuildSystem::Maven);
+    assert_eq!(config.java.source, JavaVersion(21));
+    assert_eq!(config.java.target, JavaVersion(21));
+    assert!(config.java.enable_preview);
+
+    let model = load_workspace_model(&root).expect("load maven workspace model");
+    let module = model
+        .module_by_id("maven:com.example:maven-compiler-plugin-java")
+        .expect("root module");
+
+    assert!(module.language_level.level.preview);
+    assert_eq!(
+        module.language_level.provenance,
+        LanguageLevelProvenance::BuildFile(model.workspace_root.join("pom.xml"))
+    );
 }
