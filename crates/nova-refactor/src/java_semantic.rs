@@ -4049,6 +4049,30 @@ fn record_lightweight_expr(
             references,
             spans,
         ),
+        Expr::ArrayAccess(access) => {
+            record_lightweight_expr(
+                file,
+                text,
+                &access.array,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+            record_lightweight_expr(
+                file,
+                text,
+                &access.index,
+                type_scopes,
+                scope_result,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
         Expr::Unary(expr) => record_lightweight_expr(
             file,
             text,
