@@ -48,6 +48,7 @@ test('getNovaWatchedFileGlobPatterns returns the expected default glob list', ()
     '**/.nova.toml',
     '**/nova.config.toml',
     '**/.nova/apt-cache/generated-roots.json',
+    '**/.nova/queries/gradle.json',
     '**/.nova/config.toml',
   ]);
 });
@@ -93,6 +94,7 @@ test('getNovaBuildFileGlobPatterns returns the expected default glob list', () =
     '**/.nova.toml',
     '**/nova.config.toml',
     '**/.nova/apt-cache/generated-roots.json',
+    '**/.nova/queries/gradle.json',
     '**/.nova/config.toml',
   ]);
 });

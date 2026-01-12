@@ -69,6 +69,8 @@ const NOVA_CONFIG_GLOB_PATTERNS = [
   '**/.nova.toml',
   '**/nova.config.toml',
   '**/.nova/apt-cache/generated-roots.json',
+  // `nova-build` -> `nova-project` file-based Gradle snapshot handoff.
+  '**/.nova/queries/gradle.json',
   // Legacy workspace-local config (kept for backwards compatibility).
   '**/.nova/config.toml',
 ] as const;
