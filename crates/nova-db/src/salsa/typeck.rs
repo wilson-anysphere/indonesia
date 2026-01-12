@@ -2552,6 +2552,9 @@ fn collect_type_use_annotation_diagnostics<'idx>(
                     name_text,
                     Some(name_span),
                 );
+                // Type-use annotation types are intentionally ignored by Nova's typechecker (we
+                // parse them so the underlying type can be resolved, but don't surface
+                // unresolved-type errors for the annotation name itself).
                 extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
 
                 // Skip optional argument list: `@A(x = 1)`.
@@ -9013,9 +9016,6 @@ fn find_enclosing_call_with_arg_in_expr(
             }
         }
         HirExpr::Unary { expr, .. } => {
-            find_enclosing_call_with_arg_in_expr(body, *expr, target, target_range, best);
-        }
-        HirExpr::Cast { expr, .. } => {
             find_enclosing_call_with_arg_in_expr(body, *expr, target, target_range, best);
         }
         HirExpr::Binary { lhs, rhs, .. } | HirExpr::Assign { lhs, rhs, .. } => {
