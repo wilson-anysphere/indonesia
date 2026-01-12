@@ -452,6 +452,14 @@ For details (including `NOVA_AI_COMPLETIONS_MAX_ITEMS`) and how they affect the 
 (`CompletionList.isIncomplete` and `nova/completion/more` polling), see `docs/protocol-extensions.md`
 (`nova/completion/more`).
 
+Common overrides:
+
+- `NOVA_DISABLE_AI=1` — force-disable all AI features server-side.
+- `NOVA_DISABLE_AI_COMPLETIONS=1` — force-disable multi-token completions server-side.
+- `NOVA_AI_COMPLETIONS_MAX_ITEMS=<n>` — override the server’s AI multi-token completion max-items.
+  `0` disables multi-token completions entirely (and the server clamps large values; see the
+  protocol docs for details).
+
 ### Code-editing policy (patches / file edits)
 
 Nova treats **patch-based code edits** (anything that applies edits to files) as higher risk than

@@ -1591,6 +1591,8 @@ Notes:
   - Values are clamped to a reasonable maximum (currently `32`).
   - Empty / invalid values are ignored (the server falls back to config/default behavior).
   - This override is read at process start; a server restart is required for changes to take effect.
+  - This only affects **async multi-token** AI completions; standard (non-AI) completions returned
+    from `textDocument/completion` are unaffected.
 - Other server-side env var overrides that can disable AI completions entirely:
   - `NOVA_DISABLE_AI=1` disables all AI features.
   - `NOVA_DISABLE_AI_COMPLETIONS=1` disables multi-token completions.
