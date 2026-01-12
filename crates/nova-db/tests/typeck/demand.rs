@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
 use nova_db::salsa::FileExprId;
-use nova_db::{
-    ArcEq, FileId, NovaHir, NovaInputs, NovaTypeck, ProjectId, SalsaRootDatabase, SourceRootId,
-};
+use nova_db::{ArcEq, FileId, NovaHir, NovaInputs, NovaTypeck, ProjectId, SalsaRootDatabase, SourceRootId};
 use nova_jdk::JdkIndex;
 use nova_resolve::ids::DefWithBodyId;
 use nova_types::format_type;
@@ -91,5 +89,77 @@ class C {
         stats.by_query.get("typeck_body").is_none(),
         "type_of_expr_demand should not execute typeck_body; stats: {:?}",
         stats.by_query.get("typeck_body")
+    );
+}
+
+#[test]
+fn demand_reports_unresolved_type_for_catch_var() {
+    let src = r#"
+class C {
+    void m() {
+        try { }
+        catch (var e) {
+            e.toString();
+        }
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+
+    let tree = db.hir_item_tree(file);
+    let method_ast = tree
+        .methods
+        .iter()
+        .find_map(|(ast_id, m)| (m.name == "m" && m.body.is_some()).then_some(*ast_id))
+        .expect("expected method `m` with a body");
+    let method_id = nova_hir::ids::MethodId::new(file, method_ast);
+    let owner = DefWithBodyId::Method(method_id);
+
+    let body = db.hir_body(method_id);
+    let try_stmt = match &body.stmts[body.root] {
+        nova_hir::hir::Stmt::Block { statements, .. } => statements
+            .iter()
+            .find_map(|stmt| match &body.stmts[*stmt] {
+                nova_hir::hir::Stmt::Try { .. } => Some(*stmt),
+                _ => None,
+            })
+            .expect("expected a try statement"),
+        other => panic!("expected a block root statement, got {other:?}"),
+    };
+
+    let catch_body = match &body.stmts[try_stmt] {
+        nova_hir::hir::Stmt::Try { catches, .. } => catches
+            .first()
+            .map(|c| c.body)
+            .expect("expected at least one catch clause"),
+        other => panic!("expected a try statement, got {other:?}"),
+    };
+
+    let call_expr = match &body.stmts[catch_body] {
+        nova_hir::hir::Stmt::Block { statements, .. } => statements
+            .iter()
+            .find_map(|stmt| match &body.stmts[*stmt] {
+                nova_hir::hir::Stmt::Expr { expr, .. } => Some(*expr),
+                _ => None,
+            })
+            .expect("expected an expression statement in catch body"),
+        other => panic!("expected catch body to be a block, got {other:?}"),
+    };
+
+    let res = db.type_of_expr_demand_result(
+        file,
+        FileExprId {
+            owner,
+            expr: call_expr,
+        },
+    );
+
+    assert!(
+        res.diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("var")),
+        "expected demand-driven type inference to report unresolved-type for `catch (var e)`; got {:?}",
+        res.diagnostics
     );
 }

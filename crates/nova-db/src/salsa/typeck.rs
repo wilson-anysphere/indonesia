@@ -2858,6 +2858,7 @@ struct BodyChecker<'a, 'idx> {
     expected_return: Type,
     local_types: Vec<Type>,
     local_ty_states: Vec<LocalTyState>,
+    local_is_catch_param: Vec<bool>,
     local_initializers: Vec<Option<HirExprId>>,
     local_is_let_decl: Vec<bool>,
     local_foreach_iterables: Vec<Option<HirExprId>>,
@@ -2897,26 +2898,40 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
     ) -> Self {
         let local_types = vec![Type::Unknown; body.locals.len()];
         let local_ty_states = vec![LocalTyState::Uncomputed; body.locals.len()];
-        let (local_initializers, local_is_let_decl, local_foreach_iterables) = if lazy_locals {
-            let mut initializers = vec![None; body.locals.len()];
-            let mut is_let_decl = vec![false; body.locals.len()];
-            let mut foreach_iterables = vec![None; body.locals.len()];
-            for (_, stmt) in body.stmts.iter() {
-                match stmt {
-                    HirStmt::Let {
-                        local, initializer, ..
-                    } => {
+        let mut local_is_catch_param = vec![false; body.locals.len()];
+        let mut initializers = vec![None; body.locals.len()];
+        let mut is_let_decl = vec![false; body.locals.len()];
+        let mut foreach_iterables = vec![None; body.locals.len()];
+        for (_, stmt) in body.stmts.iter() {
+            match stmt {
+                HirStmt::Let {
+                    local, initializer, ..
+                } => {
+                    if lazy_locals {
                         is_let_decl[local.idx()] = true;
                         initializers[local.idx()] = *initializer;
                     }
-                    HirStmt::ForEach {
-                        local, iterable, ..
-                    } => {
+                }
+                HirStmt::ForEach {
+                    local, iterable, ..
+                } => {
+                    if lazy_locals {
                         foreach_iterables[local.idx()] = Some(*iterable);
                     }
-                    _ => {}
                 }
+                HirStmt::Try { catches, .. } => {
+                    for catch in catches {
+                        let idx = catch.param.idx();
+                        if idx < local_is_catch_param.len() {
+                            local_is_catch_param[idx] = true;
+                        }
+                    }
+                }
+                _ => {}
             }
+        }
+
+        let (local_initializers, local_is_let_decl, local_foreach_iterables) = if lazy_locals {
             (initializers, is_let_decl, foreach_iterables)
         } else {
             (
@@ -2941,6 +2956,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             expected_return,
             local_types,
             local_ty_states,
+            local_is_catch_param,
             local_initializers,
             local_is_let_decl,
             local_foreach_iterables,
@@ -4025,7 +4041,12 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         self.local_ty_states[local.idx()] = LocalTyState::Computing;
 
         let data = &self.body.locals[local];
-        let ty = if data.ty_text.trim() == "var" && self.var_inference_enabled() {
+        let is_catch_param = self
+            .local_is_catch_param
+            .get(local.idx())
+            .copied()
+            .unwrap_or(false);
+        let ty = if data.ty_text.trim() == "var" && self.var_inference_enabled() && !is_catch_param {
             if self.local_is_let_decl[local.idx()] {
                 let diag_span = if data.ty_range.is_empty() {
                     data.range
