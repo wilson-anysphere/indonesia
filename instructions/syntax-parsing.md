@@ -110,15 +110,16 @@ testdata/
 
 **To add a test:**
 1. Create `testdata/parser/category/test_name.java`
-2. Run tests - they'll generate `.tree` file
-3. Review and commit the `.tree` file
+2. Run the golden corpus test with `BLESS=1` once to write the expected outputs
+3. Review and commit the generated `.tree` (and `.errors` for recovery fixtures)
+4. Re-run without `BLESS=1` to ensure the expectations are stable
 
 ```bash
-# Run parser tests
-bash scripts/cargo_agent.sh test -p nova-syntax --lib
+# Run the golden corpus test
+bash scripts/cargo_agent.sh test -p nova-syntax --test golden_corpus
 
-# Update snapshots
-UPDATE_EXPECT=1 bash scripts/cargo_agent.sh test -p nova-syntax --lib
+# (Re)generate expected `.tree`/`.errors` outputs
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test golden_corpus
 ```
 
 ### Java Language Levels
@@ -155,15 +156,20 @@ let formatted = nova_format::format_file(source, options);
 ## Testing
 
 ```bash
-# Parser tests
+# Parser unit tests
 bash scripts/cargo_agent.sh test -p nova-syntax --lib
 
-# Formatter tests
-bash scripts/cargo_agent.sh test -p nova-format --lib
+# Parser golden corpus fixtures
+bash scripts/cargo_agent.sh test -p nova-syntax --test golden_corpus
 
-# Update snapshots
-UPDATE_EXPECT=1 bash scripts/cargo_agent.sh test -p nova-syntax --lib
-UPDATE_EXPECT=1 bash scripts/cargo_agent.sh test -p nova-format --lib
+# Formatter tests (includes insta snapshot tests in `tests/`)
+bash scripts/cargo_agent.sh test -p nova-format --tests
+
+# Update golden corpus expectations
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test golden_corpus
+
+# Update formatter snapshots (insta)
+INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --tests
 ```
 
 ---
