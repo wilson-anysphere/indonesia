@@ -50,7 +50,7 @@ fn gate_reserved_type_name_var(root: &SyntaxNode, level: JavaLanguageLevel, out:
             continue;
         };
         if name_tok.kind() == SyntaxKind::VarKw {
-            out.push(reserved_type_name_var_error(&name_tok));
+            out.push(reserved_type_name_var_declaration_error(&name_tok));
         }
     }
 
@@ -67,7 +67,7 @@ fn gate_reserved_type_name_var(root: &SyntaxNode, level: JavaLanguageLevel, out:
             continue;
         };
         if name_tok.kind() == SyntaxKind::VarKw {
-            out.push(reserved_type_name_var_error(&name_tok));
+            out.push(reserved_type_name_var_declaration_error(&name_tok));
         }
     }
 
@@ -122,7 +122,7 @@ fn gate_reserved_type_name_var(root: &SyntaxNode, level: JavaLanguageLevel, out:
         if matches!(parent_kind, Some(SyntaxKind::LambdaParameter)) {
             continue;
         }
-        out.push(reserved_type_name_var_error(last_segment));
+        out.push(reserved_type_name_var_type_position_error(last_segment));
     }
 }
 
@@ -576,10 +576,18 @@ fn feature_error(
     )
 }
 
-fn reserved_type_name_var_error(token: &SyntaxToken) -> Diagnostic {
+fn reserved_type_name_var_declaration_error(token: &SyntaxToken) -> Diagnostic {
     Diagnostic::error(
         JAVA_RESERVED_TYPE_NAME_VAR,
-        "`var` is a reserved type name since Java 10 and cannot be used here",
+        "as of Java 10, `var` is a restricted type name and cannot be used for type declarations",
+        Some(span(token)),
+    )
+}
+
+fn reserved_type_name_var_type_position_error(token: &SyntaxToken) -> Diagnostic {
+    Diagnostic::error(
+        JAVA_RESERVED_TYPE_NAME_VAR,
+        "`var` can only be used for local variable declarations (and lambda parameters in Java 11+)",
         Some(span(token)),
     )
 }

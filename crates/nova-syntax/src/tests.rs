@@ -1768,6 +1768,66 @@ fn feature_gate_var_lambda_parameters_version_matrix() {
 }
 
 #[test]
+fn java9_allows_class_named_var_but_java10_rejects_it() {
+    let input = "class var {}";
+
+    let java9 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 9,
+                preview: false,
+            },
+        },
+    );
+    assert_eq!(java9.result.errors, Vec::new());
+    assert!(java9.diagnostics.is_empty());
+
+    let java10 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 10,
+                preview: false,
+            },
+        },
+    );
+    assert_eq!(java10.result.errors, Vec::new());
+    assert_eq!(
+        java10
+            .diagnostics
+            .iter()
+            .map(|d| d.code.as_ref())
+            .collect::<Vec<_>>(),
+        vec!["JAVA_RESERVED_TYPE_NAME_VAR"]
+    );
+}
+
+#[test]
+fn java10_rejects_var_as_field_type() {
+    let input = "class Foo { var x = 1; }";
+
+    let java10 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 10,
+                preview: false,
+            },
+        },
+    );
+    assert_eq!(java10.result.errors, Vec::new());
+    assert_eq!(
+        java10
+            .diagnostics
+            .iter()
+            .map(|d| d.code.as_ref())
+            .collect::<Vec<_>>(),
+        vec!["JAVA_RESERVED_TYPE_NAME_VAR"]
+    );
+}
+
+#[test]
 fn feature_gate_sealed_classes_version_matrix() {
     let input = "sealed class C permits A, B {}";
 
