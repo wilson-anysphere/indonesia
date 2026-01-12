@@ -1,19 +1,26 @@
 use std::fs;
+use std::io::Write;
 
-use nova_project::{load_workspace_model_with_options, BuildSystem, ClasspathEntryKind, LoadOptions};
+use nova_project::{
+    load_workspace_model_with_options, BuildSystem, ClasspathEntryKind, LoadOptions,
+};
 use tempfile::tempdir;
+use zip::write::FileOptions;
 
-fn write_fake_jar_dir_with_automatic_module_name(jar_path: &std::path::Path, module_name: &str) {
-    let manifest_path = jar_path.join("META-INF").join("MANIFEST.MF");
-    fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
-        .expect("mkdir jar/META-INF");
+fn write_fake_jar_with_automatic_module_name(jar_path: &std::path::Path, module_name: &str) {
+    if let Some(parent) = jar_path.parent() {
+        fs::create_dir_all(parent).expect("mkdir jar parent");
+    }
 
-    // `nova_project::jpms::is_stable_named_module` reads `META-INF/MANIFEST.MF` using
-    // `nova_archive::Archive`, which supports both `.jar` files and exploded directories.
-    //
-    // We create an exploded jar directory to avoid needing zip/jar tooling in tests.
-    fs::write(&manifest_path, format!("Manifest-Version: 1.0\r\nAutomatic-Module-Name: {module_name}\r\n\r\n"))
-        .expect("write manifest");
+    let manifest = format!("Manifest-Version: 1.0\r\nAutomatic-Module-Name: {module_name}\r\n\r\n");
+
+    let mut jar = zip::ZipWriter::new(std::fs::File::create(jar_path).expect("create jar"));
+    let options = FileOptions::<()>::default();
+    jar.start_file("META-INF/MANIFEST.MF", options)
+        .expect("start manifest entry");
+    jar.write_all(manifest.as_bytes())
+        .expect("write manifest contents");
+    jar.finish().expect("finish jar");
 }
 
 #[test]
@@ -24,8 +31,8 @@ fn maven_workspace_model_populates_module_path_for_jpms_projects() {
     fs::create_dir_all(&workspace_root).expect("mkdir workspace");
     fs::create_dir_all(&maven_repo).expect("mkdir repo");
 
-    let guava_dir = maven_repo.join("com/google/guava/guava/33.0.0-jre/guava-33.0.0-jre.jar");
-    write_fake_jar_dir_with_automatic_module_name(&guava_dir, "com.google.common");
+    let guava_jar = maven_repo.join("com/google/guava/guava/33.0.0-jre/guava-33.0.0-jre.jar");
+    write_fake_jar_with_automatic_module_name(&guava_jar, "com.google.common");
 
     fs::write(
         workspace_root.join("pom.xml"),
@@ -116,8 +123,8 @@ fn maven_workspace_model_populates_module_path_for_jpms_projects() {
     );
 
     // Ensure model is deterministic (important for cache keys and downstream indexing).
-    let model2 =
-        load_workspace_model_with_options(&workspace_root, &options).expect("reload workspace model");
+    let model2 = load_workspace_model_with_options(&workspace_root, &options)
+        .expect("reload workspace model");
     assert_eq!(model.modules, model2.modules);
     assert_eq!(model.jpms_modules, model2.jpms_modules);
 }

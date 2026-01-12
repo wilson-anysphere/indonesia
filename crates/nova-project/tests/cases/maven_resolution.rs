@@ -19,6 +19,14 @@ fn repo_pom_path(repo: &Path, group_id: &str, artifact_id: &str, version: &str) 
         .join(format!("{artifact_id}-{version}.pom"))
 }
 
+fn repo_jar_path(repo: &Path, group_id: &str, artifact_id: &str, version: &str) -> PathBuf {
+    let group_path = group_id.replace('.', "/");
+    repo.join(group_path)
+        .join(artifact_id)
+        .join(version)
+        .join(format!("{artifact_id}-{version}.jar"))
+}
+
 #[test]
 fn resolves_parent_bom_profiles_and_transitive_deps_offline() {
     let temp = tempfile::tempdir().expect("temp dir");
@@ -165,6 +173,7 @@ fn resolves_parent_bom_profiles_and_transitive_deps_offline() {
 </project>
 "#,
     );
+    write_file(&repo_jar_path(&repo, "com.dep", "dep-a", "1.0.0"), "");
 
     write_file(
         &repo_pom_path(&repo, "com.dep", "dep-b", "2.0.0"),
@@ -177,6 +186,7 @@ fn resolves_parent_bom_profiles_and_transitive_deps_offline() {
 </project>
 "#,
     );
+    write_file(&repo_jar_path(&repo, "com.dep", "dep-b", "2.0.0"), "");
 
     // Leaf dependencies.
     write_file(
@@ -241,18 +251,21 @@ fn resolves_parent_bom_profiles_and_transitive_deps_offline() {
         Some("2.0.0".to_string())
     )));
 
-    // Classpath should include jar entries for transitive deps (placeholders are fine).
+    // Classpath should include jar entries for transitive deps when present on disk.
     let jar_entries = config
         .classpath
         .iter()
         .filter(|cp| cp.kind == ClasspathEntryKind::Jar)
         .map(|cp| cp.path.to_string_lossy().replace('\\', "/"))
         .collect::<Vec<_>>();
-    assert!(jar_entries.iter().any(|p| p.contains("com/dep/dep-a/1.0.0/dep-a-1.0.0.jar")));
-    assert!(jar_entries.iter().any(|p| p.contains("com/dep/dep-b/2.0.0/dep-b-2.0.0.jar")));
+    assert!(jar_entries
+        .iter()
+        .any(|p| p.contains("com/dep/dep-a/1.0.0/dep-a-1.0.0.jar")));
+    assert!(jar_entries
+        .iter()
+        .any(|p| p.contains("com/dep/dep-b/2.0.0/dep-b-2.0.0.jar")));
 
     // Ensure deterministic output (no dependence on host ~/.m2).
     let config2 = load_project_with_options(&workspace_root, &options).expect("reload project");
     assert_eq!(config, config2);
 }
-

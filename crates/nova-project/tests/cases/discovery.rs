@@ -76,8 +76,7 @@ fn loads_maven_multi_module_workspace() {
     )));
 
     // Ensure config is deterministic.
-    let config2 =
-        load_project_with_options(&root, &options).expect("load maven project again");
+    let config2 = load_project_with_options(&root, &options).expect("load maven project again");
     assert_eq!(config, config2);
 }
 
@@ -123,8 +122,7 @@ fn loads_maven_nested_multi_module_workspace() {
     )));
 
     // Ensure config is deterministic.
-    let config2 =
-        load_project_with_options(&root, &options).expect("load maven project again");
+    let config2 = load_project_with_options(&root, &options).expect("load maven project again");
     assert_eq!(config, config2);
 }
 
@@ -240,19 +238,33 @@ fn resolves_maven_managed_dependency_coordinates_placeholders() {
         .expect("expected managed dependency to be discovered");
     assert_eq!(dep.version, Some("1.2.3".to_string()));
 
-    let jar_entries: Vec<String> = config
+    // Dependency jar paths are only included when the artifact exists on disk.
+    let jar_path = repo_dir
+        .path()
+        .join("com/example/managed-dep/1.2.3/managed-dep-1.2.3.jar");
+    assert!(
+        !config.classpath.iter().any(|cp| cp.path == jar_path),
+        "expected missing jar to be omitted from classpath"
+    );
+
+    std::fs::create_dir_all(jar_path.parent().expect("jar parent")).expect("mkdir jar parent");
+    std::fs::write(&jar_path, b"").expect("write jar placeholder");
+
+    let config2 = load_project_with_options(&root, &options).expect("reload maven project");
+    let jar_entries: Vec<String> = config2
         .classpath
         .iter()
         .filter(|cp| cp.kind == ClasspathEntryKind::Jar)
         .map(|cp| cp.path.to_string_lossy().replace('\\', "/"))
         .collect();
 
-    let jar_path = jar_entries
-        .iter()
-        .find(|p| p.contains("com/example/managed-dep"))
-        .expect("expected managed-dep to have a synthesized jar path");
-    assert!(jar_path.contains("/1.2.3/"), "jar path: {jar_path}");
-    assert!(!jar_path.contains("${"), "jar path: {jar_path}");
+    let jar_path_str = jar_path.to_string_lossy().replace('\\', "/");
+    assert!(
+        jar_entries.iter().any(|p| p == &jar_path_str),
+        "expected managed-dep jar to be present once created, got: {jar_entries:?}"
+    );
+    assert!(jar_path_str.contains("/1.2.3/"), "jar path: {jar_path_str}");
+    assert!(!jar_path_str.contains("${"), "jar path: {jar_path_str}");
 }
 
 #[test]
@@ -295,8 +307,7 @@ fn loads_gradle_multi_module_workspace() {
         Some("33.0.0-jre".to_string())
     )));
 
-    let config2 =
-        load_project_with_options(&root, &options).expect("load gradle project again");
+    let config2 = load_project_with_options(&root, &options).expect("load gradle project again");
     assert_eq!(config, config2);
 }
 
@@ -332,8 +343,7 @@ fn loads_gradle_multi_module_workspace_includes_root_project_when_it_has_sources
     assert_eq!(config.modules[0].root, config.workspace_root);
 
     // Ensure config is deterministic.
-    let config2 =
-        load_project_with_options(&root, &options).expect("load gradle project again");
+    let config2 = load_project_with_options(&root, &options).expect("load gradle project again");
     assert_eq!(config, config2);
 }
 
@@ -405,8 +415,7 @@ fn loads_gradle_custom_source_sets_workspace() {
         PathBuf::from("app/src/integrationTest/java")
     )));
 
-    let config2 =
-        load_project_with_options(&root, &options).expect("load gradle project again");
+    let config2 = load_project_with_options(&root, &options).expect("load gradle project again");
     assert_eq!(config, config2);
 }
 
@@ -598,13 +607,15 @@ fn loads_maven_multi_module_workspace_model() {
         "expected module_path to remain empty for non-JPMS workspaces"
     );
     assert!(
-        !app.classpath.iter().any(|cp| cp.kind == ClasspathEntryKind::Jar),
+        !app.classpath
+            .iter()
+            .any(|cp| cp.kind == ClasspathEntryKind::Jar),
         "expected no dependency jar entries for empty Maven repo"
     );
 
     // Ensure model is deterministic.
-    let model2 =
-        load_workspace_model_with_options(&root, &options).expect("load maven workspace model again");
+    let model2 = load_workspace_model_with_options(&root, &options)
+        .expect("load maven workspace model again");
     assert_eq!(model.modules, model2.modules);
     assert_eq!(model.jpms_modules, model2.jpms_modules);
 }
@@ -686,9 +697,7 @@ fn loads_gradle_multi_module_workspace_model_includes_root_project_when_it_has_s
     // For determinism, the root module is always first.
     assert_eq!(model.modules[0].id, "gradle::");
 
-    let root_module = model
-        .module_by_id("gradle::")
-        .expect("root gradle module");
+    let root_module = model.module_by_id("gradle::").expect("root gradle module");
     let root_source_roots: BTreeSet<_> = root_module
         .source_roots
         .iter()
@@ -738,7 +747,9 @@ fn loads_gradle_includeflat_workspace_model() {
     let app_file = model
         .workspace_root
         .join("../app/src/main/java/com/example/app/App.java");
-    let match_app = model.module_for_path(&app_file).expect("module for App.java");
+    let match_app = model
+        .module_for_path(&app_file)
+        .expect("module for App.java");
     assert_eq!(match_app.module.id, "gradle::app");
     assert_eq!(match_app.source_root.kind, SourceRootKind::Main);
 }
@@ -751,8 +762,8 @@ fn loads_gradle_projectdir_mapping_workspace_model() {
         gradle_user_home: Some(gradle_home.path().to_path_buf()),
         ..LoadOptions::default()
     };
-    let model = load_workspace_model_with_options(&root, &options)
-        .expect("load gradle workspace model");
+    let model =
+        load_workspace_model_with_options(&root, &options).expect("load gradle workspace model");
 
     assert_eq!(model.build_system, BuildSystem::Gradle);
 
@@ -801,8 +812,8 @@ fn loads_gradle_custom_source_sets_workspace_model() {
         gradle_user_home: Some(gradle_home.path().to_path_buf()),
         ..LoadOptions::default()
     };
-    let model = load_workspace_model_with_options(&root, &options)
-        .expect("load gradle workspace model");
+    let model =
+        load_workspace_model_with_options(&root, &options).expect("load gradle workspace model");
 
     assert_eq!(model.build_system, BuildSystem::Gradle);
 
