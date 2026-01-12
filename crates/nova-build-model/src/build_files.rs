@@ -26,13 +26,42 @@ impl BuildFileFingerprint {
         let mut hasher = Sha256::new();
         for path in files {
             if let Ok(rel) = path.strip_prefix(project_root) {
-                hasher.update(rel.to_string_lossy().as_bytes());
+                // `collect_gradle_build_files` can yield paths like `<root>/../included/...` for
+                // Gradle composite builds (`includeBuild("../included")`).
+                //
+                // These paths lexically start with `project_root`, but may not be *within* the
+                // canonical workspace root. Hashing `../included/...` directly would make
+                // fingerprints unstable when callers use symlinked or otherwise non-canonical
+                // workspace roots.
+                let rel_has_dot_segments = rel.components().any(|component| {
+                    matches!(
+                        component,
+                        std::path::Component::CurDir | std::path::Component::ParentDir
+                    )
+                });
+                if !rel_has_dot_segments {
+                    hasher.update(rel.to_string_lossy().as_bytes());
+                } else if let Some(canonical_root) = canonical_root.as_ref() {
+                    if let Ok(canonical_path) = path.canonicalize() {
+                        if let Ok(rel) = canonical_path.strip_prefix(canonical_root) {
+                            hasher.update(rel.to_string_lossy().as_bytes());
+                        } else {
+                            hasher.update(canonical_path.to_string_lossy().as_bytes());
+                        }
+                    } else {
+                        hasher.update(rel.to_string_lossy().as_bytes());
+                    }
+                } else {
+                    hasher.update(rel.to_string_lossy().as_bytes());
+                }
             } else if let Some(canonical_root) = canonical_root.as_ref() {
                 if let Ok(canonical_path) = path.canonicalize() {
                     if let Ok(rel) = canonical_path.strip_prefix(canonical_root) {
                         hasher.update(rel.to_string_lossy().as_bytes());
                     } else {
-                        hasher.update(path.to_string_lossy().as_bytes());
+                        // For paths outside the (canonical) project root, use the canonical file
+                        // path for fingerprinting.
+                        hasher.update(canonical_path.to_string_lossy().as_bytes());
                     }
                 } else {
                     hasher.update(path.to_string_lossy().as_bytes());
@@ -941,4 +970,42 @@ mod tests {
 
         assert!(parse_gradle_settings_included_builds(contents).is_empty());
     }
-}
+
+    #[cfg(unix)]
+    #[test]
+    fn fingerprint_is_stable_for_include_builds_outside_root_with_symlinked_workspace_root() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real_root = dir.path().join("real");
+        let included = dir.path().join("included");
+        std::fs::create_dir_all(&real_root).unwrap();
+        std::fs::create_dir_all(&included).unwrap();
+
+        write_file(
+            &real_root.join("settings.gradle"),
+            b"includeBuild(\"../included\")\n",
+        );
+        write_file(&real_root.join("build.gradle"), b"plugins {}\n");
+        write_file(&included.join("build.gradle"), b"plugins {}\n");
+
+        let link_root = dir.path().join("link");
+        symlink(&real_root, &link_root).unwrap();
+
+        // Simulate callers passing a symlinked workspace root, but with build file paths produced
+        // from a non-canonical root. The fingerprint should remain stable even when the included
+        // build lives outside the workspace root.
+        let fp_link_paths = BuildFileFingerprint::from_files(
+            &link_root,
+            collect_gradle_build_files(&link_root).unwrap(),
+        )
+        .expect("fingerprint");
+        let fp_real_paths = BuildFileFingerprint::from_files(
+            &link_root,
+            collect_gradle_build_files(&real_root).unwrap(),
+        )
+        .expect("fingerprint");
+
+        assert_eq!(fp_link_paths, fp_real_paths);
+    }
+} 
