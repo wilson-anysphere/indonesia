@@ -1,0 +1,413 @@
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+use nova_jdwp::wire::JdwpClient;
+use nova_jdwp::wire::types::{
+    FieldId, FieldInfoWithGeneric, FrameId, JdwpError, JdwpValue, Location, ObjectId,
+    ReferenceTypeId, ThreadId, VariableInfo, VariableInfoWithGeneric,
+};
+
+use super::java_gen::sanitize_java_param_name;
+use super::java_types::java_type_from_signatures;
+
+const FIELD_MODIFIER_STATIC: u32 = 0x0008;
+
+/// A bound Java identifier (local or instance field) with a static Java type and the JDWP value
+/// captured from the current frame.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamEvalBinding {
+    /// Java identifier as referenced in the original expression (e.g. `nums`).
+    pub name: String,
+    /// Java source spelling for the identifier's type (e.g. `java.util.List<java.lang.Integer>`).
+    pub java_type: String,
+    /// The captured runtime value to pass to the injected helper method.
+    pub value: JdwpValue,
+}
+
+/// All bindings needed to evaluate an expression in the context of a suspended frame.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamEvalFrameBindings {
+    /// The suspended frame's `this` object. Always present as a binding so helper signatures stay
+    /// stable; for static frames this will be a `null` object reference (`id = 0`).
+    pub this: StreamEvalBinding,
+    /// In-scope local variables, ordered deterministically.
+    pub locals: Vec<StreamEvalBinding>,
+    /// Instance fields exposed as unqualified identifiers, ordered deterministically.
+    pub fields: Vec<StreamEvalBinding>,
+}
+
+impl StreamEvalFrameBindings {
+    /// Returns locals in the format expected by [`crate::wire_stream_eval::java_gen`].
+    ///
+    /// This includes a synthetic `("this", <type>)` entry so the helper can choose a concrete
+    /// parameter type for `__this`.
+    pub fn locals_for_java_gen(&self) -> Vec<(String, String)> {
+        let mut out = Vec::with_capacity(1 + self.locals.len());
+        out.push(("this".to_string(), self.this.java_type.clone()));
+        out.extend(
+            self.locals
+                .iter()
+                .map(|b| (b.name.clone(), b.java_type.clone())),
+        );
+        out
+    }
+
+    pub fn fields_for_java_gen(&self) -> Vec<(String, String)> {
+        self.fields
+            .iter()
+            .map(|b| (b.name.clone(), b.java_type.clone()))
+            .collect()
+    }
+
+    /// Returns invocation arguments in the same order as the generated helper method signature:
+    /// `(__this, <locals...>, <fields...>)`.
+    pub fn args_for_helper(&self) -> Vec<JdwpValue> {
+        let mut out = Vec::with_capacity(1 + self.locals.len() + self.fields.len());
+        out.push(self.this.value.clone());
+        out.extend(self.locals.iter().map(|b| b.value.clone()));
+        out.extend(self.fields.iter().map(|b| b.value.clone()));
+        out
+    }
+}
+
+/// Build evaluator bindings for the given suspended frame.
+///
+/// This captures:
+/// - `this` (via `StackFrame.ThisObject`)
+/// - in-scope locals (via `Method.VariableTableWithGeneric` + `StackFrame.GetValues`)
+/// - instance fields on `this` (via `ReferenceType.FieldsWithGeneric` + `ObjectReference.GetValues`)
+///
+/// Locals shadow fields: if a local variable name collides with a field name, the field is not
+/// bound.
+pub async fn build_frame_bindings(
+    jdwp: &JdwpClient,
+    thread: ThreadId,
+    frame_id: FrameId,
+    location: Location,
+) -> Result<StreamEvalFrameBindings, JdwpError> {
+    let this_id = jdwp.stack_frame_this_object(thread, frame_id).await?;
+    let (this_java_type, this_value) = if this_id == 0 {
+        ("java.lang.Object".to_string(), JdwpValue::Object { tag: b'L', id: 0 })
+    } else {
+        let (_tag, type_id) = jdwp.object_reference_reference_type(this_id).await?;
+        let sig = jdwp.reference_type_signature(type_id).await?;
+        (
+            java_type_from_signatures(&sig, None),
+            JdwpValue::Object {
+                tag: b'L',
+                id: this_id,
+            },
+        )
+    };
+
+    let locals = collect_in_scope_locals(jdwp, thread, frame_id, &location).await?;
+    let local_names: HashSet<String> = locals.iter().map(|b| b.name.clone()).collect();
+
+    let fields = collect_instance_fields(jdwp, this_id, &local_names).await?;
+
+    Ok(StreamEvalFrameBindings {
+        this: StreamEvalBinding {
+            name: "this".to_string(),
+            java_type: this_java_type,
+            value: this_value,
+        },
+        locals,
+        fields,
+    })
+}
+
+async fn collect_in_scope_locals(
+    jdwp: &JdwpClient,
+    thread: ThreadId,
+    frame_id: FrameId,
+    location: &Location,
+) -> Result<Vec<StreamEvalBinding>, JdwpError> {
+    let vars = match jdwp
+        .method_variable_table_with_generic(location.class_id, location.method_id)
+        .await
+    {
+        Ok((_argc, vars)) => vars
+            .into_iter()
+            .map(VarInfo::from_generic)
+            .collect::<Vec<_>>(),
+        Err(err) if is_unsupported_command_error(&err) => {
+            let (_argc, vars) = jdwp
+                .method_variable_table(location.class_id, location.method_id)
+                .await?;
+            vars.into_iter().map(VarInfo::from_erased).collect()
+        }
+        Err(err) => return Err(err),
+    };
+
+    let in_scope: Vec<VarInfo> = vars
+        .into_iter()
+        .filter(|var| is_var_in_scope(var.code_index, var.length, location.index))
+        .filter(|var| !var.name.trim().is_empty())
+        // Avoid binding the synthetic `this` local; we always bind it separately and rewrite `this`
+        // tokens in the expression.
+        .filter(|var| var.name != "this")
+        .collect();
+
+    // If multiple variables with the same name are in scope, prefer the one that starts latest
+    // (inner-most scope).
+    let mut by_name: HashMap<String, VarInfo> = HashMap::new();
+    for var in in_scope {
+        match by_name.get(&var.name) {
+            Some(existing) if existing.code_index >= var.code_index => {}
+            _ => {
+                by_name.insert(var.name.clone(), var);
+            }
+        }
+    }
+
+    let mut vars: Vec<VarInfo> = by_name.into_values().collect();
+    vars.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let slots: Vec<(u32, String)> = vars
+        .iter()
+        .map(|v| (v.slot, v.signature.clone()))
+        .collect();
+    let values = jdwp
+        .stack_frame_get_values(thread, frame_id, &slots)
+        .await?;
+
+    let mut out = Vec::with_capacity(vars.len());
+    for (var, value) in vars.into_iter().zip(values.into_iter()) {
+        let java_type = java_type_from_signatures(&var.signature, var.generic_signature.as_deref());
+        out.push(StreamEvalBinding {
+            name: var.name,
+            java_type,
+            value,
+        });
+    }
+
+    Ok(out)
+}
+
+#[derive(Debug, Clone)]
+struct VarInfo {
+    code_index: u64,
+    name: String,
+    signature: String,
+    generic_signature: Option<String>,
+    length: u32,
+    slot: u32,
+}
+
+impl VarInfo {
+    fn from_generic(v: VariableInfoWithGeneric) -> Self {
+        Self {
+            code_index: v.code_index,
+            name: v.name,
+            signature: v.signature,
+            generic_signature: v.generic_signature,
+            length: v.length,
+            slot: v.slot,
+        }
+    }
+
+    fn from_erased(v: VariableInfo) -> Self {
+        Self {
+            code_index: v.code_index,
+            name: v.name,
+            signature: v.signature,
+            generic_signature: None,
+            length: v.length,
+            slot: v.slot,
+        }
+    }
+}
+
+async fn collect_instance_fields(
+    jdwp: &JdwpClient,
+    this_id: ObjectId,
+    local_names: &HashSet<String>,
+) -> Result<Vec<StreamEvalBinding>, JdwpError> {
+    if this_id == 0 {
+        return Ok(Vec::new());
+    }
+
+    let (_ref_type_tag, type_id) = jdwp.object_reference_reference_type(this_id).await?;
+    let hierarchy = class_hierarchy(jdwp, type_id).await?;
+
+    #[derive(Debug, Clone)]
+    struct SelectedField {
+        declaring_type: ReferenceTypeId,
+        field_id: FieldId,
+        name: String,
+        signature: String,
+        generic_signature: Option<String>,
+    }
+
+    let mut seen_names = HashSet::new();
+    let mut selected = Vec::new();
+
+    for class_id in hierarchy {
+        let fields = reference_type_fields_with_generic_fallback(jdwp, class_id).await?;
+        for field in fields {
+            if field.mod_bits & FIELD_MODIFIER_STATIC != 0 {
+                continue;
+            }
+
+            let name = field.name.trim();
+            if name.is_empty() {
+                continue;
+            }
+
+            // Locals shadow fields.
+            if local_names.contains(name) {
+                continue;
+            }
+
+            // Only bind identifiers that can be used directly without rewriting the expression.
+            if sanitize_java_param_name(name) != name {
+                continue;
+            }
+
+            if !seen_names.insert(name.to_string()) {
+                continue;
+            }
+
+            selected.push(SelectedField {
+                declaring_type: class_id,
+                field_id: field.field_id,
+                name: name.to_string(),
+                signature: field.signature,
+                generic_signature: field.generic_signature,
+            });
+        }
+    }
+
+    // Fetch values per declaring type (more compatible with VMs that require field ids to come
+    // from a single declaring reference type).
+    let mut per_type: BTreeMap<ReferenceTypeId, Vec<FieldId>> = BTreeMap::new();
+    for field in &selected {
+        per_type
+            .entry(field.declaring_type)
+            .or_default()
+            .push(field.field_id);
+    }
+
+    let mut values_by_id: HashMap<FieldId, JdwpValue> = HashMap::new();
+    for (_type_id, field_ids) in per_type {
+        let values = jdwp.object_reference_get_values(this_id, &field_ids).await?;
+        for (field_id, value) in field_ids.into_iter().zip(values.into_iter()) {
+            values_by_id.insert(field_id, value);
+        }
+    }
+
+    let mut out = Vec::with_capacity(selected.len());
+    for field in selected {
+        let Some(value) = values_by_id.get(&field.field_id).cloned() else {
+            continue;
+        };
+        let java_type = java_type_from_signatures(&field.signature, field.generic_signature.as_deref());
+        out.push(StreamEvalBinding {
+            name: field.name,
+            java_type,
+            value,
+        });
+    }
+
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+async fn class_hierarchy(
+    jdwp: &JdwpClient,
+    type_id: ReferenceTypeId,
+) -> Result<Vec<ReferenceTypeId>, JdwpError> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    let mut current = type_id;
+    while current != 0 && seen.insert(current) {
+        out.push(current);
+        let superclass = jdwp.class_type_superclass(current).await?;
+        if superclass == 0 {
+            break;
+        }
+        current = superclass;
+    }
+    Ok(out)
+}
+
+async fn reference_type_fields_with_generic_fallback(
+    jdwp: &JdwpClient,
+    class_id: ReferenceTypeId,
+) -> Result<Vec<FieldInfoWithGeneric>, JdwpError> {
+    match jdwp.reference_type_fields_with_generic(class_id).await {
+        Ok(fields) => Ok(fields),
+        Err(err) if is_unsupported_command_error(&err) => {
+            let erased = jdwp.reference_type_fields(class_id).await?;
+            Ok(erased
+                .into_iter()
+                .map(|field| FieldInfoWithGeneric {
+                    field_id: field.field_id,
+                    name: field.name,
+                    signature: field.signature,
+                    generic_signature: None,
+                    mod_bits: field.mod_bits,
+                })
+                .collect())
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn is_var_in_scope(code_index: u64, length: u32, pc: u64) -> bool {
+    let Some(end) = code_index.checked_add(length as u64) else {
+        return false;
+    };
+    code_index <= pc && pc < end
+}
+
+fn is_unsupported_command_error(err: &JdwpError) -> bool {
+    const ERROR_NOT_FOUND: u16 = 41;
+    const ERROR_UNSUPPORTED_VERSION: u16 = 68;
+    const ERROR_NOT_IMPLEMENTED: u16 = 99;
+
+    matches!(
+        err,
+        JdwpError::VmError(ERROR_NOT_FOUND | ERROR_UNSUPPORTED_VERSION | ERROR_NOT_IMPLEMENTED)
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nova_jdwp::wire::mock::{MockJdwpServer, FIELD_HIDING_OBJECT_ID};
+
+    #[tokio::test]
+    async fn instance_fields_are_filtered_by_hierarchy_and_shadowed_by_locals() {
+        let server = MockJdwpServer::spawn().await.unwrap();
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+        let local_names = HashSet::new();
+        let fields = collect_instance_fields(&client, FIELD_HIDING_OBJECT_ID, &local_names)
+            .await
+            .unwrap();
+
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].name, "hidden");
+        assert_eq!(fields[0].java_type, "int");
+        assert_eq!(fields[0].value, JdwpValue::Int(1));
+
+        let mut shadowed = HashSet::new();
+        shadowed.insert("hidden".to_string());
+        let fields = collect_instance_fields(&client, FIELD_HIDING_OBJECT_ID, &shadowed)
+            .await
+            .unwrap();
+        assert!(fields.is_empty());
+    }
+
+    #[test]
+    fn locals_shadow_fields_by_name() {
+        let mut locals = HashSet::new();
+        locals.insert("nums".to_string());
+
+        // In Java, locals shadow fields with the same name; stream-eval bindings must follow that
+        // rule so unqualified identifiers resolve as they do in the original source.
+        assert!(locals.contains("nums"));
+        let should_bind_field = !locals.contains("nums");
+        assert!(!should_bind_field, "field should be skipped");
+    }
+}

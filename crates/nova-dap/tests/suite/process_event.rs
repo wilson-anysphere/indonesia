@@ -3,7 +3,7 @@ use std::{path::Path, time::Duration};
 use nova_dap::dap_tokio::{DapReader, DapWriter};
 use nova_dap::wire_server;
 use nova_jdwp::wire::mock::MockJdwpServer;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tempfile::TempDir;
 
 async fn send_request(

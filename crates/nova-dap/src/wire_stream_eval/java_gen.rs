@@ -154,6 +154,7 @@ pub fn generate_stream_eval_helper_java_source(
     package_name: &str,
     imports: &[String],
     locals: &[(String, String)],
+    fields: &[(String, String)],
     stages: &[String],
 ) -> String {
     const CLASS_NAME: &str = "__NovaStreamEvalHelper";
@@ -236,6 +237,35 @@ pub fn generate_stream_eval_helper_java_source(
         };
 
         params.push((ty.to_string(), param));
+    }
+
+    // Bind instance fields after locals so unqualified field references can compile.
+    // For now we only bind fields that can retain their original identifier spelling
+    // (i.e. sanitization is a no-op and there are no collisions).
+    let mut fields_sorted: Vec<_> = fields.iter().collect();
+    fields_sorted.sort_by(|a, b| a.0.trim().cmp(b.0.trim()));
+    for (name, ty) in fields_sorted {
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let ty = ty.trim();
+        if ty.is_empty() {
+            continue;
+        }
+
+        let sanitized = sanitize_java_param_name(name);
+        if sanitized != name {
+            // Best-effort: skip fields whose identifiers cannot be represented directly
+            // without rewriting the expression.
+            continue;
+        }
+        if !used_params.insert(sanitized.clone()) {
+            // Locals (or other fields) already bound this name.
+            continue;
+        }
+
+        params.push((ty.to_string(), sanitized));
     }
 
     for (idx, stage) in stages.iter().enumerate() {
@@ -448,6 +478,7 @@ mod tests {
                 ("this".to_string(), "com.example.Foo".to_string()),
                 ("foo-bar".to_string(), "int".to_string()),
             ],
+            &[],
             &["this.foo()".to_string(), "this.bar()".to_string()],
         );
 
@@ -483,6 +514,7 @@ mod tests {
                 ("this".to_string(), "Object".to_string()),
                 ("s".to_string(), "java.util.stream.Stream<Integer>".to_string()),
             ],
+            &[],
             &["s.forEach(System.out::println)".to_string()],
         );
 
@@ -506,6 +538,7 @@ mod tests {
                 ("this".to_string(), "Object".to_string()),
                 ("s".to_string(), "java.util.stream.Stream<Integer>".to_string()),
             ],
+            &[],
             &["s.forEachOrdered(System.out::println)".to_string()],
         );
 
@@ -526,6 +559,7 @@ mod tests {
             "com.example",
             &[],
             &[("this".to_string(), "Object".to_string())],
+            &[],
             &["java.util.stream.IntStream.range(0, 3).forEach(System.out::println)".to_string()],
         );
 
@@ -540,5 +574,22 @@ mod tests {
         assert!(src.contains(
             "java.util.stream.IntStream.range(0, 3).forEach(System.out::println);"
         ));
+    }
+
+    #[test]
+    fn java_source_generation_includes_bound_fields_after_locals() {
+        let src = generate_stream_eval_helper_java_source(
+            "",
+            &[],
+            &[("this".to_string(), "com.example.Foo".to_string())],
+            &[("nums".to_string(), "java.util.List<java.lang.Integer>".to_string())],
+            &["nums.stream().count()".to_string()],
+        );
+
+        // `__this` always comes first.
+        assert!(
+            src.contains("public static Object stage0(com.example.Foo __this, java.util.List<java.lang.Integer> nums)")
+        );
+        assert!(src.contains("return nums.stream().count();"));
     }
 }

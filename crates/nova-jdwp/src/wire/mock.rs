@@ -1623,6 +1623,39 @@ async fn handle_packet(
             let class_id = r.read_reference_type_id(sizes).unwrap_or(0);
             let mut w = JdwpWriter::new();
             match class_id {
+                OBJECT_CLASS_ID => {
+                    // Mirror `ReferenceType.Fields` but include an empty generic signature.
+                    w.write_u32(1);
+                    w.write_id(FIELD_ID, sizes.field_id);
+                    w.write_string("field");
+                    w.write_string("I");
+                    w.write_string("");
+                    w.write_u32(1);
+                }
+                THROWABLE_CLASS_ID => {
+                    w.write_u32(1);
+                    w.write_id(DETAIL_MESSAGE_FIELD_ID, sizes.field_id);
+                    w.write_string("detailMessage");
+                    w.write_string("Ljava/lang/String;");
+                    w.write_string("");
+                    w.write_u32(0);
+                }
+                FIELD_HIDING_SUPERCLASS_ID => {
+                    w.write_u32(1);
+                    w.write_id(FIELD_HIDING_FIELD_SUPER_ID, sizes.field_id);
+                    w.write_string("hidden");
+                    w.write_string("I");
+                    w.write_string("");
+                    w.write_u32(1);
+                }
+                FIELD_HIDING_SUBCLASS_ID => {
+                    w.write_u32(1);
+                    w.write_id(FIELD_HIDING_FIELD_SUB_ID, sizes.field_id);
+                    w.write_string("hidden");
+                    w.write_string("I");
+                    w.write_string("");
+                    w.write_u32(1);
+                }
                 CLASS_ID => {
                     w.write_u32(2);
                     w.write_id(GENERIC_LIST_FIELD_ID, sizes.field_id);

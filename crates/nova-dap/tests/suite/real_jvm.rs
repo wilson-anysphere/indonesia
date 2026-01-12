@@ -496,7 +496,7 @@ async fn dap_stream_debug_request_works_on_real_jvm() {
 
     std::fs::write(
         &source_path,
-        "import java.util.*;\npublic class Main {\n  public static void main(String[] args) throws Exception {\n    Thread.sleep(500);\n    List<Integer> list = Arrays.asList(1,2,3);\n    long count = list.stream().filter(x -> x > 1).map(x -> x * 2).count(); // BREAKPOINT\n    System.out.println(count);\n  }\n}\n",
+        "import java.util.*;\npublic class Main {\n  List<Integer> nums = Arrays.asList(1,2,3);\n  void run() throws Exception {\n    Thread.sleep(500);\n    long count = nums.stream().filter(x -> x > 1).map(x -> x * 2).count(); // BREAKPOINT\n    System.out.println(count);\n  }\n  public static void main(String[] args) throws Exception { new Main().run(); }\n}\n",
     )
     .unwrap();
 
@@ -624,7 +624,7 @@ async fn dap_stream_debug_request_works_on_real_jvm() {
         .and_then(|frame| frame.get("id").and_then(|v| v.as_i64()))
         .expect("expected a frame id for Main.java");
 
-    let expr = "list.stream().filter(x -> x > 1).map(x -> x * 2).count()";
+    let expr = "nums.stream().filter(x -> x > 1).map(x -> x * 2).count()";
     let stream_seq = stack_seq + 1;
     dap.send_request(
         stream_seq,
