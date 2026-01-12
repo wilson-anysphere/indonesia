@@ -1095,4 +1095,18 @@ mod tests {
 
         assert_eq!(updated, "ae");
     }
+
+    #[test]
+    fn apply_text_edits_rejects_ranges_that_split_utf8_characters() {
+        // 😀 is 4 bytes in UTF-8: "a😀b" has byte indices:
+        // a: 0..1, 😀: 1..5, b: 5..6.
+        // Use a range inside the emoji byte sequence to ensure we never panic in `replace_range`.
+        let file = FileId::new("file:///test");
+        let original = "a😀b";
+
+        let edit = TextEdit::replace(file.clone(), TextRange::new(2, 3), "X");
+        let err = apply_text_edits(original, &[edit]).unwrap_err();
+
+        assert_eq!(err, EditError::InvalidUtf8Boundary { file, offset: 2 },);
+    }
 }
