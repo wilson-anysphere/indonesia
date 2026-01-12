@@ -1604,6 +1604,114 @@ class A {
 }
 
 #[test]
+fn completion_includes_javadoc_return_snippet() {
+    let (db, file, pos) = fixture(
+        r#"
+/**
+ * @ret<|>
+ */
+int m() { return 0; }
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "@return")
+        .expect("expected @return snippet completion");
+
+    assert_eq!(item.kind, Some(lsp_types::CompletionItemKind::SNIPPET));
+    assert_eq!(item.insert_text_format, Some(InsertTextFormat::SNIPPET));
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+    assert_eq!(edit.new_text, "@return $0");
+}
+
+#[test]
+fn completion_includes_javadoc_throws_snippet() {
+    let (db, file, pos) = fixture(
+        r#"
+/**
+ * @thr<|>
+ */
+void m() {}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "@throws")
+        .expect("expected @throws snippet completion");
+
+    assert_eq!(item.kind, Some(lsp_types::CompletionItemKind::SNIPPET));
+    assert_eq!(item.insert_text_format, Some(InsertTextFormat::SNIPPET));
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+    assert_eq!(edit.new_text, "@throws ${1:Exception} $0");
+}
+
+#[test]
+fn completion_includes_javadoc_see_snippet() {
+    let (db, file, pos) = fixture(
+        r#"
+/**
+ * @se<|>
+ */
+void m() {}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "@see")
+        .expect("expected @see snippet completion");
+
+    assert_eq!(item.kind, Some(lsp_types::CompletionItemKind::SNIPPET));
+    assert_eq!(item.insert_text_format, Some(InsertTextFormat::SNIPPET));
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+    assert_eq!(edit.new_text, "@see ${1:Reference} $0");
+}
+
+#[test]
+fn completion_includes_javadoc_inline_link_snippet() {
+    let (db, file, pos) = fixture(
+        r#"
+/**
+ * {@li<|>
+ */
+void m() {}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "{@link}")
+        .expect("expected {@link} snippet completion");
+
+    assert_eq!(item.kind, Some(lsp_types::CompletionItemKind::SNIPPET));
+    assert_eq!(item.insert_text_format, Some(InsertTextFormat::SNIPPET));
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+    assert_eq!(edit.new_text, "{@link ${1:TypeOrMember}}$0");
+}
+
+#[test]
 fn annotation_attribute_completion_suggests_elements() {
     let anno_path = PathBuf::from("/workspace/src/main/java/p/MyAnno.java");
     let java_path = PathBuf::from("/workspace/src/main/java/p/Main.java");
