@@ -47,8 +47,8 @@ fn loads_maven_multi_module_workspace() {
     assert!(roots.contains(&(SourceRootKind::Main, PathBuf::from("lib/src/main/java"))));
     assert!(roots.contains(&(SourceRootKind::Main, PathBuf::from("app/src/main/java"))));
 
-    // Maven dependency jar paths are only included when the artifacts exist in the configured
-    // local repo. This test uses an empty repo, so no jar entries should be present.
+    // Multi-module workspaces can have very large dependency closures. When the local Maven repo is
+    // empty, avoid synthesizing missing dependency jars to keep the classpath lean.
     let jar_entries = config
         .classpath
         .iter()
@@ -507,6 +507,28 @@ fn loads_gradle_root_buildscript_dependencies_kotlin_dsl() {
 }
 
 #[test]
+fn loads_gradle_root_buildscript_dependencies_with_version_catalog() {
+    let root = testdata_path("gradle-multi-root-deps-version-catalog");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load gradle project");
+
+    let deps: BTreeSet<_> = config
+        .dependencies
+        .iter()
+        .map(|d| (d.group_id.clone(), d.artifact_id.clone(), d.version.clone()))
+        .collect();
+    assert!(deps.contains(&(
+        "com.google.guava".to_string(),
+        "guava".to_string(),
+        Some("33.0.0-jre".to_string())
+    )));
+}
+
+#[test]
 fn loads_gradle_projectdir_mapping_workspace() {
     let root = testdata_path("gradle-projectdir-mapping");
     let gradle_home = tempdir().expect("tempdir");
@@ -843,8 +865,9 @@ fn loads_maven_multi_module_workspace_model() {
     assert_eq!(match_lib.module.id, "maven:com.example:lib");
     assert_eq!(match_lib.source_root.kind, SourceRootKind::Main);
 
-    // Non-JPMS Maven workspace model: `module_path` should stay empty. Dependency jar paths are
-    // only included when the artifacts exist in the local repo; this test uses an empty repo.
+    // Non-JPMS Maven workspace model: `module_path` should stay empty. For multi-module workspaces
+    // we avoid synthesizing missing dependency jars to keep classpaths lean; this test uses an
+    // empty Maven repo.
     assert!(
         app.module_path.is_empty(),
         "expected module_path to remain empty for non-JPMS workspaces"
@@ -1136,6 +1159,30 @@ fn loads_gradle_root_buildscript_dependencies_workspace_model() {
 #[test]
 fn loads_gradle_root_buildscript_dependencies_kotlin_dsl_workspace_model() {
     let root = testdata_path("gradle-multi-root-deps-kts");
+    let gradle_home = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let model =
+        load_workspace_model_with_options(&root, &options).expect("load gradle workspace model");
+
+    let app = model.module_by_id("gradle::app").expect("app module");
+    let deps: BTreeSet<_> = app
+        .dependencies
+        .iter()
+        .map(|d| (d.group_id.clone(), d.artifact_id.clone(), d.version.clone()))
+        .collect();
+    assert!(deps.contains(&(
+        "com.google.guava".to_string(),
+        "guava".to_string(),
+        Some("33.0.0-jre".to_string())
+    )));
+}
+
+#[test]
+fn loads_gradle_root_buildscript_dependencies_with_version_catalog_workspace_model() {
+    let root = testdata_path("gradle-multi-root-deps-version-catalog");
     let gradle_home = tempdir().expect("tempdir");
     let options = LoadOptions {
         gradle_user_home: Some(gradle_home.path().to_path_buf()),
