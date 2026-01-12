@@ -2000,6 +2000,19 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
     exists_as_jar(&path).then_some(path)
 }
 
+fn exists_as_jar(path: &Path) -> bool {
+    // Most Maven dependencies are packaged as jars. Nova intentionally supports:
+    // - "missing jar" paths synthesized from coordinates (so IDE users still see the dep)
+    // - exploded jar directories (some build setups unpack jars in the local repo)
+    //
+    // Only reject paths that exist but are neither a file nor a directory (e.g. special files).
+    if path.exists() {
+        path.is_file() || path.is_dir()
+    } else {
+        true
+    }
+}
+
 fn resolve_snapshot_jar_file_name(
     version_dir: &Path,
     artifact_id: &str,
