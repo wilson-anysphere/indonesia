@@ -225,6 +225,30 @@ fn path_validation_rejects_traversal_attempts() {
 }
 
 #[test]
+fn load_apis_treat_invalid_keys_as_cache_miss() {
+    let temp = TempDir::new().unwrap();
+    let store = DecompiledDocumentStore::new(temp.path().to_path_buf());
+
+    assert!(store
+        .load_text("not-a-hash", "com.example.Foo")
+        .unwrap()
+        .is_none());
+    assert!(store
+        .load_document("not-a-hash", "com.example.Foo")
+        .unwrap()
+        .is_none());
+
+    // Invalid binary names should also degrade to misses on load.
+    assert!(store
+        .load_text(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "../evil"
+        )
+        .unwrap()
+        .is_none());
+}
+
+#[test]
 fn storing_twice_is_ok_and_deterministic() {
     let uri = decompiled_uri_for_classfile(FOO_CLASS, FOO_INTERNAL_NAME);
     let parsed = parse_decompiled_uri(&uri).expect("parse uri");

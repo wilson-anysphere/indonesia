@@ -118,7 +118,10 @@ impl DecompiledDocumentStore {
         content_hash: &str,
         binary_name: &str,
     ) -> Result<Option<String>, CacheError> {
-        let path = self.path_for(content_hash, binary_name)?;
+        // Treat invalid keys as a cache miss (best-effort store).
+        let Ok(path) = self.path_for(content_hash, binary_name) else {
+            return Ok(None);
+        };
 
         let Some(bytes) = read_cache_file_bytes(&path)? else {
             return Ok(None);
@@ -148,7 +151,10 @@ impl DecompiledDocumentStore {
             return Ok(None);
         };
 
-        let meta_path = self.meta_path_for(content_hash, binary_name)?;
+        // Treat invalid keys as a cache miss (best-effort store).
+        let Ok(meta_path) = self.meta_path_for(content_hash, binary_name) else {
+            return Ok(None);
+        };
         let Some(meta_bytes) = read_cache_file_bytes(&meta_path)? else {
             return Ok(None);
         };
