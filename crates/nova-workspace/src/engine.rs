@@ -22,7 +22,7 @@ use nova_memory::{
     MemoryEvictor, MemoryManager, MemoryPressure, MemoryRegistration, MemoryReport,
 };
 use nova_project::{
-    BuildSystem, ClasspathEntry, ClasspathEntryKind, JavaConfig, LoadOptions, OutputDir,
+    BuildSystem, ClasspathEntry, ClasspathEntryKind, JavaConfig, JavaVersion, LoadOptions, OutputDir,
     OutputDirKind, ProjectConfig, ProjectError, SourceRoot, SourceRootKind, SourceRootOrigin,
 };
 #[cfg(test)]
@@ -3185,7 +3185,45 @@ fn apply_java_compile_config_to_project_config(
     config.module_path = classpath_entries_from_paths(cfg.module_path.iter().cloned());
     config.source_roots = source_roots_from_java_compile_config(base, cfg);
     config.output_dirs = output_dirs_from_java_compile_config(base, cfg);
+    config.java = java_config_from_java_compile_config(base.java, cfg);
     config
+}
+
+fn java_config_from_java_compile_config(
+    base: JavaConfig,
+    cfg: &nova_build::JavaCompileConfig,
+) -> JavaConfig {
+    let release = cfg
+        .release
+        .as_deref()
+        .and_then(|release| JavaVersion::parse(release));
+    let source = cfg
+        .source
+        .as_deref()
+        .and_then(|source| JavaVersion::parse(source));
+    let target = cfg
+        .target
+        .as_deref()
+        .and_then(|target| JavaVersion::parse(target));
+
+    let mut java = base;
+    match (release, source, target) {
+        (Some(version), _, _) => {
+            java.source = version;
+            java.target = version;
+        }
+        (None, Some(version), None) | (None, None, Some(version)) => {
+            java.source = version;
+            java.target = version;
+        }
+        (None, Some(source), Some(target)) => {
+            java.source = source;
+            java.target = target;
+        }
+        (None, None, None) => {}
+    }
+    java.enable_preview |= cfg.enable_preview;
+    java
 }
 
 fn reuse_previous_build_config_fields(
@@ -3195,6 +3233,7 @@ fn reuse_previous_build_config_fields(
     loaded.classpath = previous.classpath.clone();
     loaded.module_path = previous.module_path.clone();
     loaded.output_dirs = previous.output_dirs.clone();
+    loaded.java = previous.java;
 
     // Prefer the previous source roots (which may have been populated from nova-build), but also
     // incorporate any newly discovered roots from `nova-project` (e.g. apt generated roots).
@@ -6002,6 +6041,15 @@ mode = "off"
             }
         }
 
+        fn scalar_output(value: &str) -> nova_build::CommandOutput {
+            nova_build::CommandOutput {
+                status: success_status(),
+                stdout: format!("{value}\n"),
+                stderr: String::new(),
+                truncated: false,
+            }
+        }
+
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
 
@@ -6045,6 +6093,10 @@ mode = "off"
             "project.testCompileSourceRoots".to_string(),
             list_output(&["src/test/java"]),
         );
+        outputs.insert(
+            "maven.compiler.target".to_string(),
+            scalar_output("1.8"),
+        );
 
         let runner: Arc<dyn nova_build::CommandRunner> =
             Arc::new(MavenEvaluateRoutingRunner::new(outputs));
@@ -6066,6 +6118,7 @@ mode = "off"
             let project = ProjectId::from_raw(0);
             let config = snap.project_config(project);
             assert_eq!(config.build_system, BuildSystem::Maven);
+            assert_eq!(config.java.target.0, 8, "expected Java target to come from nova-build");
             assert!(
                 config
                     .classpath
@@ -6154,9 +6207,8 @@ mode = "off"
             "testSourceRoots": [],
             "mainOutputDirs": [root.join("build/classes/java/main").to_string_lossy()],
             "testOutputDirs": [root.join("build/classes/java/test").to_string_lossy()],
-            "sourceCompatibility": "17",
-            "targetCompatibility": "17",
-            "toolchainLanguageVersion": "17",
+            "sourceCompatibility": "1.8",
+            "targetCompatibility": "1.8",
             "compileCompilerArgs": [],
             "testCompilerArgs": [],
             "inferModulePath": false,
@@ -6186,6 +6238,10 @@ mode = "off"
             let project = ProjectId::from_raw(0);
             let config = snap.project_config(project);
             assert_eq!(config.build_system, BuildSystem::Gradle);
+            assert_eq!(
+                config.java.target.0, 8,
+                "expected Java target to come from nova-build"
+            );
             assert!(
                 config
                     .classpath
