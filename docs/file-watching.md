@@ -169,6 +169,23 @@ match msg {
 }
 ```
 
+You can also assert which paths the component tried to watch:
+
+```rust
+use nova_vfs::{FileWatcher, ManualFileWatcher, WatchMode};
+use std::path::{Path, PathBuf};
+
+let mut watcher = ManualFileWatcher::default();
+watcher
+    .watch_path(Path::new("/project"), WatchMode::Recursive)
+    .unwrap();
+
+assert_eq!(
+    watcher.watch_calls(),
+    &[(PathBuf::from("/project"), WatchMode::Recursive)]
+);
+```
+
 ### 2) Bypass the watcher and call "apply events" APIs directly
 
 For higher-level workspace behavior, many tests can skip the watcher entirely and call the
