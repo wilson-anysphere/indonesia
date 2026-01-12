@@ -4306,6 +4306,12 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     };
 
                     let Some(init) = initializer else {
+                        // Align with javac: `var` requires an initializer (Java 10+).
+                        self.diagnostics.push(Diagnostic::error(
+                            "var-requires-initializer",
+                            "`var` declarations must have an initializer",
+                            Some(diag_span),
+                        ));
                         self.diagnostics.push(Diagnostic::error(
                             "invalid-var",
                             "`var` local variables require an initializer",
@@ -4330,6 +4336,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         // Still walk the expression for internal errors/best-effort IDE info.
                         let _ = self.infer_expr(loader, *init);
                         self.diagnostics.push(Diagnostic::error(
+                            "var-functional-initializer",
+                            "`var` cannot be initialized with a lambda or method reference",
+                            Some(init_range),
+                        ));
+                        self.diagnostics.push(Diagnostic::error(
                             "var-poly-expression",
                             "cannot infer `var` from a poly expression without a target type",
                             Some(init_range),
@@ -4343,6 +4354,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     let init_is_null = matches!(&self.body.exprs[*init], HirExpr::Null { .. })
                         || init_ty == Type::Null;
                     if init_is_null {
+                        self.diagnostics.push(Diagnostic::error(
+                            "var-null-initializer",
+                            "`var` cannot be initialized with `null`",
+                            Some(init_range),
+                        ));
                         self.diagnostics.push(Diagnostic::error(
                             "invalid-var",
                             "cannot infer a `var` local variable type from `null`",
@@ -4610,6 +4626,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     let env_ro: &dyn TypeEnv = &*loader.store;
                     let found = format_type(env_ro, &iterable_ty);
                     self.diagnostics.push(Diagnostic::error(
+                        "foreach-non-iterable",
+                        "expression in enhanced for-loop is not iterable",
+                        Some(self.body.exprs[*iterable].range()),
+                    ));
+                    self.diagnostics.push(Diagnostic::error(
                         "foreach-not-iterable",
                         format!("foreach expression is not iterable: found {found}"),
                         Some(self.body.exprs[*iterable].range()),
@@ -4820,6 +4841,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         // Still walk the expression for internal errors/best-effort IDE info.
                         let _ = self.infer_expr(loader, init);
                         self.diagnostics.push(Diagnostic::error(
+                            "var-functional-initializer",
+                            "`var` cannot be initialized with a lambda or method reference",
+                            Some(init_range),
+                        ));
+                        self.diagnostics.push(Diagnostic::error(
                             "var-poly-expression",
                             "cannot infer `var` from a poly expression without a target type",
                             Some(init_range),
@@ -4830,6 +4856,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         let init_is_null = matches!(&self.body.exprs[init], HirExpr::Null { .. })
                             || init_ty == Type::Null;
                         if init_is_null {
+                            self.diagnostics.push(Diagnostic::error(
+                                "var-null-initializer",
+                                "`var` cannot be initialized with `null`",
+                                Some(init_range),
+                            ));
                             self.diagnostics.push(Diagnostic::error(
                                 "invalid-var",
                                 "cannot infer a `var` local variable type from `null`",
@@ -4855,6 +4886,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         }
                     }
                 } else {
+                    self.diagnostics.push(Diagnostic::error(
+                        "var-requires-initializer",
+                        "`var` declarations must have an initializer",
+                        Some(diag_span),
+                    ));
                     self.diagnostics.push(Diagnostic::error(
                         "invalid-var",
                         "`var` local variables require an initializer",

@@ -2954,6 +2954,12 @@ class C {
         diags.iter().any(|d| d.code.as_ref() == "invalid-var"),
         "expected invalid-var diagnostic; got {diags:?}"
     );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "var-requires-initializer"),
+        "expected var-requires-initializer diagnostic; got {diags:?}"
+    );
 }
 
 #[test]
@@ -2971,6 +2977,12 @@ class C {
     assert!(
         diags.iter().any(|d| d.code.as_ref() == "invalid-var"),
         "expected invalid-var diagnostic; got {diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "var-null-initializer"),
+        "expected var-null-initializer diagnostic; got {diags:?}"
     );
 }
 
@@ -2991,6 +3003,26 @@ class C {
     assert!(
         diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
         "expected foreach var element type to be inferred; got {diags:?}"
+    );
+}
+
+#[test]
+fn foreach_var_infers_element_type_for_array_initializer() {
+    let src = r#"
+class C {
+    void m() {
+        for (var s : new String[]{"a"}) {
+            s.substring(1);
+        }
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected foreach var element type to be inferred from array initializer; got {diags:?}"
     );
 }
 
