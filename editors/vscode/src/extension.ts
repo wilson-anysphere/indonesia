@@ -24,7 +24,7 @@ import {
   resetNovaExperimentalCapabilities,
   setNovaExperimentalCapabilities,
 } from './novaCapabilities';
-import { sendRequestWithOptionalToken } from './novaRequest';
+import { isRequestCancelledError, sendRequestWithOptionalToken } from './novaRequest';
 import { ServerManager, type NovaServerSettings } from './serverManager';
 import { buildNovaLspLaunchConfig, resolveNovaConfigPath } from './lspArgs';
 import { getNovaConfigChangeEffects } from './configChange';
@@ -2255,24 +2255,6 @@ function createMethodNotFoundError(method: string): Error & { code: number } {
   const err = new Error(`Method not found: ${method}`) as Error & { code: number };
   err.code = -32601;
   return err;
-}
-
-function isRequestCancelledError(err: unknown): boolean {
-  if (typeof err === 'string') {
-    return err.toLowerCase().includes('requestcancelled');
-  }
-
-  if (!err || typeof err !== 'object') {
-    return false;
-  }
-
-  const code = (err as { code?: unknown }).code;
-  if (code === -32800) {
-    return true;
-  }
-
-  const message = (err as { message?: unknown }).message;
-  return typeof message === 'string' && message.toLowerCase().includes('requestcancelled');
 }
 
 async function sendNovaRequest<R>(

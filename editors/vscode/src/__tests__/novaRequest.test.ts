@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { sendRequestWithOptionalToken } from '../novaRequest';
+import { isRequestCancelledError, sendRequestWithOptionalToken } from '../novaRequest';
 
 describe('sendRequestWithOptionalToken', () => {
   it('forwards the token when params are provided', async () => {
@@ -30,3 +30,12 @@ describe('sendRequestWithOptionalToken', () => {
   });
 });
 
+describe('isRequestCancelledError', () => {
+  it('detects JSON-RPC RequestCancelled (-32800)', () => {
+    expect(isRequestCancelledError({ code: -32800, message: 'RequestCancelled' })).toBe(true);
+  });
+
+  it('detects a RequestCancelled message', () => {
+    expect(isRequestCancelledError({ message: 'RequestCancelled' })).toBe(true);
+  });
+});
