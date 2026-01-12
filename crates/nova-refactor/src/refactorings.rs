@@ -3124,17 +3124,18 @@ fn check_extract_variable_field_shadowing(
     }
 
     let stmt_start = syntax_range(stmt.syntax()).start;
-    let scope = stmt
-        .syntax()
-        .parent()
-        .and_then(ast::Block::cast)
-        .map(|b| b.syntax().clone())
-        .or_else(|| {
-            stmt.syntax()
-                .parent()
-                .and_then(ast::SwitchBlock::cast)
-                .map(|b| b.syntax().clone())
-        });
+    // The new local is inserted immediately before `stmt`. Use the closest enclosing statement-list
+    // container to approximate the scope where the local will shadow an existing field:
+    // - a `{ ... }` block (local variable scope is the block)
+    // - otherwise the surrounding switch block (locals declared in a `case:` group are in scope
+    //   until the end of the switch block)
+    let scope = stmt.syntax().ancestors().find_map(|node| {
+        if let Some(block) = ast::Block::cast(node.clone()) {
+            Some(block.syntax().clone())
+        } else {
+            ast::SwitchBlock::cast(node).map(|b| b.syntax().clone())
+        }
+    });
 
     let Some(scope) = scope else {
         // If we can't determine the scope, fall back to allowing extraction. Other validation

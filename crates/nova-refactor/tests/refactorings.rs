@@ -796,6 +796,96 @@ fn extract_variable_allows_name_that_matches_field_when_later_access_is_qualifie
 }
 
 #[test]
+fn extract_variable_rejects_name_that_would_shadow_field_used_later_unqualified_in_switch_case_group() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  int value = 0;
+
+  void m(int x) {
+    switch (x) {
+      case 1:
+        int y = /*select*/1 + 2/*end*/;
+        System.out.println(value);
+        break;
+    }
+  }
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src)]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range,
+            name: "value".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    let SemanticRefactorError::Conflicts(conflicts) = err else {
+        panic!("expected conflicts, got: {err:?}");
+    };
+
+    assert!(
+        conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::FieldShadowing { name, .. } if name == "value")),
+        "expected FieldShadowing conflict: {conflicts:?}"
+    );
+}
+
+#[test]
+fn extract_variable_rejects_name_that_would_shadow_field_used_later_unqualified_in_other_switch_case_group() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class Test {
+  int value = 0;
+
+  void m(int x) {
+    switch (x) {
+      case 1:
+        int y = /*select*/1 + 2/*end*/;
+        break;
+      case 2:
+        System.out.println(value);
+        break;
+    }
+  }
+}
+"#;
+
+    let (src, expr_range) = strip_selection_markers(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src)]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range,
+            name: "value".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    let SemanticRefactorError::Conflicts(conflicts) = err else {
+        panic!("expected conflicts, got: {err:?}");
+    };
+
+    assert!(
+        conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::FieldShadowing { name, .. } if name == "value")),
+        "expected FieldShadowing conflict: {conflicts:?}"
+    );
+}
+
+#[test]
 fn extract_variable_rejects_dependency_written_earlier_in_same_statement() {
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
