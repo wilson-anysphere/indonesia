@@ -1469,18 +1469,6 @@ impl Lowerer {
                 Some(ast::Stmt::Expr(self.lower_expr_stmt(node)))
             }
             SyntaxKind::ReturnStatement => Some(ast::Stmt::Return(self.lower_return_stmt(node))),
-            SyntaxKind::LabeledStatement => {
-                // Labeled statements are a control-flow construct, but the lightweight AST doesn't
-                // model labels. Still lower the body so downstream semantic passes (HIR lowering,
-                // typeck, etc.) don't silently drop the statement.
-                //
-                // `label: stmt` => `stmt`
-                let range = self.spans.map_node(node);
-                node.children()
-                    .find(|child| is_statement_kind(child.kind()))
-                    .and_then(|child| self.lower_stmt(&child))
-                    .or_else(|| Some(ast::Stmt::Empty(range)))
-            }
             SyntaxKind::Block => Some(ast::Stmt::Block(self.lower_block(node))),
             SyntaxKind::IfStatement => Some(ast::Stmt::If(self.lower_if_stmt(node))),
             SyntaxKind::WhileStatement | SyntaxKind::DoWhileStatement => {
