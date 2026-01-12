@@ -267,6 +267,10 @@ let mut registry = AnalyzerRegistry::new();
 registry.register(Box::new(nova_framework_lombok::LombokAnalyzer::new()));
 ```
 
+In the IDE, the default registry is constructed in `crates/nova-ide/src/extensions.rs` and executed
+via `FrameworkAnalyzerRegistryProvider` (which uses `crates/nova-ide/src/framework_db.rs` to adapt
+`nova_db::Database` to `nova_framework::Database`).
+
 ### Plugin integration constraint (Database adapter)
 
 `FrameworkAnalyzer` runs on `nova_framework::Database`, which requires HIR-backed structural queries

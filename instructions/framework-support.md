@@ -175,7 +175,8 @@ List<User> findByName(@Param("name") String name);
 
 1. **Create crate** - `nova-framework-<name>`
 2. **Implement trait** - `FrameworkAnalyzer`
-3. **Register analyzer** - In `nova-framework` registry
+3. **Register analyzer** - In the consumer's `AnalyzerRegistry` (for IDE support, see
+   `crates/nova-ide/src/extensions.rs` where the default registry is built)
 4. **Add tests** - Framework-specific test cases
 5. **Document** - Update framework docs
 
