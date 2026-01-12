@@ -2690,6 +2690,29 @@ class A { void m() throws <|> {} }
 }
 
 #[test]
+fn completion_type_position_in_catch_clause_includes_exception_subtypes() {
+    let (db, file, pos) = fixture(
+        r#"
+class Ex extends Exception {}
+class A {
+  void m() {
+    try {
+    } catch (<|> e) {
+    }
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"Ex"),
+        "expected completion list to contain Ex; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_in_catch_parameter_name_does_not_trigger_type_position_completion() {
     let (db, file, pos) = fixture(
         r#"
