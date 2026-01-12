@@ -1,8 +1,8 @@
 use httpmock::prelude::*;
 use nova_ai::{
-    AiClient, CloudMultiTokenCompletionProvider, CompletionContextBuilder,
-    MultiTokenCompletionContext, MultiTokenCompletionProvider, MultiTokenCompletionRequest,
-    MultiTokenInsertTextFormat, PrivacyMode,
+    AiClient, AiError, AiStream, ChatRequest, CloudMultiTokenCompletionProvider,
+    CompletionContextBuilder, LlmClient, MultiTokenCompletionContext, MultiTokenCompletionProvider,
+    MultiTokenCompletionRequest, MultiTokenInsertTextFormat, PrivacyMode, RedactionConfig,
 };
 use nova_config::{AiConfig, AiProviderKind};
 use serde_json::json;
@@ -140,4 +140,92 @@ async fn invalid_json_gracefully_degrades_to_empty() {
         .expect("provider call succeeds");
     mock.assert();
     assert!(out.is_empty());
+}
+
+#[derive(Default)]
+struct CapturingLlm {
+    prompt: std::sync::Mutex<Option<String>>,
+}
+
+#[async_trait::async_trait]
+impl LlmClient for CapturingLlm {
+    async fn chat(
+        &self,
+        request: ChatRequest,
+        _cancel: CancellationToken,
+    ) -> Result<String, AiError> {
+        let content = request
+            .messages
+            .first()
+            .map(|msg| msg.content.clone())
+            .unwrap_or_default();
+        *self.prompt.lock().expect("prompt mutex") = Some(content);
+
+        Ok(r#"{"completions":[{"label":"x","insert_text":"y","format":"plain","additional_edits":[],"confidence":0.5}]}"#.to_string())
+    }
+
+    async fn chat_stream(
+        &self,
+        _request: ChatRequest,
+        _cancel: CancellationToken,
+    ) -> Result<AiStream, AiError> {
+        Err(AiError::UnexpectedResponse(
+            "streaming not supported in test".into(),
+        ))
+    }
+
+    async fn list_models(&self, _cancel: CancellationToken) -> Result<Vec<String>, AiError> {
+        Ok(Vec::new())
+    }
+}
+
+#[tokio::test]
+async fn anonymization_respects_comment_redaction_flag() {
+    let llm = Arc::new(CapturingLlm::default());
+
+    let provider =
+        CloudMultiTokenCompletionProvider::new(llm.clone()).with_privacy_mode(PrivacyMode {
+            anonymize_identifiers: true,
+            include_file_paths: false,
+            redaction: RedactionConfig {
+                redact_string_literals: false,
+                redact_numeric_literals: false,
+                redact_comments: false,
+            },
+        });
+
+    let ctx = MultiTokenCompletionContext {
+        receiver_type: Some("Stream<Person>".into()),
+        expected_type: Some("List<String>".into()),
+        surrounding_code: "// KEEP_ME\npeople.stream().".into(),
+        available_methods: vec!["filter".into(), "map".into(), "collect".into()],
+        importable_paths: vec![],
+    };
+
+    let prompt = CompletionContextBuilder::new(10_000).build_completion_prompt(&ctx, 1);
+    let out = provider
+        .complete_multi_token(MultiTokenCompletionRequest {
+            prompt,
+            max_items: 1,
+            timeout: Duration::from_secs(1),
+            cancel: CancellationToken::new(),
+        })
+        .await
+        .expect("provider call succeeds");
+    assert_eq!(out.len(), 1);
+
+    let captured = llm
+        .prompt
+        .lock()
+        .expect("prompt mutex")
+        .clone()
+        .expect("captured prompt");
+    assert!(
+        captured.contains("KEEP_ME"),
+        "expected comment content to be preserved when redact_comments=false\n{captured}"
+    );
+    assert!(
+        !captured.contains("// [REDACTED]"),
+        "expected comments not to be stripped when redact_comments=false\n{captured}"
+    );
 }

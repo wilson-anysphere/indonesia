@@ -138,13 +138,13 @@ fn sanitize_prompt(prompt: &str, privacy: &PrivacyMode) -> String {
     }
 
     if privacy.anonymize_identifiers {
-        out = anonymize_prompt_context(&out);
+        out = anonymize_prompt_context(&out, privacy.redaction.redact_comments);
     }
 
     out
 }
 
-fn anonymize_prompt_context(prompt: &str) -> String {
+fn anonymize_prompt_context(prompt: &str, redact_comments: bool) -> String {
     // The completion prompt has a stable structure: only anonymize the values in the
     // semantic-context sections (types + surrounding code) so we don't corrupt the
     // instructions or the structured output schema below.
@@ -152,7 +152,7 @@ fn anonymize_prompt_context(prompt: &str) -> String {
         anonymize_identifiers: true,
         redact_sensitive_strings: false,
         redact_numeric_literals: false,
-        strip_or_redact_comments: true,
+        strip_or_redact_comments: redact_comments,
     });
 
     let mut out = String::with_capacity(prompt.len());
