@@ -296,13 +296,13 @@ list.stream()
 
 ```bash
 # DAP tests
-bash scripts/cargo_agent.sh test -p nova-dap --lib
+bash scripts/cargo_agent.sh test --locked -p nova-dap --lib
 
 # JDWP tests
-bash scripts/cargo_agent.sh test -p nova-jdwp --lib
+bash scripts/cargo_agent.sh test --locked -p nova-jdwp --lib
 
 # Stream debug tests
-bash scripts/cargo_agent.sh test -p nova-stream-debug --lib
+bash scripts/cargo_agent.sh test --locked -p nova-stream-debug --lib
 ```
 
 ### Integration Testing

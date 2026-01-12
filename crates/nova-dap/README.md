@@ -44,7 +44,7 @@ To run from source without building the binary path explicitly, you can also use
 
 ```bash
 # From the repo root:
-bash scripts/cargo_agent.sh run -p nova-dap -- --listen 127.0.0.1:4711
+bash scripts/cargo_agent.sh run --locked -p nova-dap -- --listen 127.0.0.1:4711
 ```
 
 Note: `--listen` expects a full `host:port` socket address (e.g. `127.0.0.1:0`,
@@ -106,7 +106,7 @@ resume automatically once `launch` completes.)
 From the repo root:
 
 ```bash
-bash scripts/cargo_agent.sh build -p nova-dap
+bash scripts/cargo_agent.sh build --locked -p nova-dap
 ```
 
 The adapter binary will be at:
@@ -359,5 +359,5 @@ green even when the feature is enabled.
 Run it locally with:
 
 ```bash
-bash scripts/cargo_agent.sh test -p nova-dap --features real-jvm-tests --test tests suite::real_jvm -- --nocapture
+bash scripts/cargo_agent.sh test --locked -p nova-dap --features real-jvm-tests --test tests suite::real_jvm -- --nocapture
 ```
