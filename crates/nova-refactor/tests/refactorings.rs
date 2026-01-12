@@ -3120,7 +3120,7 @@ fn inline_variable_in_switch_case_with_declaration_on_own_line_deletes_indent_cl
         break;
     }
   }
-}
+ }
 "#;
 
     let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
@@ -3146,7 +3146,7 @@ fn inline_variable_in_switch_case_with_declaration_on_own_line_deletes_indent_cl
         break;
     }
   }
-}
+ }
 "#;
     assert_eq!(after, expected);
 }
@@ -3684,6 +3684,59 @@ fn rename_local_variable_inside_array_creation_expression() {
     assert!(
         !after.contains("new int[foo]"),
         "expected old name to be gone: {after}"
+    );
+}
+
+#[test]
+fn rename_outer_local_does_not_touch_names_inside_switch_expression_yield_block() {
+    // The Java switch expression body may contain blocks and declarations that introduce bindings
+    // we don't currently model in the lightweight AST / stable HIR. We must not accidentally treat
+    // references inside those blocks as referring to the outer scope.
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  int m(int x) {
+    int foo = 0;
+    return switch (x) {
+      default -> {
+        int foo = 1;
+        yield foo;
+      }
+    };
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int foo = 0").unwrap() + "int ".len() + 1;
+    let symbol = db.symbol_at(&file, offset).expect("symbol at outer foo");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "bar".into(),
+        },
+    )
+    .unwrap();
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+
+    // Outer binding renamed.
+    assert!(
+        after.contains("int bar = 0;"),
+        "expected outer foo declaration to be renamed: {after}"
+    );
+    // Inner binding untouched.
+    assert!(
+        after.contains("int foo = 1;"),
+        "expected inner foo declaration to remain unchanged: {after}"
+    );
+    assert!(
+        after.contains("yield foo;"),
+        "expected inner foo usage to remain unchanged: {after}"
+    );
+    assert!(
+        !after.contains("yield bar;"),
+        "expected outer rename not to affect inner yield usage: {after}"
     );
 }
 

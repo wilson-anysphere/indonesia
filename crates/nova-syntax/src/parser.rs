@@ -1883,6 +1883,20 @@ impl<'a> Parser<'a> {
         // whether a closing brace belongs to this block.
         let mut saw_statement_less_indented_than_block = false;
 
+        // Indentation-based recovery in Java is necessarily heuristic, since indentation is not
+        // syntactically meaningful. We use it as a best-effort signal to recover from missing
+        // braces (common during edits), but we must avoid producing parse errors for valid yet
+        // misindented code.
+        //
+        // If the first token inside the block is *less indented* than the line that introduced the
+        // block, treat indentation as unreliable and disable the "outdented `}` belongs to an
+        // outer construct" recovery below.
+        let allow_outdent_recovery = {
+            let start = self.current_range().start;
+            let (indent, is_first) = self.line_indent_and_is_first_token(start);
+            !(is_first && indent < block_indent)
+        };
+
         while !self.at(SyntaxKind::RBrace)
             && !self.at(SyntaxKind::StringTemplateExprEnd)
             && !self.at(SyntaxKind::Eof)
@@ -1901,7 +1915,7 @@ impl<'a> Parser<'a> {
             self.force_progress(before, STMT_RECOVERY);
         }
 
-        if self.at(SyntaxKind::RBrace) {
+        if allow_outdent_recovery && self.at(SyntaxKind::RBrace) {
             let start = self.current_range().start;
             let (indent, is_first) = self.line_indent_and_is_first_token(start);
             if is_first && indent < block_indent && !saw_statement_less_indented_than_block {

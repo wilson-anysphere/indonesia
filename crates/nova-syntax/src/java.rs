@@ -2066,14 +2066,21 @@ impl Lowerer {
                 .map(|expr| self.lower_expr(&expr))
                 .unwrap_or_else(|| ast::Expr::Missing(self.spans.map_node(node))),
             // For expression kinds we don't handle precisely (including parse recovery via
-            // `SyntaxKind::Error`), preserve any nested expressions so name resolution and
-            // refactoring still see identifiers nested inside.
+            // `SyntaxKind::Error`), preserve nested expressions (e.g. array dimension
+            // expressions, string template interpolations) so name resolution and refactoring
+            // still see identifiers nested inside.
             _ => {
                 let range = self.spans.map_node(node);
                 let mut children = Vec::new();
-                // Collect "direct" descendant expressions: we descend through non-expression
-                // wrapper nodes (e.g. `DimExpr`) but stop once we hit another expression node.
-                // This preserves nested names without needing to model the full syntax kind yet.
+                // Collect "direct" descendant expressions: we descend through known expression
+                // wrapper nodes (e.g. `DimExpr`, `ArgumentList`, string template nodes) but stop
+                // once we hit another expression node.
+                //
+                // NOTE: We intentionally do *not* descend into arbitrary nodes (like blocks,
+                // class bodies, or switch blocks) because those may introduce new declarations/
+                // scopes we don't model in the lightweight AST yet. Capturing expressions under
+                // such nodes could lead to incorrect name resolution (and therefore incorrect
+                // rename results) by missing shadowing bindings.
                 let mut stack: Vec<SyntaxNode> = node.children().collect();
                 stack.reverse();
                 while let Some(child) = stack.pop() {
@@ -2081,9 +2088,11 @@ impl Lowerer {
                         children.push(self.lower_expr(&child));
                         continue;
                     }
-                    let mut nested: Vec<SyntaxNode> = child.children().collect();
-                    nested.reverse();
-                    stack.extend(nested);
+                    if is_invalid_expr_wrapper_kind(child.kind()) {
+                        let mut nested: Vec<SyntaxNode> = child.children().collect();
+                        nested.reverse();
+                        stack.extend(nested);
+                    }
                 }
                 if children.is_empty() {
                     ast::Expr::Missing(range)
@@ -2825,10 +2834,10 @@ fn is_expression_kind(kind: SyntaxKind) -> bool {
             | SyntaxKind::SuperExpression
             | SyntaxKind::ParenthesizedExpression
             | SyntaxKind::NewExpression
-            | SyntaxKind::ArrayCreationExpression
             | SyntaxKind::MethodCallExpression
             | SyntaxKind::FieldAccessExpression
             | SyntaxKind::ArrayAccessExpression
+            | SyntaxKind::ArrayCreationExpression
             | SyntaxKind::ClassLiteralExpression
             | SyntaxKind::MethodReferenceExpression
             | SyntaxKind::ConstructorReferenceExpression
@@ -2861,6 +2870,23 @@ fn is_type_name_token(kind: SyntaxKind) -> bool {
             | SyntaxKind::FloatKw
             | SyntaxKind::DoubleKw
             | SyntaxKind::VoidKw
+    )
+}
+
+fn is_invalid_expr_wrapper_kind(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::ArgumentList
+            | SyntaxKind::DimExprs
+            | SyntaxKind::DimExpr
+            | SyntaxKind::Dims
+            | SyntaxKind::Dim
+            | SyntaxKind::AnnotatedDim
+            | SyntaxKind::ArrayInitializer
+            | SyntaxKind::ArrayInitializerList
+            | SyntaxKind::VariableInitializer
+            | SyntaxKind::StringTemplate
+            | SyntaxKind::StringTemplateInterpolation
     )
 }
 
