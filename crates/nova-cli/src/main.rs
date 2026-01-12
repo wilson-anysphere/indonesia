@@ -1527,7 +1527,7 @@ fn workspace_symbols_distributed(args: &SymbolsArgs) -> Result<Vec<WorkspaceSymb
             let kind_candidates = [
                 sym_value.get("kind").cloned(),
                 // Default kind for remote symbols when the protocol does not include it.
-                Some(serde_json::json!("Class")),
+                Some(serde_json::json!("Unknown")),
             ];
 
             let mut parsed: Option<WorkspaceSymbol> = None;
