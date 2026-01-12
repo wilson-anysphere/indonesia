@@ -37,6 +37,10 @@ fn ensure_worker_binary() -> PathBuf {
         .arg("1")
         .arg("-p")
         .arg("nova-worker")
+        // Nested cargo builds run under the same sandbox RLIMIT_AS ceiling as the test harness.
+        // Keep the worker build single-threaded to avoid spurious OOM / thread-spawn failures.
+        .arg("-j")
+        .arg("1")
         .current_dir(&repo_root)
         .status()
         .expect("spawn scripts/cargo_agent.sh build -p nova-worker");
