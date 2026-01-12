@@ -3182,6 +3182,32 @@ impl<'a> Parser<'a> {
                         self.parse_new_expression_or_array_creation(checkpoint, allow_lambda);
                         continue;
                     }
+
+                    // String templates (preview): `processor."..."` / `processor."""..."""`.
+                    // The Java parser accepts a modern superset grammar; language-level validity
+                    // is handled by the feature gate pass.
+                    if matches!(
+                        self.nth(1),
+                        Some(SyntaxKind::StringLiteral | SyntaxKind::TextBlock)
+                    ) {
+                        self.builder.start_node_at(
+                            checkpoint,
+                            SyntaxKind::StringTemplateExpression.into(),
+                        );
+                        self.bump(); // .
+                        if self.at(SyntaxKind::StringLiteral) || self.at(SyntaxKind::TextBlock) {
+                            self.bump();
+                        } else {
+                            // Should be unreachable due to the lookahead above, but keep the
+                            // parser resilient for partial code.
+                            self.builder.start_node(SyntaxKind::Error.into());
+                            self.error_here("expected template after `.`");
+                            self.builder.finish_node();
+                        }
+                        self.builder.finish_node();
+                        continue;
+                    }
+
                     // Field access / method call receiver segment. Java also allows explicit type
                     // arguments on method invocations: `expr.<T>method()`.
                     let mut lookahead = skip_trivia(&self.tokens, 1);

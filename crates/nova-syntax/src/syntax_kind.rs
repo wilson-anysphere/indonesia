@@ -6,7 +6,7 @@ use serde_repr::{Deserialize_repr, Serialize_repr};
 /// Bump this whenever serialized syntax artifacts become incompatible with
 /// previously persisted data (e.g. `SyntaxKind` numeric values change, new token
 /// kinds are inserted, node kinds are renamed/reordered, etc.).
-pub const SYNTAX_SCHEMA_VERSION: u32 = 2;
+pub const SYNTAX_SCHEMA_VERSION: u32 = 3;
 
 /// Unified syntax kind for both tokens and AST nodes.
 ///
@@ -440,6 +440,8 @@ pub enum SyntaxKind {
     StatementFragment,
     ExpressionFragment,
     ClassMemberFragment,
+    // --- Java 21+ preview nodes ---
+    StringTemplateExpression,
     __Last,
 }
 

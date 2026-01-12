@@ -1532,6 +1532,74 @@ fn feature_gate_unnamed_variables_version_matrix() {
 }
 
 #[test]
+fn feature_gate_string_templates_version_matrix() {
+    let input = r#"class Foo { String m(String name) { return STR."hi \{name}"; } }"#;
+
+    let java20_no_preview = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 20,
+                preview: false,
+            },
+        },
+    );
+    assert_eq!(java20_no_preview.result.errors, Vec::new());
+    assert_eq!(
+        java20_no_preview
+            .diagnostics
+            .iter()
+            .map(|d| d.code.as_ref())
+            .collect::<Vec<_>>(),
+        vec!["JAVA_FEATURE_STRING_TEMPLATES"]
+    );
+
+    let java20_preview = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 20,
+                preview: true,
+            },
+        },
+    );
+    assert_eq!(java20_preview.result.errors, Vec::new());
+    assert_eq!(
+        java20_preview
+            .diagnostics
+            .iter()
+            .map(|d| d.code.as_ref())
+            .collect::<Vec<_>>(),
+        vec!["JAVA_FEATURE_STRING_TEMPLATES"]
+    );
+
+    let java21_no_preview = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel::JAVA_21,
+        },
+    );
+    assert_eq!(java21_no_preview.result.errors, Vec::new());
+    assert_eq!(
+        java21_no_preview
+            .diagnostics
+            .iter()
+            .map(|d| d.code.as_ref())
+            .collect::<Vec<_>>(),
+        vec!["JAVA_FEATURE_STRING_TEMPLATES"]
+    );
+
+    let java21_preview = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel::JAVA_21.with_preview(true),
+        },
+    );
+    assert_eq!(java21_preview.result.errors, Vec::new());
+    assert!(java21_preview.diagnostics.is_empty());
+}
+
+#[test]
 fn feature_gate_unnamed_variables_handles_unicode_escape_underscore() {
     let input = r#"class Foo { void m(Object o) { if (o instanceof String \u005F) { return; } } }"#;
 
@@ -3008,7 +3076,7 @@ fn syntax_kind_schema_fingerprint() -> u64 {
 
 // NOTE: If this fails, update the constant and *consider* bumping
 // `SYNTAX_SCHEMA_VERSION` in `syntax_kind.rs`.
-const EXPECTED_SYNTAX_KIND_SCHEMA_FINGERPRINT: u64 = 0x22d7_381f_5f64_849e;
+const EXPECTED_SYNTAX_KIND_SCHEMA_FINGERPRINT: u64 = 0x6771_a04e_a664_5b86;
 
 #[test]
 fn syntax_kind_schema_fingerprint_guardrail() {

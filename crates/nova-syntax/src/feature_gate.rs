@@ -19,6 +19,7 @@ pub(crate) fn feature_gate_diagnostics(
     gate_pattern_matching_instanceof(root, level, &mut diagnostics);
     gate_var_local_inference(root, level, &mut diagnostics);
     gate_unnamed_variables(root, level, &mut diagnostics);
+    gate_string_templates(root, level, &mut diagnostics);
 
     diagnostics
 }
@@ -389,6 +390,22 @@ fn gate_unnamed_variables(root: &SyntaxNode, level: JavaLanguageLevel, out: &mut
             continue;
         };
         out.push(feature_error(level, JavaFeature::UnnamedVariables, &tok));
+    }
+}
+
+fn gate_string_templates(root: &SyntaxNode, level: JavaLanguageLevel, out: &mut Vec<Diagnostic>) {
+    if level.is_enabled(JavaFeature::StringTemplates) {
+        return;
+    }
+
+    for node in root
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::StringTemplateExpression)
+    {
+        let Some(tok) = first_token(&node) else {
+            continue;
+        };
+        out.push(feature_error(level, JavaFeature::StringTemplates, &tok));
     }
 }
 

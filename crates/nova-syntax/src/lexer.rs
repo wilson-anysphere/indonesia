@@ -315,7 +315,11 @@ impl<'a> Lexer<'a> {
                         Some(next) => {
                             match next {
                                 // Single-character escapes.
-                                'b' | 't' | 'n' | 'f' | 'r' | '"' | '\'' | '\\' | 's' => {
+                                // `\{` is used by Java string templates (preview) to start an
+                                // embedded expression. Nova lexes a superset grammar, so accept
+                                // it here to avoid a lex error; feature gating handles language
+                                // level diagnostics.
+                                'b' | 't' | 'n' | 'f' | 'r' | '"' | '\'' | '\\' | 's' | '{' => {
                                     self.bump_char();
                                 }
                                 // Octal escape: \0 to \377
