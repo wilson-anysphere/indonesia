@@ -147,23 +147,6 @@ impl JpaAnalyzer {
         Some(entry)
     }
 
-    fn has_class(db: &dyn Database, project: ProjectId, binary_name: &str) -> bool {
-        if db.has_class_on_classpath(project, binary_name) {
-            return true;
-        }
-        // Be tolerant of callers (and DB implementations) mixing Java binary
-        // names (`a.b.C`) and internal names (`a/b/C`).
-        if binary_name.contains('.') {
-            let alt = binary_name.replace('.', "/");
-            return db.has_class_on_classpath(project, &alt);
-        }
-        if binary_name.contains('/') {
-            let alt = binary_name.replace('/', ".");
-            return db.has_class_on_classpath(project, &alt);
-        }
-        false
-    }
-
     fn file_local_analysis(text: &str) -> AnalysisResult {
         analyze_java_sources(&[text])
     }
@@ -177,6 +160,14 @@ impl Default for JpaAnalyzer {
 
 impl FrameworkAnalyzer for JpaAnalyzer {
     fn applies_to(&self, db: &dyn Database, project: ProjectId) -> bool {
+        // Classpath marker based detection (preferred, since it works even for
+        // transitive dependencies).
+        if db.has_class_on_classpath_prefix(project, "jakarta.persistence.")
+            || db.has_class_on_classpath_prefix(project, "javax.persistence.")
+        {
+            return true;
+        }
+
         // Direct JPA API coordinates.
         if db.has_dependency(project, "jakarta.persistence", "jakarta.persistence-api")
             || db.has_dependency(project, "javax.persistence", "javax.persistence-api")
@@ -191,16 +182,9 @@ impl FrameworkAnalyzer for JpaAnalyzer {
             ("org.springframework.boot", "spring-boot-starter-data-jpa"),
             ("org.springframework.data", "spring-data-jpa"),
         ];
-        if COMMON_COORDS
+        COMMON_COORDS
             .iter()
             .any(|(g, a)| db.has_dependency(project, g, a))
-        {
-            return true;
-        }
-
-        // Classpath marker types.
-        Self::has_class(db, project, "jakarta.persistence.Entity")
-            || Self::has_class(db, project, "javax.persistence.Entity")
     }
 
     fn analyze_file(&self, db: &dyn Database, file: FileId) -> Option<FrameworkData> {
@@ -318,3 +302,4 @@ struct CachedProjectAnalysis {
     file_to_source: HashMap<FileId, usize>,
     analysis: Arc<AnalysisResult>,
 }
+
