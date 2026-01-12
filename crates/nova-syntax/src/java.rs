@@ -4080,9 +4080,12 @@ mod tests {
             panic!("expected switch expression initializer");
         };
 
-        // The switch block should preserve the rule body block and its yield statement.
-        let ast::Stmt::Block(rule_body) = &switch_expr.body.statements[0] else {
-            panic!("expected switch rule body to lower to a block statement");
+        // The switch arm body should preserve the rule body block and its yield statement.
+        let [arm] = switch_expr.arms.as_slice() else {
+            panic!("expected switch expression to have exactly one arm");
+        };
+        let ast::SwitchArmBody::Block(rule_body) = &arm.body else {
+            panic!("expected switch arm body to lower to a block");
         };
 
         assert!(
@@ -4107,15 +4110,12 @@ mod tests {
             panic!("expected switch expression initializer");
         };
 
-        assert!(
-            switch_expr.body.statements.iter().any(|stmt| matches!(
-                stmt,
-                ast::Stmt::Yield(ast::YieldStmt {
-                    expr: Some(ast::Expr::IntLiteral(_)),
-                    ..
-                })
-            )),
-            "expected switch rule expression body to lower to a yield statement"
-        );
+        let [arm] = switch_expr.arms.as_slice() else {
+            panic!("expected switch expression to have exactly one arm");
+        };
+
+        let ast::SwitchArmBody::Expr(ast::Expr::IntLiteral(_)) = &arm.body else {
+            panic!("expected switch rule expression body to lower to an int literal expression");
+        };
     }
 }
