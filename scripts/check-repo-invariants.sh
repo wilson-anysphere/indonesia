@@ -69,6 +69,39 @@ if [[ ${#nova_dap_root_tests[@]} -ne 1 || "${nova_dap_root_tests[0]}" != "crates
   exit 1
 fi
 
+# Enforce the single-harness integration test layout for framework crates.
+#
+# These crates intentionally consolidate their integration tests into a single root harness for
+# compile-time/memory efficiency (each `tests/*.rs` file is its own integration test binary).
+framework_harness_checks=(
+  "crates/nova-framework-spring/tests:crates/nova-framework-spring/tests/harness.rs:move additional files into crates/nova-framework-spring/tests/suite/ and add them to crates/nova-framework-spring/tests/suite/mod.rs"
+  "crates/nova-framework-builtins/tests:crates/nova-framework-builtins/tests/builtins_tests.rs:move additional files into crates/nova-framework-builtins/tests/builtins/ and add them to crates/nova-framework-builtins/tests/builtins/mod.rs"
+  "crates/nova-framework-micronaut/tests:crates/nova-framework-micronaut/tests/integration_tests.rs:move additional files into crates/nova-framework-micronaut/tests/integration_tests/ and add them to crates/nova-framework-micronaut/tests/integration_tests/mod.rs"
+)
+
+for check in "${framework_harness_checks[@]}"; do
+  IFS=":" read -r test_dir expected_file suggestion <<<"${check}"
+
+  root_tests=()
+  while IFS= read -r file; do
+    root_tests+=("$file")
+  done < <(find "${test_dir}" -maxdepth 1 -name '*.rs' -print)
+
+  if [[ ${#root_tests[@]} -ne 1 || "${root_tests[0]}" != "${expected_file}" ]]; then
+    echo "repo invariant failed: integration tests in ${test_dir} must be consolidated into ${expected_file}" >&2
+    if [[ ${#root_tests[@]} -eq 0 ]]; then
+      echo "  found: <none>" >&2
+    else
+      echo "  found:" >&2
+      for file in "${root_tests[@]}"; do
+        echo "    - ${file}" >&2
+      done
+    fi
+    echo "  suggestion: ${suggestion}" >&2
+    exit 1
+  fi
+done
+
 # Enforce the `nova-types` integration test harness naming.
 #
 # CI and docs rely on the stable entrypoint:
