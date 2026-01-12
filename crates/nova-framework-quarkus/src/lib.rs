@@ -152,17 +152,16 @@ impl QuarkusAnalyzer {
             }
         }
 
-        let mut java_sources = Vec::with_capacity(java_files.len());
         let mut file_to_source_idx = HashMap::with_capacity(java_files.len());
+        let mut source_refs: Vec<&str> = Vec::with_capacity(java_files.len());
         for file in java_files.iter().copied() {
             let Some(text) = db.file_text(file) else {
                 continue;
             };
-            file_to_source_idx.insert(file, java_sources.len());
-            java_sources.push(text.to_string());
+            file_to_source_idx.insert(file, source_refs.len());
+            source_refs.push(text);
         }
-        let refs: Vec<&str> = java_sources.iter().map(|s| s.as_str()).collect();
-        let analysis = analyze_java_sources_with_spans(&refs);
+        let analysis = analyze_java_sources_with_spans(&source_refs);
 
         let entry = Arc::new(CachedProjectAnalysis {
             fingerprint,
