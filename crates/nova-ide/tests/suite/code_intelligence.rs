@@ -137,6 +137,11 @@ class A {
         .expect("expected ArrayList completion item");
 
     assert_eq!(
+        item.additional_text_edits, None,
+        "expected no additional_text_edits when ArrayList is covered by `import java.util.*;`"
+    );
+
+    assert_eq!(
         item.insert_text_format,
         Some(InsertTextFormat::SNIPPET),
         "expected ArrayList completion to use snippet insertion"
@@ -151,6 +156,35 @@ class A {
         "expected snippet insertion to start with `ArrayList(`; got {:?}",
         edit.new_text
     );
+}
+
+#[test]
+fn completion_new_expression_adds_import_edit_for_arraylist_without_imports() {
+    let (db, file, pos) = fixture("class A { void m(){ new Arr<|> } }");
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "ArrayList")
+        .expect("expected ArrayList completion item");
+
+    let edits = item
+        .additional_text_edits
+        .as_ref()
+        .expect("expected additional_text_edits for ArrayList completion");
+    assert!(
+        edits.iter()
+            .any(|e| e.new_text == "import java.util.ArrayList;\n"),
+        "expected import edit for java.util.ArrayList; got {edits:#?}"
+    );
+
+    let import_edit = edits
+        .iter()
+        .find(|e| e.new_text == "import java.util.ArrayList;\n")
+        .expect("expected import edit for java.util.ArrayList");
+
+    assert_eq!(import_edit.range.start, lsp_types::Position::new(0, 0));
+    assert_eq!(import_edit.range.end, lsp_types::Position::new(0, 0));
 }
 
 #[test]

@@ -750,6 +750,55 @@ fn parse_java_imports(text: &str) -> JavaImportInfo {
     out
 }
 
+fn java_type_needs_import(imports: &JavaImportInfo, ty: &str) -> bool {
+    let Some((pkg, _simple)) = ty.rsplit_once('.') else {
+        return false;
+    };
+    if pkg == "java.lang" {
+        return false;
+    }
+    if imports.explicit_types.iter().any(|existing| existing == ty) {
+        return false;
+    }
+    if imports.star_packages.iter().any(|pkg_import| pkg_import == pkg) {
+        return false;
+    }
+    true
+}
+
+fn java_import_insertion_offset(text: &str) -> usize {
+    let mut package_line_end: Option<usize> = None;
+    let mut last_import_line_end: Option<usize> = None;
+
+    let mut offset = 0usize;
+    for segment in text.split_inclusive('\n') {
+        let line_end = offset + segment.len();
+        let mut line = segment.strip_suffix('\n').unwrap_or(segment);
+        line = line.strip_suffix('\r').unwrap_or(line);
+        let trimmed = line.trim_start();
+
+        if package_line_end.is_none() && trimmed.starts_with("package ") && trimmed.contains(';') {
+            package_line_end = Some(line_end);
+        }
+        if trimmed.starts_with("import ") && trimmed.contains(';') {
+            last_import_line_end = Some(line_end);
+        }
+
+        offset = line_end;
+    }
+
+    last_import_line_end.or(package_line_end).unwrap_or(0)
+}
+
+fn java_import_text_edit(text: &str, text_index: &TextIndex<'_>, ty: &str) -> TextEdit {
+    let insert_offset = java_import_insertion_offset(text);
+    let pos = text_index.offset_to_position(insert_offset);
+    TextEdit {
+        range: Range::new(pos, pos),
+        new_text: format!("import {ty};\n"),
+    }
+}
+
 fn is_new_expression_type_completion_context(text: &str, prefix_start: usize) -> bool {
     let new_end = skip_whitespace_backwards(text, prefix_start);
     if new_end < 3 {
@@ -783,11 +832,10 @@ fn constructor_completion_item(label: String, detail: Option<String>) -> Complet
 }
 
 fn new_expression_type_completions(
-    db: &dyn Database,
-    file: FileId,
+    text: &str,
+    text_index: &TextIndex<'_>,
     prefix: &str,
 ) -> Vec<CompletionItem> {
-    let text = db.file_content(file);
     let analysis = analyze(text);
     let imports = parse_java_imports(text);
 
@@ -807,15 +855,15 @@ fn new_expression_type_completions(
     }
 
     // 2) Explicit imports.
-    for ty in imports.explicit_types {
-        let simple = ty.rsplit('.').next().unwrap_or(&ty).to_string();
+    for ty in &imports.explicit_types {
+        let simple = ty.rsplit('.').next().unwrap_or(ty).to_string();
         if seen_labels.insert(simple.clone()) {
-            items.push(constructor_completion_item(simple, Some(ty)));
+            items.push(constructor_completion_item(simple, Some(ty.clone())));
         }
     }
 
     // 3) JDK types from `java.lang.*` + `java.util.*` + any star-imported packages.
-    let mut packages = imports.star_packages;
+    let mut packages = imports.star_packages.clone();
     packages.push("java.lang".to_string());
     packages.push("java.util".to_string());
     packages.sort();
@@ -857,7 +905,11 @@ fn new_expression_type_completions(
                 continue;
             }
 
-            items.push(constructor_completion_item(simple, Some(name)));
+            let mut item = constructor_completion_item(simple, Some(name.clone()));
+            if java_type_needs_import(&imports, &name) {
+                item.additional_text_edits = Some(vec![java_import_text_edit(text, text_index, &name)]);
+            }
+            items.push(item);
             added_for_pkg += 1;
         }
     }
@@ -896,7 +948,7 @@ pub(crate) fn core_completions(
             &text_index,
             prefix_start,
             offset,
-            new_expression_type_completions(db, file, &prefix),
+            new_expression_type_completions(text, &text_index, &prefix),
         );
     }
 
@@ -1106,7 +1158,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
             &text_index,
             prefix_start,
             offset,
-            new_expression_type_completions(db, file, &prefix),
+            new_expression_type_completions(text, &text_index, &prefix),
         );
     }
 
