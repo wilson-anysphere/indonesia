@@ -14502,34 +14502,35 @@ fn receiver_is_value_receiver(analysis: &Analysis, receiver: &str, offset: usize
         return true;
     }
 
-    // Identifier (local vars / params / fields).
-    if analysis.vars.iter().any(|v| v.name == receiver) {
-        return true;
-    }
-    if analysis
-        .methods
-        .iter()
-        .flat_map(|m| m.params.iter())
-        .any(|p| p.name == receiver)
-    {
-        return true;
-    }
-    if analysis.fields.iter().any(|f| f.name == receiver) {
-        return true;
-    }
-
-    // Params in the enclosing method.
+    // Identifier (locals / params / fields).
+    //
+    // Prefer scope-aware lookup so we don't accidentally treat `Map.En` as a value receiver just
+    // because another method has a parameter named `Map`.
     if let Some(method) = analysis
         .methods
         .iter()
         .find(|m| span_contains(m.body_span, offset))
     {
+        if analysis.vars.iter().any(|v| {
+            v.name == receiver
+                && v.name_span.start <= offset
+                && span_contains(method.body_span, v.name_span.start)
+        }) {
+            return true;
+        }
         if method.params.iter().any(|p| p.name == receiver) {
             return true;
         }
+    } else if analysis
+        .vars
+        .iter()
+        .any(|v| v.name == receiver && v.name_span.start <= offset)
+    {
+        // Best-effort fallback when we can't determine the enclosing method (incomplete syntax).
+        return true;
     }
 
-    false
+    analysis.fields.iter().any(|f| f.name == receiver)
 }
 
 fn infer_receiver(
@@ -14568,26 +14569,65 @@ fn infer_receiver(
         return (ty, CallKind::Instance);
     }
 
-    if let Some(var) = analysis.vars.iter().find(|v| v.name == receiver) {
-        return (
-            parse_source_type_in_context(types, file_ctx, &var.ty),
-            CallKind::Instance,
-        );
-    }
-
-    // Prefer parameters from the enclosing method (scope-aware) so we resolve types using the
-    // current file's package/import context.
+    // Prefer locals/params from the enclosing method to avoid cross-method name collisions.
+    //
+    // When we can identify the enclosing method, only consider names that are actually in scope
+    // (locals + params in that method, plus fields). This avoids mis-resolving `Map.En` as an
+    // instance receiver just because some other method has a parameter named `Map`.
     if let Some(method) = analysis
         .methods
         .iter()
         .find(|m| span_contains(m.body_span, offset))
     {
+        if let Some(var) = analysis
+            .vars
+            .iter()
+            .filter(|v| {
+                v.name == receiver
+                    && v.name_span.start <= offset
+                    && span_contains(method.body_span, v.name_span.start)
+            })
+            .max_by_key(|v| v.name_span.start)
+        {
+            return (
+                parse_source_type_in_context(types, file_ctx, &var.ty),
+                CallKind::Instance,
+            );
+        }
+
         if let Some(param) = method.params.iter().find(|p| p.name == receiver) {
             return (
                 parse_source_type_in_context(types, file_ctx, &param.ty),
                 CallKind::Instance,
             );
         }
+
+        if let Some(field) = analysis.fields.iter().find(|f| f.name == receiver) {
+            return (
+                parse_source_type_in_context(types, file_ctx, &field.ty),
+                CallKind::Instance,
+            );
+        }
+
+        // Allow `Foo.bar()` / `Foo.<cursor>` to treat `Foo` as a type reference.
+        return (
+            parse_source_type_in_context(types, file_ctx, receiver),
+            CallKind::Static,
+        );
+    }
+
+    // Best-effort fallback: we couldn't determine the enclosing method, so scan locals declared
+    // before this point.
+    if let Some(var) = analysis
+        .vars
+        .iter()
+        .filter(|v| v.name == receiver && v.name_span.start <= offset)
+        .max_by_key(|v| v.name_span.start)
+    {
+        return (
+            parse_source_type_in_context(types, file_ctx, &var.ty),
+            CallKind::Instance,
+        );
     }
 
     if let Some(field) = analysis.fields.iter().find(|f| f.name == receiver) {
@@ -14598,7 +14638,8 @@ fn infer_receiver(
     }
 
     // Best-effort fallback: if we can't find an enclosing method (e.g. cursor is outside a method
-    // body), fall back to any parameter in the file.
+    // body), scan all method parameters. Still use the file context so unqualified types in
+    // `package ...;` files resolve.
     if let Some(param) = analysis
         .methods
         .iter()
