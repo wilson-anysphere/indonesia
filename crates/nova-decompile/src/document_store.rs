@@ -1,4 +1,7 @@
+use crate::{SymbolKey, SymbolRange};
 use nova_cache::{atomic_write, deps_cache_dir, CacheConfig, CacheError};
+use nova_core::{Position, Range};
+use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
@@ -51,6 +54,26 @@ impl DecompiledDocumentStore {
         atomic_write(&path, text.as_bytes())
     }
 
+    /// Persist decompiled source text *and* decompiler symbol mappings.
+    ///
+    /// The decompiled text is written to `<binary-name>.java` (same as [`Self::store_text`]).
+    /// Mappings are written to a JSON sidecar file next to it:
+    /// `<binary-name>.meta.json`.
+    pub fn store_document(
+        &self,
+        content_hash: &str,
+        binary_name: &str,
+        text: &str,
+        mappings: &[SymbolRange],
+    ) -> Result<(), CacheError> {
+        self.store_text(content_hash, binary_name, text)?;
+
+        let meta_path = self.meta_path_for(content_hash, binary_name)?;
+        let stored = StoredDecompiledMappings::from_mappings(mappings);
+        let bytes = serde_json::to_vec(&stored)?;
+        atomic_write(&meta_path, &bytes)
+    }
+
     /// Load previously-persisted decompiled source text for a canonical `(content_hash,
     /// binary_name)` identity.
     ///
@@ -63,33 +86,9 @@ impl DecompiledDocumentStore {
     ) -> Result<Option<String>, CacheError> {
         let path = self.path_for(content_hash, binary_name)?;
 
-        // Avoid following symlinks out of the cache directory.
-        let meta = match std::fs::symlink_metadata(&path) {
-            Ok(meta) => meta,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(err) => return Err(err.into()),
+        let Some(bytes) = read_cache_file_bytes(&path)? else {
+            return Ok(None);
         };
-        if meta.file_type().is_symlink() || !meta.is_file() {
-            let _ = std::fs::remove_file(&path);
-            return Ok(None);
-        }
-
-        // Cap reads to avoid pathological allocations if the cache is corrupted.
-        const MAX_DOC_BYTES: u64 = nova_cache::BINCODE_PAYLOAD_LIMIT_BYTES as u64;
-        if meta.len() > MAX_DOC_BYTES {
-            let _ = std::fs::remove_file(&path);
-            return Ok(None);
-        }
-
-        let bytes = match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(err) => return Err(err.into()),
-        };
-        if bytes.len() as u64 > MAX_DOC_BYTES {
-            let _ = std::fs::remove_file(&path);
-            return Ok(None);
-        }
 
         match String::from_utf8(bytes) {
             Ok(text) => Ok(Some(text)),
@@ -98,6 +97,37 @@ impl DecompiledDocumentStore {
                 Ok(None)
             }
         }
+    }
+
+    /// Load previously-persisted decompiled source text and symbol mappings for a canonical
+    /// `(content_hash, binary_name)` identity.
+    ///
+    /// This returns `Ok(None)` when:
+    /// - the stored text file is missing or invalid
+    /// - the mapping sidecar file is missing or invalid
+    pub fn load_document(
+        &self,
+        content_hash: &str,
+        binary_name: &str,
+    ) -> Result<Option<(String, Vec<SymbolRange>)>, CacheError> {
+        let Some(text) = self.load_text(content_hash, binary_name)? else {
+            return Ok(None);
+        };
+
+        let meta_path = self.meta_path_for(content_hash, binary_name)?;
+        let Some(meta_bytes) = read_cache_file_bytes(&meta_path)? else {
+            return Ok(None);
+        };
+
+        let stored: StoredDecompiledMappings = match serde_json::from_slice(&meta_bytes) {
+            Ok(value) => value,
+            Err(_) => {
+                let _ = std::fs::remove_file(&meta_path);
+                return Ok(None);
+            }
+        };
+
+        Ok(Some((text, stored.into_mappings())))
     }
 
     /// Returns whether the decompiled document exists on disk.
@@ -131,6 +161,91 @@ impl DecompiledDocumentStore {
             .root
             .join(content_hash)
             .join(format!("{binary_name}.java")))
+    }
+
+    fn meta_path_for(&self, content_hash: &str, binary_name: &str) -> Result<PathBuf, CacheError> {
+        validate_content_hash(content_hash)?;
+        validate_binary_name(binary_name)?;
+        Ok(self
+            .root
+            .join(content_hash)
+            .join(format!("{binary_name}.meta.json")))
+    }
+}
+
+fn read_cache_file_bytes(path: &Path) -> Result<Option<Vec<u8>>, CacheError> {
+    // Avoid following symlinks out of the cache directory.
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+    if meta.file_type().is_symlink() || !meta.is_file() {
+        let _ = std::fs::remove_file(path);
+        return Ok(None);
+    }
+
+    // Cap reads to avoid pathological allocations if the cache is corrupted.
+    const MAX_DOC_BYTES: u64 = nova_cache::BINCODE_PAYLOAD_LIMIT_BYTES as u64;
+    if meta.len() > MAX_DOC_BYTES {
+        let _ = std::fs::remove_file(path);
+        return Ok(None);
+    }
+
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+    if bytes.len() as u64 > MAX_DOC_BYTES {
+        let _ = std::fs::remove_file(path);
+        return Ok(None);
+    }
+
+    Ok(Some(bytes))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredDecompiledMappings {
+    mappings: Vec<StoredSymbolRange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredSymbolRange {
+    symbol: SymbolKey,
+    start_line: u32,
+    start_character: u32,
+    end_line: u32,
+    end_character: u32,
+}
+
+impl StoredDecompiledMappings {
+    fn from_mappings(mappings: &[SymbolRange]) -> Self {
+        Self {
+            mappings: mappings
+                .iter()
+                .map(|m| StoredSymbolRange {
+                    symbol: m.symbol.clone(),
+                    start_line: m.range.start.line,
+                    start_character: m.range.start.character,
+                    end_line: m.range.end.line,
+                    end_character: m.range.end.character,
+                })
+                .collect(),
+        }
+    }
+
+    fn into_mappings(self) -> Vec<SymbolRange> {
+        self.mappings
+            .into_iter()
+            .map(|m| SymbolRange {
+                symbol: m.symbol,
+                range: Range::new(
+                    Position::new(m.start_line, m.start_character),
+                    Position::new(m.end_line, m.end_character),
+                ),
+            })
+            .collect()
     }
 }
 
@@ -171,4 +286,3 @@ fn validate_binary_name(binary_name: &str) -> Result<(), CacheError> {
         _ => Err(io::Error::other("invalid decompiled binary name").into()),
     }
 }
-

@@ -3624,6 +3624,7 @@ dependencies = [
  "nova-core",
  "nova-vfs",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror 1.0.69",
 ]
