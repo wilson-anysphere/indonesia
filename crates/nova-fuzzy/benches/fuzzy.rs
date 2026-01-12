@@ -19,7 +19,7 @@ fn configure_rayon() {
 
 fn criterion_config() -> Criterion {
     configure_rayon();
-    Criterion::default()
+    Criterion::default().configure_from_args()
 }
 
 fn lcg(seed: &mut u64) -> u64 {
