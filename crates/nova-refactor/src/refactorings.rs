@@ -2118,7 +2118,24 @@ pub fn inline_variable(
 
     let init_has_side_effects = has_side_effects(init_expr.syntax());
     let init_is_order_sensitive = initializer_is_order_sensitive(init_expr.syntax());
-    let init_replacement = parenthesize_initializer(init_text, &init_expr);
+    let declared_ty_text = render_java_type(decl.ty.syntax());
+    let init_ty_text = best_type_at_range_display(db, &def.file, text, init_range);
+    let init_ty_syntax = infer_expr_type_no_fallback(&init_expr);
+
+    let mut init_replacement = parenthesize_initializer(init_text, &init_expr);
+    let init_ty_for_cast = init_ty_text.as_deref().or(init_ty_syntax.as_deref());
+    if declared_ty_text != "var"
+        && !init_ty_for_cast.is_some_and(|init_ty| {
+            inline_variable_types_match(&declared_ty_text, init_ty)
+        })
+    {
+        init_replacement = force_expression_to_declared_type(
+            &decl.ty,
+            &init_expr,
+            init_ty_for_cast,
+            init_replacement,
+        );
+    }
 
     let mut all_refs = db.find_references(params.symbol);
     if all_refs.is_empty() && params.inline_all {
@@ -2753,6 +2770,263 @@ pub fn inline_variable(
     let mut edit = WorkspaceEdit::new(edits);
     edit.normalize()?;
     Ok(edit)
+}
+
+fn inline_variable_types_match(declared: &str, initializer: &str) -> bool {
+    let declared = declared.trim();
+    let initializer = initializer.trim();
+    if declared == initializer {
+        return true;
+    }
+
+    // Best-effort normalization: treat `Foo` and `com.example.Foo` as equivalent when the simple
+    // name matches. This keeps us from inserting redundant casts when typeck returns qualified
+    // names.
+    if !declared.contains('.') && initializer.ends_with(&format!(".{declared}")) {
+        return true;
+    }
+    if !initializer.contains('.') && declared.ends_with(&format!(".{initializer}")) {
+        return true;
+    }
+
+    false
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BoxedPrimitiveInfo {
+    primitive: &'static str,
+}
+
+fn boxed_primitive_info(ty: &str) -> Option<BoxedPrimitiveInfo> {
+    let simple = ty.rsplit('.').next().unwrap_or(ty);
+    match simple {
+        "Boolean" => Some(BoxedPrimitiveInfo {
+            primitive: "boolean",
+        }),
+        "Byte" => Some(BoxedPrimitiveInfo { primitive: "byte" }),
+        "Short" => Some(BoxedPrimitiveInfo {
+            primitive: "short",
+        }),
+        "Integer" => Some(BoxedPrimitiveInfo { primitive: "int" }),
+        "Long" => Some(BoxedPrimitiveInfo { primitive: "long" }),
+        "Character" => Some(BoxedPrimitiveInfo { primitive: "char" }),
+        "Float" => Some(BoxedPrimitiveInfo {
+            primitive: "float",
+        }),
+        "Double" => Some(BoxedPrimitiveInfo {
+            primitive: "double",
+        }),
+        _ => None,
+    }
+}
+
+fn is_primitive_type(ty: &str) -> bool {
+    matches!(
+        ty,
+        "boolean" | "byte" | "short" | "int" | "long" | "char" | "float" | "double"
+    )
+}
+
+fn infer_expr_type_no_fallback(expr: &ast::Expression) -> Option<String> {
+    match expr {
+        ast::Expression::LiteralExpression(lit) => infer_type_from_literal_no_fallback(lit),
+        ast::Expression::NewExpression(new_expr) => infer_type_from_new_expression(new_expr),
+        ast::Expression::ArrayCreationExpression(array_expr) => {
+            let base_ty = array_expr.ty()?;
+            let base = render_java_type(base_ty.syntax());
+
+            let mut dims = 0usize;
+            if let Some(dim_exprs) = array_expr.dim_exprs() {
+                dims += dim_exprs.dims().count();
+            }
+            if let Some(dims_node) = array_expr.dims() {
+                dims += dims_node.dims().count();
+            }
+
+            Some(if dims == 0 {
+                base
+            } else {
+                format!("{base}{}", "[]".repeat(dims))
+            })
+        }
+        ast::Expression::CastExpression(cast) => {
+            let ty = cast.ty()?;
+            let rendered = render_java_type(ty.syntax());
+            // Java intersection types (`A & B`) are not denotable in variable declarations, and are
+            // too context-sensitive for our simple inference.
+            if rendered.contains('&') {
+                None
+            } else {
+                Some(rendered)
+            }
+        }
+        ast::Expression::ConditionalExpression(cond) => {
+            let then_branch = cond.then_branch()?;
+            let else_branch = cond.else_branch()?;
+
+            let then_ty = infer_expr_type_no_fallback(&then_branch)?;
+            let else_ty = infer_expr_type_no_fallback(&else_branch)?;
+            (then_ty == else_ty).then_some(then_ty)
+        }
+        ast::Expression::ParenthesizedExpression(par) => {
+            par.expression()
+                .and_then(|inner| infer_expr_type_no_fallback(&inner))
+        }
+        ast::Expression::InstanceofExpression(_) => Some("boolean".to_string()),
+        ast::Expression::UnaryExpression(unary) => infer_type_from_unary_expr_no_fallback(unary),
+        ast::Expression::BinaryExpression(binary) => infer_type_from_binary_expr_no_fallback(binary),
+        ast::Expression::MethodCallExpression(call) => infer_type_from_method_call(call),
+        // Without type-checker info these are hard to infer reliably.
+        ast::Expression::ThisExpression(_)
+        | ast::Expression::SuperExpression(_)
+        | ast::Expression::NameExpression(_)
+        | ast::Expression::ArrayInitializer(_) => None,
+        _ => None,
+    }
+}
+
+fn infer_type_from_literal_no_fallback(lit: &ast::LiteralExpression) -> Option<String> {
+    let tok = lit
+        .syntax()
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .find(|tok| !tok.kind().is_trivia() && tok.kind() != SyntaxKind::Eof)?;
+
+    match tok.kind() {
+        SyntaxKind::IntLiteral => Some("int".to_string()),
+        SyntaxKind::LongLiteral => Some("long".to_string()),
+        SyntaxKind::FloatLiteral => Some("float".to_string()),
+        SyntaxKind::DoubleLiteral => Some("double".to_string()),
+        SyntaxKind::CharLiteral => Some("char".to_string()),
+        SyntaxKind::StringLiteral | SyntaxKind::TextBlock => Some("String".to_string()),
+        SyntaxKind::TrueKw | SyntaxKind::FalseKw => Some("boolean".to_string()),
+        // The `null` literal has the special null type; treat it as unknown so we preserve the
+        // declared type via casting when inlining.
+        SyntaxKind::NullKw => None,
+        _ => None,
+    }
+}
+
+fn infer_type_from_unary_expr_no_fallback(unary: &ast::UnaryExpression) -> Option<String> {
+    let op = first_non_trivia_child_token_kind(unary.syntax())?;
+    match op {
+        SyntaxKind::Bang => Some("boolean".to_string()),
+        SyntaxKind::Plus | SyntaxKind::Minus => {
+            let operand = unary.operand()?;
+            let operand_ty = infer_expr_type_no_fallback(&operand)?;
+            let rank = numeric_rank(&operand_ty)?;
+            Some(numeric_type_for_rank(rank).to_string())
+        }
+        SyntaxKind::Tilde => {
+            let operand = unary.operand()?;
+            let operand_ty = infer_expr_type_no_fallback(&operand)?;
+            let rank = integral_rank(&operand_ty)?;
+            Some(integral_type_for_rank(rank).to_string())
+        }
+        // We don't know the operand type without typeck, and returning an incorrect primitive type
+        // here could hide type mismatches. Treat as unknown.
+        SyntaxKind::PlusPlus | SyntaxKind::MinusMinus => None,
+        _ => None,
+    }
+}
+
+fn infer_type_from_binary_expr_no_fallback(binary: &ast::BinaryExpression) -> Option<String> {
+    let op = first_non_trivia_child_token_kind(binary.syntax())?;
+    match op {
+        SyntaxKind::Less
+        | SyntaxKind::LessEq
+        | SyntaxKind::Greater
+        | SyntaxKind::GreaterEq
+        | SyntaxKind::EqEq
+        | SyntaxKind::BangEq
+        | SyntaxKind::AmpAmp
+        | SyntaxKind::PipePipe => return Some("boolean".to_string()),
+        _ => {}
+    }
+
+    let lhs_ty = binary.lhs().and_then(|lhs| infer_expr_type_no_fallback(&lhs));
+    let rhs_ty = binary.rhs().and_then(|rhs| infer_expr_type_no_fallback(&rhs));
+
+    match op {
+        SyntaxKind::Plus => {
+            // Best-effort: infer string concatenation when either side is known `String`.
+            if lhs_ty.as_deref() == Some("String") || rhs_ty.as_deref() == Some("String") {
+                return Some("String".to_string());
+            }
+
+            let (lhs_ty, rhs_ty) = (lhs_ty?, rhs_ty?);
+            let (lhs_rank, rhs_rank) = (numeric_rank(&lhs_ty)?, numeric_rank(&rhs_ty)?);
+            Some(numeric_type_for_rank(lhs_rank.max(rhs_rank)).to_string())
+        }
+        SyntaxKind::Minus | SyntaxKind::Star | SyntaxKind::Slash | SyntaxKind::Percent => {
+            let (lhs_ty, rhs_ty) = (lhs_ty?, rhs_ty?);
+            let (lhs_rank, rhs_rank) = (numeric_rank(&lhs_ty)?, numeric_rank(&rhs_ty)?);
+            Some(numeric_type_for_rank(lhs_rank.max(rhs_rank)).to_string())
+        }
+        SyntaxKind::LeftShift | SyntaxKind::RightShift | SyntaxKind::UnsignedRightShift => {
+            let lhs_ty = lhs_ty?;
+            let rank = integral_rank(&lhs_ty)?;
+            Some(integral_type_for_rank(rank).to_string())
+        }
+        SyntaxKind::Amp | SyntaxKind::Pipe | SyntaxKind::Caret => {
+            if lhs_ty.as_deref() == Some("boolean") && rhs_ty.as_deref() == Some("boolean") {
+                return Some("boolean".to_string());
+            }
+
+            let (lhs_ty, rhs_ty) = (lhs_ty?, rhs_ty?);
+            let (lhs_rank, rhs_rank) = (integral_rank(&lhs_ty)?, integral_rank(&rhs_ty)?);
+            Some(integral_type_for_rank(lhs_rank.max(rhs_rank)).to_string())
+        }
+        _ => None,
+    }
+}
+
+fn force_expression_to_declared_type(
+    declared_ty: &ast::Type,
+    initializer: &ast::Expression,
+    initializer_ty: Option<&str>,
+    init_replacement: String,
+) -> String {
+    let declared_ty_text = render_java_type(declared_ty.syntax());
+    if declared_ty_text == "var" {
+        // `var` already uses the initializer's static type.
+        return init_replacement;
+    }
+
+    // For `Type.valueOf(...)` we need a bare type name (annotations on the type are not legal
+    // qualifiers in an expression). Use the `NamedType` subtree when available.
+    let declared_qualifier = declared_ty
+        .named()
+        .map(|named| render_java_type(named.syntax()))
+        .unwrap_or_else(|| declared_ty_text.clone());
+
+    // Prefer boxing wrappers when the declared type is a boxed primitive and the initializer is a
+    // primitive expression (so inlining doesn't change overload resolution via boxing/unboxing).
+    //
+    // When typeck is not available, fall back to the parser-only (non-contextual) inference as a
+    // best effort.
+    let initializer_ty = initializer_ty
+        .map(str::trim)
+        .filter(|ty| !ty.is_empty())
+        .map(|ty| ty.to_string())
+        .or_else(|| infer_expr_type_no_fallback(initializer))
+        .unwrap_or_else(|| "Object".to_string());
+
+    if !declared_ty_text.contains('[') && !declared_ty_text.contains('<') {
+        if let Some(info) = boxed_primitive_info(&declared_qualifier) {
+            if is_primitive_type(&initializer_ty) {
+                let arg = if matches!(info.primitive, "byte" | "short" | "char") {
+                    format!("(({}) {init_replacement})", info.primitive)
+                } else {
+                    init_replacement
+                };
+                return format!("{declared_qualifier}.valueOf({arg})");
+            }
+        }
+    }
+
+    // Default: cast to preserve the variable's declared compile-time type.
+    format!("(({declared_ty_text}) {init_replacement})")
 }
 
 fn ensure_inline_variable_dependencies_not_shadowed(
@@ -5582,6 +5856,7 @@ struct LocalVarDeclInfo {
     statement_range: TextRange,
     declarator_delete_range: Option<TextRange>,
     other_initializers_have_side_effects: bool,
+    ty: ast::Type,
     initializer: ast::Expression,
 }
 
@@ -5629,6 +5904,7 @@ fn find_local_variable_declaration(
         let target_idx = target_idx?;
         let decl = declarators.get(target_idx)?.clone();
         let initializer = decl.initializer()?;
+        let ty = stmt.ty()?;
         let statement_range = syntax_range(stmt.syntax());
 
         let declarator_delete_range = if declarators.len() <= 1 {
@@ -5723,6 +5999,7 @@ fn find_local_variable_declaration(
             statement_range,
             declarator_delete_range,
             other_initializers_have_side_effects,
+            ty,
             initializer,
         })
     }

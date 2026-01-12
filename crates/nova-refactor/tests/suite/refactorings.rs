@@ -6614,6 +6614,129 @@ fn inline_variable_all_usages_replaces_and_deletes_declaration() {
 }
 
 #[test]
+fn inline_variable_preserves_declared_reference_type_for_overload_resolution() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void f(Object o) {}
+  void f(String s) {}
+
+  void m() {
+    Object x = "hi";
+    f(x);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("Object x").unwrap() + "Object ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at x");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  void f(Object o) {}
+  void f(String s) {}
+
+  void m() {
+    f(((Object) "hi"));
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn inline_variable_preserves_declared_numeric_type_for_overload_resolution() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void f(long v) {}
+  void f(int v) {}
+
+  void m() {
+    long x = 1;
+    f(x);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("long x").unwrap() + "long ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at x");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  void f(long v) {}
+  void f(int v) {}
+
+  void m() {
+    f(((long) 1));
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn inline_variable_preserves_boxing_for_overload_resolution() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void f(Integer v) {}
+  void f(int v) {}
+
+  void m() {
+    Integer x = 1;
+    f(x);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("Integer x").unwrap() + "Integer ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at x");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  void f(Integer v) {}
+  void f(int v) {}
+
+  void m() {
+    f(Integer.valueOf(1));
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn inline_variable_preserves_crlf_newlines_and_removes_decl_cleanly() {
     let file = FileId::new("Test.java");
     let src_lf = r#"class Test {
