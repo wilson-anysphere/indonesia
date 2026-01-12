@@ -934,6 +934,84 @@ class C {
 }
 
 #[test]
+fn extract_method_includes_lambda_captures_as_parameters() {
+    let fixture = r#"
+class C {
+    void m(int x) {
+        java.util.List<Integer> xs = java.util.List.of(1);
+        /*start*/xs.forEach(i -> System.out.println(x + i));/*end*/
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m(int x) {
+        java.util.List<Integer> xs = java.util.List.of(1);
+        extracted(xs, x);
+    }
+
+    private void extracted(java.util.List<Integer> xs, int x) {
+        xs.forEach(i -> System.out.println(x + i));
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn extract_method_includes_anonymous_class_captures_as_parameters() {
+    let fixture = r#"
+class C {
+    void m(int x) {
+        /*start*/new Runnable() { public void run() { System.out.println(x); } }.run();/*end*/
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m(int x) {
+        extracted(x);
+    }
+
+    private void extracted(int x) {
+        new Runnable() { public void run() { System.out.println(x); } }.run();
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn extract_method_inside_constructor() {
     let fixture = r#"
 class C {

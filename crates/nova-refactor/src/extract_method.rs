@@ -411,6 +411,41 @@ impl ExtractMethod {
             let (reads_in_selection, writes_in_selection) =
                 collect_reads_writes_in_flow_selection(&flow_body, flow_selection);
 
+            // Flow IR intentionally skips lowering lambda bodies (they're lazily executed) and does
+            // not model anonymous class bodies. When the selection contains such nested bodies, any
+            // enclosing locals/params referenced inside them must still be treated as reads so the
+            // extracted method receives them as parameters.
+            let known_names = collect_known_local_names(&flow_body);
+            let mut read_candidates: Vec<(Span, LocalKind, String, Span)> = reads_in_selection
+                .iter()
+                .map(|(local, span)| {
+                    let local_data = &flow_body.locals()[local.index()];
+                    (
+                        local_data.span,
+                        local_data.kind,
+                        local_data.name.as_str().to_string(),
+                        *span,
+                    )
+                })
+                .collect();
+            for (name, use_span) in
+                collect_capture_reads_in_statements(&selection_info.statements, &known_names)
+            {
+                if let Some((decl_span, local_kind)) =
+                    resolve_local_decl_for_name(&flow_body, &name, use_span.start)
+                {
+                    read_candidates.push((decl_span, local_kind, name, use_span));
+                }
+            }
+            // Stable order + dedup by first occurrence in the selection.
+            read_candidates.sort_by(|a, b| {
+                a.3.start
+                    .cmp(&b.3.start)
+                    .then_with(|| a.3.end.cmp(&b.3.end))
+            });
+            let mut seen: HashSet<Span> = HashSet::new();
+            read_candidates.retain(|(decl_span, _, _, _)| seen.insert(*decl_span));
+
             let live_after_selection = live_locals_after_selection(&flow_body, flow_selection);
             let capture_reads_after_selection =
                 collect_capture_reads_after_offset(&method_body, flow_selection.end, &flow_body);
@@ -429,18 +464,17 @@ impl ExtractMethod {
 
             // Determine parameters in order of first appearance in the selection.
             let mut parameters = Vec::new();
-            for (local, first_use) in reads_in_selection {
-                if local_declared_in_selection(&flow_body, local, flow_selection) {
+            for (decl_span, local_kind, name, use_span) in read_candidates {
+                if local_kind == LocalKind::Local && span_within_range(decl_span, flow_selection) {
                     continue;
                 }
-                let name = flow_body.locals()[local.index()].name.as_str().to_string();
-                let ty = type_for_local(
+                let ty = type_for_decl_span(
                     &mut typeck,
                     source,
-                    &flow_body,
                     &declared_types,
-                    local,
-                    Some(first_use.start),
+                    &name,
+                    decl_span,
+                    use_span.start,
                     &mut issues,
                 );
                 parameters.push(Parameter { name, ty });
@@ -597,20 +631,48 @@ impl ExtractMethod {
 
         let mut typeck: Option<SingleFileTypecheck> = None;
 
+        let known_names = collect_known_local_names(&flow_body);
+        let mut read_candidates: Vec<(Span, LocalKind, String, Span)> =
+            collect_reads_in_flow_expr(&flow_body, flow_expr_id, selection)
+                .into_iter()
+                .map(|(local, span)| {
+                    let local_data = &flow_body.locals()[local.index()];
+                    (
+                        local_data.span,
+                        local_data.kind,
+                        local_data.name.as_str().to_string(),
+                        span,
+                    )
+                })
+                .collect();
+        for (name, use_span) in collect_capture_reads_in_expression(&selected_expr, &known_names) {
+            if let Some((decl_span, local_kind)) =
+                resolve_local_decl_for_name(&flow_body, &name, use_span.start)
+            {
+                read_candidates.push((decl_span, local_kind, name, use_span));
+            }
+        }
+        // Stable order + dedup by first occurrence in the selection.
+        read_candidates.sort_by(|a, b| {
+            a.3.start
+                .cmp(&b.3.start)
+                .then_with(|| a.3.end.cmp(&b.3.end))
+        });
+        let mut seen: HashSet<Span> = HashSet::new();
+        read_candidates.retain(|(decl_span, _, _, _)| seen.insert(*decl_span));
+
         let mut parameters = Vec::new();
-        for (local, first_use) in collect_reads_in_flow_expr(&flow_body, flow_expr_id, selection) {
-            let local_data = &flow_body.locals()[local.index()];
-            if span_within_range(local_data.span, selection) {
+        for (decl_span, local_kind, name, use_span) in read_candidates {
+            if local_kind == LocalKind::Local && span_within_range(decl_span, selection) {
                 continue;
             }
-            let name = local_data.name.as_str().to_string();
-            let ty = type_for_local(
+            let ty = type_for_decl_span(
                 &mut typeck,
                 source,
-                &flow_body,
                 &declared_types,
-                local,
-                Some(first_use.start),
+                &name,
+                decl_span,
+                use_span.start,
                 &mut issues,
             );
             parameters.push(Parameter { name, ty });
@@ -2326,6 +2388,142 @@ fn type_for_local(
 
     issues.push(ExtractMethodIssue::UnknownType { name });
     "Object".to_string()
+}
+
+fn type_for_decl_span(
+    typeck: &mut Option<SingleFileTypecheck>,
+    source: &str,
+    types: &DeclaredTypes,
+    name: &str,
+    decl_span: Span,
+    fallback_offset: usize,
+    issues: &mut Vec<ExtractMethodIssue>,
+) -> String {
+    let Some(mut ty) = types.types.get(&decl_span).cloned() else {
+        issues.push(ExtractMethodIssue::UnknownType {
+            name: name.to_string(),
+        });
+        return "Object".to_string();
+    };
+
+    if ty.trim() != "var" {
+        return ty;
+    }
+
+    let mut offsets = Vec::new();
+    if let Some(offset) = types.initializer_offsets.get(&decl_span).copied() {
+        offsets.push(offset);
+    }
+    offsets.push(fallback_offset);
+
+    if let Some(inferred) = infer_type_at_offsets(typeck, source, offsets) {
+        ty = inferred;
+        return ty;
+    }
+
+    issues.push(ExtractMethodIssue::UnknownType {
+        name: name.to_string(),
+    });
+    "Object".to_string()
+}
+
+fn collect_known_local_names(body: &Body) -> HashSet<String> {
+    body.locals()
+        .iter()
+        .map(|local| local.name.as_str().to_string())
+        .collect()
+}
+
+fn resolve_local_decl_for_name(body: &Body, name: &str, use_pos: usize) -> Option<(Span, LocalKind)> {
+    let mut best: Option<(Span, LocalKind)> = None;
+    for local in body.locals() {
+        if local.name.as_str() != name {
+            continue;
+        }
+        if local.span.start > use_pos {
+            continue;
+        }
+        match best {
+            None => best = Some((local.span, local.kind)),
+            Some((best_span, _)) => {
+                if local.span.start > best_span.start {
+                    best = Some((local.span, local.kind));
+                }
+            }
+        }
+    }
+    best
+}
+
+fn collect_capture_reads_in_statements(
+    statements: &[ast::Statement],
+    known_names: &HashSet<String>,
+) -> Vec<(String, Span)> {
+    let mut reads = Vec::new();
+    for stmt in statements {
+        reads.extend(collect_capture_reads_in_node(stmt.syntax(), known_names));
+    }
+    reads
+}
+
+fn collect_capture_reads_in_expression(
+    expr: &ast::Expression,
+    known_names: &HashSet<String>,
+) -> Vec<(String, Span)> {
+    collect_capture_reads_in_node(expr.syntax(), known_names)
+}
+
+fn collect_capture_reads_in_node(
+    node: &nova_syntax::SyntaxNode,
+    known_names: &HashSet<String>,
+) -> Vec<(String, Span)> {
+    let mut reads = Vec::new();
+    for descendant in node.descendants() {
+        if let Some(lambda) = ast::LambdaExpression::cast(descendant.clone()) {
+            if let Some(body) = lambda.body() {
+                reads.extend(collect_name_expr_reads(body.syntax(), known_names));
+            }
+            continue;
+        }
+
+        if let Some(new_expr) = ast::NewExpression::cast(descendant) {
+            if let Some(class_body) = new_expr.class_body() {
+                reads.extend(collect_name_expr_reads(class_body.syntax(), known_names));
+            }
+        }
+    }
+    reads
+}
+
+fn collect_name_expr_reads(
+    node: &nova_syntax::SyntaxNode,
+    known_names: &HashSet<String>,
+) -> Vec<(String, Span)> {
+    let mut reads = Vec::new();
+    for name_expr in node.descendants().filter_map(ast::NameExpression::cast) {
+        let Some((name, span)) = simple_name_of_name_expr(&name_expr) else {
+            continue;
+        };
+        if known_names.contains(&name) {
+            reads.push((name, span));
+        }
+    }
+    reads
+}
+
+fn simple_name_of_name_expr(expr: &ast::NameExpression) -> Option<(String, Span)> {
+    let mut last_ident: Option<nova_syntax::SyntaxToken> = None;
+    for tok in expr
+        .syntax()
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+    {
+        if tok.kind().is_identifier_like() {
+            last_ident = Some(tok);
+        }
+    }
+    let tok = last_ident?;
+    Some((tok.text().to_string(), span_of_token(&tok)))
 }
 
 fn update_first_use(best: &mut Option<usize>, candidate: usize) {
