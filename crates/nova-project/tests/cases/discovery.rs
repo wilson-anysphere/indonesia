@@ -2,9 +2,9 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use nova_project::{
-    load_project, load_project_with_options, load_workspace_model, load_workspace_model_with_options,
-    BuildSystem, ClasspathEntryKind, JavaVersion, LanguageLevelProvenance, LoadOptions,
-    OutputDirKind, SourceRootKind, SourceRootOrigin,
+    load_project_with_options, load_workspace_model_with_options, BuildSystem, ClasspathEntryKind,
+    JavaVersion, LanguageLevelProvenance, LoadOptions, OutputDirKind, SourceRootKind,
+    SourceRootOrigin,
 };
 use tempfile::tempdir;
 
@@ -244,6 +244,38 @@ fn loads_maven_profile_modules_active_by_default() {
         })
         .collect();
     assert!(source_roots.contains(&(SourceRootKind::Main, PathBuf::from("child/src/main/java"))));
+}
+
+#[test]
+fn resolves_maven_managed_dependency_coordinates_placeholders() {
+    let root = testdata_path("maven-managed-coordinates-placeholder");
+    let repo_dir = tempdir().expect("tempdir");
+    let options = LoadOptions {
+        maven_repo: Some(repo_dir.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load maven project");
+
+    let dep = config
+        .dependencies
+        .iter()
+        .find(|d| d.group_id == "com.example" && d.artifact_id == "managed-dep")
+        .expect("expected managed dependency to be discovered");
+    assert_eq!(dep.version, Some("1.2.3".to_string()));
+
+    let jar_entries: Vec<String> = config
+        .classpath
+        .iter()
+        .filter(|cp| cp.kind == ClasspathEntryKind::Jar)
+        .map(|cp| cp.path.to_string_lossy().replace('\\', "/"))
+        .collect();
+
+    let jar_path = jar_entries
+        .iter()
+        .find(|p| p.contains("com/example/managed-dep"))
+        .expect("expected managed-dep to have a synthesized jar path");
+    assert!(jar_path.contains("/1.2.3/"), "jar path: {jar_path}");
+    assert!(!jar_path.contains("${"), "jar path: {jar_path}");
 }
 
 #[test]

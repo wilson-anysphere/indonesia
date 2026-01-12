@@ -746,9 +746,20 @@ impl EffectivePom {
         let java = java_from_maven_config(&properties, compiler_plugin.as_ref())
             .or_else(|| parent.and_then(|p| p.java));
 
-        let mut dependency_management = parent
-            .map(|p| p.dependency_management.clone())
-            .unwrap_or_default();
+        // Preserve raw placeholders in dependency management, but re-key inherited entries using
+        // the current module's merged properties. This matches Maven interpolation semantics where
+        // inherited values (including their placeholders) are resolved in the context of the
+        // child module.
+        let mut dependency_management = BTreeMap::new();
+        if let Some(parent) = parent {
+            for dep in parent.dependency_management.values() {
+                let key = (
+                    resolve_placeholders(&dep.group_id, &properties),
+                    resolve_placeholders(&dep.artifact_id, &properties),
+                );
+                dependency_management.insert(key, dep.clone());
+            }
+        }
 
         // Apply imported BOMs (in order) before this module's own managed deps.
         let mut imported_boms = Vec::new();
@@ -758,17 +769,13 @@ impl EffectivePom {
             if is_bom_import(&dep) {
                 imported_boms.push(dep);
             } else {
-                // Preserve raw placeholders in dependency management and resolve them using the
-                // current module's merged properties when applying versions to dependencies. This
-                // matches Maven's effective POM interpolation semantics where inherited values may be
-                // influenced by child property overrides.
                 local_managed.push(dep);
             }
         }
 
         for bom in imported_boms {
-            let group_id = bom.group_id.clone();
-            let artifact_id = bom.artifact_id.clone();
+            let group_id = resolve_placeholders(&bom.group_id, &properties);
+            let artifact_id = resolve_placeholders(&bom.artifact_id, &properties);
             if group_id.is_empty() || artifact_id.is_empty() {
                 continue;
             }
@@ -780,7 +787,8 @@ impl EffectivePom {
                 .or_else(|| {
                     dependency_management
                         .get(&(group_id.clone(), artifact_id.clone()))
-                        .and_then(|managed| managed.version.clone())
+                        .and_then(|managed| managed.version.as_deref())
+                        .map(|v| resolve_placeholders(v, &properties))
                 });
 
             if version
@@ -812,22 +820,60 @@ impl EffectivePom {
         }
 
         for dep in local_managed {
-            dependency_management.insert((dep.group_id.clone(), dep.artifact_id.clone()), dep);
+            let key = (
+                resolve_placeholders(&dep.group_id, &properties),
+                resolve_placeholders(&dep.artifact_id, &properties),
+            );
+            dependency_management.insert(key, dep);
         }
 
         let mut dependencies = Vec::new();
         for dep in &raw.dependencies {
             let mut dep = dep.clone();
+
+            dep.group_id = resolve_placeholders(&dep.group_id, &properties);
+            dep.artifact_id = resolve_placeholders(&dep.artifact_id, &properties);
+            dep.scope = dep
+                .scope
+                .as_deref()
+                .map(|v| resolve_placeholders(v, &properties));
+            dep.classifier = dep
+                .classifier
+                .as_deref()
+                .map(|v| resolve_placeholders(v, &properties));
+            dep.type_ = dep
+                .type_
+                .as_deref()
+                .map(|v| resolve_placeholders(v, &properties));
+
+            let managed = dependency_management.get(&(dep.group_id.clone(), dep.artifact_id.clone()));
+
             dep.version = dep
                 .version
                 .as_deref()
                 .map(|v| resolve_placeholders(v, &properties))
                 .or_else(|| {
-                    dependency_management
-                        .get(&(dep.group_id.clone(), dep.artifact_id.clone()))
+                    managed
                         .and_then(|managed| managed.version.as_deref())
                         .map(|v| resolve_placeholders(v, &properties))
                 });
+
+            // dependencyManagement provides defaults for other fields when absent.
+            if dep.scope.is_none() {
+                dep.scope = managed
+                    .and_then(|managed| managed.scope.as_deref())
+                    .map(|v| resolve_placeholders(v, &properties));
+            }
+            if dep.classifier.is_none() {
+                dep.classifier = managed
+                    .and_then(|managed| managed.classifier.as_deref())
+                    .map(|v| resolve_placeholders(v, &properties));
+            }
+            if dep.type_.is_none() {
+                dep.type_ = managed
+                    .and_then(|managed| managed.type_.as_deref())
+                    .map(|v| resolve_placeholders(v, &properties));
+            }
             dependencies.push(dep);
         }
 
@@ -1531,12 +1577,19 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
         return None;
     }
 
+    if dep.group_id.contains("${") || dep.artifact_id.contains("${") {
+        return None;
+    }
+
     let type_ = dep.type_.as_deref().unwrap_or("jar");
     if type_ != "jar" {
         return None;
     }
 
     let classifier = dep.classifier.as_deref();
+    if classifier.is_some_and(|c| c.contains("${")) {
+        return None;
+    }
 
     let group_path = dep.group_id.replace('.', "/");
     let version_dir = maven_repo
