@@ -5949,15 +5949,12 @@ fn collect_switch_contexts(
                     walk_expr(body, *dim, owner, scope_result, resolver, item_trees, out);
                 }
                 if let Some(initializer) = initializer {
-                    walk_expr(
-                        body,
-                        *initializer,
-                        owner,
-                        scope_result,
-                        resolver,
-                        item_trees,
-                        out,
-                    );
+                    walk_expr(body, *initializer, owner, scope_result, resolver, item_trees, out);
+                }
+            }
+            hir::Expr::ArrayInitializer { items, .. } => {
+                for item in items {
+                    walk_expr(body, *item, owner, scope_result, resolver, item_trees, out);
                 }
             }
             hir::Expr::ArrayInitializer { items, .. } => {
