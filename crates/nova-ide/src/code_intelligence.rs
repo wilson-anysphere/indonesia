@@ -12524,7 +12524,7 @@ fn filter_completions_by_expected_type(
         return;
     };
 
-    let mut types = type_store_for_completion(analysis);
+    let mut types = type_store_for_completion(analysis, file_ctx);
     let expected_ty = parse_source_type_in_context(&mut types, file_ctx, expected_src);
     if !is_resolved_type(&types, &expected_ty) {
         return;
@@ -12567,7 +12567,7 @@ fn filter_completions_by_expected_type(
     });
 }
 
-fn type_store_for_completion(analysis: &Analysis) -> TypeStore {
+fn type_store_for_completion(analysis: &Analysis, file_ctx: &CompletionResolveCtx) -> TypeStore {
     let mut types = TypeStore::with_minimal_jdk();
     define_local_interfaces(&mut types, &analysis.tokens);
 
@@ -12597,7 +12597,7 @@ fn type_store_for_completion(analysis: &Analysis) -> TypeStore {
         let Some(id) = types.class_id(&class.name) else {
             continue;
         };
-        let super_ty = parse_source_type(&mut types, super_name);
+        let super_ty = parse_source_type_in_context(&mut types, file_ctx, super_name);
         if let Some(class_def) = types.class_mut(id) {
             class_def.super_class = Some(super_ty);
         }

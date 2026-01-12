@@ -1697,6 +1697,36 @@ class A {
 }
 
 #[test]
+fn completion_in_initializer_filters_to_imported_expected_type() {
+    let (db, file, pos) = fixture(
+        r#"
+import java.util.List;
+class A {
+  void m() {
+    List l = null;
+    String s = "";
+    List x = <|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items
+            .iter()
+            .any(|i| i.label == "l" && i.kind == Some(CompletionItemKind::VARIABLE)),
+        "expected completion list to contain List-typed local `l`; got {items:#?}"
+    );
+    assert!(
+        !items
+            .iter()
+            .any(|i| i.label == "s" && i.kind == Some(CompletionItemKind::VARIABLE)),
+        "expected completion list to not contain String-typed local `s`; got {items:#?}"
+    );
+}
+
+#[test]
 fn completion_in_while_condition_includes_true_literal() {
     let (db, file, pos) = fixture(
         r#"
