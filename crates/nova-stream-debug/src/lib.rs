@@ -1027,6 +1027,149 @@ impl Segment {
     }
 }
 
+fn enclosing_parens_inner(source: &str) -> Option<&str> {
+    let source = source.trim();
+    if !source.starts_with('(') || !source.ends_with(')') {
+        return None;
+    }
+
+    let mut depth = 0usize;
+    let mut in_str = false;
+    let mut in_char = false;
+    let mut escape = false;
+
+    for (i, ch) in source.char_indices() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if in_str {
+            if ch == '\\' {
+                escape = true;
+            } else if ch == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        if in_char {
+            if ch == '\\' {
+                escape = true;
+            } else if ch == '\'' {
+                in_char = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_str = true,
+            '\'' => in_char = true,
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    // If the outermost ')' doesn't close at the end of the string, these aren't
+                    // just grouping parens (e.g. `(Foo) bar` casts) and we should not strip them.
+                    if i + ch.len_utf8() == source.len() {
+                        return Some(&source[1..i]);
+                    }
+                    return None;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn contains_top_level_operator(source: &str) -> bool {
+    let mut depth_paren = 0usize;
+    let mut depth_bracket = 0usize;
+    let mut depth_brace = 0usize;
+    let mut depth_angle = 0usize;
+
+    let mut in_str = false;
+    let mut in_char = false;
+    let mut escape = false;
+
+    for (_i, ch) in source.char_indices() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if in_str {
+            if ch == '\\' {
+                escape = true;
+            } else if ch == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        if in_char {
+            if ch == '\\' {
+                escape = true;
+            } else if ch == '\'' {
+                in_char = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_str = true,
+            '\'' => in_char = true,
+            '(' => depth_paren += 1,
+            ')' => depth_paren = depth_paren.saturating_sub(1),
+            '[' => depth_bracket += 1,
+            ']' => depth_bracket = depth_bracket.saturating_sub(1),
+            '{' => depth_brace += 1,
+            '}' => depth_brace = depth_brace.saturating_sub(1),
+            '<' => depth_angle += 1,
+            '>' => depth_angle = depth_angle.saturating_sub(1),
+            _ => {}
+        }
+
+        if depth_paren == 0
+            && depth_bracket == 0
+            && depth_brace == 0
+            && depth_angle == 0
+            && matches!(
+                ch,
+                '?' | ':' | '+' | '-' | '*' | '/' | '%' | '=' | '|' | '&' | '^' | '!' | '~'
+            )
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn strip_redundant_grouping_parens(source: &str) -> &str {
+    let mut current = source.trim();
+    loop {
+        let Some(inner) = enclosing_parens_inner(current) else {
+            break;
+        };
+        let inner = inner.trim();
+
+        // Stop when the inner expression begins with `(` but is not itself enclosed in a matching
+        // pair of parens. In Java syntax, that's a common shape for casts / lambdas where the
+        // *outer* parentheses are required for member access (e.g. `((Foo) bar).baz()`).
+        if inner.starts_with('(') && enclosing_parens_inner(inner).is_none() {
+            break;
+        }
+
+        // If the inner expression contains top-level operators (e.g. `?:`, `+`, `&&`) we can't
+        // safely remove the parentheses without changing how a following `.method()` binds.
+        if contains_top_level_operator(inner) {
+            break;
+        }
+
+        current = inner;
+    }
+    current
+}
+
 fn parse_dotted_expr(source: &str) -> Result<DottedExpr, StreamAnalysisError> {
     let raw_segments = split_top_level(source, '.')?;
     let mut segments = Vec::with_capacity(raw_segments.len());
@@ -1037,14 +1180,21 @@ fn parse_dotted_expr(source: &str) -> Result<DottedExpr, StreamAnalysisError> {
             continue;
         }
 
-        if let Some((name, args)) = parse_call_segment(raw)? {
+        let normalized = strip_redundant_grouping_parens(raw);
+        if normalized != raw {
+            let nested = parse_dotted_expr(normalized)?;
+            segments.extend(nested.segments);
+            continue;
+        }
+
+        if let Some((name, args)) = parse_call_segment(normalized)? {
             segments.push(Segment {
-                source: raw.to_string(),
+                source: normalized.to_string(),
                 kind: SegmentKind::Call { name, args },
             });
         } else {
             segments.push(Segment {
-                source: raw.to_string(),
+                source: normalized.to_string(),
                 kind: SegmentKind::Access,
             });
         }
@@ -1106,6 +1256,12 @@ fn parse_call_segment(raw: &str) -> Result<Option<(String, Vec<String>)>, Stream
     let Some(open_paren_idx) = open_paren_idx else {
         return Ok(None);
     };
+
+    // A segment that starts with `(` is not a method call in Java; it's a parenthesized
+    // expression/cast/lambda, which should be treated as an access segment.
+    if open_paren_idx == 0 {
+        return Ok(None);
+    }
 
     let (head, tail) = raw.split_at(open_paren_idx);
     let mut head = head.trim();
@@ -1348,6 +1504,32 @@ mod tests {
         assert_eq!(
             chain.terminal.as_ref().unwrap().kind,
             StreamOperationKind::Collect
+        );
+    }
+
+    #[test]
+    fn extracts_collection_stream_chain_with_parenthesized_receiver() {
+        // Parentheses around the collection receiver are redundant but common in generated code.
+        let expr = "(list).stream().count()";
+        let chain = analyze_stream_expression(expr).unwrap();
+
+        match &chain.source {
+            StreamSource::Collection {
+                collection_expr,
+                stream_expr,
+                method,
+            } => {
+                assert_eq!(collection_expr, "list");
+                assert_eq!(stream_expr, "list.stream()");
+                assert_eq!(method, "stream");
+            }
+            _ => panic!("expected collection source"),
+        }
+
+        assert!(chain.intermediates.is_empty());
+        assert_eq!(
+            chain.terminal.as_ref().unwrap().kind,
+            StreamOperationKind::Count
         );
     }
 
@@ -1956,6 +2138,36 @@ mod tests {
     }
 
     #[test]
+    fn debug_stream_refuses_existing_stream_values_with_parenthesized_pipeline() {
+        // Parenthesized stream pipelines should not bypass the ExistingStream safety guard.
+        let expr = "(s.filter(x -> x > 0)).count()";
+        let chain = analyze_stream_expression(expr).unwrap();
+        match &chain.source {
+            StreamSource::ExistingStream { stream_expr } => {
+                assert_eq!(stream_expr, "s");
+            }
+            other => panic!("expected ExistingStream source, got {other:?}"),
+        }
+
+        let mut jdwp = MockJdwpClient::new();
+        let config = StreamDebugConfig {
+            max_sample_size: 2,
+            max_total_time: Duration::from_secs(1),
+            allow_side_effects: false,
+            allow_terminal_ops: true,
+        };
+        let cancel = CancellationToken::default();
+
+        let err = debug_stream(&mut jdwp, 1, &chain, &config, &cancel).unwrap_err();
+        match err {
+            StreamDebugError::UnsafeExistingStream { stream_expr } => {
+                assert_eq!(stream_expr, "s");
+            }
+            other => panic!("expected UnsafeExistingStream error, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn debug_stream_allows_re_evaluatable_existing_stream_expressions_with_calls() {
         let expr = "java.util.Arrays.stream(arr).filter(x -> x > 0).count()";
         let chain = analyze_stream_expression(expr).unwrap();
@@ -2028,6 +2240,19 @@ mod tests {
             result.terminal.as_ref().unwrap().value.as_deref(),
             Some("1")
         );
+    }
+
+    #[test]
+    fn analyze_allows_parenthesized_existing_stream_expressions_with_calls() {
+        let expr = "(java.util.Arrays.stream(arr)).filter(x -> x > 0).count()";
+        let chain = analyze_stream_expression(expr).unwrap();
+        match &chain.source {
+            StreamSource::ExistingStream { stream_expr } => {
+                assert_eq!(stream_expr, "java.util.Arrays.stream(arr)");
+                assert!(!is_pure_access_expr(stream_expr));
+            }
+            other => panic!("expected ExistingStream source, got {other:?}"),
+        }
     }
 
     #[test]
