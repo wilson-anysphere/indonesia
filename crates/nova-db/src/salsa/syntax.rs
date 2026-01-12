@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use nova_cache::Fingerprint;
+use nova_core::LineIndex;
 use nova_syntax::{GreenNode, JavaParseResult, ParseResult};
 use nova_types::Diagnostic;
 
@@ -37,8 +38,14 @@ pub trait NovaSyntax:
     /// the configured language level (e.g. `record` below Java 16).
     fn syntax_feature_diagnostics(&self, file: FileId) -> Arc<Vec<Diagnostic>>;
 
+    /// Pre-computed line start offsets for this file's current text snapshot.
+    fn line_index(&self, file: FileId) -> Arc<LineIndex>;
+
     /// Convenience query that exposes the syntax tree.
     fn syntax_tree(&self, file: FileId) -> Arc<SyntaxTree>;
+
+    /// Convenience downstream query used by tests to validate early-cutoff behavior.
+    fn line_count(&self, file: FileId) -> u32;
 }
 
 fn parse(db: &dyn NovaSyntax, file: FileId) -> Arc<ParseResult> {
@@ -146,6 +153,41 @@ fn syntax_tree(db: &dyn NovaSyntax, file: FileId) -> Arc<SyntaxTree> {
     let result = Arc::new(root);
     db.record_query_stat("syntax_tree", start.elapsed());
     result
+}
+
+fn line_index(db: &dyn NovaSyntax, file: FileId) -> Arc<LineIndex> {
+    let start = Instant::now();
+
+    #[cfg(feature = "tracing")]
+    let _span = tracing::debug_span!("query", name = "line_index", ?file).entered();
+
+    cancel::check_cancelled(db);
+
+    // Touch Salsa inputs so dependency tracking works even for missing files.
+    let index = if db.file_exists(file) {
+        let text = db.file_content(file);
+        LineIndex::new(text.as_str())
+    } else {
+        // Avoid allocating an empty `String` just to build the index.
+        LineIndex::new("")
+    };
+
+    let result = Arc::new(index);
+    db.record_query_stat("line_index", start.elapsed());
+    result
+}
+
+fn line_count(db: &dyn NovaSyntax, file: FileId) -> u32 {
+    let start = Instant::now();
+
+    #[cfg(feature = "tracing")]
+    let _span = tracing::debug_span!("query", name = "line_count", ?file).entered();
+
+    cancel::check_cancelled(db);
+
+    let count = db.line_index(file).line_count();
+    db.record_query_stat("line_count", start.elapsed());
+    count
 }
 
 #[cfg(test)]
