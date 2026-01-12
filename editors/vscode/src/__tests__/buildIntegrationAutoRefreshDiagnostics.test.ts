@@ -69,6 +69,28 @@ describe('build integration polling', () => {
       return found;
     };
 
+    const findPollBuildStatusOnce = (): ts.ArrowFunction | undefined => {
+      let found: ts.ArrowFunction | undefined;
+      const visit = (node: ts.Node) => {
+        if (found) {
+          return;
+        }
+        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === 'pollBuildStatusOnce') {
+          const init = node.initializer ? unwrapExpression(node.initializer) : undefined;
+          if (init && ts.isArrowFunction(init)) {
+            found = init;
+            return;
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(sourceFile);
+      return found;
+    };
+
+    const pollBuildStatusOnce = findPollBuildStatusOnce();
+    expect(pollBuildStatusOnce).toBeDefined();
+
     let foundGuard = false;
     const visit = (node: ts.Node) => {
       if (foundGuard) {
@@ -89,7 +111,8 @@ describe('build integration polling', () => {
       }
       ts.forEachChild(node, visit);
     };
-    visit(sourceFile);
+    // The guard + refresh call should happen inside pollBuildStatusOnce.
+    visit(pollBuildStatusOnce!);
 
     expect(foundGuard).toBe(true);
   });
