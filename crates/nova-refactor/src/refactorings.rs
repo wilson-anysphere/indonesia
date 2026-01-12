@@ -1784,6 +1784,23 @@ pub fn inline_variable(
         }) {
             return Err(RefactorError::InlineSideEffects);
         }
+
+        // 4) Prevent reordering side effects *within* the usage statement itself.
+        //
+        // The initializer was previously evaluated as its own statement (`int a = foo();`) before
+        // the usage statement executed. After inlining, `foo()` executes at the usage site, so we
+        // must reject cases where other side-effectful sub-expressions would run before the usage
+        // (e.g. `bar() + a` would become `bar() + foo()`, reordering `foo()` after `bar()`).
+        let usage_start = usage.range.start;
+        if usage_stmt.syntax().descendants().any(|node| {
+            if !has_side_effects(&node) {
+                return false;
+            }
+            let range = syntax_range(&node);
+            range.end <= usage_start
+        }) {
+            return Err(RefactorError::InlineSideEffects);
+        }
     }
 
     // --- Initializer dependency stability analysis ---
