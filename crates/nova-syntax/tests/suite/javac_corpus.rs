@@ -32,7 +32,6 @@ fn nova_opts() -> ParseOptions {
     // Match the `javac --release` used for the corpus compilation.
     ParseOptions {
         language_level: JavaLanguageLevel::JAVA_17,
-        ..ParseOptions::default()
     }
 }
 

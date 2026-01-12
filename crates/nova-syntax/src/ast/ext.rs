@@ -226,7 +226,7 @@ impl Iterator for NamesAfterKeyword {
     fn next(&mut self) -> Option<Self::Item> {
         use rowan::NodeOrToken;
 
-        while let Some(el) = self.iter.next() {
+        for el in self.iter.by_ref() {
             match el {
                 NodeOrToken::Token(tok) if tok.kind() == self.keyword => {
                     self.started = true;

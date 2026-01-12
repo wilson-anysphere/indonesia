@@ -108,11 +108,7 @@ pub fn parse_long_literal(text: &str) -> Result<i64, LiteralError> {
     };
 
     let value = parse_unsigned_integer(bytes, prefix_len, end, base, limit)?;
-    if is_decimal {
-        Ok(value as i64)
-    } else {
-        Ok(value as i64)
-    }
+    Ok(value as i64)
 }
 
 fn integer_base(bytes: &[u8], end: usize) -> Result<(u32, usize, bool), LiteralError> {
@@ -478,15 +474,15 @@ fn validate_decimal_floating(main: &str, had_suffix: bool) -> Result<(), Literal
 
     let sig_end = exp_idx.unwrap_or(bytes.len());
     if let Some(d) = dot_idx {
-        let left_has_digit = bytes[..d].iter().any(|b| matches!(b, b'0'..=b'9'));
+        let left_has_digit = bytes[..d].iter().any(|b| b.is_ascii_digit());
         let right_has_digit = bytes[d + 1..sig_end]
             .iter()
-            .any(|b| matches!(b, b'0'..=b'9'));
+            .any(|b| b.is_ascii_digit());
         if !left_has_digit && !right_has_digit {
             return Err(err("Missing digits in literal", 0..sig_end));
         }
     } else {
-        let has_digit = bytes[..sig_end].iter().any(|b| matches!(b, b'0'..=b'9'));
+        let has_digit = bytes[..sig_end].iter().any(|b| b.is_ascii_digit());
         if !has_digit {
             return Err(err("Missing digits in literal", 0..sig_end));
         }
@@ -497,7 +493,7 @@ fn validate_decimal_floating(main: &str, had_suffix: bool) -> Result<(), Literal
         if matches!(bytes.get(exp_start), Some(b'+' | b'-')) {
             exp_start += 1;
         }
-        let exp_has_digit = bytes[exp_start..].iter().any(|b| matches!(b, b'0'..=b'9'));
+        let exp_has_digit = bytes[exp_start..].iter().any(|b| b.is_ascii_digit());
         if !exp_has_digit {
             return Err(err("Missing exponent digits", e..e + 1));
         }
@@ -767,7 +763,7 @@ fn binary_to_ieee_bits(nibbles: &[u8], bit_len: usize, exp2: i64, params: FloatP
 
         if bit_len > precision {
             let shift = bit_len - precision;
-            q = extract_msb_bits(nibbles, bit_len, precision) as u64;
+            q = extract_msb_bits(nibbles, bit_len, precision);
             let guard = get_bit(nibbles, shift - 1);
             let sticky = low_bits_nonzero(nibbles, shift - 1);
 
@@ -1056,10 +1052,8 @@ pub fn unescape_text_block(text: &str) -> Result<String, LiteralError> {
                 // Line continuation: backslash + line terminator removes the terminator.
                 if idx + 1 < closing_start && matches!(bytes[idx + 1], b'\n' | b'\r') {
                     idx += 2;
-                    if idx - 1 < closing_start && bytes[idx - 1] == b'\r' {
-                        if idx < closing_start && bytes[idx] == b'\n' {
-                            idx += 1;
-                        }
+                    if bytes[idx - 1] == b'\r' && idx < closing_start && bytes[idx] == b'\n' {
+                        idx += 1;
                     }
                     at_line_start = true;
                     continue;

@@ -245,9 +245,9 @@ fn gate_switch_expressions(root: &SyntaxNode, level: JavaLanguageLevel, out: &mu
         .filter_map(|e| e.into_token())
         .filter(|t| t.kind() == SyntaxKind::Arrow)
     {
-        if !tok
+        if tok
             .parent()
-            .map_or(false, |p| p.kind() == SyntaxKind::SwitchLabel)
+            .is_none_or(|p| p.kind() != SyntaxKind::SwitchLabel)
         {
             continue;
         }

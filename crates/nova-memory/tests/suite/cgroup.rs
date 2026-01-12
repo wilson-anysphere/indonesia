@@ -101,7 +101,7 @@ fn interprets_rlimit_as_infinity_or_extremely_large_as_unlimited() {
 #[test]
 fn interprets_libc_rlim_infinity_as_unlimited() {
     assert_eq!(
-        interpret_rlimit_as_bytes(libc::RLIM_INFINITY as u64, libc::RLIM_INFINITY as u64),
+        interpret_rlimit_as_bytes(libc::RLIM_INFINITY, libc::RLIM_INFINITY),
         None
     );
 }

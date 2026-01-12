@@ -197,7 +197,7 @@ fn parse_javac_version(output: &str) -> Option<u32> {
 }
 
 fn parse_javac_version_token(version: &str) -> Option<u32> {
-    let mut nums = version.split(|c| c == '.' || c == '_');
+    let mut nums = version.split(['.', '_']);
     let first_part = nums.next()?;
     let first_digits: String = first_part
         .chars()
@@ -254,7 +254,10 @@ fn parse_location_prefix(line: &str) -> Option<(&str, usize, usize, &str)> {
         if bytes[i] != b':' {
             continue;
         }
-        if !bytes.get(i + 1).map_or(false, |b| b.is_ascii_whitespace()) {
+        if !bytes
+            .get(i + 1)
+            .is_some_and(|b| b.is_ascii_whitespace())
+        {
             continue;
         }
         if i == 0 || !bytes[i - 1].is_ascii_digit() {

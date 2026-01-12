@@ -320,7 +320,7 @@ fn ranges_intersect(a: TextRange, b: TextRange) -> bool {
 }
 
 fn edit_intersects_ambiguous_token(old: &JavaParseResult, edit: &TextEdit) -> bool {
-    if edit.range.len() == 0 {
+    if edit.range.is_empty() {
         let tokens = old.token_at_offset(edit.range.start);
         return match tokens {
             TokenAtOffset::None => false,
@@ -398,7 +398,7 @@ fn is_ambiguous_token_kind(kind: SyntaxKind) -> bool {
 }
 
 fn anchor_node(old: &JavaParseResult, edit: &TextEdit) -> crate::SyntaxNode {
-    if edit.range.len() > 0 {
+    if !edit.range.is_empty() {
         let element = old.covering_element(edit.range);
         return match element {
             NodeOrToken::Node(node) => node,
@@ -433,7 +433,7 @@ fn select_reparse_node(
     anchor: crate::SyntaxNode,
     edit: &TextEdit,
 ) -> Option<(crate::SyntaxNode, ReparseTarget)> {
-    let insertion_offset = if edit.range.len() == 0 {
+    let insertion_offset = if edit.range.is_empty() {
         Some(edit.range.start)
     } else {
         None

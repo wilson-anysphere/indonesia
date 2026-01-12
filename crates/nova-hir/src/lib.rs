@@ -196,7 +196,7 @@ pub mod framework {
         pub params: Vec<Parameter>,
     }
 
-    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[derive(Debug, Clone, PartialEq, Eq, Default)]
     pub struct ClassData {
         pub name: String,
         pub annotations: Vec<Annotation>,
@@ -215,18 +215,6 @@ pub mod framework {
                 .iter()
                 .find(|a| a.matches(name))
                 .and_then(|a| a.span)
-        }
-    }
-
-    impl Default for ClassData {
-        fn default() -> Self {
-            Self {
-                name: String::new(),
-                annotations: Vec::new(),
-                fields: Vec::new(),
-                methods: Vec::new(),
-                constructors: Vec::new(),
-            }
         }
     }
 

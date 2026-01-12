@@ -83,7 +83,6 @@ impl<T> Arena<T> {
         self.data.is_empty()
     }
 
-    #[must_use]
     pub fn iter(&self) -> impl Iterator<Item = (u32, &T)> {
         self.data.iter().enumerate().map(|(i, v)| (i as u32, v))
     }

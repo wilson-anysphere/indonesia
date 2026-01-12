@@ -206,8 +206,8 @@ fn parse_grammar(src: &str) -> Result<Grammar> {
             }
 
             // `Foo {}` on a single line.
-            if after.starts_with('}') {
-                let trailing = after[1..].trim();
+            if let Some(after) = after.strip_prefix('}') {
+                let trailing = after.trim();
                 if !trailing.is_empty() {
                     return Err(anyhow!(
                         "unexpected trailing tokens after `}}` at line {}",

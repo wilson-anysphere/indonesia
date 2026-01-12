@@ -62,7 +62,7 @@ pub fn lower_module_info_source(src: &str) -> ModuleInfoLowerResult {
     };
 
     let decl_name_text = decl.name().map(|name| name.text());
-    if decl_name_text.as_deref().map_or(true, str::is_empty) {
+    if decl_name_text.as_deref().is_none_or(str::is_empty) {
         errors.push(ModuleInfoLowerError::MissingModuleName);
     }
 
@@ -85,7 +85,7 @@ pub fn lower_module_info_source_strict(src: &str) -> Result<ModuleInfo, ModuleIn
         .ok_or(ModuleInfoLowerError::MissingModuleDeclaration)?;
 
     let decl_name_text = decl.name().map(|name| name.text());
-    if decl_name_text.as_deref().map_or(true, str::is_empty) {
+    if decl_name_text.as_deref().is_none_or(str::is_empty) {
         return Err(ModuleInfoLowerError::MissingModuleName);
     }
 

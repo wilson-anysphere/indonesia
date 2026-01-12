@@ -175,7 +175,7 @@ impl PartialEq for ModuleDirective {
 
 impl Eq for ModuleDirective {}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ItemTree {
     pub package: Option<PackageDecl>,
     pub imports: Vec<Import>,
@@ -246,26 +246,6 @@ impl ItemTree {
         self.initializers
             .get(&id.ast_id)
             .expect("invalid InitializerId")
-    }
-}
-
-impl Default for ItemTree {
-    fn default() -> Self {
-        ItemTree {
-            package: None,
-            imports: Vec::new(),
-            module: None,
-            items: Vec::new(),
-            classes: BTreeMap::new(),
-            interfaces: BTreeMap::new(),
-            enums: BTreeMap::new(),
-            records: BTreeMap::new(),
-            annotations: BTreeMap::new(),
-            fields: BTreeMap::new(),
-            methods: BTreeMap::new(),
-            constructors: BTreeMap::new(),
-            initializers: BTreeMap::new(),
-        }
     }
 }
 

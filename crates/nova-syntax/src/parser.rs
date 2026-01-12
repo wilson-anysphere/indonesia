@@ -2279,10 +2279,11 @@ impl<'a> Parser<'a> {
                             self.parse_switch_label();
                         }
 
-                        while !self.at(SyntaxKind::RBrace)
-                            && !self.at(SyntaxKind::StringTemplateExprEnd)
-                            && !self.at(SyntaxKind::Eof)
-                            && !(self.at(SyntaxKind::CaseKw) || self.at(SyntaxKind::DefaultKw))
+                        while !(self.at(SyntaxKind::RBrace)
+                            || self.at(SyntaxKind::StringTemplateExprEnd)
+                            || self.at(SyntaxKind::Eof)
+                            || self.at(SyntaxKind::CaseKw)
+                            || self.at(SyntaxKind::DefaultKw))
                         {
                             let stmt_before = self.tokens.len();
                             self.parse_statement(stmt_ctx);
@@ -2395,7 +2396,7 @@ impl<'a> Parser<'a> {
                     if self
                         .tokens
                         .get(i)
-                        .map_or(false, |t| t.kind.is_identifier_like())
+                        .is_some_and(|t| t.kind.is_identifier_like())
                     {
                         i += 1;
                         loop {
@@ -2408,7 +2409,7 @@ impl<'a> Parser<'a> {
                             if !self
                                 .tokens
                                 .get(seg)
-                                .map_or(false, |t| t.kind.is_identifier_like())
+                                .is_some_and(|t| t.kind.is_identifier_like())
                             {
                                 i = dot;
                                 break;
@@ -2446,7 +2447,7 @@ impl<'a> Parser<'a> {
             if !self
                 .tokens
                 .get(seg)
-                .map_or(false, |t| t.kind.is_identifier_like())
+                .is_some_and(|t| t.kind.is_identifier_like())
             {
                 i = dot;
                 break;
@@ -2527,7 +2528,7 @@ impl<'a> Parser<'a> {
             && self.at(SyntaxKind::WhenKw)
             // In a switch case label, `when` introduces a guard if it is followed by an expression.
             // Otherwise, it can still be a binding identifier (contextual keyword).
-            && self.nth(1).map_or(true, can_start_expression)
+            && self.nth(1).is_none_or(can_start_expression)
         {
             self.error_here("expected binding identifier");
         } else {
@@ -3997,12 +3998,10 @@ impl<'a> Parser<'a> {
                 self.bump();
                 self.bump();
             }
+        } else if self.at_underscore_identifier() {
+            self.parse_unnamed_pattern();
         } else {
-            if self.at_underscore_identifier() {
-                self.parse_unnamed_pattern();
-            } else {
-                self.expect_ident_like("expected lambda parameter");
-            }
+            self.expect_ident_like("expected lambda parameter");
         }
         self.builder.finish_node(); // LambdaParameter
     }

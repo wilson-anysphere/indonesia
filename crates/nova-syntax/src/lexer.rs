@@ -847,7 +847,7 @@ impl<'a> Lexer<'a> {
             idx -= 1;
             count += 1;
         }
-        count % 2 == 0
+        count.is_multiple_of(2)
     }
 
     fn scan_identifier_or_keyword(&mut self) -> SyntaxKind {
@@ -1082,14 +1082,9 @@ impl<'a> Lexer<'a> {
                 self.pos += 1; // '.'
 
                 let require_after = before.digits == 0;
-                if matches!(self.peek_byte(0), Some(b'_'))
-                    && matches!(
-                        self.peek_byte(1),
-                        Some(b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F')
-                    )
+                if (self.peek_byte(0) == Some(b'_') && self.peek_byte(1).is_some_and(is_hex_digit))
+                    || self.peek_byte(0).is_some_and(is_hex_digit)
                 {
-                    after = self.scan_digits_with_underscores(is_hex_digit, is_hex_digit);
-                } else if self.peek_byte(0).is_some_and(is_hex_digit) {
                     after = self.scan_digits_with_underscores(is_hex_digit, is_hex_digit);
                 }
 
@@ -1628,7 +1623,7 @@ impl DigitsScan {
 }
 
 fn is_hex_digit(b: u8) -> bool {
-    matches!(b, b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F')
+    b.is_ascii_hexdigit()
 }
 
 fn is_ident_start(ch: char) -> bool {

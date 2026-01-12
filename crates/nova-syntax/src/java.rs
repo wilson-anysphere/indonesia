@@ -1513,10 +1513,10 @@ impl Lowerer {
             .children()
             .find(|child| is_expression_kind(child.kind()))
             .map(|expr| self.lower_expr(&expr))
-            .unwrap_or_else(|| ast::Expr::Missing(range));
+            .unwrap_or(ast::Expr::Missing(range));
 
         let mut branches = node.children().filter_map(|child| self.lower_stmt(&child));
-        let then_branch = branches.next().unwrap_or_else(|| ast::Stmt::Empty(range));
+        let then_branch = branches.next().unwrap_or(ast::Stmt::Empty(range));
         let else_branch = branches.next().map(Box::new);
 
         ast::IfStmt {
@@ -1533,13 +1533,13 @@ impl Lowerer {
             .children()
             .find(|child| is_expression_kind(child.kind()))
             .map(|expr| self.lower_expr(&expr))
-            .unwrap_or_else(|| ast::Expr::Missing(range));
+            .unwrap_or(ast::Expr::Missing(range));
 
         let body = node
             .children()
             .filter_map(|child| self.lower_stmt(&child))
             .next()
-            .unwrap_or_else(|| ast::Stmt::Empty(range));
+            .unwrap_or(ast::Stmt::Empty(range));
 
         ast::WhileStmt {
             condition,
@@ -1558,7 +1558,7 @@ impl Lowerer {
             .children()
             .filter_map(|child| self.lower_stmt(&child))
             .next()
-            .unwrap_or_else(|| ast::Stmt::Empty(range));
+            .unwrap_or(ast::Stmt::Empty(range));
 
         let Some(header) = header else {
             return ast::Stmt::For(ast::ForStmt {
@@ -1610,7 +1610,7 @@ impl Lowerer {
                 .children()
                 .find(|child| is_expression_kind(child.kind()))
                 .map(|expr| self.lower_expr(&expr))
-                .unwrap_or_else(|| ast::Expr::Missing(range));
+                .unwrap_or(ast::Expr::Missing(range));
 
             return ast::Stmt::ForEach(ast::ForEachStmt {
                 var,
@@ -1671,15 +1671,16 @@ impl Lowerer {
 
         let condition = header
             .descendants()
-            .filter(|child| is_expression_kind(child.kind()))
-            .filter(|expr| {
+            .find(|expr| {
+                if !is_expression_kind(expr.kind()) {
+                    return false;
+                }
                 let span = self.spans.map_node(expr);
-                span.start >= init_end && span.end <= cond_end
-            })
-            .filter(|expr| {
+                if span.start < init_end || span.end > cond_end {
+                    return false;
+                }
                 !is_expression_kind(expr.parent().map(|p| p.kind()).unwrap_or(SyntaxKind::Error))
             })
-            .next()
             .map(|expr_node| self.lower_expr(&expr_node));
 
         let update = header
@@ -1710,7 +1711,7 @@ impl Lowerer {
             .children()
             .find(|child| is_expression_kind(child.kind()))
             .map(|expr| self.lower_expr(&expr))
-            .unwrap_or_else(|| ast::Expr::Missing(range));
+            .unwrap_or(ast::Expr::Missing(range));
 
         let switch_block = node
             .children()

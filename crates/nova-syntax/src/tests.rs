@@ -3791,7 +3791,7 @@ fn incremental_edit_inside_switch_statement_in_switch_expression_keeps_yield_as_
     let edit = TextEdit::insert(insert_offset, "1");
 
     let mut new_text = old_text.to_string();
-    new_text.insert_str(insert_offset as usize, "1");
+    new_text.insert(insert_offset as usize, '1');
 
     let new_parse = reparse_java(&old, old_text, edit, &new_text);
     assert_eq!(new_parse.errors, Vec::new());
@@ -4073,7 +4073,7 @@ fn incremental_edit_creating_unterminated_string_template_falls_back_to_full_rep
     let edit = TextEdit::insert(insert_offset, "\"");
 
     let mut new_text = old_text.to_string();
-    new_text.insert_str(insert_offset as usize, "\"");
+    new_text.insert(insert_offset as usize, '"');
 
     let new_parse = reparse_java(&old, old_text, edit, &new_text);
 

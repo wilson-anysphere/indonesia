@@ -510,7 +510,7 @@ impl<'a> FlowBodyLower<'a> {
             .collect::<Vec<_>>();
 
         let first_semi = semis
-            .get(0)
+            .first()
             .map(|t| u32::from(t.text_range().start()) as usize);
         let second_semi = semis
             .get(1)

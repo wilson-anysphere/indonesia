@@ -45,17 +45,9 @@ pub use tree_store::SyntaxTreeStore;
 ///
 /// The Java parser always accepts a modern (superset) grammar. The language
 /// level only affects *post-parse* feature-gate diagnostics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ParseOptions {
     pub language_level: JavaLanguageLevel,
-}
-
-impl Default for ParseOptions {
-    fn default() -> Self {
-        Self {
-            language_level: JavaLanguageLevel::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

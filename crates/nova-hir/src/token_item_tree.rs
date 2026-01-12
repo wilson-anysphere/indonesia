@@ -132,7 +132,7 @@ impl TokenSymbolSummary {
     }
 }
 
-fn token_text<'a>(text: &'a str, range: TextRange) -> &'a str {
+fn token_text(text: &str, range: TextRange) -> &str {
     let start = range.start as usize;
     let end = range.end as usize;
     &text[start..end]
