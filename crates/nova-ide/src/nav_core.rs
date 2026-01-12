@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashSet, VecDeque};
 
 use lsp_types::{Location, Uri};
 use nova_index::InheritanceIndex;
@@ -588,7 +588,7 @@ where
 
     // Prefer interface declarations.
     let mut visited: HashSet<String> = HashSet::new();
-    let mut queue: std::collections::VecDeque<String> = type_info.def().interfaces.clone().into();
+    let mut queue: VecDeque<String> = type_info.def().interfaces.clone().into();
     visited.extend(queue.iter().cloned());
 
     while let Some(iface) = queue.pop_front() {

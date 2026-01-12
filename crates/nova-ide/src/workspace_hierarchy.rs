@@ -284,16 +284,19 @@ impl WorkspaceHierarchyIndex {
             ));
         }
 
-        // Search interfaces / extended interfaces first.
-        for iface in &type_info.def.interfaces {
-            if let Some(def) = self.resolve_method_definition_inner(iface, method_name, visited) {
-                return Some(def);
+        // Java method lookup prefers the superclass chain over interfaces.
+        if let Some(super_name) = type_info.def.super_class.as_deref() {
+            if let Some(found) = self.resolve_method_definition_inner(super_name, method_name, visited) {
+                return Some(found);
             }
         }
 
-        // Then walk the superclass chain.
-        if let Some(super_name) = type_info.def.super_class.as_deref() {
-            return self.resolve_method_definition_inner(super_name, method_name, visited);
+        // If we can't find a declaration/definition in the class chain, fall back
+        // to interfaces (including extended interfaces).
+        for iface in &type_info.def.interfaces {
+            if let Some(found) = self.resolve_method_definition_inner(iface, method_name, visited) {
+                return Some(found);
+            }
         }
 
         None

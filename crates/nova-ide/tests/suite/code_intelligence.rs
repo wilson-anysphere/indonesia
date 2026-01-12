@@ -3132,45 +3132,6 @@ class Foo {
 }
 
 #[test]
-fn goto_definition_resolves_interface_method_through_extends() {
-    let main_path = PathBuf::from("/workspace/src/main/java/Main.java");
-    let i_path = PathBuf::from("/workspace/src/main/java/I.java");
-    let j_path = PathBuf::from("/workspace/src/main/java/J.java");
-
-    let main_text = r#"
-class Main {
-  void m(J j) {
-    j.fo<|>o();
-  }
-}
-"#;
-    let i_text = r#"
-interface I {
-  void foo();
-}
-"#
-    .to_string();
-    let j_text = r#"
-interface J extends I {}
-"#
-    .to_string();
-
-    let (db, file, pos) = fixture_multi(
-        main_path,
-        main_text,
-        vec![(i_path, i_text), (j_path, j_text)],
-    );
-
-    let loc = goto_definition(&db, file, pos).expect("expected definition location");
-    assert!(
-        loc.uri.as_str().contains("I.java"),
-        "expected goto-definition to resolve to I.java; got {:?}",
-        loc.uri
-    );
-    assert_eq!(loc.range.start.line, 2);
-}
-
-#[test]
 fn goto_definition_resolves_default_method_inherited_from_interface() {
     let main_path = PathBuf::from("/workspace/src/main/java/Main.java");
     let i_path = PathBuf::from("/workspace/src/main/java/I.java");
@@ -3244,6 +3205,77 @@ class A implements I {}
     assert!(
         loc.uri.as_str().contains("I.java"),
         "expected goto-definition to resolve to I.java; got {:?}",
+        loc.uri
+    );
+    assert_eq!(loc.range.start.line, 2);
+}
+
+#[test]
+fn goto_definition_resolves_interface_method_through_extends() {
+    let main_path = PathBuf::from("/workspace/src/main/java/Main.java");
+    let i_path = PathBuf::from("/workspace/src/main/java/I.java");
+    let j_path = PathBuf::from("/workspace/src/main/java/J.java");
+
+    let main_text = r#"
+class Main {
+  void m(J j) {
+    j.fo<|>o();
+  }
+}
+"#;
+    let i_text = r#"
+interface I {
+  void foo();
+}
+"#
+    .to_string();
+    let j_text = r#"
+interface J extends I {}
+"#
+    .to_string();
+
+    let (db, file, pos) = fixture_multi(main_path, main_text, vec![(i_path, i_text), (j_path, j_text)]);
+
+    let loc = goto_definition(&db, file, pos).expect("expected definition location");
+    assert!(
+        loc.uri.as_str().contains("I.java"),
+        "expected goto-definition to resolve to I.java; got {:?}",
+        loc.uri
+    );
+    assert_eq!(loc.range.start.line, 2);
+}
+
+#[test]
+fn goto_definition_resolves_superinterface_method_declaration_across_files() {
+    let main_path = PathBuf::from("/workspace/src/main/java/Main.java");
+    let i0_path = PathBuf::from("/workspace/src/main/java/I0.java");
+    let i1_path = PathBuf::from("/workspace/src/main/java/I1.java");
+
+    let main_text = r#"
+class Main {
+  void m() {
+    I1 i = null;
+    i.fo<|>o();
+  }
+}
+"#;
+    let i0_text = r#"
+interface I0 {
+  void foo();
+}
+"#
+    .to_string();
+    let i1_text = r#"
+interface I1 extends I0 {}
+"#
+    .to_string();
+
+    let (db, file, pos) = fixture_multi(main_path, main_text, vec![(i0_path, i0_text), (i1_path, i1_text)]);
+
+    let loc = goto_definition(&db, file, pos).expect("expected definition location");
+    assert!(
+        loc.uri.as_str().contains("I0.java"),
+        "expected goto-definition to resolve to I0.java; got {:?}",
         loc.uri
     );
     assert_eq!(loc.range.start.line, 2);

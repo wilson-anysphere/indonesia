@@ -414,20 +414,18 @@ impl WorkspaceIndex {
             });
         }
 
-        // First walk the superclass chain (including interface inheritance via `extends`).
+        // Prefer superclass lookup over interfaces (matches Java method lookup precedence).
         if let Some(super_name) = type_info.def.super_class.as_deref() {
-            if let Some(def) =
-                self.resolve_method_definition_inner(super_name, method_name, visited)
+            if let Some(def) = self.resolve_method_definition_inner(super_name, method_name, visited)
             {
                 return Some(def);
             }
         }
 
-        // If no method is found on the class/superclass chain, fall back to interfaces
-        // (including default methods).
+        // Fall back to interfaces, including extended interfaces (`interface I1 extends I0`).
         for iface in &type_info.def.interfaces {
-            if let Some(def) = self.resolve_method_definition_inner(iface, method_name, visited) {
-                return Some(def);
+            if let Some(found) = self.resolve_method_definition_inner(iface, method_name, visited) {
+                return Some(found);
             }
         }
 
@@ -470,10 +468,10 @@ impl WorkspaceIndex {
             }
         }
 
-        // Then check implemented interfaces (interface constants).
+        // Then check implemented interfaces (interface constants / inherited interface fields).
         for iface in &type_info.def.interfaces {
-            if let Some(def) = self.resolve_field_definition_inner(iface, field_name, visited) {
-                return Some(def);
+            if let Some(found) = self.resolve_field_definition_inner(iface, field_name, visited) {
+                return Some(found);
             }
         }
 
