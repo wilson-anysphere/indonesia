@@ -531,6 +531,42 @@ class C {}
 }
 
 #[test]
+fn type_import_on_demand_prefers_type_over_package_with_same_name() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(
+        file,
+        r#"
+import p.B.*;
+class Use {}
+"#,
+    );
+
+    let mut index = TestIndex::default();
+    // `p.B` exists as a type.
+    index.add_type("p", "B");
+    let inner = index.add_type("p", "B$Inner");
+
+    // `p.B` also exists as a package (containing `p.B.C`).
+    index.add_type("p.B", "C");
+
+    let scopes = build_scopes(&db, file);
+    let resolver = Resolver::new(&index);
+
+    // Member types of `p.B` should be imported.
+    assert_eq!(
+        resolver.resolve_type_name(&scopes.scopes, scopes.file_scope, &Name::from("Inner")),
+        Some(TypeResolution::External(inner))
+    );
+
+    // Types in the `p.B` *package* should not be imported when `p.B` resolves to a type.
+    assert_eq!(
+        resolver.resolve_type_name(&scopes.scopes, scopes.file_scope, &Name::from("C")),
+        None
+    );
+}
+
+#[test]
 fn ambiguous_type_import_on_demand_is_reported() {
     let mut db = TestDb::default();
     let file = FileId::from_raw(0);

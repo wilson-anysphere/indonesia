@@ -287,6 +287,24 @@ impl<'a> Resolver<'a> {
         resolve_type_with_nesting(self.jdk, name)
     }
 
+    /// Resolve a fully-qualified type name in the configured indices *without* applying any
+    /// dot-to-`$` nesting heuristics.
+    ///
+    /// This is useful in contexts where the caller is intentionally constructing a binary name
+    /// (e.g. `Outer$Inner`) and does not want `resolve_type_with_nesting` to reinterpret dotted
+    /// segments as nested separators.
+    fn resolve_type_in_index_exact(&self, name: &QualifiedName) -> Option<TypeName> {
+        if is_java_qualified_name(name) {
+            return self.jdk.resolve_type(name);
+        }
+        if let Some(classpath) = self.classpath {
+            if let Some(ty) = classpath.resolve_type(name) {
+                return Some(ty);
+            }
+        }
+        self.jdk.resolve_type(name)
+    }
+
     fn resolve_type_in_package_index(
         &self,
         package: &PackageName,
@@ -1078,28 +1096,42 @@ impl<'a> Resolver<'a> {
 
         for import in &imports.type_star {
             // JLS 7.5.2: `import X.*;` imports from either:
-            // - package `X` (all accessible types declared in the package), or
-            // - type `X` (all accessible member types declared in the type).
-            let package = package_name_from_qualified(&import.path);
-
-            if self.package_exists(&package) {
-                if let Some(ty) = self.resolve_type_in_package_index(&package, name) {
+            // - type `X` (all accessible member types declared in the type), or
+            // - package `X` (all accessible types declared in the package).
+            //
+            // If `X` resolves as a type name, it is treated as a type-import-on-demand, even if a
+            // package of the same name exists (matches `javac` behavior when class/package names
+            // overlap in bytecode).
+            if let Some(owner) = self.resolve_type_in_index(&import.path) {
+                // Prefer resolving the member as a binary nested name (`Outer$Inner`) so we don't
+                // accidentally treat a subpackage type (`Outer.Inner`) as a member type.
+                let binary_candidate = QualifiedName::from_dotted(&format!(
+                    "{}${}",
+                    owner.as_str(),
+                    name.as_str()
+                ));
+                if let Some(ty) = self.resolve_type_in_index_exact(&binary_candidate) {
                     if seen.insert(ty.clone()) {
+                        candidates.push(ty);
+                    }
+                    continue;
+                }
+
+                // Best-effort fallback: allow indices that only resolve dotted names through the
+                // nesting heuristic, but ensure the resolved type is actually nested under `owner`
+                // (i.e. `owner$Name`).
+                let prefix = import.path.to_dotted();
+                let dotted_candidate = QualifiedName::from_dotted(&format!("{prefix}.{}", name.as_str()));
+                if let Some(ty) = self.resolve_type_in_index(&dotted_candidate) {
+                    if ty.as_str().starts_with(&format!("{}$", owner.as_str())) && seen.insert(ty.clone()) {
                         candidates.push(ty);
                     }
                 }
                 continue;
             }
 
-            // Only treat the prefix as a type-import-on-demand if the prefix itself resolves to
-            // a type name.
-            if self.resolve_type_in_index(&import.path).is_none() {
-                continue;
-            }
-
-            let prefix = import.path.to_dotted();
-            let candidate = QualifiedName::from_dotted(&format!("{prefix}.{}", name.as_str()));
-            if let Some(ty) = self.resolve_type_in_index(&candidate) {
+            let package = package_name_from_qualified(&import.path);
+            if let Some(ty) = self.resolve_type_in_package_index(&package, name) {
                 if seen.insert(ty.clone()) {
                     candidates.push(ty);
                 }
