@@ -1098,10 +1098,7 @@ fn record_body_references(
                 let Some(field) = def.fields.get(&Name::from(name.as_str())).map(|f| f.id) else {
                     return;
                 };
-
-                let Some(&symbol) =
-                    resolution_to_symbol.get(&ResolutionKey::Field(field))
-                else {
+                let Some(&symbol) = resolution_to_symbol.get(&ResolutionKey::Field(field)) else {
                     return;
                 };
                 let range = TextRange::new(name_range.start, name_range.end);

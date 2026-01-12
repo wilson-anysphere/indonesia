@@ -781,7 +781,6 @@ where
         this
     }
 }
-
 #[allow(private_bounds)]
 impl<DB: ?Sized> IdeExtensions<DB>
 where
