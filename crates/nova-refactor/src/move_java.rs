@@ -21,6 +21,10 @@ pub struct FileEdit {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Legacy edit type for Java move refactorings.
+///
+/// This struct is kept temporarily for backwards compatibility. New code should prefer Nova's
+/// canonical [`WorkspaceEdit`] via [`move_class_workspace_edit`] / [`move_package_workspace_edit`].
 pub struct RefactoringEdit {
     pub file_moves: Vec<FileMove>,
     pub file_edits: Vec<FileEdit>,
@@ -145,6 +149,10 @@ pub struct MovePackageParams {
     pub new_package: String,
 }
 
+/// Move a single Java top-level class to a new package.
+///
+/// Returns Nova's canonical [`WorkspaceEdit`]. Internally this refactoring is still implemented
+/// by producing a legacy [`RefactoringEdit`] and converting it to the canonical edit model.
 pub fn move_class(
     files: &BTreeMap<PathBuf, String>,
     params: MoveClassParams,
@@ -264,6 +272,18 @@ pub fn move_class(
     Ok(out.to_workspace_edit(files)?)
 }
 
+/// Move a single Java top-level class to a new package, returning Nova's canonical [`WorkspaceEdit`].
+pub fn move_class_workspace_edit(
+    files: &BTreeMap<PathBuf, String>,
+    params: MoveClassParams,
+) -> Result<WorkspaceEdit, RefactorError> {
+    move_class(files, params)
+}
+
+/// Move/rename a Java package (and its subpackages).
+///
+/// Returns Nova's canonical [`WorkspaceEdit`]. Internally this refactoring is still implemented
+/// by producing a legacy [`RefactoringEdit`] and converting it to the canonical edit model.
 pub fn move_package(
     files: &BTreeMap<PathBuf, String>,
     params: MovePackageParams,
@@ -403,6 +423,14 @@ pub fn move_package(
     }
 
     Ok(out.to_workspace_edit(files)?)
+}
+
+/// Move/rename a Java package (and its subpackages), returning Nova's canonical [`WorkspaceEdit`].
+pub fn move_package_workspace_edit(
+    files: &BTreeMap<PathBuf, String>,
+    params: MovePackageParams,
+) -> Result<WorkspaceEdit, RefactorError> {
+    move_package(files, params)
 }
 
 fn package_is_prefix(prefix: &str, package: &str) -> bool {

@@ -83,7 +83,10 @@ pub use refactor::{
 #[cfg(feature = "ai")]
 pub use requests::{MoreCompletionsParams, MoreCompletionsResult, NOVA_COMPLETION_MORE_METHOD};
 pub use server::{HotSwapParams, HotSwapService, NovaLspServer};
-pub use workspace_edit::{client_supports_file_operations, workspace_edit_from_refactor};
+pub use workspace_edit::{
+    client_supports_file_operations, workspace_edit_from_refactor,
+    workspace_edit_from_refactor_workspace_edit,
+};
 
 use nova_dap::hot_swap::{BuildSystem, JdwpRedefiner};
 use nova_scheduler::CancellationToken;

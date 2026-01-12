@@ -54,11 +54,12 @@ pub use extract_member::{
 };
 pub use inline_method::{inline_method, InlineMethodError, InlineMethodOptions};
 pub use move_java::{
-    move_class, move_package, FileEdit, FileMove, MoveClassParams, MovePackageParams,
-    RefactorError, RefactoringEdit,
+    move_class, move_class_workspace_edit, move_package, move_package_workspace_edit, FileEdit,
+    FileMove, MoveClassParams, MovePackageParams, RefactorError, RefactoringEdit,
 };
 pub use move_member::{
-    move_method, move_static_member, MoveMemberError, MoveMethodParams, MoveStaticMemberParams,
+    move_method, move_method_workspace_edit, move_static_member, move_static_member_workspace_edit,
+    MoveMemberError, MoveMethodParams, MoveStaticMemberParams,
 };
 pub use safe_delete::{
     apply_edits, safe_delete, safe_delete_delete_anyway_edit, safe_delete_preview, SafeDeleteError,

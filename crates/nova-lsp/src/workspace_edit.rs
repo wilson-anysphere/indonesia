@@ -6,7 +6,7 @@ use lsp_types::{ClientCapabilities, ResourceOperationKind, Uri, WorkspaceEdit};
 use nova_refactor::{
     apply_workspace_edit, workspace_edit_to_lsp_document_changes_with_uri_mapper,
     workspace_edit_to_lsp_with_uri_mapper, FileId as RefactorFileId, FileOp as RefactorFileOp,
-    TextDatabase, WorkspaceEdit as RefactorWorkspaceEdit, WorkspaceTextEdit,
+    RefactorDatabase, TextDatabase, WorkspaceEdit as RefactorWorkspaceEdit, WorkspaceTextEdit,
 };
 
 pub fn client_supports_file_operations(capabilities: &ClientCapabilities) -> bool {
@@ -55,42 +55,50 @@ fn can_delete(capabilities: &ClientCapabilities) -> bool {
         && edit.document_changes.unwrap_or(false)
 }
 
+/// Convert a canonical [`nova_refactor::WorkspaceEdit`] into an LSP [`WorkspaceEdit`], selecting
+/// the best representation for the provided client capabilities.
+///
+/// - If the client supports `documentChanges` + `Rename`, we emit `RenameFile`.
+/// - If the client supports `documentChanges` + `Create`+`Delete` (but not `Rename`), we rewrite
+///   `Rename` file ops into `Create`+`Delete` and preserve post-rename text edits.
+/// - Otherwise, we fall back to rewriting the original documents in-place via the `changes` map
+///   (matching the behavior of Nova's legacy move refactorings).
+pub fn workspace_edit_from_refactor_workspace_edit(
+    root_uri: &Uri,
+    db: &dyn RefactorDatabase,
+    edit: &RefactorWorkspaceEdit,
+    capabilities: &ClientCapabilities,
+) -> WorkspaceEdit {
+    if can_rename(capabilities) {
+        if let Ok(edit) = workspace_edit_to_lsp_document_changes_with_uri_mapper(db, edit, |file| {
+            Ok(join_uri(root_uri, Path::new(&file.0)))
+        }) {
+            return edit;
+        }
+    }
+
+    if can_create(capabilities) && can_delete(capabilities) {
+        if let Some(rewritten) = rewrite_renames_as_create_delete(db, edit) {
+            if let Ok(edit) = workspace_edit_to_lsp_document_changes_with_uri_mapper(
+                db,
+                &rewritten,
+                |file| Ok(join_uri(root_uri, Path::new(&file.0))),
+            ) {
+                return edit;
+            }
+        }
+    }
+
+    try_workspace_edit_without_file_ops_support(root_uri, db, edit)
+        .unwrap_or_else(|| WorkspaceEdit::default())
+}
+
 pub fn workspace_edit_from_refactor(
     root_uri: &Uri,
     original_files: &HashMap<PathBuf, String>,
     edit: &RefactorWorkspaceEdit,
     capabilities: &ClientCapabilities,
 ) -> WorkspaceEdit {
-    if can_rename(capabilities) {
-        if let Some(edit) =
-            try_workspace_edit_from_refactor_with_rename_support(root_uri, original_files, edit)
-        {
-            return edit;
-        }
-    }
-
-    if can_create(capabilities) && can_delete(capabilities) {
-        if let Some(edit) = try_workspace_edit_from_refactor_with_create_delete_support(
-            root_uri,
-            original_files,
-            edit,
-        ) {
-            return edit;
-        }
-    } else {
-        // Continue to the fallback below.
-    }
-
-    // Fallback: no file operations, so rewrite the original documents in place.
-    try_workspace_edit_from_refactor_without_file_ops_support(root_uri, original_files, edit)
-        .unwrap_or_else(|| WorkspaceEdit::default())
-}
-
-fn try_workspace_edit_from_refactor_with_rename_support(
-    root_uri: &Uri,
-    original_files: &HashMap<PathBuf, String>,
-    edit: &RefactorWorkspaceEdit,
-) -> Option<WorkspaceEdit> {
     let db = TextDatabase::new(original_files.iter().map(|(path, text)| {
         (
             RefactorFileId::new(path.to_string_lossy().into_owned()),
@@ -98,17 +106,13 @@ fn try_workspace_edit_from_refactor_with_rename_support(
         )
     }));
 
-    workspace_edit_to_lsp_document_changes_with_uri_mapper(&db, edit, |file| {
-        Ok(join_uri(root_uri, Path::new(&file.0)))
-    })
-    .ok()
+    workspace_edit_from_refactor_workspace_edit(root_uri, &db, edit, capabilities)
 }
 
-fn try_workspace_edit_from_refactor_with_create_delete_support(
-    root_uri: &Uri,
-    original_files: &HashMap<PathBuf, String>,
+fn rewrite_renames_as_create_delete(
+    db: &dyn RefactorDatabase,
     edit: &RefactorWorkspaceEdit,
-) -> Option<WorkspaceEdit> {
+) -> Option<RefactorWorkspaceEdit> {
     let mut canonical = RefactorWorkspaceEdit {
         file_ops: Vec::new(),
         text_edits: edit.text_edits.clone(),
@@ -117,11 +121,10 @@ fn try_workspace_edit_from_refactor_with_create_delete_support(
     for op in &edit.file_ops {
         match op {
             RefactorFileOp::Rename { from, to } => {
-                let from_path = PathBuf::from(&from.0);
-                let from_contents = original_files.get(&from_path)?;
+                let from_contents = db.file_text(from)?.to_string();
                 canonical.file_ops.push(RefactorFileOp::Create {
                     file: to.clone(),
-                    contents: from_contents.clone(),
+                    contents: from_contents,
                 });
                 canonical
                     .file_ops
@@ -140,36 +143,48 @@ fn try_workspace_edit_from_refactor_with_create_delete_support(
     }
 
     canonical.normalize().ok()?;
-
-    let db = TextDatabase::new(original_files.iter().map(|(path, text)| {
-        (
-            RefactorFileId::new(path.to_string_lossy().into_owned()),
-            text.clone(),
-        )
-    }));
-
-    workspace_edit_to_lsp_document_changes_with_uri_mapper(&db, &canonical, |file| {
-        Ok(join_uri(root_uri, Path::new(&file.0)))
-    })
-    .ok()
+    Some(canonical)
 }
 
-fn try_workspace_edit_from_refactor_without_file_ops_support(
+fn try_workspace_edit_without_file_ops_support(
     root_uri: &Uri,
-    original_files: &HashMap<PathBuf, String>,
+    db: &dyn RefactorDatabase,
     edit: &RefactorWorkspaceEdit,
 ) -> Option<WorkspaceEdit> {
-    let db = TextDatabase::new(original_files.iter().map(|(path, text)| {
-        (
-            RefactorFileId::new(path.to_string_lossy().into_owned()),
-            text.clone(),
-        )
-    }));
+    // Build a minimal pre-edit snapshot containing the files needed for this edit.
+    let mut original_by_id: BTreeMap<RefactorFileId, String> = BTreeMap::new();
 
-    let original_by_id: BTreeMap<RefactorFileId, String> = original_files
-        .iter()
-        .map(|(path, text)| (RefactorFileId::new(path.to_string_lossy().into_owned()), text.clone()))
-        .collect();
+    for op in &edit.file_ops {
+        match op {
+            RefactorFileOp::Rename { from, to } => {
+                let text = db.file_text(from)?;
+                original_by_id.insert(from.clone(), text.to_string());
+                if let Some(text) = db.file_text(to) {
+                    original_by_id.insert(to.clone(), text.to_string());
+                }
+            }
+            RefactorFileOp::Delete { file } => {
+                let text = db.file_text(file)?;
+                original_by_id.insert(file.clone(), text.to_string());
+            }
+            RefactorFileOp::Create { file, .. } => {
+                // Include existing content to surface create conflicts.
+                if let Some(text) = db.file_text(file) {
+                    original_by_id.insert(file.clone(), text.to_string());
+                }
+            }
+        }
+    }
+
+    for e in &edit.text_edits {
+        if original_by_id.contains_key(&e.file) {
+            continue;
+        }
+        if let Some(text) = db.file_text(&e.file) {
+            original_by_id.insert(e.file.clone(), text.to_string());
+        }
+    }
+
     let applied = apply_workspace_edit(&original_by_id, edit).ok()?;
 
     let mut rewritten_sources: HashSet<RefactorFileId> = HashSet::new();
@@ -210,7 +225,7 @@ fn try_workspace_edit_from_refactor_without_file_ops_support(
 
     canonical.normalize().ok()?;
 
-    workspace_edit_to_lsp_with_uri_mapper(&db, &canonical, |file| {
+    workspace_edit_to_lsp_with_uri_mapper(db, &canonical, |file| {
         Ok(join_uri(root_uri, Path::new(&file.0)))
     })
     .ok()
@@ -340,8 +355,14 @@ mod tests {
             ..Default::default()
         };
 
+        let db = TextDatabase::new(original.iter().map(|(path, text)| {
+            (
+                RefactorFileId::new(path.to_string_lossy().into_owned()),
+                text.clone(),
+            )
+        }));
         let root: Uri = "file:///workspace/".parse().unwrap();
-        let ws_edit = workspace_edit_from_refactor(&root, &original, &edit, &caps);
+        let ws_edit = workspace_edit_from_refactor_workspace_edit(&root, &db, &edit, &caps);
 
         let Some(DocumentChanges::Operations(ops)) = ws_edit.document_changes else {
             panic!("expected document change operations");
@@ -368,13 +389,20 @@ mod tests {
 
         let caps = ClientCapabilities::default();
 
+        let db = TextDatabase::new(original.iter().map(|(path, text)| {
+            (
+                RefactorFileId::new(path.to_string_lossy().into_owned()),
+                text.clone(),
+            )
+        }));
         let root: Uri = "file:///workspace/".parse().unwrap();
-        let ws_edit = workspace_edit_from_refactor(&root, &original, &edit, &caps);
+        let ws_edit = workspace_edit_from_refactor_workspace_edit(&root, &db, &edit, &caps);
 
         assert!(ws_edit.document_changes.is_none());
         let changes = ws_edit.changes.expect("expected changes map");
         let uri = join_uri(&root, Path::new("src/main/java/com/foo/A.java"));
         assert!(changes.contains_key(&uri));
+        assert!(changes[&uri][0].new_text.contains("package com.bar;"));
     }
 
     #[test]
@@ -399,7 +427,7 @@ mod tests {
             "package com.other;\n\nimport com.foo.A;\n\npublic class C { A a; }\n".to_string(),
         );
 
-        let refactor = nova_refactor::move_class(
+        let refactor = nova_refactor::move_class_workspace_edit(
             &files,
             MoveClassParams {
                 source_path: PathBuf::from("src/main/java/com/foo/A.java"),
@@ -409,7 +437,12 @@ mod tests {
         )
         .unwrap();
 
-        let original_files: HashMap<PathBuf, String> = files.into_iter().collect();
+        let db = TextDatabase::new(files.iter().map(|(path, text)| {
+            (
+                RefactorFileId::new(path.to_string_lossy().into_owned()),
+                text.clone(),
+            )
+        }));
 
         let caps = ClientCapabilities {
             workspace: Some(WorkspaceClientCapabilities {
@@ -424,7 +457,7 @@ mod tests {
         };
 
         let root: Uri = "file:///workspace/".parse().unwrap();
-        let ws_edit = workspace_edit_from_refactor(&root, &original_files, &refactor, &caps);
+        let ws_edit = workspace_edit_from_refactor_workspace_edit(&root, &db, &refactor, &caps);
 
         let Some(DocumentChanges::Operations(ops)) = ws_edit.document_changes else {
             panic!("expected document change operations");
@@ -464,8 +497,14 @@ mod tests {
             ..Default::default()
         };
 
+        let db = TextDatabase::new(original.iter().map(|(path, text)| {
+            (
+                RefactorFileId::new(path.to_string_lossy().into_owned()),
+                text.clone(),
+            )
+        }));
         let root: Uri = "file:///workspace/".parse().unwrap();
-        let ws_edit = workspace_edit_from_refactor(&root, &original, &edit, &caps);
+        let ws_edit = workspace_edit_from_refactor_workspace_edit(&root, &db, &edit, &caps);
 
         let Some(DocumentChanges::Operations(ops)) = ws_edit.document_changes else {
             panic!("expected document change operations");

@@ -176,6 +176,10 @@ fn collect_static_reference_edits(
     edits
 }
 
+/// Move a static member (static method or static field) between two classes.
+///
+/// Returns Nova's canonical [`WorkspaceEdit`]. Internally this refactoring is still implemented
+/// by producing a legacy [`RefactoringEdit`] and converting it to the canonical edit model.
 pub fn move_static_member(
     files: &BTreeMap<PathBuf, String>,
     params: MoveStaticMemberParams,
@@ -285,6 +289,15 @@ pub fn move_static_member(
     }
 
     Ok(out.to_workspace_edit(files)?)
+}
+
+/// Move a static member (static method or static field) between two classes, returning Nova's
+/// canonical [`WorkspaceEdit`].
+pub fn move_static_member_workspace_edit(
+    files: &BTreeMap<PathBuf, String>,
+    params: MoveStaticMemberParams,
+) -> Result<WorkspaceEdit, MoveMemberError> {
+    move_static_member(files, params)
 }
 
 fn identifier_tokens(text: &str) -> Vec<(usize, usize, String)> {
@@ -450,6 +463,10 @@ fn detect_unhandled_dot_calls(text: &str, method_name: &str) -> bool {
     false
 }
 
+/// Move an instance method from one class to another.
+///
+/// Returns Nova's canonical [`WorkspaceEdit`]. Internally this refactoring is still implemented
+/// by producing a legacy [`RefactoringEdit`] and converting it to the canonical edit model.
 pub fn move_method(
     files: &BTreeMap<PathBuf, String>,
     params: MoveMethodParams,
@@ -699,4 +716,12 @@ pub fn move_method(
     }
 
     Ok(out.to_workspace_edit(files)?)
+}
+
+/// Move an instance method from one class to another, returning Nova's canonical [`WorkspaceEdit`].
+pub fn move_method_workspace_edit(
+    files: &BTreeMap<PathBuf, String>,
+    params: MoveMethodParams,
+) -> Result<WorkspaceEdit, MoveMemberError> {
+    move_method(files, params)
 }
