@@ -197,6 +197,36 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         self.java_owning_targets_for_file_with_universe(file.as_ref(), None)
     }
 
+    /// Resolve Java compilation information for a workspace source file.
+    ///
+    /// This is a convenience API intended for IDE-style, on-demand loading:
+    ///
+    /// 1) find the owning `java_*` Bazel target(s) for `file`
+    /// 2) return [`JavaCompileInfo`] for the first owner (chosen deterministically)
+    ///
+    /// Returns `Ok(None)` when:
+    /// - `file` is not contained in any Bazel package under the workspace root (no `BUILD` /
+    ///   `BUILD.bazel` file found up to the workspace root), or
+    /// - no owning `java_*` targets were found for `file`.
+    ///
+    /// When multiple owning targets exist, this chooses the first label in lexicographic order.
+    pub fn compile_info_for_file(
+        &mut self,
+        file: impl AsRef<Path>,
+    ) -> Result<Option<JavaCompileInfo>> {
+        self.compile_info_for_file_with_universe(file.as_ref(), None)
+    }
+
+    /// Like [`BazelWorkspace::compile_info_for_file`], but restricts owning-target resolution to the
+    /// transitive closure of `run_target` (`deps(run_target)`).
+    pub fn compile_info_for_file_in_run_target_closure(
+        &mut self,
+        file: impl AsRef<Path>,
+        run_target: &str,
+    ) -> Result<Option<JavaCompileInfo>> {
+        self.compile_info_for_file_with_universe(file.as_ref(), Some(run_target))
+    }
+
     /// Like [`BazelWorkspace::java_owning_targets_for_file`], but restrict the reverse dependency
     /// search universe to the transitive closure of `run_target` (`deps(run_target)`).
     pub fn java_owning_targets_for_file_in_run_target_closure(
@@ -205,6 +235,34 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         run_target: &str,
     ) -> Result<Vec<String>> {
         self.java_owning_targets_for_file_with_universe(file.as_ref(), Some(run_target))
+    }
+
+    fn compile_info_for_file_with_universe(
+        &mut self,
+        file: &Path,
+        run_target: Option<&str>,
+    ) -> Result<Option<JavaCompileInfo>> {
+        let mut owners = if let Some(run_target) = run_target {
+            self.java_owning_targets_for_file_in_run_target_closure(file, run_target)?
+        } else {
+            self.java_owning_targets_for_file(file)?
+        };
+
+        if owners.is_empty() {
+            return Ok(None);
+        }
+
+        // `java_owning_targets_for_file*` results are already sorted and deduplicated when derived
+        // from `bazel query`, but keep this deterministic even if upstream behavior changes (or if a
+        // future provider returns unsorted results).
+        owners.sort();
+        owners.dedup();
+
+        let target = owners
+            .first()
+            .expect("owners checked non-empty")
+            .to_string();
+        Ok(Some(self.target_compile_info(&target)?))
     }
 
     fn java_owning_targets_for_file_with_universe(
