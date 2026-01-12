@@ -360,3 +360,32 @@ fn type_use_annotations_on_primitive_arrays_are_ignored() {
         Type::Array(Box::new(Type::Primitive(PrimitiveType::Int)))
     );
 }
+
+#[test]
+fn resolves_unicode_identifier_in_same_package() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(file, "package p; class C {}\n");
+
+    let jdk = JdkIndex::new();
+    let mut index = TestIndex::default();
+    index.add_type("p", "π");
+
+    let scopes = build_scopes(&db, file);
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let result = resolve_type_ref_text(
+        &resolver,
+        &scopes.scopes,
+        scopes.file_scope,
+        &env,
+        &type_vars,
+        "π",
+        None,
+    );
+
+    assert!(result.diagnostics.is_empty());
+    assert_eq!(result.ty, Type::Named("p.π".to_string()));
+}
