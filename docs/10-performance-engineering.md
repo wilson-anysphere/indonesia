@@ -105,8 +105,8 @@ pub struct ReferenceIndex {
 
 /// Inheritance index: type → subtypes
 pub struct InheritanceIndex {
-    subtypes: HashMap<TypeId, Vec<TypeId>>,
-    supertypes: HashMap<TypeId, Vec<TypeId>>,
+    subtypes: HashMap<ClassId, Vec<ClassId>>,
+    supertypes: HashMap<ClassId, Vec<ClassId>>,
 }
 
 /// File index: path → file metadata
@@ -116,6 +116,10 @@ pub struct FileIndex {
     content_hashes: HashMap<FileId, ContentHash>,
 }
 ```
+
+**Implementation note (current repo):** class identity is represented by `ClassId` (not a
+per-query/local id). Stable ids are a prerequisite for reliable caching and for indexes keyed by
+type identity; see ADR 0011 and ADR 0012 in `docs/adr/`.
 
 ### Incremental Index Updates
 

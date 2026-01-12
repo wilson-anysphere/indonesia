@@ -508,28 +508,32 @@ pub fn find_references(
 #[query]
 pub fn type_hierarchy(
     db: &dyn Database,
-    type_id: TypeId,
+    class_id: ClassId,
 ) -> TypeHierarchy {
-    let type_def = db.type_definition(type_id);
+    let type_def = db.type_definition(class_id);
     
     TypeHierarchy {
-        item: type_hierarchy_item(db, type_id),
+        item: type_hierarchy_item(db, class_id),
         
         // Supertypes
-        supertypes: db.supertypes(type_id)
+        supertypes: db.supertypes(class_id)
             .into_iter()
             .map(|t| type_hierarchy_item(db, t))
             .collect(),
         
         // Subtypes (from index)
         subtypes: db.inheritance_index()
-            .subtypes_of(type_id)
+            .subtypes_of(class_id)
             .into_iter()
             .map(|t| type_hierarchy_item(db, t))
             .collect(),
     }
 }
 ```
+
+**Implementation note (current repo):** the concrete type system represents classes with `ClassId`
+(`nova_types::Type::Class`). Correctness and incremental caching depend on class ids being stable
+across bodies and queries; see ADR 0011 and ADR 0012 in `docs/adr/`.
 
 ### Call Hierarchy
 
