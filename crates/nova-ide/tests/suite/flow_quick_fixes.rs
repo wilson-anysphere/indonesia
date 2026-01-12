@@ -1,8 +1,15 @@
-use lsp_types::{CodeActionKind, Position, Range, TextEdit};
+use lsp_types::{CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit};
+use nova_config::NovaConfig;
 use nova_db::InMemoryFileStore;
-use nova_ide::{code_action::diagnostic_quick_fixes, file_diagnostics, file_diagnostics_lsp};
-use nova_types::{Severity, Span};
+use nova_ext::{ProjectId, Span};
+use nova_ide::{
+    code_action::diagnostic_quick_fixes, extensions::IdeExtensions, file_diagnostics,
+    file_diagnostics_lsp,
+};
+use nova_scheduler::CancellationToken;
+use nova_types::Severity;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::text_fixture::{offset_to_position as offset_to_lsp_position, position_to_offset};
 
@@ -65,12 +72,26 @@ fn unreachable_code_quick_fix_removes_statement() {
         "expected FLOW_UNREACHABLE diagnostic on `{stmt}`; got {diags:#?}"
     );
 
-    let lsp_diags = file_diagnostics_lsp(&db, file);
+    let db: Arc<InMemoryFileStore> = Arc::new(db);
+    let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
 
-    let selection = Range::new(
-        offset_to_lsp_position(text, stmt_start),
-        offset_to_lsp_position(text, stmt_end),
-    );
+    let selection = Span::new(stmt_start, stmt_end);
+    let actions = ide.code_actions_lsp(CancellationToken::new(), file, Some(selection));
+
+    let action = actions
+        .iter()
+        .find_map(|action| match action {
+            CodeActionOrCommand::CodeAction(action) if action.title == "Remove unreachable code" => {
+                Some(action)
+            }
+            _ => None,
+        })
+        .expect("expected `Remove unreachable code` quickfix");
+
+    assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+
+    let edit = action.edit.clone().expect("expected quickfix workspace edit");
+    let changes = edit.changes.expect("expected `changes` workspace edit");
 
     let path = PathBuf::from("/test.java");
     let abs = nova_core::AbsPathBuf::new(path).expect("absolute path");
@@ -78,21 +99,6 @@ fn unreachable_code_quick_fix_removes_statement() {
         .expect("file uri")
         .parse()
         .expect("parse uri");
-
-    let actions = diagnostic_quick_fixes(text, Some(uri.clone()), selection, &lsp_diags);
-
-    let action = actions
-        .iter()
-        .find(|action| action.title == "Remove unreachable code")
-        .expect("expected `Remove unreachable code` quickfix");
-
-    assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
-
-    let edit = action
-        .edit
-        .clone()
-        .expect("expected quickfix workspace edit");
-    let changes = edit.changes.expect("expected `changes` workspace edit");
 
     let edits = changes.get(&uri).expect("expected edits for file uri");
     assert_eq!(edits.len(), 1, "expected single text edit; got {edits:#?}");
@@ -122,15 +128,16 @@ fn unreachable_code_quick_fix_removes_statement() {
     let return_stmt = "return;";
     let return_start = text.find(return_stmt).expect("expected return statement");
     let return_end = return_start + return_stmt.len();
-    let selection = Range::new(
-        offset_to_lsp_position(text, return_start),
-        offset_to_lsp_position(text, return_end),
+    let actions = ide.code_actions_lsp(
+        CancellationToken::new(),
+        file,
+        Some(Span::new(return_start, return_end)),
     );
-    let actions = diagnostic_quick_fixes(text, Some(uri), selection, &lsp_diags);
     assert!(
-        !actions
-            .iter()
-            .any(|action| action.title == "Remove unreachable code"),
+        !actions.iter().any(|action| matches!(
+            action,
+            CodeActionOrCommand::CodeAction(action) if action.title == "Remove unreachable code"
+        )),
         "expected quick fix to be filtered out for non-intersecting selection; got {actions:#?}"
     );
 }

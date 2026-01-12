@@ -119,6 +119,19 @@ pub(crate) fn quick_fixes_for_diagnostics(
                     actions.push(CodeActionOrCommand::CodeAction(action));
                 }
             }
+            "FLOW_UNREACHABLE" => {
+                let Some(diag_span) = diag.span else {
+                    continue;
+                };
+
+                if !spans_intersect(diag_span, selection) {
+                    continue;
+                }
+
+                if let Some(action) = remove_unreachable_code_action(uri, source, diag_span) {
+                    actions.push(CodeActionOrCommand::CodeAction(action));
+                }
+            }
             "return-mismatch" => {
                 let Some(diag_span) = diag.span else {
                     continue;
@@ -575,4 +588,20 @@ fn line_indent<'a>(text: &'a str, line_start: usize) -> &'a str {
     }
     // SAFETY: we only advance on ASCII bytes, which are always char boundaries.
     &text[line_start..end]
+}
+
+fn remove_unreachable_code_action(uri: &Uri, source: &str, diag_span: Span) -> Option<CodeAction> {
+    // Best-effort: remove the entire line containing the unreachable statement, rather than just
+    // the diagnostic span. The span may not cover the full statement text (e.g. `x = 1` inside
+    // `int x = 1;`), and deleting whole lines is deterministic and avoids leaving behind broken
+    // syntax.
+    let start = line_start_offset(source, diag_span.start)?;
+    let end = line_end_offset(source, diag_span.end);
+
+    Some(CodeAction {
+        title: "Remove unreachable code".to_string(),
+        kind: Some(CodeActionKind::QUICKFIX),
+        edit: Some(single_replace_range_edit(uri, source, start, end, String::new())),
+        ..Default::default()
+    })
 }
