@@ -19,7 +19,6 @@ import { toDidRenameFilesParams } from './fileOperations';
 import { getNovaWatchedFileGlobPatterns } from './fileWatchers';
 import {
   formatUnsupportedNovaMethodMessage,
-  isNovaMethodNotFoundError,
   isNovaRequestSupported,
   resetNovaExperimentalCapabilities,
   setNovaExperimentalCapabilities,
@@ -2071,12 +2070,12 @@ export async function activate(context: vscode.ExtensionContext) {
   registerNovaBuildFileWatchers(context, (method, params) => sendNovaRequest(method, params, { allowMethodFallback: true }), {
     output: serverOutput,
     formatError,
-    isMethodNotFoundError: isNovaMethodNotFoundError,
+    isMethodNotFoundError,
   });
   registerNovaBuildIntegration(context, {
     request: (method, params) => sendNovaRequest(method, params, { allowMethodFallback: true }),
     formatError,
-    isMethodNotFoundError: isNovaMethodNotFoundError,
+    isMethodNotFoundError,
   });
 
   let restartPromptInFlight: Promise<void> | undefined;
@@ -2230,7 +2229,7 @@ async function sendNovaRequest<R>(
     }
     return result;
   } catch (err) {
-    if (method.startsWith('nova/') && isNovaMethodNotFoundError(err)) {
+    if (method.startsWith('nova/') && isMethodNotFoundError(err)) {
       if (opts.allowMethodFallback) {
         throw err;
       } else {

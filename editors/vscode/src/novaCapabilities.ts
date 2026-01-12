@@ -1,4 +1,5 @@
 import type { LanguageClient } from 'vscode-languageclient/node';
+import { isMethodNotFoundError } from './safeMode';
 
 export type NovaExperimentalCapabilities = {
   requests: Set<string>;
@@ -151,20 +152,7 @@ export function formatUnsupportedNovaMethodMessage(method: string): string {
  * - `-32602` with an "unknown (stateless) method" message for unknown `nova/*` methods
  */
 export function isNovaMethodNotFoundError(err: unknown): boolean {
-  const obj = asObject(err);
-  if (!obj) {
-    return false;
-  }
-
-  const code = obj.code;
-  if (code === -32601) {
-    return true;
-  }
-
-  const message = obj.message;
-  if (code === -32602 && typeof message === 'string' && message.toLowerCase().includes('unknown (stateless) method')) {
-    return true;
-  }
-
-  return typeof message === 'string' && message.toLowerCase().includes('method not found');
+  // Keep this helper as a convenience wrapper for the experimental-capabilities module, but reuse
+  // the shared JSON-RPC method-not-found detection logic so all call sites stay consistent.
+  return isMethodNotFoundError(err);
 }
