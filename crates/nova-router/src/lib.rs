@@ -2733,7 +2733,7 @@ mod tests {
             }
         }
 
-        let index = GlobalSymbolIndex::new(symbols);
+        let index = GlobalSymbolIndex::new(symbols, 0);
         let results = index.search("foo", 5);
 
         let formatted: Vec<(String, String)> = results
