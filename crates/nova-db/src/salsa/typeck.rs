@@ -11137,6 +11137,7 @@ fn find_enclosing_target_typed_expr_in_stmt_inner(
         | HirStmt::Let { range, .. }
         | HirStmt::Expr { range, .. }
         | HirStmt::Assert { range, .. }
+        | HirStmt::Yield { range, .. }
         | HirStmt::Return { range, .. }
         | HirStmt::If { range, .. }
         | HirStmt::While { range, .. }
