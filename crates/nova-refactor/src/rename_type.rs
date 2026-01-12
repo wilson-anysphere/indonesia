@@ -720,6 +720,7 @@ fn expr_scope_for_offset(
             | Stmt::Let { range, .. }
             | Stmt::Expr { range, .. }
             | Stmt::Yield { range, .. }
+            | Stmt::Assert { range, .. }
             | Stmt::Return { range, .. }
             | Stmt::If { range, .. }
             | Stmt::While { range, .. }
@@ -728,7 +729,6 @@ fn expr_scope_for_offset(
             | Stmt::Synchronized { range, .. }
             | Stmt::Switch { range, .. }
             | Stmt::Try { range, .. }
-            | Stmt::Assert { range, .. }
             | Stmt::Throw { range, .. }
             | Stmt::Break { range }
             | Stmt::Continue { range }
@@ -769,11 +769,6 @@ fn expr_scope_for_offset(
             } => {
                 visit_expr(body, *condition, offset, best_expr, best_stmt);
                 if let Some(expr) = message {
-                    visit_expr(body, *expr, offset, best_expr, best_stmt);
-                }
-            }
-            Stmt::Yield { expr, .. } => {
-                if let Some(expr) = expr {
                     visit_expr(body, *expr, offset, best_expr, best_stmt);
                 }
             }
