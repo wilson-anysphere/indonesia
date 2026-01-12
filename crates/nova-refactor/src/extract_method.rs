@@ -363,14 +363,6 @@ fn find_best_expr_in_stmt(
                 find_best_expr_in_stmt(body, *finally, offset, owner, best);
             }
         }
-        HirStmt::Assert {
-            condition, message, ..
-        } => {
-            find_best_expr_in_expr(body, *condition, offset, owner, best);
-            if let Some(message) = message {
-                find_best_expr_in_expr(body, *message, offset, owner, best);
-            }
-        }
         HirStmt::Throw { expr, .. } => find_best_expr_in_expr(body, *expr, offset, owner, best),
         HirStmt::Break { .. } | HirStmt::Continue { .. } | HirStmt::Empty { .. } => {}
     }
@@ -439,8 +431,8 @@ fn find_best_expr_in_expr(
             for dim_expr in dim_exprs {
                 find_best_expr_in_expr(body, *dim_expr, offset, owner, best);
             }
-            if let Some(initializer) = initializer {
-                find_best_expr_in_expr(body, *initializer, offset, owner, best);
+            if let Some(init_expr) = initializer {
+                find_best_expr_in_expr(body, *init_expr, offset, owner, best);
             }
         }
         HirExpr::ArrayInitializer { items, .. } => {
