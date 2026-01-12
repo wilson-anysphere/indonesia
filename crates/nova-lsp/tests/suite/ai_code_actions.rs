@@ -1869,9 +1869,8 @@ fn stdio_server_ai_generate_tests_sends_apply_edit() {
         .expect("end pos");
     let range = Range::new(start, end);
 
-    // The AI test-generation action is allowed to create new files (see
-    // `AiCodeActionExecutor::execute`), so use a patch that creates the conventional Maven/Gradle
-    // test file under `src/test/java/...`.
+    // The AI test-generation action is allowed to create new files, so use a patch that creates
+    // the conventional Maven/Gradle test file under `src/test/java/...`.
     let patch = json!({
       "edits": [
         {

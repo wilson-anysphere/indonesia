@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use lsp_types::{
@@ -135,6 +135,7 @@ impl<'a> AiCodeActionExecutor<'a> {
                     workspace,
                     &result.formatted_workspace,
                     result.applied.touched_ranges.keys(),
+                    result.applied.created_files.iter(),
                 );
                 Ok(CodeActionOutcome::WorkspaceEdit(edit))
             }
@@ -191,6 +192,7 @@ impl<'a> AiCodeActionExecutor<'a> {
                     workspace,
                     &result.formatted_workspace,
                     result.applied.touched_ranges.keys(),
+                    result.applied.created_files.iter(),
                 );
                 Ok(CodeActionOutcome::WorkspaceEdit(edit))
             }
@@ -252,17 +254,46 @@ fn workspace_edit_from_virtual_workspace<'a>(
     before: &VirtualWorkspace,
     after: &VirtualWorkspace,
     touched_files: impl IntoIterator<Item = &'a String>,
+    created_files: impl IntoIterator<Item = &'a String>,
 ) -> WorkspaceEdit {
     let mut changed: Vec<(String, Option<String>, Option<String>)> = Vec::new();
-    let mut has_new_file = false;
+    let created_files: Vec<&'a String> = created_files.into_iter().collect();
+    let mut create_ops: Vec<String> = Vec::new();
+
+    for file in &created_files {
+        let file = (*file).as_str();
+        if before.get(file).is_none() && after.get(file).is_some() {
+            create_ops.push(file.to_string());
+        }
+    }
+
+    let mut has_new_file = !create_ops.is_empty();
+    let mut seen: HashSet<&str> = HashSet::new();
 
     for file in touched_files {
+        if !seen.insert(file.as_str()) {
+            continue;
+        }
+        let before_text = before.get(file).map(str::to_string);
+        let after_text = after.get(file).map(str::to_string);
+        if before_text == after_text {
+            continue;
+        }
+        changed.push((file.clone(), before_text, after_text));
+    }
+
+    for file in created_files {
+        if !seen.insert(file.as_str()) {
+            continue;
+        }
         let before_text = before.get(file).map(str::to_string);
         let after_text = after.get(file).map(str::to_string);
         if before_text == after_text {
             continue;
         }
         if before_text.is_none() && after_text.is_some() {
+            // Fall back to emitting file operations if the patch produced a new file but it
+            // wasn't surfaced in the touched range list (e.g. empty file creations).
             has_new_file = true;
         }
         changed.push((file.clone(), before_text, after_text));
@@ -291,20 +322,18 @@ fn workspace_edit_from_virtual_workspace<'a>(
     }
 
     let mut ops: Vec<DocumentChangeOperation> = Vec::new();
-    for (file, before_text, after_text) in &changed {
-        if before_text.is_none() && after_text.is_some() {
-            let uri = crate::workspace_edit::join_uri(root_uri, Path::new(file));
-            ops.push(DocumentChangeOperation::Op(ResourceOp::Create(
-                CreateFile {
-                    uri,
-                    options: Some(CreateFileOptions {
-                        overwrite: Some(false),
-                        ignore_if_exists: Some(true),
-                    }),
-                    annotation_id: None,
-                },
-            )));
-        }
+    for file in create_ops {
+        let uri = crate::workspace_edit::join_uri(root_uri, Path::new(&file));
+        ops.push(DocumentChangeOperation::Op(ResourceOp::Create(
+            CreateFile {
+                uri,
+                options: Some(CreateFileOptions {
+                    overwrite: Some(false),
+                    ignore_if_exists: Some(true),
+                }),
+                annotation_id: None,
+            },
+        )));
     }
 
     for (file, before_text, after_text) in changed {
@@ -883,6 +912,7 @@ mod tests {
     #[tokio::test]
     async fn generate_tests_creates_new_file_workspace_edit_includes_create_file_op() {
         let test_file = "src/test/java/com/example/ExampleTest.java";
+        let expected_uri = crate::workspace_edit::join_uri(&root_uri(), Path::new(test_file));
         let patch = format!(
             r#"{{
   "edits": [
@@ -934,15 +964,22 @@ mod tests {
             panic!("expected operations-based document changes");
         };
         assert!(
-            ops.iter()
-                .any(|op| matches!(op, DocumentChangeOperation::Op(ResourceOp::Create(_)))),
-            "expected CreateFile op, got: {ops:?}"
+            ops.iter().any(|op| matches!(
+                op,
+                DocumentChangeOperation::Op(ResourceOp::Create(CreateFile { uri, .. }))
+                    if uri == &expected_uri
+            )),
+            "expected CreateFile op for {:?}, got: {ops:?}",
+            expected_uri
         );
 
         let text_edits = ops
             .iter()
             .filter_map(|op| match op {
-                DocumentChangeOperation::Edit(TextDocumentEdit { edits, .. }) => Some(edits),
+                DocumentChangeOperation::Edit(TextDocumentEdit {
+                    text_document,
+                    edits,
+                }) if text_document.uri == expected_uri => Some(edits),
                 _ => None,
             })
             .flatten()
