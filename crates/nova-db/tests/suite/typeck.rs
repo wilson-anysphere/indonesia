@@ -1,9 +1,13 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use nova_db::{ArcEq, FileId, NovaInputs, NovaTypeck, ProjectId, SalsaRootDatabase, SourceRootId};
+use nova_db::{
+    ArcEq, FileId, NovaHir, NovaInputs, NovaTypeck, ProjectId, SalsaRootDatabase, SourceRootId,
+};
 use nova_jdk::JdkIndex;
 use nova_project::{BuildSystem, JavaConfig, Module, ProjectConfig};
+use nova_resolve::ids::DefWithBodyId;
+use nova_types::{PrimitiveType, Type};
 use tempfile::TempDir;
 
 #[path = "../typeck/diagnostics.rs"]
@@ -961,5 +965,50 @@ class C {
     assert!(
         diags.iter().all(|d| d.code.as_ref() != "return-mismatch"),
         "expected lambda return checking to use the SAM return type, got {diags:?}"
+    );
+}
+
+#[test]
+fn type_of_def_is_signature_only_and_does_not_execute_typeck_body() {
+    let src = r#"
+class C {
+    int m() { return 1; }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let tree = db.hir_item_tree(file);
+
+    let method_id = tree
+        .items
+        .iter()
+        .find_map(|item| match *item {
+            nova_hir::item_tree::Item::Class(class_id) => tree
+                .class(class_id)
+                .members
+                .iter()
+                .find_map(|member| match *member {
+                    nova_hir::item_tree::Member::Method(m) => Some(m),
+                    _ => None,
+                }),
+            _ => None,
+        })
+        .expect("expected to find method in item tree");
+
+    // Reset query stats so the assertion below only reflects the `type_of_def` call.
+    db.clear_query_stats();
+
+    let ty = db.type_of_def(DefWithBodyId::Method(method_id));
+    assert_eq!(ty, Type::Primitive(PrimitiveType::Int));
+
+    let typeck_body_executions = db
+        .query_stats()
+        .by_query
+        .get("typeck_body")
+        .map(|s| s.executions)
+        .unwrap_or(0);
+    assert_eq!(
+        typeck_body_executions, 0,
+        "type_of_def should not execute typeck_body"
     );
 }

@@ -187,7 +187,100 @@ fn type_of_expr(db: &dyn NovaTypeck, _file: FileId, expr: FileExprId) -> Type {
 }
 
 fn type_of_def(db: &dyn NovaTypeck, def: DefWithBodyId) -> Type {
-    db.typeck_body(def).expected_return.clone()
+    let start = Instant::now();
+
+    #[cfg(feature = "tracing")]
+    let _span = tracing::debug_span!("query", name = "type_of_def", ?def).entered();
+
+    cancel::check_cancelled(db);
+
+    let ty = match def {
+        DefWithBodyId::Method(m) => {
+            let file = m.file;
+            let project = db.file_project(file);
+            let jdk = db.jdk_index(project);
+            let classpath = db.classpath_index(project);
+            let workspace = db.workspace_def_map(project);
+            let jpms_env = db.jpms_compilation_env(project);
+
+            let jpms_index = jpms_env.as_deref().map(|env| {
+                let cfg = db.project_config(project);
+                let file_rel = db.file_rel_path(file);
+                let from = module_for_file(&cfg, file_rel.as_str());
+                JpmsTypeckIndex::new(env, &workspace, &*jdk, from)
+            });
+
+            let workspace_index = WorkspaceFirstIndex {
+                workspace: &workspace,
+                classpath: classpath.as_deref().map(|cp| cp as &dyn TypeIndex),
+            };
+
+            let resolver = if let Some(index) = jpms_index.as_ref() {
+                nova_resolve::Resolver::new(index).with_workspace(&workspace)
+            } else {
+                nova_resolve::Resolver::new(&*jdk)
+                    .with_classpath(&workspace_index)
+                    .with_workspace(&workspace)
+            };
+
+            let scopes = db.scope_graph(file);
+            let scope_id = scopes
+                .method_scopes
+                .get(&m)
+                .copied()
+                .unwrap_or(scopes.file_scope);
+
+            let tree = db.hir_item_tree(file);
+
+            // Signature-only type resolution: build a minimal type environment and resolve the
+            // declared return type without touching the body HIR/typeck.
+            let base_store = db.project_base_type_store(project);
+            let mut store = (&*base_store).clone();
+            let provider = if let Some(env) = jpms_env.as_deref() {
+                nova_types::ChainTypeProvider::new(vec![
+                    &env.classpath as &dyn TypeProvider,
+                    &*jdk as &dyn TypeProvider,
+                ])
+            } else {
+                match classpath.as_deref() {
+                    Some(cp) => nova_types::ChainTypeProvider::new(vec![
+                        cp as &dyn TypeProvider,
+                        &*jdk as &dyn TypeProvider,
+                    ]),
+                    None => nova_types::ChainTypeProvider::new(vec![&*jdk as &dyn TypeProvider]),
+                }
+            };
+            let mut loader = ExternalTypeLoader::new(&mut store, &provider);
+
+            // Define source types in this file so `Type::Class` ids are stable.
+            let (_field_types, _method_types, source_type_vars) =
+                define_source_types(&resolver, &scopes, &tree, &mut loader);
+
+            let type_vars = type_vars_for_owner(
+                def,
+                scope_id,
+                &scopes.scopes,
+                &tree,
+                &mut loader,
+                &source_type_vars,
+            );
+
+            let (ty, _diags) = resolve_expected_return_type(
+                &resolver,
+                &scopes.scopes,
+                scope_id,
+                &tree,
+                def,
+                &type_vars,
+                &mut loader,
+            );
+            ty
+        }
+        DefWithBodyId::Constructor(_) | DefWithBodyId::Initializer(_) => Type::Void,
+    };
+
+    db.record_query_stat("type_of_def", start.elapsed());
+    ty
 }
 
 fn resolve_method_call(
