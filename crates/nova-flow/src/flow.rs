@@ -96,6 +96,18 @@ pub fn analyze_with(
     let mut seen = HashSet::new();
     diagnostics.retain(|d| seen.insert((d.code.clone(), d.span)));
 
+    // Keep diagnostic ordering deterministic and stable under minor CFG changes.
+    diagnostics.sort_by(|a, b| {
+        let a_span = a.span.unwrap_or(nova_types::Span::new(usize::MAX, usize::MAX));
+        let b_span = b.span.unwrap_or(nova_types::Span::new(usize::MAX, usize::MAX));
+        a_span
+            .start
+            .cmp(&b_span.start)
+            .then_with(|| a_span.end.cmp(&b_span.end))
+            .then_with(|| a.code.as_ref().cmp(b.code.as_ref()))
+            .then_with(|| a.message.cmp(&b.message))
+    });
+
     FlowAnalysisResult {
         cfg,
         reachable,
