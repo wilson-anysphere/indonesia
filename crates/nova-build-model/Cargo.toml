@@ -6,7 +6,10 @@ edition = "2021"
 [dependencies]
 nova-modules = { path = "../nova-modules" }
 serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+hex = "0.4"
 thiserror.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+tempfile.workspace = true

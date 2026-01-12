@@ -2,15 +2,13 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use nova_build_model::{
+    collect_gradle_build_files, BuildFileFingerprint, GradleSnapshotFile,
+    GradleSnapshotJavaCompileConfig, GRADLE_SNAPSHOT_REL_PATH, GRADLE_SNAPSHOT_SCHEMA_VERSION,
+};
 use regex::Regex;
-use sha2::{Digest, Sha256};
 use toml::Value;
 use walkdir::WalkDir;
-
-use nova_build_model::{
-    GradleSnapshotFile, GradleSnapshotJavaCompileConfig, GRADLE_SNAPSHOT_REL_PATH,
-    GRADLE_SNAPSHOT_SCHEMA_VERSION,
-};
 
 use crate::discover::{LoadOptions, ProjectError};
 use crate::{
@@ -82,164 +80,6 @@ fn maybe_insert_buildsrc_module_ref(module_refs: &mut Vec<GradleModuleRef>, work
         },
     );
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct BuildFileFingerprint {
-    digest: String,
-}
-
-impl BuildFileFingerprint {
-    fn from_files(project_root: &Path, mut files: Vec<PathBuf>) -> std::io::Result<Self> {
-        files.sort();
-        files.dedup();
-
-        let mut hasher = Sha256::new();
-        for path in files {
-            let rel = path.strip_prefix(project_root).unwrap_or(&path);
-            hasher.update(rel.to_string_lossy().as_bytes());
-            hasher.update([0]);
-
-            let bytes = std::fs::read(&path)?;
-            hasher.update(&bytes);
-            hasher.update([0]);
-        }
-
-        Ok(Self {
-            digest: hex::encode(hasher.finalize()),
-        })
-    }
-}
-
-fn collect_gradle_build_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
-    let mut out = Vec::new();
-    collect_gradle_build_files_rec(root, root, &mut out)?;
-    // Stable sort for hashing.
-    out.sort_by(|a, b| {
-        let ra = a.strip_prefix(root).unwrap_or(a);
-        let rb = b.strip_prefix(root).unwrap_or(b);
-        ra.cmp(rb)
-    });
-    out.dedup();
-    Ok(out)
-}
-
-fn collect_gradle_build_files_rec(
-    root: &Path,
-    dir: &Path,
-    out: &mut Vec<PathBuf>,
-) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let file_name = entry.file_name();
-        let file_name = file_name.to_string_lossy();
-
-        if path.is_dir() {
-            // Avoid scanning huge non-source directories that commonly show up in mono-repos.
-            // These trees can contain many files that look like build files but should not
-            // influence Nova's build fingerprint (e.g. vendored JS dependencies).
-            if file_name == "node_modules" {
-                continue;
-            }
-            // Bazel output trees are typically created at the workspace root and can be enormous.
-            // Skip any top-level `bazel-*` entries (`bazel-out`, `bazel-bin`, `bazel-testlogs`,
-            // `bazel-<workspace>`, etc).
-            if dir == root && file_name.starts_with("bazel-") {
-                continue;
-            }
-            if file_name == ".git"
-                || file_name == ".gradle"
-                || file_name == "build"
-                || file_name == "target"
-                || file_name == ".nova"
-                || file_name == ".idea"
-            {
-                continue;
-            }
-            collect_gradle_build_files_rec(root, &path, out)?;
-            continue;
-        }
-
-        let name = file_name.as_ref();
-
-        // Gradle dependency locking can change resolved classpaths without modifying any build
-        // scripts, so include lockfiles in the fingerprint.
-        //
-        // Patterns:
-        // - `gradle.lockfile` at any depth.
-        // - `*.lockfile` under any `dependency-locks/` directory (covers Gradle's default
-        //   `gradle/dependency-locks/` location).
-        if name == "gradle.lockfile" {
-            out.push(path);
-            continue;
-        }
-        if name.ends_with(".lockfile")
-            && path.parent().is_some_and(|parent| {
-                parent.ancestors().any(|dir| {
-                    dir.file_name()
-                        .is_some_and(|name| name == "dependency-locks")
-                })
-            })
-        {
-            out.push(path);
-            continue;
-        }
-
-        // Match `nova-build` build-file watcher semantics by including any
-        // `build.gradle*` / `settings.gradle*` variants.
-        if name.starts_with("build.gradle") || name.starts_with("settings.gradle") {
-            out.push(path);
-            continue;
-        }
-
-        // Applied Gradle script plugins can influence dependencies and tasks
-        // without being named `build.gradle*` / `settings.gradle*`.
-        if name.ends_with(".gradle") || name.ends_with(".gradle.kts") {
-            out.push(path);
-            continue;
-        }
-
-        // Gradle version catalogs can define dependency versions and thus affect resolved
-        // classpaths. In addition to the default `gradle/libs.versions.toml`, Gradle supports
-        // custom catalogs referenced from `settings.gradle*` (e.g. `gradle/foo.versions.toml`).
-        //
-        // Only include catalogs that are direct children of a directory named `gradle` to avoid
-        // accidentally picking up unrelated `*.toml` files elsewhere in the repo (including under
-        // `node_modules/`).
-        if name.ends_with(".versions.toml")
-            && path
-                .parent()
-                .and_then(|parent| parent.file_name())
-                .is_some_and(|dir| dir == "gradle")
-        {
-            out.push(path);
-            continue;
-        }
-        match name {
-            "gradle.properties" => out.push(path),
-            // Gradle version catalogs can define dependency versions and thus
-            // affect resolved classpaths.
-            "libs.versions.toml" => out.push(path),
-            "gradlew" | "gradlew.bat" => {
-                if path == root.join(name) {
-                    out.push(path);
-                }
-            }
-            "gradle-wrapper.properties" => {
-                if path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.properties")) {
-                    out.push(path);
-                }
-            }
-            "gradle-wrapper.jar" => {
-                if path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.jar")) {
-                    out.push(path);
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
 fn gradle_build_fingerprint(project_root: &Path) -> std::io::Result<BuildFileFingerprint> {
     let build_files = collect_gradle_build_files(project_root)?;
     BuildFileFingerprint::from_files(project_root, build_files)

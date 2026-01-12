@@ -1,4 +1,5 @@
 use crate::{BuildSystemKind, JavaCompileConfig, Result};
+pub use nova_build_model::BuildFileFingerprint;
 use nova_build_model::AnnotationProcessing;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -30,33 +31,6 @@ pub enum CacheError {
         path: PathBuf,
         source: serde_json::Error,
     },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BuildFileFingerprint {
-    pub digest: String,
-}
-
-impl BuildFileFingerprint {
-    pub fn from_files(project_root: &Path, mut files: Vec<PathBuf>) -> Result<Self> {
-        files.sort();
-        files.dedup();
-
-        let mut hasher = Sha256::new();
-        for path in files {
-            let rel = path.strip_prefix(project_root).unwrap_or(&path);
-            hasher.update(rel.to_string_lossy().as_bytes());
-            hasher.update([0]);
-
-            let bytes = fs::read(&path)?;
-            hasher.update(&bytes);
-            hasher.update([0]);
-        }
-
-        Ok(Self {
-            digest: hex::encode(hasher.finalize()),
-        })
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

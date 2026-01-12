@@ -1,10 +1,12 @@
 //! Shared project/build model types used across Nova build system integrations.
 
+mod build_files;
 mod generated_roots_snapshot;
 mod gradle_snapshot;
 mod model;
 pub mod package;
 
+pub use build_files::{collect_gradle_build_files, BuildFileFingerprint};
 pub use generated_roots_snapshot::*;
 pub use gradle_snapshot::*;
 pub use model::*;
