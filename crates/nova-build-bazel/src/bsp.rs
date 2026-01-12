@@ -1566,6 +1566,52 @@ mod tests {
         assert_eq!(config.args, vec!["--from-env".to_string()]);
     }
 
+    #[cfg(feature = "bsp")]
+    #[test]
+    fn bsp_connect_timeout_defaults_when_env_missing_or_invalid() {
+        let _lock = crate::test_support::env_lock();
+
+        let _unset = EnvVarGuard::set(ENV_BSP_CONNECT_TIMEOUT_MS, None);
+        assert_eq!(bsp_connect_timeout(), DEFAULT_BSP_CONNECT_TIMEOUT);
+
+        for value in ["", "not-a-number", "0", "-5", "   "] {
+            let _guard = EnvVarGuard::set(ENV_BSP_CONNECT_TIMEOUT_MS, Some(value));
+            assert_eq!(bsp_connect_timeout(), DEFAULT_BSP_CONNECT_TIMEOUT);
+        }
+    }
+
+    #[cfg(feature = "bsp")]
+    #[test]
+    fn bsp_connect_timeout_can_be_overridden_by_env() {
+        let _lock = crate::test_support::env_lock();
+
+        let _guard = EnvVarGuard::set(ENV_BSP_CONNECT_TIMEOUT_MS, Some("1234"));
+        assert_eq!(bsp_connect_timeout(), Duration::from_millis(1234));
+    }
+
+    #[cfg(feature = "bsp")]
+    #[test]
+    fn bsp_request_timeout_defaults_when_env_missing_or_invalid() {
+        let _lock = crate::test_support::env_lock();
+
+        let _unset = EnvVarGuard::set(ENV_BSP_REQUEST_TIMEOUT_MS, None);
+        assert_eq!(bsp_request_timeout(), DEFAULT_BSP_REQUEST_TIMEOUT);
+
+        for value in ["", "not-a-number", "0", "-5", "   "] {
+            let _guard = EnvVarGuard::set(ENV_BSP_REQUEST_TIMEOUT_MS, Some(value));
+            assert_eq!(bsp_request_timeout(), DEFAULT_BSP_REQUEST_TIMEOUT);
+        }
+    }
+
+    #[cfg(feature = "bsp")]
+    #[test]
+    fn bsp_request_timeout_can_be_overridden_by_env() {
+        let _lock = crate::test_support::env_lock();
+
+        let _guard = EnvVarGuard::set(ENV_BSP_REQUEST_TIMEOUT_MS, Some("4321"));
+        assert_eq!(bsp_request_timeout(), Duration::from_millis(4321));
+    }
+
     struct MaxMessageBytesEnvVarGuard {
         _lock: std::sync::MutexGuard<'static, ()>,
         previous: Option<std::ffi::OsString>,
