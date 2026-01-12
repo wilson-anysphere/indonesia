@@ -1606,24 +1606,31 @@ fn new_expression_type_completions(
     packages.sort();
     packages.dedup();
 
+    // Avoid allocating/cloning a potentially large `Vec<String>` for each package via
+    // `class_names_with_prefix`. Instead, scan the stable sorted name list and stop once we've
+    // produced enough items.
+    let fallback_jdk = JdkIndex::new();
+    let class_names: &[String] = jdk
+        .all_binary_class_names()
+        .or_else(|_| fallback_jdk.all_binary_class_names())
+        .unwrap_or(&[]);
+
     for pkg in packages {
         if items.len() >= MAX_NEW_TYPE_JDK_CANDIDATES_PER_PACKAGE * 4 {
             break;
         }
 
         let pkg_prefix = format!("{pkg}.");
-        let Ok(names) = jdk.class_names_with_prefix(&pkg_prefix) else {
-            continue;
-        };
+        let start = class_names.partition_point(|name| name.as_str() < pkg_prefix.as_str());
 
         let mut added_for_pkg = 0usize;
-        for name in names {
+        for name in &class_names[start..] {
             if added_for_pkg >= MAX_NEW_TYPE_JDK_CANDIDATES_PER_PACKAGE {
                 break;
             }
 
-            if !name.starts_with(&pkg_prefix) {
-                continue;
+            if !name.starts_with(pkg_prefix.as_str()) {
+                break;
             }
 
             let rest = &name[pkg_prefix.len()..];
@@ -1642,10 +1649,11 @@ fn new_expression_type_completions(
                 continue;
             }
 
-            let mut item = constructor_completion_item(simple, Some(name.clone()));
-            if java_type_needs_import(&imports, &name) {
+            let binary = name.as_str();
+            let mut item = constructor_completion_item(simple, Some(binary.to_owned()));
+            if java_type_needs_import(&imports, binary) {
                 item.additional_text_edits =
-                    Some(vec![java_import_text_edit(text, text_index, &name)]);
+                    Some(vec![java_import_text_edit(text, text_index, binary)]);
             }
             items.push(item);
             added_for_pkg += 1;
@@ -3458,16 +3466,26 @@ fn jdk_type_completions(
         "jakarta.inject.",
     ];
 
+    // Avoid allocating/cloning a potentially large `Vec<String>` for each package via
+    // `class_names_with_prefix`. Instead, scan the stable sorted name list and stop once we've
+    // produced enough items.
+    let fallback_jdk = JdkIndex::new();
+    let class_names: &[String] = jdk
+        .all_binary_class_names()
+        .or_else(|_| fallback_jdk.all_binary_class_names())
+        .unwrap_or(&[]);
+
     let mut out = Vec::new();
 
     for pkg in packages {
         let query_prefix = format!("{pkg}{prefix}");
-        let Ok(names) = jdk.class_names_with_prefix(&query_prefix) else {
-            continue;
-        };
-
-        for binary in names {
-            let simple = simple_name_from_binary(&binary);
+        let start = class_names.partition_point(|name| name.as_str() < query_prefix.as_str());
+        for binary in &class_names[start..] {
+            if !binary.starts_with(query_prefix.as_str()) {
+                break;
+            }
+            let binary = binary.as_str();
+            let simple = simple_name_from_binary(binary);
             if !prefix.is_empty() && !simple.starts_with(prefix) {
                 continue;
             }
@@ -3478,7 +3496,7 @@ fn jdk_type_completions(
             out.push(CompletionItem {
                 label: simple.clone(),
                 kind: Some(CompletionItemKind::CLASS),
-                detail: Some(binary),
+                detail: Some(binary.to_owned()),
                 insert_text: Some(simple),
                 ..Default::default()
             });
@@ -4574,6 +4592,15 @@ fn type_name_completions(
         .cloned()
         .unwrap_or_else(|| Arc::new(JdkIndex::new()));
     {
+        // Avoid allocating/cloning a potentially large `Vec<String>` for each package via
+        // `class_names_with_prefix`. Instead, scan the stable sorted name list and stop once we've
+        // produced enough items.
+        let fallback_jdk = JdkIndex::new();
+        let class_names: &[String] = jdk
+            .all_binary_class_names()
+            .or_else(|_| fallback_jdk.all_binary_class_names())
+            .unwrap_or(&[]);
+
         let mut packages = import_ctx.wildcard_packages.clone();
         packages.push("java.lang".to_string()); // implicitly imported.
         packages.push("java.util".to_string()); // common package (mirrors `new` completions).
@@ -4586,20 +4613,18 @@ fn type_name_completions(
             }
             let pkg_prefix = format!("{pkg}.");
             let query = format!("{pkg_prefix}{prefix}");
-
-            let Ok(names) = jdk.class_names_with_prefix(&query) else {
-                continue;
-            };
+            let start = class_names.partition_point(|name| name.as_str() < query.as_str());
 
             let mut added_for_pkg = 0usize;
-            for binary in names {
+            for binary in &class_names[start..] {
                 if added_for_pkg >= MAX_TYPE_NAME_JDK_CANDIDATES_PER_PACKAGE {
                     break;
                 }
-                if !binary.starts_with(&pkg_prefix) {
-                    continue;
+                if !binary.starts_with(query.as_str()) {
+                    break;
                 }
 
+                let binary = binary.as_str();
                 let rest = &binary[pkg_prefix.len()..];
                 // Star-imports only expose direct package members (no subpackages).
                 if rest.contains('.') || rest.contains('$') {
@@ -4612,7 +4637,7 @@ fn type_name_completions(
                 }
 
                 let kind = jdk
-                    .lookup_type(&binary)
+                    .lookup_type(binary)
                     .ok()
                     .flatten()
                     .map(|stub| {
@@ -4627,12 +4652,12 @@ fn type_name_completions(
                 let mut item = CompletionItem {
                     label: simple,
                     kind: Some(kind),
-                    detail: Some(binary.clone()),
+                    detail: Some(binary.to_owned()),
                     ..Default::default()
                 };
-                if java_type_needs_import(&imports, &binary) {
+                if java_type_needs_import(&imports, binary) {
                     item.additional_text_edits =
-                        Some(vec![java_import_text_edit(text, text_index, &binary)]);
+                        Some(vec![java_import_text_edit(text, text_index, binary)]);
                 }
                 items.push(item);
                 added_for_pkg += 1;
