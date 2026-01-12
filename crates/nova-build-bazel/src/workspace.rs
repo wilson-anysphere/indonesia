@@ -382,7 +382,6 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                 //
                 // This is intentionally more forgiving than `workspace_file_label`, which treats
                 // outside-workspace paths as an error.
-                let message = err.to_string();
                 if err.chain().any(|cause| {
                     cause
                         .downcast_ref::<WorkspacePathOutsideRootError>()
@@ -390,8 +389,10 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                         || cause
                             .downcast_ref::<WorkspacePathEscapesRootError>()
                             .is_some()
-                }) || message.contains("failed to canonicalize file path")
-                {
+                        || cause
+                            .downcast_ref::<std::io::Error>()
+                            .is_some_and(|err| err.kind() == std::io::ErrorKind::NotFound)
+                }) {
                     return Ok(None);
                 }
                 return Err(err);
