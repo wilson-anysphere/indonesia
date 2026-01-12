@@ -319,8 +319,11 @@ This list is meant to be kept accurate as new components integrate.
 - Registration: `MemoryManager::register_evictor("workspace_project_indexes", …)`
 - Tracked bytes: `ProjectIndexes::estimated_bytes()`
 - `evict(request)`:
-  - Current semantics: if asked to shrink (i.e. `target_bytes < current`) or under `Critical`, drops the in-memory indexes entirely (`ProjectIndexes::default()`).
-  - Indexes will be rebuilt lazily by the next indexing/search operation.
+  - `target_bytes == 0` or `Critical`: drops the in-memory indexes entirely (`ProjectIndexes::default()`).
+  - Otherwise, best-effort partial retention:
+    - If the `symbols` index alone does not fit in `target_bytes`, clears everything.
+    - Else, keeps `symbols` and chooses the best subset of secondary indexes (`references`, `inheritance`, `annotations`) such that `symbols + chosen <= target_bytes` (small deterministic knapsack in `WorkspaceProjectIndexesEvictor::evict`).
+  - Has `eviction_priority = 10` (dropping full project indexes is high-UX-impact; prefer evicting other index caches first).
 - `flush_to_disk()`:
   - Not implemented (default no-op).
 
