@@ -80,8 +80,10 @@ queries like `class(ClassId) -> &nova_hir::framework::ClassData` (plus dependenc
 The IDE-facing `nova_db::Database` currently provides file text only.
 
 If you want to run framework analyzers inside `nova-ide`, you need an adapter layer that can supply
-`ClassData` and project metadata (often by building a `nova_framework::MemoryDatabase` from parsed
-sources). See `crates/nova-ide/src/lombok_intel.rs` for a complete example.
+`ClassData` and project metadata.
+
+- General-purpose adapter: `crates/nova-ide/src/framework_db.rs`
+- Focused example that builds a `nova_framework::MemoryDatabase`: `crates/nova-ide/src/lombok_intel.rs`
 
 ### Virtual Members
 
