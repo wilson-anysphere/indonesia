@@ -44,7 +44,7 @@ the adapter via the agent wrapper:
 
 ```bash
 # From the repo root:
-bash scripts/cargo_agent.sh run --locked -p nova-dap -- --listen 127.0.0.1:4711
+bash scripts/cargo_agent.sh run --locked -p nova-dap --bin nova-dap -- --listen 127.0.0.1:4711
 ```
 
 Note: `--listen` expects a full `host:port` socket address (e.g. `127.0.0.1:0`,

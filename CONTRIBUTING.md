@@ -54,12 +54,12 @@ bash scripts/cargo_agent.sh build --locked -p nova-cli
 # Local dev
 cargo run --locked -p nova-cli -- --help
 cargo run --locked -p nova-lsp -- --version
-bash scripts/cargo_agent.sh run --locked -p nova-dap -- --version
+cargo run --locked -p nova-dap --bin nova-dap -- --version
 
 # Agent / multi-runner
 bash scripts/cargo_agent.sh run --locked -p nova-cli -- --help
 bash scripts/cargo_agent.sh run --locked -p nova-lsp -- --version
-bash scripts/cargo_agent.sh run --locked -p nova-dap -- --version
+bash scripts/cargo_agent.sh run --locked -p nova-dap --bin nova-dap -- --version
 ```
 
 ### Tests
