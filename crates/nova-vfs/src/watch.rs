@@ -1025,6 +1025,7 @@ pub use notify_impl::{EventNormalizer, NotifyFileWatcher};
 mod tests {
     use super::*;
     use crate::path::VfsPath;
+    use std::io;
     use std::time::Duration;
 
     #[test]
@@ -1087,5 +1088,23 @@ mod tests {
                 changes: vec![FileChange::Created { path }]
             }
         );
+    }
+
+    #[test]
+    fn manual_watcher_delivers_errors() {
+        let watcher = ManualFileWatcher::new();
+
+        watcher
+            .push_error(io::Error::new(io::ErrorKind::Other, "boom"))
+            .unwrap();
+
+        let err = watcher
+            .receiver()
+            .recv_timeout(Duration::from_secs(1))
+            .expect("watch error")
+            .expect_err("expected error");
+
+        assert_eq!(err.kind(), io::ErrorKind::Other);
+        assert_eq!(err.to_string(), "boom");
     }
 }
