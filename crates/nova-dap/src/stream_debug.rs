@@ -7,6 +7,8 @@ use nova_stream_debug::{
 };
 use serde::{Deserialize, Serialize};
 
+pub mod evaluator;
+
 pub const STREAM_DEBUG_COMMAND: &str = "nova/streamDebug";
 
 #[derive(Debug, Deserialize)]
