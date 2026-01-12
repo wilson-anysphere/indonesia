@@ -25,6 +25,25 @@ use std::{
     time::Duration,
 };
 
+const BSP_MAX_MESSAGE_BYTES_DEFAULT: usize = 64 * 1024 * 1024;
+const BSP_MAX_MESSAGE_BYTES_FLOOR: usize = 1 * 1024 * 1024;
+const BSP_MAX_MESSAGE_BYTES_CEILING: usize = 512 * 1024 * 1024;
+const BSP_MAX_MESSAGE_BYTES_ENV_VAR: &str = "NOVA_BSP_MAX_MESSAGE_BYTES";
+
+fn bsp_max_message_bytes() -> usize {
+    let configured = std::env::var(BSP_MAX_MESSAGE_BYTES_ENV_VAR).ok();
+    let configured = configured
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+
+    let value = configured
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(BSP_MAX_MESSAGE_BYTES_DEFAULT);
+
+    value.clamp(BSP_MAX_MESSAGE_BYTES_FLOOR, BSP_MAX_MESSAGE_BYTES_CEILING)
+}
+
 /// JSON-RPC error payload returned by BSP servers.
 ///
 /// This is intentionally `pub(crate)` so the Bazel workspace integration can detect when a server
@@ -600,7 +619,7 @@ impl BspClient {
     }
 
     fn read_message(&mut self) -> Result<Value> {
-        const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+        let max_message_bytes = bsp_max_message_bytes();
         let mut content_length: Option<usize> = None;
 
         loop {
@@ -630,9 +649,9 @@ impl BspClient {
         }
 
         let len = content_length.with_context(|| "missing Content-Length header")?;
-        if len > MAX_MESSAGE_BYTES {
+        if len > max_message_bytes {
             return Err(anyhow!(
-                "BSP message too large: {len} bytes (limit {MAX_MESSAGE_BYTES})"
+                "BSP message too large: {len} bytes (limit {max_message_bytes})"
             ));
         }
         let mut buf = vec![0u8; len];
@@ -1217,6 +1236,8 @@ pub fn target_compile_info_via_bsp(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
     #[cfg(feature = "bsp")]
     use tempfile::tempdir;
 
@@ -1456,5 +1477,70 @@ mod tests {
         let config = BazelBspConfig::discover(root.path()).unwrap();
         assert_eq!(config.program, "bsp-from-env");
         assert_eq!(config.args, vec!["--from-env".to_string()]);
+    }
+
+    static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_MUTEX
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("failed to lock env mutex")
+    }
+
+    struct MaxMessageBytesEnvVarGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for MaxMessageBytesEnvVarGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(BSP_MAX_MESSAGE_BYTES_ENV_VAR, value),
+                None => std::env::remove_var(BSP_MAX_MESSAGE_BYTES_ENV_VAR),
+            }
+        }
+    }
+
+    fn set_max_message_bytes_env_var(value: Option<&str>) -> MaxMessageBytesEnvVarGuard {
+        let lock = env_lock();
+        let previous = std::env::var_os(BSP_MAX_MESSAGE_BYTES_ENV_VAR);
+
+        match value {
+            Some(value) => std::env::set_var(BSP_MAX_MESSAGE_BYTES_ENV_VAR, value),
+            None => std::env::remove_var(BSP_MAX_MESSAGE_BYTES_ENV_VAR),
+        }
+
+        MaxMessageBytesEnvVarGuard {
+            _lock: lock,
+            previous,
+        }
+    }
+
+    #[test]
+    fn bsp_max_message_bytes_uses_default_when_env_is_missing() {
+        let _guard = set_max_message_bytes_env_var(None);
+        assert_eq!(bsp_max_message_bytes(), BSP_MAX_MESSAGE_BYTES_DEFAULT);
+    }
+
+    #[test]
+    fn bsp_max_message_bytes_respects_env_override() {
+        let _guard = set_max_message_bytes_env_var(Some("2097152"));
+        assert_eq!(bsp_max_message_bytes(), 2 * 1024 * 1024);
+    }
+
+    #[test]
+    fn bsp_read_message_rejects_oversized_messages() {
+        let _guard = set_max_message_bytes_env_var(Some("2097152"));
+        let max = bsp_max_message_bytes();
+        let len = max + 1;
+        let payload = format!("Content-Length: {len}\r\n\r\n");
+        let mut client = BspClient::from_streams(std::io::Cursor::new(payload), std::io::sink());
+
+        let err = client.read_message().unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!("BSP message too large: {len} bytes (limit {max})")
+        );
     }
 }
