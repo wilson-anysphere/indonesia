@@ -465,6 +465,25 @@ class Main { void test(){ Foo a, $1b; $0b.toString(); } }
 }
 
 #[test]
+fn go_to_type_definition_on_second_local_in_comma_separated_decl() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Foo.java
+class $1Foo {}
+//- /Main.java
+class Main { void test(){ Foo a, b; $0b.toString(); } }
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = type_definition(&fixture.db, file, pos).expect("expected type definition location");
+
+    assert_eq!(got.uri, fixture.marker_uri(1));
+    assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
 fn go_to_declaration_on_second_local_in_comma_separated_decl_with_comparison_in_initializer() {
     let fixture = FileIdFixture::parse(
         r#"
@@ -554,6 +573,25 @@ class Main {
     let file = fixture.marker_file(0);
     let pos = fixture.marker_position(0);
     let got = declaration(&fixture.db, file, pos).expect("expected declaration location");
+
+    assert_eq!(got.uri, fixture.marker_uri(1));
+    assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
+fn go_to_type_definition_on_second_field_in_comma_separated_decl() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Foo.java
+class $1Foo {}
+//- /Main.java
+class Main { Foo a, b; void test(){ $0b.toString(); } }
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = type_definition(&fixture.db, file, pos).expect("expected type definition location");
 
     assert_eq!(got.uri, fixture.marker_uri(1));
     assert_eq!(got.range.start, fixture.marker_position(1));
