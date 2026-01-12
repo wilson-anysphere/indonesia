@@ -3483,6 +3483,16 @@ fn reload_project_and_sync(
         .iter()
         .any(|path| path.ends_with(Path::new(nova_build_model::GRADLE_SNAPSHOT_REL_PATH)));
 
+    let (previous_maven_mode, previous_gradle_mode) = {
+        let state = project_state
+            .lock()
+            .expect("workspace project state mutex poisoned");
+        (
+            state.load_options.nova_config.build.maven_mode(),
+            state.load_options.nova_config.build.gradle_mode(),
+        )
+    };
+
     // Load Nova config early so build integration gating/timeouts pick up changes to `nova.toml`
     // during the current reload.
     let nova_config_path = nova_config::discover_config_path(workspace_root);
@@ -3588,6 +3598,25 @@ fn reload_project_and_sync(
                 ),
                 _ => unreachable!("build integration only applies to Maven/Gradle"),
             };
+            #[cfg(test)]
+            let _ = timeout;
+
+            // Treat build integration mode changes (e.g. `auto` -> `on`) as a signal to refresh
+            // build metadata even when the file change set doesn't include build tool inputs.
+            // Otherwise, the workspace would keep using heuristic classpaths until a build file
+            // changes (or the workspace is restarted).
+            let previous_mode = match current_config.build_system {
+                BuildSystem::Maven => previous_maven_mode,
+                BuildSystem::Gradle => previous_gradle_mode,
+                _ => BuildIntegrationMode::Off,
+            };
+            let mode_rank = |mode: BuildIntegrationMode| match mode {
+                BuildIntegrationMode::Off => 0u8,
+                BuildIntegrationMode::Auto => 1u8,
+                BuildIntegrationMode::On => 2u8,
+            };
+            let refresh_build =
+                refresh_build || mode_rank(mode) > mode_rank(previous_mode);
 
             if refresh_build {
                 match mode {
@@ -4361,6 +4390,177 @@ mode = "off"
 
         engine.set_workspace_root(root).unwrap();
     }
+
+    #[test]
+    fn build_integration_mode_change_to_on_invokes_build_tools() {
+        use std::{collections::HashMap, process::ExitStatus};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Debug)]
+        struct MavenEvaluateRoutingRunner {
+            calls: Arc<AtomicUsize>,
+            outputs: HashMap<String, nova_build::CommandOutput>,
+        }
+
+        impl MavenEvaluateRoutingRunner {
+            fn new(
+                calls: Arc<AtomicUsize>,
+                outputs: HashMap<String, nova_build::CommandOutput>,
+            ) -> Self {
+                Self { calls, outputs }
+            }
+        }
+
+        impl nova_build::CommandRunner for MavenEvaluateRoutingRunner {
+            fn run(
+                &self,
+                _cwd: &Path,
+                _program: &Path,
+                args: &[String],
+            ) -> std::io::Result<nova_build::CommandOutput> {
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                let expression = args
+                    .iter()
+                    .find_map(|arg| arg.strip_prefix("-Dexpression="))
+                    .unwrap_or_default();
+
+                Ok(self.outputs.get(expression).cloned().unwrap_or_else(|| {
+                    nova_build::CommandOutput {
+                        status: success_status(),
+                        stdout: String::new(),
+                        stderr: String::new(),
+                        truncated: false,
+                    }
+                }))
+            }
+        }
+
+        fn success_status() -> ExitStatus {
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                ExitStatus::from_raw(0)
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::ExitStatusExt;
+                ExitStatus::from_raw(0)
+            }
+        }
+
+        fn list_output(values: &[&str]) -> nova_build::CommandOutput {
+            nova_build::CommandOutput {
+                status: success_status(),
+                stdout: format!("[{}]\n", values.join(", ")),
+                stderr: String::new(),
+                truncated: false,
+            }
+        }
+
+        fn scalar_output(value: &str) -> nova_build::CommandOutput {
+            nova_build::CommandOutput {
+                status: success_status(),
+                stdout: format!("{value}\n"),
+                stderr: String::new(),
+                truncated: false,
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+
+        fs::write(
+            root.join("pom.xml"),
+            br#"<project><modelVersion>4.0.0</modelVersion></project>"#,
+        )
+        .unwrap();
+
+        let main_dir = root.join("src/main/java/com/example");
+        fs::create_dir_all(&main_dir).unwrap();
+        fs::write(
+            main_dir.join("Main.java"),
+            "package com.example; class Main {}".as_bytes(),
+        )
+        .unwrap();
+
+        let dep_jar = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../nova-classpath/testdata/dep.jar")
+            .canonicalize()
+            .unwrap();
+        let dep_jar_str = dep_jar.to_string_lossy().to_string();
+
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "project.compileClasspathElements".to_string(),
+            list_output(&[dep_jar_str.as_str()]),
+        );
+        outputs.insert(
+            "project.testClasspathElements".to_string(),
+            list_output(&[dep_jar_str.as_str()]),
+        );
+        outputs.insert(
+            "project.compileSourceRoots".to_string(),
+            list_output(&["src/main/java"]),
+        );
+        outputs.insert(
+            "project.testCompileSourceRoots".to_string(),
+            list_output(&["src/test/java"]),
+        );
+        outputs.insert("maven.compiler.target".to_string(), scalar_output("1.8"));
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let runner: Arc<dyn nova_build::CommandRunner> =
+            Arc::new(MavenEvaluateRoutingRunner::new(Arc::clone(&calls), outputs));
+
+        let memory = MemoryManager::new(MemoryBudget::default_for_system_with_env_overrides());
+        let engine = WorkspaceEngine::new(WorkspaceEngineConfig {
+            workspace_root: root.clone(),
+            persistence: PersistenceConfig {
+                mode: PersistenceMode::Disabled,
+                cache: CacheConfig::from_env(),
+            },
+            memory,
+            build_runner: Some(runner),
+        });
+
+        engine.set_workspace_root(&root).unwrap();
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            0,
+            "expected build tools not to run when build integration is not enabled"
+        );
+        engine.query_db.with_snapshot(|snap| {
+            let config = snap.project_config(ProjectId::from_raw(0));
+            assert!(
+                !config.classpath.iter().any(|entry| entry.path == dep_jar),
+                "expected heuristic Maven config to not include {}",
+                dep_jar.display()
+            );
+        });
+
+        // Enable build integration via config change; this should trigger a build metadata refresh
+        // even though no build files changed.
+        let config_path = root.join("nova.toml");
+        fs::write(&config_path, "[build]\nmode = \"on\"\n").unwrap();
+        engine.reload_project_now(&[config_path]).unwrap();
+
+        assert!(
+            calls.load(Ordering::Relaxed) > 0,
+            "expected build tools to run after enabling build integration"
+        );
+        engine.query_db.with_snapshot(|snap| {
+            let config = snap.project_config(ProjectId::from_raw(0));
+            assert!(
+                config
+                    .classpath
+                    .iter()
+                    .any(|entry| entry.kind == ClasspathEntryKind::Jar && entry.path == dep_jar),
+                "expected build-derived classpath to include {}",
+                dep_jar.display()
+            );
+        });
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn trigger_indexing_persists_project_index_shards_to_disk() {
         let dir = tempfile::tempdir().unwrap();
