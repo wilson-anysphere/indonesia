@@ -726,13 +726,17 @@ export function registerNovaBuildIntegration(
           const projectPath = selector?.projectPath;
           let target: string | undefined = selector?.target;
 
-          try {
-            const shouldPromptForTarget = !target && !module && !projectPath && (await isBazelWorkspace(folder));
-            if (shouldPromptForTarget) {
-              target = await promptForBazelTarget(folder);
-              if (!target) {
-                return;
-              }
+           try {
+             // `nova/buildProject` only supports Bazel builds when `buildTool` is unset/auto. If the
+             // user explicitly selected Maven/Gradle, avoid Bazel target prompts (common in repos
+             // that include both WORKSPACE + pom.xml/build.gradle).
+             const shouldPromptForTarget =
+               buildTool === 'auto' && !target && !module && !projectPath && (await isBazelWorkspace(folder));
+             if (shouldPromptForTarget) {
+               target = await promptForBazelTarget(folder);
+               if (!target) {
+                 return;
+               }
             }
 
             try {
@@ -752,12 +756,12 @@ export function registerNovaBuildIntegration(
                 return;
               }
 
-              const message = formatError(err);
-              if (!target && !module && !projectPath && isBazelTargetRequiredMessage(message)) {
-                target = await promptForBazelTarget(folder);
-                if (!target) {
-                  return;
-                }
+               const message = formatError(err);
+               if (buildTool === 'auto' && !target && !module && !projectPath && isBazelTargetRequiredMessage(message)) {
+                 target = await promptForBazelTarget(folder);
+                 if (!target) {
+                   return;
+                 }
 
                 const response = await request('nova/buildProject', {
                   projectRoot,
