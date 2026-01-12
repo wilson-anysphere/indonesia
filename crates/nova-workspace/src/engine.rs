@@ -1195,6 +1195,34 @@ impl WorkspaceEngine {
                                     let config = watch_config
                                         .read()
                                         .expect("workspace watch config lock poisoned");
+                                    let has_configured_roots = !config.source_roots.is_empty()
+                                        || !config.generated_source_roots.is_empty();
+                                    let is_within_any_source_root = |path: &Path| {
+                                        if has_configured_roots {
+                                            config
+                                                .source_roots
+                                                .iter()
+                                                .chain(config.generated_source_roots.iter())
+                                                .any(|root| path.starts_with(root))
+                                        } else {
+                                            path.starts_with(&config.workspace_root)
+                                        }
+                                    };
+                                    let is_ancestor_of_any_source_root = |path: &Path| {
+                                        if has_configured_roots {
+                                            config
+                                                .source_roots
+                                                .iter()
+                                                .chain(config.generated_source_roots.iter())
+                                                .any(|root| root.starts_with(path))
+                                        } else {
+                                            false
+                                        }
+                                    };
+                                    let is_relevant_dir_for_move_or_delete = |path: &Path| {
+                                        is_within_any_source_root(path)
+                                            || is_ancestor_of_any_source_root(path)
+                                    };
                                     for change in changes {
                                         // NOTE: Directory-level watcher events cannot be safely
                                         // mapped into per-file operations in the VFS. Falling back
@@ -1202,52 +1230,34 @@ impl WorkspaceEngine {
                                         let is_heuristic_directory_change_for_missing_path =
                                             |local: &Path| {
                                                 // Safety net when `fs::metadata` fails (e.g. the
-                                                // path was deleted before we observed it). We only
-                                                // apply this to extension-less paths outside
-                                                // ignored directories to reduce the risk of
-                                                // triggering full rescans for normal file edits.
-                                                let in_ignored_dir = local.components().any(|c| {
-                                                    let component = c.as_os_str();
-                                                    if component == std::ffi::OsStr::new(".git")
-                                                        || component
-                                                            == std::ffi::OsStr::new(".gradle")
-                                                        || component == std::ffi::OsStr::new("build")
-                                                        || component
-                                                            == std::ffi::OsStr::new("target")
-                                                        || component
-                                                            == std::ffi::OsStr::new("node_modules")
-                                                        || component
-                                                            == std::ffi::OsStr::new(".nova")
-                                                        || component
-                                                            == std::ffi::OsStr::new(".idea")
-                                                        || component
-                                                            == std::ffi::OsStr::new("bazel-out")
-                                                        || component
-                                                            == std::ffi::OsStr::new("bazel-bin")
-                                                        || component
-                                                            == std::ffi::OsStr::new("bazel-testlogs")
-                                                    {
-                                                        return true;
-                                                    }
-
-                                                    component.to_str().is_some_and(|component| {
-                                                        component.starts_with("bazel-")
-                                                    })
-                                                });
-
-                                                local.extension().is_none() && !in_ignored_dir
+                                                // path was deleted before we observed it). Only
+                                                // treat extension-less paths that are within (or
+                                                // ancestors of) known source roots as potential
+                                                // directory-level operations.
+                                                local.extension().is_none()
+                                                    && is_relevant_dir_for_move_or_delete(local)
                                             };
                                         let mut category: Option<ChangeCategory> = None;
                                         let is_directory_change = match &change {
                                             FileChange::Created { path }
-                                            | FileChange::Modified { path } => path
-                                                .as_local_path()
-                                                .and_then(|p| fs::metadata(p).ok())
-                                                .is_some_and(|meta| meta.is_dir()),
+                                            | FileChange::Modified { path } => {
+                                                match path.as_local_path() {
+                                                    Some(local) => fs::metadata(local)
+                                                        .map(|meta| {
+                                                            meta.is_dir()
+                                                                && is_within_any_source_root(local)
+                                                        })
+                                                        .unwrap_or(false),
+                                                    None => false,
+                                                }
+                                            }
                                             FileChange::Deleted { path } => {
                                                 match path.as_local_path() {
                                                     Some(local) => match fs::metadata(local) {
-                                                        Ok(meta) => meta.is_dir(),
+                                                        Ok(meta) => {
+                                                            meta.is_dir()
+                                                                && is_relevant_dir_for_move_or_delete(local)
+                                                        }
                                                         Err(err)
                                                             if err.kind()
                                                                 == std::io::ErrorKind::NotFound =>
@@ -1263,8 +1273,9 @@ impl WorkspaceEngine {
                                                             // Directory deletes are often observed
                                                             // *after* the directory is removed, so
                                                             // metadata fails. As a safety net,
-                                                            // treat extension-less paths outside
-                                                            // ignored directories as potential
+                                                            // treat extension-less paths that are
+                                                            // within (or are ancestors of) known
+                                                            // source roots as potential
                                                             // directory-level operations and fall
                                                             // back to a rescan.
                                                             category != Some(ChangeCategory::Build)
@@ -1289,7 +1300,11 @@ impl WorkspaceEngine {
                                                     to_meta.as_ref(),
                                                     Some(Ok(meta)) if meta.is_dir()
                                                 );
-                                                if from_is_dir || to_is_dir {
+                                                let any_relevant = from_local
+                                                    .is_some_and(is_relevant_dir_for_move_or_delete)
+                                                    || to_local
+                                                        .is_some_and(is_relevant_dir_for_move_or_delete);
+                                                if (from_is_dir || to_is_dir) && any_relevant {
                                                     true
                                                 } else {
                                                     // If we can't stat either path because both are
@@ -1312,12 +1327,11 @@ impl WorkspaceEngine {
                                                         category =
                                                             categorize_event(&config, &change);
                                                         category != Some(ChangeCategory::Build)
-                                                            && from_local.is_some_and(
+                                                            && (from_local.is_some_and(
                                                                 is_heuristic_directory_change_for_missing_path,
-                                                            )
-                                                            && to_local.is_some_and(
+                                                            ) || to_local.is_some_and(
                                                                 is_heuristic_directory_change_for_missing_path,
-                                                            )
+                                                            ))
                                                     } else {
                                                         false
                                                     }
@@ -8499,6 +8513,84 @@ public class Bar {}"#;
         })
         .await
         .expect("timed out waiting for directory-modified-triggered project reload");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn manual_watcher_directory_event_outside_source_roots_does_not_trigger_rescan() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path().join("project");
+        fs::create_dir_all(project_root.join("src")).unwrap();
+        fs::write(
+            project_root.join("src/Main.java"),
+            "class Main {}".as_bytes(),
+        )
+        .unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let project_root = project_root.canonicalize().unwrap();
+
+        let workspace = crate::Workspace::open(&project_root).unwrap();
+        let engine = workspace.engine.clone();
+
+        let config = engine
+            .watch_config
+            .read()
+            .expect("workspace watch config lock poisoned")
+            .clone();
+        let expected_src = normalize_vfs_local_path(project_root.join("src"));
+        assert!(
+            config.source_roots.contains(&expected_src),
+            "expected watch_config.source_roots to include {} (got {:?})",
+            expected_src.display(),
+            config.source_roots
+        );
+
+        let manual = ManualFileWatcher::new();
+        let handle: ManualFileWatcherHandle = manual.handle();
+        let _watcher = engine
+            .start_watching_with_watcher(Box::new(manual), WatchDebounceConfig::ZERO)
+            .unwrap();
+
+        // Create a new source file on disk but do not send a file-level watcher event for it. If
+        // an unrelated directory event triggers a rescan, the workspace would discover this file.
+        let added_file = project_root.join("src/Added.java");
+        fs::write(&added_file, "class Added {}".as_bytes()).unwrap();
+        let added_vfs_path = VfsPath::local(added_file);
+        assert!(
+            engine.vfs.get_id(&added_vfs_path).is_none(),
+            "expected Added.java to be undiscovered before any watcher event"
+        );
+
+        // Send a directory-level create event outside source roots (a common pattern during builds,
+        // e.g. `target/`). This should *not* trigger a full rescan.
+        let target_dir = project_root.join("target");
+        fs::create_dir_all(&target_dir).unwrap();
+        handle
+            .push(WatchEvent::Changes {
+                changes: vec![FileChange::Created {
+                    path: VfsPath::local(target_dir),
+                }],
+            })
+            .unwrap();
+
+        // Wait for a short interval and assert the workspace did not rescan and discover the file.
+        let engine_for_wait = engine.clone();
+        let added_for_wait = added_vfs_path.clone();
+        let res = timeout(Duration::from_secs(1), async move {
+            loop {
+                if engine_for_wait.vfs.get_id(&added_for_wait).is_some() {
+                    panic!(
+                        "unexpected rescan: directory event outside source roots should not discover Added.java"
+                    );
+                }
+                yield_now().await;
+            }
+        })
+        .await;
+
+        assert!(
+            res.is_err(),
+            "expected test to time out (file should remain undiscovered)"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
