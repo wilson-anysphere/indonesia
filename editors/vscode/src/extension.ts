@@ -2334,7 +2334,26 @@ async function requireClient(_opts?: { token?: vscode.CancellationToken }): Prom
   if (!client) {
     throw new Error('language client is not running');
   }
-  await clientStart;
+  const startPromise = clientStart;
+  if (startPromise) {
+    const token = _opts?.token;
+    if (!token || token.isCancellationRequested) {
+      // If the caller has already cancelled, don't block on language server startup. This keeps
+      // long-running requests responsive to cancellation while the client is still starting.
+    } else {
+      let subscription: vscode.Disposable | undefined;
+      try {
+        await Promise.race([
+          startPromise,
+          new Promise<void>((resolve) => {
+            subscription = token.onCancellationRequested(() => resolve());
+          }),
+        ]);
+      } finally {
+        subscription?.dispose();
+      }
+    }
+  }
   return client;
 }
 
