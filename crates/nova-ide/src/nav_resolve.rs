@@ -1474,6 +1474,7 @@ fn receiver_before_colon_colon(text: &str, bytes: &[u8], colon_idx: usize) -> Op
     // - `Type<T>::method` (strip type args)
     // - `expr.field::method`
     // - `expr.call()::method` (only empty-arg calls, mirroring `receiver_before_dot`)
+    // - `new Foo()::method` / `new pkg.Foo()::method` (treated as receiver type `Foo`)
     //
     // We normalize whitespace by joining segments with `.` and representing empty-arg calls as
     // `name()`. We intentionally do *not* attempt to parse arbitrary expressions or calls with
@@ -1483,6 +1484,16 @@ fn receiver_before_colon_colon(text: &str, bytes: &[u8], colon_idx: usize) -> Op
     loop {
         if end == 0 {
             return None;
+        }
+
+        // Best-effort: handle constructor receivers like `new Type(... )::method`.
+        //
+        // This mirrors `receiver_before_dot` so method-reference navigation works for patterns like
+        // `new Foo()::bar`.
+        if let Some(ty) = receiver_type_from_new_expression(text, bytes, end) {
+            segments_rev.push(ty);
+            segments_rev.reverse();
+            return Some(segments_rev.join("."));
         }
 
         // Segment can be either:

@@ -4091,6 +4091,70 @@ fn goto_definition_resolves_method_reference_with_generic_receiver_across_files(
 }
 
 #[test]
+fn goto_definition_resolves_method_reference_with_call_receiver_across_files() {
+    let main_path = PathBuf::from("/workspace/src/main/java/Main.java");
+    let foo_path = PathBuf::from("/workspace/src/main/java/Foo.java");
+
+    let (foo_text, foo_offset) = strip_marker("class Foo { void $1bar(){} }", "$1");
+    let (main_text, main_offset) = strip_marker(
+        "import java.util.function.Consumer; class Main { Foo foo(){ return new Foo(); } void m(){ Consumer<Foo> c = foo()::$0bar; } }",
+        "$0",
+    );
+
+    let mut db = InMemoryFileStore::new();
+    let main_file = db.file_id_for_path(&main_path);
+    let foo_file = db.file_id_for_path(&foo_path);
+    db.set_file_text(main_file, main_text.clone());
+    db.set_file_text(foo_file, foo_text.clone());
+
+    let pos = offset_to_position(&main_text, main_offset);
+    let loc = goto_definition(&db, main_file, pos).expect("expected definition location");
+
+    assert!(
+        loc.uri.as_str().contains("Foo.java"),
+        "expected goto-definition to resolve to Foo.java; got {:?}",
+        loc.uri
+    );
+    assert_eq!(
+        loc.range.start,
+        offset_to_position(&foo_text, foo_offset),
+        "expected goto-definition to resolve to Foo.bar() definition"
+    );
+}
+
+#[test]
+fn goto_definition_resolves_method_reference_with_new_expression_receiver_across_files() {
+    let main_path = PathBuf::from("/workspace/src/main/java/Main.java");
+    let foo_path = PathBuf::from("/workspace/src/main/java/Foo.java");
+
+    let (foo_text, foo_offset) = strip_marker("class Foo { void $1bar(){} }", "$1");
+    let (main_text, main_offset) = strip_marker(
+        "import java.util.function.Consumer; class Main { void m(){ Consumer<Foo> c = new Foo()::$0bar; } }",
+        "$0",
+    );
+
+    let mut db = InMemoryFileStore::new();
+    let main_file = db.file_id_for_path(&main_path);
+    let foo_file = db.file_id_for_path(&foo_path);
+    db.set_file_text(main_file, main_text.clone());
+    db.set_file_text(foo_file, foo_text.clone());
+
+    let pos = offset_to_position(&main_text, main_offset);
+    let loc = goto_definition(&db, main_file, pos).expect("expected definition location");
+
+    assert!(
+        loc.uri.as_str().contains("Foo.java"),
+        "expected goto-definition to resolve to Foo.java; got {:?}",
+        loc.uri
+    );
+    assert_eq!(
+        loc.range.start,
+        offset_to_position(&foo_text, foo_offset),
+        "expected goto-definition to resolve to Foo.bar() definition"
+    );
+}
+
+#[test]
 fn goto_definition_resolves_constructor_reference_to_type_across_files() {
     let main_path = PathBuf::from("/workspace/src/main/java/Main.java");
     let foo_path = PathBuf::from("/workspace/src/main/java/Foo.java");
