@@ -471,14 +471,26 @@ mod notify_impl {
                 recv(stop_rx) -> _ => {
                     // Flush any pending rename-froms so they aren't silently dropped when
                     // shutting down the watcher.
-                    let changes = normalizer.flush(Instant::now());
+                    let changes = normalizer.flush(
+                        Instant::now() + EventNormalizer::MAX_AGE + Duration::from_millis(1),
+                    );
                     if !changes.is_empty() {
                         let _ = events_tx.try_send(Ok(WatchEvent::Changes { changes }));
                     }
                     break;
                 },
                 recv(raw_rx) -> msg => {
-                    let Ok(res) = msg else { break };
+                    let Ok(res) = msg else {
+                        // The notify callback is gone (usually because the watcher is shutting down
+                        // unexpectedly). Ensure we don't silently drop any pending rename-froms.
+                        let changes = normalizer.flush(
+                            Instant::now() + EventNormalizer::MAX_AGE + Duration::from_millis(1),
+                        );
+                        if !changes.is_empty() {
+                            let _ = events_tx.try_send(Ok(WatchEvent::Changes { changes }));
+                        }
+                        break;
+                    };
                     match res {
                         Ok(event) => {
                             let now = Instant::now();
