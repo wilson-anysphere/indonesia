@@ -1485,3 +1485,92 @@ class C { Integer m(){ return true ? 1 : null; } }
         .expect("expected a type at offset");
     assert_eq!(ty, "Integer");
 }
+
+#[test]
+fn array_access_expression_has_element_type() {
+    let src = r#"
+class C { int m(){ int[] a = {1,2}; return a[0]; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src
+        .find("a[0]")
+        .expect("snippet should contain array access")
+        + 1; // point at `[` so we select the full `a[0]` expression (not `a` or `0`)
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "int");
+}
+
+#[test]
+fn class_literal_has_class_of_string_type() {
+    let src = r#"
+class C { Class<String> m(){ return String.class; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src
+        .find(".class")
+        .expect("snippet should contain class literal");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Class<String>");
+}
+
+#[test]
+fn primitive_class_literal_has_class_of_wildcard_type() {
+    let src = r#"
+class C { Class<?> m(){ return int.class; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src
+        .find(".class")
+        .expect("snippet should contain primitive class literal");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Class<?>");
+}
+
+#[test]
+fn array_class_literal_preserves_array_dims() {
+    let src = r#"
+class C { Class<String[]> m(){ return String[].class; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.severity != nova_types::Severity::Error),
+        "expected no errors; got {diags:?}"
+    );
+
+    let offset = src
+        .find(".class")
+        .expect("snippet should contain array class literal");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Class<String[]>");
+}
