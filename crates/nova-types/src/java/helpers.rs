@@ -10,6 +10,26 @@ use crate::{ClassId, ClassKind, ClassType, PrimitiveType, Type, TypeEnv, TypeVar
 ///
 /// Example: `ArrayList<String>` instantiated as `List` returns `List<String>`.
 pub fn instantiate_as_supertype(env: &dyn TypeEnv, ty: &Type, target: ClassId) -> Option<Type> {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum BoundKind {
+        Class,
+        Other,
+    }
+
+    fn bound_kind(env: &dyn TypeEnv, ty: &Type) -> BoundKind {
+        let ty = crate::canonicalize_named(env, ty);
+        let Type::Class(ClassType { def, .. }) = ty else {
+            return BoundKind::Other;
+        };
+        let Some(def) = env.class(def) else {
+            return BoundKind::Other;
+        };
+        match def.kind {
+            ClassKind::Class => BoundKind::Class,
+            ClassKind::Interface => BoundKind::Other,
+        }
+    }
+
     fn inner(
         env: &dyn TypeEnv,
         ty: &Type,
@@ -37,24 +57,58 @@ pub fn instantiate_as_supertype(env: &dyn TypeEnv, ty: &Type, target: ClassId) -
 
                 // Best-effort: if multiple parts can be viewed as the requested supertype, prefer
                 // the most informative (fewest Unknowns) and ensure the result is not ambiguous.
-                let mut out: Option<Type> = None;
+                //
+                // Note: in real Java, intersection types contain at most one class component.
+                // During recovery we may still see multiple class-like parts; in that case we
+                // prefer a deterministic class-derived instantiation over dropping all info.
+                let mut out_class: Option<Type> = None;
+                let mut out_other: Option<Type> = None;
                 for part in sorted {
                     let Some(found) = inner(env, part, target, seen_type_vars) else {
                         continue;
                     };
-                    out = match out {
-                        None => Some(found),
-                        Some(existing) => Some(merge_instantiated_supertypes(env, existing, found)?),
-                    };
+                    match bound_kind(env, part) {
+                        BoundKind::Class => {
+                            out_class = match out_class {
+                                None => Some(found),
+                                Some(existing) => match merge_instantiated_supertypes(
+                                    env,
+                                    existing.clone(),
+                                    found,
+                                ) {
+                                    Some(merged) => Some(merged),
+                                    None => Some(existing),
+                                },
+                            };
+                        }
+                        BoundKind::Other => {
+                            out_other = match out_other {
+                                None => Some(found),
+                                Some(existing) => {
+                                    Some(merge_instantiated_supertypes(env, existing, found)?)
+                                }
+                            };
+                        }
+                    }
                 }
-                return out;
+
+                return match (out_class, out_other) {
+                    (Some(class_ty), Some(other_ty)) => Some(
+                        merge_instantiated_supertypes(env, class_ty.clone(), other_ty)
+                            .unwrap_or(class_ty),
+                    ),
+                    (Some(class_ty), None) => Some(class_ty),
+                    (None, Some(other_ty)) => Some(other_ty),
+                    (None, None) => None,
+                };
             }
             Type::TypeVar(id) => {
                 if !seen_type_vars.insert(*id) {
                     return None;
                 }
 
-                let mut out: Option<Type> = None;
+                let mut out_class: Option<Type> = None;
+                let mut out_other: Option<Type> = None;
                 if let Some(tp) = env.type_param(*id) {
                     // Deterministically iterate bounds (ordering isn't guaranteed stable during recovery).
                     let mut sorted: Vec<&Type> = tp.upper_bounds.iter().collect();
@@ -69,17 +123,42 @@ pub fn instantiate_as_supertype(env: &dyn TypeEnv, ty: &Type, target: ClassId) -
                         let Some(found) = inner(env, bound, target, seen_type_vars) else {
                             continue;
                         };
-                        out = match out {
-                            None => Some(found),
-                            Some(existing) => {
-                                Some(merge_instantiated_supertypes(env, existing, found)?)
+                        match bound_kind(env, bound) {
+                            BoundKind::Class => {
+                                out_class = match out_class {
+                                    None => Some(found),
+                                    Some(existing) => match merge_instantiated_supertypes(
+                                        env,
+                                        existing.clone(),
+                                        found,
+                                    ) {
+                                        Some(merged) => Some(merged),
+                                        None => Some(existing),
+                                    },
+                                };
                             }
-                        };
+                            BoundKind::Other => {
+                                out_other = match out_other {
+                                    None => Some(found),
+                                    Some(existing) => {
+                                        Some(merge_instantiated_supertypes(env, existing, found)?)
+                                    }
+                                };
+                            }
+                        }
                     }
                 }
 
                 seen_type_vars.remove(id);
-                return out;
+                return match (out_class, out_other) {
+                    (Some(class_ty), Some(other_ty)) => Some(
+                        merge_instantiated_supertypes(env, class_ty.clone(), other_ty)
+                            .unwrap_or(class_ty),
+                    ),
+                    (Some(class_ty), None) => Some(class_ty),
+                    (None, Some(other_ty)) => Some(other_ty),
+                    (None, None) => None,
+                };
             }
             _ => {}
         }
