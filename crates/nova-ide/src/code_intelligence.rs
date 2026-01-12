@@ -2923,7 +2923,8 @@ fn java_package_and_top_level_types(text: &str) -> (Option<String>, Vec<String>)
                         }
                     }
                     "class" | "interface" | "enum" | "record" => {
-                        if let Some(name_tok) = tokens.get(i + 1).filter(|t| t.kind == TokenKind::Ident)
+                        if let Some(name_tok) =
+                            tokens.get(i + 1).filter(|t| t.kind == TokenKind::Ident)
                         {
                             types.push(name_tok.text.clone());
                         }
@@ -3363,11 +3364,23 @@ fn general_completions(
             "for",
             Some("for (${1:int i = 0}; ${2:i < n}; ${3:i++}) {\n    $0\n}"),
         ),
+        (
+            "for-each",
+            Some("for (${1:Type item} : ${2:items}) {\n    $0\n}"),
+        ),
         ("while", Some("while (${1:condition}) {\n    $0\n}")),
+        ("do", Some("do {\n    $0\n} while (${1:condition});")),
+        (
+            "switch",
+            Some(
+                "switch (${1:expression}) {\n    case ${2:value}:\n        $0\n        break;\n    default:\n        break;\n}",
+            ),
+        ),
         (
             "try",
             Some("try {\n    $0\n} catch (${1:Exception e}) {\n}"),
         ),
+        ("try-finally", Some("try {\n    $0\n} finally {\n}")),
         ("else", None),
         ("return", None),
         ("class", None),
@@ -3707,7 +3720,10 @@ fn kind_weight(kind: Option<CompletionItemKind>) -> i32 {
     }
 }
 
-fn compare_completion_items_for_dedup(a: &CompletionItem, b: &CompletionItem) -> std::cmp::Ordering {
+fn compare_completion_items_for_dedup(
+    a: &CompletionItem,
+    b: &CompletionItem,
+) -> std::cmp::Ordering {
     let a_has_detail = a.detail.as_ref().is_some_and(|d| !d.is_empty());
     let b_has_detail = b.detail.as_ref().is_some_and(|d| !d.is_empty());
 
@@ -3747,7 +3763,12 @@ fn compare_completion_items_for_dedup(a: &CompletionItem, b: &CompletionItem) ->
                 .cmp(&b.additional_text_edits.as_ref().map(Vec::len).unwrap_or(0))
         })
         // Deterministic tie-breaking for "equally rich" duplicates.
-        .then_with(|| a.detail.as_deref().unwrap_or("").cmp(b.detail.as_deref().unwrap_or("")))
+        .then_with(|| {
+            a.detail
+                .as_deref()
+                .unwrap_or("")
+                .cmp(b.detail.as_deref().unwrap_or(""))
+        })
         .then_with(|| {
             a.insert_text
                 .as_deref()
@@ -3851,7 +3872,15 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>, ctx: &Completi
             // Used as a deterministic tie-breaker when scores/weights/labels tie.
             let kind_key = format!("{:?}", item.kind);
 
-            Some((item, score, expected_bonus, scope, recency, weight, kind_key))
+            Some((
+                item,
+                score,
+                expected_bonus,
+                scope,
+                recency,
+                weight,
+                kind_key,
+            ))
         })
         .collect();
 
@@ -4943,7 +4972,11 @@ pub fn prepare_type_hierarchy(
     // Prefer type declarations at the cursor.
     let mut type_name: Option<String> = None;
     if let Some(parsed) = index.file(file) {
-        if let Some(ty) = parsed.types.iter().find(|ty| span_contains(ty.name_span, offset)) {
+        if let Some(ty) = parsed
+            .types
+            .iter()
+            .find(|ty| span_contains(ty.name_span, offset))
+        {
             type_name = Some(ty.name.clone());
         }
     }
@@ -4962,7 +4995,11 @@ pub fn prepare_type_hierarchy(
     let def_file = index.file(info.file_id)?;
     let def_text_index = TextIndex::new(&def_file.text);
 
-    Some(vec![type_hierarchy_item(&info.uri, &def_text_index, &info.def)])
+    Some(vec![type_hierarchy_item(
+        &info.uri,
+        &def_text_index,
+        &info.def,
+    )])
 }
 
 pub fn type_hierarchy_supertypes(
@@ -4985,7 +5022,11 @@ pub fn type_hierarchy_supertypes(
         out.push(type_hierarchy_item(&info.uri, &def_text_index, &info.def));
     }
 
-    out.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.uri.to_string().cmp(&b.uri.to_string())));
+    out.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| a.uri.to_string().cmp(&b.uri.to_string()))
+    });
     out
 }
 
@@ -5009,7 +5050,11 @@ pub fn type_hierarchy_subtypes(
         out.push(type_hierarchy_item(&info.uri, &def_text_index, &info.def));
     }
 
-    out.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.uri.to_string().cmp(&b.uri.to_string())));
+    out.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| a.uri.to_string().cmp(&b.uri.to_string()))
+    });
     out
 }
 
