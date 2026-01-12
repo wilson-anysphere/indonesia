@@ -23,9 +23,7 @@ use nova_memory::{
 use nova_project::{
     BuildSystem, JavaConfig, LoadOptions, ProjectConfig, ProjectError, SourceRootOrigin,
 };
-use nova_scheduler::{Cancelled, Debouncer, KeyedDebouncer, PoolKind, Scheduler};
-#[cfg(test)]
-use nova_scheduler::SchedulerConfig;
+use nova_scheduler::{Cancelled, Debouncer, KeyedDebouncer, PoolKind, Scheduler, SchedulerConfig};
 use nova_syntax::{JavaParseStore, SyntaxTreeStore};
 use nova_types::{CompletionItem, Diagnostic as NovaDiagnostic};
 use nova_vfs::{
