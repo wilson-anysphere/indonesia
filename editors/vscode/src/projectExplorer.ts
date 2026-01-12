@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'node:path';
+import { resolvePossiblyRelativePath } from './pathUtils';
 
 export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
 
@@ -503,7 +504,8 @@ function createSourceRootNode(
   idx: number,
   opts?: { projectRoot?: string },
 ): NovaProjectExplorerNode {
-  const resolved = resolvePath(root, opts?.projectRoot ?? parent.projectRoot);
+  const baseDir = opts?.projectRoot ?? parent.projectRoot;
+  const resolved = resolvePossiblyRelativePath(baseDir, root);
   const uri = resolved ? vscode.Uri.file(resolved) : undefined;
 
   return {
@@ -524,35 +526,23 @@ function createSourceRootNode(
 }
 
 function createClasspathEntryNode(
-  parent: { id: string },
+  parent: { id: string; projectRoot: string },
   entry: string,
   idx: number,
   _opts?: { sliceLabel?: string },
 ): NovaProjectExplorerNode {
   const label = path.basename(entry) || entry;
-  const uri = entry ? vscode.Uri.file(entry) : undefined;
+  const resolved = resolvePossiblyRelativePath(parent.projectRoot, entry);
+  const uri = resolved ? vscode.Uri.file(resolved) : undefined;
 
   return {
     type: 'path',
     id: `${parent.id}:entry:${idx}:${entry}`,
     label,
-    description: entry,
+    description: resolved && resolved !== entry ? resolved : entry,
     uri,
     icon: new vscode.ThemeIcon('symbol-file'),
   };
-}
-
-function resolvePath(value: string, baseDir: string): string | null {
-  if (!value || typeof value !== 'string') {
-    return null;
-  }
-  if (path.isAbsolute(value)) {
-    return value;
-  }
-  if (!baseDir || typeof baseDir !== 'string') {
-    return null;
-  }
-  return path.join(baseDir, value);
 }
 
 function unitLabel(unit: ProjectModelUnit): string {

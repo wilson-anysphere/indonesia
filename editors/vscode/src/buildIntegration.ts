@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
-import * as path from 'node:path';
 import { combineBuildStatuses, groupByFilePath, isBazelTargetRequiredMessage, type NovaBuildStatus } from './buildIntegrationUtils';
+import { resolvePossiblyRelativePath } from './pathUtils';
 
 export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
 
@@ -319,14 +319,7 @@ export function registerNovaBuildIntegration(
   };
 
   const resolveDiagnosticPath = (projectRoot: string, file: string): string => {
-    const trimmed = file.trim();
-    if (trimmed.length === 0) {
-      return trimmed;
-    }
-    if (path.isAbsolute(trimmed)) {
-      return trimmed;
-    }
-    return path.join(projectRoot, trimmed);
+    return resolvePossiblyRelativePath(projectRoot, file);
   };
 
   const refreshBuildDiagnostics = async (
