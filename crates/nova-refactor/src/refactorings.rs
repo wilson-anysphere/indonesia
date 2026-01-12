@@ -3015,6 +3015,163 @@ fn check_extract_variable_name_conflicts(
         }
     }
 
+    // Pattern variables introduced by pattern matching in conditional expressions. Be conservative:
+    // treat any `TypePattern` bindings in the condition as in-scope throughout the corresponding
+    // body statement.
+    for if_stmt in enclosing
+        .body()
+        .syntax()
+        .descendants()
+        .filter_map(ast::IfStatement::cast)
+    {
+        if is_within_nested_type(if_stmt.syntax(), enclosing.body().syntax()) {
+            continue;
+        }
+        let Some(condition) = if_stmt.condition() else {
+            continue;
+        };
+        let Some(then_branch) = if_stmt.then_branch() else {
+            continue;
+        };
+        let scope = syntax_range(then_branch.syntax());
+        if !ranges_overlap(new_scope, scope) {
+            continue;
+        }
+        if condition
+            .syntax()
+            .descendants()
+            .filter_map(ast::TypePattern::cast)
+            .filter_map(|pat| pat.name_token())
+            .any(|tok| tok.text() == name)
+        {
+            return Err(name_collision());
+        }
+    }
+
+    for while_stmt in enclosing
+        .body()
+        .syntax()
+        .descendants()
+        .filter_map(ast::WhileStatement::cast)
+    {
+        if is_within_nested_type(while_stmt.syntax(), enclosing.body().syntax()) {
+            continue;
+        }
+        let Some(condition) = while_stmt.condition() else {
+            continue;
+        };
+        let Some(body) = while_stmt.body() else {
+            continue;
+        };
+        let scope = syntax_range(body.syntax());
+        if !ranges_overlap(new_scope, scope) {
+            continue;
+        }
+        if condition
+            .syntax()
+            .descendants()
+            .filter_map(ast::TypePattern::cast)
+            .filter_map(|pat| pat.name_token())
+            .any(|tok| tok.text() == name)
+        {
+            return Err(name_collision());
+        }
+    }
+
+    for do_stmt in enclosing
+        .body()
+        .syntax()
+        .descendants()
+        .filter_map(ast::DoWhileStatement::cast)
+    {
+        if is_within_nested_type(do_stmt.syntax(), enclosing.body().syntax()) {
+            continue;
+        }
+        let Some(condition) = do_stmt.condition() else {
+            continue;
+        };
+        let Some(body) = do_stmt.body() else {
+            continue;
+        };
+        let scope = syntax_range(body.syntax());
+        if !ranges_overlap(new_scope, scope) {
+            continue;
+        }
+        if condition
+            .syntax()
+            .descendants()
+            .filter_map(ast::TypePattern::cast)
+            .filter_map(|pat| pat.name_token())
+            .any(|tok| tok.text() == name)
+        {
+            return Err(name_collision());
+        }
+    }
+
+    // Switch pattern variables (`case Type name -> ...` / `case Type name:` / record patterns).
+    for group in enclosing
+        .body()
+        .syntax()
+        .descendants()
+        .filter_map(ast::SwitchGroup::cast)
+    {
+        if is_within_nested_type(group.syntax(), enclosing.body().syntax()) {
+            continue;
+        }
+        let scope = syntax_range(group.syntax());
+        if !ranges_overlap(new_scope, scope) {
+            continue;
+        }
+        let mut has_conflict = false;
+        for label in group.labels() {
+            has_conflict |= label
+                .syntax()
+                .descendants()
+                .filter_map(ast::TypePattern::cast)
+                .filter_map(|pat| pat.name_token())
+                .any(|tok| tok.text() == name);
+            if has_conflict {
+                break;
+            }
+        }
+        if has_conflict {
+            return Err(name_collision());
+        }
+    }
+
+    for rule in enclosing
+        .body()
+        .syntax()
+        .descendants()
+        .filter_map(ast::SwitchRule::cast)
+    {
+        if is_within_nested_type(rule.syntax(), enclosing.body().syntax()) {
+            continue;
+        }
+        let scope = rule
+            .body()
+            .map(|body| syntax_range(body.syntax()))
+            .unwrap_or_else(|| syntax_range(rule.syntax()));
+        if !ranges_overlap(new_scope, scope) {
+            continue;
+        }
+        let mut has_conflict = false;
+        for label in rule.labels() {
+            has_conflict |= label
+                .syntax()
+                .descendants()
+                .filter_map(ast::TypePattern::cast)
+                .filter_map(|pat| pat.name_token())
+                .any(|tok| tok.text() == name);
+            if has_conflict {
+                break;
+            }
+        }
+        if has_conflict {
+            return Err(name_collision());
+        }
+    }
+
     Ok(())
 }
 

@@ -916,6 +916,123 @@ fn extract_variable_replace_all_replaces_occurrences_after_insertion_stmt_in_sam
 }
 
 #[test]
+fn extract_variable_rejects_name_conflict_with_instanceof_pattern_variable() {
+    let fixture = r#"class C {
+  void m(Object o) {
+    if (o instanceof String s) {
+      System.out.println(/*start*/1 + 2/*end*/);
+    }
+  }
+}
+"#;
+    let (src, expr_range) = extract_range(fixture);
+    let file = FileId::new("Test.java");
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "s".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    let SemanticRefactorError::Conflicts(conflicts) = err else {
+        panic!("expected conflicts, got: {err:?}");
+    };
+
+    assert!(
+        conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::NameCollision { name, .. } if name == "s")),
+        "expected NameCollision conflict: {conflicts:?}"
+    );
+}
+
+#[test]
+fn extract_variable_rejects_name_conflict_with_switch_pattern_variable() {
+    let fixture = r#"class C {
+  void m(Object o) {
+    switch (o) {
+      case String s -> {
+        System.out.println(/*start*/1 + 2/*end*/);
+      }
+      default -> {}
+    }
+  }
+}
+"#;
+    let (src, expr_range) = extract_range(fixture);
+    let file = FileId::new("Test.java");
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "s".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    let SemanticRefactorError::Conflicts(conflicts) = err else {
+        panic!("expected conflicts, got: {err:?}");
+    };
+
+    assert!(
+        conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::NameCollision { name, .. } if name == "s")),
+        "expected NameCollision conflict: {conflicts:?}"
+    );
+}
+
+#[test]
+fn extract_variable_rejects_name_conflict_with_try_with_resources_resource_variable() {
+    let fixture = r#"class C {
+  void m(java.io.InputStream src) throws Exception {
+    try (java.io.InputStream in = src) {
+      System.out.println(/*start*/1 + 2/*end*/);
+    }
+  }
+}
+"#;
+    let (src, expr_range) = extract_range(fixture);
+    let file = FileId::new("Test.java");
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "in".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    let SemanticRefactorError::Conflicts(conflicts) = err else {
+        panic!("expected conflicts, got: {err:?}");
+    };
+
+    assert!(
+        conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::NameCollision { name, .. } if name == "in")),
+        "expected NameCollision conflict: {conflicts:?}"
+    );
+}
+
+#[test]
 fn extract_variable_rejects_empty_name() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
