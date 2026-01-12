@@ -1277,14 +1277,32 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             } => {
                 let data = &self.body.locals[*local];
                 let iterable_ty = self.infer_expr(loader, *iterable).ty;
-                let element_ty = match &iterable_ty {
-                    Type::Array(elem) => elem.as_ref().clone(),
-                    _ => Type::Unknown,
+                let object_ty = Type::class(loader.store.well_known().object, vec![]);
+                let (is_iterable, element_ty) = match &iterable_ty {
+                    Type::Array(elem) => (true, elem.as_ref().clone()),
+                    Type::Class(class_ty) => {
+                        let name = loader
+                            .store
+                            .class(class_ty.def)
+                            .map(|def| def.name.as_str());
+                        match name {
+                            Some("java.lang.Iterable" | "java.util.List" | "java.util.ArrayList") => (
+                                true,
+                                class_ty
+                                    .args
+                                    .get(0)
+                                    .cloned()
+                                    .unwrap_or_else(|| object_ty.clone()),
+                            ),
+                            _ => (false, Type::Unknown),
+                        }
+                    }
+                    _ => (false, Type::Unknown),
                 };
 
                 // Emit an error if the iterable expression is not something we can iterate.
-                // For now we only support arrays (and treat everything else as non-iterable).
-                if !iterable_ty.is_errorish() && !matches!(iterable_ty, Type::Array(_)) {
+                // For now we only support arrays and a small subset of `Iterable<T>`.
+                if !iterable_ty.is_errorish() && !is_iterable {
                     let env_ro: &dyn TypeEnv = &*loader.store;
                     let found = format_type(env_ro, &iterable_ty);
                     self.diagnostics.push(Diagnostic::error(

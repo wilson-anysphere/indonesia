@@ -174,6 +174,45 @@ class C { void m(String[] arr){ for (int x : arr) {} } }
 }
 
 #[test]
+fn foreach_explicit_type_accepts_list_element() {
+    let src = r#"
+import java.util.*;
+class C { void m(List<String> list){ for (String s : list) { s.length(); } } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| {
+            d.code.as_ref() != "type-mismatch"
+                && d.code.as_ref() != "foreach-not-iterable"
+                && d.code.as_ref() != "unresolved-method"
+        }),
+        "expected foreach over list to type-check without foreach/type mismatch errors, got {diags:?}"
+    );
+}
+
+#[test]
+fn foreach_var_infers_list_element() {
+    let src = r#"
+import java.util.*;
+class C { void m(List<String> list){ for (var s : list) { s.length(); } } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| {
+            d.code.as_ref() != "foreach-not-iterable"
+                && d.code.as_ref() != "cannot-infer-foreach-var"
+                && d.code.as_ref() != "type-mismatch"
+                && d.code.as_ref() != "unresolved-method"
+        }),
+        "expected foreach var over list to infer element type, got {diags:?}"
+    );
+}
+
+#[test]
 fn compound_assign_allows_narrowing_like_javac() {
     let src = r#"
 class C {
