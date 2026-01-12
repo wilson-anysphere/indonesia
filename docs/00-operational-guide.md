@@ -141,7 +141,7 @@ Environment variables:
 - `NOVA_CARGO_LIMIT_AS`: Address-space cap (default: `4G`)
 - `NOVA_CARGO_SLOTS`: Max concurrent cargo commands (default: auto)
 - `NOVA_CARGO_JOBS`: Force `-j` value (default: cargo's default)
-- `NOVA_RUST_TEST_THREADS`: Test thread cap (default: `min(nproc, 32)`)
+- `NOVA_RUST_TEST_THREADS`: Test thread cap (default: `min(nproc, 8)`)
 - `NOVA_CARGO_ALLOW_UNSCOPED_TEST`: Set to `1` to allow unscoped `cargo test` (not recommended; prefer `-p/--package` or `--manifest-path`)
 
 ---
