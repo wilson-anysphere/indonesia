@@ -790,6 +790,53 @@ class B extends A {
 }
 
 #[test]
+fn completion_includes_detail_for_local_var_type() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    int count = 0;
+    co<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "count")
+        .expect("expected local var completion item");
+
+    assert_eq!(item.detail.as_deref(), Some("int"));
+}
+
+#[test]
+fn completion_includes_string_member_detail_with_return_type() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    "x".<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "substring")
+        .expect("expected substring completion item");
+
+    let detail = item.detail.as_deref().unwrap_or("");
+    assert!(
+        detail.contains("substring(") && detail.contains("String"),
+        "expected detail to contain a signature with return type; got {detail:?}"
+    );
+}
+
+#[test]
 fn completion_includes_string_members_for_string_literal_receiver() {
     let (db, file, pos) = fixture(
         r#"

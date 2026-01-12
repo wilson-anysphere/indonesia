@@ -3198,7 +3198,12 @@ fn new_expression_type_completions(
     // 1) Classes declared in this file.
     for class in &analysis.classes {
         if seen_labels.insert(class.name.clone()) {
-            let mut item = constructor_completion_item(class.name.clone(), None);
+            let detail = if imports.current_package.is_empty() {
+                class.name.clone()
+            } else {
+                format!("{}.{}", imports.current_package, class.name)
+            };
+            let mut item = constructor_completion_item(class.name.clone(), Some(detail));
             mark_workspace_completion_item(&mut item);
             items.push(item);
         }
@@ -7019,7 +7024,7 @@ fn annotation_type_completions(
             items.push(CompletionItem {
                 label: ty.simple.clone(),
                 kind: Some(CompletionItemKind::CLASS),
-                detail: (!ty.package.is_empty()).then(|| ty.package.clone()),
+                detail: Some(ty.qualified.clone()),
                 insert_text: Some(ty.simple.clone()),
                 ..Default::default()
             });
@@ -7071,10 +7076,14 @@ fn workspace_type_completions(
             if !seen.insert(name.clone()) {
                 continue;
             }
+            let qualified = match package.as_deref() {
+                Some(pkg) if !pkg.is_empty() => format!("{pkg}.{name}"),
+                _ => name.clone(),
+            };
             out.push(CompletionItem {
                 label: name.clone(),
                 kind: Some(CompletionItemKind::CLASS),
-                detail: package.clone(),
+                detail: Some(qualified),
                 insert_text: Some(name),
                 ..Default::default()
             });
@@ -7434,7 +7443,6 @@ fn member_completions(
 ) -> Vec<CompletionItem> {
     let text = db.file_content(file);
     let analysis = analyze(text);
-
     let mut types = completion_type_store(db, file);
     let file_ctx = JavaFileTypeContext::from_tokens(&analysis.tokens);
 
@@ -9836,7 +9844,7 @@ fn general_completions(
         items.push(CompletionItem {
             label: m.name.clone(),
             kind: Some(CompletionItemKind::METHOD),
-            detail: Some(m.ret_ty.clone()),
+            detail: Some(format!("{} {}", m.ret_ty, format_method_signature(m))),
             insert_text: Some(insert_text),
             insert_text_format,
             ..Default::default()
