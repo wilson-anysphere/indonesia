@@ -999,10 +999,7 @@ fn fuzzy_rank_workspace_symbols_sharded(
             ranked,
             SearchStats {
                 strategy: CandidateStrategy::FullScan,
-                candidates_considered: shards
-                    .iter()
-                    .map(|shard| shard.symbols.symbols.len())
-                    .sum(),
+                candidates_considered: shards.iter().map(|shard| shard.symbols.symbols.len()).sum(),
             },
         );
     }

@@ -113,9 +113,7 @@ fn stdio_server_supports_workspace_symbol_requests() {
     assert!(
         results.iter().any(|value| {
             value.get("name").and_then(|v| v.as_str()) == Some("Foo")
-                && value
-                    .pointer("/location/uri")
-                    .and_then(|v| v.as_str())
+                && value.pointer("/location/uri").and_then(|v| v.as_str())
                     == Some(file_uri.as_str())
         }),
         "expected to find Foo symbol pointing at Foo.java when query is Foo"
