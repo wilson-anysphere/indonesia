@@ -259,6 +259,48 @@ class C {
 }
 
 #[test]
+fn rejects_parenthesized_assignment_statement_expression() {
+    let src = r#"
+class C {
+    void m() {
+        int i = 0;
+        (i = 1);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-statement-expression"),
+        "expected invalid-statement-expression diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn allows_parenthesized_receiver_method_invocation_statement_expression() {
+    let src = r#"
+class C {
+    void f() {}
+    void m() {
+        (new C()).f();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.as_ref() != "invalid-statement-expression"),
+        "expected no invalid-statement-expression diagnostics; got {diags:?}"
+    );
+}
+
+#[test]
 fn allows_inc_dec_statement_expression() {
     let src = r#"
 class C {

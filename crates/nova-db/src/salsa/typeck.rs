@@ -2741,7 +2741,21 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
     }
 
     fn validate_statement_expression(&mut self, expr: HirExprId) {
+        let expr_range = self.body.exprs[expr].range();
         match &self.body.exprs[expr] {
+            HirExpr::Missing { .. } => {}
+            _ if self.range_is_wrapped_in_parens(expr_range) => {
+                // Parenthesized expressions are not valid statement expressions (JLS 14.8).
+                //
+                // `nova-syntax` lowers parenthesized expressions to their inner expression node,
+                // so a parenthesized assignment like `(x = 1);` would otherwise look like a plain
+                // `HirExpr::Assign` here.
+                self.diagnostics.push(Diagnostic::error(
+                    "invalid-statement-expression",
+                    "invalid expression statement",
+                    Some(expr_range),
+                ));
+            }
             HirExpr::Assign { .. }
             | HirExpr::Call { .. }
             | HirExpr::Unary {
@@ -2772,19 +2786,43 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     self.diagnostics.push(Diagnostic::error(
                         "invalid-statement-expression",
                         "invalid expression statement",
-                        Some(self.body.exprs[expr].range()),
+                        Some(expr_range),
                     ));
                 }
             }
-            HirExpr::Missing { .. } => {}
             _ => {
                 self.diagnostics.push(Diagnostic::error(
                     "invalid-statement-expression",
                     "invalid expression statement",
-                    Some(self.body.exprs[expr].range()),
+                    Some(expr_range),
                 ));
             }
         }
+    }
+
+    fn range_is_wrapped_in_parens(&self, range: Span) -> bool {
+        let file = def_file(self.owner);
+        let text = self.db.file_content(file);
+        let bytes = text.as_bytes();
+        if range.start == 0 || range.end >= bytes.len() {
+            return false;
+        }
+
+        // Look for an opening `(` immediately before the expression (ignoring whitespace).
+        let mut left = range.start;
+        while left > 0 && bytes[left - 1].is_ascii_whitespace() {
+            left -= 1;
+        }
+        if left == 0 || bytes[left - 1] != b'(' {
+            return false;
+        }
+
+        // Look for a closing `)` immediately after the expression (ignoring whitespace).
+        let mut right = range.end;
+        while right < bytes.len() && bytes[right].is_ascii_whitespace() {
+            right += 1;
+        }
+        right < bytes.len() && bytes[right] == b')'
     }
 
     fn check_stmt(
