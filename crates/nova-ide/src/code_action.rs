@@ -7,6 +7,7 @@ use nova_refactor::extract_method::{
     ExtractMethod, ExtractMethodIssue, InsertionStrategy, Visibility,
 };
 use nova_refactor::TextRange;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -88,6 +89,7 @@ pub fn extract_method_code_action(source: &str, uri: Uri, lsp_range: Range) -> O
 /// Today this provides two quick-fixes:
 /// - `unresolved-type` → `Create class '<Name>'`
 /// - `FLOW_UNREACHABLE` → `Remove unreachable code`
+/// - `FLOW_UNASSIGNED` → `Initialize '<name>'`
 pub fn diagnostic_quick_fixes(
     source: &str,
     uri: Option<Uri>,
@@ -103,7 +105,13 @@ pub fn diagnostic_quick_fixes(
         .flat_map(|diag| {
             create_class_quick_fix(source, &uri, &selection, diag)
                 .into_iter()
-                .chain(remove_unreachable_code_quick_fix(source, &uri, &selection, diag).into_iter())
+                .chain(
+                    remove_unreachable_code_quick_fix(source, &uri, &selection, diag).into_iter(),
+                )
+                .chain(
+                    initialize_unassigned_local_quick_fix(source, &uri, &selection, diag)
+                        .into_iter(),
+                )
         })
         .collect()
 }
@@ -196,6 +204,57 @@ fn remove_unreachable_code_quick_fix(
     })
 }
 
+fn initialize_unassigned_local_quick_fix(
+    source: &str,
+    uri: &Uri,
+    selection: &Range,
+    diagnostic: &Diagnostic,
+) -> Option<CodeAction> {
+    if diagnostic_code(diagnostic)? != "FLOW_UNASSIGNED" {
+        return None;
+    }
+
+    if !ranges_intersect(selection, &diagnostic.range) {
+        return None;
+    }
+
+    let name = backticked_name(&diagnostic.message)?;
+
+    let start_offset = crate::text::position_to_offset(source, diagnostic.range.start)?;
+    let (line_start, indent) = line_start_and_indent(source, start_offset)?;
+
+    let default_value = infer_default_value_for_local(source, name, start_offset);
+    let line_ending = if source.contains("\r\n") { "\r\n" } else { "\n" };
+    let new_text = format!("{indent}{name} = {default_value};{line_ending}");
+
+    let insert_pos = crate::text::offset_to_position(source, line_start);
+    let insert_range = Range {
+        start: insert_pos,
+        end: insert_pos,
+    };
+
+    let mut changes = HashMap::new();
+    changes.insert(
+        uri.clone(),
+        vec![TextEdit {
+            range: insert_range,
+            new_text,
+        }],
+    );
+
+    Some(CodeAction {
+        title: format!("Initialize '{name}'"),
+        kind: Some(CodeActionKind::QUICKFIX),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        }),
+        diagnostics: Some(vec![diagnostic.clone()]),
+        ..CodeAction::default()
+    })
+}
+
 fn diagnostic_code(diagnostic: &Diagnostic) -> Option<&str> {
     match diagnostic.code.as_ref()? {
         NumberOrString::String(code) => Some(code.as_str()),
@@ -206,6 +265,15 @@ fn diagnostic_code(diagnostic: &Diagnostic) -> Option<&str> {
 fn unresolved_type_name(message: &str) -> Option<&str> {
     let rest = message.strip_prefix("unresolved type `")?;
     rest.strip_suffix('`')
+}
+
+fn backticked_name(message: &str) -> Option<&str> {
+    // Flow diagnostics for unassigned locals use the format:
+    // `use of local `<name>` before definite assignment`
+    let start = message.find('`')?;
+    let rest = &message[start + 1..];
+    let end = rest.find('`')?;
+    Some(rest[..end].trim())
 }
 
 fn is_simple_type_identifier(name: &str) -> bool {
@@ -266,6 +334,63 @@ fn full_line_range(source: &str, range: &Range) -> Option<Range> {
         start: crate::text::offset_to_position(source, line_start),
         end: crate::text::offset_to_position(source, line_end),
     })
+}
+
+fn line_start_and_indent(source: &str, offset: usize) -> Option<(usize, &str)> {
+    let offset = offset.min(source.len());
+    let line_start = source[..offset]
+        .rfind('\n')
+        .map(|idx| idx + 1)
+        .unwrap_or(0);
+
+    let line = source.get(line_start..)?;
+    let indent_len: usize = line
+        .chars()
+        .take_while(|ch| *ch == ' ' || *ch == '\t')
+        .map(char::len_utf8)
+        .sum();
+    let indent = line.get(..indent_len)?;
+
+    Some((line_start, indent))
+}
+
+fn infer_default_value_for_local(source: &str, name: &str, before_offset: usize) -> &'static str {
+    let before_offset = before_offset.min(source.len());
+    let prefix = &source[..before_offset];
+
+    // Best-effort: detect primitive local declarations. For all non-primitives we default to
+    // `null` anyway, so we can keep the type parsing narrow and avoid false positives.
+    let pat = format!(
+        r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:final\s+)?(?P<ty>byte|short|int|long|float|double|boolean|char)(?P<array1>(?:\[\])*)\s+{}\b",
+        regex::escape(name)
+    );
+    let re = Regex::new(&pat).ok();
+
+    if let Some(re) = re {
+        for line in prefix.lines().rev() {
+            let Some(caps) = re.captures(line) else {
+                continue;
+            };
+            let ty = caps.name("ty").map(|m| m.as_str()).unwrap_or("");
+            let array1 = caps.name("array1").map(|m| m.as_str()).unwrap_or("");
+
+            // Handle the alternative Java array syntax: `int x[];` (brackets after the name).
+            let array2 = line.contains(&format!("{name}[]"));
+
+            if !array1.is_empty() || array2 {
+                return "null";
+            }
+
+            return match ty {
+                "boolean" => "false",
+                "char" => "'\\0'",
+                "byte" | "short" | "int" | "long" | "float" | "double" => "0",
+                _ => "null",
+            };
+        }
+    }
+
+    "null"
 }
 
 fn position_within_range(start: Position, end: Position, pos: Position) -> bool {
