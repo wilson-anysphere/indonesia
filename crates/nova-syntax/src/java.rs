@@ -3017,16 +3017,17 @@ mod tests {
         let ast::Stmt::Expr(expr_stmt) = &block.statements[0] else {
             panic!("expected expression statement");
         };
+        assert_eq!(expr_stmt.range, Span::new(2, 9));
 
         let ast::Expr::Call(call) = &expr_stmt.expr else {
             panic!("expected call expression");
         };
+        assert_eq!(call.range, Span::new(2, 8));
 
-        assert!(
-            matches!(call.callee.as_ref(), ast::Expr::This(_)),
-            "expected call callee to be `this`, got {:?}",
-            call.callee
-        );
+        let ast::Expr::This(range) = call.callee.as_ref() else {
+            panic!("expected call callee to be `this`, got {:?}", call.callee);
+        };
+        assert_eq!(*range, Span::new(2, 6));
     }
 
     #[test]
@@ -3037,16 +3038,17 @@ mod tests {
         let ast::Stmt::Expr(expr_stmt) = &block.statements[0] else {
             panic!("expected expression statement");
         };
+        assert_eq!(expr_stmt.range, Span::new(2, 10));
 
         let ast::Expr::Call(call) = &expr_stmt.expr else {
             panic!("expected call expression");
         };
+        assert_eq!(call.range, Span::new(2, 9));
 
-        assert!(
-            matches!(call.callee.as_ref(), ast::Expr::Super(_)),
-            "expected call callee to be `super`, got {:?}",
-            call.callee
-        );
+        let ast::Expr::Super(range) = call.callee.as_ref() else {
+            panic!("expected call callee to be `super`, got {:?}", call.callee);
+        };
+        assert_eq!(*range, Span::new(2, 7));
     }
 
     #[test]
