@@ -210,7 +210,7 @@ impl<'a> JavaPrettyFormatter<'a> {
                     parts.push(fmt_comment(&ctx, &comment, self.source));
                     has_content = true;
                     consumes_next_line_break = matches!(kind, CommentKind::Line | CommentKind::Doc);
-
+ 
                     // Ensure block comments cannot glue to the following token when the source has
                     // no whitespace between them (e.g. `/* comment */int x;`).
                     //
