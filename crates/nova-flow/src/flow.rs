@@ -232,6 +232,13 @@ impl<'a, 'c> HirCfgBuilder<'a, 'c> {
         (self.check_cancelled)();
     }
 
+    fn const_bool_expr(&self, expr: ExprId) -> Option<bool> {
+        match &self.body.expr(expr).kind {
+            ExprKind::Bool(value) => Some(*value),
+            _ => None,
+        }
+    }
+
     fn build_seq(&mut self, stmts: &[StmtId], entry: BlockId) -> Option<BlockId> {
         let mut reachable_current: Option<BlockId> = Some(entry);
         let mut unreachable_current: Option<BlockId> = None;
@@ -275,15 +282,31 @@ impl<'a, 'c> HirCfgBuilder<'a, 'c> {
                 let else_entry = self.cfg.new_block();
                 let join = self.cfg.new_block();
 
-                self.cfg.set_terminator(
-                    entry,
-                    Terminator::If {
-                        condition: *condition,
-                        then_target: then_entry,
-                        else_target: else_entry,
-                        from: stmt,
-                    },
-                );
+                match self.const_bool_expr(*condition) {
+                    Some(true) => self.cfg.set_terminator(
+                        entry,
+                        Terminator::Goto {
+                            target: then_entry,
+                            from: Some(stmt),
+                        },
+                    ),
+                    Some(false) => self.cfg.set_terminator(
+                        entry,
+                        Terminator::Goto {
+                            target: else_entry,
+                            from: Some(stmt),
+                        },
+                    ),
+                    None => self.cfg.set_terminator(
+                        entry,
+                        Terminator::If {
+                            condition: *condition,
+                            then_target: then_entry,
+                            else_target: else_entry,
+                            from: stmt,
+                        },
+                    ),
+                }
 
                 let then_fallthrough = self.build_stmt(*then_branch, then_entry);
                 if let Some(bb) = then_fallthrough {
@@ -330,15 +353,31 @@ impl<'a, 'c> HirCfgBuilder<'a, 'c> {
                     },
                 );
 
-                self.cfg.set_terminator(
-                    cond_bb,
-                    Terminator::If {
-                        condition: *condition,
-                        then_target: body_bb,
-                        else_target: after_bb,
-                        from: stmt,
-                    },
-                );
+                match self.const_bool_expr(*condition) {
+                    Some(true) => self.cfg.set_terminator(
+                        cond_bb,
+                        Terminator::Goto {
+                            target: body_bb,
+                            from: Some(stmt),
+                        },
+                    ),
+                    Some(false) => self.cfg.set_terminator(
+                        cond_bb,
+                        Terminator::Goto {
+                            target: after_bb,
+                            from: Some(stmt),
+                        },
+                    ),
+                    None => self.cfg.set_terminator(
+                        cond_bb,
+                        Terminator::If {
+                            condition: *condition,
+                            then_target: body_bb,
+                            else_target: after_bb,
+                            from: stmt,
+                        },
+                    ),
+                }
 
                 self.break_stack.push(BreakContext {
                     break_target: after_bb,
@@ -392,15 +431,31 @@ impl<'a, 'c> HirCfgBuilder<'a, 'c> {
                     );
                 }
 
-                self.cfg.set_terminator(
-                    cond_bb,
-                    Terminator::If {
-                        condition: *condition,
-                        then_target: body_bb,
-                        else_target: after_bb,
-                        from: stmt,
-                    },
-                );
+                match self.const_bool_expr(*condition) {
+                    Some(true) => self.cfg.set_terminator(
+                        cond_bb,
+                        Terminator::Goto {
+                            target: body_bb,
+                            from: Some(stmt),
+                        },
+                    ),
+                    Some(false) => self.cfg.set_terminator(
+                        cond_bb,
+                        Terminator::Goto {
+                            target: after_bb,
+                            from: Some(stmt),
+                        },
+                    ),
+                    None => self.cfg.set_terminator(
+                        cond_bb,
+                        Terminator::If {
+                            condition: *condition,
+                            then_target: body_bb,
+                            else_target: after_bb,
+                            from: stmt,
+                        },
+                    ),
+                }
 
                 Some(after_bb)
             }
@@ -437,15 +492,31 @@ impl<'a, 'c> HirCfgBuilder<'a, 'c> {
                 );
 
                 match condition {
-                    Some(cond) => self.cfg.set_terminator(
-                        cond_bb,
-                        Terminator::If {
-                            condition: *cond,
-                            then_target: body_bb,
-                            else_target: after_bb,
-                            from: stmt,
-                        },
-                    ),
+                    Some(cond) => match self.const_bool_expr(*cond) {
+                        Some(true) => self.cfg.set_terminator(
+                            cond_bb,
+                            Terminator::Goto {
+                                target: body_bb,
+                                from: Some(stmt),
+                            },
+                        ),
+                        Some(false) => self.cfg.set_terminator(
+                            cond_bb,
+                            Terminator::Goto {
+                                target: after_bb,
+                                from: Some(stmt),
+                            },
+                        ),
+                        None => self.cfg.set_terminator(
+                            cond_bb,
+                            Terminator::If {
+                                condition: *cond,
+                                then_target: body_bb,
+                                else_target: after_bb,
+                                from: stmt,
+                            },
+                        ),
+                    },
                     None => {
                         // Best-effort: treat missing condition as an infinite loop.
                         self.cfg.set_terminator(
@@ -456,7 +527,7 @@ impl<'a, 'c> HirCfgBuilder<'a, 'c> {
                             },
                         );
                     }
-                }
+                };
 
                 self.break_stack.push(BreakContext {
                     break_target: after_bb,

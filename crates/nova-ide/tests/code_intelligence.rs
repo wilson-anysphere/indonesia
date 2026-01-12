@@ -772,3 +772,118 @@ class A {
         "expected use-before-assignment diagnostic after break; got {diags:#?}"
     );
 }
+
+#[test]
+fn diagnostics_report_unreachable_else_branch_on_if_true() {
+    let text = r#"
+class A {
+  void m() {
+    if (true) {
+      int x = 1;
+    } else {
+      int y = 2;
+    }
+  }
+}
+"#;
+
+    let (db, file) = fixture_file(text);
+    let diags = file_diagnostics(&db, file);
+
+    let x_needle = "int x = 1;";
+    let x_start = text.find(x_needle).expect("expected int x in fixture");
+    let x_end = x_start + x_needle.len();
+
+    let y_needle = "int y = 2;";
+    let y_start = text.find(y_needle).expect("expected int y in fixture");
+    let y_end = y_start + y_needle.len();
+
+    assert!(
+        !diags.iter().any(|d| d.code == "FLOW_UNREACHABLE"
+            && d.span
+                .is_some_and(|span| span.start < x_end && span.end > x_start)),
+        "expected then branch to be reachable; got {diags:#?}"
+    );
+    assert!(
+        diags.iter().any(|d| d.code == "FLOW_UNREACHABLE"
+            && d.span
+                .is_some_and(|span| span.start < y_end && span.end > y_start)),
+        "expected else branch to be unreachable; got {diags:#?}"
+    );
+}
+
+#[test]
+fn diagnostics_report_unreachable_while_body_on_constant_false() {
+    let text = r#"
+class A {
+  void m() {
+    while (false) {
+      int x = 1;
+    }
+    int y = 2;
+  }
+}
+"#;
+
+    let (db, file) = fixture_file(text);
+    let diags = file_diagnostics(&db, file);
+
+    let x_needle = "int x = 1;";
+    let x_start = text.find(x_needle).expect("expected int x in fixture");
+    let x_end = x_start + x_needle.len();
+
+    let y_needle = "int y = 2;";
+    let y_start = text.find(y_needle).expect("expected int y in fixture");
+    let y_end = y_start + y_needle.len();
+
+    assert!(
+        diags.iter().any(|d| d.code == "FLOW_UNREACHABLE"
+            && d.span
+                .is_some_and(|span| span.start < x_end && span.end > x_start)),
+        "expected while body to be unreachable; got {diags:#?}"
+    );
+    assert!(
+        !diags.iter().any(|d| d.code == "FLOW_UNREACHABLE"
+            && d.span
+                .is_some_and(|span| span.start < y_end && span.end > y_start)),
+        "expected statement after while(false) to be reachable; got {diags:#?}"
+    );
+}
+
+#[test]
+fn diagnostics_report_unreachable_after_for_true() {
+    let text = r#"
+class A {
+  void m() {
+    for (; true;) {
+      int x = 1;
+    }
+    int y = 2;
+  }
+}
+"#;
+
+    let (db, file) = fixture_file(text);
+    let diags = file_diagnostics(&db, file);
+
+    let x_needle = "int x = 1;";
+    let x_start = text.find(x_needle).expect("expected int x in fixture");
+    let x_end = x_start + x_needle.len();
+
+    let y_needle = "int y = 2;";
+    let y_start = text.find(y_needle).expect("expected int y in fixture");
+    let y_end = y_start + y_needle.len();
+
+    assert!(
+        !diags.iter().any(|d| d.code == "FLOW_UNREACHABLE"
+            && d.span
+                .is_some_and(|span| span.start < x_end && span.end > x_start)),
+        "expected for-body to be reachable; got {diags:#?}"
+    );
+    assert!(
+        diags.iter().any(|d| d.code == "FLOW_UNREACHABLE"
+            && d.span
+                .is_some_and(|span| span.start < y_end && span.end > y_start)),
+        "expected statement after for(;true;) to be unreachable; got {diags:#?}"
+    );
+}
