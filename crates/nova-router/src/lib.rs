@@ -593,21 +593,53 @@ impl InProcessRouter {
 
         let token = self.next_index_token().await;
         let revision = self.global_revision.fetch_add(1, Ordering::SeqCst) + 1;
-        let mut join_set = JoinSet::new();
+        let mut collect_set = JoinSet::new();
+
+        // Collect shard files concurrently so multi-shard indexing can start promptly.
+        for (shard_id, root) in self.layout.source_roots.iter().enumerate() {
+            let root = root.path.clone();
+            let shard_id = shard_id as ShardId;
+            collect_set.spawn(async move {
+                let files = collect_java_files(&root)
+                    .await
+                    .with_context(|| format!("collect files for shard {shard_id} ({})", root.display()))?;
+                Ok::<_, anyhow::Error>((shard_id, files))
+            });
+        }
+
+        let mut shard_files = Vec::new();
+        while !collect_set.is_empty() {
+            let res = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    token.cancel();
+                    return Err(rpc_cancelled_error());
+                }
+                res = collect_set.join_next() => res,
+            };
+
+            let Some(res) = res else {
+                break;
+            };
+
+            let (shard_id, files) = match res {
+                Ok(Ok(res)) => res,
+                Ok(Err(err)) => return Err(err),
+                Err(err) => return Err(anyhow!("file collection task panicked: {err}")),
+            };
+            shard_files.push((shard_id, files));
+        }
+
+        if token.is_cancelled() {
+            return Ok(());
+        }
+        if cancel.is_cancelled() {
+            return Err(rpc_cancelled_error());
+        }
 
         // Spawn all per-shard indexing tasks first so multi-shard work actually runs concurrently.
-        for (shard_id, root) in self.layout.source_roots.iter().enumerate() {
-            if cancel.is_cancelled() {
-                token.cancel();
-                return Err(rpc_cancelled_error());
-            }
-
-            let files = collect_java_files(&root.path).await?;
-            if cancel.is_cancelled() {
-                token.cancel();
-                return Err(rpc_cancelled_error());
-            }
-            let shard_id = shard_id as ShardId;
+        let mut join_set = JoinSet::new();
+        for (shard_id, files) in shard_files {
             let task = self
                 .scheduler
                 .spawn_background_with_token(token.clone(), move |token| {
@@ -670,12 +702,22 @@ impl InProcessRouter {
             return Err(rpc_cancelled_error());
         }
 
-        {
-            let mut guard = self.shard_indexes.lock().await;
-            *guard = indexes.clone();
+        let symbols = build_global_symbols(indexes.values());
+
+        // Check cancellation as close to committing as possible so a new indexing run can prevent
+        // stale results from being installed (including during `build_global_symbols`).
+        if token.is_cancelled() {
+            return Ok(());
+        }
+        if cancel.is_cancelled() {
+            return Err(rpc_cancelled_error());
         }
 
-        let symbols = build_global_symbols(indexes.values());
+        {
+            let mut guard = self.shard_indexes.lock().await;
+            *guard = indexes;
+        }
+
         write_global_symbols(&self.global_symbols, symbols, revision).await;
         Ok(())
     }
@@ -931,6 +973,20 @@ impl DistributedRouter {
         }
 
         let revision = self.state.global_revision.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.state.layout.source_roots.is_empty() {
+            {
+                let mut guard = self.state.shard_indexes.lock().await;
+                guard.clear();
+            }
+            let update_id = self
+                .state
+                .shard_indexes_update_id
+                .fetch_add(1, Ordering::SeqCst)
+                + 1;
+            write_global_symbols(&self.state.global_symbols, Vec::new(), update_id).await;
+            return Ok(());
+        }
+
         let mut join_set = JoinSet::new();
         for shard_id in 0..(self.state.layout.source_roots.len() as ShardId) {
             let state = self.state.clone();
@@ -1056,12 +1112,17 @@ impl DistributedRouter {
         // rebuild once from a full snapshot at the end (even if we return early on error after
         // applying some shard indexes).
         if updated_any {
-            let (indexes_snapshot, update_id) = {
+            let (mut symbols, update_id) = {
                 let guard = self.state.shard_indexes.lock().await;
                 let update_id = self.state.shard_indexes_update_id.load(Ordering::SeqCst);
-                (guard.clone(), update_id)
+                let mut symbols = Vec::new();
+                for shard in guard.values() {
+                    symbols.extend(shard.symbols.iter().cloned());
+                }
+                (symbols, update_id)
             };
-            let symbols = build_global_symbols(indexes_snapshot.values());
+            symbols.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.path.cmp(&b.path)));
+            symbols.dedup();
             write_global_symbols(&self.state.global_symbols, symbols, update_id).await;
         }
 
