@@ -2052,7 +2052,39 @@ impl Debugger {
         )
         .await?;
 
-        let mut out = Vec::with_capacity(in_scope.len());
+        let has_this = in_scope.iter().any(|v| v.name == "this");
+
+        let mut out = Vec::with_capacity(in_scope.len() + usize::from(!has_this));
+
+        if !has_this {
+            match cancellable_jdwp(
+                cancel,
+                self.jdwp
+                    .stack_frame_this_object(frame.thread, frame.frame_id),
+            )
+            .await
+            {
+                Ok(object_id) if object_id != 0 => {
+                    out.push(
+                        self.render_variable(
+                            cancel,
+                            "this",
+                            Some("this".to_string()),
+                            JdwpValue::Object {
+                                tag: b'L',
+                                id: object_id,
+                            },
+                            None,
+                        )
+                        .await?,
+                    );
+                }
+                Ok(_) => {}
+                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                Err(_) => {}
+            }
+        }
+
         for (var, value) in in_scope.into_iter().zip(values.into_iter()) {
             let name = var.name;
             out.push(
@@ -2095,6 +2127,24 @@ impl Debugger {
         let mut out = HashMap::new();
         for (var, value) in in_scope.into_iter().zip(values.into_iter()) {
             out.insert(var.name, value);
+        }
+
+        if !out.contains_key("this") {
+            if let Ok(object_id) = self
+                .jdwp
+                .stack_frame_this_object(frame.thread, frame.frame_id)
+                .await
+            {
+                if object_id != 0 {
+                    out.insert(
+                        "this".to_string(),
+                        JdwpValue::Object {
+                            tag: b'L',
+                            id: object_id,
+                        },
+                    );
+                }
+            }
         }
         Ok(out)
     }

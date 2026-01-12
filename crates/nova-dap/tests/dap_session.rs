@@ -289,6 +289,50 @@ async fn dap_can_set_variables_in_locals_objects_and_arrays() {
 }
 
 #[tokio::test]
+async fn dap_locals_include_this_object() {
+    let jdwp = MockJdwpServer::spawn().await.unwrap();
+    let (client, server_task) = spawn_wire_server();
+
+    client.initialize_handshake().await;
+    client.attach("127.0.0.1", jdwp.addr().port()).await;
+    client.set_breakpoints("Main.java", &[3]).await;
+
+    let thread_id = client.first_thread_id().await;
+    let frame_id = client.first_frame_id(thread_id).await;
+    let locals_ref = client.first_scope_variables_reference(frame_id).await;
+
+    let vars_resp = client.variables(locals_ref).await;
+    let locals = vars_resp
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
+
+    let this_ref = locals
+        .iter()
+        .find(|v| v.get("name").and_then(|n| n.as_str()) == Some("this"))
+        .and_then(|v| v.get("variablesReference"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    assert!(this_ref > OBJECT_HANDLE_BASE);
+
+    let this_vars = client.variables(this_ref).await;
+    let children = this_vars
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
+    let field_value = children
+        .iter()
+        .find(|v| v.get("name").and_then(|n| n.as_str()) == Some("field"))
+        .and_then(|v| v.get("value"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert_eq!(field_value, "7");
+
+    client.disconnect().await;
+    server_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn dap_can_hot_swap_a_class() {
     let mut caps = vec![false; 32];
     caps[7] = true; // canRedefineClasses
