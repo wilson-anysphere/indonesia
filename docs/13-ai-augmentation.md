@@ -455,10 +455,15 @@ below.
 In particular, anonymizing identifiers is great for privacy, but it makes LLM-generated patches
 impossible to apply reliably to the original source.
 
-As a result, Nova refuses AI code edits when:
+In cloud mode (`ai.privacy.local_only = false`), Nova will only allow patch-based code edits when
+**all** of the following are true:
 
-- `ai.privacy.local_only = false` (cloud mode) **and**
-- **identifier anonymization** is enabled (the default in cloud mode)
+1. `ai.privacy.anonymize_identifiers = false` (or `ai.privacy.anonymize = false`)
+2. `ai.privacy.allow_cloud_code_edits = true`
+3. `ai.privacy.allow_code_edits_without_anonymization = true`
+
+Nova refuses cloud code edits when identifier anonymization is enabled (the default in cloud mode),
+because patches produced against anonymized code cannot be applied reliably to the original source.
 
 To enable cloud code edits, you must **explicitly opt in** and **disable identifier anonymization**:
 
