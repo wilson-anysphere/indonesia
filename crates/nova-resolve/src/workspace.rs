@@ -136,7 +136,12 @@ impl TypeIndex for WorkspaceDefMap {
     fn resolve_static_member(&self, owner: &TypeName, name: &Name) -> Option<StaticMemberId> {
         let item = self.items_by_type_name.get(owner).copied()?;
         let ty = self.types.get(&item)?;
-        if ty.fields.contains_key(name) || ty.methods.contains_key(name) {
+        let has_static_field = ty.fields.get(name).is_some_and(|f| f.is_static);
+        let has_static_method = ty
+            .methods
+            .get(name)
+            .is_some_and(|methods| methods.iter().any(|m| m.is_static));
+        if has_static_field || has_static_method {
             Some(StaticMemberId::new(format!(
                 "{}::{}",
                 owner.as_str(),

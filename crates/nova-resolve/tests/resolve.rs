@@ -933,3 +933,63 @@ class C {
     let value_res = resolver.resolve_value_name(&scopes.scopes, name_scope, &Name::from("foo"));
     assert_eq!(value_res, Some(Resolution::Field(foo_field)));
 }
+
+#[test]
+fn workspace_static_imports_respect_static_modifiers() {
+    let mut db = TestDb::default();
+    let util_file = FileId::from_raw(0);
+    let use_file = FileId::from_raw(1);
+    db.set_file_text(
+        util_file,
+        r#"
+package p;
+class Util {
+  int foo;
+  static int bar;
+}
+"#,
+    );
+    db.set_file_text(
+        use_file,
+        r#"
+import static p.Util.foo;
+import static p.Util.bar;
+class C { }
+"#,
+    );
+
+    let tree_util = queries::item_tree(&db, util_file);
+    let tree_use = queries::item_tree(&db, use_file);
+    let def_util = nova_resolve::DefMap::from_item_tree(util_file, &tree_util);
+    let def_use = nova_resolve::DefMap::from_item_tree(use_file, &tree_use);
+
+    let mut workspace = nova_resolve::WorkspaceDefMap::default();
+    workspace.extend_from_def_map(&def_util);
+    workspace.extend_from_def_map(&def_use);
+
+    let scopes = build_scopes(&db, use_file);
+    let jdk = JdkIndex::new();
+    let resolver = Resolver::new(&jdk)
+        .with_classpath(&workspace)
+        .with_workspace(&workspace);
+
+    let res_bar = resolver.resolve_name(&scopes.scopes, scopes.file_scope, &Name::from("bar"));
+    assert!(
+        matches!(res_bar, Some(Resolution::StaticMember(_))),
+        "expected `bar` to resolve via static import, got {res_bar:?}"
+    );
+
+    let res_foo = resolver.resolve_name(&scopes.scopes, scopes.file_scope, &Name::from("foo"));
+    assert_eq!(
+        res_foo, None,
+        "expected `foo` static import to be unresolved, got {res_foo:?}"
+    );
+
+    let imports = nova_resolve::ImportMap::from_item_tree(&tree_use);
+    let diags = resolver.diagnose_imports(&imports);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "unresolved-import"
+            && d.message.contains("static p.Util.foo")),
+        "expected unresolved-import diagnostic for `foo`, got {diags:#?}"
+    );
+}

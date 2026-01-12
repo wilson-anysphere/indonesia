@@ -163,11 +163,13 @@ impl<'a> Resolver<'a> {
         };
 
         if let Some(field) = ty.fields.get(&name) {
-            return StaticMemberResolution::SourceField(*field);
+            if field.is_static {
+                return StaticMemberResolution::SourceField(field.id);
+            }
         }
         if let Some(methods) = ty.methods.get(&name) {
-            if let Some(first) = methods.first().copied() {
-                return StaticMemberResolution::SourceMethod(first);
+            if let Some(first) = methods.iter().find(|m| m.is_static) {
+                return StaticMemberResolution::SourceMethod(first.id);
             }
         }
 

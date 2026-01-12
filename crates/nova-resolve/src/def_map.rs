@@ -3,9 +3,9 @@ use std::collections::HashMap;
 
 use nova_core::{FileId, Name, PackageName, QualifiedName, TypeName};
 use nova_hir::ids::{ConstructorId, FieldId, InitializerId, ItemId, MethodId};
-use nova_hir::item_tree::{Import as HirImport, Item, ItemTree, Member};
+use nova_hir::item_tree::{Import as HirImport, Item, ItemTree, Member, Modifiers};
 
-use crate::types::{TypeDef, TypeKind};
+use crate::types::{FieldDef, MethodDef, TypeDef, TypeKind};
 
 /// A normalized import representation derived from `ItemTree`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -259,16 +259,21 @@ impl DefMap {
                 Member::Field(field_id) => {
                     self.field_owners.insert(*field_id, id);
 
-                    let field_name = Name::from(tree.field(*field_id).name.as_str());
+                    let field = tree.field(*field_id);
+                    let field_name = Name::from(field.name.as_str());
+                    let is_static = (field.modifiers.raw & Modifiers::STATIC) != 0;
                     match type_def.fields.entry(field_name.clone()) {
                         Entry::Vacant(entry) => {
-                            entry.insert(*field_id);
+                            entry.insert(FieldDef {
+                                id: *field_id,
+                                is_static,
+                            });
                         }
                         Entry::Occupied(entry) => {
                             self.errors.push(DefMapError::DuplicateField {
                                 owner: id,
                                 name: field_name,
-                                first: *entry.get(),
+                                first: entry.get().id,
                                 second: *field_id,
                             });
                         }
@@ -277,12 +282,17 @@ impl DefMap {
                 Member::Method(method_id) => {
                     self.method_owners.insert(*method_id, id);
 
-                    let method_name = Name::from(tree.method(*method_id).name.as_str());
+                    let method = tree.method(*method_id);
+                    let method_name = Name::from(method.name.as_str());
+                    let is_static = (method.modifiers.raw & Modifiers::STATIC) != 0;
                     type_def
                         .methods
                         .entry(method_name)
                         .or_default()
-                        .push(*method_id);
+                        .push(MethodDef {
+                            id: *method_id,
+                            is_static,
+                        });
                 }
                 Member::Constructor(ctor_id) => {
                     self.constructor_owners.insert(*ctor_id, id);
