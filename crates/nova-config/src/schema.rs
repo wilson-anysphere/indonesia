@@ -374,6 +374,48 @@ fn apply_semantic_constraints(schema: &mut RootSchema) {
         })),
     );
 
+    // Cloud code edits require the base opt-in `allow_cloud_code_edits=true`. If the user sets the
+    // more specific `allow_code_edits_without_anonymization=true` flag, they must set the base flag
+    // as well (otherwise it has no effect).
+    push_all_of(
+        schema,
+        schema_from_json(json!({
+            "if": {
+                "required": ["ai"],
+                "properties": {
+                    "ai": {
+                        "required": ["enabled", "privacy"],
+                        "properties": {
+                            "enabled": { "const": true },
+                            "privacy": {
+                                "required": ["local_only", "allow_code_edits_without_anonymization"],
+                                "properties": {
+                                    "local_only": { "const": false },
+                                    "allow_code_edits_without_anonymization": { "const": true }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "then": {
+                "required": ["ai"],
+                "properties": {
+                    "ai": {
+                        "properties": {
+                            "privacy": {
+                                "required": ["allow_cloud_code_edits"],
+                                "properties": {
+                                    "allow_cloud_code_edits": { "const": true }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        })),
+    );
+
     allow_deprecated_aliases(schema);
     disallow_alias_collisions(schema);
 

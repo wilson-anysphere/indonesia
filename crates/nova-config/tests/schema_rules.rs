@@ -335,6 +335,37 @@ fn json_schema_requires_cloud_code_edit_opt_in_in_cloud_mode() {
 }
 
 #[test]
+fn json_schema_requires_allow_cloud_code_edits_for_cloud_code_edit_without_anonymization() {
+    let schema = json_schema();
+    let value = serde_json::to_value(schema).expect("schema serializes");
+
+    let all_of = value
+        .pointer("/allOf")
+        .and_then(|v| v.as_array())
+        .expect("root schema should include allOf semantic constraints");
+
+    let rule = all_of
+        .iter()
+        .find(|entry| {
+            entry
+                .pointer(
+                    "/if/properties/ai/properties/privacy/properties/allow_code_edits_without_anonymization/const",
+                )
+                .and_then(|v| v.as_bool())
+                == Some(true)
+        })
+        .expect("cloud code-edit without anonymization semantic rule should exist");
+
+    assert_eq!(
+        rule.pointer(
+            "/then/properties/ai/properties/privacy/properties/allow_cloud_code_edits/const",
+        )
+        .and_then(|v| v.as_bool()),
+        Some(true)
+    );
+}
+
+#[test]
 fn json_schema_requires_non_empty_ai_privacy_patterns() {
     let schema = json_schema();
     let value = serde_json::to_value(schema).expect("schema serializes");

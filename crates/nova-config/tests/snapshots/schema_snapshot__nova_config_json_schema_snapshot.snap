@@ -479,6 +479,61 @@ expression: schema
           }
         }
       }
+    },
+    {
+      "if": {
+        "required": [
+          "ai"
+        ],
+        "properties": {
+          "ai": {
+            "required": [
+              "enabled",
+              "privacy"
+            ],
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "privacy": {
+                "required": [
+                  "allow_code_edits_without_anonymization",
+                  "local_only"
+                ],
+                "properties": {
+                  "allow_code_edits_without_anonymization": {
+                    "const": true
+                  },
+                  "local_only": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "ai"
+        ],
+        "properties": {
+          "ai": {
+            "properties": {
+              "privacy": {
+                "required": [
+                  "allow_cloud_code_edits"
+                ],
+                "properties": {
+                  "allow_cloud_code_edits": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "properties": {
