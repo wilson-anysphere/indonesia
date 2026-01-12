@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -308,24 +309,11 @@ pub(crate) fn load_gradle_workspace_model(
 }
 
 fn parse_gradle_settings_modules(contents: &str) -> Vec<String> {
-    // Very conservative: look for quoted strings in lines containing `include`.
-    let mut modules = Vec::new();
-    for line in contents.lines() {
-        if !line.contains("include") {
-            continue;
-        }
-        modules.extend(extract_quoted_strings(line).into_iter().map(|s| {
-            let s = s.trim();
-            let s = s.strip_prefix(':').unwrap_or(s);
-            s.replace(':', "/")
-        }));
-    }
-
-    if modules.is_empty() {
-        vec![".".to_string()]
-    } else {
-        modules
-    }
+    // `ProjectConfig` module roots are directory-relative; reuse the more robust project parser.
+    parse_gradle_settings_projects(contents)
+        .into_iter()
+        .map(|m| m.dir_rel)
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -344,41 +332,32 @@ impl GradleModuleRef {
 }
 
 fn parse_gradle_settings_projects(contents: &str) -> Vec<GradleModuleRef> {
-    let mut modules: Vec<GradleModuleRef> = Vec::new();
-    for line in contents.lines() {
-        if !line.contains("include") {
-            continue;
-        }
-        modules.extend(extract_quoted_strings(line).into_iter().map(|s| {
-            let s = s.trim();
-            let project_path = if s.starts_with(':') {
-                s.to_string()
-            } else {
-                format!(":{s}")
-            };
-            let dir_rel = project_path
-                .trim_start_matches(':')
-                .replace(':', "/")
-                .trim()
-                .to_string();
-            let dir_rel = if dir_rel.is_empty() {
-                ".".to_string()
-            } else {
-                dir_rel
-            };
+    let contents = strip_gradle_comments(contents);
+
+    let included = parse_gradle_settings_included_projects(&contents);
+    if included.is_empty() {
+        return vec![GradleModuleRef::root()];
+    }
+
+    let overrides = parse_gradle_settings_project_dir_overrides(&contents);
+
+    // Deterministic + dedup: module refs are sorted by Gradle project path.
+    let included: BTreeSet<_> = included.into_iter().collect();
+
+    included
+        .into_iter()
+        .map(|project_path| {
+            let dir_rel = overrides
+                .get(&project_path)
+                .cloned()
+                .unwrap_or_else(|| heuristic_dir_rel_for_project_path(&project_path));
 
             GradleModuleRef {
                 project_path,
                 dir_rel,
             }
-        }));
-    }
-
-    if modules.is_empty() {
-        vec![GradleModuleRef::root()]
-    } else {
-        modules
-    }
+        })
+        .collect()
 }
 
 fn extract_quoted_strings(text: &str) -> Vec<String> {
@@ -388,6 +367,312 @@ fn extract_quoted_strings(text: &str) -> Vec<String> {
     re.captures_iter(text)
         .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string()))
         .collect()
+}
+
+fn strip_gradle_comments(contents: &str) -> String {
+    // Best-effort comment stripping to avoid parsing commented-out `include`/`projectDir` lines.
+    // This is intentionally conservative and only strips:
+    // - `// ...` to end-of-line
+    // - `/* ... */` block comments
+    // while preserving quoted strings (`'...'` / `"..."`).
+    let bytes = contents.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+
+    let mut i = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+
+        if in_line_comment {
+            if b == b'\n' {
+                in_line_comment = false;
+                out.push(b'\n');
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_block_comment {
+            if b == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                in_block_comment = false;
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_single {
+            out.push(b);
+            if b == b'\\' {
+                if let Some(next) = bytes.get(i + 1) {
+                    out.push(*next);
+                    i += 2;
+                    continue;
+                }
+            } else if b == b'\'' {
+                in_single = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_double {
+            out.push(b);
+            if b == b'\\' {
+                if let Some(next) = bytes.get(i + 1) {
+                    out.push(*next);
+                    i += 2;
+                    continue;
+                }
+            } else if b == b'"' {
+                in_double = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if b == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            in_line_comment = true;
+            i += 2;
+            continue;
+        }
+
+        if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            in_block_comment = true;
+            i += 2;
+            continue;
+        }
+
+        if b == b'\'' {
+            in_single = true;
+            out.push(b'\'');
+            i += 1;
+            continue;
+        }
+
+        if b == b'"' {
+            in_double = true;
+            out.push(b'"');
+            i += 1;
+            continue;
+        }
+
+        out.push(b);
+        i += 1;
+    }
+
+    String::from_utf8(out).unwrap_or_else(|_| contents.to_string())
+}
+
+fn normalize_project_path(project_path: &str) -> String {
+    let project_path = project_path.trim();
+    if project_path.is_empty() || project_path == ":" {
+        return ":".to_string();
+    }
+    if project_path.starts_with(':') {
+        project_path.to_string()
+    } else {
+        format!(":{project_path}")
+    }
+}
+
+fn heuristic_dir_rel_for_project_path(project_path: &str) -> String {
+    let dir_rel = project_path.trim_start_matches(':').replace(':', "/");
+    if dir_rel.trim().is_empty() {
+        ".".to_string()
+    } else {
+        dir_rel
+    }
+}
+
+fn normalize_dir_rel(dir_rel: &str) -> Option<String> {
+    let mut dir_rel = dir_rel.trim().replace('\\', "/");
+    while let Some(stripped) = dir_rel.strip_prefix("./") {
+        dir_rel = stripped.to_string();
+    }
+    while dir_rel.ends_with('/') {
+        dir_rel.pop();
+    }
+
+    if dir_rel.is_empty() {
+        return Some(".".to_string());
+    }
+
+    // Avoid accidentally escaping the workspace root by joining with an absolute path.
+    let is_absolute_unix = dir_rel.starts_with('/');
+    let is_windows_drive = dir_rel.as_bytes().get(1).is_some_and(|b| *b == b':')
+        && dir_rel
+            .as_bytes()
+            .first()
+            .is_some_and(|b| b.is_ascii_alphabetic());
+    if is_absolute_unix || is_windows_drive {
+        return None;
+    }
+
+    Some(dir_rel)
+}
+
+fn parse_gradle_settings_included_projects(contents: &str) -> Vec<String> {
+    static INCLUDE_RE: OnceLock<Regex> = OnceLock::new();
+    let re = INCLUDE_RE.get_or_init(|| Regex::new(r"\binclude\b").expect("valid regex"));
+
+    let mut projects = Vec::new();
+
+    for m in re.find_iter(contents) {
+        let mut idx = m.end();
+        let bytes = contents.as_bytes();
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+        if idx >= bytes.len() {
+            continue;
+        }
+
+        let args = if bytes[idx] == b'(' {
+            extract_balanced_parens(contents, idx)
+                .map(|(args, _end)| args)
+                .unwrap_or_default()
+        } else {
+            extract_unparenthesized_args_until_eol_or_continuation(contents, idx)
+        };
+
+        projects.extend(
+            extract_quoted_strings(&args)
+                .into_iter()
+                .map(|s| normalize_project_path(&s)),
+        );
+    }
+
+    projects
+}
+
+fn extract_balanced_parens(contents: &str, open_paren_index: usize) -> Option<(String, usize)> {
+    let bytes = contents.as_bytes();
+    if bytes.get(open_paren_index) != Some(&b'(') {
+        return None;
+    }
+
+    let mut depth = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+
+    let mut i = open_paren_index;
+    while i < bytes.len() {
+        let b = bytes[i];
+
+        if in_single {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == b'\'' {
+                in_single = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_double {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == b'"' {
+                in_double = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        match b {
+            b'\'' => {
+                in_single = true;
+                i += 1;
+            }
+            b'"' => {
+                in_double = true;
+                i += 1;
+            }
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth = depth.saturating_sub(1);
+                i += 1;
+                if depth == 0 {
+                    let args = &contents[open_paren_index + 1..i - 1];
+                    return Some((args.to_string(), i));
+                }
+            }
+            _ => i += 1,
+        }
+    }
+
+    None
+}
+
+fn extract_unparenthesized_args_until_eol_or_continuation(contents: &str, start: usize) -> String {
+    // Groovy allows method calls without parentheses:
+    //   include ':app', ':lib'
+    // and can span lines after commas:
+    //   include ':app',
+    //           ':lib'
+    let len = contents.len();
+    let mut cursor = start;
+
+    loop {
+        let rest = &contents[cursor..];
+        let line_break = rest.find('\n').map(|off| cursor + off).unwrap_or(len);
+        let line = &contents[cursor..line_break];
+        if line.trim_end().ends_with(',') && line_break < len {
+            cursor = line_break + 1;
+            continue;
+        }
+        return contents[start..line_break].to_string();
+    }
+}
+
+fn parse_gradle_settings_project_dir_overrides(contents: &str) -> BTreeMap<String, String> {
+    // Common overrides:
+    //   project(':app').projectDir = file('modules/app')
+    //   project(':lib').projectDir = new File(settingsDir, 'modules/lib')
+    //   project(":app").projectDir = file("modules/app") (Kotlin DSL)
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(
+            r#"(?x)
+                \bproject\s*\(\s*['"](?P<project>[^'"]+)['"]\s*\)
+                \s*\.\s*projectDir\s*=\s*
+                (?:
+                    file\s*\(\s*['"](?P<file_dir>[^'"]+)['"]\s*\)
+                  |
+                    (?:new\s+)?(?:java\.io\.)?File\s*\(\s*settingsDir\s*,\s*['"](?P<settings_dir>[^'"]+)['"]\s*\)
+                )
+            "#,
+        )
+        .expect("valid regex")
+    });
+
+    let mut overrides = BTreeMap::new();
+    for caps in re.captures_iter(contents) {
+        let project_path = normalize_project_path(&caps["project"]);
+        let dir_rel = caps
+            .name("file_dir")
+            .or_else(|| caps.name("settings_dir"))
+            .map(|m| m.as_str())
+            .and_then(normalize_dir_rel);
+        let Some(dir_rel) = dir_rel else {
+            continue;
+        };
+        overrides.insert(project_path, dir_rel);
+    }
+    overrides
 }
 
 fn parse_gradle_java_config(root: &Path) -> Option<JavaConfig> {

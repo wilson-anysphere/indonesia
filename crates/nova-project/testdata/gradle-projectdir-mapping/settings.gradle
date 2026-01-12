@@ -1,0 +1,11 @@
+rootProject.name = 'gradle-projectdir-mapping'
+
+include(
+  ':app',
+  ':lib',
+)
+
+// Override module locations to non-standard dirs.
+project(':app').projectDir = file('modules/app')
+project(':lib').projectDir = new File(settingsDir, 'modules/lib')
+
