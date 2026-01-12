@@ -27,13 +27,20 @@ pub struct Vfs<F: FileSystem> {
 }
 
 impl<F: FileSystem> Vfs<F> {
+    /// Default memory budget for cached virtual documents (decompiled sources, etc).
+    ///
+    /// The budget is enforced via LRU eviction based on `text.len()` bytes.
+    pub const DEFAULT_VIRTUAL_DOCUMENT_BUDGET_BYTES: usize = 64 * 1024 * 1024;
+
     pub fn new(base: F) -> Self {
-        // Default budget for cached virtual documents (decompiled sources, etc).
-        //
-        // This store is process-local and is bounded via LRU eviction, so this value is primarily
-        // about keeping enough recent virtual docs resident without unbounded memory growth.
-        const DEFAULT_VIRTUAL_DOCUMENT_BUDGET_BYTES: usize = 64 * 1024 * 1024;
-        let virtual_documents = VirtualDocumentStore::new(DEFAULT_VIRTUAL_DOCUMENT_BUDGET_BYTES);
+        Self::new_with_virtual_document_budget(base, Self::DEFAULT_VIRTUAL_DOCUMENT_BUDGET_BYTES)
+    }
+
+    /// Constructs a new `Vfs` with an explicit budget for cached virtual documents.
+    ///
+    /// This is mainly intended for tests and memory-constrained environments.
+    pub fn new_with_virtual_document_budget(base: F, virtual_document_max_bytes: usize) -> Self {
+        let virtual_documents = VirtualDocumentStore::new(virtual_document_max_bytes);
         let base = VirtualDocumentsFs::new(base, virtual_documents.clone());
         Self {
             fs: OverlayFs::new(base),
@@ -416,6 +423,16 @@ mod tests {
         vfs.open_document(path.clone(), "overlay".to_string(), 1);
 
         assert_eq!(vfs.read_bytes(&path).unwrap(), b"overlay".to_vec());
+    }
+
+    #[test]
+    fn vfs_can_be_constructed_with_zero_virtual_document_budget() {
+        let vfs = Vfs::new_with_virtual_document_budget(LocalFs::new(), 0);
+        let path = VfsPath::decompiled(HASH_64, "com.example.Foo");
+
+        vfs.store_virtual_document(path.clone(), "class Foo {}".to_string());
+        let err = vfs.read_to_string(&path).expect_err("expected budget=0 to store nothing");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 
     #[test]
