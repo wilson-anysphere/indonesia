@@ -502,7 +502,7 @@ fn initialize_result_json() -> serde_json::Value {
 
     json!({
         "capabilities": {
-            "textDocumentSync": { "openClose": true, "change": 2 },
+            "textDocumentSync": { "openClose": true, "change": 2, "save": { "includeText": false } },
             "workspace": {
                 // Advertise workspace folder support so editors can send
                 // `workspace/didChangeWorkspaceFolders` when the user switches projects.
@@ -2379,6 +2379,46 @@ fn handle_notification(
             let canonical_uri = VfsPath::from(&params.text_document.uri)
                 .to_uri()
                 .unwrap_or_else(|| uri_string);
+            state.note_refactor_overlay_change(&canonical_uri);
+            state.refresh_document_memory();
+        }
+        "textDocument/didSave" => {
+            let Ok(params) = serde_json::from_value::<lsp_types::DidSaveTextDocumentParams>(params)
+            else {
+                return Ok(());
+            };
+
+            let uri = params.text_document.uri;
+            let uri_string = uri.to_string();
+            let path = VfsPath::from(&uri);
+            let is_open = state.analysis.vfs.overlay().is_open(&path);
+
+            match params.text {
+                Some(text) => {
+                    if is_open {
+                        // `didSave` does not include a document version. Best-effort: replace the
+                        // overlay contents while keeping the document open; subsequent `didChange`
+                        // notifications will provide versioned edits again.
+                        let file_id = state.analysis.open_document(uri.clone(), text, 0);
+                        state.semantic_search_index_open_document(file_id);
+                    } else {
+                        // If the document is not open, record the saved contents as our best view
+                        // of the file until we receive a file-watch refresh.
+                        let (file_id, _path) = state.analysis.file_id_for_uri(&uri);
+                        state.analysis.file_exists.insert(file_id, true);
+                        state.analysis.file_contents.insert(file_id, text);
+                    }
+                }
+                None => {
+                    // Without `text`, fall back to disk when possible. Avoid overriding the in-memory
+                    // overlay for open documents.
+                    if !is_open {
+                        state.analysis.refresh_from_disk(&uri);
+                    }
+                }
+            }
+
+            let canonical_uri = path.to_uri().unwrap_or(uri_string);
             state.note_refactor_overlay_change(&canonical_uri);
             state.refresh_document_memory();
         }
