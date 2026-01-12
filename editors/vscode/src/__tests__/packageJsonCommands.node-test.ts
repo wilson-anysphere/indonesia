@@ -519,6 +519,13 @@ test('package.json contributes Nova Frameworks + Project Explorer viewsWelcome e
   });
   assert.ok(hasProjectServerMissingHint);
 
+  const hasProjectSafeModeHint = projectExplorerWelcome.some((entry) => {
+    const when = typeof entry.when === 'string' ? entry.when : '';
+    const contents = typeof entry.contents === 'string' ? entry.contents : '';
+    return when.includes('nova.frameworks.safeMode') && (contents.includes('nova.bugReport') || contents.toLowerCase().includes('bug report'));
+  });
+  assert.ok(hasProjectSafeModeHint);
+
   const hasProjectUnsupportedHint = projectExplorerWelcome.some((entry) => {
     const contents = typeof entry.contents === 'string' ? entry.contents : '';
     return contents.toLowerCase().includes('upgrade') || contents.includes('nova.showServerVersion');
