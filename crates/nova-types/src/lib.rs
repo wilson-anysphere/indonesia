@@ -5150,49 +5150,19 @@ fn infer_class_type_arguments_from_target(
         .copied()
         .map(Type::TypeVar)
         .collect::<Vec<_>>();
-    let mut queue = VecDeque::new();
-    let mut seen = HashSet::new();
-    queue.push_back(Type::class(class, start_args));
-
-    while let Some(current) = queue.pop_front() {
-        let Type::Class(ClassType { def, args }) = current.clone() else {
-            continue;
-        };
-        if !seen.insert((def, args.clone())) {
-            continue;
-        }
-
-        if def == target_def {
-            if args.len() != target_args.len() {
-                return None;
-            }
-            let mut mapping = HashMap::new();
-            for (pattern, actual) in args.iter().zip(target_args) {
-                collect_type_var_constraints(&mut mapping, pattern, actual);
-            }
-            return Some(mapping);
-        }
-
-        let Some(current_def) = env.class(def) else {
-            continue;
-        };
-
-        let subst = current_def
-            .type_params
-            .iter()
-            .copied()
-            .zip(args.into_iter())
-            .collect::<HashMap<_, _>>();
-
-        if let Some(sc) = &current_def.super_class {
-            queue.push_back(substitute(sc, &subst));
-        }
-        for iface in &current_def.interfaces {
-            queue.push_back(substitute(iface, &subst));
-        }
+    let start_ty = Type::class(class, start_args);
+    let instantiated = instantiate_as_supertype(env, &start_ty, target_def)?;
+    let Type::Class(ClassType { args, .. }) = instantiated else {
+        return None;
+    };
+    if args.len() != target_args.len() {
+        return None;
     }
-
-    None
+    let mut mapping = HashMap::new();
+    for (pattern, actual) in args.iter().zip(target_args) {
+        collect_type_var_constraints(&mut mapping, pattern, actual);
+    }
+    Some(mapping)
 }
 
 // === Minimal expression typing ==============================================
