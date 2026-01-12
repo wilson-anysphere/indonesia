@@ -61,7 +61,19 @@ fn stdio_server_handles_call_and_type_hierarchy_requests() {
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    let initialize_resp = read_response_with_id(&mut stdout, 1);
+    assert!(
+        initialize_resp
+            .pointer("/result/capabilities/callHierarchyProvider")
+            .is_some(),
+        "expected callHierarchyProvider capability: {initialize_resp:#}"
+    );
+    assert!(
+        initialize_resp
+            .pointer("/result/capabilities/typeHierarchyProvider")
+            .is_some(),
+        "expected typeHierarchyProvider capability: {initialize_resp:#}"
+    );
     write_jsonrpc_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
@@ -182,12 +194,40 @@ fn stdio_server_handles_call_and_type_hierarchy_requests() {
         "expected supertypes to include `A`, got: {resp:#}"
     );
 
+    let a_item = supertypes
+        .iter()
+        .find(|item| item.get("name").and_then(|v| v.as_str()) == Some("A"))
+        .cloned()
+        .expect("expected supertypes to include A");
+
+    // 5) subtypes for `A` should include `B`.
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "typeHierarchy/subtypes",
+            "params": { "item": a_item }
+        }),
+    );
+    let resp = read_response_with_id(&mut stdout, 6);
+    let subtypes = resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .expect("subtypes result array");
+    assert!(
+        subtypes
+            .iter()
+            .any(|item| item.get("name").and_then(|v| v.as_str()) == Some("B")),
+        "expected subtypes to include `B`, got: {resp:#}"
+    );
+
     // shutdown + exit
     write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 6, "method": "shutdown" }),
+        &json!({ "jsonrpc": "2.0", "id": 7, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_response_with_id(&mut stdout, 6);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 7);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
