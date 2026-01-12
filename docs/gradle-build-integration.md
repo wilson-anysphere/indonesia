@@ -235,7 +235,9 @@ buildscript classpath, but it is **not** a normal subproject and does **not** ap
 
 To make `buildSrc` sources navigable without invoking Gradle, `nova-project` includes `buildSrc/` as
 an additional module when it exists and contains Java sources under conventional layouts
-(e.g. `buildSrc/src/main/java`).
+(e.g. `buildSrc/src/main/java`). Nova also supports **multi-project `buildSrc`** builds: when
+`buildSrc/settings.gradle(.kts)` exists and declares subprojects, `buildSrc` is included whenever
+either the root *or any of its subprojects* contains Java sources.
 
 Nova represents `buildSrc` using a stable synthetic Gradle project path:
 
@@ -249,6 +251,35 @@ This synthetic path may also appear in `.nova/queries/gradle.json`:
   dirs/classpaths) just like any other Gradle module,
 - otherwise, `nova-project` falls back to heuristics for `buildSrc` (e.g. `src/*/java` source roots,
   `build/classes/java/{main,test}` output dirs).
+
+#### Multi-project `buildSrc` subprojects
+
+When `buildSrc` is a multi-project build (via `buildSrc/settings.gradle(.kts)`), `nova-project` also
+discovers and indexes `buildSrc` subprojects. These are represented using prefixed synthetic project
+paths:
+
+- project path: `:__buildSrc:<projectPath>` (e.g. `:__buildSrc:plugins`)
+- module id: `gradle::__buildSrc:<projectPath>` (e.g. `gradle::__buildSrc:plugins`)
+- module root: `<workspace>/buildSrc/<projectDir>`
+
+### Special case: Gradle composite builds (`includeBuild(...)`)
+
+Gradle supports "composite builds" via `includeBuild(...)` directives in `settings.gradle(.kts)`.
+Nova treats included builds as additional modules for indexing (best-effort; no dependency
+substitution semantics).
+
+In heuristic mode, `nova-project`:
+
+- parses `includeBuild(...)` roots from `settings.gradle(.kts)` and includes each build root as an
+  additional Gradle module,
+- assigns deterministic synthetic Gradle project paths (e.g. `:__includedBuild_build-logic`) and
+  module ids (e.g. `gradle::__includedBuild_build-logic`),
+- parses the included build’s own `settings.gradle(.kts)` (when present) and discovers subprojects
+  under that included build using prefixed project paths like `:__includedBuild_build-logic:plugins`.
+
+When opening a file within an included build directory nested under a larger Gradle workspace (e.g.
+`<workspace>/build-logic/**`), Nova prefers the **outer** Gradle workspace root so callers load a
+model that includes the composite build relationship.
 
 Example (abridged):
 
