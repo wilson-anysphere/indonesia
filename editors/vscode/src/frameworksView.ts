@@ -13,8 +13,6 @@ import { formatError, isSafeModeError } from './safeMode';
 
 type FrameworkCategory = 'web-endpoints' | 'micronaut-endpoints' | 'micronaut-beans';
 
-const NOT_SUPPORTED_MESSAGE = 'Not supported by this server';
-
 type WebEndpointsResponse = {
   endpoints: WebEndpoint[];
 };
