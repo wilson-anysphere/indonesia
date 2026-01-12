@@ -471,7 +471,8 @@
         "nova.build.autoReloadOnBuildFileChange": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically reload Nova's project model when build configuration files (pom.xml, build.gradle, WORKSPACE, etc.) change."
+          "scope": "resource",
+          "description": "Automatically reload Nova's project model for a workspace folder when build configuration files (pom.xml, build.gradle, WORKSPACE, etc.) change."
         },
         "nova.tests.buildTool": {
           "type": "string",
@@ -482,7 +483,8 @@
             "prompt"
           ],
           "default": "auto",
-          "description": "Build tool to use for test runs/debugging. Use 'prompt' to choose each time."
+          "scope": "resource",
+          "description": "Build tool to use for test runs/debugging for a workspace folder. Use 'prompt' to choose each time."
         },
         "nova.build.buildTool": {
           "type": "string",

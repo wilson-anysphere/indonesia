@@ -488,3 +488,59 @@ test('package.json contributes nova.build.buildTool setting', async () => {
     "Build tool to use for project builds/reloads. Use 'prompt' to choose each time.",
   );
 });
+
+test('package.json contributes nova.build.autoReloadOnBuildFileChange setting', async () => {
+  const pkgPath = path.resolve(__dirname, '../../package.json');
+  const raw = await fs.readFile(pkgPath, 'utf8');
+  const pkg = JSON.parse(raw) as {
+    contributes?: { configuration?: { properties?: unknown } };
+  };
+
+  const properties = pkg.contributes?.configuration?.properties;
+  assert.ok(properties && typeof properties === 'object');
+
+  const setting = (properties as Record<string, unknown>)['nova.build.autoReloadOnBuildFileChange'];
+  assert.ok(setting && typeof setting === 'object');
+
+  const typed = setting as {
+    type?: unknown;
+    default?: unknown;
+    scope?: unknown;
+    description?: unknown;
+  };
+
+  assert.equal(typed.type, 'boolean');
+  assert.equal(typed.default, true);
+  assert.equal(typed.scope, 'resource');
+  assert.ok(typeof typed.description === 'string');
+  assert.ok(typed.description.includes('workspace folder'));
+});
+
+test('package.json contributes nova.tests.buildTool setting', async () => {
+  const pkgPath = path.resolve(__dirname, '../../package.json');
+  const raw = await fs.readFile(pkgPath, 'utf8');
+  const pkg = JSON.parse(raw) as {
+    contributes?: { configuration?: { properties?: unknown } };
+  };
+
+  const properties = pkg.contributes?.configuration?.properties;
+  assert.ok(properties && typeof properties === 'object');
+
+  const setting = (properties as Record<string, unknown>)['nova.tests.buildTool'];
+  assert.ok(setting && typeof setting === 'object');
+
+  const typed = setting as {
+    type?: unknown;
+    enum?: unknown;
+    default?: unknown;
+    scope?: unknown;
+    description?: unknown;
+  };
+
+  assert.equal(typed.type, 'string');
+  assert.deepEqual(typed.enum, ['auto', 'maven', 'gradle', 'prompt']);
+  assert.equal(typed.default, 'auto');
+  assert.equal(typed.scope, 'resource');
+  assert.ok(typeof typed.description === 'string');
+  assert.ok(typed.description.includes('workspace folder'));
+});

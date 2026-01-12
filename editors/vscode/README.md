@@ -348,11 +348,11 @@ the language server.
 - `nova.debug.host` (string): default JDWP host for Nova debug sessions (default: `127.0.0.1`).
 - `nova.debug.port` (number): default JDWP port for Nova debug sessions (default: `5005`).
 - `nova.debug.legacyAdapter` (boolean): run `nova-dap --legacy` (default: false).
-- `nova.tests.buildTool` ("auto" | "maven" | "gradle" | "prompt"): build tool to use for test runs/debugging.
+- `nova.tests.buildTool` ("auto" | "maven" | "gradle" | "prompt"): build tool to use for test runs/debugging for a workspace folder.
 
 ### Build / Project
 
-- `nova.build.autoReloadOnBuildFileChange` (boolean): automatically reload Nova’s project model when build configuration files change (for example `pom.xml`, `build.gradle`, `WORKSPACE`). Set to `false` to disable.
+- `nova.build.autoReloadOnBuildFileChange` (boolean): automatically reload Nova’s project model for a workspace folder when build configuration files change (for example `pom.xml`, `build.gradle`, `WORKSPACE`). Set to `false` to disable.
 - `nova.build.buildTool` ("auto" | "maven" | "gradle" | "prompt"): build tool to use for **Nova: Build Project** and **Nova: Reload Project**.
   - When set to `prompt`, Nova asks you to choose which build tool to use each time you run those commands.
   - Auto-reload on build file changes treats `prompt` as `auto` (Nova won’t prompt in the background).
