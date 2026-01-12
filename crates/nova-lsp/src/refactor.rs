@@ -14,7 +14,7 @@ use nova_refactor::{
     MoveMethodParams as RefactorMoveMethodParams,
     MoveStaticMemberParams as RefactorMoveStaticMemberParams, RefactorDatabase,
     RefactorJavaDatabase, SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget,
-    SemanticRefactorError, TextDatabase, WorkspaceTextRange,
+    Conflict, SemanticRefactorError, TextDatabase, WorkspaceTextRange,
 };
 use schemars::schema::RootSchema;
 use schemars::schema_for;
@@ -237,6 +237,12 @@ pub fn extract_variable_code_actions(
         expr_range: WorkspaceTextRange,
         use_var: bool,
     ) -> Option<String> {
+        // Treat name conflicts as a recoverable probe failure by trying another placeholder name.
+        //
+        // Older implementations returned a stringly-typed `ExtractNotSupported` error; newer ones
+        // use structured semantic conflicts (`Conflicts(NameCollision)`).
+        const NAME_CONFLICT_REASON: &str =
+            "extracted variable name conflicts with an existing binding";
         for attempt in 0usize..100 {
             let name = if attempt == 0 {
                 "extracted".to_string()
@@ -256,11 +262,20 @@ pub fn extract_variable_code_actions(
             ) {
                 Ok(_) => return Some(name),
                 Err(SemanticRefactorError::InvalidIdentifier { .. }) => continue,
-                // Treat name conflicts as a recoverable probe failure by trying another placeholder
-                // name. The semantic refactor engine reports these as conflicts (not
-                // ExtractNotSupported), so matching on the structured error keeps this resilient to
-                // changes in error wording.
-                Err(SemanticRefactorError::Conflicts(_)) => continue,
+                Err(SemanticRefactorError::Conflicts(conflicts))
+                    if conflicts.iter().any(|conflict| matches!(
+                        conflict,
+                        Conflict::NameCollision { name: conflict_name, .. }
+                            if conflict_name == &name
+                    )) =>
+                {
+                    continue
+                }
+                Err(SemanticRefactorError::ExtractNotSupported { reason })
+                    if reason == NAME_CONFLICT_REASON =>
+                {
+                    continue
+                }
                 Err(_) => return None,
             }
         }
