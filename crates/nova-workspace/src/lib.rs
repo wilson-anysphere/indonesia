@@ -1236,6 +1236,7 @@ fn fuzzy_rank_workspace_symbols_sharded(
             .map(|name| SearchSymbol {
                 qualified_name: name.clone(),
                 name,
+                container_name: None,
                 location: None,
                 ast_id: None,
             })

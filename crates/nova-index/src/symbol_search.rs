@@ -9,6 +9,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub struct Symbol {
     pub name: String,
     pub qualified_name: String,
+    /// Optional container name (e.g. enclosing class/package) for display.
+    pub container_name: Option<String>,
     /// Best-effort file/position for the symbol's definition.
     ///
     /// This is optional because some callers (e.g. aggregated workspace symbol search)
@@ -115,6 +117,9 @@ impl SymbolSearchIndex {
         for entry in &self.symbols {
             bytes = bytes.saturating_add(entry.symbol.name.capacity() as u64);
             bytes = bytes.saturating_add(entry.symbol.qualified_name.capacity() as u64);
+            if let Some(container_name) = &entry.symbol.container_name {
+                bytes = bytes.saturating_add(container_name.capacity() as u64);
+            }
             if let Some(loc) = &entry.symbol.location {
                 bytes = bytes.saturating_add(loc.file.capacity() as u64);
             }
@@ -414,6 +419,7 @@ impl WorkspaceSymbolSearcher {
                     .map(|name| Symbol {
                         name: name.clone(),
                         qualified_name: name.clone(),
+                        container_name: None,
                         location: None,
                         ast_id: None,
                     })
@@ -494,12 +500,14 @@ mod tests {
             Symbol {
                 name: "HashMap".into(),
                 qualified_name: "java.util.HashMap".into(),
+                container_name: None,
                 location: None,
                 ast_id: None,
             },
             Symbol {
                 name: "HashSet".into(),
                 qualified_name: "java.util.HashSet".into(),
+                container_name: None,
                 location: None,
                 ast_id: None,
             },
@@ -516,12 +524,14 @@ mod tests {
             Symbol {
                 name: "foobar".into(),
                 qualified_name: "pkg.foobar".into(),
+                container_name: None,
                 location: None,
                 ast_id: None,
             },
             Symbol {
                 name: "barfoo".into(),
                 qualified_name: "pkg.barfoo".into(),
+                container_name: None,
                 location: None,
                 ast_id: None,
             },
@@ -537,12 +547,14 @@ mod tests {
             Symbol {
                 name: "HashMap".into(),
                 qualified_name: "java.util.HashMap".into(),
+                container_name: None,
                 location: None,
                 ast_id: None,
             },
             Symbol {
                 name: "Hmac".into(),
                 qualified_name: "crypto.Hmac".into(),
+                container_name: None,
                 location: None,
                 ast_id: None,
             },
@@ -560,6 +572,7 @@ mod tests {
         let index = SymbolSearchIndex::build(vec![Symbol {
             name: "FooBar".into(),
             qualified_name: "pkg.FooBar".into(),
+            container_name: None,
             location: None,
             ast_id: None,
         }]);
@@ -583,6 +596,7 @@ mod tests {
             symbols.push(Symbol {
                 name: "aa".into(),
                 qualified_name: "bb".into(),
+                container_name: None,
                 location: None,
                 ast_id: None,
             });
@@ -591,6 +605,7 @@ mod tests {
         symbols.push(Symbol {
             name: "Foo".into(),
             qualified_name: "com.example.Foo".into(),
+            container_name: None,
             location: None,
             ast_id: None,
         });
@@ -613,12 +628,14 @@ mod tests {
             Symbol {
                 name: "Foo".into(),
                 qualified_name: "com.b.Foo".into(),
+                container_name: None,
                 location: None,
                 ast_id: None,
             },
             Symbol {
                 name: "Foo".into(),
                 qualified_name: "com.a.Foo".into(),
+                container_name: None,
                 location: None,
                 ast_id: None,
             },
@@ -629,5 +646,70 @@ mod tests {
         assert_eq!(results[0].score.rank_key(), results[1].score.rank_key());
         assert_eq!(results[0].symbol.qualified_name, "com.a.Foo");
         assert_eq!(results[1].symbol.qualified_name, "com.b.Foo");
+    }
+
+    #[test]
+    fn estimated_bytes_accounts_for_symbol_metadata() {
+        let container_name = "container".repeat(16 * 1024);
+        let file = "src/Foo.java".repeat(16 * 1024);
+
+        let index1 = SymbolSearchIndex::build(vec![Symbol {
+            name: "Foo".into(),
+            qualified_name: "com.example.Foo".into(),
+            container_name: Some(container_name.clone()),
+            location: Some(SymbolLocation {
+                file: file.clone(),
+                line: 10,
+                column: 20,
+            }),
+            ast_id: None,
+        }]);
+        let bytes1 = index1.estimated_bytes();
+        assert!(bytes1 > 0);
+
+        // We expect the estimate to at least include the symbol's heap-allocated metadata.
+        let sym = &index1.symbols[0].symbol;
+        let expected_min = sym
+            .container_name
+            .as_ref()
+            .expect("container_name should be present")
+            .capacity() as u64
+            + sym
+                .location
+                .as_ref()
+                .expect("location should be present")
+                .file
+                .capacity() as u64;
+        assert!(
+            bytes1 >= expected_min,
+            "expected estimated_bytes to include container_name + location.file capacity"
+        );
+
+        let index2 = SymbolSearchIndex::build(vec![
+            Symbol {
+                name: "Foo".into(),
+                qualified_name: "com.example.Foo".into(),
+                container_name: Some(container_name.clone()),
+                location: Some(SymbolLocation {
+                    file: file.clone(),
+                    line: 10,
+                    column: 20,
+                }),
+                ast_id: None,
+            },
+            Symbol {
+                name: "Foo2".into(),
+                qualified_name: "com.example.Foo2".into(),
+                container_name: Some(container_name),
+                location: Some(SymbolLocation {
+                    file,
+                    line: 30,
+                    column: 40,
+                }),
+                ast_id: None,
+            },
+        ]);
+        let bytes2 = index2.estimated_bytes();
+        assert!(bytes2 > bytes1);
     }
 }

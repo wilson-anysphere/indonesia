@@ -195,6 +195,7 @@ fn generate_symbols(count: usize) -> Vec<SearchSymbol> {
         .map(|i| SearchSymbol {
             name: format!("Class{i}"),
             qualified_name: format!("bench.pkg.Class{i}"),
+            container_name: None,
             location: None,
             ast_id: None,
         })
