@@ -21,7 +21,7 @@ The repo includes a copy/paste-ready config file at [`editors/neovim/init.lua`](
 The template includes:
 
 - `nova-lsp --stdio` for `java` buffers via `nvim-lspconfig`
-- Root detection via `pom.xml`, `build.gradle(.kts)`, `settings.gradle(.kts)`, `.git`
+- Root detection via Maven/Gradle/Bazel markers: `pom.xml`, `build.gradle(.kts)`, `settings.gradle(.kts)`, `WORKSPACE(.bazel)`, `MODULE.bazel`, `.git`
 - `:NovaOrganizeImports` + `<leader>oi` helper mapping (standard LSP `source.organizeImports`)
 
 ## `nvim-lspconfig` configuration (inline snippet)
@@ -36,7 +36,7 @@ if not configs.nova then
     default_config = {
       cmd = { 'nova-lsp', '--stdio' },
       filetypes = { 'java' },
-      root_dir = util.root_pattern('pom.xml', 'build.gradle', 'build.gradle.kts', 'settings.gradle', 'settings.gradle.kts', '.git'),
+      root_dir = util.root_pattern('pom.xml', 'build.gradle', 'build.gradle.kts', 'settings.gradle', 'settings.gradle.kts', 'WORKSPACE', 'WORKSPACE.bazel', 'MODULE.bazel', '.git'),
     },
   }
 end

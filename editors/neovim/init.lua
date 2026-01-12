@@ -29,6 +29,10 @@ if not configs.nova then
         "build.gradle.kts",
         "settings.gradle",
         "settings.gradle.kts",
+        -- Bazel workspace markers.
+        "WORKSPACE",
+        "WORKSPACE.bazel",
+        "MODULE.bazel",
         ".git"
       ),
     },
