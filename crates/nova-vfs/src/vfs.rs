@@ -231,6 +231,8 @@ mod tests {
     use nova_core::{AbsPathBuf, Position, Range};
 
     use crate::fs::LocalFs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     #[test]
     fn vfs_emits_document_change_events() {
@@ -404,6 +406,67 @@ mod tests {
 
         vfs.store_virtual_document(path.clone(), "class Foo {}".to_string());
         assert_eq!(vfs.read_to_string(&path).unwrap(), "class Foo {}");
+    }
+
+    #[test]
+    fn decompiled_virtual_documents_fall_back_to_base_fs_when_not_cached() {
+        #[derive(Clone, Debug)]
+        struct MockFs {
+            path: VfsPath,
+            text: String,
+            reads: Arc<AtomicUsize>,
+        }
+
+        impl FileSystem for MockFs {
+            fn read_to_string(&self, path: &VfsPath) -> io::Result<String> {
+                if path == &self.path {
+                    self.reads.fetch_add(1, Ordering::SeqCst);
+                    return Ok(self.text.clone());
+                }
+                Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("missing ({path})"),
+                ))
+            }
+
+            fn exists(&self, path: &VfsPath) -> bool {
+                path == &self.path
+            }
+
+            fn metadata(&self, path: &VfsPath) -> io::Result<std::fs::Metadata> {
+                Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!("metadata not supported ({path})"),
+                ))
+            }
+
+            fn read_dir(&self, path: &VfsPath) -> io::Result<Vec<VfsPath>> {
+                Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!("read_dir not supported ({path})"),
+                ))
+            }
+        }
+
+        let path = VfsPath::decompiled(HASH_64, "com.example.FromBase");
+        let reads = Arc::new(AtomicUsize::new(0));
+        let base = MockFs {
+            path: path.clone(),
+            text: "class FromBase {}".to_string(),
+            reads: reads.clone(),
+        };
+        let vfs = Vfs::new(base);
+
+        // The decompiled document should be readable without explicit
+        // `store_virtual_document` calls when the base filesystem supports it.
+        assert_eq!(vfs.read_to_string(&path).unwrap(), "class FromBase {}");
+        assert!(vfs.virtual_documents.contains(&path));
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+
+        // Follow-up reads should hit the in-memory cache and avoid re-reading
+        // from the base filesystem.
+        assert_eq!(vfs.read_to_string(&path).unwrap(), "class FromBase {}");
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
     }
 
     #[test]

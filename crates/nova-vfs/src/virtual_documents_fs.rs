@@ -23,23 +23,50 @@ impl<F: FileSystem> FileSystem for VirtualDocumentsFs<F> {
     fn read_bytes(&self, path: &VfsPath) -> io::Result<Vec<u8>> {
         match path {
             VfsPath::Decompiled { .. } | VfsPath::LegacyDecompiled { .. } => {
-                match self.store.get_text(path) {
-                    Some(text) => Ok(text.as_bytes().to_vec()),
-                    None => match self.base.read_to_string(path) {
-                        Ok(text) => {
-                            // Best-effort: if the store is full, it will evict entries based on
-                            // its configured budget.
-                            self.store.insert_text(path.clone(), text.clone());
-                            Ok(text.into_bytes())
+                if let Some(text) = self.store.get_text(path) {
+                    return Ok(text.as_bytes().to_vec());
+                }
+
+                // Avoid surfacing `Unsupported` (or other scheme-related errors) from file systems
+                // like `LocalFs` when the virtual document isn't present; treat this as a cache
+                // miss unless the base explicitly reports the path exists.
+                if !self.base.exists(path) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("virtual document not found ({path})"),
+                    ));
+                }
+
+                match self.base.read_bytes(path) {
+                    Ok(bytes) => {
+                        // Best-effort: if the store is full, it will evict entries based on its
+                        // configured budget.
+                        if let Ok(text) = std::str::from_utf8(&bytes) {
+                            self.store.insert_text(path.clone(), text.to_string());
                         }
-                        Err(err) if err.kind() == io::ErrorKind::Unsupported => Err(
-                            io::Error::new(
-                                io::ErrorKind::NotFound,
-                                format!("virtual document not found ({path})"),
+                        Ok(bytes)
+                    }
+                    Err(err)
+                        if matches!(
+                            err.kind(),
+                            io::ErrorKind::Unsupported | io::ErrorKind::InvalidData
+                        ) =>
+                    {
+                        match self.base.read_to_string(path) {
+                            Ok(text) => {
+                                self.store.insert_text(path.clone(), text.clone());
+                                Ok(text.into_bytes())
+                            }
+                            Err(err) if err.kind() == io::ErrorKind::Unsupported => Err(
+                                io::Error::new(
+                                    io::ErrorKind::NotFound,
+                                    format!("virtual document not found ({path})"),
+                                ),
                             ),
-                        ),
-                        Err(err) => Err(err),
-                    },
+                            Err(err) => Err(err),
+                        }
+                    }
+                    Err(err) => Err(err),
                 }
             }
             _ => self.base.read_bytes(path),
@@ -49,23 +76,32 @@ impl<F: FileSystem> FileSystem for VirtualDocumentsFs<F> {
     fn read_to_string(&self, path: &VfsPath) -> io::Result<String> {
         match path {
             VfsPath::Decompiled { .. } | VfsPath::LegacyDecompiled { .. } => {
-                match self.store.get_text(path) {
-                    Some(text) => Ok(text.to_string()),
-                    None => match self.base.read_to_string(path) {
-                        Ok(text) => {
-                            // Best-effort: if the store is full, it will evict entries based on
-                            // its configured budget.
-                            self.store.insert_text(path.clone(), text.clone());
-                            Ok(text)
-                        }
-                        Err(err) if err.kind() == io::ErrorKind::Unsupported => Err(
-                            io::Error::new(
-                                io::ErrorKind::NotFound,
-                                format!("virtual document not found ({path})"),
-                            ),
-                        ),
-                        Err(err) => Err(err),
-                    },
+                if let Some(text) = self.store.get_text(path) {
+                    return Ok(text.to_string());
+                }
+
+                // Avoid surfacing `Unsupported` (or other scheme-related errors) from file systems
+                // like `LocalFs` when the virtual document isn't present; treat this as a cache
+                // miss unless the base explicitly reports the path exists.
+                if !self.base.exists(path) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("virtual document not found ({path})"),
+                    ));
+                }
+
+                match self.base.read_to_string(path) {
+                    Ok(text) => {
+                        // Best-effort: if the store is full, it will evict entries based on its
+                        // configured budget.
+                        self.store.insert_text(path.clone(), text.clone());
+                        Ok(text)
+                    }
+                    Err(err) if err.kind() == io::ErrorKind::Unsupported => Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("virtual document not found ({path})"),
+                    )),
+                    Err(err) => Err(err),
                 }
             }
             _ => self.base.read_to_string(path),
@@ -217,6 +253,50 @@ mod tests {
         let fs = VirtualDocumentsFs::new(UnsupportedFs, store);
 
         let err = fs.read_to_string(&path).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn does_not_delegate_to_base_when_base_reports_decompiled_path_missing() {
+        #[derive(Clone, Debug)]
+        struct PanicReadFs;
+
+        impl FileSystem for PanicReadFs {
+            fn read_bytes(&self, path: &VfsPath) -> io::Result<Vec<u8>> {
+                panic!("unexpected base.read_bytes({path})");
+            }
+
+            fn read_to_string(&self, path: &VfsPath) -> io::Result<String> {
+                panic!("unexpected base.read_to_string({path})");
+            }
+
+            fn exists(&self, _path: &VfsPath) -> bool {
+                false
+            }
+
+            fn metadata(&self, path: &VfsPath) -> io::Result<std::fs::Metadata> {
+                Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!("metadata not supported ({path})"),
+                ))
+            }
+
+            fn read_dir(&self, path: &VfsPath) -> io::Result<Vec<VfsPath>> {
+                Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!("read_dir not supported ({path})"),
+                ))
+            }
+        }
+
+        let path = VfsPath::decompiled(HASH_64, "com.example.Missing");
+        let store = VirtualDocumentStore::new(1024);
+        let fs = VirtualDocumentsFs::new(PanicReadFs, store);
+
+        let err = fs.read_to_string(&path).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+
+        let err = fs.read_bytes(&path).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
     }
 }
