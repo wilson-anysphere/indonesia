@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'node:path';
 import { resolvePossiblyRelativePath } from './pathUtils';
+import { formatUnsupportedNovaMethodMessage, isNovaMethodNotFoundError } from './novaCapabilities';
 
 export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
 
@@ -468,7 +469,7 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
         this.modelByWorkspace.set(key, result);
         return result;
       } catch (err) {
-        const result: ProjectModelLoadResult = isMethodNotFoundError(err)
+        const result: ProjectModelLoadResult = isNovaMethodNotFoundError(err)
           ? { status: 'unsupported' }
           : { status: 'error', message: formatError(err) };
         this.modelByWorkspace.set(key, result);
@@ -619,14 +620,15 @@ async function showProjectModel(request: NovaRequest): Promise<void> {
   }
 
   try {
-    const model = await request('nova/projectModel', { projectRoot: workspace.uri.fsPath });
+    const method = 'nova/projectModel';
+    const model = await request(method, { projectRoot: workspace.uri.fsPath });
     if (!model) {
       return;
     }
     await openJsonDocument(`Nova Project Model (${workspace.name}).json`, model);
   } catch (err) {
-    if (isMethodNotFoundError(err)) {
-      void vscode.window.showInformationMessage('Nova: project model is not supported by this server.');
+    if (isNovaMethodNotFoundError(err)) {
+      void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage('nova/projectModel'));
       return;
     }
     void vscode.window.showErrorMessage(`Nova: failed to fetch project model: ${formatError(err)}`);
@@ -640,14 +642,15 @@ async function showProjectConfiguration(request: NovaRequest): Promise<void> {
   }
 
   try {
-    const config = await request('nova/projectConfiguration', { projectRoot: workspace.uri.fsPath });
+    const method = 'nova/projectConfiguration';
+    const config = await request(method, { projectRoot: workspace.uri.fsPath });
     if (!config) {
       return;
     }
     await openJsonDocument(`Nova Project Configuration (${workspace.name}).json`, config);
   } catch (err) {
-    if (isMethodNotFoundError(err)) {
-      void vscode.window.showInformationMessage('Nova: project configuration is not supported by this server.');
+    if (isNovaMethodNotFoundError(err)) {
+      void vscode.window.showErrorMessage(formatUnsupportedNovaMethodMessage('nova/projectConfiguration'));
       return;
     }
     void vscode.window.showErrorMessage(`Nova: failed to fetch project configuration: ${formatError(err)}`);
@@ -710,26 +713,4 @@ function formatError(err: unknown): string {
   } catch {
     return String(err);
   }
-}
-
-function isMethodNotFoundError(err: unknown): boolean {
-  if (!err || typeof err !== 'object') {
-    return false;
-  }
-
-  const code = (err as { code?: unknown }).code;
-  if (code === -32601) {
-    return true;
-  }
-
-  const message = (err as { message?: unknown }).message;
-  if (
-    code === -32602 &&
-    typeof message === 'string' &&
-    message.toLowerCase().includes('unknown (stateless) method')
-  ) {
-    return true;
-  }
-
-  return typeof message === 'string' && message.toLowerCase().includes('method not found');
 }
