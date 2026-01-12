@@ -2208,7 +2208,7 @@ fn extract_variable_rejects_switch_expression_rule_expression() {
         matches!(
             err,
             SemanticRefactorError::ExtractNotSupported { reason }
-                if reason == "cannot extract from switch expression rule body"
+                if reason == "cannot extract from non-block switch rule body"
         ),
         "expected switch expression rule rejection, got: {err:?}"
     );
@@ -2248,9 +2248,39 @@ fn extract_variable_rejects_switch_expression_rule_expression_nested() {
         matches!(
             err,
             SemanticRefactorError::ExtractNotSupported { reason }
-                if reason == "cannot extract from switch expression rule body"
+                if reason == "cannot extract from non-block switch rule body"
         ),
-        "expected switch expression rule rejection, got: {err:?}"
+        "expected non-block switch rule body rejection, got: {err:?}"
+    );
+}
+
+#[test]
+fn extract_variable_rejects_switch_case_label_expression() {
+    let file = FileId::new("Test.java");
+    let fixture =
+        r#"class C { void m(int x) { switch (x) { case /*start*/1 + 2/*end*/: break; } } }"#;
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
+            name: "sum".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason == "cannot extract from switch labels"
+        ),
+        "expected switch label rejection, got: {err:?}"
     );
 }
 
@@ -2276,7 +2306,7 @@ fn extract_variable_rejects_switch_expression_rule_throw_statement_body() {
         ExtractVariableParams {
             file,
             expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
-            name: "tmp".into(),
+            name: "sum".into(),
             use_var: true,
             replace_all: false,
         },
@@ -2287,10 +2317,63 @@ fn extract_variable_rejects_switch_expression_rule_throw_statement_body() {
         matches!(
             err,
             SemanticRefactorError::ExtractNotSupported { reason }
-                if reason == "cannot extract from switch expression rule body"
+                if reason == "cannot extract from non-block switch rule body"
         ),
-        "expected switch expression rule rejection, got: {err:?}"
+        "expected non-block switch rule body rejection, got: {err:?}"
     );
+}
+
+#[test]
+fn extract_variable_rejects_arrow_switch_rule_statement_body() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C { void m(int x) { switch (x) { case 1 -> System.out.println(/*start*/1 + 2/*end*/); default -> {} } } }"#;
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
+            name: "sum".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason == "cannot extract into a single-statement switch rule body without braces"
+        ),
+        "expected non-block switch rule body rejection, got: {err:?}"
+    );
+}
+
+#[test]
+fn extract_variable_allows_arrow_switch_rule_block_body() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C { void m(int x) { switch (x) { case 1 -> { System.out.println(/*start*/1 + 2/*end*/); } default -> {} } } }"#;
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_range.start, expr_range.end),
+            name: "sum".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class C { void m(int x) { switch (x) { case 1 -> { var sum = 1 + 2; System.out.println(sum); } default -> {} } } }"#;
+    assert_eq!(after, expected);
 }
 
 #[test]

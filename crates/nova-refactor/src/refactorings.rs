@@ -796,6 +796,55 @@ pub fn extract_variable(
         });
     }
 
+    // Reject extracting from switch labels/guards. Labels must remain constant expressions and
+    // switch labels/guards cannot contain statement lists where we could insert a new declaration.
+    if expr.syntax().ancestors().any(|node| {
+        ast::SwitchLabel::cast(node.clone()).is_some()
+            || ast::CaseLabelElement::cast(node.clone()).is_some()
+            || ast::Guard::cast(node).is_some()
+    }) {
+        return Err(RefactorError::ExtractNotSupported {
+            reason: "cannot extract from switch labels",
+        });
+    }
+
+    // Reject non-block switch-expression arrow rule bodies (`case ... -> <expr>` / `case ... -> <stmt>`).
+    //
+    // Extract Variable inserts a new local declaration statement before the enclosing statement.
+    // For non-block switch *expression* rule bodies, doing so would either hoist evaluation out of
+    // the selected case arm or require rewriting the rule into a `{ ... }` block (not implemented).
+    if let Some(rule) = expr.syntax().ancestors().find_map(ast::SwitchRule::cast) {
+        let Some(body) = rule.body() else {
+            return Err(RefactorError::ExtractNotSupported {
+                reason: "cannot extract from malformed switch rule",
+            });
+        };
+        if !matches!(body, ast::SwitchRuleBody::Block(_)) {
+            // Only guard when the selection is inside the rule body (not the labels/guard).
+            let body_range = syntax_range(body.syntax());
+            if body_range.start <= selection.start && selection.end <= body_range.end {
+                let container = rule
+                    .syntax()
+                    .ancestors()
+                    .skip(1)
+                    .find_map(|node| {
+                        if ast::SwitchExpression::cast(node.clone()).is_some() {
+                            Some(true)
+                        } else if ast::SwitchStatement::cast(node).is_some() {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    });
+                if container == Some(true) {
+                    return Err(RefactorError::ExtractNotSupported {
+                        reason: "cannot extract from non-block switch rule body",
+                    });
+                }
+            }
+        }
+    }
+
     if let Some(reason) = constant_expression_only_context_reason(&expr) {
         return Err(RefactorError::ExtractNotSupported { reason });
     }
@@ -925,7 +974,6 @@ pub fn extract_variable(
         }
         (stmt_range.start, String::new(), " ")
     };
-
     check_extract_variable_name_conflicts(&params.file, &stmt, insert_pos, &name)?;
     check_extract_variable_field_shadowing(&stmt, &params.file, &name, expr_range)?;
 
@@ -2432,8 +2480,10 @@ fn inline_variable_has_writes(
             }
         };
 
-        if reference_is_write(parsed, reference.range)? {
-            return Ok(true);
+        match reference_is_write(parsed, reference.range) {
+            Ok(true) => return Ok(true),
+            Ok(false) => {}
+            Err(err) => return Err(err),
         }
     }
 

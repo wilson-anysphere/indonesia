@@ -13,8 +13,8 @@ use nova_refactor::{
     ConvertToRecordOptions, ExtractVariableParams, FileId, InlineVariableParams, JavaSymbolKind,
     MoveMethodParams as RefactorMoveMethodParams,
     MoveStaticMemberParams as RefactorMoveStaticMemberParams, RefactorDatabase,
-    RefactorJavaDatabase, SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget,
-    Conflict, SemanticRefactorError, TextDatabase, WorkspaceTextRange,
+    RefactorJavaDatabase, SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget, Conflict,
+    SemanticRefactorError, TextDatabase, WorkspaceTextRange,
 };
 use schemars::schema::RootSchema;
 use schemars::schema_for;
@@ -243,6 +243,16 @@ pub fn extract_variable_code_actions(
         // use structured semantic conflicts (`Conflicts(NameCollision)`).
         const NAME_CONFLICT_REASON: &str =
             "extracted variable name conflicts with an existing binding";
+
+        fn conflicts_resolvable_by_renaming(conflicts: &[Conflict], name: &str) -> bool {
+            conflicts.iter().all(|conflict| match conflict {
+                Conflict::NameCollision { name: n, .. }
+                | Conflict::Shadowing { name: n, .. }
+                | Conflict::FieldShadowing { name: n, .. } => n == name,
+                Conflict::VisibilityLoss { .. } | Conflict::FileAlreadyExists { .. } => false,
+            })
+        }
+
         for attempt in 0usize..100 {
             let name = if attempt == 0 {
                 "extracted".to_string()
@@ -263,21 +273,17 @@ pub fn extract_variable_code_actions(
                 Ok(_) => return Some(name),
                 Err(SemanticRefactorError::InvalidIdentifier { .. }) => continue,
                 Err(SemanticRefactorError::Conflicts(conflicts))
-                    if conflicts.iter().any(|conflict| matches!(
-                        conflict,
-                        Conflict::NameCollision { name: conflict_name, .. }
-                            if conflict_name == &name
-                    )) =>
+                    if conflicts_resolvable_by_renaming(&conflicts, &name) =>
                 {
-                    continue
+                    continue;
                 }
                 Err(SemanticRefactorError::ExtractNotSupported { reason })
                     if reason == NAME_CONFLICT_REASON =>
                 {
-                    continue
+                    continue;
                 }
                 Err(_) => return None,
-            }
+            };
         }
 
         None
