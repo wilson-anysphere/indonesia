@@ -36,6 +36,75 @@ class A {}
 }
 
 #[test]
+fn diagnostics_treats_fully_qualified_reference_as_unused_import() {
+    let mut db = InMemoryFileStore::new();
+    let path = PathBuf::from("/test.java");
+    let file = db.file_id_for_path(&path);
+    db.set_file_text(
+        file,
+        r#"import java.util.List;
+class A {
+  java.util.List<String> xs;
+}
+"#
+        .to_string(),
+    );
+
+    let diags = file_diagnostics(&db, file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.severity == Severity::Warning && d.code.as_ref() == "unused-import"),
+        "expected unused-import warning diagnostic; got {diags:#?}"
+    );
+}
+
+#[test]
+fn diagnostics_do_not_count_comment_mentions_as_usage() {
+    let mut db = InMemoryFileStore::new();
+    let path = PathBuf::from("/test.java");
+    let file = db.file_id_for_path(&path);
+    db.set_file_text(
+        file,
+        r#"import java.util.List;
+// List is only mentioned in a comment.
+class A {}
+"#
+        .to_string(),
+    );
+
+    let diags = file_diagnostics(&db, file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.severity == Severity::Warning && d.code.as_ref() == "unused-import"),
+        "expected unused-import warning diagnostic; got {diags:#?}"
+    );
+}
+
+#[test]
+fn diagnostics_do_not_treat_block_comment_imports_as_real_imports() {
+    let mut db = InMemoryFileStore::new();
+    let path = PathBuf::from("/test.java");
+    let file = db.file_id_for_path(&path);
+    db.set_file_text(
+        file,
+        r#"/*
+import java.util.List;
+*/
+class A {}
+"#
+        .to_string(),
+    );
+
+    let diags = file_diagnostics(&db, file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unused-import"),
+        "expected no unused-import diagnostics; got {diags:#?}"
+    );
+}
+
+#[test]
 fn quick_fix_removes_unused_import_line() {
     let mut db = InMemoryFileStore::new();
     let path = PathBuf::from("/test.java");

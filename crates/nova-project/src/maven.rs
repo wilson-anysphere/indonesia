@@ -2057,7 +2057,6 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
     let path = version_dir.join(default_file_name(version));
     exists_as_jar(&path).then_some(path)
 }
-
 fn resolve_snapshot_jar_file_name(
     version_dir: &Path,
     base_version: &str,

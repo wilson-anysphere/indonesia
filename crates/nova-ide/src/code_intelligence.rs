@@ -1138,36 +1138,6 @@ fn sort_and_dedupe_diagnostics(diagnostics: &mut Vec<Diagnostic>) {
     diagnostics.dedup();
 }
 
-fn is_java_identifier_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$'
-}
-
-fn collect_java_identifier_tokens<'a>(text: &'a str) -> HashSet<&'a str> {
-    let bytes = text.as_bytes();
-    let mut out: HashSet<&'a str> = HashSet::new();
-
-    let mut i = 0usize;
-    while i < bytes.len() {
-        if !is_java_identifier_byte(bytes[i]) {
-            i += 1;
-            continue;
-        }
-
-        let start = i;
-        i += 1;
-        while i < bytes.len() && is_java_identifier_byte(bytes[i]) {
-            i += 1;
-        }
-
-        // ASCII bytes are always valid UTF-8 char boundaries.
-        if let Some(token) = text.get(start..i) {
-            out.insert(token);
-        }
-    }
-
-    out
-}
-
 fn unused_import_diagnostics(java_source: &str) -> Vec<Diagnostic> {
     struct ImportLine {
         span: Span,
@@ -1175,58 +1145,147 @@ fn unused_import_diagnostics(java_source: &str) -> Vec<Diagnostic> {
         simple: String,
     }
 
+    fn line_end_offset(text: &str, offset: usize) -> usize {
+        let offset = offset.min(text.len());
+        let Some(rest) = text.get(offset..) else {
+            return text.len();
+        };
+        match rest.find('\n') {
+            Some(rel) => offset + rel + 1,
+            None => text.len(),
+        }
+    }
+
+    let tokens = nova_syntax::lex(java_source);
+
     let mut imports: Vec<ImportLine> = Vec::new();
     let mut last_import_end = 0usize;
 
-    let mut offset = 0usize;
-    for segment in java_source.split_inclusive('\n') {
-        let line_end_including_newline = offset + segment.len();
-        let mut line = segment.strip_suffix('\n').unwrap_or(segment);
-        line = line.strip_suffix('\r').unwrap_or(line);
-
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("import ") {
-            // Always exclude the full import block from usage searches (even static/wildcard).
-            last_import_end = line_end_including_newline;
-
-            // Ignore static imports for now; those introduce members, not types.
-            if trimmed.starts_with("import static ") {
-                offset = line_end_including_newline;
-                continue;
-            }
-
-            // Extract `foo.bar.Baz` from `import foo.bar.Baz;` (best-effort).
-            let rest = trimmed.get("import ".len()..).unwrap_or("").trim();
-            let rest = rest
-                .split_once(';')
-                .map(|(before, _after)| before)
-                .unwrap_or(rest)
-                .trim();
-
-            if rest.is_empty() {
-                offset = line_end_including_newline;
-                continue;
-            }
-
-            // Ignore wildcard imports (`import foo.bar.*;`) for now.
-            if rest.ends_with(".*") {
-                offset = line_end_including_newline;
-                continue;
-            }
-
-            let simple = rest.rsplit('.').next().unwrap_or(rest).to_string();
-            imports.push(ImportLine {
-                span: Span::new(offset, offset + line.len()),
-                path: rest.to_string(),
-                simple,
-            });
-        }
-
-        offset = line_end_including_newline;
+    let mut idx = 0usize;
+    while idx < tokens.len() && tokens[idx].kind.is_trivia() {
+        idx += 1;
     }
 
-    let body = java_source.get(last_import_end..).unwrap_or("");
-    let used = collect_java_identifier_tokens(body);
+    // Skip an optional package declaration so we start scanning at the import block.
+    if idx < tokens.len() && tokens[idx].kind == nova_syntax::SyntaxKind::PackageKw {
+        idx += 1;
+        while idx < tokens.len() {
+            if tokens[idx].kind == nova_syntax::SyntaxKind::Semicolon {
+                idx += 1;
+                break;
+            }
+            idx += 1;
+        }
+    }
+
+    loop {
+        while idx < tokens.len() && tokens[idx].kind.is_trivia() {
+            idx += 1;
+        }
+        if idx >= tokens.len() {
+            break;
+        }
+        if tokens[idx].kind != nova_syntax::SyntaxKind::ImportKw {
+            break;
+        }
+
+        let import_start = tokens[idx].range.start as usize;
+        idx += 1;
+
+        while idx < tokens.len() && tokens[idx].kind.is_trivia() {
+            idx += 1;
+        }
+
+        let mut is_static = false;
+        if idx < tokens.len() && tokens[idx].kind == nova_syntax::SyntaxKind::StaticKw {
+            is_static = true;
+            idx += 1;
+        }
+
+        let mut segments: Vec<String> = Vec::new();
+        let mut saw_star = false;
+        let mut stmt_end = import_start;
+
+        while idx < tokens.len() {
+            let tok = &tokens[idx];
+
+            match tok.kind {
+                nova_syntax::SyntaxKind::Whitespace
+                | nova_syntax::SyntaxKind::LineComment
+                | nova_syntax::SyntaxKind::BlockComment
+                | nova_syntax::SyntaxKind::DocComment => {
+                    idx += 1;
+                    continue;
+                }
+                nova_syntax::SyntaxKind::Identifier => {
+                    segments.push(tok.text(java_source).to_string());
+                    idx += 1;
+                    continue;
+                }
+                nova_syntax::SyntaxKind::Dot => {
+                    idx += 1;
+                    continue;
+                }
+                nova_syntax::SyntaxKind::Star => {
+                    saw_star = true;
+                    idx += 1;
+                    continue;
+                }
+                nova_syntax::SyntaxKind::Semicolon => {
+                    stmt_end = tok.range.end as usize;
+                    idx += 1;
+                    break;
+                }
+                nova_syntax::SyntaxKind::Eof => {
+                    stmt_end = tok.range.end as usize;
+                    idx += 1;
+                    break;
+                }
+                _ => {
+                    idx += 1;
+                    continue;
+                }
+            }
+        }
+
+        if stmt_end > 0 {
+            last_import_end = last_import_end.max(line_end_offset(java_source, stmt_end));
+        }
+
+        if is_static || saw_star || segments.is_empty() {
+            continue;
+        }
+
+        let path = segments.join(".");
+        let simple = segments.last().cloned().unwrap_or_default();
+
+        imports.push(ImportLine {
+            span: Span::new(import_start, stmt_end),
+            path,
+            simple,
+        });
+    }
+
+    let mut used: HashSet<&str> = HashSet::new();
+    let mut prev_non_trivia = None;
+
+    for tok in tokens.iter() {
+        let start = tok.range.start as usize;
+        if start < last_import_end {
+            continue;
+        }
+        if tok.kind.is_trivia() {
+            continue;
+        }
+
+        if tok.kind == nova_syntax::SyntaxKind::Identifier
+            && prev_non_trivia != Some(nova_syntax::SyntaxKind::Dot)
+        {
+            used.insert(tok.text(java_source));
+        }
+
+        prev_non_trivia = Some(tok.kind);
+    }
 
     imports
         .into_iter()
