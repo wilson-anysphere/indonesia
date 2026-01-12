@@ -5776,6 +5776,24 @@ class C {
 }
 
 #[test]
+fn source_varargs_param_is_typed_as_array_in_body() {
+    let src = r#"
+class C {
+    static void foo(int... xs) {
+        int[] ys = xs;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected varargs param to type-check as an array in the body, got {diags:?}"
+    );
+}
+
+#[test]
 fn source_varargs_constructor_is_tagged() {
     let src = r#"
 class Foo {
