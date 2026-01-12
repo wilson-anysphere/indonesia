@@ -784,14 +784,16 @@ export function registerNovaBuildIntegration(
       }
 
       const projectRoot = selector?.projectRoot ?? folder.uri.fsPath;
-      const buildTool = await getBuildBuildTool(folder);
+      const module = selector?.module;
+      const projectPath = selector?.projectPath;
+      let target: string | undefined = selector?.target;
+      // When building an explicit Bazel target, always use `buildTool=auto` and skip any prompt.
+      // `nova/buildProject` only supports Bazel builds when `buildTool` is unset/auto.
+      const buildTool: BuildTool = target ? 'auto' : await getBuildBuildTool(folder);
+
       const workspaceState = getWorkspaceState(folder);
       workspaceState.buildCommandInFlight = true;
       try {
-        const module = selector?.module;
-        const projectPath = selector?.projectPath;
-        let target: string | undefined = selector?.target;
-
         const startedAtIso = new Date().toISOString();
         let finishedLogged = false;
 
