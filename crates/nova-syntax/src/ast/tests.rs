@@ -2262,3 +2262,67 @@ fn string_template_expression_accessors_expression_fragment() {
     assert_eq!(text_segments, vec!["Hello ", "!"]);
     assert_eq!(template.parts().count(), 1);
 }
+
+#[test]
+fn string_template_expression_accessors_statement_fragment() {
+    let fragment_parse =
+        parse_java_statement_fragment("String s = STR.\"Hello \\{name}!\";", 0);
+    assert!(fragment_parse.parse.errors.is_empty());
+
+    let fragment =
+        StatementFragment::cast(fragment_parse.parse.syntax()).expect("StatementFragment");
+    let stmt = fragment.statement().expect("expected statement");
+    assert!(
+        matches!(stmt, Statement::LocalVariableDeclarationStatement(_)),
+        "expected local variable declaration statement, got {stmt:?}"
+    );
+
+    let template_expr = stmt
+        .syntax()
+        .descendants()
+        .find_map(StringTemplateExpression::cast)
+        .expect("expected a StringTemplateExpression");
+    assert_eq!(
+        template_expr
+            .processor()
+            .expect("expected processor")
+            .syntax()
+            .text()
+            .to_string(),
+        "STR"
+    );
+    let template = template_expr.template().expect("expected string template");
+    assert_eq!(template.parts().count(), 1);
+}
+
+#[test]
+fn string_template_expression_accessors_class_member_fragment() {
+    let fragment_parse =
+        parse_java_class_member_fragment("String s = STR.\"Hello \\{name}!\";", 0);
+    assert!(fragment_parse.parse.errors.is_empty());
+
+    let fragment =
+        ClassMemberFragment::cast(fragment_parse.parse.syntax()).expect("ClassMemberFragment");
+    let member = fragment.member().expect("expected member");
+    let field = match member {
+        ClassMember::FieldDeclaration(field) => field,
+        other => panic!("expected FieldDeclaration, got {other:?}"),
+    };
+
+    let template_expr = field
+        .syntax()
+        .descendants()
+        .find_map(StringTemplateExpression::cast)
+        .expect("expected a StringTemplateExpression");
+    assert_eq!(
+        template_expr
+            .processor()
+            .expect("expected processor")
+            .syntax()
+            .text()
+            .to_string(),
+        "STR"
+    );
+    let template = template_expr.template().expect("expected string template");
+    assert_eq!(template.parts().count(), 1);
+}
