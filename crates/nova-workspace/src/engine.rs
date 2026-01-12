@@ -3313,29 +3313,42 @@ fn should_refresh_build_config(
     module_roots: &[PathBuf],
     changed_files: &[PathBuf],
 ) -> bool {
-    changed_files.is_empty()
-        || changed_files.iter().any(|path| {
-            // Many build inputs are detected based on path components (e.g. ignoring `build/`
-            // output directories). Use paths relative to the workspace root (or module roots) so
-            // absolute parent directories (like `/home/user/build/...`) don't accidentally trip
-            // ignore heuristics.
-            let mut best: Option<&Path> = None;
-            let mut best_len = 0usize;
-            for root in
-                std::iter::once(workspace_root).chain(module_roots.iter().map(PathBuf::as_path))
-            {
-                if let Ok(stripped) = path.strip_prefix(root) {
-                    let len = root.components().count();
-                    if len > best_len {
-                        best_len = len;
-                        best = Some(stripped);
-                    }
+    if changed_files.is_empty() {
+        return true;
+    }
+
+    // Normalize roots to match `nova-vfs` path normalization semantics (drive letter casing +
+    // lexical `.`/`..` resolution). This avoids missing prefix matches when module roots are
+    // recorded with `..` segments (e.g. `../included`) but file change events arrive in a
+    // normalized form.
+    let mut roots: Vec<(PathBuf, usize)> = Vec::with_capacity(module_roots.len() + 1);
+    let workspace_root = normalize_vfs_local_path(workspace_root.to_path_buf());
+    let workspace_root_len = workspace_root.components().count();
+    roots.push((workspace_root, workspace_root_len));
+    for root in module_roots.iter().cloned().map(normalize_vfs_local_path) {
+        let len = root.components().count();
+        roots.push((root, len));
+    }
+
+    changed_files.iter().any(|path| {
+        let path = normalize_vfs_local_path(path.clone());
+
+        // Many build inputs are detected based on path components (e.g. ignoring `build/` output
+        // directories). Use paths relative to the workspace root (or module roots) so absolute
+        // parent directories (like `/home/user/build/...`) don't accidentally trip ignore
+        // heuristics.
+        let mut best: Option<(&Path, usize)> = None;
+        for (root, root_len) in &roots {
+            if let Ok(stripped) = path.strip_prefix(root) {
+                if best.map(|(_, best_len)| *root_len > best_len).unwrap_or(true) {
+                    best = Some((stripped, *root_len));
                 }
             }
-            let rel = best.unwrap_or(path.as_path());
+        }
+        let rel = best.map(|(rel, _)| rel).unwrap_or(path.as_path());
 
-            is_build_tool_input_file(rel) || is_nova_config_file(rel)
-        })
+        is_build_tool_input_file(rel) || is_nova_config_file(rel)
+    })
 }
 
 fn classpath_entry_kind_for_path(path: &Path) -> ClasspathEntryKind {
@@ -4357,6 +4370,19 @@ mod tests {
                 &[included_root.join("gradle.lockfile")]
             ),
             "expected included-build gradle.lockfile under /tmp/build/... to trigger refresh"
+        );
+
+        // Roots with `..` segments should still participate in prefix matching after lexical
+        // normalization (events are typically normalized by `nova-vfs` before reaching this
+        // function).
+        let included_root_with_dotdots = PathBuf::from("/tmp/build/included/../included");
+        assert!(
+            should_refresh_build_config(
+                &root,
+                &[included_root_with_dotdots],
+                &[included_root.join("gradle.lockfile")]
+            ),
+            "expected included-build gradle.lockfile to trigger refresh when module root contains dot segments"
         );
     }
 
