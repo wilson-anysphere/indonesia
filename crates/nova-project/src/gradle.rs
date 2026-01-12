@@ -4137,7 +4137,7 @@ guava = { module = "com.google.guava:guava", version = { ref = "guava" } }
 junit = { module = "junit:junit", version = { ref = "junit" } }
 
 [bundles]
-test = ["junit", "guava"]
+        test = ["junit", "guava"]
 "#;
         let catalog = parse_gradle_version_catalog_from_toml(catalog_toml, &gradle_properties)
             .expect("parse catalog");
