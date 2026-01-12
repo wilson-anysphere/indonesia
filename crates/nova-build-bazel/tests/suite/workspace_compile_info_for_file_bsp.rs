@@ -8,9 +8,35 @@ use nova_build_bazel::bsp::{
 use nova_build_bazel::{BazelWorkspace, BspWorkspace, CommandOutput, CommandRunner};
 use std::{
     collections::BTreeMap,
+    ffi::OsString,
     path::Path,
 };
 use tempfile::tempdir;
+
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: Option<&str>) -> Self {
+        let previous = std::env::var_os(key);
+        match value {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 struct NoopRunner;
@@ -34,6 +60,9 @@ fn server_caps() -> ServerCapabilities {
 
 #[test]
 fn compile_info_for_file_prefers_bsp_inverse_sources_and_javac_options_without_bazel() {
+    let _lock = nova_build_bazel::test_support::env_lock();
+    let _use_bsp_guard = EnvVarGuard::set("NOVA_BAZEL_USE_BSP", Some("1"));
+
     let root = tempdir().unwrap();
 
     // `compile_info_for_file` requires the file to be contained in some Bazel package.

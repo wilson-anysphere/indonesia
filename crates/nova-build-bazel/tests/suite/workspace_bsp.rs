@@ -7,10 +7,36 @@ use nova_build_bazel::bsp::{
 };
 use nova_build_bazel::{BazelWorkspace, BspWorkspace, CommandOutput, CommandRunner};
 use std::{
+    ffi::OsString,
     path::Path,
     sync::{Arc, Mutex},
 };
 use tempfile::tempdir;
+
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: Option<&str>) -> Self {
+        let previous = std::env::var_os(key);
+        match value {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 struct RecordingRunner {
@@ -53,6 +79,9 @@ fn server_caps() -> ServerCapabilities {
 
 #[test]
 fn bazel_workspace_java_targets_prefers_bsp_buildtargets() {
+    let _lock = nova_build_bazel::test_support::env_lock();
+    let _use_bsp_guard = EnvVarGuard::set("NOVA_BAZEL_USE_BSP", Some("1"));
+
     let root = tempdir().unwrap();
 
     let java_target = BuildTarget {
@@ -107,6 +136,9 @@ fn bazel_workspace_java_targets_prefers_bsp_buildtargets() {
 
 #[test]
 fn bazel_workspace_java_targets_falls_back_to_bsp_target_id_uri() {
+    let _lock = nova_build_bazel::test_support::env_lock();
+    let _use_bsp_guard = EnvVarGuard::set("NOVA_BAZEL_USE_BSP", Some("1"));
+
     let root = tempdir().unwrap();
 
     let java_target = BuildTarget {
@@ -153,6 +185,9 @@ fn bazel_workspace_java_targets_falls_back_to_bsp_target_id_uri() {
 
 #[test]
 fn bazel_workspace_target_compile_info_prefers_bsp_javac_options() {
+    let _lock = nova_build_bazel::test_support::env_lock();
+    let _use_bsp_guard = EnvVarGuard::set("NOVA_BAZEL_USE_BSP", Some("1"));
+
     let root = tempdir().unwrap();
 
     let java_target = BuildTarget {
@@ -214,6 +249,9 @@ fn bazel_workspace_target_compile_info_prefers_bsp_javac_options() {
 
 #[test]
 fn bazel_workspace_target_compile_info_cache_is_invalidated_by_bazelrc_imports() {
+    let _lock = nova_build_bazel::test_support::env_lock();
+    let _use_bsp_guard = EnvVarGuard::set("NOVA_BAZEL_USE_BSP", Some("1"));
+
     let root = tempdir().unwrap();
 
     // Create a `.bazelrc` that imports another file. Changes to the imported file can affect query
