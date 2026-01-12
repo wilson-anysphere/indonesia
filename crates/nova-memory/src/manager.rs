@@ -219,19 +219,11 @@ impl MemoryManager {
         let before_effective_total = effective_usage_total(tracked_total, before_rss);
         let before_pressure = self.pressure_for_total(before_effective_total);
 
-        // When we're under `Low` pressure and still within the total budget, avoid running the
-        // per-category eviction loop.
-        //
-        // The memory manager's budgets are split across coarse categories (query cache, syntax
-        // trees, etc). Some categories can temporarily exceed their share even when total tracked
-        // usage is still comfortably below the overall budget, and aggressively evicting in that
-        // situation leads to surprising churn (for example, evicting file texts immediately after
-        // loading a workspace, before any explicit memory pressure has been introduced).
-        //
-        // We still run eviction under `Low` pressure when the *total* tracked usage is over the
-        // budget (e.g. a large non-evictable allocation forces caches to shrink), regardless of
-        // the configured pressure thresholds.
-        if matches!(before_pressure, MemoryPressure::Low) && tracked_total <= self.inner.budget.total
+        // Fast-path: if we're comfortably within both the overall and per-category budgets, avoid
+        // running the eviction loop.
+        if matches!(before_pressure, MemoryPressure::Low)
+            && tracked_total <= self.inner.budget.total
+            && self.within_targets(before_usage, self.inner.budget.categories)
         {
             let report = self.report();
             self.maybe_emit_event(before_pressure, report.clone());
