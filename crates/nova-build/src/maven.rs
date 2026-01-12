@@ -1529,9 +1529,9 @@ fn collect_maven_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf>
                 continue;
             }
             // Bazel output trees are typically created at the workspace root and can be enormous.
-            // Skip any top-level `bazel-*` entries (`bazel-out`, `bazel-bin`, `bazel-testlogs`,
+            // Skip any `bazel-*` entries (`bazel-out`, `bazel-bin`, `bazel-testlogs`,
             // `bazel-<workspace>`, etc).
-            if dir == root && file_name.starts_with("bazel-") {
+            if file_name.starts_with("bazel-") {
                 continue;
             }
 
@@ -1587,6 +1587,7 @@ fn collect_maven_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
     use std::collections::HashMap;
     use std::process::ExitStatus;
     use std::sync::Mutex;
@@ -1650,6 +1651,55 @@ mod tests {
             .map(|p| p.to_string_lossy().replace('\\', "/"))
             .collect();
         assert_eq!(rel_modules, vec!["module-a", "module-b"]);
+    }
+
+    #[test]
+    fn collect_maven_build_files_ignores_bazel_dirs_at_any_depth() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+ 
+        // Real build files.
+        std::fs::write(root.join("pom.xml"), "<project></project>").unwrap();
+        std::fs::write(root.join("mvnw"), "echo mvnw").unwrap();
+        std::fs::write(root.join("mvnw.cmd"), "@echo mvnw").unwrap();
+        std::fs::create_dir_all(root.join("module-a")).unwrap();
+        std::fs::write(root.join("module-a").join("pom.xml"), "<project></project>").unwrap();
+ 
+        // Bazel output trees can contain files that look like build markers, but they should not
+        // influence Maven fingerprinting.
+        std::fs::create_dir_all(root.join("bazel-out")).unwrap();
+        std::fs::write(root.join("bazel-out").join("pom.xml"), "<project></project>").unwrap();
+        std::fs::create_dir_all(root.join("nested").join("bazel-out")).unwrap();
+        std::fs::write(
+            root.join("nested").join("bazel-out").join("pom.xml"),
+            "<project></project>",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("nested").join("bazel-myworkspace")).unwrap();
+        std::fs::write(
+            root.join("nested")
+                .join("bazel-myworkspace")
+                .join("pom.xml"),
+            "<project></project>",
+        )
+        .unwrap();
+ 
+        let files = collect_maven_build_files(root).unwrap();
+        let rel: BTreeSet<PathBuf> = files
+            .into_iter()
+            .map(|p| p.strip_prefix(root).unwrap().to_path_buf())
+            .collect();
+ 
+        let expected: BTreeSet<PathBuf> = [
+            PathBuf::from("module-a/pom.xml"),
+            PathBuf::from("mvnw"),
+            PathBuf::from("mvnw.cmd"),
+            PathBuf::from("pom.xml"),
+        ]
+        .into_iter()
+        .collect();
+ 
+        assert_eq!(rel, expected);
     }
 
     #[test]
