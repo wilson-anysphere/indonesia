@@ -19491,9 +19491,11 @@ mod tests {
         let foo_file = db.file_id_for_path("/__nova_test_ws__/src/com/foo/Foo.java");
         db.set_file_text(foo_file, "package com.foo; class Foo {}".to_string());
 
+        let test_file = db.file_id_for_path("/__nova_test_ws__/src/Test.java");
         let text = "import com.\nclass Test {}".to_string();
+        db.set_file_text(test_file, text.clone());
         let offset = text.find("com.").expect("expected `com.` in fixture") + "com.".len();
-        let items = import_path_completions(&db, foo_file, &text, offset, "").expect("completions");
+        let items = import_path_completions(&db, test_file, &text, offset, "").expect("completions");
 
         let foo = items
             .iter()

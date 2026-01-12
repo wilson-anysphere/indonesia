@@ -12,6 +12,7 @@ use nova_types::Span;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use crate::quick_fixes::is_java_identifier;
@@ -156,6 +157,32 @@ pub fn diagnostic_quick_fixes(
         if let Some(action) = flow_null_deref_quick_fix(source, &uri, &selection, diag) {
             actions.push(action);
         }
+    }
+
+    // Mirror the built-in `IdeExtensions::code_actions_lsp` quick-fix set: offer JDK
+    // static-member fixes (qualify / add static import) when the diagnostic + selection indicate
+    // an unresolved *unqualified* identifier.
+    if let Some(selection_span) = lsp_range_to_span(source, &selection) {
+        let converted_diagnostics: Vec<nova_types::Diagnostic> = diagnostics
+            .iter()
+            .filter_map(|diagnostic| {
+                let code = diagnostic_code(diagnostic)?;
+                let span = lsp_range_to_span(source, &diagnostic.range)?;
+                Some(nova_types::Diagnostic {
+                    severity: nova_types::Severity::Error,
+                    code: Cow::Owned(code.to_string()),
+                    message: diagnostic.message.clone(),
+                    span: Some(span),
+                })
+            })
+            .collect();
+
+        actions.extend(crate::quick_fixes::unresolved_static_member_quick_fixes(
+            source,
+            &uri,
+            selection_span,
+            &converted_diagnostics,
+        ));
     }
 
     actions

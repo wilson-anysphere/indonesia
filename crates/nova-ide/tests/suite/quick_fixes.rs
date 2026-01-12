@@ -709,3 +709,71 @@ fn diagnostic_quick_fixes_create_field_in_single_line_file_inserts_before_final_
         "expected inserted field to end with closing brace on its own line; got:\n{updated}"
     );
 }
+
+#[test]
+fn diagnostic_quick_fixes_unresolved_method_offers_jdk_static_member_quick_fixes() {
+    let source = "class A { void m() { int x = max(1, 2); } }";
+    let uri: lsp_types::Uri = "file:///test.java".parse().expect("valid uri");
+
+    let max_start = source.find("max").expect("expected max in fixture");
+    let max_end = max_start + "max".len();
+    let range = Range::new(
+        offset_to_position(source, max_start),
+        offset_to_position(source, max_end),
+    );
+
+    let diag = lsp_types::Diagnostic {
+        range: range.clone(),
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String("unresolved-method".to_string())),
+        message: "unresolved reference `max`".to_string(),
+        ..lsp_types::Diagnostic::default()
+    };
+
+    let actions = diagnostic_quick_fixes(source, Some(uri), range, &[diag]);
+    let titles: Vec<&str> = actions.iter().map(|a| a.title.as_str()).collect();
+
+    assert!(
+        titles.iter().any(|t| *t == "Qualify with Math"),
+        "expected qualify quick fix; got {titles:?}"
+    );
+    assert!(
+        titles
+            .iter()
+            .any(|t| *t == "Add static import java.lang.Math.max"),
+        "expected static import quick fix; got {titles:?}"
+    );
+}
+
+#[test]
+fn diagnostic_quick_fixes_static_import_inserts_import_statement() {
+    let source = "class A { void m() { int x = max(1, 2); } }";
+    let uri: lsp_types::Uri = "file:///test.java".parse().expect("valid uri");
+
+    let max_start = source.find("max").expect("expected max in fixture");
+    let max_end = max_start + "max".len();
+    let range = Range::new(
+        offset_to_position(source, max_start),
+        offset_to_position(source, max_end),
+    );
+
+    let diag = lsp_types::Diagnostic {
+        range: range.clone(),
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String("unresolved-method".to_string())),
+        message: "unresolved reference `max`".to_string(),
+        ..lsp_types::Diagnostic::default()
+    };
+
+    let actions = diagnostic_quick_fixes(source, Some(uri), range, &[diag]);
+    let import = actions
+        .iter()
+        .find(|action| action.title == "Add static import java.lang.Math.max")
+        .expect("missing static import quick fix");
+
+    let updated = apply_workspace_edit(source, import.edit.as_ref().expect("expected edit"));
+    assert!(
+        updated.contains("import static java.lang.Math.max;"),
+        "expected static import insertion; got:\n{updated}"
+    );
+}
