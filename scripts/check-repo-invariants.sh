@@ -278,10 +278,7 @@ stable_harness_checks=(
 for check in "${stable_harness_checks[@]}"; do
   IFS=":" read -r test_dir expected_file suggestion <<<"${check}"
 
-  root_tests=()
-  while IFS= read -r file; do
-    root_tests+=("$file")
-  done < <(find "${test_dir}" -maxdepth 1 -name '*.rs' -print)
+  mapfile -t root_tests < <(find "${test_dir}" -maxdepth 1 -name '*.rs' -print | sort)
 
   # `expected_file` can include multiple acceptable sets:
   # - alternative groups are separated by `|`
