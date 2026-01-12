@@ -1,6 +1,5 @@
 use httpmock::prelude::*;
 use lsp_types::{Position, Range};
-mod support;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::io::BufReader;
@@ -11,7 +10,7 @@ use nova_lsp::text_pos::TextPos;
 use nova_core::{path_to_file_uri, AbsPathBuf};
 use tempfile::TempDir;
 
-use support::{read_jsonrpc_message, read_response_with_id, write_jsonrpc_message};
+use crate::support::{read_jsonrpc_message, read_response_with_id, write_jsonrpc_message};
 
 fn uri_for_path(path: &Path) -> String {
     let abs = AbsPathBuf::try_from(path.to_path_buf()).expect("abs path");
@@ -20,8 +19,9 @@ fn uri_for_path(path: &Path) -> String {
 
 #[test]
 fn stdio_server_handles_ai_explain_error_code_action() {
-    let _lock = support::stdio_server_lock();
-    let ai_server = support::TestAiServer::start(json!({ "completion": "mock explanation" }));
+    let _lock = crate::support::stdio_server_lock();
+    let ai_server =
+        crate::support::TestAiServer::start(json!({ "completion": "mock explanation" }));
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -655,10 +655,11 @@ completion_ranking = true
 
 #[test]
 fn stdio_server_extracts_utf16_ranges_for_ai_code_actions() {
-    let _lock = support::stdio_server_lock();
+    let _lock = crate::support::stdio_server_lock();
     // The code action request itself should not invoke the provider, but we need
     // a valid endpoint so the server considers AI configured.
-    let ai_server = support::TestAiServer::start(json!({ "completion": "unused in this test" }));
+    let ai_server =
+        crate::support::TestAiServer::start(json!({ "completion": "unused in this test" }));
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -780,8 +781,9 @@ fn stdio_server_extracts_utf16_ranges_for_ai_code_actions() {
 
 #[test]
 fn stdio_server_rejects_surrogate_pair_interior_ranges_for_ai_code_actions() {
-    let _lock = support::stdio_server_lock();
-    let ai_server = support::TestAiServer::start(json!({ "completion": "unused in this test" }));
+    let _lock = crate::support::stdio_server_lock();
+    let ai_server =
+        crate::support::TestAiServer::start(json!({ "completion": "unused in this test" }));
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")

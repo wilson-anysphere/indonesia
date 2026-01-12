@@ -8,8 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tempfile::TempDir;
 
-mod support;
-use support::{read_response_with_id, write_jsonrpc_message};
+use crate::support::{read_response_with_id, write_jsonrpc_message};
 
 fn uri_for_path(path: &Path) -> String {
     let abs = AbsPathBuf::canonicalize(path).expect("abs path");

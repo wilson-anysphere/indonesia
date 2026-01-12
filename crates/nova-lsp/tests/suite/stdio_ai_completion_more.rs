@@ -8,7 +8,7 @@ use std::str::FromStr;
 use std::time::Duration;
 use tempfile::TempDir;
 
-mod support;
+use crate::support;
 
 #[test]
 fn stdio_server_supports_ai_multi_token_completion_polling() {

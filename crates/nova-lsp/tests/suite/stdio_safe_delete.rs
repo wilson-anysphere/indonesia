@@ -4,8 +4,7 @@ use serde_json::json;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
 
-mod support;
-use support::{drain_notifications_until_id, read_response_with_id, write_jsonrpc_message};
+use crate::support::{drain_notifications_until_id, read_response_with_id, write_jsonrpc_message};
 
 fn apply_lsp_edits(original: &str, edits: &[TextEdit]) -> String {
     if edits.is_empty() {

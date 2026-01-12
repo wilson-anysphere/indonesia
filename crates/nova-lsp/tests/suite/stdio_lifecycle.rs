@@ -2,8 +2,7 @@ use serde_json::json;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
 
-mod support;
-use support::{read_response_with_id, write_jsonrpc_message};
+use crate::support::{read_response_with_id, write_jsonrpc_message};
 
 #[test]
 fn stdio_exit_without_shutdown_returns_failure_status() {

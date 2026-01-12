@@ -14,6 +14,7 @@ use std::thread;
 use tempfile::TempDir;
 
 mod support;
+mod suite;
 use support::{read_jsonrpc_message, read_response_with_id, write_jsonrpc_message};
 
 #[derive(Debug, Clone, Deserialize)]

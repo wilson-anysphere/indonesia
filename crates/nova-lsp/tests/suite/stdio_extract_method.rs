@@ -1,5 +1,4 @@
 use lsp_types::{Position, Range, Uri, WorkspaceEdit};
-mod support;
 use nova_test_utils::extract_range;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -9,7 +8,7 @@ use std::process::{Command, Stdio};
 use tempfile::TempDir;
 use url::Url;
 
-use support::{read_response_with_id, write_jsonrpc_message};
+use crate::support::{read_response_with_id, write_jsonrpc_message};
 
 #[test]
 fn stdio_server_supports_extract_method_code_action_and_execute_command() {
