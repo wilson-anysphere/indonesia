@@ -1661,6 +1661,32 @@ fn record_non_body_type_references(
         );
     }
 
+    // JPMS module declarations live at the compilation unit level as well. We only record
+    // directives whose grammar contains type names (`uses` / `provides ... with ...`) to avoid
+    // accidentally treating exported package names as type references.
+    if let Some(module) = tree.module.as_ref() {
+        for directive in &module.directives {
+            use nova_hir::item_tree::ModuleDirective;
+            let range = match directive {
+                ModuleDirective::Uses { range, .. } | ModuleDirective::Provides { range, .. } => {
+                    *range
+                }
+                _ => continue,
+            };
+            record_type_references_in_range(
+                file,
+                file_text,
+                TextRange::new(range.start, range.end),
+                scope_result.file_scope,
+                &scope_result.scopes,
+                resolver,
+                resolution_to_symbol,
+                references,
+                spans,
+            );
+        }
+    }
+
     for item in &tree.items {
         let item_id = item_to_item_id(*item);
         let Some(&class_scope) = scope_result.class_scopes.get(&item_id) else {

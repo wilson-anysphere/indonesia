@@ -163,3 +163,115 @@ class B {
     let out_b = out.get(&file_b).expect("B.java updated");
     assert!(out_b.contains("C obj = new C();"));
 }
+
+#[test]
+fn rename_type_updates_module_info_uses_and_provides_directives() {
+    let module_info = FileId::new("module-info.java");
+    let service_file = FileId::new("p/Service.java");
+    let impl_file = FileId::new("p/impl/ServiceImpl.java");
+
+    let src_module = r#"module m {
+  uses p.Service;
+  provides p.Service with p.impl.ServiceImpl;
+}
+"#;
+
+    let src_service = r#"package p;
+public interface Service {}
+"#;
+
+    let src_impl = r#"package p.impl;
+public class ServiceImpl implements p.Service {}
+"#;
+
+    let db = RefactorJavaDatabase::new([
+        (module_info.clone(), src_module.to_string()),
+        (service_file.clone(), src_service.to_string()),
+        (impl_file.clone(), src_impl.to_string()),
+    ]);
+
+    let offset = src_service
+        .find("interface Service")
+        .unwrap()
+        + "interface ".len();
+    let symbol = db
+        .symbol_at(&service_file, offset)
+        .expect("service type symbol");
+    assert_eq!(db.symbol_kind(symbol), Some(JavaSymbolKind::Type));
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "NewService".to_string(),
+        },
+    )
+    .expect("rename succeeds");
+
+    let mut files = BTreeMap::new();
+    files.insert(module_info.clone(), src_module.to_string());
+    files.insert(service_file.clone(), src_service.to_string());
+    files.insert(impl_file.clone(), src_impl.to_string());
+    let out = apply_workspace_edit(&files, &edit).expect("edit applies");
+
+    let out_module = out.get(&module_info).expect("module-info updated");
+    assert!(out_module.contains("uses p.NewService;"), "{out_module}");
+    assert!(
+        out_module.contains("provides p.NewService with p.impl.ServiceImpl;"),
+        "{out_module}"
+    );
+}
+
+#[test]
+fn rename_type_updates_module_info_provides_with_clause() {
+    let module_info = FileId::new("module-info.java");
+    let service_file = FileId::new("p/Service.java");
+    let impl_file = FileId::new("p/impl/ServiceImpl.java");
+
+    let src_module = r#"module m {
+  uses p.Service;
+  provides p.Service with p.impl.ServiceImpl;
+}
+"#;
+
+    let src_service = r#"package p;
+public interface Service {}
+"#;
+
+    let src_impl = r#"package p.impl;
+public class ServiceImpl implements p.Service {}
+"#;
+
+    let db = RefactorJavaDatabase::new([
+        (module_info.clone(), src_module.to_string()),
+        (service_file.clone(), src_service.to_string()),
+        (impl_file.clone(), src_impl.to_string()),
+    ]);
+
+    let offset = src_impl.find("class ServiceImpl").unwrap() + "class ".len();
+    let symbol = db
+        .symbol_at(&impl_file, offset)
+        .expect("implementation type symbol");
+    assert_eq!(db.symbol_kind(symbol), Some(JavaSymbolKind::Type));
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "NewServiceImpl".to_string(),
+        },
+    )
+    .expect("rename succeeds");
+
+    let mut files = BTreeMap::new();
+    files.insert(module_info.clone(), src_module.to_string());
+    files.insert(service_file.clone(), src_service.to_string());
+    files.insert(impl_file.clone(), src_impl.to_string());
+    let out = apply_workspace_edit(&files, &edit).expect("edit applies");
+
+    let out_module = out.get(&module_info).expect("module-info updated");
+    assert!(
+        out_module.contains("provides p.Service with p.impl.NewServiceImpl;"),
+        "{out_module}"
+    );
+}
