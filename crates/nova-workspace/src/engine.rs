@@ -34,6 +34,48 @@ use crate::watch::{
 };
 use crate::watch_roots::{WatchRootError, WatchRootManager};
 
+fn prune_overlapping_watch_roots(mut roots: Vec<PathBuf>) -> Vec<PathBuf> {
+    // Deterministic ordering across platforms.
+    roots.sort();
+    roots.dedup();
+
+    // The watcher currently only supports recursive roots, so any nested root is guaranteed to be
+    // covered by its parent.
+    let mut pruned: Vec<PathBuf> = Vec::new();
+    'outer: for root in roots {
+        for parent in &pruned {
+            if root.starts_with(parent) {
+                continue 'outer;
+            }
+        }
+        pruned.push(root);
+    }
+
+    pruned
+}
+
+fn compute_watch_roots(workspace_root: &Path, watch_config: &WatchConfig) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    roots.push(workspace_root.to_path_buf());
+
+    let explicit_external: Vec<PathBuf> = watch_config
+        .source_roots
+        .iter()
+        .chain(watch_config.generated_source_roots.iter())
+        // Roots under the workspace root are already covered by the workspace recursive watch.
+        .filter(|root| !root.starts_with(workspace_root))
+        .cloned()
+        .collect();
+
+    roots.extend(prune_overlapping_watch_roots(explicit_external));
+
+    // Deterministic ordering for watcher setup.
+    roots.sort();
+    roots.dedup();
+
+    roots
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexProgress {
     pub current: usize,
@@ -328,21 +370,12 @@ impl WorkspaceEngine {
                 }
             }
 
-            let desired_roots = |workspace_root: &Path, config: &WatchConfig| {
-                let mut desired: HashSet<PathBuf> = HashSet::new();
-                desired.insert(workspace_root.to_path_buf());
-                for root in config
-                    .source_roots
-                    .iter()
-                    .chain(config.generated_source_roots.iter())
-                {
-                    if root.starts_with(workspace_root) {
-                        continue;
-                    }
-                    desired.insert(root.clone());
-                }
-                desired
-            };
+            let desired_roots =
+                |workspace_root: &Path, config: &WatchConfig| -> HashSet<PathBuf> {
+                    compute_watch_roots(workspace_root, config)
+                        .into_iter()
+                        .collect()
+                };
 
             let now = Instant::now();
             for err in watch_root_manager.set_desired_roots(
@@ -371,21 +404,20 @@ impl WorkspaceEngine {
                     recv(command_rx) -> msg => {
                         let Ok(cmd) = msg else { break };
                         match cmd {
-                            WatchCommand::Watch(root) => {
+                            WatchCommand::Watch(_root) => {
                                 let now = Instant::now();
                                 let cfg = watch_config
                                     .read()
                                     .expect("workspace watch config lock poisoned")
                                     .clone();
-                                let mut desired = desired_roots(&watch_root, &cfg);
-                                desired.insert(root);
                                 for err in watch_root_manager.set_desired_roots(
-                                    desired,
+                                    desired_roots(&watch_root, &cfg),
                                     now,
                                     &mut watcher,
                                 ) {
                                     publish_watch_root_error(&subscribers, err);
                                 }
+
                                 for err in watch_root_manager.retry_pending(now, &mut watcher) {
                                     publish_watch_root_error(&subscribers, err);
                                 }
@@ -1941,6 +1973,53 @@ mod tests {
         )
         .expect("plan should be present in Reduced mode");
         assert_eq!(files, vec![FileId::from_raw(2)]);
+    }
+
+    #[test]
+    fn watch_roots_prune_nested_external_roots() {
+        let workspace_root = PathBuf::from("/ws");
+        let mut config = WatchConfig::new(workspace_root.clone());
+        config.source_roots = vec![PathBuf::from("/ext/src"), PathBuf::from("/ext/src/generated")];
+
+        let roots = compute_watch_roots(&workspace_root, &config);
+        assert_eq!(
+            roots,
+            vec![PathBuf::from("/ext/src"), PathBuf::from("/ws")]
+        );
+    }
+
+    #[test]
+    fn watch_roots_are_deterministic_across_input_order() {
+        let workspace_root = PathBuf::from("/ws");
+
+        let mut config_a = WatchConfig::new(workspace_root.clone());
+        config_a.source_roots =
+            vec![PathBuf::from("/ext/src"), PathBuf::from("/ext/src/generated")];
+
+        let mut config_b = WatchConfig::new(workspace_root.clone());
+        config_b.source_roots =
+            vec![PathBuf::from("/ext/src/generated"), PathBuf::from("/ext/src")];
+
+        assert_eq!(
+            compute_watch_roots(&workspace_root, &config_a),
+            compute_watch_roots(&workspace_root, &config_b)
+        );
+    }
+
+    #[test]
+    fn watch_roots_under_workspace_root_are_never_added_explicitly() {
+        let workspace_root = PathBuf::from("/ws");
+        let workspace_src = workspace_root.join("src");
+
+        let mut config = WatchConfig::new(workspace_root.clone());
+        config.source_roots = vec![workspace_src.clone(), PathBuf::from("/ext/src")];
+
+        let roots = compute_watch_roots(&workspace_root, &config);
+        assert!(
+            roots.iter().all(|root| root != &workspace_src),
+            "expected {} to not be watched explicitly (workspace root watch should cover it)",
+            workspace_src.display()
+        );
     }
 
     #[test]
