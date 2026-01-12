@@ -6,6 +6,7 @@ use crate::util::{collect_module_roots, module_for_path, rel_path_string};
 use crate::{NovaTestingError, Result, SCHEMA_VERSION};
 use nova_core::{LineIndex, TextSize};
 use nova_project::SourceRootKind;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,6 +19,16 @@ use index::TestDiscoveryIndex;
 
 const SKIP_DIRS: &[&str] = &[".git", "target", "build", "out", "node_modules"];
 const MAX_CACHED_WORKSPACES: usize = 8;
+
+thread_local! {
+    static JAVA_PARSER: RefCell<std::result::Result<Parser, String>> = RefCell::new({
+        let mut parser = Parser::new();
+        match parser.set_language(tree_sitter_java::language()) {
+            Ok(()) => Ok(parser),
+            Err(_) => Err("tree-sitter-java language load failed".to_string()),
+        }
+    });
+}
 
 struct CacheEntry {
     last_used: Instant,
@@ -596,15 +607,18 @@ fn looks_like_test_class(
 }
 
 fn parse_java(source: &str) -> Result<tree_sitter::Tree> {
-    let mut parser = Parser::new();
-    parser
-        .set_language(tree_sitter_java::language())
-        .map_err(|_| {
-            NovaTestingError::InvalidRequest("tree-sitter-java language load failed".to_string())
+    JAVA_PARSER.with(|parser_cell| {
+        let mut parser = parser_cell.try_borrow_mut().map_err(|_| {
+            NovaTestingError::InvalidRequest("tree-sitter parser is already in use".to_string())
         })?;
-    parser
-        .parse(source, None)
-        .ok_or_else(|| NovaTestingError::InvalidRequest("tree-sitter failed to parse Java".into()))
+        let parser = parser
+            .as_mut()
+            .map_err(|err| NovaTestingError::InvalidRequest(err.to_string()))?;
+
+        parser
+            .parse(source, None)
+            .ok_or_else(|| NovaTestingError::InvalidRequest("tree-sitter failed to parse Java".into()))
+    })
 }
 
 fn find_named_child<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
