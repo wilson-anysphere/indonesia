@@ -729,10 +729,18 @@ export function registerNovaBuildIntegration(
       if (token?.isCancellationRequested) {
         return undefined;
       }
-      const model = projectModelCache
-        ? ((await projectModelCache.getProjectModel(folder)) as unknown as ProjectModelResult)
-        : await request<ProjectModelResult>('nova/projectModel', { projectRoot }, token ? { token } : undefined);
+      // When we have a cancellation token (e.g. from the build progress UI), prefer a direct
+      // `nova/projectModel` request so VS Code can send $/cancelRequest if the user cancels.
+      // The cached model request currently cannot be cancelled.
+      const model = token
+        ? await request<ProjectModelResult>('nova/projectModel', { projectRoot }, { token })
+        : projectModelCache
+          ? ((await projectModelCache.getProjectModel(folder)) as unknown as ProjectModelResult)
+          : await request<ProjectModelResult>('nova/projectModel', { projectRoot });
       if (!model) {
+        if (token?.isCancellationRequested) {
+          return undefined;
+        }
         throw new Error('projectModel unavailable');
       }
       const targets = (model.units ?? [])
