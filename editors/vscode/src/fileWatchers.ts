@@ -19,17 +19,13 @@ const WATCHED_FILE_GLOB_PATTERNS = [
   '**/.mvn/jvm.config',
 
   // Gradle build configuration (Groovy + Kotlin DSL) / wrapper.
-  '**/build.gradle',
-  '**/build.gradle.kts',
-  '**/settings.gradle',
-  '**/settings.gradle.kts',
+  '**/*.gradle',
+  '**/*.gradle.kts',
   '**/gradle.properties',
   '**/gradlew',
   '**/gradlew.bat',
   '**/gradle/wrapper/gradle-wrapper.properties',
-  '**/gradle/libs.versions.toml',
-  '**/gradle/*.gradle',
-  '**/gradle/*.gradle.kts',
+  '**/libs.versions.toml',
 
   // Bazel build configuration.
   '**/.bazelrc',
