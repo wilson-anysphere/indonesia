@@ -223,10 +223,10 @@ Notes for client authors:
 │  • nova/safeModeStatus                                           │
 │                                                                  │
 │  REFACTOR (CUSTOM REQUESTS)                                       │
-│  • nova/safeDelete                                               │
-│  • nova/changeSignature                                          │
-│  • nova/moveMethod                                               │
-│  • nova/moveStaticMember                                         │
+│  • nova/refactor/safeDelete                                      │
+│  • nova/refactor/changeSignature                                 │
+│  • nova/refactor/moveMethod                                      │
+│  • nova/refactor/moveStaticMember                                │
 │                                                                  │
 │  AI (CUSTOM REQUESTS)                                             │
 │  • nova/ai/explainError                                          │
