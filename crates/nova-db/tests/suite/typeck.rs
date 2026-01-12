@@ -6307,6 +6307,26 @@ class C {
 }
 
 #[test]
+fn type_use_annotation_types_are_ignored_with_whitespace_after_at_sign() {
+    let src = r#"
+import java.util.List;
+
+class C {
+    List<@ Missing String> xs;
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == "unresolved-type" && d.message.contains("Missing")),
+        "expected type-use annotation types to be ignored; got {diags:?}"
+    );
+}
+
+#[test]
 fn unresolved_class_type_param_bounds_are_anchored() {
     let src = r#"
 class C<T extends Missing> {
