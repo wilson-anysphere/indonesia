@@ -4610,6 +4610,36 @@ class Foo {
     }
 
     #[test]
+    fn java_parse_cache_clears_on_memory_manager_eviction() {
+        // Ensure that Nova's MemoryManager eviction path (via `SalsaMemoEvictor`) clears the
+        // incremental Java parse cache so it can't retain parse trees after Salsa memos are
+        // dropped.
+        let manager = MemoryManager::new(MemoryBudget::from_total(1_000));
+        let db = Database::new_with_memory_manager(&manager);
+
+        let file = FileId::from_raw(1);
+        // Ensure `TrackedSalsaMemo::ParseJava` exceeds the query cache budget so eviction runs.
+        let text = "class Foo { int x; }\n".repeat(256);
+        db.set_file_text(file, text);
+        db.with_snapshot(|snap| {
+            let _ = snap.parse_java(file);
+        });
+
+        assert!(
+            db.inner.lock().java_parse_cache.entry_count() > 0,
+            "expected incremental parse cache to be populated after parse_java"
+        );
+
+        manager.enforce();
+
+        assert_eq!(
+            db.inner.lock().java_parse_cache.entry_count(),
+            0,
+            "expected incremental parse cache to clear after MemoryManager eviction"
+        );
+    }
+
+    #[test]
     fn parse_java_results_are_pinned_for_open_documents_across_memo_eviction() {
         use nova_syntax::JavaParseStore;
         use nova_vfs::OpenDocuments;
