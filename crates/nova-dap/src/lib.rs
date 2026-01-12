@@ -26,6 +26,7 @@ pub mod format;
 pub mod object_registry;
 pub mod session;
 pub mod wire_format;
+pub mod wire_stream_debug;
 
 pub use crate::dap::types::{
     EvaluateResult, OutputEvent, Scope, Variable, VariablePresentationHint,
