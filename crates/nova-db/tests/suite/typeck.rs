@@ -1360,6 +1360,24 @@ class C {
 }
 
 #[test]
+fn object_constructor_is_available() {
+    let src = r#"
+class C {
+    void m() {
+        new Object();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-constructor"),
+        "expected `new Object()` to resolve its implicit no-arg constructor; got {diags:?}"
+    );
+}
+
+#[test]
 fn static_method_called_via_instance_emits_warning() {
     let src = r#"
 class C {
