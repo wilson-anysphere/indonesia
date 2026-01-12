@@ -953,6 +953,89 @@ impl Database {
         self.inner.lock().set_file_is_dirty(file, dirty);
     }
 
+    /// Apply a single byte-offset-based text edit to `file`.
+    ///
+    /// This updates the stored file text by applying `edit` to the current snapshot.
+    /// Callers are expected to provide a valid edit range and UTF-8 boundaries.
+    ///
+    /// NOTE: This is primarily intended for incremental parsing benchmarks and LSP-style
+    /// incremental document updates. Query-level incremental reparsing is implemented
+    /// separately (see `parse_java_incremental` in `nova-syntax`).
+    pub fn apply_file_text_edit(&self, file: FileId, edit: nova_syntax::TextEdit) {
+        use std::collections::hash_map::Entry;
+
+        let default_project = ProjectId::from_raw(0);
+        let default_root = SourceRootId::from_raw(0);
+
+        let (new_text, set_default_project, set_default_root, init_dirty) = {
+            let mut inputs = self.inputs.lock();
+
+            inputs.file_exists.insert(file, true);
+            if inputs.file_ids.insert(file) {
+                inputs.file_ids_dirty = true;
+            }
+
+            let set_default_project = !inputs.file_project.contains_key(&file);
+            if set_default_project {
+                inputs.file_project.insert(file, default_project);
+            }
+
+            let set_default_root = !inputs.source_root.contains_key(&file);
+            if set_default_root {
+                inputs.source_root.insert(file, default_root);
+            }
+
+            let init_dirty = match inputs.file_is_dirty.entry(file) {
+                Entry::Vacant(entry) => {
+                    entry.insert(false);
+                    true
+                }
+                Entry::Occupied(_) => false,
+            };
+
+            let old_text = inputs
+                .file_content
+                .get(&file)
+                .cloned()
+                .unwrap_or_else(|| Arc::new(String::new()));
+
+            let start = edit.range.start as usize;
+            let end = edit.range.end as usize;
+            assert!(
+                start <= end && end <= old_text.len(),
+                "apply_file_text_edit: range out of bounds (start={start}, end={end}, len={})",
+                old_text.len()
+            );
+            assert!(
+                old_text.is_char_boundary(start) && old_text.is_char_boundary(end),
+                "apply_file_text_edit: edit range is not on UTF-8 character boundaries (start={start}, end={end})"
+            );
+
+            let mut new_text = old_text.as_str().to_string();
+            new_text.replace_range(start..end, &edit.replacement);
+            let new_text = Arc::new(new_text);
+            inputs.file_content.insert(file, new_text.clone());
+
+            (new_text, set_default_project, set_default_root, init_dirty)
+        };
+
+        self.input_footprint
+            .record_file_content_len(file, new_text.len() as u64);
+
+        let mut db = self.inner.lock();
+        if init_dirty {
+            db.set_file_is_dirty(file, false);
+        }
+        db.set_file_exists(file, true);
+        if set_default_project {
+            db.set_file_project(file, default_project);
+        }
+        if set_default_root {
+            db.set_source_root(file, default_root);
+        }
+        db.set_file_content(file, new_text);
+    }
+
     pub fn set_file_path(&self, file: FileId, path: impl Into<String>) {
         self.inner.lock().set_file_path(file, path);
     }

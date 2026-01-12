@@ -31,9 +31,15 @@ walkdir = "2"
 
 [dev-dependencies]
 bincode = "1"
+criterion = "0.5"
 nova-test-utils = { path = "../nova-test-utils" }
+rayon = "1"
 serde_json = "1"
 tempfile = "3"
 
 [lib]
 path = "src/lib.rs"
+
+[[bench]]
+name = "parse_java_incremental"
+harness = false

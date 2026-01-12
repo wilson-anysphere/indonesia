@@ -3577,6 +3577,7 @@ name = "nova-db"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "criterion",
  "nova-cache",
  "nova-classpath",
  "nova-core",
@@ -3594,6 +3595,7 @@ dependencies = [
  "nova-types-bridge",
  "parking_lot",
  "ra_ap_salsa",
+ "rayon",
  "serde",
  "serde_json",
  "tempfile",
