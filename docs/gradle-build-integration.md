@@ -76,6 +76,11 @@ Under the hood, `nova-build`:
   - `printNovaAnnotationProcessing`
 - runs Gradle with `--init-script <temp>` (plus `--no-daemon --console=plain -q`) and parses JSON
   blocks printed between sentinel markers like `NOVA_JSON_BEGIN` / `NOVA_JSON_END`.
+- selects the Gradle executable in a wrapper-first way:
+  - prefers `./gradlew` / `gradlew.bat` when present (`GradleConfig.prefer_wrapper = true`)
+  - falls back to invoking `gradle` (or a configured path) when no wrapper is present
+  - on Unix, will run `sh ./gradlew` if `gradlew` exists but is not marked executable (common in
+    Windows-originated checkouts)
 
 Implementation: `crates/nova-build/src/gradle.rs` (`update_gradle_snapshot*` helpers).
 
