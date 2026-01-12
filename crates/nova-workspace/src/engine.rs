@@ -380,14 +380,17 @@ fn workspace_scheduler() -> Scheduler {
         .get_or_init(|| {
             // Unit tests create many short-lived workspaces. Keep the scheduler conservative so we
             // don't exhaust OS thread limits when the test harness runs with high parallelism.
-            if cfg!(test) {
+            #[cfg(test)]
+            {
                 Scheduler::new(SchedulerConfig {
                     compute_threads: 1,
                     background_threads: 1,
                     io_threads: 1,
                     progress_channel_capacity: 1024,
                 })
-            } else {
+            }
+            #[cfg(not(test))]
+            {
                 Scheduler::default()
             }
         })
