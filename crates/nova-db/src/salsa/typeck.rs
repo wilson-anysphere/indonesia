@@ -2357,7 +2357,6 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         match &self.body.exprs[expr] {
             HirExpr::Assign { .. }
             | HirExpr::Call { .. }
-            | HirExpr::New { .. }
             | HirExpr::Unary {
                 op: UnaryOp::PreInc
                 | UnaryOp::PreDec
@@ -2365,6 +2364,34 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 | UnaryOp::PostDec,
                 ..
             } => {}
+            HirExpr::New {
+                class,
+                class_range,
+                range,
+                ..
+            } => {
+                // Match javac/JLS 14.8: only *class instance* creation expressions are allowed as
+                // expression statements (`new C()`), not array creation expressions (`new int[0]`).
+                //
+                // Array creation is lowered as `HirExpr::New` too, so detect it via the inferred
+                // type (preferred) and fall back to textual heuristics.
+                let inferred_is_array = self
+                    .expr_info
+                    .get(expr.idx())
+                    .and_then(|info| info.as_ref())
+                    .is_some_and(|info| matches!(info.ty, Type::Array(_)));
+
+                let syntactic_is_array =
+                    class.contains('[') || self.new_expr_array_dims(*class_range, *range).is_some();
+
+                if inferred_is_array || syntactic_is_array {
+                    self.diagnostics.push(Diagnostic::error(
+                        "invalid-statement-expression",
+                        "invalid expression statement",
+                        Some(self.body.exprs[expr].range()),
+                    ));
+                }
+            }
             HirExpr::Missing { .. } => {}
             _ => {
                 self.diagnostics.push(Diagnostic::error(
