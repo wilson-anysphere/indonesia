@@ -1555,11 +1555,11 @@ async fn handle_request_inner(
             apply_pending_configuration(cancel, debugger, pending_config).await;
 
             send_response(out_tx, seq, request, true, None, None).await;
-            // For attach sessions we don't generally know the target process name or PID.
-            // Use the attach target itself as a stable label.
-            let process_name = format!("{host_label}:{port}");
+            // For attach sessions we don't generally know the target process name or PID. Use the
+            // connect target (host:port) as a stable label.
+            let attach_target_label = format!("{host_label}:{port}");
             let process_event_body =
-                make_process_event_body(&process_name, None, is_local_process, "attach");
+                make_process_event_body(&attach_target_label, None, is_local_process, "attach");
             send_event(out_tx, seq, "process", Some(process_event_body)).await;
         }
         "restart" => {
