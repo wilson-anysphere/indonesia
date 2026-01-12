@@ -608,7 +608,6 @@ impl CtSymReleaseIndex {
     /// This is intended for best-effort integration with `nova-memory`.
     pub(crate) fn estimated_bytes(&self) -> u64 {
         use std::mem::size_of;
-
         fn add_string_capacity(bytes: &mut u64, s: &String) {
             *bytes = bytes.saturating_add(s.capacity() as u64);
         }
@@ -672,10 +671,8 @@ impl CtSymReleaseIndex {
 
         bytes = bytes.saturating_add(self.ct_sym_path.as_os_str().len() as u64);
 
-        bytes =
-            bytes.saturating_add((self.modules.capacity() * size_of::<ModuleName>()) as u64);
+        bytes = bytes.saturating_add((self.modules.capacity() * size_of::<ModuleName>()) as u64);
         for module in &self.modules {
-            // `ModuleName` doesn't expose its backing allocation; fall back to `len()`.
             bytes = bytes.saturating_add(module.as_str().len() as u64);
         }
 

@@ -517,13 +517,25 @@ impl WorkspaceEngine {
         // Coalesce noisy watcher streams by processing each path at most once per batch.
         let mut move_events: Vec<(PathBuf, PathBuf)> = Vec::new();
         let mut other_paths: HashSet<PathBuf> = HashSet::new();
+        let mut module_info_changes: HashSet<PathBuf> = HashSet::new();
 
         for event in events {
             match event {
-                NormalizedEvent::Moved { from, to } => move_events.push((from, to)),
+                NormalizedEvent::Moved { from, to } => {
+                    if is_module_info_java(&from) {
+                        module_info_changes.insert(from.clone());
+                    }
+                    if is_module_info_java(&to) {
+                        module_info_changes.insert(to.clone());
+                    }
+                    move_events.push((from, to))
+                }
                 NormalizedEvent::Created(path)
                 | NormalizedEvent::Modified(path)
                 | NormalizedEvent::Deleted(path) => {
+                    if is_module_info_java(&path) {
+                        module_info_changes.insert(path.clone());
+                    }
                     other_paths.insert(path);
                 }
             }
@@ -547,6 +559,14 @@ impl WorkspaceEngine {
         remaining.sort();
         for path in remaining {
             self.apply_path_event(&path);
+        }
+
+        if !module_info_changes.is_empty() {
+            let mut paths: Vec<PathBuf> = module_info_changes.into_iter().collect();
+            paths.sort();
+            // `module-info.java` changes affect JPMS module discovery and should trigger a project
+            // reload even though they are `.java` sources.
+            self.request_project_reload(paths);
         }
     }
 
@@ -1294,6 +1314,11 @@ fn order_move_events(mut moves: Vec<(PathBuf, PathBuf)>) -> Vec<(PathBuf, PathBu
     }
 
     ordered
+}
+
+fn is_module_info_java(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name == "module-info.java")
 }
 
 fn rel_path_for_workspace(workspace_root: &Path, path: &Path) -> Option<String> {
@@ -2563,6 +2588,77 @@ mod tests {
             assert!(snap.file_exists(file_id));
             assert!(snap.project_files(project).contains(&file_id));
         });
+    }
+
+    #[test]
+    fn module_info_changes_trigger_project_reload_and_reuse_classpath_index() {
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
+        fs::write(
+            root.join("pom.xml"),
+            br#"<?xml version="1.0"?><project></project>"#,
+        )
+        .unwrap();
+
+        let main_dir = root.join("src/main/java/com/example");
+        fs::create_dir_all(&main_dir).unwrap();
+        fs::write(
+            main_dir.join("Main.java"),
+            "package com.example; class Main {}".as_bytes(),
+        )
+        .unwrap();
+
+        let workspace = crate::Workspace::open(&root).unwrap();
+        let engine = workspace.engine_for_tests();
+        let project = ProjectId::from_raw(0);
+
+        let classpath_before = engine.query_db.with_snapshot(|snap| {
+            let config = snap.project_config(project);
+            assert_eq!(config.build_system, BuildSystem::Maven);
+            assert!(config.jpms_modules.is_empty());
+            snap.classpath_index(project)
+                .expect("classpath index built for Maven output dirs")
+                .0
+        });
+
+        // Creating `module-info.java` should enqueue a project reload (even though it's a `.java`
+        // source file) so JPMS metadata stays fresh.
+        let module_info = root.join("src/main/java/module-info.java");
+        fs::write(&module_info, "module com.example { }".as_bytes()).unwrap();
+        workspace.apply_filesystem_events(vec![NormalizedEvent::Created(module_info.clone())]);
+
+        assert!(
+            engine.project_reload_debouncer.cancel(&"workspace-reload"),
+            "expected module-info change to enqueue a project reload"
+        );
+
+        let mut changed_files = {
+            let mut state = engine
+                .project_state
+                .lock()
+                .expect("workspace project state mutex poisoned");
+            state.pending_build_changes.drain().collect::<Vec<_>>()
+        };
+        changed_files.sort();
+        assert_eq!(changed_files, vec![module_info.clone()]);
+
+        engine.reload_project_now(&changed_files).unwrap();
+
+        let classpath_after = engine.query_db.with_snapshot(|snap| {
+            let config = snap.project_config(project);
+            assert_eq!(config.jpms_modules.len(), 1);
+            assert_eq!(config.jpms_modules[0].name.as_str(), "com.example");
+            assert!(config.jpms_workspace.is_some());
+            snap.classpath_index(project)
+                .expect("classpath index remains present")
+                .0
+        });
+
+        assert!(
+            Arc::ptr_eq(&classpath_before, &classpath_after),
+            "expected classpath index to be reused when classpath/module-path are unchanged"
+        );
     }
 
     #[test]

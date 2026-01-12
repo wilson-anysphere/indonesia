@@ -216,9 +216,15 @@ pub fn reload_project(
     }
 
     if changed_files.is_empty()
-        || changed_files
-            .iter()
-            .any(|path| is_build_file(config.build_system, path) || is_apt_generated_roots_snapshot(path))
+        || changed_files.iter().any(|path| {
+            // If a build marker changes, the build system itself can change (e.g. a `pom.xml`
+            // appears in a previously "simple" workspace). Treat *any* supported build file as a
+            // signal to reload the full project configuration.
+            is_build_file(BuildSystem::Maven, path)
+                || is_build_file(BuildSystem::Gradle, path)
+                || is_build_file(BuildSystem::Bazel, path)
+                || is_apt_generated_roots_snapshot(path)
+        })
     {
         // Build files changed (or unknown change set): rescan the workspace root.
         return load_project_from_workspace_root(workspace_root, options);
