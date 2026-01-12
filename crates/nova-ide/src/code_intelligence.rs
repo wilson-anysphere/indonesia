@@ -2796,6 +2796,69 @@ fn mark_workspace_completion_item(item: &mut CompletionItem) {
     item.data = Some(json!({ "nova": { "origin": "code_intelligence", "workspace_local": true } }));
 }
 
+fn call_insert_text_with_named_params(
+    name: &str,
+    params: &[ParamDecl],
+) -> (String, Option<InsertTextFormat>) {
+    if params.is_empty() {
+        return (format!("{name}()"), None);
+    }
+
+    let mut snippet = String::new();
+    snippet.push_str(name);
+    snippet.push('(');
+    for (idx, param) in params.iter().enumerate() {
+        if idx > 0 {
+            snippet.push_str(", ");
+        }
+        let tab = idx + 1;
+        snippet.push_str(&format!("${{{tab}:{}}}", param.name));
+    }
+    snippet.push(')');
+    snippet.push_str("$0");
+    (snippet, Some(InsertTextFormat::SNIPPET))
+}
+
+fn call_insert_text_with_arity(name: &str, arity: usize) -> (String, Option<InsertTextFormat>) {
+    if arity == 0 {
+        return (format!("{name}()"), None);
+    }
+
+    let mut snippet = String::new();
+    snippet.push_str(name);
+    snippet.push('(');
+    for idx in 0..arity {
+        if idx > 0 {
+            snippet.push_str(", ");
+        }
+        let tab = idx + 1;
+        snippet.push_str(&format!("${{{tab}:arg{idx}}}"));
+    }
+    snippet.push(')');
+    snippet.push_str("$0");
+    (snippet, Some(InsertTextFormat::SNIPPET))
+}
+
+fn smallest_accessible_constructor_arity(
+    types: &TypeStore,
+    jdk: &JdkIndex,
+    binary_name: &str,
+) -> Option<usize> {
+    let stub = jdk.lookup_type(binary_name).ok().flatten()?;
+    let mut best: Option<usize> = None;
+    for method in &stub.methods {
+        if method.name != "<init>" {
+            continue;
+        }
+        if method.access_flags & ACC_PRIVATE != 0 {
+            continue;
+        }
+        let (params, _return_ty) = parse_method_descriptor(types, method.descriptor.as_str())?;
+        best = Some(best.map_or(params.len(), |cur| cur.min(params.len())));
+    }
+    best
+}
+
 fn new_expression_type_completions(
     db: &dyn Database,
     file: FileId,
@@ -2925,6 +2988,32 @@ fn new_expression_type_completions(
     let ctx = CompletionRankingContext::default();
     rank_completions(prefix, &mut items, &ctx);
     items.truncate(MAX_NEW_TYPE_COMPLETIONS);
+
+    // Best-effort: refine constructor call snippets based on the smallest-arity accessible
+    // constructor, when we can discover it from the JDK index.
+    //
+    // If we can't resolve constructors, keep the fallback `Type($0)` snippet so users can type
+    // arguments manually.
+    let desc_types = TypeStore::with_minimal_jdk();
+    for item in &mut items {
+        let Some(binary_name) = item.detail.as_deref() else {
+            continue;
+        };
+        let Some(arity) = smallest_accessible_constructor_arity(&desc_types, &jdk, binary_name)
+        else {
+            continue;
+        };
+
+        // Preserve the default `Type($0)` snippet for zero-arg constructors so completion
+        // consistently uses snippet insertion (and doesn't downgrade to plain `Type()`).
+        if arity == 0 {
+            continue;
+        }
+
+        let (insert_text, insert_text_format) = call_insert_text_with_arity(&item.label, arity);
+        item.insert_text = Some(insert_text);
+        item.insert_text_format = insert_text_format;
+    }
     items
 }
 
@@ -8715,12 +8804,15 @@ fn collect_members_from_class(
             continue;
         }
 
+        let (insert_text, insert_text_format) =
+            call_insert_text_with_arity(&method.name, method.params.len());
+
         out.push(CompletionItem {
             label: method.name.clone(),
             kind: Some(CompletionItemKind::METHOD),
             detail: Some(nova_types::format_method_signature(types, class_id, method)),
-            insert_text: Some(format!("{}($0)", method.name)),
-            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            insert_text: Some(insert_text),
+            insert_text_format,
             data: Some(member_origin_data(is_direct)),
             ..Default::default()
         });
@@ -8865,11 +8957,14 @@ fn general_completions(
                 continue;
             }
         }
+        let (insert_text, insert_text_format) =
+            call_insert_text_with_named_params(&m.name, &m.params);
         items.push(CompletionItem {
             label: m.name.clone(),
             kind: Some(CompletionItemKind::METHOD),
             detail: Some(m.ret_ty.clone()),
-            insert_text: Some(format!("{}()", m.name)),
+            insert_text: Some(insert_text),
+            insert_text_format,
             ..Default::default()
         });
     }
@@ -13355,6 +13450,7 @@ fn ensure_class_id(types: &mut TypeStore, name: &str) -> Option<ClassId> {
     Some(id)
 }
 
+const ACC_PRIVATE: u16 = 0x0002;
 const ACC_STATIC: u16 = 0x0008;
 const ACC_FINAL: u16 = 0x0010;
 const ACC_VARARGS: u16 = 0x0080;

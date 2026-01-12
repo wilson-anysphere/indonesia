@@ -447,6 +447,77 @@ fn completion_parameter_receiver_works_in_package() {
 }
 
 #[test]
+fn completion_local_method_inserts_snippet_placeholders_for_params() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void foo(int x, String y) {}
+  void m(){ fo<|> }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "foo")
+        .expect("expected foo completion item");
+
+    assert_eq!(
+        item.insert_text_format,
+        Some(InsertTextFormat::SNIPPET),
+        "expected foo completion to use snippet format; got {item:#?}"
+    );
+
+    let insert = item
+        .insert_text
+        .as_deref()
+        .expect("expected foo completion to have insert_text");
+    assert!(
+        insert.contains("${1:x}"),
+        "expected snippet to contain first param placeholder; got {insert:?}"
+    );
+    assert!(
+        insert.contains("${2:y}"),
+        "expected snippet to contain second param placeholder; got {insert:?}"
+    );
+}
+
+#[test]
+fn completion_member_method_uses_snippet_placeholders_for_arity() {
+    let (db, file, pos) = fixture(
+        r#"
+import java.util.*;
+class A{
+  void m(){
+    List l=null;
+    l.g<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "get")
+        .expect("expected get completion item");
+
+    let insert = item
+        .insert_text
+        .as_deref()
+        .expect("expected get completion to have insert_text");
+    assert!(
+        insert.contains("${1:arg0}"),
+        "expected snippet to contain arg0 placeholder; got {insert:?}"
+    );
+    assert!(
+        insert.ends_with(")$0"),
+        "expected snippet to end with `)$0`; got {insert:?}"
+    );
+}
+
+#[test]
 fn completion_deduplicates_items_by_label_and_kind() {
     // Member completions come from two sources:
     // - semantic member enumeration via `TypeStore` (source types/JDK)

@@ -641,7 +641,6 @@ mod tests {
     use super::*;
 
     use nova_db::InMemoryFileStore;
-    use std::sync::atomic::Ordering;
     use tempfile::TempDir;
 
     #[cfg(unix)]
@@ -667,7 +666,7 @@ mod tests {
 
     #[test]
     fn file_navigation_index_cache_reuses_index_until_workspace_changes() {
-        FILE_NAVIGATION_INDEX_BUILD_COUNT.store(0, Ordering::Relaxed);
+        FILE_NAVIGATION_INDEX_BUILD_COUNT_LOCAL.with(|count| count.set(0));
 
         let temp_dir = TempDir::new().expect("tempdir");
         let root = temp_dir.path();
@@ -694,14 +693,14 @@ mod tests {
 
         let got_first = implementation(&db, i_file, pos);
         assert_eq!(
-            FILE_NAVIGATION_INDEX_BUILD_COUNT.load(Ordering::Relaxed),
+            file_navigation_index_build_count_for_tests(),
             1,
             "expected initial request to build the workspace index"
         );
 
         let got_second = implementation(&db, i_file, pos);
         assert_eq!(
-            FILE_NAVIGATION_INDEX_BUILD_COUNT.load(Ordering::Relaxed),
+            file_navigation_index_build_count_for_tests(),
             1,
             "expected repeated request to reuse the cached workspace index"
         );
@@ -725,7 +724,7 @@ mod tests {
 
         let got_third = implementation(&db, i_file, pos);
         assert_eq!(
-            FILE_NAVIGATION_INDEX_BUILD_COUNT.load(Ordering::Relaxed),
+            file_navigation_index_build_count_for_tests(),
             2,
             "expected cache invalidation after editing a Java file"
         );
