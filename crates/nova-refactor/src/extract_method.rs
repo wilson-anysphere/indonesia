@@ -416,7 +416,7 @@ impl ExtractMethod {
         }
         let root = parsed.syntax();
 
-        let (method, _method_body) = find_enclosing_method(root.clone(), selection)
+        let (method, method_body) = find_enclosing_method(root.clone(), selection)
             .ok_or("selection must be inside a method, constructor, or initializer block")?;
         let enclosing_method_is_static = method.is_static();
         let enclosing_type_body = find_enclosing_type_body(method.syntax())
@@ -470,7 +470,13 @@ impl ExtractMethod {
 
                 let replacement = if let Some(ret) = &analysis.return_value {
                     if ret.declared_in_selection {
-                        format!("{} {} = {call_expr};", ret.ty, ret.name)
+                        let is_final =
+                            local_var_is_final_in_selection(&method_body, selection, &ret.name);
+                        if is_final {
+                            format!("final {} {} = {call_expr};", ret.ty, ret.name)
+                        } else {
+                            format!("{} {} = {call_expr};", ret.ty, ret.name)
+                        }
                     } else {
                         format!("{} = {call_expr};", ret.name)
                     }
@@ -2193,4 +2199,36 @@ fn infer_expression_return_type(
         }
         _ => None,
     }
+}
+
+fn local_var_is_final_in_selection(body: &ast::Block, selection: TextRange, name: &str) -> bool {
+    for stmt in body
+        .syntax()
+        .descendants()
+        .filter_map(ast::LocalVariableDeclarationStatement::cast)
+    {
+        let stmt_range = syntax_range(stmt.syntax());
+        if stmt_range.start < selection.start || stmt_range.end > selection.end {
+            continue;
+        }
+        let Some(list) = stmt.declarator_list() else {
+            continue;
+        };
+        let declares_name = list.declarators().any(|decl| {
+            let Some(tok) = decl.name_token() else {
+                return false;
+            };
+            tok.text() == name
+        });
+        if !declares_name {
+            continue;
+        }
+        return stmt.modifiers().is_some_and(|mods| {
+            mods.syntax()
+                .descendants_with_tokens()
+                .filter_map(|el| el.into_token())
+                .any(|tok| tok.kind() == SyntaxKind::FinalKw)
+        });
+    }
+    false
 }

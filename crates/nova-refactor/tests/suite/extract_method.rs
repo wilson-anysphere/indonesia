@@ -952,6 +952,47 @@ class C {
 }
 
 #[test]
+fn extract_method_preserves_final_on_declared_return_value() {
+    let fixture = r#"
+class C {
+    void m() {
+        /*start*/final int x = 1;/*end*/
+        System.out.println(x);
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "initX".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m() {
+        final int x = initX();
+        System.out.println(x);
+    }
+
+    private int initX() {
+        final int x = 1;
+        return x;
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn extract_method_rejects_break_when_target_is_outside_selection() {
     let fixture = r#"
 class C {
