@@ -472,6 +472,38 @@ fn apply_semantic_constraints(schema: &mut RootSchema) {
         })),
     );
 
+    // Build integration: if the user opts into build tool invocation, at least one build tool must
+    // remain enabled. Since per-tool toggles default to `true` and JSON Schema does not apply
+    // defaults, we only encode the "all tools disabled" misconfiguration here.
+    push_all_of(
+        schema,
+        schema_from_json(json!({
+            "not": {
+                "required": ["build"],
+                "properties": {
+                    "build": {
+                        "required": ["enabled", "maven", "gradle"],
+                        "properties": {
+                            "enabled": { "const": true },
+                            "maven": {
+                                "required": ["enabled"],
+                                "properties": {
+                                    "enabled": { "const": false }
+                                }
+                            },
+                            "gradle": {
+                                "required": ["enabled"],
+                                "properties": {
+                                    "enabled": { "const": false }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        })),
+    );
+
     allow_deprecated_aliases(schema);
     disallow_alias_collisions(schema);
 

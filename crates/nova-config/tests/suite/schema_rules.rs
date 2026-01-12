@@ -292,6 +292,37 @@ fn json_schema_includes_build_integration_config() {
 }
 
 #[test]
+fn json_schema_disallows_build_enabled_with_all_tools_disabled() {
+    let schema = json_schema();
+    let value = serde_json::to_value(schema).expect("schema serializes");
+
+    let all_of = value
+        .pointer("/allOf")
+        .and_then(|v| v.as_array())
+        .expect("root schema should include allOf semantic constraints");
+
+    let found = all_of.iter().any(|entry| {
+        entry
+            .pointer("/not/properties/build/properties/enabled/const")
+            .and_then(|v| v.as_bool())
+            == Some(true)
+            && entry
+                .pointer("/not/properties/build/properties/maven/properties/enabled/const")
+                .and_then(|v| v.as_bool())
+                == Some(false)
+            && entry
+                .pointer("/not/properties/build/properties/gradle/properties/enabled/const")
+                .and_then(|v| v.as_bool())
+                == Some(false)
+    });
+
+    assert!(
+        found,
+        "expected schema to disallow build.enabled=true with build.maven.enabled=false and build.gradle.enabled=false"
+    );
+}
+
+#[test]
 fn json_schema_requires_non_whitespace_api_key_for_cloud_providers() {
     let schema = json_schema();
     let value = serde_json::to_value(schema).expect("schema serializes");

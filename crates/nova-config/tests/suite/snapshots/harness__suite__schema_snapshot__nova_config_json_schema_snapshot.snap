@@ -609,6 +609,47 @@ expression: schema
           }
         }
       }
+    },
+    {
+      "not": {
+        "required": [
+          "build"
+        ],
+        "properties": {
+          "build": {
+            "required": [
+              "enabled",
+              "gradle",
+              "maven"
+            ],
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "gradle": {
+                "required": [
+                  "enabled"
+                ],
+                "properties": {
+                  "enabled": {
+                    "const": false
+                  }
+                }
+              },
+              "maven": {
+                "required": [
+                  "enabled"
+                ],
+                "properties": {
+                  "enabled": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "properties": {
