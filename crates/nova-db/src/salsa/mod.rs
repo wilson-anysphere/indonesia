@@ -4154,6 +4154,52 @@ class Foo {
     }
 
     #[test]
+    fn open_document_parse_cache_respects_file_text_identity() {
+        let manager = MemoryManager::new(MemoryBudget::from_total(1_000_000));
+        let open_docs = Arc::new(OpenDocuments::default());
+        let file = FileId::from_raw(1);
+        open_docs.open(file);
+
+        let store = SyntaxTreeStore::new(&manager, open_docs);
+        let db = Database::new_with_memory_manager(&manager);
+        db.set_syntax_tree_store(store);
+
+        let text1 = Arc::new("class Foo {}".to_string());
+        db.set_file_exists(file, true);
+        db.set_file_content(file, text1.clone());
+
+        let parse1 = db.snapshot().parse(file);
+        assert_eq!(parse1.root.text_len as usize, text1.len());
+
+        // Pinned parse should survive memo eviction while the text identity matches.
+        db.evict_salsa_memos(MemoryPressure::Critical);
+        let parse1_after_evict = db.snapshot().parse(file);
+        assert!(
+            Arc::ptr_eq(&parse1, &parse1_after_evict),
+            "expected open document parse to be reused across eviction when text is unchanged"
+        );
+
+        // Changing the file text should invalidate the pinned parse (even if the file is still
+        // open) to avoid returning stale trees.
+        let text2 = Arc::new("class Foo { int x; }".to_string());
+        db.set_file_content(file, text2.clone());
+        let parse2 = db.snapshot().parse(file);
+        assert!(
+            !Arc::ptr_eq(&parse1, &parse2),
+            "expected parse to recompute after file_content changes"
+        );
+        assert_eq!(parse2.root.text_len as usize, text2.len());
+
+        // The new parse should now be pinned and survive a subsequent eviction.
+        db.evict_salsa_memos(MemoryPressure::Critical);
+        let parse2_after_evict = db.snapshot().parse(file);
+        assert!(
+            Arc::ptr_eq(&parse2, &parse2_after_evict),
+            "expected new open document parse to be reused across eviction"
+        );
+    }
+
+    #[test]
     fn open_document_reuses_parse_after_memory_manager_enforce() {
         // Ensure `MemoryManager::enforce()` evicts Salsa memos (query cache) while leaving the
         // `SyntaxTreeStore` intact so open documents can reuse pinned parse results.
