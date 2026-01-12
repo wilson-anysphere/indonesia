@@ -63,40 +63,24 @@ impl<F: FileSystem> Vfs<F> {
     /// If `from` is open in the overlay, the in-memory document is updated so that reads through
     /// `to` continue to see overlay contents instead of falling back to disk.
     ///
-    /// If `to` is already interned, the [`FileIdRegistry`] typically keeps the destination
-    /// `FileId` and drops the source mapping (treating this as a delete + modify).
-    ///
-    /// However, when renaming an open document onto an interned destination path that is not open
-    /// in the overlay, we preserve the source `FileId` and orphan the destination id. This keeps
-    /// `FileId`s stable for open documents even if the destination was previously observed by the
-    /// watcher.
+    /// If `to` is already interned, the [`FileIdRegistry`] keeps the destination `FileId` and
+    /// drops the source mapping (treating this as a delete + modify).
     pub fn rename_path(&self, from: &VfsPath, to: VfsPath) -> FileId {
         let to_clone = to.clone();
 
         // Capture the pre-rename ids so we can keep open-document tracking consistent if the
         // rename collapses `from` into an existing destination id.
         let id_from = self.get_id(from);
-        let id_to = self.get_id(&to_clone);
 
         // Update the overlay first so reads through `to` still see in-memory document contents.
         let from_open = self.fs.is_open(from);
-        let to_open = self.fs.is_open(&to_clone);
         if from_open {
             self.fs.rename(from, to_clone.clone());
         }
 
         let id = {
             let mut ids = self.ids.lock().expect("file id registry mutex poisoned");
-            if from_open && !to_open {
-                match (id_from, id_to) {
-                    (Some(id_from), Some(id_to)) if id_from != id_to => {
-                        ids.rename_path_displacing_destination(from, to)
-                    }
-                    _ => ids.rename_path(from, to),
-                }
-            } else {
-                ids.rename_path(from, to)
-            }
+            ids.rename_path(from, to)
         };
 
         // If the rename changed the file id for an open document, make sure `OpenDocuments`
@@ -106,14 +90,9 @@ impl<F: FileSystem> Vfs<F> {
                 if id_from != id {
                     self.open_docs.close(id_from);
                 }
-                if let Some(id_to) = id_to {
-                    if id_to != id {
-                        self.open_docs.close(id_to);
-                    }
-                }
-                if self.fs.is_open(&to_clone) {
-                    self.open_docs.open(id);
-                }
+            }
+            if self.fs.is_open(&to_clone) {
+                self.open_docs.open(id);
             }
         }
 
@@ -281,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn vfs_rename_path_to_existing_path_preserves_source_id_for_open_document() {
+    fn vfs_rename_path_to_existing_path_keeps_destination_id_for_open_document() {
         let vfs = Vfs::new(LocalFs::new());
         let dir = tempfile::tempdir().unwrap();
         let from = VfsPath::local(dir.path().join("a.java"));
@@ -293,16 +272,16 @@ mod tests {
         assert!(vfs.open_documents().is_open(from_id));
 
         let moved = vfs.rename_path(&from, to.clone());
-        assert_eq!(moved, from_id);
-        assert_eq!(vfs.get_id(&to), Some(from_id));
-        assert_eq!(vfs.path_for_id(from_id), Some(to.clone()));
-        assert_eq!(vfs.path_for_id(to_id), None);
+        assert_eq!(moved, to_id);
+        assert_eq!(vfs.get_id(&to), Some(to_id));
+        assert_eq!(vfs.path_for_id(to_id), Some(to.clone()));
+        assert_eq!(vfs.path_for_id(from_id), None);
 
         assert!(!vfs.overlay().is_open(&from));
         assert!(vfs.overlay().is_open(&to));
         assert_eq!(vfs.read_to_string(&to).unwrap(), "hello");
-        assert!(vfs.open_documents().is_open(from_id));
-        assert!(!vfs.open_documents().is_open(to_id));
+        assert!(!vfs.open_documents().is_open(from_id));
+        assert!(vfs.open_documents().is_open(to_id));
     }
 
     #[test]

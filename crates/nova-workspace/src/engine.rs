@@ -780,10 +780,9 @@ impl WorkspaceEngine {
             }
         }
 
-        // A move can have three effects on ids:
+        // A move can have two effects on ids:
         // - Typical case: preserve `id_from` at `to`.
         // - Destination already known: keep destination id and orphan `id_from`.
-        // - Open document moved onto an existing destination: preserve `id_from` and orphan `id_to`.
         //
         // Keep Salsa inputs consistent by explicitly marking orphaned ids as deleted and removing
         // them from `project_files`.
@@ -1534,7 +1533,7 @@ mod tests {
     }
 
     #[test]
-    fn move_open_document_to_known_destination_displaces_destination_id() {
+    fn move_open_document_to_known_destination_keeps_destination_id() {
         let dir = tempfile::tempdir().unwrap();
         // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
         let root = dir.path().canonicalize().unwrap();
@@ -1557,9 +1556,8 @@ mod tests {
         let id_a = engine.vfs.get_id(&vfs_a).unwrap();
         let id_b = engine.vfs.get_id(&vfs_b).unwrap();
 
-        // Open A (overlay). When an open document is moved onto an existing destination path that
-        // is not open in the overlay, the VFS preserves the open document's `FileId` (the editor
-        // knows this id) and orphans the destination id.
+        // Open A (overlay). When the document is moved onto an already-known destination path, the
+        // VFS keeps the destination `FileId` and updates the open-doc tracking to match.
         let opened = workspace.open_document(vfs_a.clone(), "class A { overlay }".to_string(), 1);
         assert_eq!(opened, id_a);
         assert!(engine.vfs.open_documents().is_open(id_a));
@@ -1575,21 +1573,21 @@ mod tests {
         }]);
 
         assert_eq!(engine.vfs.get_id(&vfs_a), None);
-        assert_eq!(engine.vfs.get_id(&vfs_b), Some(id_a));
-        assert_eq!(engine.vfs.path_for_id(id_b), None);
+        assert_eq!(engine.vfs.get_id(&vfs_b), Some(id_b));
+        assert_eq!(engine.vfs.path_for_id(id_a), None);
         assert_eq!(
             engine.vfs.read_to_string(&vfs_b).unwrap(),
             "class A { overlay }"
         );
-        assert!(engine.vfs.open_documents().is_open(id_a));
-        assert!(!engine.vfs.open_documents().is_open(id_b));
+        assert!(!engine.vfs.open_documents().is_open(id_a));
+        assert!(engine.vfs.open_documents().is_open(id_b));
 
         engine.query_db.with_snapshot(|snap| {
-            assert!(snap.file_exists(id_a));
-            assert!(!snap.file_exists(id_b));
-            assert_eq!(snap.file_rel_path(id_a).as_str(), "src/B.java");
-            assert_eq!(snap.file_content(id_a).as_str(), "class A { overlay }");
-            assert!(!snap.project_files(ProjectId::from_raw(0)).contains(&id_b));
+            assert!(!snap.file_exists(id_a));
+            assert!(snap.file_exists(id_b));
+            assert_eq!(snap.file_rel_path(id_b).as_str(), "src/B.java");
+            assert_eq!(snap.file_content(id_b).as_str(), "class A { overlay }");
+            assert!(!snap.project_files(ProjectId::from_raw(0)).contains(&id_a));
         });
     }
 
