@@ -7238,6 +7238,15 @@ fn format_type_for_postfix_snippet(
         return out;
     }
 
+    if let Type::VirtualInner { owner, name } = ty {
+        let owner_ty = Type::class(*owner, vec![]);
+        let owner = format_type_for_postfix_snippet(types, import_ctx, &owner_ty);
+        if owner.is_empty() {
+            return name.clone();
+        }
+        return format!("{owner}.{name}");
+    }
+
     let Type::Class(class_ty) = ty else {
         return nova_types::format_type(types, ty);
     };
