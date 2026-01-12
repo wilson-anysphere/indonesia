@@ -1,0 +1,12 @@
+mod cloud_multi_token;
+mod embedding_semantic_search;
+mod explain_error_providers;
+mod in_process_llama_smoke;
+mod llm_cache;
+mod local_backends;
+mod patch_engine;
+mod patch_safety;
+mod project_database_adapters;
+mod semantic_context_builder;
+mod semantic_search_factory;
+mod semantic_search_incremental;

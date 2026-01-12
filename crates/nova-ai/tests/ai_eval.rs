@@ -11,6 +11,8 @@ use nova_ai::{
 use nova_config::{AiConfig, AiPrivacyConfig, AiProviderConfig, AiProviderKind};
 use url::Url;
 
+mod suite;
+
 fn dummy_ai_client_config(privacy: AiPrivacyConfig) -> AiConfig {
     AiConfig {
         provider: AiProviderConfig {
