@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
+use nova_core::{file_uri_to_path, path_to_file_uri, AbsPathBuf};
 use nova_format::NewlineStyle;
 use nova_syntax::ast::{self, AstNode};
 use nova_syntax::{parse_java, SyntaxKind};
@@ -23,6 +24,8 @@ pub enum RefactorError {
     Materialize(#[from] MaterializeError),
     #[error(transparent)]
     MoveJava(#[from] crate::move_java::RefactorError),
+    #[error("invalid file id `{file:?}`: {reason}")]
+    InvalidFileId { file: FileId, reason: String },
     #[error("unknown file {0:?}")]
     UnknownFile(FileId),
     #[error("invalid variable name `{name}`: {reason}")]
@@ -66,21 +69,83 @@ pub fn rename(
             .symbol_definition(params.symbol)
             .ok_or(RefactorError::RenameNotSupported { kind })?;
 
+        let all_files = db.all_files();
+        let file_ids_are_file_uris = !all_files.is_empty()
+            && all_files
+                .iter()
+                .all(|file| file_uri_to_path(&file.0).is_ok());
+
         let mut files: BTreeMap<PathBuf, String> = BTreeMap::new();
-        for file in db.all_files() {
+        let mut path_to_file_id: HashMap<PathBuf, FileId> = HashMap::new();
+        for file in all_files {
             let text = db
                 .file_text(&file)
                 .ok_or_else(|| RefactorError::UnknownFile(file.clone()))?;
-            files.insert(PathBuf::from(file.0), text.to_string());
+
+            if file_ids_are_file_uris {
+                let abs = file_uri_to_path(&file.0).map_err(|err| RefactorError::InvalidFileId {
+                    file: file.clone(),
+                    reason: err.to_string(),
+                })?;
+                let path = abs.into_path_buf();
+                path_to_file_id.insert(path.clone(), file.clone());
+                files.insert(path, text.to_string());
+            } else {
+                files.insert(PathBuf::from(&file.0), text.to_string());
+            }
         }
 
-        return Ok(crate::move_java::move_package_workspace_edit(
+        let mut edit = crate::move_java::move_package_workspace_edit(
             &files,
             crate::move_java::MovePackageParams {
                 old_package: def.name,
                 new_package: params.new_name,
             },
-        )?);
+        )?;
+
+        if file_ids_are_file_uris {
+            fn remap_file_id(
+                file: &FileId,
+                path_to_file_id: &HashMap<PathBuf, FileId>,
+            ) -> Result<FileId, RefactorError> {
+                let path = PathBuf::from(&file.0);
+                if let Some(existing) = path_to_file_id.get(&path) {
+                    return Ok(existing.clone());
+                }
+
+                let abs = AbsPathBuf::new(path).map_err(|err| RefactorError::InvalidFileId {
+                    file: file.clone(),
+                    reason: err.to_string(),
+                })?;
+                let uri = path_to_file_uri(&abs).map_err(|err| RefactorError::InvalidFileId {
+                    file: file.clone(),
+                    reason: err.to_string(),
+                })?;
+                Ok(FileId::new(uri))
+            }
+
+            for op in &mut edit.file_ops {
+                match op {
+                    crate::edit::FileOp::Rename { from, to } => {
+                        *from = remap_file_id(from, &path_to_file_id)?;
+                        *to = remap_file_id(to, &path_to_file_id)?;
+                    }
+                    crate::edit::FileOp::Create { file, .. } => {
+                        *file = remap_file_id(file, &path_to_file_id)?;
+                    }
+                    crate::edit::FileOp::Delete { file } => {
+                        *file = remap_file_id(file, &path_to_file_id)?;
+                    }
+                }
+            }
+            for text_edit in &mut edit.text_edits {
+                text_edit.file = remap_file_id(&text_edit.file, &path_to_file_id)?;
+            }
+
+            edit.normalize()?;
+        }
+
+        return Ok(edit);
     }
 
     match kind {
