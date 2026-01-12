@@ -228,6 +228,33 @@ impl WorkspaceEdit {
         }
     }
 
+    /// Merge two [`WorkspaceEdit`] values into a single edit.
+    ///
+    /// This is the supported way to *compose* refactorings from independent primitives.
+    ///
+    /// The merged edit is always [`normalize`](WorkspaceEdit::normalize)d, so:
+    /// - text edits are sorted/deduplicated and validated to be non-overlapping
+    /// - multiple inserts at the same position are merged deterministically
+    /// - file operations are de-duplicated, validated for collisions, and ordered deterministically
+    ///
+    /// # File ids and renames ("coordinate systems")
+    ///
+    /// Text edits in a [`WorkspaceEdit`] are interpreted in the file-id "coordinate system"
+    /// *after* applying the edit's own [`file_ops`](WorkspaceEdit::file_ops). In particular, if an
+    /// edit renames `a` → `b`, then any text edits intended for that file must target `b` (not
+    /// `a`).
+    ///
+    /// When composing edits that include renames, this method assumes that *both inputs already
+    /// follow that rule*. If a producer emitted text edits against pre-rename file ids, it must
+    /// call [`remap_text_edits_across_renames`](WorkspaceEdit::remap_text_edits_across_renames) (or
+    /// otherwise remap its file ids) *before* merging.
+    pub fn merge(mut self, other: WorkspaceEdit) -> Result<Self, EditError> {
+        self.file_ops.extend(other.file_ops);
+        self.text_edits.extend(other.text_edits);
+        self.normalize()?;
+        Ok(self)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.file_ops.is_empty() && self.text_edits.is_empty()
     }
@@ -894,5 +921,146 @@ mod tests {
         assert!(matches!(edit.file_ops.get(0), Some(FileOp::Rename { .. })));
         assert!(matches!(edit.file_ops.get(1), Some(FileOp::Create { .. })));
         assert!(matches!(edit.file_ops.get(2), Some(FileOp::Delete { .. })));
+    }
+
+    #[test]
+    fn merge_disjoint_edits_succeeds_and_normalizes_ordering() {
+        let a = FileId::new("file:///a");
+        let b = FileId::new("file:///b");
+        let c = FileId::new("file:///c");
+
+        // Note: the ops and text edits are intentionally in "non-normal" ordering to ensure merge
+        // calls `normalize()`.
+        let edit1 = WorkspaceEdit {
+            file_ops: vec![FileOp::Delete { file: c.clone() }],
+            text_edits: vec![TextEdit::insert(b.clone(), 0, "b")],
+        };
+        let edit2 = WorkspaceEdit {
+            file_ops: vec![FileOp::Create {
+                file: a.clone(),
+                contents: "A".to_string(),
+            }],
+            text_edits: vec![TextEdit::insert(a.clone(), 0, "a")],
+        };
+
+        let merged = edit1.merge(edit2).unwrap();
+
+        assert_eq!(
+            merged.file_ops,
+            vec![
+                FileOp::Create {
+                    file: a.clone(),
+                    contents: "A".to_string()
+                },
+                FileOp::Delete { file: c }
+            ]
+        );
+        assert_eq!(
+            merged.text_edits,
+            vec![TextEdit::insert(a, 0, "a"), TextEdit::insert(b, 0, "b")]
+        );
+    }
+
+    #[test]
+    fn merge_overlapping_text_edits_fails() {
+        let file = FileId::new("file:///test");
+        let edit1 = WorkspaceEdit::new(vec![TextEdit::replace(
+            file.clone(),
+            TextRange::new(0, 2),
+            "x",
+        )]);
+        let edit2 = WorkspaceEdit::new(vec![TextEdit::replace(
+            file.clone(),
+            TextRange::new(1, 3),
+            "y",
+        )]);
+
+        let err = edit1.merge(edit2).unwrap_err();
+        assert!(matches!(err, EditError::OverlappingEdits { .. }));
+    }
+
+    #[test]
+    fn merge_conflicting_file_ops_duplicate_rename_source_fails() {
+        let a = FileId::new("file:///a");
+        let b = FileId::new("file:///b");
+        let c = FileId::new("file:///c");
+
+        let edit1 = WorkspaceEdit {
+            file_ops: vec![FileOp::Rename {
+                from: a.clone(),
+                to: b,
+            }],
+            text_edits: Vec::new(),
+        };
+        let edit2 = WorkspaceEdit {
+            file_ops: vec![FileOp::Rename {
+                from: a,
+                to: c,
+            }],
+            text_edits: Vec::new(),
+        };
+
+        let err = edit1.merge(edit2).unwrap_err();
+        assert!(matches!(err, EditError::DuplicateRenameSource { .. }));
+    }
+
+    #[test]
+    fn merge_conflicting_file_ops_duplicate_rename_destination_fails() {
+        let a = FileId::new("file:///a");
+        let b = FileId::new("file:///b");
+        let c = FileId::new("file:///c");
+
+        let edit1 = WorkspaceEdit {
+            file_ops: vec![FileOp::Rename {
+                from: a,
+                to: c.clone(),
+            }],
+            text_edits: Vec::new(),
+        };
+        let edit2 = WorkspaceEdit {
+            file_ops: vec![FileOp::Rename { from: b, to: c }],
+            text_edits: Vec::new(),
+        };
+
+        let err = edit1.merge(edit2).unwrap_err();
+        assert!(matches!(err, EditError::DuplicateRenameDestination { .. }));
+    }
+
+    #[test]
+    fn merge_conflicting_file_ops_collision_fails() {
+        let a = FileId::new("file:///a");
+        let b = FileId::new("file:///b");
+
+        let edit1 = WorkspaceEdit {
+            file_ops: vec![FileOp::Create {
+                file: a.clone(),
+                contents: "hi".to_string(),
+            }],
+            text_edits: Vec::new(),
+        };
+        let edit2 = WorkspaceEdit {
+            file_ops: vec![FileOp::Rename { from: a, to: b }],
+            text_edits: Vec::new(),
+        };
+
+        let err = edit1.merge(edit2).unwrap_err();
+        assert!(matches!(err, EditError::FileOpCollision { .. }));
+    }
+
+    #[test]
+    fn merge_merges_inserts_at_same_position_deterministically() {
+        let file = FileId::new("file:///test");
+
+        let edit_a = WorkspaceEdit::new(vec![TextEdit::insert(file.clone(), 0, "a")]);
+        let edit_b = WorkspaceEdit::new(vec![TextEdit::insert(file.clone(), 0, "b")]);
+
+        let merged_ab = edit_a.clone().merge(edit_b.clone()).unwrap();
+        let merged_ba = edit_b.merge(edit_a).unwrap();
+
+        assert_eq!(merged_ab, merged_ba);
+        assert_eq!(
+            merged_ab.text_edits,
+            vec![TextEdit::insert(file, 0, "ab")]
+        );
     }
 }
