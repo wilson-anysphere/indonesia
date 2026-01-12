@@ -2011,7 +2011,7 @@ impl WorkspaceEngine {
         let cap = report.degraded.completion_candidate_cap;
         self.closed_file_texts
             .restore_if_evicted(&self.vfs, file_id);
-        let view = WorkspaceDbView::new(self.query_db.snapshot(), self.vfs.clone());
+        let view = WorkspaceDbView::new(self.query_db.clone(), self.vfs.clone());
         let text = view.file_content(file_id);
         let position = offset_to_lsp_position(text, offset);
         let mut lsp_items = nova_ide::completions(&view, file_id, position);
@@ -2659,7 +2659,7 @@ impl WorkspaceEngine {
 
         self.closed_file_texts
             .restore_if_evicted(&self.vfs, file_id);
-        let view = WorkspaceDbView::new(self.query_db.snapshot(), self.vfs.clone());
+        let view = WorkspaceDbView::new(self.query_db.clone(), self.vfs.clone());
         nova_ide::file_diagnostics_with_semantic_db(&view, view.semantic_db(), file_id)
     }
 
@@ -7431,7 +7431,11 @@ public class Bar {}"#;
 
         // Sanity check: the lazy DB view must still serve the old Salsa contents.
         let view =
-            crate::snapshot::WorkspaceDbView::new(engine.query_db.snapshot(), engine.vfs.clone());
+            crate::snapshot::WorkspaceDbView::new(engine.query_db.clone(), engine.vfs.clone());
+        assert!(
+            view.salsa_db().is_some(),
+            "WorkspaceDbView should expose the workspace Salsa DB for classpath-backed completions"
+        );
         assert!(
             view.file_content(foo_id).contains("class Foo"),
             "expected view to serve old Salsa contents, got: {:?}",

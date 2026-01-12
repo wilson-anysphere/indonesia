@@ -220,6 +220,7 @@ impl WorkspaceSnapshot {
 /// - The returned references point into `Arc<String>` / `PathBuf` heap allocations,
 ///   which remain valid for the lifetime of the view.
 pub(crate) struct WorkspaceDbView {
+    salsa_db: SalsaDatabase,
     snapshot: Snapshot,
     vfs: Vfs<LocalFs>,
     salsa_file_ids: Arc<Vec<FileId>>,
@@ -228,9 +229,11 @@ pub(crate) struct WorkspaceDbView {
 }
 
 impl WorkspaceDbView {
-    pub(crate) fn new(snapshot: Snapshot, vfs: Vfs<LocalFs>) -> Self {
+    pub(crate) fn new(salsa_db: SalsaDatabase, vfs: Vfs<LocalFs>) -> Self {
+        let snapshot = salsa_db.snapshot();
         let salsa_file_ids = nova_db::SourceDatabase::all_file_ids(&snapshot);
         Self {
+            salsa_db,
             snapshot,
             vfs,
             salsa_file_ids,
@@ -302,6 +305,10 @@ impl Database for WorkspaceDbView {
 
     fn file_id(&self, path: &Path) -> Option<FileId> {
         self.vfs.get_id(&VfsPath::local(path.to_path_buf()))
+    }
+
+    fn salsa_db(&self) -> Option<nova_db::SalsaDatabase> {
+        Some(self.salsa_db.clone())
     }
 }
 
