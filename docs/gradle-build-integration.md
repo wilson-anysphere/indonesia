@@ -308,6 +308,15 @@ Common call sites include:
   and may call `BuildManager::java_compile_config_gradle(workspace_root, None)` to refresh the
   workspace classpath during reloads.
 
+### Timeouts and execution budgets
+
+Gradle execution is time-bounded by whichever `CommandRunner` is in use:
+
+- `nova-lsp` typically uses a request-scoped time budget (e.g. 60s for `handle_java_classpath`) via
+  `DeadlineCommandRunner` in `crates/nova-lsp/src/extensions/mod.rs`.
+- `nova-workspace` uses its configured build runner (`WorkspaceEngineConfig.build_runner`); in
+  non-test builds this defaults to `nova_build::DefaultCommandRunner` (15 minute timeout).
+
 ---
 
 ## Troubleshooting
