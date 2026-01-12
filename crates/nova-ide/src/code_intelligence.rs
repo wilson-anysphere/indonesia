@@ -19166,7 +19166,7 @@ mod tests {
 
         let text = "import com.\nclass Test {}".to_string();
         let offset = text.find("com.").expect("expected `com.` in fixture") + "com.".len();
-        let items = import_path_completions(&db, &text, offset, "").expect("completions");
+        let items = import_path_completions(&db, foo_file, &text, offset, "").expect("completions");
 
         let foo = items
             .iter()

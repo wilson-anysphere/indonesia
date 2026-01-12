@@ -209,34 +209,47 @@ fn parse_type_ref(tokens: &[Token], mut i: usize, end: usize) -> Option<(String,
     // - `Foo`
     // - `foo.bar.Baz` (qualified types; we keep the last segment)
     // - `Foo<T>` / `Foo<T, U>`
+    // - `Foo<T>.Bar` / `foo.bar.Baz<T>.Qux` (qualified + parameterized; keep last segment)
     // - `Foo[]` / `Foo[][]`
     if i >= end {
         return None;
     }
 
-    let first = tokens.get(i).and_then(|t| t.ident())?;
+    let first_tok = tokens.get(i)?;
+    let first = first_tok.ident()?;
     let mut ty = first.to_string();
-    let mut ty_span = tokens.get(i).map(|t| t.span)?;
+    let mut ty_span = first_tok.span;
     i += 1;
 
-    // Qualified type: a.b.C -> take last segment.
-    while i + 1 < end && tokens.get(i).and_then(|t| t.symbol()) == Some('.') {
-        let Some(seg) = tokens.get(i + 1).and_then(|t| t.ident()) else {
-            break;
-        };
-        ty = seg.to_string();
-        ty_span = tokens.get(i + 1).map(|t| t.span)?;
-        i += 2;
+    // Type references can contain qualified segments and type arguments, e.g.
+    // `pkg.Outer<T>.Inner<U>`.
+    //
+    // We keep only the last identifier segment (simple name), but we need to skip
+    // any type arguments so we don't accidentally treat identifiers inside `<...>`
+    // as additional types.
+    loop {
+        // Generic args: Foo<...>
+        if i < end && tokens.get(i).and_then(|t| t.symbol()) == Some('<') {
+            let close = find_matching(tokens, i, '<', '>')?;
+            i = close + 1;
+        }
+
+        // Qualified type: a.b.C -> take last segment.
+        if i + 1 < end && tokens.get(i).and_then(|t| t.symbol()) == Some('.') {
+            let Some(seg) = tokens.get(i + 1).and_then(|t| t.ident()) else {
+                break;
+            };
+            ty = seg.to_string();
+            ty_span = tokens.get(i + 1).map(|t| t.span)?;
+            i += 2;
+            continue;
+        }
+
+        break;
     }
 
     if !qualifies_as_type(&ty) {
         return None;
-    }
-
-    // Generic args: Foo<...>
-    if i < end && tokens.get(i).and_then(|t| t.symbol()) == Some('<') {
-        let close = find_matching(tokens, i, '<', '>')?;
-        i = close + 1;
     }
 
     // Array suffix: Foo[] / Foo[][]
@@ -1429,6 +1442,32 @@ interface J extends A<String>, pkg.B {}
             vec!["A".to_string(), "B".to_string()]
         );
         assert_eq!(parsed.types[0].super_class, None);
+    }
+
+    #[test]
+    fn class_extends_parameterized_qualified_type_records_last_segment_only() {
+        let uri = Uri::from_str("file:///C.java").unwrap();
+        let text = r#"
+class C extends Outer<String>.Inner {}
+"#
+        .to_string();
+
+        let parsed = parse_file(uri, text);
+        assert_eq!(parsed.types.len(), 1);
+        assert_eq!(parsed.types[0].super_class, Some("Inner".to_string()));
+    }
+
+    #[test]
+    fn class_implements_parameterized_qualified_type_records_last_segment_only() {
+        let uri = Uri::from_str("file:///C.java").unwrap();
+        let text = r#"
+class C implements Outer<String>.I {}
+"#
+        .to_string();
+
+        let parsed = parse_file(uri, text);
+        assert_eq!(parsed.types.len(), 1);
+        assert_eq!(parsed.types[0].interfaces, vec!["I".to_string()]);
     }
 
     #[test]
