@@ -803,6 +803,15 @@ impl TypeStore {
                     is_varargs: false,
                     is_abstract: false,
                 },
+                MethodDef {
+                    name: "valueOf".to_string(),
+                    type_params: vec![],
+                    params: vec![Type::Primitive(PrimitiveType::Int)],
+                    return_type: string_ty,
+                    is_static: true,
+                    is_varargs: false,
+                    is_abstract: false,
+                },
             ];
         }
         let number = store.add_class(ClassDef {

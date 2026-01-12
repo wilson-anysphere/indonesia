@@ -3890,6 +3890,57 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         name_range: Span,
         expr: HirExprId,
     ) -> ExprInfo {
+        // Fast path: interpret `a.b.c` style `FieldAccess` chains as fully qualified type names in
+        // expression position (e.g. `java.lang.String.valueOf(1)`).
+        //
+        // Important: do this *before* inferring the receiver expression so intermediate package
+        // segments don't emit bogus `unresolved-field` diagnostics.
+        if let Some(mut segments) = self.collect_name_or_field_chain_segments(receiver) {
+            segments.push(name.to_string());
+
+            if let Some(first) = segments.first() {
+                // Guard against misinterpreting value field accesses: if the leftmost segment is a
+                // local/param/field, treat the chain as a normal value expression.
+                let scope = self
+                    .expr_scopes
+                    .scope_for_expr(expr)
+                    .unwrap_or_else(|| self.expr_scopes.root_scope());
+                let first_name = Name::from(first.as_str());
+                let first_is_local_or_param = self
+                    .expr_scopes
+                    .resolve_name(scope, &first_name)
+                    .is_some();
+                let first_resolution = self
+                    .resolver
+                    .resolve_name_detailed(self.scopes, self.scope_id, &first_name);
+                let first_is_field =
+                    matches!(&first_resolution, NameResolution::Resolved(Resolution::Field(_)));
+                let first_is_type =
+                    matches!(&first_resolution, NameResolution::Resolved(Resolution::Type(_)));
+
+                if !first_is_local_or_param && !first_is_field && !first_is_type {
+                    let q = QualifiedName::from_dotted(&segments.join("."));
+                    if let Some(resolved) = self
+                        .resolver
+                        .resolve_qualified_type_in_scope(self.scopes, self.scope_id, &q)
+                    {
+                        let binary_name = resolved.as_str().to_string();
+                        if let Some(id) = loader.ensure_class(&binary_name) {
+                            return ExprInfo {
+                                ty: Type::class(id, vec![]),
+                                is_type_ref: true,
+                            };
+                        }
+
+                        return ExprInfo {
+                            ty: Type::Named(binary_name),
+                            is_type_ref: true,
+                        };
+                    }
+                }
+            }
+        }
+
         let recv_info = self.infer_expr(loader, receiver);
         let recv_ty = recv_info.ty.clone();
 
@@ -3989,6 +4040,23 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         ExprInfo {
             ty: Type::Unknown,
             is_type_ref: false,
+        }
+    }
+
+    /// If `expr` is a pure `Name` / `FieldAccess` chain, collect its segments.
+    ///
+    /// Examples:
+    /// - `Name("java")` -> `["java"]`
+    /// - `FieldAccess(receiver=<...>, name="lang")` -> append `"lang"`
+    fn collect_name_or_field_chain_segments(&self, expr: HirExprId) -> Option<Vec<String>> {
+        match &self.body.exprs[expr] {
+            HirExpr::Name { name, .. } => Some(vec![name.clone()]),
+            HirExpr::FieldAccess { receiver, name, .. } => {
+                let mut segments = self.collect_name_or_field_chain_segments(*receiver)?;
+                segments.push(name.clone());
+                Some(segments)
+            }
+            _ => None,
         }
     }
 

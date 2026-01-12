@@ -822,6 +822,28 @@ class C {
 }
 
 #[test]
+fn fully_qualified_static_method_call_resolves() {
+    let src = r#"
+class C {
+    void m() {
+        java.lang.String.valueOf(1);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    let unresolved_members = diags
+        .iter()
+        .filter(|d| d.code.as_ref() == "unresolved-field" || d.code.as_ref() == "unresolved-method")
+        .collect::<Vec<_>>();
+    assert!(
+        unresolved_members.is_empty(),
+        "expected no unresolved member diagnostics, got {unresolved_members:?} (all diags: {diags:?})"
+    );
+}
+
+#[test]
 fn system_out_println_has_no_unresolved_member_diags() {
     let src = r#"
 class C {
