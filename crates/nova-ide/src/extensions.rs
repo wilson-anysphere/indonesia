@@ -916,6 +916,9 @@ where
         cancel: CancellationToken,
         file: nova_ext::FileId,
     ) -> Vec<Diagnostic> {
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
         fn severity_rank(severity: nova_ext::Severity) -> u8 {
             match severity {
                 nova_ext::Severity::Error => 0,
@@ -936,6 +939,9 @@ where
             file,
             &cancel,
         );
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
         // Keep built-in diagnostics ordering consistent between:
         // - `nova_lsp::diagnostics` (which goes through `nova_ide::file_diagnostics_lsp`)
         // - `nova_lsp::diagnostics_with_extensions` (which goes through this helper).
@@ -951,6 +957,9 @@ where
                 .then_with(|| a.message.cmp(&b.message))
         });
         diagnostics.dedup();
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
         diagnostics.extend(self.diagnostics(cancel, file));
         diagnostics
     }
@@ -2298,6 +2307,68 @@ class A {
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"length"));
         assert!(labels.contains(&"extraCompletion"));
+    }
+
+    #[test]
+    fn all_diagnostics_skips_extension_providers_when_cancelled() {
+        use nova_db::InMemoryFileStore;
+
+        struct CountingProvider {
+            calls: Arc<AtomicUsize>,
+        }
+
+        impl DiagnosticProvider<dyn nova_db::Database + Send + Sync> for CountingProvider {
+            fn id(&self) -> &str {
+                "counting.diag"
+            }
+
+            fn provide_diagnostics(
+                &self,
+                _ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
+                _params: DiagnosticParams,
+            ) -> Vec<Diagnostic> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Vec::new()
+            }
+        }
+
+        let mut db = InMemoryFileStore::new();
+        let file = db.file_id_for_path(PathBuf::from("/cancelled.java"));
+        db.set_file_text(
+            file,
+            r#"
+class A {
+  void m() {
+    baz();
+  }
+}
+"#
+            .to_string(),
+        );
+
+        let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
+        let mut ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        ide.registry_mut()
+            .register_diagnostic_provider(Arc::new(CountingProvider {
+                calls: Arc::clone(&calls),
+            }))
+            .unwrap();
+
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let diags = ide.all_diagnostics(cancel, file);
+        assert!(
+            diags.is_empty(),
+            "expected diagnostics to be empty after cancellation; got {diags:?}"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "expected cancelled all_diagnostics request to skip extension diagnostics"
+        );
     }
 
     #[test]
