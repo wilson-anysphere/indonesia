@@ -16,6 +16,7 @@ mod lombok_intel;
 mod micronaut_intel;
 mod organize_imports_code_action;
 mod quarkus_intel;
+mod snapshot_navigation;
 mod salsa_reuse;
 mod source_types;
 mod spring_config_metadata_intel;
