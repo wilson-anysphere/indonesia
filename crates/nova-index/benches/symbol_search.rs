@@ -71,12 +71,8 @@ fn synthetic_symbols(count: usize, mode: QualifiedNameMode) -> Vec<SearchSymbol>
             qualified_name,
             kind: IndexSymbolKind::Class,
             container_name: None,
-            location: SymbolLocation {
-                file: "A.java".into(),
-                line: 0,
-                column: 0,
-            },
-            ast_id: i as u32,
+            location: SymbolLocation::default(),
+            ast_id: 0,
         });
     }
 
@@ -108,12 +104,8 @@ fn synthetic_symbols(count: usize, mode: QualifiedNameMode) -> Vec<SearchSymbol>
             qualified_name,
             kind: IndexSymbolKind::Class,
             container_name: None,
-            location: SymbolLocation {
-                file: "A.java".into(),
-                line: 0,
-                column: 0,
-            },
-            ast_id: i as u32,
+            location: SymbolLocation::default(),
+            ast_id: 0,
         });
     }
 
