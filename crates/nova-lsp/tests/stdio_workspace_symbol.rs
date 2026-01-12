@@ -135,6 +135,94 @@ fn stdio_server_supports_workspace_symbol_requests() {
 }
 
 #[test]
+fn stdio_workspace_symbol_supports_root_uri_with_percent_encoding() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().join("My Project");
+    std::fs::create_dir_all(&root).expect("create workspace root");
+
+    let cache_dir = TempDir::new().expect("cache dir");
+
+    let file_path = root.join("Foo.java");
+    std::fs::write(
+        &file_path,
+        r#"
+            package com.example;
+
+            public class Foo {
+                public void bar() {}
+            }
+        "#,
+    )
+    .expect("write java file");
+
+    // `path_to_file_uri` percent-encodes spaces. This ensures the server decodes
+    // the initialize.rootUri back into a usable on-disk path.
+    let root_uri = uri_for_path(&root);
+    let file_uri = uri_for_path(&file_path);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .env("NOVA_CACHE_DIR", cache_dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": root_uri, "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "workspace/symbol",
+            "params": { "query": "Foo" }
+        }),
+    );
+    let resp = read_response_with_id(&mut stdout, 2);
+    let results = resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .expect("workspace/symbol result array");
+    assert!(
+        results.iter().any(|value| {
+            value.get("name").and_then(|v| v.as_str()) == Some("Foo")
+                && value.pointer("/location/uri").and_then(|v| v.as_str())
+                    == Some(file_uri.as_str())
+        }),
+        "expected Foo symbol in percent-encoded workspace root, got: {resp:?}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
 fn stdio_cancel_request_interrupts_workspace_symbol_indexing() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path();
