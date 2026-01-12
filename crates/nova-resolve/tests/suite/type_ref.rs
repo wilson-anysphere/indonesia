@@ -630,3 +630,32 @@ fn parses_diamond_as_raw_type() {
     assert_eq!(diamond.diagnostics, Vec::new());
     assert_eq!(diamond.ty, plain.ty);
 }
+
+#[test]
+fn resolves_unicode_identifier_in_same_package() {
+    let jdk = JdkIndex::new();
+    let mut index = TestIndex::default();
+    index.add_type("p", "π");
+
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let file = FileId::from_raw(0);
+    let mut db = TestDb::default();
+    db.set_file_text(file, "package p; class C {}\n");
+    let result = build_scopes(&db, file);
+
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let ty = resolve_type_ref_text(
+        &resolver,
+        &result.scopes,
+        result.file_scope,
+        &env,
+        &type_vars,
+        "π",
+        None,
+    );
+
+    assert_eq!(ty.diagnostics, Vec::new());
+    assert_eq!(ty.ty, Type::Named("p.π".to_string()));
+}

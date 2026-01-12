@@ -1094,7 +1094,7 @@ fn is_ident_start(ch: char) -> bool {
 }
 
 fn is_ident_part(ch: char) -> bool {
-    ch == '_' || ch == '$' || is_xid_continue(ch)
+    is_ident_start(ch) || is_xid_continue(ch)
 }
 
 fn reconcile_class_args(
