@@ -820,6 +820,53 @@ impl Debugger {
         }
     }
 
+    pub(crate) fn breakpoint_locations(
+        source_path: &str,
+        line: i64,
+        end_line: Option<i64>,
+    ) -> Vec<serde_json::Value> {
+        if source_path.is_empty() {
+            return Vec::new();
+        }
+
+        let file_path =
+            std::fs::canonicalize(source_path).unwrap_or_else(|_| PathBuf::from(source_path));
+        let text = match std::fs::read_to_string(&file_path) {
+            Ok(text) => text,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut sites = nova_ide::semantics::collect_breakpoint_sites(&text);
+        sites.sort_by_key(|site| site.line);
+
+        let mut start = line.max(1);
+        let mut end = end_line.unwrap_or(line).max(1);
+        if end < start {
+            std::mem::swap(&mut start, &mut end);
+        }
+
+        let mut last_line: Option<Line> = None;
+        sites
+            .into_iter()
+            .filter_map(|site| {
+                let site_line = site.line as i64;
+                if site_line < start || site_line > end {
+                    return None;
+                }
+
+                if last_line == Some(site.line) {
+                    return None;
+                }
+                last_line = Some(site.line);
+
+                Some(json!({
+                    "line": site_line,
+                    "column": 1,
+                }))
+            })
+            .collect()
+    }
+
     pub(crate) async fn set_breakpoints(
         &mut self,
         cancel: &CancellationToken,

@@ -340,29 +340,30 @@ async fn handle_request_inner(
                 *pending = PendingConfiguration::default();
             }
 
-            let body = json!({
-                "supportsConfigurationDoneRequest": true,
-                "supportsEvaluateForHovers": true,
-                "supportsPauseRequest": true,
-                "supportsCancelRequest": true,
-                "supportsTerminateRequest": true,
-                "supportsRestartRequest": false,
-                "supportsSetVariable": true,
-                "supportsStepInTargetsRequest": true,
-                "supportsStepBack": false,
-                "supportsFunctionBreakpoints": true,
-                "supportsVariablePaging": true,
-                "supportsExceptionBreakpoints": true,
-                "supportsExceptionInfoRequest": true,
-                "exceptionBreakpointFilters": [
-                    { "filter": "caught", "label": "Caught Exceptions", "default": false },
-                    { "filter": "uncaught", "label": "Uncaught Exceptions", "default": false },
-                    { "filter": "all", "label": "All Exceptions", "default": false },
-                ],
-                "supportsConditionalBreakpoints": true,
-                "supportsHitConditionalBreakpoints": true,
-                "supportsLogPoints": true,
-            });
+             let body = json!({
+                 "supportsConfigurationDoneRequest": true,
+                 "supportsEvaluateForHovers": true,
+                 "supportsPauseRequest": true,
+                 "supportsCancelRequest": true,
+                 "supportsTerminateRequest": true,
+                 "supportsRestartRequest": false,
+                 "supportsSetVariable": true,
+                 "supportsStepInTargetsRequest": true,
+                 "supportsStepBack": false,
+                 "supportsFunctionBreakpoints": true,
+                 "supportsVariablePaging": true,
+                 "supportsExceptionBreakpoints": true,
+                 "supportsExceptionInfoRequest": true,
+                 "supportsBreakpointLocationsRequest": true,
+                 "exceptionBreakpointFilters": [
+                     { "filter": "caught", "label": "Caught Exceptions", "default": false },
+                     { "filter": "uncaught", "label": "Uncaught Exceptions", "default": false },
+                     { "filter": "all", "label": "All Exceptions", "default": false },
+                 ],
+                 "supportsConditionalBreakpoints": true,
+                 "supportsHitConditionalBreakpoints": true,
+                 "supportsLogPoints": true,
+             });
             send_response(out_tx, seq, request, true, Some(body), None);
 
             if !*initialized_rx.borrow() {
@@ -1412,6 +1413,49 @@ async fn handle_request_inner(
                 }
                 Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
             }
+        }
+        "breakpointLocations" => {
+            if cancel.is_cancelled() {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("cancelled".to_string()),
+                );
+                return;
+            }
+
+            let source_path = request
+                .arguments
+                .get("source")
+                .and_then(|s| s.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            let Some(line) = request.arguments.get("line").and_then(|v| v.as_i64()) else {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("breakpointLocations.line is required".to_string()),
+                );
+                return;
+            };
+
+            let end_line = request.arguments.get("endLine").and_then(|v| v.as_i64());
+            let breakpoints = Debugger::breakpoint_locations(source_path, line, end_line);
+            send_response(
+                out_tx,
+                seq,
+                request,
+                true,
+                Some(json!({ "breakpoints": breakpoints })),
+                None,
+            );
         }
         "setExceptionBreakpoints" => {
             let filters: Vec<String> = request
