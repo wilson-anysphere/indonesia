@@ -28,7 +28,7 @@ follow [`AGENTS.md`](../AGENTS.md) + [`docs/00-operational-guide.md`](00-operati
 - Run cargo via the wrapper script: `bash scripts/cargo_agent.sh <subcommand> ...`
   (enforces memory caps and throttles concurrent cargo invocations).
 - **Always scope test runs**. Avoid workspace-wide test runs (e.g. `cargo test --workspace` /
-  `cargo nextest run --workspace`) on shared agent hosts; always use a scope like `-p <crate>`, `--test <name>`,
+  `cargo nextest run --workspace`) on shared agent hosts; always use a scope like `-p <crate>`, `--test=<name>`,
   `--lib`, or `--bin <name>`.
 
 Examples (CI command → agent-safe local equivalent):
