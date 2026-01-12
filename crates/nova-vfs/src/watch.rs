@@ -41,10 +41,14 @@
 //! - **Modified**
 //! - **Deleted**
 //! - **Moved**
+//! - **Rescan** (not a file change; indicates the watcher dropped events and consumers should rescan)
 //!
 //! Backends are allowed to be *lossy* and the OS can legitimately coalesce/reorder events; this is
 //! unavoidable in practice. The goal is to provide a stable "best effort" stream that higher
 //! layers can batch/debounce.
+//!
+//! If a backend drops events due to overflow/backpressure, it should emit [`WatchEvent::Rescan`] so
+//! consumers can fall back to a full rescan of watched roots.
 //!
 //! ## Rename pairing and limitations
 //!
@@ -93,11 +97,22 @@ pub enum WatchEvent {
 }
 
 impl WatchEvent {
+    /// Returns the normalized file changes contained in this event (if any).
+    ///
+    /// - For [`WatchEvent::Changes`], this is the underlying batch of changes.
+    /// - For [`WatchEvent::Rescan`], this is an empty slice (callers should rescan watched roots).
+    pub fn changes(&self) -> &[FileChange] {
+        match self {
+            WatchEvent::Changes { changes } => changes,
+            WatchEvent::Rescan => &[],
+        }
+    }
+
     /// Returns every VFS path touched by this watch event.
     ///
     /// For moves this includes both `from` and `to`.
     pub fn paths(&self) -> impl Iterator<Item = &VfsPath> {
-        self.changes.iter().flat_map(|change| change.paths())
+        self.changes().iter().flat_map(|change| change.paths())
     }
 
     /// Returns every local filesystem path touched by this watch event.

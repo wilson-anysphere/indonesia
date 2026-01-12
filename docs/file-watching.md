@@ -18,11 +18,17 @@ Watcher backends are normalized into a small set of operations:
 - **Modified**
 - **Deleted**
 - **Moved** (rename/move)
+- **Rescan** (not a file change): indicates the watcher dropped events and consumers should rescan watched roots.
 
 Rename detection is *heuristic* on many platforms. Some backends emit a rename as two separate
 events (`from` then `to`) and may reorder or coalesce them. `nova-vfs` is responsible for pairing
 these into a single logical **Moved** operation when possible; when pairing fails, consumers may
 observe a fallback representation (e.g. delete+create, or just modified).
+
+`Rescan` events can occur under sustained filesystem churn when watcher queues overflow. When a
+consumer receives a rescan signal, it should fall back to walking/relisting the relevant roots and
+rebuilding its view of the filesystem (treat watcher events as a hint, not an authoritative source
+of truth).
 
 ## Dynamic watch roots (workspace reloads)
 
@@ -87,13 +93,20 @@ implementation (often called `ManualFileWatcher`) and explicitly enqueue events.
 Conceptually:
 
 ```rust
-use nova_vfs::{FileWatcher, ManualFileWatcher, WatchEvent};
+use nova_vfs::{FileChange, FileWatcher, ManualFileWatcher, VfsPath, WatchEvent};
+use std::path::PathBuf;
 use std::time::Duration;
 
 // ManualFileWatcher implements FileWatcher and exposes a way to inject events.
 let watcher = ManualFileWatcher::default();
 
-watcher.push(WatchEvent { changes: vec![/* ... */] }).unwrap();
+watcher
+    .push(WatchEvent::Changes {
+        changes: vec![FileChange::Created {
+            path: VfsPath::local(PathBuf::from("/tmp/Main.java")),
+        }],
+    })
+    .unwrap();
 
 // WatchMessage = io::Result<WatchEvent>, so errors travel on the same channel.
 let msg = watcher
@@ -101,7 +114,10 @@ let msg = watcher
     .recv_timeout(Duration::from_secs(1))
     .unwrap()
     .unwrap();
-assert_eq!(msg.changes.len(), 1);
+match msg {
+    WatchEvent::Changes { changes } => assert_eq!(changes.len(), 1),
+    WatchEvent::Rescan => panic!("unexpected rescan event in test"),
+}
 ```
 
 ### 2) Bypass the watcher and call "apply events" APIs directly
