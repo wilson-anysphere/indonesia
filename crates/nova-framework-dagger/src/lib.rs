@@ -53,7 +53,7 @@ impl FrameworkAnalyzer for DaggerAnalyzer {
         let Some(file_path) = db.file_path(file) else {
             return Vec::new();
         };
-        let Some(_file_text) = db.file_text(file) else {
+        let Some(file_text) = db.file_text(file) else {
             return Vec::new();
         };
 
@@ -66,9 +66,7 @@ impl FrameworkAnalyzer for DaggerAnalyzer {
             return Vec::new();
         };
 
-        let Some(text) = project.file_text(file_path) else {
-            return Vec::new();
-        };
+        let index = LineIndex::new(file_text);
 
         project
             .analysis
@@ -83,7 +81,7 @@ impl FrameworkAnalyzer for DaggerAnalyzer {
                 },
                 code: dagger_code(d.source.as_deref()),
                 message: d.message.clone(),
-                span: core_range_to_span(text, d.range),
+                span: core_range_to_span_with_index(file_text, &index, d.range),
             })
             .collect()
     }
@@ -282,6 +280,10 @@ fn core_range_to_span(text: &str, range: Range) -> Option<Span> {
     // the `character` field. Convert to byte offsets for `nova_types::Span` using
     // `LineIndex`.
     let index = LineIndex::new(text);
+    core_range_to_span_with_index(text, &index, range)
+}
+
+fn core_range_to_span_with_index(text: &str, index: &LineIndex, range: Range) -> Option<Span> {
     if let Some(byte_range) = index.text_range(text, range) {
         return Some(Span::new(
             u32::from(byte_range.start()) as usize,
@@ -292,9 +294,13 @@ fn core_range_to_span(text: &str, range: Range) -> Option<Span> {
     // Fallback: some producers (including older best-effort parsers) may emit
     // UTF-8 byte columns instead of UTF-16. Interpret `character` as a byte
     // offset within the line and clamp to valid boundaries.
-    let start = fallback_offset_utf8(text, &index, range.start)?;
-    let end = fallback_offset_utf8(text, &index, range.end)?;
-    let (start, end) = if start <= end { (start, end) } else { (end, start) };
+    let start = fallback_offset_utf8(text, index, range.start)?;
+    let end = fallback_offset_utf8(text, index, range.end)?;
+    let (start, end) = if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    };
     Some(Span::new(start, end))
 }
 
