@@ -626,7 +626,7 @@ pub enum StreamDebugError {
     Analysis(#[from] StreamAnalysisError),
     #[error(
         "refusing to run stream debug on `{stream_expr}` because it looks like an existing Stream value.\n\
-Stream debug samples by evaluating `.limit(...).collect(...)`, which *consumes* streams.\n\
+Stream debug needs to sample elements by iterating the stream, which would *consume* that Stream value.\n\
 Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `java.util.Arrays.stream(array)`)."
     )]
     UnsafeExistingStream { stream_expr: String },
