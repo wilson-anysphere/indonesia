@@ -1037,6 +1037,16 @@ fn looks_like_type_identifier(name: &str) -> bool {
         .is_some_and(|b| matches!(b, b'A'..=b'Z'))
 }
 
+fn is_java_identifier(token: &str) -> bool {
+    let mut chars = token.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+
+    (first.is_ascii_alphabetic() || first == '_' || first == '$')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$')
+}
+
 fn parse_type_mismatch(message: &str) -> Option<(String, String)> {
     let message = message.strip_prefix("type mismatch: expected ")?;
     let (expected, found) = message.split_once(", found ")?;
