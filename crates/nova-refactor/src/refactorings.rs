@@ -4849,23 +4849,82 @@ fn find_local_variable_declaration(
 
         let declarator_delete_range = if declarators.len() <= 1 {
             None
-        } else if let Some(next) = declarators.get(target_idx + 1) {
-            // Remove `decl, ` (trailing comma) when a next declarator exists.
-            //
-            // We use a *trimmed* range for `next` because its node range may include leading
-            // trivia (whitespace/comments). When deleting the comma, we also want to remove
-            // whitespace between the comma and the next declarator to avoid leaving `int  b`.
-            let start = trimmed_syntax_range(decl.syntax()).start;
-            let end = trimmed_syntax_range(next.syntax()).start;
-            Some(TextRange::new(start, end))
-        } else if target_idx > 0 {
-            // Remove `, decl` (leading comma) when this is the last declarator.
-            let prev = declarators.get(target_idx - 1)?;
-            let start = trimmed_syntax_range(prev.syntax()).end;
-            let end = trimmed_syntax_range(decl.syntax()).end;
-            Some(TextRange::new(start, end))
         } else {
-            None
+            // When deleting a single declarator out of a multi-declarator statement (`int a = 1, b
+            // = 2;`), we want to preserve comments that are adjacent to the *remaining* declarators.
+            //
+            // Using a simple trimmed range (`decl..next`) would delete any comment between the
+            // comma and `next` because comments are trivia.
+            let comma_tokens: Vec<_> = list
+                .syntax()
+                .children_with_tokens()
+                .filter_map(|el| el.into_token())
+                .filter(|tok| tok.kind() == SyntaxKind::Comma)
+                .collect();
+
+            let comma_for_target: Option<nova_syntax::SyntaxToken> =
+                if comma_tokens.len() == declarators.len().saturating_sub(1) {
+                    if target_idx + 1 < declarators.len() {
+                        comma_tokens.get(target_idx).cloned()
+                    } else if target_idx > 0 {
+                        comma_tokens.get(target_idx - 1).cloned()
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+            if let Some(comma_tok) = comma_for_target {
+                if target_idx + 1 < declarators.len() {
+                    // Remove `decl,` (and *only* the whitespace directly after the comma) when a
+                    // next declarator exists. Stop before comments so they stay attached to the
+                    // next declarator.
+                    let start = trimmed_syntax_range(decl.syntax()).start;
+                    let mut end = syntax_token_range(&comma_tok).end;
+                    let mut tok = comma_tok;
+                    while let Some(next_tok) = tok.next_token() {
+                        if next_tok.kind() == SyntaxKind::Whitespace {
+                            end = syntax_token_range(&next_tok).end;
+                            tok = next_tok;
+                        } else {
+                            break;
+                        }
+                    }
+                    Some(TextRange::new(start, end))
+                } else if target_idx > 0 {
+                    // Remove `, decl` (and whitespace directly before the comma) when this is the
+                    // last declarator. Stop before comments so they stay attached to the previous
+                    // declarator.
+                    let end = trimmed_syntax_range(decl.syntax()).end;
+                    let mut start = syntax_token_range(&comma_tok).start;
+                    let mut tok = comma_tok;
+                    while let Some(prev_tok) = tok.prev_token() {
+                        if prev_tok.kind() == SyntaxKind::Whitespace {
+                            start = syntax_token_range(&prev_tok).start;
+                            tok = prev_tok;
+                        } else {
+                            break;
+                        }
+                    }
+                    Some(TextRange::new(start, end))
+                } else {
+                    None
+                }
+            } else if let Some(next) = declarators.get(target_idx + 1) {
+                // Fallback: remove `decl, <trivia>` up to the next declarator.
+                let start = trimmed_syntax_range(decl.syntax()).start;
+                let end = trimmed_syntax_range(next.syntax()).start;
+                Some(TextRange::new(start, end))
+            } else if target_idx > 0 {
+                // Fallback: remove `<trivia>, decl` from the previous declarator end.
+                let prev = declarators.get(target_idx - 1)?;
+                let start = trimmed_syntax_range(prev.syntax()).end;
+                let end = trimmed_syntax_range(decl.syntax()).end;
+                Some(TextRange::new(start, end))
+            } else {
+                None
+            }
         };
 
         let other_initializers_have_side_effects = declarators

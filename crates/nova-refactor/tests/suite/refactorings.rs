@@ -6647,8 +6647,8 @@ fn inline_variable_multi_declarator_statement_removes_first_declarator() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
   void m() {
-    int a = 1, b = 2;
-    System.out.println(a + b);
+    int a = 1, b = a + 1;
+    System.out.println(b);
   }
 }
 "#;
@@ -6670,8 +6670,8 @@ fn inline_variable_multi_declarator_statement_removes_first_declarator() {
     let after = apply_text_edits(src, &edit.text_edits).unwrap();
     let expected = r#"class Test {
   void m() {
-    int b = 2;
-    System.out.println(1 + b);
+    int b = 1 + 1;
+    System.out.println(b);
   }
 }
 "#;
@@ -6683,8 +6683,8 @@ fn inline_variable_multi_declarator_statement_removes_middle_declarator() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
   void m() {
-    int a = 1, b = 2, c = 3;
-    System.out.println(a + b + c);
+    int a = 1, b = a + 1, c = b + 1;
+    System.out.println(c);
   }
 }
 "#;
@@ -6706,8 +6706,8 @@ fn inline_variable_multi_declarator_statement_removes_middle_declarator() {
     let after = apply_text_edits(src, &edit.text_edits).unwrap();
     let expected = r#"class Test {
   void m() {
-    int a = 1, c = 3;
-    System.out.println(a + 2 + c);
+    int a = 1, c = (a + 1) + 1;
+    System.out.println(c);
   }
 }
 "#;
@@ -6719,15 +6719,15 @@ fn inline_variable_multi_declarator_statement_removes_last_declarator() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
   void m() {
-    int a = 1, b = 2;
-    System.out.println(a + b);
+    int a = 1, b = 2, c = b + 1;
+    System.out.println(c);
   }
 }
 "#;
     let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
 
-    let offset = src.find("b =").unwrap();
-    let symbol = db.symbol_at(&file, offset).expect("symbol at b");
+    let offset = src.find("c =").unwrap();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at c");
 
     let edit = inline_variable(
         &db,
@@ -6742,8 +6742,8 @@ fn inline_variable_multi_declarator_statement_removes_last_declarator() {
     let after = apply_text_edits(src, &edit.text_edits).unwrap();
     let expected = r#"class Test {
   void m() {
-    int a = 1;
-    System.out.println(a + 2);
+    int a = 1, b = 2;
+    System.out.println((b + 1));
   }
 }
 "#;
