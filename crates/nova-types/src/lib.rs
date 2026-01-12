@@ -3873,6 +3873,29 @@ fn collect_method_candidates(
                 let sig_key = (method.is_static, erased_params);
 
                 if let Some(&existing) = seen_sigs.get(&sig_key) {
+                    // When traversing a single class hierarchy, we encounter overriding/hiding
+                    // declarations before their supertypes, so keeping the first-seen method is
+                    // usually sufficient.
+                    //
+                    // For intersection receivers, however, the initial bounds can be visited in an
+                    // arbitrary order (e.g. `Super & Sub`). In that case we may see a supertype
+                    // method before the subtype override. Prefer the subtype declaration whenever
+                    // the owners are related, regardless of intersection ordering.
+                    let existing_owner = out[existing].owner;
+                    let current_owner = def;
+                    let existing_owner_ty = Type::class(existing_owner, vec![]);
+                    let current_owner_ty = Type::class(current_owner, vec![]);
+                    let existing_is_subtype = is_subtype(env, &existing_owner_ty, &current_owner_ty);
+                    let current_is_subtype = is_subtype(env, &current_owner_ty, &existing_owner_ty);
+                    if current_is_subtype && !existing_is_subtype {
+                        out[existing] = CandidateMethod {
+                            owner: def,
+                            method: method.clone(),
+                            class_subst: subst.clone(),
+                        };
+                        continue;
+                    }
+
                     // Best-effort intersection handling: if two unrelated bounds declare the same
                     // generic method, their type parameter ids will differ even though the methods
                     // are "the same" up to alpha-renaming. To avoid leaking an unrelated type var
@@ -3892,13 +3915,6 @@ fn collect_method_candidates(
                         // paired with a generic one that erases to the same signature
                         // (`Object id(Object)` vs `<T> T id(T)`). In that case we prefer keeping the
                         // generic method so downstream inference can pick a precise return type.
-                        let existing_owner = out[existing].owner;
-                        let current_owner = def;
-                        let existing_owner_ty = Type::class(existing_owner, vec![]);
-                        let current_owner_ty = Type::class(current_owner, vec![]);
-                        let existing_is_subtype =
-                            is_subtype(env, &existing_owner_ty, &current_owner_ty);
-
                         // Preserve override/hiding semantics: if the existing declaration comes
                         // from a more specific type, keep it (even if it is non-generic).
                         if existing_is_subtype {
@@ -5580,6 +5596,62 @@ mod tests {
         let method = &env.class(collections).unwrap().methods[0];
         let inferred = infer_type_arguments(&env, &call, collections, method);
         assert_eq!(inferred, vec![string]);
+    }
+
+    #[test]
+    fn intersection_candidate_prefers_subtype_override_over_supertype_generic() {
+        // Even though intersection receivers are normally normalized to prune redundant supertypes,
+        // `collect_method_candidates` should still behave sensibly if given an unnormalized
+        // intersection like `Super & Sub` where `Sub <: Super`.
+        let mut env = store();
+        let object = Type::class(env.well_known().object, vec![]);
+
+        let t = env.add_type_param("T", vec![object.clone()]);
+        let super_i = env.add_class(ClassDef {
+            name: "SuperI".to_string(),
+            kind: ClassKind::Interface,
+            type_params: vec![],
+            super_class: None,
+            interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
+            methods: vec![MethodDef {
+                name: "id".to_string(),
+                type_params: vec![t],
+                params: vec![Type::TypeVar(t)],
+                return_type: Type::TypeVar(t),
+                is_static: false,
+                is_varargs: false,
+                is_abstract: true,
+            }],
+        });
+        let sub_i = env.add_class(ClassDef {
+            name: "SubI".to_string(),
+            kind: ClassKind::Interface,
+            type_params: vec![],
+            super_class: None,
+            interfaces: vec![Type::class(super_i, vec![])],
+            fields: vec![],
+            constructors: vec![],
+            methods: vec![MethodDef {
+                name: "id".to_string(),
+                type_params: vec![],
+                params: vec![object.clone()],
+                return_type: object.clone(),
+                is_static: false,
+                is_varargs: false,
+                is_abstract: true,
+            }],
+        });
+
+        let receiver = Type::Intersection(vec![
+            Type::class(super_i, vec![]),
+            Type::class(sub_i, vec![]),
+        ]);
+        let cands = collect_method_candidates(&env, &receiver, "id");
+        assert_eq!(cands.len(), 1);
+        assert_eq!(cands[0].owner, sub_i);
+        assert!(cands[0].method.type_params.is_empty());
     }
 }
 
