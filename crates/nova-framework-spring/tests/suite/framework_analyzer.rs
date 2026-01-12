@@ -1,4 +1,4 @@
-use nova_framework::{AnalyzerRegistry, CompletionContext, MemoryDatabase};
+use nova_framework::{AnalyzerRegistry, CompletionContext, Database, MemoryDatabase, Symbol};
 use nova_framework_spring::{
     SpringAnalyzer, SPRING_NO_BEAN, SPRING_UNKNOWN_CONFIG_KEY,
 };
@@ -211,5 +211,58 @@ fn di_diagnostics_work_without_file_path() {
     assert!(
         diags.iter().any(|d| d.code.as_ref() == SPRING_NO_BEAN),
         "expected SPRING_NO_BEAN diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn di_navigation_targets_include_bean_definition_file() {
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+    db.add_dependency(project, "org.springframework", "spring-context");
+
+    let foo = db.add_file_with_path_and_text(
+        project,
+        "src/Foo.java",
+        r#"
+            import org.springframework.stereotype.Component;
+
+            @Component
+            class Foo {}
+        "#,
+    );
+
+    let bar = db.add_file_with_path_and_text(
+        project,
+        "src/Bar.java",
+        r#"
+            import org.springframework.stereotype.Component;
+            import org.springframework.beans.factory.annotation.Autowired;
+
+            @Component
+            class Bar {
+                @Autowired Foo foo;
+            }
+        "#,
+    );
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(SpringAnalyzer::new()));
+
+    let targets = registry.framework_navigation_targets(&db, &Symbol::File(bar));
+    assert!(
+        targets.iter().any(|t| t.file == foo && t.label == "Bean: foo"),
+        "expected Bean: foo navigation target into Foo.java; got {targets:?}"
+    );
+
+    let target = targets
+        .iter()
+        .find(|t| t.file == foo && t.label == "Bean: foo")
+        .expect("Bean: foo navigation target");
+    let span = target.span.expect("navigation target span");
+    let text = db.file_text(foo).expect("Foo.java text");
+    assert_eq!(
+        text.get(span.start..span.end).unwrap_or(""),
+        "Foo",
+        "expected navigation span to cover bean class name"
     );
 }

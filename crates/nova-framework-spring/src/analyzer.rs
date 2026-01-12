@@ -1,11 +1,11 @@
-use std::collections::{hash_map::DefaultHasher, HashMap, VecDeque};
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use nova_config_metadata::MetadataIndex;
 use nova_core::{FileId, ProjectId};
-use nova_framework::{CompletionContext, Database, FrameworkAnalyzer};
+use nova_framework::{CompletionContext, Database, FrameworkAnalyzer, NavigationTarget, Symbol};
 use nova_types::{CompletionItem, Diagnostic, Span};
 
 use crate::{
@@ -72,6 +72,7 @@ struct CachedWorkspace {
     index: Arc<SpringWorkspaceIndex>,
     analysis: Option<Arc<AnalysisResult>>,
     file_id_to_source: HashMap<FileId, usize>,
+    source_to_file_id: Vec<FileId>,
 }
 
 /// Spring framework analyzer that plugs `nova-framework-spring` into the
@@ -333,6 +334,100 @@ impl FrameworkAnalyzer for SpringAnalyzer {
 
         Vec::new()
     }
+
+    fn navigation(&self, db: &dyn Database, symbol: &Symbol) -> Vec<NavigationTarget> {
+        let Symbol::File(file) = *symbol else {
+            return Vec::new();
+        };
+
+        let Some(text) = db.file_text(file) else {
+            return Vec::new();
+        };
+        let path = db.file_path(file);
+
+        let is_java = match path {
+            Some(path) => is_java_file(path),
+            None => looks_like_java_source(text),
+        };
+        if !is_java {
+            return Vec::new();
+        }
+
+        let project = db.project_of_file(file);
+        let Some(workspace) = self.cached_workspace(db, project) else {
+            // Graceful degradation: without project-wide enumeration we avoid emitting
+            // cross-file DI navigation targets.
+            return Vec::new();
+        };
+
+        let Some(analysis) = workspace.analysis.as_ref() else {
+            return Vec::new();
+        };
+        let Some(&source_idx) = workspace.file_id_to_source.get(&file) else {
+            return Vec::new();
+        };
+
+        let mut out = Vec::new();
+        let mut seen = HashSet::<(FileId, Span, String)>::new();
+
+        // Injections in this file -> candidate beans in other files.
+        for (inj_idx, inj) in analysis.model.injections.iter().enumerate() {
+            if inj.location.source != source_idx {
+                continue;
+            }
+
+            for target in analysis.model.navigation_from_injection(inj_idx) {
+                if target.location.source == source_idx {
+                    continue;
+                }
+
+                let Some(&dest_file) = workspace.source_to_file_id.get(target.location.source) else {
+                    continue;
+                };
+
+                let key = (dest_file, target.location.span, target.label.clone());
+                if !seen.insert(key) {
+                    continue;
+                }
+
+                out.push(NavigationTarget {
+                    file: dest_file,
+                    span: Some(target.location.span),
+                    label: target.label,
+                });
+            }
+        }
+
+        // Beans in this file -> injection sites in other files.
+        for (bean_idx, bean) in analysis.model.beans.iter().enumerate() {
+            if bean.location.source != source_idx {
+                continue;
+            }
+
+            for target in analysis.model.navigation_from_bean(bean_idx) {
+                if target.location.source == source_idx {
+                    continue;
+                }
+
+                let Some(&dest_file) = workspace.source_to_file_id.get(target.location.source) else {
+                    continue;
+                };
+
+                let key = (dest_file, target.location.span, target.label.clone());
+                if !seen.insert(key) {
+                    continue;
+                }
+
+                out.push(NavigationTarget {
+                    file: dest_file,
+                    span: Some(target.location.span),
+                    label: target.label,
+                });
+            }
+        }
+
+        out
+    }
 }
 
 fn workspace_fingerprint(db: &dyn Database, all_files: &[FileId]) -> (u64, Vec<FileId>) {
@@ -459,6 +554,7 @@ fn build_workspace(db: &dyn Database, files: &[FileId]) -> CachedWorkspace {
     let index = Arc::new(index);
 
     let mut file_id_to_source = HashMap::new();
+    let mut source_to_file_id = Vec::<FileId>::new();
     let mut sources = Vec::<&str>::new();
     for (_path, file) in &java_files {
         let Some(text) = db.file_text(*file) else {
@@ -467,6 +563,7 @@ fn build_workspace(db: &dyn Database, files: &[FileId]) -> CachedWorkspace {
         let idx = sources.len();
         sources.push(text);
         file_id_to_source.insert(*file, idx);
+        source_to_file_id.push(*file);
     }
 
     let analysis = (!sources.is_empty()).then(|| Arc::new(analyze_java_sources(&sources)));
@@ -479,6 +576,7 @@ fn build_workspace(db: &dyn Database, files: &[FileId]) -> CachedWorkspace {
         index,
         analysis,
         file_id_to_source,
+        source_to_file_id,
     }
 }
 
