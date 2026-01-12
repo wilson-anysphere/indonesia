@@ -1818,6 +1818,15 @@ The first (and only) entry in `arguments` is a `GenerateMethodBodyArgs` object:
 Note: the argument object uses **snake_case** field names (e.g. `method_signature`) because the Rust
 type does not use `rename_all = "camelCase"`.
 
+`GenerateMethodBodyArgs` fields:
+
+- `method_signature` (string, required) — method signature including modifiers/return type/name.
+- `context` (string, optional) — best-effort surrounding context (class/members/etc).
+- `uri` (string, optional) — document URI (typically a `file://` URI).
+- `range` (object, optional) — best-effort range covering the selected snippet (0-based line and
+  UTF-16 `character` offsets), matching LSP conventions:
+  `{ start: { line, character }, end: { line, character } }`.
+
 ##### Response
 
 When the edit is applied:
@@ -1881,6 +1890,15 @@ The first (and only) entry in `arguments` is a `GenerateTestsArgs` object:
   "workDoneToken": "optional"
 }
 ```
+
+`GenerateTestsArgs` fields:
+
+- `target` (string, required) — description of the test target (method or class signature).
+- `context` (string, optional) — best-effort surrounding context.
+- `uri` (string, optional) — document URI (typically a `file://` URI).
+- `range` (object, optional) — best-effort range covering the selected snippet (0-based line and
+  UTF-16 `character` offsets), matching LSP conventions:
+  `{ start: { line, character }, end: { line, character } }`.
 
 ##### Response
 
