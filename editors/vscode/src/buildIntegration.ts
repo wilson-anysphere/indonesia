@@ -622,19 +622,6 @@ export function registerNovaBuildIntegration(
     return picked?.value ?? 'auto';
   }
 
-  const isBazelWorkspace = async (folder: vscode.WorkspaceFolder): Promise<boolean> => {
-    const candidates = ['WORKSPACE', 'WORKSPACE.bazel', 'MODULE.bazel'];
-    for (const name of candidates) {
-      try {
-        await vscode.workspace.fs.stat(vscode.Uri.joinPath(folder.uri, name));
-        return true;
-      } catch {
-        // keep looking
-      }
-    }
-    return false;
-  };
-
   const promptForBazelTarget = async (folder: vscode.WorkspaceFolder): Promise<string | undefined> => {
     const projectRoot = folder.uri.fsPath;
     try {
@@ -726,19 +713,7 @@ export function registerNovaBuildIntegration(
           const projectPath = selector?.projectPath;
           let target: string | undefined = selector?.target;
 
-           try {
-             // `nova/buildProject` only supports Bazel builds when `buildTool` is unset/auto. If the
-             // user explicitly selected Maven/Gradle, avoid Bazel target prompts (common in repos
-             // that include both WORKSPACE + pom.xml/build.gradle).
-             const shouldPromptForTarget =
-               buildTool === 'auto' && !target && !module && !projectPath && (await isBazelWorkspace(folder));
-             if (shouldPromptForTarget) {
-               target = await promptForBazelTarget(folder);
-               if (!target) {
-                 return;
-               }
-            }
-
+          try {
             try {
               const response = await request('nova/buildProject', {
                 projectRoot,
@@ -756,12 +731,12 @@ export function registerNovaBuildIntegration(
                 return;
               }
 
-               const message = formatError(err);
-               if (buildTool === 'auto' && !target && !module && !projectPath && isBazelTargetRequiredMessage(message)) {
-                 target = await promptForBazelTarget(folder);
-                 if (!target) {
-                   return;
-                 }
+              const message = formatError(err);
+              if (buildTool === 'auto' && !target && !module && !projectPath && isBazelTargetRequiredMessage(message)) {
+                target = await promptForBazelTarget(folder);
+                if (!target) {
+                  return;
+                }
 
                 const response = await request('nova/buildProject', {
                   projectRoot,
