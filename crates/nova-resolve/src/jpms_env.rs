@@ -9,14 +9,14 @@
 use std::collections::HashSet;
 use std::path::Path;
 
- use anyhow::{anyhow, Context, Result};
- use nova_classpath::{ClasspathEntry, IndexOptions};
- use nova_modules::{ModuleGraph, ModuleInfo, ModuleKind, ModuleName, JAVA_BASE};
- 
- #[derive(Debug, Clone)]
- pub struct JpmsEnvironment {
-     pub graph: ModuleGraph,
-     pub unnamed: ModuleName,
+use anyhow::{anyhow, Context, Result};
+use nova_classpath::{ClasspathEntry, IndexOptions};
+use nova_modules::{ModuleGraph, ModuleInfo, ModuleKind, ModuleName, JAVA_BASE};
+
+#[derive(Debug, Clone)]
+pub struct JpmsEnvironment {
+    pub graph: ModuleGraph,
+    pub unnamed: ModuleName,
 }
 
 pub struct JpmsCompilationEnvironment {
