@@ -288,6 +288,8 @@ export async function activate(context: vscode.ExtensionContext) {
           setNovaExperimentalCapabilities(folder.uri.toString(), languageClient.initializeResult);
         }
       }
+
+      updateFrameworksMethodSupportContexts();
     }),
   );
 
