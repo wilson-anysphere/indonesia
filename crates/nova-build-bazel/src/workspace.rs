@@ -130,6 +130,7 @@ impl BazelWorkspaceDiscovery {
 pub struct BazelWorkspace<R: CommandRunner> {
     root: PathBuf,
     canonical_root: OnceLock<std::result::Result<PathBuf, String>>,
+    ignored_prefixes: OnceLock<Vec<PathBuf>>,
     execution_root: OnceLock<std::result::Result<PathBuf, String>>,
     runner: R,
     cache_path: Option<PathBuf>,
@@ -148,6 +149,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         Ok(Self {
             root,
             canonical_root: OnceLock::new(),
+            ignored_prefixes: OnceLock::new(),
             execution_root: OnceLock::new(),
             runner,
             cache_path: None,
@@ -220,6 +222,42 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             Ok(path) => Ok(path.clone()),
             Err(message) => bail!("{message}"),
         }
+    }
+
+    fn ignored_prefixes(&self) -> &Vec<PathBuf> {
+        self.ignored_prefixes.get_or_init(|| {
+            let ignore_file = self.root.join(".bazelignore");
+            let Ok(contents) = fs::read_to_string(&ignore_file) else {
+                return Vec::new();
+            };
+
+            let mut prefixes = Vec::new();
+            for line in contents.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+
+                // `.bazelignore` entries are workspace-relative path prefixes. Normalize them
+                // lexically (without hitting the filesystem) and ignore entries that escape the
+                // workspace root or contain unsupported components.
+                let raw = PathBuf::from(line);
+                match normalize_workspace_relative_path(&raw) {
+                    Ok(prefix) => prefixes.push(prefix),
+                    Err(_) => continue,
+                }
+            }
+
+            prefixes.sort();
+            prefixes.dedup();
+            prefixes
+        })
+    }
+
+    fn is_ignored_workspace_path(&self, workspace_rel: &Path) -> bool {
+        self.ignored_prefixes()
+            .iter()
+            .any(|prefix| workspace_rel.starts_with(prefix))
     }
 
     /// Convert a workspace-local file path into a Bazel file label.
@@ -654,6 +692,13 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         };
 
         let rel = normalize_workspace_relative_path(&rel)?;
+
+        // Bazel treats directories listed in `.bazelignore` as outside the workspace/package
+        // universe. Do not resolve labels/packages for ignored paths.
+        if self.is_ignored_workspace_path(&rel) {
+            return Ok(None);
+        }
+
         let abs_file = self.root.join(rel);
 
         let Some(mut dir) = abs_file.parent() else {
@@ -974,6 +1019,12 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         // build definition changes for correctness.
         if changed.iter().any(|path| is_bazel_build_definition_file(path)) {
             self.java_owning_targets_cache.clear();
+        }
+        if changed
+            .iter()
+            .any(|path| path.file_name().and_then(|n| n.to_str()) == Some(".bazelignore"))
+        {
+            let _ = self.ignored_prefixes.take();
         }
         self.cache.invalidate_changed_files(&changed);
         self.persist_cache()

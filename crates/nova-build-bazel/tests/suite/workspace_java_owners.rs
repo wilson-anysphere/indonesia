@@ -959,3 +959,40 @@ fn root_package_owner_resolution_uses_root_file_label() {
         ]]
     );
 }
+
+#[test]
+fn bazelignore_excludes_file_label_and_owning_targets() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
+    std::fs::write(dir.path().join(".bazelignore"), "ignored\n").unwrap();
+
+    write_file(&dir.path().join("ignored/BUILD"), "# ignored package\n");
+    create_file(&dir.path().join("ignored/Foo.java"));
+
+    let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), NoopRunner).unwrap();
+    let label = workspace
+        .workspace_file_label(Path::new("ignored/Foo.java"))
+        .unwrap();
+    assert_eq!(label, None);
+
+    let owners = workspace
+        .java_owning_targets_for_file(Path::new("ignored/Foo.java"))
+        .unwrap();
+    assert!(owners.is_empty());
+}
+
+#[test]
+fn bazelignore_prefix_matching_is_component_based() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
+    std::fs::write(dir.path().join(".bazelignore"), "ignored\n").unwrap();
+
+    write_file(&dir.path().join("ignored2/BUILD"), "# not ignored\n");
+    create_file(&dir.path().join("ignored2/Foo.java"));
+
+    let workspace = BazelWorkspace::new(dir.path().to_path_buf(), NoopRunner).unwrap();
+    let label = workspace
+        .workspace_file_label(Path::new("ignored2/Foo.java"))
+        .unwrap();
+    assert_eq!(label.as_deref(), Some("//ignored2:Foo.java"));
+}
