@@ -1344,7 +1344,14 @@ bundles were loaded, any load/register errors, and per-provider runtime stats.
 
 #### Request params
 
-No params are required; clients should send `{}` or omit params.
+```json
+{
+  "schemaVersion": 1
+}
+```
+
+- `schemaVersion` is optional; when present, it must be `1`.
+- Clients may also omit `params` or send `null`.
 
 #### Response
 
@@ -1401,6 +1408,12 @@ No params are required; clients should send `{}` or omit params.
   "lastDurationMs": null
 }
 ```
+
+#### Errors
+
+- `-32602` for invalid params.
+- `-32602` when `schemaVersion` is present but unsupported:
+  `"unsupported schemaVersion <version> (expected 1)"`.
 
 #### Safe-mode
 

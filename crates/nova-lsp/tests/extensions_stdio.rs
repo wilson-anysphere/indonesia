@@ -204,9 +204,29 @@ fn stdio_server_exposes_extensions_status_and_navigation_requests() {
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 5, "method": "shutdown" }),
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": nova_lsp::EXTENSIONS_STATUS_METHOD,
+            "params": { "schemaVersion": 2 }
+        }),
     );
-    let _shutdown_resp = read_jsonrpc_response(&mut stdout, 5);
+    let status_bad_schema = read_jsonrpc_response(&mut stdout, 5);
+    let error = status_bad_schema.get("error").cloned().expect("error");
+    assert_eq!(error.get("code").and_then(|v| v.as_i64()), Some(-32602));
+    assert!(
+        error
+            .get("message")
+            .and_then(|v| v.as_str())
+            .is_some_and(|msg| msg.contains("unsupported schemaVersion 2 (expected 1)")),
+        "expected schema version mismatch error message; got {error}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 6, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_jsonrpc_response(&mut stdout, 6);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
