@@ -135,6 +135,18 @@ function resolveNotificationMethod(
     return asString;
   }
 
+  // Handle bracket access on protocol constants, e.g.
+  //   DidRenameFilesNotification['method']
+  //   DidRenameFilesNotification['type']
+  //   DidRenameFilesNotification['type'].method
+  // by rewriting to a normal property access and reusing the logic below.
+  if (ts.isElementAccessExpression(expr)) {
+    const key = expr.argumentExpression ? evalConstString(expr.argumentExpression, env) : undefined;
+    if (key && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key)) {
+      return resolveNotificationMethod(ts.factory.createPropertyAccessExpression(expr.expression, key), env, imports);
+    }
+  }
+
   // Handle manually constructed NotificationType instances, e.g.
   //   new NotificationType('workspace/didRenameFiles')
   // so forwarding can't bypass this check by avoiding the predefined
