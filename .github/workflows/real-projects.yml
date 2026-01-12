@@ -63,6 +63,11 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
+      - name: Cargo.lock up-to-date
+        run: |
+          set -euo pipefail
+          cargo metadata --locked --format-version 1 > /dev/null
+
       - name: Prepare cache directories
         run: |
           set -euxo pipefail
@@ -110,6 +115,16 @@ jobs:
           set -euxo pipefail
           mkdir -p real-project-logs
           ./scripts/run-real-project-tests.sh 2>&1 | tee real-project-logs/run-real-project-tests.log
+
+      - name: Cargo.lock unchanged
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git diff --exit-code -- Cargo.lock; then
+            echo "Cargo.lock changed during CI; run cargo update locally and commit Cargo.lock."
+            exit 1
+          fi
 
       - name: Record fixture revisions
         if: always()

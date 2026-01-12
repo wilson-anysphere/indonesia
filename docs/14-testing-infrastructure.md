@@ -146,13 +146,13 @@ cargo nextest run --locked --workspace --profile ci
 # cargo test --locked --workspace
 
 # one crate
-cargo test -p nova-syntax
+cargo test --locked -p nova-syntax
 
 # one integration test harness + filter (e.g. navigation tests)
-cargo test -p nova-lsp --test stdio_server navigation
+cargo test --locked -p nova-lsp --test stdio_server navigation
 
 # filter by test name substring
-cargo test -p nova-refactor move_static_method_updates_call_sites
+cargo test --locked -p nova-refactor move_static_method_updates_call_sites
 ```
 
 **Expectation:** unit tests should be deterministic and should not require network access.
@@ -164,15 +164,15 @@ Nova also ships a Nextest config at [`.config/nextest.toml`](../.config/nextest.
 
 ```bash
 # fast local runner
-cargo nextest run
+cargo nextest run --locked
 
 # CI-like semantics (timeouts, fail-fast off, etc.)
-cargo nextest run --profile ci
+cargo nextest run --locked --profile ci
 ```
 
 The `ci` profile caps test parallelism (`test-threads = 8`) so CI and large-host runs don't spawn too
 many test processes at once (which can cause memory spikes and flakiness). Override per-run with
-`NEXTEST_TEST_THREADS=<N>` or `cargo nextest run --test-threads <N>`.
+`NEXTEST_TEST_THREADS=<N>` or `cargo nextest run --locked --test-threads <N>`.
 
 #### Cross-platform testing gotchas
 
@@ -336,8 +336,8 @@ These are “black-box-ish” tests around Nova’s protocol surfaces.
 **Run locally:**
 
 ```bash
-cargo test -p nova-lsp --test stdio_server
-cargo test -p nova-lsp stdio_
+cargo test --locked -p nova-lsp --test stdio_server
+cargo test --locked -p nova-lsp stdio_
 ```
 
 #### 3b) DAP end-to-end tests (in-memory transport)
@@ -388,7 +388,7 @@ can run without a JDK. CI runs them separately in `.github/workflows/javac.yml`.
 **Run locally (requires `javac` on `PATH`):**
 
 ```bash
-cargo test -p nova-types --test javac_differential -- --ignored
+cargo test --locked -p nova-types --test javac_differential -- --ignored
 ```
 
 If `javac` is not available, the tests print a message and return early (Rust’s test harness has no
@@ -507,8 +507,8 @@ CI runs these suites in `.github/workflows/real-projects.yml` (scheduled + manua
 ./scripts/run-real-project-tests.sh
 
 # or, run the suites directly (after cloning)
-cargo test -p nova-project --test harness -- --ignored real_projects::
-cargo test -p nova-cli --test cli -- --ignored suite::real_projects::
+cargo test --locked -p nova-project --test harness -- --ignored real_projects::
+cargo test --locked -p nova-cli --test cli -- --ignored suite::real_projects::
 ```
 
 For CI-like behavior (and to reduce peak memory), consider running with a single test thread:

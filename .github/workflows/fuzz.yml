@@ -35,6 +35,11 @@ jobs:
             crates/nova-remote-proto/fuzz -> target
             crates/nova-remote-rpc/fuzz -> target
 
+      - name: Cargo.lock up-to-date
+        run: |
+          set -euo pipefail
+          cargo metadata --locked --format-version 1 > /dev/null
+
       # cargo-fuzz is required for libFuzzer integration and is expensive to build from source.
       # Use cargo-binstall to fetch a prebuilt binary (pinned for reproducibility).
       - name: Install cargo-binstall
@@ -104,6 +109,16 @@ jobs:
       - name: refactor_smoke (best-effort; --features refactor)
         run: cargo +nightly fuzz run --codegen-units 16 --features refactor refactor_smoke -- -max_total_time=30 -max_len=262144
         timeout-minutes: 30
+
+      - name: Cargo.lock unchanged
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git diff --exit-code -- Cargo.lock; then
+            echo "Cargo.lock changed during CI; run cargo update locally and commit Cargo.lock."
+            exit 1
+          fi
 
       - name: Upload fuzz artifacts
         if: failure()
