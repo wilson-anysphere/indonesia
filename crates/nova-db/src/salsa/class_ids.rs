@@ -77,12 +77,17 @@ pub trait HasClassInterner {
         interner.intern(ClassKey::new(project, binary_name))
     }
 
-    fn class_key(&self, id: ClassId) -> Option<ClassKey> {
+    /// Reverse lookup: map an interned [`ClassId`] back to its [`ClassKey`].
+    ///
+    /// Note: this is intentionally named `lookup_*` to avoid colliding with
+    /// `NovaResolve::class_key` (a Salsa query with a different meaning).
+    fn lookup_class_key(&self, id: ClassId) -> Option<ClassKey> {
         let interner = self.class_interner().lock();
         interner.lookup_key(id).cloned()
     }
 
-    fn class_id(&self, key: &ClassKey) -> Option<ClassId> {
+    /// Lookup an existing [`ClassId`] without allocating a new one.
+    fn lookup_class_id(&self, key: &ClassKey) -> Option<ClassId> {
         let interner = self.class_interner().lock();
         interner.lookup_id(key)
     }
