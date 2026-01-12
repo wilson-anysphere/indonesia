@@ -77,6 +77,10 @@ impl StreamOperationKind {
             "collect" => Self::Collect,
             "count" => Self::Count,
             "forEach" => Self::ForEach,
+            // Treat `forEachOrdered` as the same kind of terminal side-effecting operation.
+            // This keeps the operation taxonomy stable while ensuring void terminals compile
+            // correctly in injected helper methods.
+            "forEachOrdered" => Self::ForEach,
             "reduce" => Self::Reduce,
             _ => Self::Unknown,
         }
@@ -433,6 +437,7 @@ fn resolve_stream_method_stream(name: &str, arg_count: usize) -> Option<Type> {
         ("collect", 1) | ("collect", 3) => Some(Type::Named("java.lang.Object".to_string())),
         ("count", 0) => Some(Type::Primitive(PrimitiveType::Long)),
         ("forEach", 1) => Some(Type::Void),
+        ("forEachOrdered", 1) => Some(Type::Void),
         ("reduce", 1) | ("reduce", 2) | ("reduce", 3) => {
             Some(Type::Named("java.lang.Object".to_string()))
         }
@@ -450,6 +455,7 @@ fn resolve_stream_method_int_stream(name: &str, arg_count: usize) -> Option<Type
         | ("limit", 1)
         | ("peek", 1) => Some(Type::Named("java.util.stream.IntStream".to_string())),
         ("count", 0) => Some(Type::Primitive(PrimitiveType::Long)),
+        ("forEach", 1) | ("forEachOrdered", 1) => Some(Type::Void),
         _ => None,
     }
 }
@@ -464,6 +470,7 @@ fn resolve_stream_method_long_stream(name: &str, arg_count: usize) -> Option<Typ
         | ("limit", 1)
         | ("peek", 1) => Some(Type::Named("java.util.stream.LongStream".to_string())),
         ("count", 0) => Some(Type::Primitive(PrimitiveType::Long)),
+        ("forEach", 1) | ("forEachOrdered", 1) => Some(Type::Void),
         _ => None,
     }
 }
@@ -478,6 +485,7 @@ fn resolve_stream_method_double_stream(name: &str, arg_count: usize) -> Option<T
         | ("limit", 1)
         | ("peek", 1) => Some(Type::Named("java.util.stream.DoubleStream".to_string())),
         ("count", 0) => Some(Type::Primitive(PrimitiveType::Long)),
+        ("forEach", 1) | ("forEachOrdered", 1) => Some(Type::Void),
         _ => None,
     }
 }
@@ -1925,5 +1933,85 @@ mod tests {
         assert!(terminal.executed);
         assert_eq!(terminal.value.as_deref(), Some("void"));
         assert_eq!(terminal.type_name.as_deref(), Some("void"));
+    }
+
+    #[test]
+    fn analyze_recognizes_for_each_ordered_as_void_terminal() {
+        let expr = "list.stream().forEachOrdered(System.out::println)";
+        let chain = analyze_stream_expression(expr).unwrap();
+
+        let term = chain.terminal.as_ref().expect("missing terminal op");
+        assert_eq!(term.name, "forEachOrdered");
+        assert_eq!(term.kind, StreamOperationKind::ForEach);
+        assert_eq!(
+            term.resolved.as_ref().unwrap().return_type,
+            "void",
+            "expected resolved return type to be void: {term:?}"
+        );
+    }
+
+    #[test]
+    fn debug_stream_for_each_ordered_returns_void_when_allowed() {
+        let expr = "list.stream().forEachOrdered(System.out::println)";
+        let chain = analyze_stream_expression(expr).unwrap();
+
+        let mut jdwp = MockJdwpClient::new();
+        jdwp.set_evaluation(
+            1,
+            "list.stream().limit(3).collect(java.util.stream.Collectors.toList())",
+            Ok(JdwpValue::Object(ObjectRef {
+                id: 10,
+                runtime_type: "java.util.ArrayList".to_string(),
+            })),
+        );
+        jdwp.insert_object(
+            10,
+            MockObject {
+                preview: ObjectPreview {
+                    runtime_type: "java.util.ArrayList".to_string(),
+                    kind: ObjectKindPreview::List {
+                        size: 3,
+                        sample: vec![JdwpValue::Int(1), JdwpValue::Int(2), JdwpValue::Int(3)],
+                    },
+                },
+                children: Vec::new(),
+            },
+        );
+
+        jdwp.set_evaluation(
+            1,
+            "((java.util.function.Supplier<Object>)(() -> {list.stream().limit(3).forEachOrdered(System.out::println);return null;})).get()",
+            Ok(JdwpValue::Void),
+        );
+
+        let config = StreamDebugConfig {
+            max_sample_size: 3,
+            max_total_time: Duration::from_secs(1),
+            allow_side_effects: true,
+            allow_terminal_ops: true,
+        };
+        let cancel = CancellationToken::default();
+        let result = debug_stream(&mut jdwp, 1, &chain, &config, &cancel).unwrap();
+
+        let terminal = result.terminal.as_ref().expect("missing terminal result");
+        assert!(terminal.executed);
+        assert_eq!(terminal.value.as_deref(), Some("void"));
+        assert_eq!(terminal.type_name.as_deref(), Some("void"));
+    }
+
+    #[test]
+    fn analyze_recognizes_int_stream_for_each_as_void_terminal() {
+        let expr = "IntStream.range(0, 3).forEach(System.out::println)";
+        let chain = analyze_stream_expression(expr).unwrap();
+        assert_eq!(chain.stream_kind, StreamValueKind::IntStream);
+
+        let term = chain.terminal.as_ref().expect("missing terminal op");
+        assert_eq!(term.name, "forEach");
+        assert_eq!(term.kind, StreamOperationKind::ForEach);
+        assert_eq!(
+            term.resolved.as_ref().unwrap().return_type,
+            "void",
+            "expected resolved return type to be void: {term:?}"
+        );
     }
 }
