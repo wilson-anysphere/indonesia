@@ -116,10 +116,10 @@ testdata/
 
 ```bash
 # Run the golden corpus test
-bash scripts/cargo_agent.sh test -p nova-syntax --test golden_corpus
+bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
 
 # (Re)generate expected `.tree`/`.errors` outputs
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
 ```
 
 ### Java Language Levels
@@ -160,13 +160,13 @@ let formatted = nova_format::format_file(source, options);
 bash scripts/cargo_agent.sh test -p nova-syntax --lib
 
 # Parser golden corpus fixtures
-bash scripts/cargo_agent.sh test -p nova-syntax --test golden_corpus
+bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
 
 # Formatter tests (includes insta snapshot tests in `tests/`)
 bash scripts/cargo_agent.sh test -p nova-format --tests
 
 # Update golden corpus expectations
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
 
 # Update formatter snapshots (insta)
 INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --tests

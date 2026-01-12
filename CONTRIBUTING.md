@@ -57,7 +57,7 @@ Some tests compare Nova’s output against on-disk “golden” expectations (pa
 before/after fixtures). To update those expectations:
 
 ```bash
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
 BLESS=1 bash scripts/cargo_agent.sh test -p nova-refactor
 ```
 

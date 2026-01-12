@@ -119,7 +119,7 @@ fn parse_method_declaration() {
 INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --tests
 
 # Golden / fixture expectations (used by several suites, including the `nova-syntax` golden corpus)
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
 ```
 
 ### JLS Compliance Tests
@@ -352,7 +352,7 @@ bash scripts/cargo_agent.sh test -p nova-types --lib -- test_name
 bash scripts/cargo_agent.sh test -p nova-syntax --lib -- --nocapture
 
 # Update golden / fixture expectations
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
 
 # Update `insta` snapshots
 INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --tests

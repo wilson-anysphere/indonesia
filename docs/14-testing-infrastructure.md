@@ -161,18 +161,18 @@ Nova uses “golden” fixtures when the expected output is easiest to review as
   - `testdata/recovery/**/*.java` — inputs expected to produce parse errors but still recover
     - `*.tree` contains a debug dump of the recovered syntax tree
     - `*.errors` contains canonicalized parse errors
-- Test code: `crates/nova-syntax/tests/golden_corpus.rs`
+- Test code: `crates/nova-syntax/tests/suite/golden_corpus.rs` (included by `crates/nova-syntax/tests/javac_corpus.rs`)
 
 **Run locally:**
 
 ```bash
-bash scripts/cargo_agent.sh test -p nova-syntax --test golden_corpus
+bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
 ```
 
 **Update / bless expectations (writes `.tree`/`.errors` files next to the fixtures):**
 
 ```bash
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
 ```
 
 #### 2b) Refactoring before/after fixtures
@@ -554,7 +554,7 @@ Set `BLESS=1` to rewrite on-disk expectations for file-based golden tests:
 Example:
 
 ```bash
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
 BLESS=1 bash scripts/cargo_agent.sh test -p nova-refactor
 ```
 
@@ -627,7 +627,7 @@ Note: `.github/workflows/release.yml` exists for packaging and release automatio
 2. Generate/update the expected `.tree`/`.errors` outputs with:
 
 ```bash
-BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test golden_corpus
+BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test javac_corpus golden_corpus
 ```
 
 ### Add a new refactoring before/after fixture
