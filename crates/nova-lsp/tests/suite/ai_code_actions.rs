@@ -1233,7 +1233,12 @@ excluded_paths = ["secret/**"]
     // file-backed context (code snippet).
     let explain = actions
         .iter()
-        .find(|a| a.get("title").and_then(|t| t.as_str()) == Some("Explain this error"))
+        .find(|a| {
+            a.get("command")
+                .and_then(|c| c.get("command"))
+                .and_then(|v| v.as_str())
+                == Some(nova_ide::COMMAND_EXPLAIN_ERROR)
+        })
         .expect("expected explain-error action to remain available");
 
     // Ensure we don't include a code snippet for excluded files.
@@ -1245,8 +1250,8 @@ excluded_paths = ["secret/**"]
         .and_then(|v| v.as_object())
         .expect("ExplainErrorArgs payload");
     assert!(
-        explain_args.get("code").is_some_and(|v| v.is_null()),
-        "expected explainError args.code to be null for excluded paths, got: {explain_args:?}"
+        explain_args.get("code").is_none() || explain_args.get("code").is_some_and(|v| v.is_null()),
+        "expected explainError args.code to be omitted/null for excluded paths, got: {explain_args:?}"
     );
 
     assert!(
