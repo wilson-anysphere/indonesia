@@ -996,7 +996,7 @@ fn salsa_inputs_for_single_file(
     (Arc::new(rel_path), config)
 }
 
-fn with_salsa_snapshot_for_single_file<T>(
+pub(crate) fn with_salsa_snapshot_for_single_file<T>(
     db: &dyn Database,
     file: FileId,
     text: &str,

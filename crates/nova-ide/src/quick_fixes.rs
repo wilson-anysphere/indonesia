@@ -1,14 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
-use std::sync::Arc;
 
 use lsp_types::{CodeAction, CodeActionKind, CodeActionOrCommand, TextEdit, WorkspaceEdit};
-use nova_db::{Database, FileId, NovaTypeck, ProjectId, SalsaDatabase};
-use nova_jdk::JdkIndex;
+use nova_db::{Database, FileId, NovaTypeck};
 use nova_types::Span;
-use once_cell::sync::Lazy;
-
-static QUICK_FIX_JDK_INDEX: Lazy<Arc<JdkIndex>> = Lazy::new(|| Arc::new(JdkIndex::new()));
 
 /// Diagnostic-driven quick fixes.
 ///
@@ -47,14 +42,11 @@ pub fn create_symbol_quick_fixes(
     // Collect just the type-checking diagnostics; create-symbol quick fixes are
     // driven by (high-signal) type errors, and this avoids the overhead of also
     // running control-flow diagnostics during `textDocument/codeAction`.
-    let project = ProjectId::from_raw(0);
-    let salsa = SalsaDatabase::new();
-    salsa.set_jdk_index(project, Arc::clone(&QUICK_FIX_JDK_INDEX));
-    salsa.set_classpath_index(project, None);
-    salsa.set_file_text(file, source.to_string());
-    let snap = salsa.snapshot();
-
-    for diagnostic in snap.type_diagnostics(file) {
+    let diagnostics =
+        crate::code_intelligence::with_salsa_snapshot_for_single_file(db, file, source, |snap| {
+            snap.type_diagnostics(file)
+        });
+    for diagnostic in diagnostics {
         let Some(span) = diagnostic.span else {
             continue;
         };

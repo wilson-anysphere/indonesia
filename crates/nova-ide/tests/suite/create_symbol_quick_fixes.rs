@@ -153,3 +153,69 @@ fn offers_create_field_quick_fix_for_unresolved_field() {
     let last_brace = updated.rfind('}').expect("closing brace");
     assert!(stub_idx < last_brace, "expected stub before final brace");
 }
+
+#[test]
+fn does_not_offer_create_method_quick_fix_for_inherited_method_from_other_file() {
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    use nova_db::{Database as LegacyDatabase, FileId, ProjectId, SalsaDatabase};
+    use nova_jdk::JdkIndex;
+
+    struct MultiFileDb {
+        files: HashMap<FileId, (PathBuf, String)>,
+        salsa: SalsaDatabase,
+    }
+
+    impl LegacyDatabase for MultiFileDb {
+        fn file_content(&self, file_id: FileId) -> &str {
+            self.files
+                .get(&file_id)
+                .map(|(_, text)| text.as_str())
+                .unwrap_or("")
+        }
+
+        fn file_path(&self, file_id: FileId) -> Option<&Path> {
+            self.files.get(&file_id).map(|(path, _)| path.as_path())
+        }
+
+        fn salsa_db(&self) -> Option<SalsaDatabase> {
+            Some(self.salsa.clone())
+        }
+    }
+
+    let file_base = FileId::from_raw(1);
+    let file_derived = FileId::from_raw(2);
+    let path_base = PathBuf::from("/src/p/Base.java");
+    let path_derived = PathBuf::from("/src/p/Derived.java");
+    let text_base = "package p; public class Base { void foo() {} }".to_string();
+    let text_derived =
+        "package p; public class Derived extends Base { void m() { foo(); } }".to_string();
+
+    let project = ProjectId::from_raw(0);
+    let salsa = SalsaDatabase::new();
+    salsa.set_jdk_index(project, Arc::new(JdkIndex::new()));
+    salsa.set_classpath_index(project, None);
+    salsa.set_file_text(file_base, text_base.clone());
+    salsa.set_file_text(file_derived, text_derived.clone());
+    salsa.set_file_rel_path(file_base, Arc::new("src/p/Base.java".to_string()));
+    salsa.set_file_rel_path(file_derived, Arc::new("src/p/Derived.java".to_string()));
+    salsa.set_project_files(project, Arc::new(vec![file_base, file_derived]));
+
+    let mut files = HashMap::new();
+    files.insert(file_base, (path_base, text_base));
+    files.insert(file_derived, (path_derived, text_derived.clone()));
+
+    let db = MultiFileDb { files, salsa };
+
+    let start = text_derived.find("foo").expect("foo start");
+    let selection = Span::new(start, start + "foo".len());
+
+    let actions =
+        nova_ide::quick_fixes::create_symbol_quick_fixes(&db, file_derived, Some(selection));
+    assert!(
+        actions.is_empty(),
+        "expected no create-symbol quick fixes for inherited method; got actions: {actions:#?}"
+    );
+}
