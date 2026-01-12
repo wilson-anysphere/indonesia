@@ -2660,6 +2660,124 @@ esac\n",
 
     #[test]
     #[cfg(unix)]
+    fn project_model_uses_batch_gradle_task_with_settings_project_dir_overrides() {
+        let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
+        let original_path = std::env::var("PATH").unwrap_or_default();
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        fs::write(
+            root.join("settings.gradle"),
+            "include ':app', ':lib'\n\
+project(':app').projectDir = file('modules/application')\n\
+project(':lib').projectDir = file('modules/library')\n",
+        )
+        .unwrap();
+        fs::write(root.join("build.gradle"), "").unwrap();
+        fs::create_dir_all(root.join("modules/application")).unwrap();
+        fs::create_dir_all(root.join("modules/library")).unwrap();
+        fs::write(
+            root.join("modules/application/build.gradle"),
+            "plugins { id 'java' }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("modules/library/build.gradle"),
+            "plugins { id 'java' }\n",
+        )
+        .unwrap();
+
+        // Fake Gradle executable that emits batch configs for `:app` / `:lib` and fails for the
+        // filesystem-derived project paths (`:modules:application`, `:modules:library`).
+        let bin_dir = root.join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let counter = root.join("gradle-invocations.txt");
+
+        let app_dep = root.join("app.jar");
+        let lib_dep = root.join("lib.jar");
+        fs::write(&app_dep, "").unwrap();
+        fs::write(&lib_dep, "").unwrap();
+
+        let batch_payload = serde_json::json!({
+            "projects": [
+                { "path": ":", "projectDir": root.to_string_lossy(), "config": { "compileClasspath": serde_json::Value::Null } },
+                { "path": ":app", "projectDir": root.join("modules/application").to_string_lossy(), "config": { "compileClasspath": [app_dep.to_string_lossy()] } },
+                { "path": ":lib", "projectDir": root.join("modules/library").to_string_lossy(), "config": { "compileClasspath": [lib_dep.to_string_lossy()] } }
+            ]
+        });
+
+        write_executable(
+            &bin_dir.join("gradle"),
+            &format!(
+                "#!/bin/sh\n\
+set -eu\n\
+\n\
+echo 1 >> \"{}\"\n\
+\n\
+last=\"\"\n\
+for arg in \"$@\"; do\n\
+  last=\"$arg\"\n\
+done\n\
+\n\
+case \"$last\" in\n\
+  printNovaAllJavaCompileConfigs)\n\
+    cat <<'EOF'\n\
+NOVA_ALL_JSON_BEGIN\n\
+{}\n\
+NOVA_ALL_JSON_END\n\
+EOF\n\
+    ;;\n\
+  :modules:application:printNovaJavaCompileConfig|:modules:library:printNovaJavaCompileConfig)\n\
+    echo \"unexpected gradle task (filesystem path used as project path): $last\" >&2\n\
+    exit 1\n\
+    ;;\n\
+  :app:printNovaJavaCompileConfig|:lib:printNovaJavaCompileConfig)\n\
+    echo \"unexpected per-project gradle invocation: $last\" >&2\n\
+    exit 1\n\
+    ;;\n\
+  *)\n\
+    echo \"unexpected gradle task: $last\" >&2\n\
+    exit 1\n\
+    ;;\n\
+esac\n",
+                counter.to_string_lossy(),
+                batch_payload,
+            ),
+        );
+
+        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));
+
+        let value = handle_project_model(serde_json::json!({
+            "projectRoot": root.to_string_lossy().to_string(),
+        }))
+        .unwrap();
+
+        std::env::set_var("PATH", original_path);
+
+        let result: ProjectModelResult = serde_json::from_value(value).unwrap();
+        assert_eq!(result.project_root, root.to_string_lossy().to_string());
+        assert_eq!(result.units.len(), 2);
+
+        let paths: Vec<_> = result
+            .units
+            .iter()
+            .map(|unit| match unit {
+                ProjectModelUnit::Gradle { project_path, .. } => project_path.as_str(),
+                other => panic!("expected Gradle unit, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(paths, vec![":app", ":lib"]);
+
+        let count = fs::read_to_string(&counter)
+            .unwrap_or_default()
+            .lines()
+            .count();
+        assert_eq!(count, 1, "expected 1 gradle invocation, got {count}");
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn project_model_uses_gradle_project_path_from_settings_project_dir_override() {
         let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
         let original_path = std::env::var("PATH").unwrap_or_default();
