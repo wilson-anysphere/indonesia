@@ -25,6 +25,7 @@ import {
 } from './novaCapabilities';
 import { ServerManager, type NovaServerSettings } from './serverManager';
 import { buildNovaLspLaunchConfig, resolveNovaConfigPath } from './lspArgs';
+import { getNovaConfigChangeEffects } from './configChange';
 import { routeWorkspaceFolderUri } from './workspaceRouting';
 import {
   SAFE_MODE_EXEMPT_REQUESTS,
@@ -2102,41 +2103,26 @@ export async function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((event) => {
-      const serverPathChanged = event.affectsConfiguration('nova.server.path');
-      const serverDownloadChanged =
-        event.affectsConfiguration('nova.download.mode') ||
-        event.affectsConfiguration('nova.download.releaseTag') ||
-        event.affectsConfiguration('nova.download.baseUrl') ||
-        event.affectsConfiguration('nova.download.allowPrerelease') ||
-        event.affectsConfiguration('nova.download.allowVersionMismatch');
-      if (serverPathChanged) {
+      const effects = getNovaConfigChangeEffects(event);
+
+      if (effects.serverPathChanged) {
         void ensureLanguageClientStarted({ promptForInstall: false }).catch((err) => {
           const message = err instanceof Error ? err.message : String(err);
           serverOutput.appendLine(`Failed to restart nova-lsp: ${message}`);
         });
       }
-      if (!serverPathChanged && serverDownloadChanged) {
+      if (!effects.serverPathChanged && effects.serverDownloadChanged) {
         void ensureLanguageClientStarted({ promptForInstall: false }).catch((err) => {
           const message = err instanceof Error ? err.message : String(err);
           serverOutput.appendLine(`Failed to re-resolve nova-lsp after download settings change: ${message}`);
         });
       }
 
-      if (
-        !serverPathChanged &&
-        (event.affectsConfiguration('nova.lsp.configPath') ||
-          event.affectsConfiguration('nova.lsp.extraArgs') ||
-          event.affectsConfiguration('nova.server.args') ||
-          event.affectsConfiguration('nova.ai.enabled'))
-      ) {
+      if (effects.shouldPromptRestartLanguageServer) {
         promptRestartLanguageServer();
       }
 
-      if (
-        event.affectsConfiguration('nova.ai.enabled') ||
-        event.affectsConfiguration('nova.aiCompletions.enabled') ||
-        event.affectsConfiguration('nova.aiCompletions.maxItems')
-      ) {
+      if (effects.shouldClearAiCompletionCache) {
         clearAiCompletionCache();
       }
     }),
