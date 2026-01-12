@@ -449,9 +449,43 @@ mod notify_impl {
     #[cfg(feature = "watch-notify")]
     const EVENTS_QUEUE_CAPACITY: usize = 1024;
     const OVERFLOW_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+    #[cfg(feature = "watch-notify")]
+    const ENV_RAW_QUEUE_CAPACITY: &str = "NOVA_WATCH_NOTIFY_RAW_QUEUE_CAPACITY";
+    #[cfg(feature = "watch-notify")]
+    const ENV_EVENTS_QUEUE_CAPACITY: &str = "NOVA_WATCH_NOTIFY_EVENTS_QUEUE_CAPACITY";
 
     fn notify_error_to_io(err: notify::Error) -> io::Error {
         io::Error::other(err)
+    }
+
+    #[cfg(feature = "watch-notify")]
+    fn queue_capacity_from_env(var: &str) -> io::Result<Option<usize>> {
+        let raw = match std::env::var(var) {
+            Ok(value) => value,
+            Err(std::env::VarError::NotPresent) => return Ok(None),
+            Err(err) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("failed to read env var {var}: {err}"),
+                ))
+            }
+        };
+
+        let raw = raw.trim();
+        if raw.is_empty() || raw == "0" {
+            return Ok(None);
+        }
+
+        let parsed = raw.parse::<usize>().map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid {var}={raw:?}: {err}"),
+            )
+        })?;
+
+        // Avoid pathological configs that attempt to allocate enormous bounded channels.
+        const MAX_CAPACITY: usize = 1_000_000;
+        Ok(Some(parsed.clamp(1, MAX_CAPACITY)))
     }
 
     fn try_send_or_overflow<T>(tx: &channel::Sender<T>, overflowed: &AtomicBool, msg: T) {
@@ -602,7 +636,11 @@ mod notify_impl {
     #[cfg(feature = "watch-notify")]
     impl NotifyFileWatcher {
         pub fn new() -> io::Result<Self> {
-            Self::new_with_capacities(RAW_QUEUE_CAPACITY, EVENTS_QUEUE_CAPACITY)
+            let raw_queue_capacity =
+                queue_capacity_from_env(ENV_RAW_QUEUE_CAPACITY)?.unwrap_or(RAW_QUEUE_CAPACITY);
+            let events_queue_capacity = queue_capacity_from_env(ENV_EVENTS_QUEUE_CAPACITY)?
+                .unwrap_or(EVENTS_QUEUE_CAPACITY);
+            Self::new_with_capacities(raw_queue_capacity, events_queue_capacity)
         }
 
         #[cfg(test)]
