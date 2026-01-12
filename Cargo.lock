@@ -3827,12 +3827,14 @@ dependencies = [
  "nova-framework-parse",
  "nova-hir",
  "nova-index",
+ "nova-project",
  "nova-properties",
  "nova-resolve",
  "nova-syntax",
  "nova-types",
  "nova-yaml",
  "pretty_assertions",
+ "tempfile",
  "zip 0.6.6",
 ]
 

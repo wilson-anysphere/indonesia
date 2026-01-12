@@ -46,8 +46,9 @@ use nova_types::ClassId;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AnalysisResult {
@@ -229,7 +230,21 @@ impl MicronautAnalyzer {
             return Arc::new(AnalysisResult::default());
         };
 
-        let fingerprint = single_file_fingerprint(db, file);
+        let file_fingerprint = single_file_fingerprint(db, file);
+        let (config_fingerprint, config_files) = db
+            .file_path(file)
+            .and_then(|path| nova_project::workspace_root(path))
+            .map(|root| collect_config_files_from_filesystem(&root))
+            .unwrap_or_else(|| (0u64, Vec::new()));
+
+        let fingerprint = {
+            use std::collections::hash_map::DefaultHasher;
+
+            let mut hasher = DefaultHasher::new();
+            file_fingerprint.hash(&mut hasher);
+            config_fingerprint.hash(&mut hasher);
+            hasher.finish()
+        };
         {
             let cache = self
                 .cache
@@ -251,7 +266,7 @@ impl MicronautAnalyzer {
             .unwrap_or_else(|| synthetic_path_for_file(file));
         let sources = vec![JavaSource::new(path, text.to_string())];
 
-        let analysis = Arc::new(analyze_sources(&sources));
+        let analysis = Arc::new(analyze_sources_with_config(&sources, &config_files));
         let mut cache = self
             .cache
             .lock()
@@ -400,25 +415,32 @@ fn project_inputs(db: &dyn Database, file_ids: &[FileId]) -> (Vec<JavaSource>, V
     let mut config_files = Vec::new();
 
     for &file in file_ids {
-        let Some(text) = db.file_text(file) else {
-            continue;
-        };
-
         match db.file_path(file) {
             Some(path) => {
                 if path.extension().and_then(|e| e.to_str()) == Some("java") {
-                    sources.push(JavaSource::new(
-                        path.to_string_lossy().to_string(),
-                        text.to_string(),
-                    ));
+                    let text = db
+                        .file_text(file)
+                        .map(str::to_string)
+                        .or_else(|| std::fs::read_to_string(path).ok());
+                    let Some(text) = text else {
+                        continue;
+                    };
+
+                    sources.push(JavaSource::new(path.to_string_lossy().to_string(), text));
                     continue;
                 }
 
                 let Some(kind) = config_file_kind(path) else {
                     continue;
                 };
+                let text = db
+                    .file_text(file)
+                    .map(str::to_string)
+                    .or_else(|| std::fs::read_to_string(path).ok());
+                let Some(text) = text else {
+                    continue;
+                };
                 let path = path.to_string_lossy().to_string();
-                let text = text.to_string();
                 match kind {
                     ConfigFileKind::Properties => {
                         config_files.push(ConfigFile::properties(path, text))
@@ -427,6 +449,9 @@ fn project_inputs(db: &dyn Database, file_ids: &[FileId]) -> (Vec<JavaSource>, V
                 }
             }
             None => {
+                let Some(text) = db.file_text(file) else {
+                    continue;
+                };
                 if looks_like_java_source(text) {
                     sources.push(JavaSource::new(
                         synthetic_path_for_file(file),
@@ -453,6 +478,95 @@ fn config_file_kind(path: &Path) -> Option<ConfigFileKind> {
     }
 }
 
+fn collect_config_files_from_filesystem(root: &Path) -> (u64, Vec<ConfigFile>) {
+    use std::collections::hash_map::DefaultHasher;
+
+    const MAX_FILES: usize = 128;
+
+    let candidates = [
+        root.join("src/main/resources"),
+        root.join("src/test/resources"),
+        root.join("src"),
+        root.to_path_buf(),
+    ];
+
+    let mut paths = Vec::new();
+    for candidate in candidates {
+        if paths.len() >= MAX_FILES {
+            break;
+        }
+        collect_config_file_paths_inner(&candidate, &mut paths, MAX_FILES);
+    }
+
+    paths.sort();
+    paths.dedup();
+
+    let mut hasher = DefaultHasher::new();
+    let mut out = Vec::new();
+    for path in paths {
+        let Some(kind) = config_file_kind(&path) else {
+            continue;
+        };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+
+        path.hash(&mut hasher);
+        match kind {
+            ConfigFileKind::Properties => 0u8.hash(&mut hasher),
+            ConfigFileKind::Yaml => 1u8.hash(&mut hasher),
+        }
+        fingerprint_text(&text, &mut hasher);
+
+        let path_str = path.to_string_lossy().to_string();
+        match kind {
+            ConfigFileKind::Properties => out.push(ConfigFile::properties(path_str, text)),
+            ConfigFileKind::Yaml => out.push(ConfigFile::yaml(path_str, text)),
+        }
+    }
+
+    (hasher.finish(), out)
+}
+
+fn collect_config_file_paths_inner(root: &Path, out: &mut Vec<PathBuf>, limit: usize) {
+    if out.len() >= limit {
+        return;
+    }
+    if !root.exists() {
+        return;
+    }
+    if root.is_file() {
+        if config_file_kind(root).is_some() {
+            out.push(root.to_path_buf());
+        }
+        return;
+    }
+
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        if out.len() >= limit {
+            break;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if matches!(
+                name,
+                "target" | "build" | "out" | ".git" | ".gradle" | ".idea"
+            ) {
+                continue;
+            }
+            collect_config_file_paths_inner(&path, out, limit);
+        } else if config_file_kind(&path).is_some() {
+            out.push(path);
+        }
+    }
+}
+
 fn project_fingerprint(db: &dyn Database, file_ids: &[FileId]) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     let mut hasher = DefaultHasher::new();
@@ -472,7 +586,19 @@ fn project_fingerprint(db: &dyn Database, file_ids: &[FileId]) -> u64 {
                 if let Some(text) = db.file_text(file) {
                     fingerprint_text(text, &mut hasher);
                 } else {
-                    0usize.hash(&mut hasher);
+                    // Fall back to on-disk metadata when the DB doesn't provide the file's
+                    // contents (e.g. unopened buffers). This keeps the cache reasonably fresh
+                    // without forcing full-file reads.
+                    match std::fs::metadata(path) {
+                        Ok(meta) => {
+                            meta.len().hash(&mut hasher);
+                            hash_mtime(&mut hasher, meta.modified().ok());
+                        }
+                        Err(_) => {
+                            0u64.hash(&mut hasher);
+                            0u32.hash(&mut hasher);
+                        }
+                    }
                 }
             }
             None => {
@@ -503,7 +629,16 @@ fn single_file_fingerprint(db: &dyn Database, file: FileId) -> u64 {
     if let Some(text) = db.file_text(file) {
         fingerprint_text(text, &mut hasher);
     } else {
-        0usize.hash(&mut hasher);
+        match db.file_path(file).and_then(|path| std::fs::metadata(path).ok()) {
+            Some(meta) => {
+                meta.len().hash(&mut hasher);
+                hash_mtime(&mut hasher, meta.modified().ok());
+            }
+            None => {
+                0u64.hash(&mut hasher);
+                0u32.hash(&mut hasher);
+            }
+        }
     }
 
     hasher.finish()
@@ -524,6 +659,20 @@ fn fingerprint_text(text: &str, hasher: &mut impl Hasher) {
     if bytes.len() > EDGE {
         bytes[bytes.len() - EDGE..].hash(hasher);
     }
+}
+
+fn hash_mtime(hasher: &mut impl Hasher, time: Option<SystemTime>) {
+    let Some(time) = time else {
+        0u64.hash(hasher);
+        0u32.hash(hasher);
+        return;
+    };
+
+    let duration = time
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| std::time::Duration::from_secs(0));
+    duration.as_secs().hash(hasher);
+    duration.subsec_nanos().hash(hasher);
 }
 
 fn looks_like_java_source(text: &str) -> bool {

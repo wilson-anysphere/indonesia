@@ -14,7 +14,9 @@ nova-properties = { path = "../nova-properties" }
 nova-yaml = { path = "../nova-yaml" }
 nova-syntax = { path = "../nova-syntax" }
 nova-framework-parse = { path = "../nova-framework-parse" }
+nova-project = { path = "../nova-project" }
 zip = "0.6"
 
 [dev-dependencies]
 pretty_assertions = "1"
+tempfile.workspace = true
