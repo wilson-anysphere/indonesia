@@ -747,8 +747,11 @@ impl NovaServer {
         if let Some(method) = self.db.read().empty_method_at(params.range) {
             actions.push(CodeAction {
                 title: "Generate method body with AI".into(),
-                kind: Some(CodeActionKind::QUICKFIX),
-                command: Some(command("nova.ai.generateMethod", [method.id])),
+                kind: Some(CodeActionKind::new("nova.ai.generate")),
+                command: Some(command(
+                    "nova.ai.generateMethodBody",
+                    [GenerateMethodBodyArgs { /* method_signature, context, uri, range */ }],
+                )),
                 ..Default::default()
             });
         }
@@ -758,7 +761,10 @@ impl NovaServer {
             actions.push(CodeAction {
                 title: "Explain this error".into(),
                 kind: Some(CodeActionKind::new("nova.explain")),
-                command: Some(command("nova.ai.explainError", [diagnostic])),
+                command: Some(command(
+                    "nova.ai.explainError",
+                    [ExplainErrorArgs { /* diagnostic_message, code, uri, range */ }],
+                )),
                 ..Default::default()
             });
         }
@@ -767,8 +773,11 @@ impl NovaServer {
         if let Some(method) = self.db.read().method_at(params.range.start) {
             actions.push(CodeAction {
                 title: "Generate tests with AI".into(),
-                kind: Some(CodeActionKind::new("nova.test")),
-                command: Some(command("nova.ai.generateTests", [method.id])),
+                kind: Some(CodeActionKind::new("nova.ai.tests")),
+                command: Some(command(
+                    "nova.ai.generateTests",
+                    [GenerateTestsArgs { /* target, context, uri, range */ }],
+                )),
                 ..Default::default()
             });
         }
