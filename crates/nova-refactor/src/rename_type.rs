@@ -581,6 +581,7 @@ fn expr_scope_for_offset(
             | Expr::Call { range, .. }
             | Expr::New { range, .. }
             | Expr::ArrayCreation { range, .. }
+            | Expr::ArrayInitializer { range, .. }
             | Expr::Unary { range, .. }
             | Expr::Binary { range, .. }
             | Expr::Instanceof { range, .. }
@@ -628,9 +629,21 @@ fn expr_scope_for_offset(
                     visit_expr(body, *arg, offset, best_expr, best_stmt);
                 }
             }
-            Expr::ArrayCreation { dim_exprs, .. } => {
+            Expr::ArrayCreation {
+                dim_exprs,
+                initializer,
+                ..
+            } => {
                 for dim in dim_exprs {
                     visit_expr(body, *dim, offset, best_expr, best_stmt);
+                }
+                if let Some(expr) = initializer {
+                    visit_expr(body, *expr, offset, best_expr, best_stmt);
+                }
+            }
+            Expr::ArrayInitializer { items, .. } => {
+                for item in items {
+                    visit_expr(body, *item, offset, best_expr, best_stmt);
                 }
             }
             Expr::Unary { expr, .. } => visit_expr(body, *expr, offset, best_expr, best_stmt),
@@ -699,6 +712,7 @@ fn expr_scope_for_offset(
             | Stmt::Synchronized { range, .. }
             | Stmt::Switch { range, .. }
             | Stmt::Try { range, .. }
+            | Stmt::Assert { range, .. }
             | Stmt::Throw { range, .. }
             | Stmt::Break { range }
             | Stmt::Continue { range }
@@ -802,6 +816,14 @@ fn expr_scope_for_offset(
                 }
                 if let Some(stmt) = finally {
                     visit_stmt(body, *stmt, offset, best_expr, best_stmt);
+                }
+            }
+            Stmt::Assert {
+                condition, message, ..
+            } => {
+                visit_expr(body, *condition, offset, best_expr, best_stmt);
+                if let Some(expr) = message {
+                    visit_expr(body, *expr, offset, best_expr, best_stmt);
                 }
             }
             Stmt::Throw { expr, .. } => visit_expr(body, *expr, offset, best_expr, best_stmt),
