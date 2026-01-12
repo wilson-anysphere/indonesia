@@ -16,9 +16,8 @@ pub use cdi::{CdiAnalysis, CdiAnalysisWithSources, CdiModel, SourceDiagnostic, S
 pub use cdi::{CDI_AMBIGUOUS_CODE, CDI_CIRCULAR_CODE, CDI_UNSATISFIED_CODE};
 pub use config::{collect_config_property_names, config_property_completions};
 
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use nova_core::{FileId, ProjectId};
@@ -37,12 +36,14 @@ const MAX_CACHED_PROJECTS: usize = 32;
 /// based on dependencies/classpath markers.
 pub struct QuarkusAnalyzer {
     cache: Mutex<LruCache<ProjectId, Arc<CachedProjectAnalysis>>>,
+    config_cache: Mutex<LruCache<ProjectId, Arc<CachedProjectConfigKeys>>>,
 }
 
 impl QuarkusAnalyzer {
     pub fn new() -> Self {
         Self {
             cache: Mutex::new(LruCache::new(MAX_CACHED_PROJECTS)),
+            config_cache: Mutex::new(LruCache::new(MAX_CACHED_PROJECTS)),
         }
     }
 }
@@ -107,19 +108,13 @@ impl FrameworkAnalyzer for QuarkusAnalyzer {
             return Vec::new();
         };
 
-        let property_file_refs = collect_application_properties(db, ctx.project);
-        let yaml_file_refs = collect_application_yaml(db, ctx.project);
+        let config_keys = self.project_config_keys(db, ctx.project);
 
         // Avoid rescanning all Java sources on every completion request by reusing the cached
         // `config_properties` extracted during the project's last analysis.
         let mut names = BTreeSet::<String>::new();
         names.extend(entry.analysis.config_properties.iter().cloned());
-        names.extend(collect_config_property_names(&[], &property_file_refs));
-        for text in yaml_file_refs {
-            for entry in yaml::parse(text).entries {
-                names.insert(entry.key);
-            }
-        }
+        names.extend(config_keys.keys.iter().cloned());
 
         let mut items: Vec<_> = names
             .into_iter()
@@ -142,6 +137,12 @@ struct CachedProjectAnalysis {
     fingerprint: u64,
     file_to_source_idx: HashMap<FileId, usize>,
     analysis: AnalysisResultWithSpans,
+}
+
+#[derive(Debug, Clone)]
+struct CachedProjectConfigKeys {
+    fingerprint: u64,
+    keys: Vec<String>,
 }
 
 impl QuarkusAnalyzer {
@@ -188,6 +189,57 @@ impl QuarkusAnalyzer {
             .insert(project, entry.clone());
 
         Some(entry)
+    }
+
+    fn project_config_keys(
+        &self,
+        db: &dyn Database,
+        project: ProjectId,
+    ) -> Arc<CachedProjectConfigKeys> {
+        let files = collect_project_config_files(db, project);
+        let fingerprint = fingerprint_config_files(db, &files);
+
+        if let Some(existing) = self
+            .config_cache
+            .lock()
+            .expect("quarkus analyzer config cache mutex poisoned")
+            .get_cloned(&project)
+        {
+            if existing.fingerprint == fingerprint {
+                return existing;
+            }
+        }
+
+        let mut keys = BTreeSet::<String>::new();
+        for file in &files {
+            let Some(text) = db.file_text(file.id) else {
+                continue;
+            };
+            match file.kind {
+                ConfigFileKind::Properties => {
+                    for entry in nova_properties::parse(text).entries {
+                        keys.insert(entry.key);
+                    }
+                }
+                ConfigFileKind::Yaml => {
+                    for entry in yaml::parse(text).entries {
+                        keys.insert(entry.key);
+                    }
+                }
+            }
+        }
+
+        let built = Arc::new(CachedProjectConfigKeys {
+            fingerprint,
+            keys: keys.into_iter().collect(),
+        });
+
+        self.config_cache
+            .lock()
+            .expect("quarkus analyzer config cache mutex poisoned")
+            .insert(project, Arc::clone(&built));
+
+        built
     }
 }
 
@@ -441,69 +493,90 @@ fn config_property_prefix_at<'a>(source: &'a str, offset: usize) -> Option<(&'a 
     Some((&source[start..offset], Span::new(start, offset)))
 }
 
-fn collect_application_properties<'a>(db: &'a dyn Database, project: ProjectId) -> Vec<&'a str> {
-    let mut out = Vec::new();
-    let mut seen_paths = HashSet::<&'a Path>::new();
-
-    for file in db.all_files(project) {
-        let Some(path) = db.file_path(file) else {
-            continue;
-        };
-
-        if !seen_paths.insert(path) {
-            continue;
-        }
-
-        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        let is_application = file_name.starts_with("application");
-        let is_microprofile_config = file_name == "microprofile-config.properties";
-        if !is_application && !is_microprofile_config
-            || !path
-                .extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("properties"))
-        {
-            continue;
-        }
-
-        if let Some(text) = db.file_text(file) {
-            out.push(text);
-        }
-    }
-    out
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConfigFileKind {
+    Properties,
+    Yaml,
 }
 
-fn collect_application_yaml<'a>(db: &'a dyn Database, project: ProjectId) -> Vec<&'a str> {
-    let mut out = Vec::new();
-    let mut seen_paths = HashSet::<&'a Path>::new();
+#[derive(Clone, Debug)]
+struct ConfigFile {
+    path: String,
+    id: FileId,
+    kind: ConfigFileKind,
+}
+
+fn collect_project_config_files(db: &dyn Database, project: ProjectId) -> Vec<ConfigFile> {
+    let mut files = Vec::new();
 
     for file in db.all_files(project) {
         let Some(path) = db.file_path(file) else {
             continue;
         };
-
-        if !seen_paths.insert(path) {
+        let Some(_) = db.file_text(file) else {
             continue;
-        }
+        };
 
         let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if !file_name.starts_with("application")
-            || !path
-                .extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|ext| {
-                    ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml")
-                })
-        {
-            continue;
-        }
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
-        if let Some(text) = db.file_text(file) {
-            out.push(text);
+        if ext.eq_ignore_ascii_case("properties") {
+            let is_application = file_name.starts_with("application");
+            let is_microprofile_config = file_name == "microprofile-config.properties";
+            if is_application || is_microprofile_config {
+                files.push(ConfigFile {
+                    path: path.to_string_lossy().to_string(),
+                    id: file,
+                    kind: ConfigFileKind::Properties,
+                });
+            }
+        } else if ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml") {
+            if file_name.starts_with("application") {
+                files.push(ConfigFile {
+                    path: path.to_string_lossy().to_string(),
+                    id: file,
+                    kind: ConfigFileKind::Yaml,
+                });
+            }
         }
     }
 
-    out
+    files.sort_by(|a, b| a.path.cmp(&b.path).then_with(|| a.id.cmp(&b.id)));
+    files
+}
+
+fn fingerprint_config_files(db: &dyn Database, files: &[ConfigFile]) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+
+    let mut hasher = DefaultHasher::new();
+    files.len().hash(&mut hasher);
+    for file in files {
+        file.path.hash(&mut hasher);
+        file.id.to_raw().hash(&mut hasher);
+        (file.kind as u8).hash(&mut hasher);
+
+        let Some(text) = db.file_text(file.id) else {
+            continue;
+        };
+        fingerprint_text(text, &mut hasher);
+    }
+    hasher.finish()
+}
+
+fn fingerprint_text(text: &str, hasher: &mut impl Hasher) {
+    let bytes = text.as_bytes();
+    bytes.len().hash(hasher);
+    (text.as_ptr() as usize).hash(hasher);
+
+    const EDGE: usize = 64;
+    let prefix_len = bytes.len().min(EDGE);
+    bytes[..prefix_len].hash(hasher);
+    let mid_start = bytes.len() / 2;
+    let mid_end = (mid_start + EDGE).min(bytes.len());
+    bytes[mid_start..mid_end].hash(hasher);
+
+    let suffix_start = bytes.len().saturating_sub(EDGE);
+    bytes[suffix_start..].hash(hasher);
 }
 
 fn is_escaped_quote(bytes: &[u8], idx: usize) -> bool {
