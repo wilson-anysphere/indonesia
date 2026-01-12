@@ -189,6 +189,10 @@ test enqueues too many events without draining the receiver, `push` will return 
 If the watcher itself is moved into another thread (e.g. a background watcher driver), create a
 `ManualFileWatcherHandle` via `watcher.handle()` and use the handle to inject events after the move.
 
+Note: `ManualFileWatcher` uses a **bounded** internal queue. If a test enqueues many events without
+draining the receiver, `push(...)` / `push_error(...)` may return `io::ErrorKind::WouldBlock`. Drain
+the receiver (or reduce event volume) to keep tests deterministic.
+
 Conceptually:
 
 ```rust

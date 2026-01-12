@@ -1770,4 +1770,28 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn manual_watcher_queue_is_bounded() {
+        let watcher = ManualFileWatcher::new();
+
+        // Fill the bounded queue without draining it.
+        for _ in 0..MANUAL_WATCH_QUEUE_CAPACITY {
+            watcher.push(WatchEvent::Rescan).unwrap();
+        }
+
+        // The next push should fail instead of allowing unbounded growth.
+        let err = watcher
+            .push(WatchEvent::Rescan)
+            .expect_err("expected ManualFileWatcher queue to be full");
+        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
+
+        // Drain a message, then ensure we can push again.
+        watcher
+            .receiver()
+            .recv_timeout(Duration::from_secs(1))
+            .expect("watch event")
+            .expect("ok event");
+        watcher.push(WatchEvent::Rescan).unwrap();
+    }
 }
