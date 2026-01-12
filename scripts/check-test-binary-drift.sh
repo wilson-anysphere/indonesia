@@ -121,6 +121,7 @@ count_top_level_tests() {
 }
 
 violations=()
+warnings=()
 while IFS= read -r crate; do
   [[ -n "${crate}" ]] || continue
 
@@ -132,14 +133,10 @@ while IFS= read -r crate; do
   base_count="$(count_top_level_tests "${base_sha}" "${crate}")"
   head_count="$(count_top_level_tests "${head_sha}" "${crate}")"
 
-  allowed="${base_count}"
-  # Special case: crates with no top-level harnesses in the base commit may add exactly one.
-  if [[ "${base_count}" -eq 0 ]]; then
-    allowed=1
-  fi
-
-  if [[ "${head_count}" -gt "${allowed}" ]]; then
-    violations+=("${crate}: base=${base_count}, head=${head_count} (allowed ≤ ${allowed})")
+  if [[ "${head_count}" -gt 2 ]]; then
+    violations+=("${crate}: base=${base_count}, head=${head_count} (allowed ≤ 2)")
+  elif [[ "${head_count}" -eq 2 && "${base_count}" -lt 2 ]]; then
+    warnings+=("${crate}: base=${base_count}, head=${head_count} (now at 2 root test binaries)")
   fi
 done <<<"${changed_crates}"
 
@@ -147,14 +144,14 @@ if (( ${#violations[@]} > 0 )); then
   cat >&2 <<'EOF'
 ERROR: Integration test binary drift detected.
 
-This PR increases the number of *top-level* integration test binaries for one or more existing crates.
+This PR increases the number of *top-level* integration test binaries to >2 for one or more existing crates.
 
 Top-level means exactly:
   crates/<crate>/tests/*.rs
 
 Each .rs file directly under tests/ becomes a separate test binary, which slows builds and increases CI
 memory pressure. Instead, extend an existing harness and put new tests in module files under a
-subdirectory (e.g. tests/<harness>/...).
+subdirectory (e.g. tests/suite/...) and include them via a module.
 
 See: AGENTS.md → "Test Organization"
 EOF
@@ -164,6 +161,18 @@ EOF
 
   printf '\n' >&2
   exit 1
+fi
+
+if (( ${#warnings[@]} > 0 )); then
+  cat >&2 <<'EOF'
+warning: integration test harness count is now 2 for one or more crates.
+
+This is allowed, but discouraged unless there's a strong reason to keep two harness entrypoints.
+EOF
+
+  printf '\nWarnings:\n' >&2
+  printf '  - %s\n' "${warnings[@]}" >&2
+  printf '\n' >&2
 fi
 
 echo "check-test-binary-drift: ok" >&2

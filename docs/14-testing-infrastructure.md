@@ -65,7 +65,7 @@ cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 git diff --exit-code -- Cargo.lock
 
-# PR-only: Guard against new top-level `crates/*/tests/*.rs` binaries (see AGENTS.md "Test Organization")
+# PR-only: Guard against top-level `crates/*/tests/*.rs` binary sprawl (see AGENTS.md "Test Organization")
 # In CI this compares against the PR base SHA. Locally:
 BASE_SHA=$(git merge-base origin/main HEAD) ./scripts/check-test-binary-drift.sh
 

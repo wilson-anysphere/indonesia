@@ -100,7 +100,10 @@ cargo check --all-features    # Will OOM
 
 ### Test Organization
 
-**Never create loose `tests/*.rs` files.** Each `.rs` file in `tests/` becomes a separate binary.
+**Avoid creating loose `tests/*.rs` files.** Each `.rs` file in `tests/` becomes a separate binary.
+Prefer a single integration test harness per crate; a second harness is allowed only when there is a
+strong reason (e.g. CI entrypoints or process-global cache isolation). `nova-devtools` warns at 2
+root `tests/*.rs` files and errors at >2.
 
 ```
 tests/
