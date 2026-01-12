@@ -1091,9 +1091,8 @@ Notes:
 
 #### Safe-mode
 
-This request is allowed while the server is in safe-mode (it is explicitly exempted from the
-safe-mode guard), but the server will not start background semantic-search indexing runs while in
-safe-mode (so `currentRunId` may remain `0`).
+This request is guarded by `nova_lsp::hardening::guard_method()` and fails with `-32603` while the
+server is in safe-mode.
 
 ---
 
