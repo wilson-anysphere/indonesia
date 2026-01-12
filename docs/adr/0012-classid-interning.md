@@ -15,7 +15,9 @@ See: `crates/nova-types/src/lib.rs` (`TypeStore::{add_class, intern_class_id, up
 In the Salsa layer, we also have a *database-level* memory eviction mechanism:
 
 - `SalsaDatabase::evict_salsa_memos` rebuilds `ra_salsa::Storage` with `Storage::default()` and
-  reapplies inputs.
+  reapplies inputs. Because `Storage::default()` would normally also drop Salsa intern tables,
+  Nova snapshots+restores the interned tables it relies on (see
+  `crates/nova-db/src/salsa/mod.rs:InternedTablesSnapshot`).
 
 See: `crates/nova-db/src/salsa/mod.rs` (`evict_salsa_memos`).
 
@@ -35,7 +37,7 @@ For `ClassId`, we care about stability across:
 1. **Within a single db instance** (`SalsaDatabase` in one process).
 2. **Across Salsa snapshots** (`ParallelDatabase::snapshot()`).
 3. **Across revisions** (inputs change; unchanged classes should ideally keep the same id).
-4. **Across memo eviction** (`evict_salsa_memos` resets `ra_salsa::Storage`).
+4. **Across memo eviction** (`evict_salsa_memos` rebuilds memo storage; Nova restores interned tables).
 5. **Across process restarts** (new server process; optional depending on persistence strategy).
 
 ## Decision
@@ -118,11 +120,11 @@ Pros:
   intern tables) remain intact*.
 
 Cons:
-- `evict_salsa_memos` rebuilds `ra_salsa::Storage` (`crates/nova-db/src/salsa/mod.rs`), which
-  implies intern tables restart from empty.
-- Interned integer assignment is order-dependent; if interning happens “on demand” inside queries,
-  different evaluation orders (including parallel scheduling) can yield different raw ids after a
-  rebuild, violating the “eviction is a semantic no-op” requirement.
+- Interned integer assignment is order-dependent across *fresh* intern tables; raw ids can differ
+  across fresh database instances / process restarts if values are interned in a different order.
+- Memo eviction rebuilds Salsa storage; Nova snapshots+restores the interned tables it relies on to
+  keep interned ids stable, and this list must be maintained if new `#[ra_salsa::interned]` queries
+  become part of long-lived identities.
 
 #### Empirical confirmation (prototype)
 
@@ -130,12 +132,12 @@ See `crates/nova-db/src/salsa/interned_class_key.rs` for a minimal `ra_ap_salsa`
 prototype and tests.
 
 Findings with `ra_ap_salsa` `0.0.269` and Nova’s current `evict_salsa_memos` implementation
-(rebuilds `ra_salsa::Storage::default()`):
+(rebuilds `ra_salsa::Storage::default()` but snapshots+restores intern tables):
 
 - Same key ⇒ same interned handle within a single storage.
 - Snapshots can lookup/intern consistently for already-interned keys.
-- **After memo eviction, the intern tables are dropped.** Re-interning the same key yields a
-  different `InternId`, and looking up a pre-eviction id panics (no longer valid).
+- After memo eviction, interned ids remain valid **because Nova restores interned tables** before
+  recomputation (see `InternedTablesSnapshot`).
 - Intern ids are **insertion-order dependent** across fresh storages (interning `A` then `B`
   produces different raw ids than interning `B` then `A`).
 

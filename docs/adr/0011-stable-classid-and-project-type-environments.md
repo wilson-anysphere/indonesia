@@ -2,17 +2,19 @@
 
 ## Context
 
-Nova’s semantic analysis currently constructs a `nova_types::TypeStore` **per body** (see
-[`crates/nova-db/src/salsa/typeck.rs:typeck_body`](../../crates/nova-db/src/salsa/typeck.rs#L147)).
-`TypeStore` allocates `ClassId` values densely: a new class id is assigned by appending to an
-internal `Vec<ClassDef>`, so `ClassId` is effectively “the insertion index” (see
-[`crates/nova-types/src/lib.rs:TypeStore::intern_class_id`](../../crates/nova-types/src/lib.rs#L903)).
+Nova’s semantic analysis uses `nova_types::TypeStore` as a lightweight Java type environment, and
+represents reference types as `Type::Class(ClassType { def: ClassId, .. })`.
 
-During typechecking, external types are loaded on demand via
-[`crates/nova-types-bridge/src/lib.rs:ExternalTypeLoader`](../../crates/nova-types-bridge/src/lib.rs#L23),
+`TypeStore` allocates `ClassId` values densely: a new class id is assigned by insertion order (the
+raw `u32` is effectively the index into an internal `Vec<ClassDef>`). See
+[`crates/nova-types/src/lib.rs:TypeStore::intern_class_id`](../../crates/nova-types/src/lib.rs).
+
+During typechecking ([`crates/nova-db/src/salsa/typeck.rs:typeck_body`](../../crates/nova-db/src/salsa/typeck.rs)),
+external types are loaded on-demand via
+[`crates/nova-types-bridge/src/lib.rs:ExternalTypeLoader`](../../crates/nova-types-bridge/src/lib.rs),
 which reserves ids by calling `TypeStore::intern_class_id` as new binary names are encountered.
 
-This has an important (and currently undesirable) property:
+If each body/query builds its own fresh `TypeStore`, this has an important (and undesirable) property:
 
 - The numeric `ClassId` assigned to a given Java binary name (e.g. `java.lang.String`) depends on
   **which classes happened to be interned first**.
@@ -69,7 +71,8 @@ Implement a *project-level* base type environment and make all body checkers sta
 
 Concrete shape:
 
-- Introduce a project query like `project_type_store(project: ProjectId) -> Arc<TypeStore>` (name TBD)
+- Introduce a project query like `project_base_type_store(project: ProjectId) -> Arc<TypeStore>`
+  (implemented today as `crates/nova-db/src/salsa/typeck.rs:project_base_type_store`)
   that:
   - seeds well-known JDK types (today: `TypeStore::with_minimal_jdk()`),
   - **pre-interns** class ids for a deterministic set of binary names:
@@ -105,10 +108,10 @@ Two acceptable implementations:
       - `binary_name: String` (canonical Java binary name, dotted, with `$` for nested types)
     - The returned `ClassId` is globally unique and stable within the lifetime of the database, and
       adding new classes does not renumber existing ids.
-    - **Important:** with Nova’s current memory eviction strategy (`SalsaDatabase::evict_salsa_memos`
-      rebuilds `ra_salsa::Storage::default()`), raw interned ids do **not** survive eviction unless
-      we either preserve intern tables or deterministically seed them. See ADR 0012 and the
-      prototype tests in `crates/nova-db/src/salsa/interned_class_key.rs`.
+    - **Important:** Nova’s `SalsaDatabase::evict_salsa_memos` rebuilds `ra_salsa::Storage`, but
+      Nova snapshots+restores selected interned tables so interned ids remain stable across memo
+      eviction within a single database instance (see ADR 0012 and
+      `crates/nova-db/src/salsa/mod.rs:InternedTablesSnapshot`).
 
 2. **A persistent interner outside Salsa**
    - A project-scoped interner stored as database state, updated only by the single writer thread.
