@@ -2329,6 +2329,60 @@ fn inline_variable_all_usages_replaces_and_deletes_declaration() {
 }
 
 #[test]
+fn inline_variable_inline_all_rejected_when_unindexed_occurrence_exists() {
+    let file = FileId::new("Test.java");
+    let src = r#"class C {
+  void m() {
+    int a = 1 + 2;
+    Runnable r = new Runnable() {
+      public void run() {
+        System.out.println(a);
+      }
+    };
+    System.out.println(a);
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    // `inline_all` must not delete the declaration if we cannot prove all occurrences were indexed.
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(err, SemanticRefactorError::InlineNotSupported));
+
+    // The non-deleting variant stays supported.
+    let mut refs = db.find_references(symbol);
+    refs.sort_by_key(|r| r.range.start);
+    let usage = refs.first().expect("at least one indexed reference").range;
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: false,
+            usage_range: Some(usage),
+        },
+    )
+    .unwrap();
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    assert!(after.contains("int a = 1 + 2;"), "declaration must remain");
+    assert!(
+        after.contains("System.out.println((1 + 2));"),
+        "at least one usage should be inlined: {after}"
+    );
+}
+
+#[test]
 fn inline_variable_rejected_when_initializer_dependency_is_written_before_use() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {

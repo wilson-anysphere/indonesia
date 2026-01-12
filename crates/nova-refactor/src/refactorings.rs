@@ -669,6 +669,73 @@ pub struct InlineVariableParams {
     pub usage_range: Option<TextRange>,
 }
 
+fn contains_unknown_name_expression(
+    db: &dyn RefactorDatabase,
+    file: &FileId,
+    source: &str,
+    name: &str,
+    symbol: SymbolId,
+    known_refs: &[crate::semantic::Reference],
+) -> bool {
+    // Some RefactorDatabase implementations may be able to return semantic references for a symbol
+    // even when `symbol_at` span tracking is incomplete. Treat any same-name occurrence whose
+    // identifier token range exactly matches a known reference range as "known" without requiring
+    // an additional `symbol_at` resolution step.
+    let known_ranges: HashSet<TextRange> = known_refs
+        .iter()
+        .filter(|r| &r.file == file)
+        .map(|r| r.range)
+        .collect();
+
+    let parsed = parse_java(source);
+    let root = parsed.syntax();
+
+    for name_expr in root.descendants().filter_map(ast::NameExpression::cast) {
+        let mut text = String::new();
+        let mut ident_start: Option<usize> = None;
+        let mut ident_range: Option<TextRange> = None;
+
+        for tok in name_expr
+            .syntax()
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+        {
+            if tok.kind().is_trivia() {
+                continue;
+            }
+            text.push_str(tok.text());
+            if ident_start.is_none() && tok.kind().is_identifier_like() && tok.text() == name {
+                let start = u32::from(tok.text_range().start()) as usize;
+                let end = u32::from(tok.text_range().end()) as usize;
+                ident_start = Some(start);
+                ident_range = Some(TextRange::new(start, end));
+            }
+        }
+
+        if text != name {
+            continue;
+        }
+
+        let Some(ident_start) = ident_start else {
+            continue;
+        };
+
+        if let Some(ident_range) = ident_range {
+            if known_ranges.contains(&ident_range) {
+                continue;
+            }
+        }
+
+        match db.symbol_at(file, ident_start) {
+            Some(resolved) if resolved == symbol => {}
+            Some(_) => {}
+            None => return true,
+        }
+    }
+
+    false
+}
+
 pub fn inline_variable(
     db: &dyn RefactorDatabase,
     params: InlineVariableParams,
@@ -847,7 +914,21 @@ pub fn inline_variable(
         &targets,
     )?;
 
-    let remove_decl = params.inline_all || all_refs.len() == 1;
+    let mut remove_decl = params.inline_all || all_refs.len() == 1;
+    if remove_decl
+        && contains_unknown_name_expression(db, &def.file, text, &def.name, params.symbol, &all_refs)
+    {
+        // If we cannot prove that our semantic reference index covers every textual occurrence of
+        // the variable name, deleting the declaration can produce uncompilable code.
+        //
+        // When the user explicitly requested "inline all" we reject the refactoring. Otherwise we
+        // fall back to keeping the declaration (still safe) even if the indexed reference set
+        // makes it look like there is only one usage.
+        if params.inline_all {
+            return Err(RefactorError::InlineNotSupported);
+        }
+        remove_decl = false;
+    }
 
     if init_has_side_effects {
         if !(remove_decl && targets.len() == 1) {
