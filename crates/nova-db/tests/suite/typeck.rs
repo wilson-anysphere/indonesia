@@ -378,6 +378,44 @@ class C {
 }
 
 #[test]
+fn this_in_static_initializer_is_error() {
+    let src = r#"
+class C {
+  static {
+    this.toString();
+  }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "this-in-static-context"
+            && d.message.contains("static context")),
+        "expected `this` in static initializer to produce a static-context diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn super_in_static_initializer_is_error() {
+    let src = r#"
+class C {
+  static {
+    super.toString();
+  }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "super-in-static-context"
+            && d.message.contains("static context")),
+        "expected `super` in static initializer to produce a static-context diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn byte_initializer_allows_int_constant() {
     let src = r#"
 class C { void m(){ byte b = 1; } }
