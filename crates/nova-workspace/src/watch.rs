@@ -339,7 +339,7 @@ mod tests {
             root.join(".nova.toml"),
             root.join("nova.config.toml"),
             root.join(".nova").join("config.toml"),
-            root.join(".nova").join("queries").join("gradle.json"),
+            root.join(nova_build_model::GRADLE_SNAPSHOT_REL_PATH),
             root.join("gradle.lockfile"),
             root.join("gradle")
                 .join("dependency-locks")

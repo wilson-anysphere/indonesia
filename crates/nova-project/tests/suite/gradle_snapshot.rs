@@ -1,6 +1,9 @@
 use std::path::Path;
 
-use nova_build_model::{collect_gradle_build_files, BuildFileFingerprint};
+use nova_build_model::{
+    collect_gradle_build_files, BuildFileFingerprint, GRADLE_SNAPSHOT_REL_PATH,
+    GRADLE_SNAPSHOT_SCHEMA_VERSION,
+};
 use nova_project::{
     load_project_with_options, load_workspace_model_with_options, BuildSystem, ClasspathEntryKind,
     LoadOptions, OutputDirKind, SourceRootKind, SourceRootOrigin,
@@ -87,17 +90,16 @@ fn gradle_snapshot_overrides_project_dir_and_populates_module_config() {
 
     let fingerprint = compute_gradle_fingerprint(workspace_root);
 
-    let snapshot_dir = workspace_root.join(".nova/queries");
-    std::fs::create_dir_all(&snapshot_dir).unwrap();
-    let snapshot_path = snapshot_dir.join("gradle.json");
+    let snapshot_path = workspace_root.join(GRADLE_SNAPSHOT_REL_PATH);
+    std::fs::create_dir_all(snapshot_path.parent().unwrap()).unwrap();
 
     let snapshot_json = serde_json::json!({
-         "schemaVersion": 1,
-         "buildFingerprint": fingerprint.clone(),
-         "projects": [
-             { "path": ":", "projectDir": workspace_root.to_string_lossy() },
-             { "path": ":app", "projectDir": app_root.to_string_lossy() }
-         ],
+        "schemaVersion": GRADLE_SNAPSHOT_SCHEMA_VERSION,
+        "buildFingerprint": fingerprint.clone(),
+        "projects": [
+            { "path": ":", "projectDir": workspace_root.to_string_lossy() },
+            { "path": ":app", "projectDir": app_root.to_string_lossy() }
+        ],
         "javaCompileConfigs": {
             ":app": {
                 "projectDir": app_root.to_string_lossy(),
