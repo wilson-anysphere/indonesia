@@ -1502,4 +1502,30 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::Other);
         assert_eq!(err.to_string(), "boom");
     }
+
+    #[test]
+    fn manual_watcher_handle_can_inject_events() {
+        let watcher = ManualFileWatcher::new();
+        let handle = watcher.handle();
+
+        let path = VfsPath::local("/tmp/Main.java");
+        handle
+            .push(WatchEvent::Changes {
+                changes: vec![FileChange::Created { path: path.clone() }],
+            })
+            .unwrap();
+
+        let msg = watcher
+            .receiver()
+            .recv_timeout(Duration::from_secs(1))
+            .expect("watch event")
+            .expect("ok event");
+
+        assert_eq!(
+            msg,
+            WatchEvent::Changes {
+                changes: vec![FileChange::Created { path }]
+            }
+        );
+    }
 }
