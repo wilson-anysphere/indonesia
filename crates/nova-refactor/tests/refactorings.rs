@@ -1517,6 +1517,33 @@ fn inline_variable_side_effectful_initializer_is_rejected() {
 }
 
 #[test]
+fn inline_variable_array_initializer_is_not_supported() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int[] xs = {1, 2};
+    System.out.println(xs.length);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int[] xs").unwrap() + "int[] ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at xs");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(err, SemanticRefactorError::InlineNotSupported));
+}
+
+#[test]
 fn inline_variable_for_init_declaration_is_not_supported() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {

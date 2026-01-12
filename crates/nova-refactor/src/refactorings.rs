@@ -356,6 +356,11 @@ pub fn inline_variable(
         .ok_or(RefactorError::InlineNotSupported)?;
 
     let init_expr = decl.initializer;
+    // Array initializers (`int[] xs = {1,2};`) are not expressions in Java; they cannot be inlined
+    // at arbitrary use sites.
+    if matches!(init_expr, ast::Expression::ArrayInitializer(_)) {
+        return Err(RefactorError::InlineNotSupported);
+    }
     let init_range = syntax_range(init_expr.syntax());
     let init_text = text
         .get(init_range.start..init_range.end)
