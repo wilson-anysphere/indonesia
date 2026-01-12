@@ -2075,6 +2075,28 @@ class C {
 }
 
 #[test]
+fn resolves_explicit_this_constructor_invocation() {
+    let src = r#"
+class C {
+    C() { this(1); }
+    C(int x) {}
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| {
+            d.code.as_ref() != "unresolved-constructor"
+                && d.code.as_ref() != "ambiguous-constructor"
+                && d.code.as_ref() != "invalid-constructor-invocation"
+                && d.code.as_ref() != "constructor-invocation-not-first"
+        }),
+        "expected `this(1)` to resolve without ctor diagnostics; got {diags:?}"
+    );
+}
+
+#[test]
 fn super_invocation_outside_constructor_is_error() {
     let src = r#"
 class C {
@@ -2112,6 +2134,41 @@ class C {
             .iter()
             .any(|d| d.code.as_ref() == "constructor-invocation-not-first"),
         "expected constructor-invocation-not-first diagnostic, got {diags:?}"
+    );
+}
+
+#[test]
+fn this_invocation_not_first_is_error() {
+    let src = r#"
+class C {
+    C() {
+        int x = 0;
+        this(1);
+    }
+    C(int x) {}
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "constructor-invocation-not-first"),
+        "expected constructor-invocation-not-first diagnostic, got {diags:?}"
+    );
+
+    let bad = diags
+        .iter()
+        .find(|d| d.code.as_ref() == "constructor-invocation-not-first")
+        .expect("expected constructor-invocation-not-first diagnostic");
+    let span = bad
+        .span
+        .expect("constructor-invocation-not-first diagnostic should have a span");
+    let this_kw = src.find("this(1)").expect("snippet should contain this call");
+    assert!(
+        span.start <= this_kw && this_kw < span.end,
+        "expected diagnostic span to cover this invocation, got {span:?}"
     );
 }
 
