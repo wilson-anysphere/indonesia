@@ -109,9 +109,11 @@ Notes:
   (beyond `TypeStore::with_minimal_jdk()` and names found by the workspace scan) to avoid base-store
   blow-up. If we observe remaining `ClassId` instability due to transitive JDK loads, we should
   expand the pre-intern set (e.g. enumerate JDK names) or move sooner to a true global interner.
-- Cloning a large `TypeStore` is likely too expensive long-term. The short-term implementation may use:
-  - cheap cloning via structural sharing (preferred),
-  - or a “base + overlay” environment where the overlay only stores body-local additions.
+- Cloning a large `TypeStore` is likely too expensive long-term.
+  - **Implementation note (current repo):** `TypeStore::clone` is a *deep clone* of the internal
+    `Vec`/`HashMap` tables. This means base-store size directly impacts per-body latency and memory.
+  - Mitigation ideas: cheap cloning via structural sharing (preferred), or a “base + overlay”
+    environment where the overlay only stores body-local additions.
 
 ### Long-term (true stable interning across incremental revisions)
 
