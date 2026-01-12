@@ -3145,7 +3145,7 @@ fn classpath_index_for_file(
         .chain(config.module_path.iter())
         .filter(|entry| match entry.kind {
             nova_project::ClasspathEntryKind::Directory => entry.path.is_dir(),
-            nova_project::ClasspathEntryKind::Jar => entry.path.is_file(),
+            nova_project::ClasspathEntryKind::Jar => entry.path.is_file() || entry.path.is_dir(),
             #[allow(unreachable_patterns)]
             _ => false,
         })
