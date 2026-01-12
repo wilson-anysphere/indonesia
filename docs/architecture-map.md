@@ -385,6 +385,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
   - ADR 0003 mentions an optional TCP transport; `nova-lsp` currently only supports stdio (`lsp_server::Connection::stdio()`) and uses `lsp-server` for framing + the initialize handshake (`initialize_start/finish`) in `crates/nova-lsp/src/main.rs`.
+  - `nova-lsp` has an **experimental** local distributed mode behind `--distributed` / `--distributed-worker-command` (see `crates/nova-lsp/src/main.rs`). Today this primarily powers `workspace/symbol` via `nova-router` + `nova-worker`, and is not enabled by default.
   - Request/notification dispatch is still a Nova-owned manual router (`match` over `method` strings), not `tower-lsp`; `$/cancelRequest` is handled explicitly via `message_router` + `nova_lsp::RequestCancellation`.
   - Custom `nova/*` method support is advertised via `initializeResult.capabilities.experimental.nova.{requests,notifications}` (clients should still handle older servers that omit this).
   - Request cancellation is routed (`$/cancelRequest` → request-scoped `CancellationToken`), but many handlers still only check cancellation at coarse boundaries; long-running work may not stop promptly.
@@ -456,7 +457,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
   - `crates/nova-remote-proto/src/lib.rs` — shared hard limits + helpers
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
-  - Distributed mode is still experimental, but is now used by the shipped `nova-lsp` binary when launched with `--distributed` (local IPC router + spawned `nova-worker`).
+  - Distributed mode is still experimental, but is now editor-facing via `nova-lsp --distributed` (local IPC router + spawned `nova-worker`); today the editor-facing surface area is intentionally narrow (primarily `workspace/symbol`).
   - v3 is the current router↔worker wire protocol; schema evolution is expected within minor versions.
 
 ### `nova-remote-rpc`
@@ -464,7 +465,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Key entry points:** `crates/nova-remote-rpc/src/lib.rs` (`RpcConnection`, `RpcRole`, `RouterConfig`, `WorkerConfig`, `RpcError`, `RpcTransportError`, `RequestId`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
-  - Distributed mode is still experimental; `nova-lsp` currently uses it behind `--distributed` primarily for `workspace/symbol` + best-effort file update propagation.
+  - Distributed mode is still experimental; `nova-lsp` uses it behind `--distributed` (local IPC router + spawned `nova-worker`) primarily for `workspace/symbol` + best-effort file update propagation.
   - No application-level keepalive/heartbeat yet; idle connections rely on the transport/deployment.
 
 ### `nova-resolve`
@@ -479,7 +480,8 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Key entry points:** `crates/nova-router/src/lib.rs` (`QueryRouter`, `DistributedRouterConfig`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
-  - Distributed mode is integrated into the shipped `nova-lsp` stdio server behind CLI flags (`--distributed`, `--distributed-worker-command`), but the editor-facing surface area is still intentionally narrow (see `docs/16-distributed-mode.md`).
+  - Distributed mode is integrated into the shipped `nova-lsp` stdio server behind CLI flags (`--distributed`, `--distributed-worker-command`), but the editor-facing surface area is still intentionally narrow/experimental (see `docs/16-distributed-mode.md`).
+  - No general per-query fanout yet; the router mostly serves queries from an aggregated symbol index instead of routing arbitrary semantic queries to multiple shards/workers on demand.
 
 ### `nova-scheduler`
 - **Purpose:** concurrency helpers (scheduler pools, cancellation tokens, watchdog timeouts, debouncers).
