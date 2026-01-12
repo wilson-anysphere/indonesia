@@ -8852,11 +8852,8 @@ fn run_ai_generate_method_body_apply<O: RpcOut + Sync>(
     // Enforce excluded_paths *before* building prompts or calling the model.
     if ai.is_excluded_path(&abs_path) {
         return Err((
-            -32603,
-            format!(
-                "refusing to generate AI edits for excluded path `{}` (matches ai.privacy.excluded_paths)",
-                abs_path.display()
-            ),
+            -32600,
+            "AI disabled for this file due to ai.privacy.excluded_paths".to_string(),
         ));
     }
 
@@ -8864,7 +8861,7 @@ fn run_ai_generate_method_body_apply<O: RpcOut + Sync>(
         load_document_text(state, uri_string).or_else(|| load_document_text(state, uri.as_str()))
     else {
         return Err((
-            -32603,
+            -32602,
             format!("missing document text for `{}`", uri.as_str()),
         ));
     };
@@ -8958,11 +8955,8 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
     // Enforce excluded_paths *before* building prompts or calling the model.
     if ai.is_excluded_path(&abs_path) {
         return Err((
-            -32603,
-            format!(
-                "refusing to generate AI edits for excluded path `{}` (matches ai.privacy.excluded_paths)",
-                abs_path.display()
-            ),
+            -32600,
+            "AI disabled for this file due to ai.privacy.excluded_paths".to_string(),
         ));
     }
 
@@ -8970,7 +8964,7 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
         load_document_text(state, uri_string).or_else(|| load_document_text(state, uri.as_str()))
     else {
         return Err((
-            -32603,
+            -32602,
             format!("missing document text for `{}`", uri.as_str()),
         ));
     };

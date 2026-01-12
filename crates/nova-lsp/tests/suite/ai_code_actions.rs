@@ -3136,6 +3136,291 @@ fn stdio_server_ai_generate_tests_custom_request_sends_apply_edit() {
 }
 
 #[test]
+fn stdio_server_ai_custom_requests_reject_excluded_paths() {
+    let _lock = crate::support::stdio_server_lock();
+    let ai_server = crate::support::TestAiServer::start(json!({ "completion": "unused" }));
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+    let root_uri = uri_for_path(root);
+
+    let secrets_dir = root.join("src/secrets");
+    std::fs::create_dir_all(&secrets_dir).expect("create secrets dir");
+    let file_path = secrets_dir.join("Secret.java");
+    let file_uri = uri_for_path(&file_path);
+    let text = "class Secret { int answer() { } }\n";
+    std::fs::write(&file_path, text).expect("write Secret.java");
+
+    let config_path = root.join("nova.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "http"
+url = "{}/complete"
+model = "default"
+
+[ai.privacy]
+local_only = true
+excluded_paths = ["src/secrets/**"]
+"#,
+            ai_server.base_url()
+        ),
+    )
+    .expect("write config");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        // The test config file should be authoritative; clear any legacy env-var AI wiring that
+        // could override `--config` (common in developer shells).
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        // Ensure a developer's environment doesn't disable AI for this test.
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": root_uri, "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": text
+                }
+            }
+        }),
+    );
+
+    let range = Range::new(Position::new(0, 0), Position::new(0, 0));
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/generateMethodBody",
+            "params": {
+                "method_signature": "int answer()",
+                "context": null,
+                "uri": file_uri,
+                "range": range
+            }
+        }),
+    );
+
+    let resp = read_response_with_id(&mut stdout, 2);
+    let error = resp
+        .get("error")
+        .and_then(|v| v.as_object())
+        .expect("expected error response");
+    assert_eq!(error.get("code").and_then(|v| v.as_i64()), Some(-32600));
+    assert!(
+        error
+            .get("message")
+            .and_then(|v| v.as_str())
+            .is_some_and(|m| m.contains("excluded_paths")),
+        "expected error message to mention excluded_paths, got: {resp:#?}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "nova/ai/generateTests",
+            "params": {
+                "target": "int answer()",
+                "context": null,
+                "uri": file_uri,
+                "range": range
+            }
+        }),
+    );
+
+    let resp = read_response_with_id(&mut stdout, 3);
+    let error = resp
+        .get("error")
+        .and_then(|v| v.as_object())
+        .expect("expected error response");
+    assert_eq!(error.get("code").and_then(|v| v.as_i64()), Some(-32600));
+    assert!(
+        error
+            .get("message")
+            .and_then(|v| v.as_str())
+            .is_some_and(|m| m.contains("excluded_paths")),
+        "expected error message to mention excluded_paths, got: {resp:#?}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+    ai_server.assert_hits(0);
+}
+
+#[test]
+fn stdio_server_ai_custom_requests_require_document_text() {
+    let _lock = crate::support::stdio_server_lock();
+    let ai_server = crate::support::TestAiServer::start(json!({ "completion": "unused" }));
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+    let root_uri = uri_for_path(root);
+
+    let missing_path = root.join("src/main/java/com/example/Missing.java");
+    let missing_uri = uri_for_path(&missing_path);
+    let range = Range::new(Position::new(0, 0), Position::new(0, 0));
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        // Ensure a developer's environment doesn't disable AI for this test.
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env("NOVA_AI_PROVIDER", "http")
+        .env(
+            "NOVA_AI_ENDPOINT",
+            format!("{}/complete", ai_server.base_url()),
+        )
+        .env("NOVA_AI_MODEL", "default")
+        .env("NOVA_AI_ANONYMIZE_IDENTIFIERS", "0")
+        .env("NOVA_AI_ALLOW_CLOUD_CODE_EDITS", "1")
+        .env("NOVA_AI_ALLOW_CODE_EDITS_WITHOUT_ANONYMIZATION", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": root_uri, "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/generateMethodBody",
+            "params": {
+                "method_signature": "int answer()",
+                "context": null,
+                "uri": missing_uri,
+                "range": range
+            }
+        }),
+    );
+    let resp = read_response_with_id(&mut stdout, 2);
+    let error = resp
+        .get("error")
+        .and_then(|v| v.as_object())
+        .expect("expected error response");
+    assert_eq!(error.get("code").and_then(|v| v.as_i64()), Some(-32602));
+    assert!(
+        error
+            .get("message")
+            .and_then(|v| v.as_str())
+            .is_some_and(|m| m.contains("missing document text")),
+        "expected missing document text error, got: {resp:#?}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "nova/ai/generateTests",
+            "params": {
+                "target": "int answer()",
+                "context": null,
+                "uri": missing_uri,
+                "range": range
+            }
+        }),
+    );
+    let resp = read_response_with_id(&mut stdout, 3);
+    let error = resp
+        .get("error")
+        .and_then(|v| v.as_object())
+        .expect("expected error response");
+    assert_eq!(error.get("code").and_then(|v| v.as_i64()), Some(-32602));
+    assert!(
+        error
+            .get("message")
+            .and_then(|v| v.as_str())
+            .is_some_and(|m| m.contains("missing document text")),
+        "expected missing document text error, got: {resp:#?}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+    ai_server.assert_hits(0);
+}
+
+#[test]
 fn stdio_server_chunks_long_ai_explain_error_log_messages() {
     let _lock = crate::support::stdio_server_lock();
     let mock_server = MockServer::start();
