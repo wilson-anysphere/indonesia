@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use nova_format::{format_member_insertion_with_newline, NewlineStyle};
 use nova_index::TextRange;
@@ -122,6 +122,8 @@ fn extract_impl(
     if kind == ExtractKind::Field && is_in_static_context(&expr, &class_body) {
         return Err(ExtractError::NotInstanceContext);
     }
+    let field_types = collect_field_types(source, &class_body);
+    let class_name = enclosing_type_name(&class_body);
     if depends_on_local(&expr) {
         return Err(ExtractError::DependsOnLocal);
     }
@@ -134,7 +136,8 @@ fn extract_impl(
         ExtractKind::Field => qualify_field_initializer_expr(source, &expr, &class_body),
         ExtractKind::Constant => qualify_constant_initializer_expr(source, &expr, &class_body)?,
     };
-    let expr_type = infer_expr_type(source, &expr).unwrap_or_else(|| "Object".to_string());
+    let expr_type = infer_expr_type(source, &expr, &field_types, class_name.as_deref())
+        .unwrap_or_else(|| "Object".to_string());
 
     let existing_names = collect_field_names(&class_body);
     let suggested = match kind {
@@ -705,13 +708,38 @@ fn receiver_head_name(receiver: &ast::Expression) -> Option<String> {
     }
 }
 
-fn infer_expr_type(_source: &str, expr: &ast::Expression) -> Option<String> {
-    fn infer_type_from_tokens(tokens: impl Iterator<Item = nova_syntax::SyntaxToken>) -> String {
+fn infer_expr_type(
+    _source: &str,
+    expr: &ast::Expression,
+    field_types: &HashMap<String, String>,
+    class_name: Option<&str>,
+) -> Option<String> {
+    fn simple_type_name(ty: &str) -> &str {
+        let mut ty = ty.trim();
+        if let Some((head, _)) = ty.split_once('<') {
+            ty = head;
+        }
+        while ty.ends_with("[]") {
+            ty = ty.strip_suffix("[]").unwrap_or(ty);
+            ty = ty.trim();
+        }
+        ty.rsplit('.').next().unwrap_or(ty)
+    }
+
+    fn infer_type_from_tokens(
+        tokens: impl Iterator<Item = nova_syntax::SyntaxToken>,
+        field_types: &HashMap<String, String>,
+        class_name: Option<&str>,
+    ) -> String {
         let mut saw_string = false;
         let mut saw_boolean = false;
         let mut saw_double = false;
         let mut saw_float = false;
         let mut saw_long = false;
+        let mut prev_non_trivia: Option<SyntaxKind> = None;
+        let mut last_ident: Option<String> = None;
+        let mut dot_receiver_ident: Option<String> = None;
+        let mut dot_receiver_is_this = false;
 
         for tok in tokens.filter(|tok| !tok.kind().is_trivia() && tok.kind() != SyntaxKind::Eof) {
             match tok.kind() {
@@ -731,8 +759,43 @@ fn infer_expr_type(_source: &str, expr: &ast::Expression) -> Option<String> {
                 SyntaxKind::DoubleLiteral => saw_double = true,
                 SyntaxKind::FloatLiteral => saw_float = true,
                 SyntaxKind::LongLiteral => saw_long = true,
+                SyntaxKind::Dot => {
+                    dot_receiver_ident = last_ident.clone();
+                    dot_receiver_is_this = prev_non_trivia == Some(SyntaxKind::ThisKw);
+                }
+                kind if kind.is_identifier_like() => {
+                    let name = tok.text();
+                    let use_for_lookup = if prev_non_trivia == Some(SyntaxKind::Dot) {
+                        dot_receiver_is_this
+                            || dot_receiver_ident
+                                .as_deref()
+                                .is_some_and(|receiver| Some(receiver) == class_name)
+                    } else {
+                        true
+                    };
+
+                    if use_for_lookup {
+                        if let Some(ty) = field_types.get(name) {
+                            match simple_type_name(ty) {
+                                "String" => saw_string = true,
+                                "boolean" | "Boolean" => saw_boolean = true,
+                                "double" | "Double" => saw_double = true,
+                                "float" | "Float" => saw_float = true,
+                                "long" | "Long" => saw_long = true,
+                                _ => {}
+                            }
+                        }
+                    }
+
+                    if prev_non_trivia == Some(SyntaxKind::Dot) {
+                        dot_receiver_ident = None;
+                        dot_receiver_is_this = false;
+                    }
+                    last_ident = Some(name.to_string());
+                }
                 _ => {}
             }
+            prev_non_trivia = Some(tok.kind());
         }
 
         if saw_string {
@@ -772,6 +835,57 @@ fn infer_expr_type(_source: &str, expr: &ast::Expression) -> Option<String> {
             )
         }
         ast::Expression::InstanceofExpression(_) => Some("boolean".to_string()),
+        ast::Expression::NameExpression(name_expr) => {
+            let idents: Vec<_> = name_expr
+                .syntax()
+                .descendants_with_tokens()
+                .filter_map(|el| el.into_token())
+                .filter(|tok| tok.kind().is_identifier_like())
+                .map(|tok| tok.text().to_string())
+                .collect();
+
+            match idents.as_slice() {
+                [] => None,
+                // `FIELD` -> treat as an implicit field reference within the enclosing class.
+                [field] => field_types.get(field).cloned(),
+                // `ClassName.FIELD` -> allow same-class qualified field accesses (helps avoid Java
+                // forward-reference issues when we insert extracted members at the top of the
+                // class).
+                [receiver, field] if class_name.is_some_and(|name| name == receiver) => {
+                    field_types.get(field).cloned()
+                }
+                // Qualified names like `Math.PI` are unsafe to resolve parser-only.
+                _ => None,
+            }
+        }
+        ast::Expression::FieldAccessExpression(field_access) => {
+            let receiver = field_access.expression()?;
+            // Best-effort: handle `this.foo` and `ClassName.foo` by looking up `foo` in the
+            // enclosing class body.
+            if !matches!(receiver, ast::Expression::ThisExpression(_))
+                && !matches!(receiver, ast::Expression::NameExpression(_))
+            {
+                return None;
+            }
+            let name = field_access.name_token()?;
+            if let ast::Expression::NameExpression(name_expr) = receiver {
+                let mut idents = name_expr
+                    .syntax()
+                    .descendants_with_tokens()
+                    .filter_map(|el| el.into_token())
+                    .filter(|tok| tok.kind().is_identifier_like());
+                let Some(ident) = idents.next() else {
+                    return None;
+                };
+                if idents.next().is_some() {
+                    return None;
+                }
+                if Some(ident.text()) != class_name {
+                    return None;
+                }
+            }
+            field_types.get(name.text()).cloned()
+        }
         ast::Expression::CastExpression(cast) => {
             let ty = cast.ty()?;
             if let Some(primitive) = ty.primitive() {
@@ -832,7 +946,11 @@ fn infer_expr_type(_source: &str, expr: &ast::Expression) -> Option<String> {
                 .syntax()
                 .descendants_with_tokens()
                 .filter_map(|el| el.into_token());
-            Some(infer_type_from_tokens(then_tokens.chain(else_tokens)))
+            Some(infer_type_from_tokens(
+                then_tokens.chain(else_tokens),
+                field_types,
+                class_name,
+            ))
         }
         ast::Expression::BinaryExpression(_)
         | ast::Expression::UnaryExpression(_)
@@ -852,10 +970,53 @@ fn infer_expr_type(_source: &str, expr: &ast::Expression) -> Option<String> {
                 expr.syntax()
                     .descendants_with_tokens()
                     .filter_map(|el| el.into_token()),
+                field_types,
+                class_name,
             ))
         }
         _ => None,
     }
+}
+
+fn collect_field_types(source: &str, body: &ast::ClassBody) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for member in body.members() {
+        let ast::ClassMember::FieldDeclaration(field) = member else {
+            continue;
+        };
+        let Some(ty) = field.ty() else {
+            continue;
+        };
+        let ty_range = syntax_range(ty.syntax());
+        let Some(ty_text) = source.get(ty_range.start..ty_range.end) else {
+            continue;
+        };
+        let ty_text = ty_text.trim().to_string();
+
+        let Some(list) = field.declarator_list() else {
+            continue;
+        };
+        for decl in list.declarators() {
+            if let Some(name) = decl.name_token() {
+                out.insert(name.text().to_string(), ty_text.clone());
+            }
+        }
+    }
+    out
+}
+
+fn enclosing_type_name(body: &ast::ClassBody) -> Option<String> {
+    body.syntax().ancestors().find_map(|node| {
+        if let Some(class) = ast::ClassDeclaration::cast(node.clone()) {
+            class.name_token().map(|t| t.text().to_string())
+        } else if let Some(enm) = ast::EnumDeclaration::cast(node.clone()) {
+            enm.name_token().map(|t| t.text().to_string())
+        } else if let Some(record) = ast::RecordDeclaration::cast(node) {
+            record.name_token().map(|t| t.text().to_string())
+        } else {
+            None
+        }
+    })
 }
 
 fn collect_field_names(body: &ast::ClassBody) -> HashSet<String> {

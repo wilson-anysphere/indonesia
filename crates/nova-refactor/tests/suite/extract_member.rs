@@ -485,6 +485,160 @@ hi
 }
 
 #[test]
+fn extract_constant_infers_string_for_string_field_reference() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    static final String PREFIX = "hi";
+
+    void m() {
+        String x = /*[*/A.PREFIX/*]*/;
+    }
+}
+"#,
+    );
+
+    let outcome = extract_constant("A.java", &code, range, ExtractOptions::default()).unwrap();
+
+    let mut files = BTreeMap::new();
+    let file_id = FileId::new("A.java");
+    files.insert(file_id.clone(), code);
+    let updated = apply_workspace_edit(&files, &outcome.edit).expect("apply edits");
+
+    assert_eq!(
+        updated.get(&file_id).unwrap(),
+        r#"
+class A {
+    private static final String VALUE = A.PREFIX;
+
+    static final String PREFIX = "hi";
+
+    void m() {
+        String x = VALUE;
+    }
+}
+"#
+    );
+}
+
+#[test]
+fn extract_constant_infers_string_for_string_field_concatenation() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    static final String PREFIX = "hi";
+    static final String SUFFIX = "bye";
+
+    void m() {
+        String x = /*[*/A.PREFIX + A.SUFFIX/*]*/;
+    }
+}
+"#,
+    );
+
+    let outcome = extract_constant("A.java", &code, range, ExtractOptions::default()).unwrap();
+
+    let mut files = BTreeMap::new();
+    let file_id = FileId::new("A.java");
+    files.insert(file_id.clone(), code);
+    let updated = apply_workspace_edit(&files, &outcome.edit).expect("apply edits");
+
+    assert_eq!(
+        updated.get(&file_id).unwrap(),
+        r#"
+class A {
+    private static final String VALUE = A.PREFIX + A.SUFFIX;
+
+    static final String PREFIX = "hi";
+    static final String SUFFIX = "bye";
+
+    void m() {
+        String x = VALUE;
+    }
+}
+"#
+    );
+}
+
+#[test]
+fn extract_constant_infers_long_for_long_field_expression() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    static final long LEFT = 1L;
+    static final long RIGHT = 2L;
+
+    void m() {
+        long x = /*[*/A.LEFT + A.RIGHT/*]*/;
+    }
+}
+"#,
+    );
+
+    let outcome = extract_constant("A.java", &code, range, ExtractOptions::default()).unwrap();
+
+    let mut files = BTreeMap::new();
+    let file_id = FileId::new("A.java");
+    files.insert(file_id.clone(), code);
+    let updated = apply_workspace_edit(&files, &outcome.edit).expect("apply edits");
+
+    assert_eq!(
+        updated.get(&file_id).unwrap(),
+        r#"
+class A {
+    private static final long VALUE = A.LEFT + A.RIGHT;
+
+    static final long LEFT = 1L;
+    static final long RIGHT = 2L;
+
+    void m() {
+        long x = VALUE;
+    }
+}
+"#
+    );
+}
+
+#[test]
+fn extract_constant_infers_boolean_for_boolean_field_bitand() {
+    let (code, range) = fixture_range(
+        r#"
+class A {
+    static final boolean LEFT = true;
+    static final boolean RIGHT = false;
+
+    void m() {
+        boolean x = /*[*/A.LEFT & A.RIGHT/*]*/;
+    }
+}
+"#,
+    );
+
+    let outcome = extract_constant("A.java", &code, range, ExtractOptions::default()).unwrap();
+
+    let mut files = BTreeMap::new();
+    let file_id = FileId::new("A.java");
+    files.insert(file_id.clone(), code);
+    let updated = apply_workspace_edit(&files, &outcome.edit).expect("apply edits");
+
+    assert_eq!(
+        updated.get(&file_id).unwrap(),
+        r#"
+class A {
+    private static final boolean VALUE = A.LEFT & A.RIGHT;
+
+    static final boolean LEFT = true;
+    static final boolean RIGHT = false;
+
+    void m() {
+        boolean x = VALUE;
+    }
+}
+"#
+    );
+}
+
+#[test]
 fn extract_constant_replace_all() {
     let (code, range) = fixture_range(
         r#"
