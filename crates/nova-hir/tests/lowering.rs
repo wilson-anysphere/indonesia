@@ -356,6 +356,8 @@ class Foo {
     assert_eq!(tree.methods.len(), 1);
     let (&method_ast_id, method) = tree.methods.iter().next().expect("method");
     assert_eq!(method.name, "id");
+    assert_eq!(method.type_params.len(), 1);
+    assert_eq!(method.type_params[0].name, "T");
     assert_eq!(method.return_ty, "T");
     assert_eq!(
         &source[method.return_ty_range.start..method.return_ty_range.end],
@@ -388,6 +390,25 @@ class Foo {
         }
     }
     assert!(returns_t);
+}
+
+#[test]
+fn lower_generic_constructor() {
+    let source = r#"
+class Foo { <T> Foo(T t) { } }
+"#;
+
+    let db = TestDb {
+        files: vec![Arc::from(source)],
+    };
+    let file = FileId::from_raw(0);
+
+    let tree = item_tree(&db, file);
+    assert_eq!(tree.constructors.len(), 1);
+    let ctor = tree.constructors.values().next().expect("constructor");
+    assert_eq!(ctor.name, "Foo");
+    assert_eq!(ctor.type_params.len(), 1);
+    assert_eq!(ctor.type_params[0].name, "T");
 }
 
 #[test]
