@@ -176,6 +176,9 @@ proptest! {
 
 ## Fuzzing
 
+For the authoritative fuzzing guide (target list, timeouts, artifacts, and minimization), see
+[`docs/fuzzing.md`](../docs/fuzzing.md).
+
 ### Setup
 
 ```bash
@@ -192,6 +195,20 @@ bash scripts/cargo_agent.sh +nightly fuzz list
 
 # Run a fuzz target (from the repo root).
 bash scripts/cargo_agent.sh +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
+
+# Formatter / edit generation.
+bash scripts/cargo_agent.sh +nightly fuzz run fuzz_format -- -max_total_time=60 -max_len=262144
+
+# Parse JVM classfiles.
+bash scripts/cargo_agent.sh +nightly fuzz run fuzz_classfile -- -max_total_time=60 -max_len=262144
+
+# Parse JUnit XML reports.
+bash scripts/cargo_agent.sh +nightly fuzz run fuzz_junit_report -- -max_total_time=60 -max_len=262144
+
+# Optional targets
+bash scripts/cargo_agent.sh +nightly fuzz run parse_java -- -max_total_time=60 -max_len=262144
+bash scripts/cargo_agent.sh +nightly fuzz run format_java -- -max_total_time=60 -max_len=262144
+bash scripts/cargo_agent.sh +nightly fuzz run --features refactor refactor_smoke -- -max_total_time=60 -max_len=262144
 
 # IDE completions robustness (never panic on malformed Java + arbitrary cursor positions).
 bash scripts/cargo_agent.sh +nightly fuzz run fuzz_completion -- -max_total_time=60 -max_len=262144
@@ -235,7 +252,6 @@ fuzz/
     ├── fuzz_on_type_format.rs
     ├── fuzz_classfile.rs
     ├── fuzz_junit_report.rs
-    ├── fuzz_completion.rs
     ├── fuzz_yaml_parse.rs
     ├── fuzz_properties_parse.rs
     ├── fuzz_config_metadata.rs
@@ -275,16 +291,21 @@ bash ../../scripts/cargo_agent.sh +nightly fuzz run read_dap_message -- -max_tot
 ### Writing Fuzz Targets
 
 ```rust
-// fuzz/fuzz_targets/parse_java.rs
+// fuzz/fuzz_targets/fuzz_syntax_parse.rs (simplified)
 
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use nova_syntax::parse;
+
+mod utils;
 
 fuzz_target!(|data: &[u8]| {
-    if let Ok(input) = std::str::from_utf8(data) {
-        let _ = parse(input);  // Should never panic
-    }
+    let Some(text) = utils::truncate_utf8(data) else {
+        return;
+    };
+
+    // Should never panic / hang on malformed input.
+    let _ = nova_syntax::parse(text);
+    let _ = nova_syntax::parse_java(text);
 });
 ```
 
@@ -292,8 +313,10 @@ fuzz_target!(|data: &[u8]| {
 
 When fuzzer finds a crash:
 
-1. **Reproduce**: `bash scripts/cargo_agent.sh +nightly fuzz run <target> <crash_file>`
-2. **Minimize**: `bash scripts/cargo_agent.sh +nightly fuzz tmin <target> <crash_file>`
+See [`docs/fuzzing.md`](../docs/fuzzing.md) for artifact paths and minimization commands.
+
+1. **Reproduce**: `bash scripts/cargo_agent.sh +nightly fuzz run <target> fuzz/artifacts/<target>/<artifact>`
+2. **Minimize**: `bash scripts/cargo_agent.sh +nightly fuzz tmin <target> fuzz/artifacts/<target>/<artifact>`
 3. **Debug**: Add minimized input as test case
 4. **Fix**: Fix the bug
 5. **Verify**: Ensure crash no longer reproduces
