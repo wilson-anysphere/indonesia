@@ -6,6 +6,9 @@ use nova_build_model::{
     GRADLE_SNAPSHOT_SCHEMA_VERSION,
 };
 
+#[path = "suite/generated_roots_snapshot.rs"]
+mod generated_roots_snapshot;
+
 #[test]
 fn gradle_snapshot_roundtrip_json() {
     let snapshot = GradleSnapshotFile {
