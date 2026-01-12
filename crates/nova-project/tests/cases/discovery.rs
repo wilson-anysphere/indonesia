@@ -403,9 +403,9 @@ fn loads_gradle_includeflat_workspace() {
             .source_roots
             .iter()
             .any(|sr| sr.kind == SourceRootKind::Main && sr.path == expected_app_source_root),
-        "expected includeFlat source root to resolve to {expected_app_source_root:?}. got: {:?}",
-        config.source_roots
-    );
+         "expected includeFlat source root to resolve to {expected_app_source_root:?}. got: {:?}",
+         config.source_roots
+     );
     assert!(
         config
             .source_roots
@@ -449,9 +449,9 @@ fn loads_gradle_includeflat_kts_workspace() {
             .source_roots
             .iter()
             .any(|sr| sr.kind == SourceRootKind::Main && sr.path == expected_app_source_root),
-        "expected includeFlat source root to resolve to {expected_app_source_root:?}. got: {:?}",
-        config.source_roots
-    );
+         "expected includeFlat source root to resolve to {expected_app_source_root:?}. got: {:?}",
+         config.source_roots
+     );
     assert!(
         config
             .source_roots

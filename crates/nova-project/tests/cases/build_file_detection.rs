@@ -34,9 +34,11 @@ fn gradle_is_build_file_recognizes_expected_paths() {
         // Dependency locking can change resolved versions/classpaths without touching build scripts.
         "gradle.lockfile",
         "gradle/dependency-locks/compileClasspath.lockfile",
-        // Version catalogs can live outside the conventional `gradle/` directory.
+        // Version catalogs:
+        // - `libs.versions.toml` is the conventional (and historically supported) default catalog.
+        // - Additional catalogs can be configured via `settings.gradle` and are commonly stored
+        //   under `gradle/` (e.g. `gradle/deps.versions.toml`).
         "libs.versions.toml",
-        "deps.versions.toml",
         "gradle/libs.versions.toml",
         "gradle/deps.versions.toml",
         "gradle/conventions.gradle",
@@ -70,6 +72,11 @@ fn gradle_is_build_file_recognizes_expected_paths() {
         ".gradle/deps.versions.toml",
         // Lockfiles under ignored dirs should not be treated as build files.
         ".gradle/gradle.lockfile",
+        // Additional version catalogs must be under `gradle/`.
+        "deps.versions.toml",
+        "build/deps.versions.toml",
+        "target/deps.versions.toml",
+        ".nova/deps.versions.toml",
         // Sanity check: non-build file.
         "gradle/conventions.txt",
         // Dependency locks must use the `.lockfile` extension.
