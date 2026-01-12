@@ -5850,18 +5850,6 @@ fn check_order_sensitive_inline_order(
     }
 }
 
-fn check_side_effectful_inline_order(
-    root: &nova_syntax::SyntaxNode,
-    decl_stmt: &ast::LocalVariableDeclarationStatement,
-    targets: &[crate::semantic::Reference],
-    decl_file: &FileId,
-) -> Result<(), RefactorError> {
-    // Side-effectful inlining is more restrictive than pure order-sensitivity: if we can't prove
-    // statement-adjacency in the same block, conservatively report that side effects would be
-    // reordered (instead of the more generic `InlineNotSupported`).
-    check_order_sensitive_inline_order(root, decl_stmt, targets, decl_file)
-        .map_err(|_| RefactorError::InlineSideEffects)
-}
 #[derive(Clone, Debug)]
 struct ImportDecl {
     is_static: bool,
