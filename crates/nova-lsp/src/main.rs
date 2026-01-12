@@ -2799,6 +2799,17 @@ fn handle_completion(
     #[cfg(not(feature = "ai"))]
     let (completion_context_id, has_more) = (None::<String>, false);
 
+    #[cfg(feature = "ai")]
+    let mut items = if state.ai_config.enabled && state.ai_config.features.completion_ranking {
+        let runtime = state.runtime.as_ref().ok_or_else(|| {
+            "AI completion ranking is enabled but the Tokio runtime is unavailable".to_string()
+        })?;
+        runtime.block_on(nova_ide::completions_with_ai(&db, file, position, &state.ai_config))
+    } else {
+        nova_lsp::completion(&db, file, position)
+    };
+
+    #[cfg(not(feature = "ai"))]
     let mut items = nova_lsp::completion(&db, file, position);
     if items.is_empty() && has_more {
         items.push(CompletionItem {
@@ -3205,6 +3216,7 @@ fn path_from_uri(uri: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use httpmock::prelude::*;
+    use tempfile::TempDir;
 
     #[test]
     fn path_from_uri_decodes_percent_encoding() {
@@ -3413,6 +3425,69 @@ mod tests {
         assert_eq!(output_chunks.join(""), expected);
 
         mock.assert();
+    }
+
+    #[test]
+    fn build_context_request_attaches_project_and_semantic_context_when_available() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = temp.path();
+        let src_dir = root.join("src");
+        std::fs::create_dir_all(&src_dir).expect("create src dir");
+
+        let file_path = src_dir.join("Main.java");
+        let text = r#"class Main { void run() { String s = "hi"; } }"#;
+        std::fs::write(&file_path, text).expect("write java file");
+
+        let uri: lsp_types::Uri = url::Url::from_file_path(&file_path)
+            .expect("file url")
+            .to_string()
+            .parse()
+            .expect("uri");
+
+        let mut state = ServerState::new(
+            nova_config::AiConfig::default(),
+            Some(nova_ai::PrivacyMode::default()),
+        );
+        state.project_root = Some(root.to_path_buf());
+        state
+            .analysis
+            .open_document(uri.clone(), text.to_string(), 1);
+
+        let offset = text.find("s =").expect("variable occurrence");
+        let start = nova_lsp::text_pos::lsp_position(text, offset).expect("start pos");
+        let end = nova_lsp::text_pos::lsp_position(text, offset + 1).expect("end pos");
+        let range = nova_ide::LspRange {
+            start: nova_ide::LspPosition {
+                line: start.line,
+                character: start.character,
+            },
+            end: nova_ide::LspPosition {
+                line: end.line,
+                character: end.character,
+            },
+        };
+
+        let req = build_context_request_from_args(
+            &state,
+            Some(uri.as_str()),
+            Some(range),
+            String::new(),
+            None,
+            /*include_doc_comments=*/ false,
+        );
+
+        assert!(
+            req.project_context.is_some(),
+            "expected project context for a real workspace root"
+        );
+        assert!(
+            req.semantic_context.is_some(),
+            "expected hover/type info for identifier at selection"
+        );
+
+        let built = nova_ai::ContextBuilder::new().build(req);
+        assert!(built.text.contains("Project context"));
+        assert!(built.text.contains("Symbol/type info"));
     }
 }
 
@@ -3786,6 +3861,189 @@ fn maybe_add_related_code(state: &ServerState, req: ContextRequest) -> ContextRe
     req.with_related_code_from_focal(search.as_ref(), 3)
 }
 
+fn looks_like_project_root(root: &std::path::Path) -> bool {
+    if !root.is_dir() {
+        return false;
+    }
+
+    // Avoid expensive filesystem scans when we only have an ad-hoc URI (e.g. `file:///Test.java`)
+    // that doesn't correspond to an actual workspace folder.
+    const MARKERS: &[&str] = &[
+        // VCS roots.
+        ".git",
+        ".hg",
+        // Maven.
+        "pom.xml",
+        "mvnw",
+        "mvnw.cmd",
+        // Gradle.
+        "build.gradle",
+        "build.gradle.kts",
+        "settings.gradle",
+        "settings.gradle.kts",
+        "gradlew",
+        "gradlew.bat",
+        // Bazel.
+        "WORKSPACE",
+        "WORKSPACE.bazel",
+        "MODULE.bazel",
+        // Nova workspace config.
+        ".nova",
+        "nova.toml",
+        ".nova.toml",
+        "nova.config.toml",
+    ];
+
+    if MARKERS.iter().any(|marker| root.join(marker).exists())
+        || root.join("src").join("main").join("java").is_dir()
+        || root.join("src").join("test").join("java").is_dir()
+    {
+        return true;
+    }
+
+    let src = root.join("src");
+    if !src.is_dir() {
+        return false;
+    }
+
+    // Simple projects: accept a `src/` tree that actually contains Java source files near the
+    // top-level. Cap the walk so this stays cheap even for large workspaces.
+    let mut inspected = 0usize;
+    for entry in walkdir::WalkDir::new(&src).max_depth(4) {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        inspected += 1;
+        if inspected > 2_000 {
+            break;
+        }
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if entry
+            .path()
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("java"))
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn project_context_for_root(root: &std::path::Path) -> Option<nova_ai::context::ProjectContext> {
+    if !looks_like_project_root(root) {
+        return None;
+    }
+
+    let config = nova_ide::framework_cache::project_config(root)?;
+
+    let build_system = Some(format!("{:?}", config.build_system));
+    let java_version = Some(format!(
+        "source {} / target {}",
+        config.java.source.0, config.java.target.0
+    ));
+
+    let mut frameworks = Vec::new();
+    let deps = &config.dependencies;
+    if deps
+        .iter()
+        .any(|d| d.group_id.starts_with("org.springframework"))
+    {
+        frameworks.push("Spring".to_string());
+    }
+    if deps.iter().any(|d| {
+        d.group_id.contains("micronaut")
+            || d.artifact_id.contains("micronaut")
+            || d.group_id.starts_with("io.micronaut")
+    }) {
+        frameworks.push("Micronaut".to_string());
+    }
+    if deps.iter().any(|d| d.group_id.starts_with("io.quarkus")) {
+        frameworks.push("Quarkus".to_string());
+    }
+    if deps.iter().any(|d| {
+        d.group_id.contains("jakarta.persistence")
+            || d.group_id.contains("javax.persistence")
+            || d.artifact_id.contains("persistence")
+    }) {
+        frameworks.push("JPA".to_string());
+    }
+    if deps
+        .iter()
+        .any(|d| d.group_id == "org.projectlombok" || d.artifact_id == "lombok")
+    {
+        frameworks.push("Lombok".to_string());
+    }
+    if deps.iter().any(|d| {
+        d.group_id.starts_with("org.mapstruct") || d.artifact_id.contains("mapstruct")
+    }) {
+        frameworks.push("MapStruct".to_string());
+    }
+    if deps
+        .iter()
+        .any(|d| d.group_id == "com.google.dagger" || d.artifact_id.contains("dagger"))
+    {
+        frameworks.push("Dagger".to_string());
+    }
+
+    frameworks.sort();
+    frameworks.dedup();
+
+    let classpath = config
+        .classpath
+        .iter()
+        .chain(config.module_path.iter())
+        .map(|entry| entry.path.to_string_lossy().to_string())
+        .collect();
+
+    Some(nova_ai::context::ProjectContext {
+        build_system,
+        java_version,
+        frameworks,
+        classpath,
+    })
+}
+
+fn semantic_context_for_hover(
+    path: &std::path::Path,
+    text: &str,
+    position: lsp_types::Position,
+) -> Option<String> {
+    let mut db = InMemoryFileStore::new();
+    let file = db.file_id_for_path(path);
+    db.set_file_text(file, text.to_string());
+
+    let hover = nova_ide::hover(&db, file, position)?;
+    match hover.contents {
+        lsp_types::HoverContents::Markup(markup) => Some(markup.value),
+        lsp_types::HoverContents::Scalar(marked) => Some(match marked {
+            lsp_types::MarkedString::String(s) => s,
+            lsp_types::MarkedString::LanguageString(ls) => ls.value,
+        }),
+        lsp_types::HoverContents::Array(items) => {
+            let mut out = String::new();
+            for item in items {
+                match item {
+                    lsp_types::MarkedString::String(s) => {
+                        out.push_str(&s);
+                        out.push('\n');
+                    }
+                    lsp_types::MarkedString::LanguageString(ls) => {
+                        out.push_str(&ls.value);
+                        out.push('\n');
+                    }
+                }
+            }
+            let out = out.trim().to_string();
+            if out.is_empty() { None } else { Some(out) }
+        }
+    }
+}
+
 fn build_context_request(
     state: &ServerState,
     focal_code: String,
@@ -3795,7 +4053,10 @@ fn build_context_request(
         file_path: None,
         focal_code,
         enclosing_context: enclosing,
-        project_context: None,
+        project_context: state
+            .project_root
+            .as_deref()
+            .and_then(project_context_for_root),
         semantic_context: None,
         related_symbols: Vec::new(),
         related_code: Vec::new(),
@@ -3832,6 +4093,16 @@ fn build_context_request_from_args(
                 // is enabled.
                 if let Some(path) = path_from_uri(uri) {
                     req.file_path = Some(path.display().to_string());
+                    let project_root = state
+                        .project_root
+                        .clone()
+                        .unwrap_or_else(|| nova_ide::framework_cache::project_root_for_path(&path));
+                    req.project_context = project_context_for_root(&project_root);
+                    req.semantic_context = semantic_context_for_hover(
+                        &path,
+                        &text,
+                        lsp_types::Position::new(range.start.line, range.start.character),
+                    );
                 }
                 req.cursor = Some(nova_ai::patch::Position {
                     line: range.start.line,
