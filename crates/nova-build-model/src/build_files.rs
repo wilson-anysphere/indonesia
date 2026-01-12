@@ -810,6 +810,29 @@ mod tests {
     }
 
     #[test]
+    fn collect_gradle_build_files_parses_include_build_with_file_wrapper() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let included = dir.path().join("included");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&included).unwrap();
+
+        // Kotlin DSL often wraps paths with `file(...)`.
+        write_file(
+            &root.join("settings.gradle.kts"),
+            b"includeBuild(file(\"../included\"))\n",
+        );
+        write_file(&included.join("build.gradle"), b"plugins { id 'java' }\n");
+
+        let files = collect_gradle_build_files(&root).unwrap();
+        let expected = root.join("../included/build.gradle");
+        assert!(
+            files.contains(&expected),
+            "expected included build.gradle to be included in build file collection; got: {files:?}"
+        );
+    }
+
+    #[test]
     fn collect_gradle_build_files_parses_include_build_with_triple_double_quotes() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("root");

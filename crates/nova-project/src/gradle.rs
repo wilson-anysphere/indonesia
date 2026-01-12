@@ -3986,6 +3986,24 @@ includeBuild '''build-logic2'''
     }
 
     #[test]
+    fn parse_gradle_settings_included_builds_parses_file_and_named_argument_forms() {
+        let settings = r#"
+includeBuild(file("build-logic"))
+includeBuild(path = "../included")
+includeBuild(rootDir = file("../nested"))
+"#;
+        let builds = parse_gradle_settings_included_builds(settings);
+        assert_eq!(
+            builds,
+            vec![
+                "../included".to_string(),
+                "../nested".to_string(),
+                "build-logic".to_string(),
+            ],
+        );
+    }
+
+    #[test]
     fn append_included_build_module_refs_ignores_missing_or_non_gradle_roots() {
         let dir = tempdir().expect("tempdir");
         let workspace_root = dir.path();
