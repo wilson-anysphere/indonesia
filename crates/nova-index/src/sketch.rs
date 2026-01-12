@@ -421,7 +421,12 @@ impl Index {
         for indices in self.symbols_by_file.values_mut() {
             indices.sort_by_key(|&idx| {
                 let sym = &self.symbols[idx];
-                (sym.decl_range.start, sym.decl_range.len())
+                (
+                    sym.decl_range.start,
+                    sym.decl_range.len(),
+                    sym.name_range.start,
+                    sym.name_range.len(),
+                )
             });
         }
     }
