@@ -2392,6 +2392,23 @@ class C {
 }
 
 #[test]
+fn unqualified_static_method_call_does_not_emit_warning() {
+    let src = r#"
+class C {
+    static void foo() {}
+    void m(){ foo(); }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "static-access-via-instance"),
+        "expected no static-access-via-instance warning for unqualified static call, got {diags:?}"
+    );
+}
+
+#[test]
 fn static_type_receiver_calling_instance_method_emits_static_context_diag() {
     let src = r#"
 class C {

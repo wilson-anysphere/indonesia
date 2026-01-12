@@ -6223,7 +6223,12 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         }
     }
 
-    fn emit_method_warnings(&mut self, method: &ResolvedMethod, call_span: Span) {
+    fn emit_method_warnings(
+        &mut self,
+        method: &ResolvedMethod,
+        call_span: Span,
+        warn_static_access_via_instance: bool,
+    ) {
         // `nova-types` aggregates some warnings in `ResolvedMethod.warnings`, but certain
         // call paths may also attach warnings to per-argument conversions. Surface both,
         // while ensuring we don't emit duplicates for the same call-site.
@@ -6244,6 +6249,9 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         for warning in unique {
             match warning {
                 TypeWarning::StaticAccessViaInstance => {
+                    if !warn_static_access_via_instance {
+                        continue;
+                    }
                     self.diagnostics.push(Diagnostic::warning(
                         "static-access-via-instance",
                         format!(
@@ -6358,7 +6366,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 let mut ctx = TyContext::new(env_ro);
                 match nova_types::resolve_method_call(&mut ctx, &call) {
                     MethodResolution::Found(method) => {
-                        self.emit_method_warnings(&method, self.body.exprs[expr].range());
+                        self.emit_method_warnings(
+                            &method,
+                            self.body.exprs[expr].range(),
+                            call_kind == CallKind::Instance,
+                        );
                         self.call_resolutions[expr.idx()] = Some(method.clone());
                         apply_arg_targets(self, loader, &method);
                         ExprInfo {
@@ -6466,7 +6478,13 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     let mut ctx = TyContext::new(env_ro);
                     match nova_types::resolve_method_call(&mut ctx, &call) {
                         MethodResolution::Found(method) => {
-                            self.emit_method_warnings(&method, self.body.exprs[expr].range());
+                            // An unqualified call like `foo()` is not a static-access-via-instance
+                            // scenario even in an instance method (unlike `obj.foo()`).
+                            self.emit_method_warnings(
+                                &method,
+                                self.body.exprs[expr].range(),
+                                false,
+                            );
                             self.call_resolutions[expr.idx()] = Some(method.clone());
                             apply_arg_targets(self, loader, &method);
                             return ExprInfo {
@@ -6571,7 +6589,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         let mut ctx = TyContext::new(env_ro);
                         match nova_types::resolve_method_call(&mut ctx, &call) {
                             MethodResolution::Found(method) => {
-                                self.emit_method_warnings(&method, self.body.exprs[expr].range());
+                                self.emit_method_warnings(
+                                    &method,
+                                    self.body.exprs[expr].range(),
+                                    false,
+                                );
                                 self.call_resolutions[expr.idx()] = Some(method.clone());
                                 apply_arg_targets(self, loader, &method);
                                 ExprInfo {
@@ -6655,7 +6677,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         let mut ctx = TyContext::new(env_ro);
                         match nova_types::resolve_method_call(&mut ctx, &call) {
                             MethodResolution::Found(method) => {
-                                self.emit_method_warnings(&method, self.body.exprs[expr].range());
+                                self.emit_method_warnings(
+                                    &method,
+                                    self.body.exprs[expr].range(),
+                                    false,
+                                );
                                 self.call_resolutions[expr.idx()] = Some(method.clone());
                                 apply_arg_targets(self, loader, &method);
                                 ExprInfo {
@@ -6731,7 +6757,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         let mut ctx = TyContext::new(env_ro);
                         match nova_types::resolve_method_call(&mut ctx, &call) {
                             MethodResolution::Found(method) => {
-                                self.emit_method_warnings(&method, self.body.exprs[expr].range());
+                                self.emit_method_warnings(
+                                    &method,
+                                    self.body.exprs[expr].range(),
+                                    false,
+                                );
                                 self.call_resolutions[expr.idx()] = Some(method.clone());
                                 apply_arg_targets(self, loader, &method);
                                 ExprInfo {
