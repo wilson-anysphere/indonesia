@@ -1720,6 +1720,37 @@ async fn dap_evaluate_supports_pinned_objects_via_nova_pinned_scope() {
     let handle_id = obj_ref - OBJECT_HANDLE_BASE;
     assert!(handle_id > 0, "unexpected handle id derived from obj_ref");
 
+    // Populate the pinned scope so child variables use the pinned `evaluateName` base.
+    let pinned_vars_resp = client
+        .request(
+            "variables",
+            json!({ "variablesReference": PINNED_SCOPE_REF }),
+        )
+        .await;
+    assert_eq!(
+        pinned_vars_resp.get("success").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+
+    let obj_vars = client
+        .request("variables", json!({ "variablesReference": obj_ref }))
+        .await;
+    let fields = obj_vars
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
+    let field_eval = fields
+        .iter()
+        .find(|v| v.get("name").and_then(|n| n.as_str()) == Some("field"))
+        .and_then(|v| v.get("evaluateName"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert_eq!(
+        field_eval,
+        format!("__novaPinned[{handle_id}].field"),
+        "expected pinned field evaluateName to use __novaPinned base: {obj_vars}"
+    );
+
     let eval_pinned = client
         .request(
             "evaluate",
@@ -1751,7 +1782,7 @@ async fn dap_evaluate_supports_pinned_objects_via_nova_pinned_scope() {
         .request(
             "evaluate",
             json!({
-                "expression": format!("__novaPinned[{handle_id}].field"),
+                "expression": field_eval,
                 "frameId": frame_id,
             }),
         )

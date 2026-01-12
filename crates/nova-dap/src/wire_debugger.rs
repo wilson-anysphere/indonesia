@@ -4031,6 +4031,10 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                 continue;
             };
 
+            let evaluate_name = format!("__novaPinned[{}]", handle.as_u32());
+            self.objects
+                .set_evaluate_name(handle, evaluate_name.clone());
+
             let value = JdwpValue::Object {
                 tag: b'L',
                 id: object_id,
@@ -4041,7 +4045,7 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                 formatted.value,
                 formatted.type_name,
                 formatted.variables_reference,
-                Some(format!("__novaPinned[{}]", handle.as_u32())),
+                Some(evaluate_name),
                 Some(json!({
                     "kind": "data",
                     "attributes": ["pinned"],
