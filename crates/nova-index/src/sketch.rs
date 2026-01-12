@@ -21,6 +21,13 @@ impl TextRange {
     pub fn len(&self) -> usize {
         self.end.saturating_sub(self.start)
     }
+
+    pub fn shift(self, delta: usize) -> Self {
+        Self {
+            start: self.start.saturating_add(delta),
+            end: self.end.saturating_add(delta),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +92,12 @@ pub struct ReferenceCandidate {
 pub struct Index {
     files: BTreeMap<String, String>,
     symbols: Vec<Symbol>,
+    /// Per-file symbol lists (indices into `symbols`), sorted by `decl_range.start` then
+    /// `decl_range.len()`.
+    ///
+    /// This allows common queries like "symbol at cursor" to avoid scanning every symbol in the
+    /// workspace.
+    symbols_by_file: HashMap<String, Vec<usize>>,
     /// Maps (class_name, method_name) -> method symbol ids (one per overload).
     method_symbols: HashMap<(String, String), Vec<SymbolId>>,
     class_extends: HashMap<String, String>,
@@ -95,6 +108,7 @@ impl Index {
         let mut index = Self {
             files,
             symbols: Vec::new(),
+            symbols_by_file: HashMap::new(),
             method_symbols: HashMap::new(),
             class_extends: HashMap::new(),
         };
@@ -108,6 +122,95 @@ impl Index {
 
     pub fn symbols(&self) -> &[Symbol] {
         &self.symbols
+    }
+
+    /// Iterate over symbols discovered in a specific file.
+    ///
+    /// Symbols are returned in deterministic order (sorted by `decl_range.start` then
+    /// `decl_range.len()`).
+    pub fn symbols_in_file(&self, file: &str) -> impl Iterator<Item = &Symbol> {
+        self.symbols_by_file
+            .get(file)
+            .into_iter()
+            .flat_map(|indices| indices.iter().map(|&idx| &self.symbols[idx]))
+    }
+
+    /// Returns the *most nested* symbol (smallest `decl_range.len()`) whose declaration range
+    /// covers `offset`.
+    ///
+    /// If `kinds` is `None`, all symbol kinds are considered.
+    /// If `kinds` is provided, only symbols with a kind in that set are considered.
+    pub fn symbol_at_offset(
+        &self,
+        file: &str,
+        offset: usize,
+        kinds: Option<&[SymbolKind]>,
+    ) -> Option<&Symbol> {
+        let indices = self.symbols_by_file.get(file)?;
+
+        let mut best: Option<&Symbol> = None;
+        for &idx in indices {
+            let sym = &self.symbols[idx];
+            if sym.decl_range.start > offset {
+                break;
+            }
+
+            if offset < sym.decl_range.start || offset >= sym.decl_range.end {
+                continue;
+            }
+
+            if let Some(kinds) = kinds {
+                if !kinds.contains(&sym.kind) {
+                    continue;
+                }
+            }
+
+            match best {
+                None => best = Some(sym),
+                Some(current) => {
+                    if sym.decl_range.len() < current.decl_range.len() {
+                        best = Some(sym);
+                    }
+                }
+            }
+        }
+
+        best
+    }
+
+    /// Returns all symbols in `file` whose declaration range fully covers `range`.
+    ///
+    /// Results are ordered from most-nested to least-nested (smallest to largest
+    /// `decl_range.len()`).
+    pub fn symbols_covering_range(
+        &self,
+        file: &str,
+        range: TextRange,
+        kinds: Option<&[SymbolKind]>,
+    ) -> Vec<&Symbol> {
+        let Some(indices) = self.symbols_by_file.get(file) else {
+            return Vec::new();
+        };
+
+        let mut out = Vec::new();
+        for &idx in indices {
+            let sym = &self.symbols[idx];
+            if sym.decl_range.start > range.start {
+                break;
+            }
+
+            if sym.decl_range.start <= range.start && sym.decl_range.end >= range.end {
+                if let Some(kinds) = kinds {
+                    if !kinds.contains(&sym.kind) {
+                        continue;
+                    }
+                }
+                out.push(sym);
+            }
+        }
+
+        out.sort_by_key(|sym| sym.decl_range.len());
+        out
     }
 
     pub fn file_text(&self, file: &str) -> Option<&str> {
@@ -151,6 +254,7 @@ impl Index {
 
     fn rebuild(&mut self) {
         self.symbols.clear();
+        self.symbols_by_file.clear();
         self.method_symbols.clear();
         self.class_extends.clear();
 
@@ -175,7 +279,12 @@ impl Index {
                     extends: class.extends.clone(),
                 };
                 next_id += 1;
+                let class_idx = self.symbols.len();
                 self.symbols.push(class_sym);
+                self.symbols_by_file
+                    .entry(file.clone())
+                    .or_default()
+                    .push(class_idx);
 
                 for method in class.methods {
                     let id = SymbolId(next_id);
@@ -184,6 +293,7 @@ impl Index {
                         .entry((class.name.clone(), method.name.clone()))
                         .or_default()
                         .push(id);
+                    let method_idx = self.symbols.len();
                     self.symbols.push(Symbol {
                         id,
                         kind: SymbolKind::Method,
@@ -197,11 +307,16 @@ impl Index {
                         is_override: method.is_override,
                         extends: None,
                     });
+                    self.symbols_by_file
+                        .entry(file.clone())
+                        .or_default()
+                        .push(method_idx);
                 }
 
                 for field in class.fields {
                     let id = SymbolId(next_id);
                     next_id += 1;
+                    let field_idx = self.symbols.len();
                     self.symbols.push(Symbol {
                         id,
                         kind: SymbolKind::Field,
@@ -215,8 +330,20 @@ impl Index {
                         is_override: false,
                         extends: None,
                     });
+                    self.symbols_by_file
+                        .entry(file.clone())
+                        .or_default()
+                        .push(field_idx);
                 }
             }
+        }
+
+        // Keep per-file symbol lists stable + enable early-exit scans.
+        for indices in self.symbols_by_file.values_mut() {
+            indices.sort_by_key(|&idx| {
+                let sym = &self.symbols[idx];
+                (sym.decl_range.start, sym.decl_range.len())
+            });
         }
     }
 
@@ -513,6 +640,24 @@ impl<'a> JavaSketchParser<'a> {
                 let body_offset = body_start + 1;
                 let (methods, fields) = parse_members_in_class(body_text, body_offset);
 
+                // Recursively parse nested classes. We intentionally run this on the raw body text
+                // slice and then shift ranges, so nested symbols remain positioned in the
+                // original file.
+                let mut nested_parser = JavaSketchParser::new(body_text);
+                let mut nested_classes = nested_parser.parse_classes();
+                for nested in &mut nested_classes {
+                    nested.name_range = nested.name_range.shift(body_offset);
+                    nested.decl_range = nested.decl_range.shift(body_offset);
+                    for method in &mut nested.methods {
+                        method.name_range = method.name_range.shift(body_offset);
+                        method.decl_range = method.decl_range.shift(body_offset);
+                    }
+                    for field in &mut nested.fields {
+                        field.name_range = field.name_range.shift(body_offset);
+                        field.decl_range = field.decl_range.shift(body_offset);
+                    }
+                }
+
                 classes.push(ParsedClass {
                     name,
                     name_range,
@@ -521,6 +666,7 @@ impl<'a> JavaSketchParser<'a> {
                     methods,
                     fields,
                 });
+                classes.extend(nested_classes);
                 self.cursor = body_end;
             }
         }
