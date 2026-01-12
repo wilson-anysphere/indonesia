@@ -916,9 +916,15 @@ pub fn inline_variable(
         .descendants()
         .filter_map(ast::VariableDeclarator::cast)
         .find(|decl| {
-            decl.name_token()
-                .map(|tok| syntax_token_range(&tok) == def.name_range)
-                .unwrap_or(false)
+            let Some(tok) = decl.name_token() else {
+                return false;
+            };
+            let range = syntax_token_range(&tok);
+            range == def.name_range
+                || (range.start <= def.name_range.start && def.name_range.end <= range.end)
+                || db
+                    .symbol_at(&def.file, range.start)
+                    .is_some_and(|sym| sym == params.symbol)
         })
     {
         if declarator
@@ -939,7 +945,7 @@ pub fn inline_variable(
         }
     }
 
-    let decl = find_local_variable_declaration(&root, def.name_range)
+    let decl = find_local_variable_declaration(db, &def.file, params.symbol, &root, def.name_range)
         .ok_or(RefactorError::InlineNotSupported)?;
 
     let decl_stmt = decl.statement.clone();
@@ -1028,7 +1034,11 @@ pub fn inline_variable(
             let Some(tok) = root
                 .descendants_with_tokens()
                 .filter_map(|el| el.into_token())
-                .find(|tok| syntax_token_range(tok) == token_range)
+                .filter(|tok| !tok.kind().is_trivia())
+                .find(|tok| {
+                    let range = syntax_token_range(tok);
+                    range.start <= token_range.start && token_range.start < range.end
+                })
             else {
                 return Err(RefactorError::InlineNotSupported);
             };
@@ -1092,7 +1102,18 @@ pub fn inline_variable(
     }
 
     if init_has_side_effects {
+        // If we would need to duplicate the initializer (multiple targets) or keep the
+        // declaration (inline-one with multiple usages), reject to avoid changing evaluation
+        // count.
         if !(remove_decl && targets.len() == 1) {
+            return Err(RefactorError::InlineSideEffects);
+        }
+
+        // When deleting only a single declarator from a multi-declarator statement (`int a = f(),
+        // b = g();`), the initializer moves relative to the remaining initializers, which can
+        // reorder side effects. Be conservative and reject if any other initializer in the same
+        // statement has side effects.
+        if decl.declarator_delete_range.is_some() && decl.other_initializers_have_side_effects {
             return Err(RefactorError::InlineSideEffects);
         }
 
@@ -1107,56 +1128,60 @@ pub fn inline_variable(
         .collect();
 
     if remove_decl {
-        // Delete the declaration statement. Be careful not to delete tokens that precede the
-        // statement on the same line (e.g. `case 1: int a = ...;`).
-        let stmt_range = decl.statement_range;
-        let stmt_start = stmt_range.start;
-        let stmt_end = stmt_range.end;
-        let line_start = line_start(text, stmt_start);
-
-        let decl_range = if text[line_start..stmt_start]
-            .chars()
-            .all(|c| c.is_whitespace())
-        {
-            // Statement begins at line start (only indentation precedes it). Delete indentation and
-            // one trailing newline when present.
-            let end = statement_end_including_trailing_newline(text, stmt_end);
-            TextRange::new(line_start, end)
+        if let Some(delete_range) = decl.declarator_delete_range {
+            edits.push(TextEdit::delete(def.file.clone(), delete_range));
         } else {
-            // Statement begins mid-line. Delete only the statement token range, but avoid leaving
-            // awkward whitespace behind.
-            let mut end = stmt_end;
+            // Delete the declaration statement. Be careful not to delete tokens that precede the
+            // statement on the same line (e.g. `case 1: int a = ...;`).
+            let stmt_range = decl.statement_range;
+            let stmt_start = stmt_range.start;
+            let stmt_end = stmt_range.end;
+            let line_start = line_start(text, stmt_start);
 
-            // If a newline immediately follows the statement, consume it too (preserve CRLF as a
-            // unit).
-            let tail = text.get(end..).unwrap_or_default();
-            if tail.starts_with("\r\n") {
-                end += 2;
-            } else if tail.starts_with('\n') || tail.starts_with('\r') {
-                end += 1;
-            } else if let Some(comment_end) =
-                statement_end_including_trailing_inline_comment(text, end)
+            let decl_range = if text[line_start..stmt_start]
+                .chars()
+                .all(|c| c.is_whitespace())
             {
-                // When deleting a mid-line statement (e.g. after `case 1:`), also delete any trailing
-                // inline comments (`// ...` or `/* ... */`) that occur before the line break. This
-                // avoids leaving a dangling comment behind after removing the statement.
-                end = comment_end;
-            } else if matches!(text.as_bytes().get(end), Some(b' ')) {
-                // If there is a single space after the statement and another token follows on the
-                // same line, delete that one space (e.g. `; System.out...`).
-                let after_space = end + 1;
-                if after_space < text.len() {
-                    let next = text.as_bytes()[after_space];
-                    if next != b'\n' && next != b'\r' && next != b' ' && next != b'\t' {
-                        end = after_space;
+                // Statement begins at line start (only indentation precedes it). Delete indentation and
+                // one trailing newline when present.
+                let end = statement_end_including_trailing_newline(text, stmt_end);
+                TextRange::new(line_start, end)
+            } else {
+                // Statement begins mid-line. Delete only the statement token range, but avoid leaving
+                // awkward whitespace behind.
+                let mut end = stmt_end;
+
+                // If a newline immediately follows the statement, consume it too (preserve CRLF as a
+                // unit).
+                let tail = text.get(end..).unwrap_or_default();
+                if tail.starts_with("\r\n") {
+                    end += 2;
+                } else if tail.starts_with('\n') || tail.starts_with('\r') {
+                    end += 1;
+                } else if let Some(comment_end) =
+                    statement_end_including_trailing_inline_comment(text, end)
+                {
+                    // When deleting a mid-line statement (e.g. after `case 1:`), also delete any trailing
+                    // inline comments (`// ...` or `/* ... */`) that occur before the line break. This
+                    // avoids leaving a dangling comment behind after removing the statement.
+                    end = comment_end;
+                } else if matches!(text.as_bytes().get(end), Some(b' ')) {
+                    // If there is a single space after the statement and another token follows on the
+                    // same line, delete that one space (e.g. `; System.out...`).
+                    let after_space = end + 1;
+                    if after_space < text.len() {
+                        let next = text.as_bytes()[after_space];
+                        if next != b'\n' && next != b'\r' && next != b' ' && next != b'\t' {
+                            end = after_space;
+                        }
                     }
                 }
-            }
 
-            TextRange::new(stmt_start, end)
-        };
+                TextRange::new(stmt_start, end)
+            };
 
-        edits.push(TextEdit::delete(def.file.clone(), decl_range));
+            edits.push(TextEdit::delete(def.file.clone(), decl_range));
+        }
     }
 
     let mut edit = WorkspaceEdit::new(edits);
@@ -2746,10 +2771,15 @@ fn is_java_ident_byte(b: u8) -> bool {
 struct LocalVarDeclInfo {
     statement: ast::LocalVariableDeclarationStatement,
     statement_range: TextRange,
+    declarator_delete_range: Option<TextRange>,
+    other_initializers_have_side_effects: bool,
     initializer: ast::Expression,
 }
 
 fn find_local_variable_declaration(
+    db: &dyn RefactorDatabase,
+    file: &FileId,
+    symbol: SymbolId,
     root: &nova_syntax::SyntaxNode,
     name_range: TextRange,
 ) -> Option<LocalVarDeclInfo> {
@@ -2757,30 +2787,82 @@ fn find_local_variable_declaration(
         .descendants()
         .filter_map(ast::LocalVariableDeclarationStatement::cast)
     {
-        let list = stmt.declarator_list()?;
+        let Some(list) = stmt.declarator_list() else {
+            continue;
+        };
         let declarators: Vec<_> = list.declarators().collect();
 
-        let matches_symbol = declarators.iter().any(|decl| {
+        let mut target_idx = declarators.iter().position(|decl| {
             decl.name_token()
                 .map(|tok| syntax_token_range(&tok) == name_range)
                 .unwrap_or(false)
         });
-        if !matches_symbol {
+
+        if target_idx.is_none() {
+            // Be tolerant of slightly different name ranges (e.g. when the DB reports a range
+            // within the identifier token).
+            target_idx = declarators.iter().position(|decl| {
+                decl.name_token()
+                    .map(|tok| {
+                        let range = syntax_token_range(&tok);
+                        range.start <= name_range.start && name_range.end <= range.end
+                    })
+                    .unwrap_or(false)
+            });
+        }
+
+        if target_idx.is_none() {
+            // Fallback: match by semantic symbol id when range matching fails.
+            target_idx = declarators.iter().position(|decl| {
+                let Some(tok) = decl.name_token() else {
+                    return false;
+                };
+                let range = syntax_token_range(&tok);
+                db.symbol_at(file, range.start).is_some_and(|sym| sym == symbol)
+            });
+        }
+
+        let Some(target_idx) = target_idx else {
             continue;
-        }
+        };
 
-        // Reject multi-declarator statements until we properly rewrite them.
-        if declarators.len() != 1 {
-            return None;
-        }
-
-        let decl = declarators.into_iter().next()?;
+        let decl = declarators.get(target_idx)?.clone();
         let initializer = decl.initializer()?;
         let statement_range = syntax_range(stmt.syntax());
+
+        let declarator_delete_range = if declarators.len() <= 1 {
+            None
+        } else if let Some(next) = declarators.get(target_idx + 1) {
+            // Remove `decl, ` (trailing comma) when a next declarator exists.
+            //
+            // We use a *trimmed* range for `next` because its node range may include leading
+            // trivia (whitespace/comments). When deleting the comma, we also want to remove
+            // whitespace between the comma and the next declarator to avoid leaving `int  b`.
+            let start = trimmed_syntax_range(decl.syntax()).start;
+            let end = trimmed_syntax_range(next.syntax()).start;
+            Some(TextRange::new(start, end))
+        } else if target_idx > 0 {
+            // Remove `, decl` (leading comma) when this is the last declarator.
+            let prev = declarators.get(target_idx - 1)?;
+            let start = trimmed_syntax_range(prev.syntax()).end;
+            let end = trimmed_syntax_range(decl.syntax()).end;
+            Some(TextRange::new(start, end))
+        } else {
+            None
+        };
+
+        let other_initializers_have_side_effects = declarators
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| *idx != target_idx)
+            .filter_map(|(_, decl)| decl.initializer())
+            .any(|expr| has_side_effects(expr.syntax()));
 
         return Some(LocalVarDeclInfo {
             statement: stmt,
             statement_range,
+            declarator_delete_range,
+            other_initializers_have_side_effects,
             initializer,
         });
     }
@@ -2793,6 +2875,31 @@ fn syntax_token_range(tok: &nova_syntax::SyntaxToken) -> TextRange {
         u32::from(range.start()) as usize,
         u32::from(range.end()) as usize,
     )
+}
+
+fn trimmed_syntax_range(node: &nova_syntax::SyntaxNode) -> TextRange {
+    let mut start: Option<usize> = None;
+    let mut end: Option<usize> = None;
+    for el in node.descendants_with_tokens() {
+        let Some(tok) = el.into_token() else {
+            continue;
+        };
+        if tok.kind().is_trivia() {
+            continue;
+        }
+        let range = tok.text_range();
+        let tok_start = u32::from(range.start()) as usize;
+        let tok_end = u32::from(range.end()) as usize;
+        if start.is_none() {
+            start = Some(tok_start);
+        }
+        end = Some(tok_end);
+    }
+
+    match (start, end) {
+        (Some(start), Some(end)) => TextRange::new(start, end),
+        _ => syntax_range(node),
+    }
 }
 
 fn reject_unsafe_extract_variable_context(

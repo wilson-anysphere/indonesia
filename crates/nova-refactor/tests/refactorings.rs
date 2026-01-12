@@ -3448,6 +3448,114 @@ class C {
 }
 
 #[test]
+fn inline_variable_multi_declarator_statement_removes_first_declarator() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int a = 1, b = 2;
+    System.out.println(a + b);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  void m() {
+    int b = 2;
+    System.out.println(1 + b);
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn inline_variable_multi_declarator_inline_one_keeps_declaration() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int a = 1, b = 2;
+    System.out.println(a);
+    System.out.println(a);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let mut refs = db.find_references(symbol);
+    refs.sort_by_key(|r| r.range.start);
+    assert_eq!(refs.len(), 2, "expected two references");
+    let first_usage = refs[0].range;
+
+    let edit = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: false,
+            usage_range: Some(first_usage),
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(src, &edit.text_edits).unwrap();
+    let expected = r#"class Test {
+  void m() {
+    int a = 1, b = 2;
+    System.out.println(1);
+    System.out.println(a);
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn inline_variable_multi_declarator_side_effects_in_other_initializer_is_rejected() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  int foo() { return 1; }
+  int bar() { return 2; }
+  void m() {
+    int a = foo(), b = bar();
+    System.out.println(a);
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int a").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: true,
+            usage_range: None,
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(err, SemanticRefactorError::InlineSideEffects));
+}
+
+#[test]
 fn inline_variable_in_switch_one_line_case_label_does_not_delete_case() {
     let file = FileId::new("Test.java");
     let src = r#"class C {
