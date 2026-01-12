@@ -200,6 +200,62 @@ mod tests {
     }
 
     #[derive(Clone, Debug)]
+    struct ByteMockFs {
+        path: VfsPath,
+        bytes: Vec<u8>,
+        reads: Arc<AtomicUsize>,
+    }
+
+    impl ByteMockFs {
+        fn new(path: VfsPath, bytes: Vec<u8>) -> Self {
+            Self {
+                path,
+                bytes,
+                reads: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn reads(&self) -> usize {
+            self.reads.load(Ordering::SeqCst)
+        }
+    }
+
+    impl FileSystem for ByteMockFs {
+        fn read_bytes(&self, path: &VfsPath) -> io::Result<Vec<u8>> {
+            if path == &self.path {
+                self.reads.fetch_add(1, Ordering::SeqCst);
+                return Ok(self.bytes.clone());
+            }
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("missing ({path})"),
+            ))
+        }
+
+        fn read_to_string(&self, path: &VfsPath) -> io::Result<String> {
+            panic!("unexpected base.read_to_string({path})")
+        }
+
+        fn exists(&self, path: &VfsPath) -> bool {
+            path == &self.path
+        }
+
+        fn metadata(&self, path: &VfsPath) -> io::Result<std::fs::Metadata> {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("metadata not supported ({path})"),
+            ))
+        }
+
+        fn read_dir(&self, path: &VfsPath) -> io::Result<Vec<VfsPath>> {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("read_dir not supported ({path})"),
+            ))
+        }
+    }
+
+    #[derive(Clone, Debug)]
     struct UnsupportedFs;
 
     impl FileSystem for UnsupportedFs {
@@ -261,6 +317,25 @@ mod tests {
 
         // Follow-up reads should hit the in-memory cache.
         assert_eq!(fs.read_bytes(&path).unwrap(), b"class Bytes {}".to_vec());
+        assert_eq!(base.reads(), 1);
+    }
+
+    #[test]
+    fn read_bytes_delegates_to_base_and_caches_utf8_text() {
+        let path = VfsPath::decompiled(HASH_64, "com.example.BytesOk");
+        let base = ByteMockFs::new(path.clone(), b"class BytesOk {}".to_vec());
+        let store = VirtualDocumentStore::new(1024);
+        let fs = VirtualDocumentsFs::new(base.clone(), store.clone());
+
+        assert_eq!(
+            fs.read_bytes(&path).unwrap(),
+            b"class BytesOk {}".to_vec()
+        );
+        assert!(store.contains(&path));
+        assert_eq!(base.reads(), 1);
+
+        // Subsequent reads should hit the store and not consult the base for a `read_to_string`.
+        assert_eq!(fs.read_to_string(&path).unwrap(), "class BytesOk {}");
         assert_eq!(base.reads(), 1);
     }
 
