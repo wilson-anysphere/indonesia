@@ -738,12 +738,18 @@ export function registerNovaBuildIntegration(
       return selector.workspaceFolder;
     }
     if (selector?.projectRoot) {
-      const uri = vscode.Uri.file(selector.projectRoot);
-      const folder = vscode.workspace.getWorkspaceFolder(uri);
+      const folders = getWorkspaceFolders();
+      // Prefer matching by fsPath so this works in remote workspaces where the folder URI scheme is
+      // not necessarily `file`, but the fsPath still matches the projectRoot string.
+      const byPath = folders.find((f) => f.uri.fsPath === selector.projectRoot);
+      if (byPath) {
+        return byPath;
+      }
+
+      const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(selector.projectRoot));
       if (folder) {
         return folder;
       }
-      const folders = getWorkspaceFolders();
       if (folders.length === 1) {
         return folders[0];
       }
