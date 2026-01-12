@@ -4959,11 +4959,15 @@ fn infer_type_from_binary_expr(binary: &ast::BinaryExpression) -> String {
             let (Some(lhs_ty), Some(rhs_ty)) = (lhs_ty, rhs_ty) else {
                 return "Object".to_string();
             };
-            let (Some(lhs_rank), Some(rhs_rank)) = (numeric_rank(&lhs_ty), numeric_rank(&rhs_ty))
-            else {
-                return "Object".to_string();
-            };
-            numeric_type_for_rank(lhs_rank.max(rhs_rank)).to_string()
+
+            match (numeric_rank(&lhs_ty), numeric_rank(&rhs_ty)) {
+                (Some(lhs_rank), Some(rhs_rank)) => {
+                    numeric_type_for_rank(lhs_rank.max(rhs_rank)).to_string()
+                }
+                (Some(rank), None) if rhs_ty == "Object" => numeric_type_for_rank(rank).to_string(),
+                (None, Some(rank)) if lhs_ty == "Object" => numeric_type_for_rank(rank).to_string(),
+                _ => "Object".to_string(),
+            }
         }
         SyntaxKind::Minus | SyntaxKind::Star | SyntaxKind::Slash | SyntaxKind::Percent => {
             let (Some(lhs_ty), Some(rhs_ty)) = (lhs_ty, rhs_ty) else {
