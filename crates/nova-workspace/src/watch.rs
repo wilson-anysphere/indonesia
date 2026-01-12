@@ -116,6 +116,13 @@ pub fn is_build_file(path: &Path) -> bool {
         return true;
     }
 
+    // Nova's generated-source roots discovery reads a snapshot under
+    // `.nova/apt-cache/generated-roots.json`. Updates to this file should
+    // trigger a project reload so newly discovered generated roots are watched.
+    if name == "generated-roots.json" && path.ends_with(Path::new(".nova/apt-cache/generated-roots.json")) {
+        return true;
+    }
+
     if path.extension().and_then(|s| s.to_str()) == Some("bzl") {
         return true;
     }
@@ -355,6 +362,31 @@ mod tests {
                 path.display()
             );
         }
+    }
+
+    #[test]
+    fn nova_generated_roots_snapshot_changes_are_build_changes() {
+        let root = PathBuf::from("/tmp/workspace");
+        let config = WatchConfig::new(root.clone());
+
+        let path = root
+            .join(".nova")
+            .join("apt-cache")
+            .join("generated-roots.json");
+
+        assert!(
+            is_build_file(&path),
+            "expected {} to be treated as a build file",
+            path.display()
+        );
+
+        let event = NormalizedEvent::Modified(path.clone());
+        assert_eq!(
+            categorize_event(&config, &event),
+            Some(ChangeCategory::Build),
+            "expected {} to be categorized as Build",
+            path.display()
+        );
     }
 
     #[test]
