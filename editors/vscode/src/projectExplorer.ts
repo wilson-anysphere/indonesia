@@ -813,9 +813,14 @@ class NovaProjectExplorerProvider implements vscode.TreeDataProvider<NovaProject
       return false;
     }
 
-    const supported = isNovaRequestSupported('nova/projectModel');
+    const workspaces = vscode.workspace.workspaceFolders ?? [];
+    if (workspaces.length === 0) {
+      return true;
+    }
+
+    const method = 'nova/projectModel';
     // Default to optimistic behaviour when capability lists are unavailable.
-    return supported !== false;
+    return workspaces.some((workspace) => isNovaRequestSupported(workspace.uri.toString(), method) !== false);
   }
 
   private async triggerUnsupportedWelcome(): Promise<void> {

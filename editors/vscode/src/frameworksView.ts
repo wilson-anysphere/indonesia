@@ -324,13 +324,14 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
   }
 
   private async loadWebEndpoints(element: CategoryNode): Promise<FrameworkNode[]> {
+    const workspaceKey = element.workspaceFolder.uri.toString();
     const projectRoot = element.projectRoot;
 
     let response: WebEndpointsResponse | undefined;
-    response = await this.callRequest<WebEndpointsResponse>('nova/web/endpoints', { projectRoot });
+    response = await this.callRequest<WebEndpointsResponse>(workspaceKey, 'nova/web/endpoints', { projectRoot });
     if (!response) {
       // Backward compatible alias.
-      response = await this.callRequest<WebEndpointsResponse>('nova/quarkus/endpoints', { projectRoot });
+      response = await this.callRequest<WebEndpointsResponse>(workspaceKey, 'nova/quarkus/endpoints', { projectRoot });
     }
 
     if (!response) {
@@ -367,8 +368,9 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
   }
 
   private async loadMicronautEndpoints(element: CategoryNode): Promise<FrameworkNode[]> {
+    const workspaceKey = element.workspaceFolder.uri.toString();
     const projectRoot = element.projectRoot;
-    const response = await this.callRequest<MicronautEndpointsResponse>('nova/micronaut/endpoints', { projectRoot });
+    const response = await this.callRequest<MicronautEndpointsResponse>(workspaceKey, 'nova/micronaut/endpoints', { projectRoot });
 
     if (!response) {
       void vscode.commands.executeCommand('setContext', 'nova.frameworks.micronautEndpointsSupported', false);
@@ -409,8 +411,9 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
   }
 
   private async loadMicronautBeans(element: CategoryNode): Promise<FrameworkNode[]> {
+    const workspaceKey = element.workspaceFolder.uri.toString();
     const projectRoot = element.projectRoot;
-    const response = await this.callRequest<MicronautBeansResponse>('nova/micronaut/beans', { projectRoot });
+    const response = await this.callRequest<MicronautBeansResponse>(workspaceKey, 'nova/micronaut/beans', { projectRoot });
 
     if (!response) {
       void vscode.commands.executeCommand('setContext', 'nova.frameworks.micronautBeansSupported', false);
@@ -444,8 +447,8 @@ class NovaFrameworksTreeDataProvider implements vscode.TreeDataProvider<Framewor
     }));
   }
 
-  private async callRequest<R>(method: string, params: unknown): Promise<R | undefined> {
-    if (isNovaRequestSupported(method) === false) {
+  private async callRequest<R>(workspaceKey: string, method: string, params: unknown): Promise<R | undefined> {
+    if (isNovaRequestSupported(workspaceKey, method) === false) {
       return undefined;
     }
 
