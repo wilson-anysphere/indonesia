@@ -643,7 +643,7 @@ impl InProcessRouter {
                     // Spawn indexing for this shard immediately.
                     let task = self.scheduler.spawn_background_with_token(token.clone(), move |token| {
                         Cancelled::check(&token)?;
-                        let symbols = index_for_files(shard_id, files);
+                        let symbols = index_for_files(shard_id, files, &token)?;
                         Cancelled::check(&token)?;
                         Ok(symbols)
                     });
@@ -763,7 +763,7 @@ impl InProcessRouter {
             .scheduler
             .spawn_background_with_token(token.clone(), move |token| {
                 Cancelled::check(&token)?;
-                let symbols = index_for_files(shard_id, shard_files);
+                let symbols = index_for_files(shard_id, shard_files, &token)?;
                 Cancelled::check(&token)?;
                 Ok(symbols)
             });
@@ -2427,8 +2427,14 @@ where
     }
 }
 
-fn index_for_files(shard_id: ShardId, mut files: Vec<FileText>) -> Vec<Symbol> {
+fn index_for_files(
+    shard_id: ShardId,
+    mut files: Vec<FileText>,
+    cancel: &CancellationToken,
+) -> std::result::Result<Vec<Symbol>, Cancelled> {
     use nova_db::{FileId, NovaHir, SalsaDatabase, SourceRootId};
+
+    Cancelled::check(cancel)?;
 
     files.sort_by(|a, b| a.path.cmp(&b.path));
 
@@ -2437,6 +2443,7 @@ fn index_for_files(shard_id: ShardId, mut files: Vec<FileText>) -> Vec<Symbol> {
     let mut file_ids = Vec::with_capacity(files.len());
 
     for (idx, file) in files.into_iter().enumerate() {
+        Cancelled::check(cancel)?;
         let file_id = FileId::from_raw(idx as u32);
         db.set_file_exists(file_id, true);
         db.set_source_root(file_id, root);
@@ -2447,6 +2454,7 @@ fn index_for_files(shard_id: ShardId, mut files: Vec<FileText>) -> Vec<Symbol> {
     let snap = db.snapshot();
     let mut symbols = Vec::new();
     for (file_id, path) in file_ids {
+        Cancelled::check(cancel)?;
         let names = snap.hir_symbol_names(file_id);
         for name in names.iter() {
             symbols.push(Symbol {
@@ -2458,7 +2466,7 @@ fn index_for_files(shard_id: ShardId, mut files: Vec<FileText>) -> Vec<Symbol> {
 
     symbols.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.path.cmp(&b.path)));
     symbols.dedup();
-    symbols
+    Ok(symbols)
 }
 
 fn build_global_symbols<'a>(
