@@ -557,7 +557,8 @@ pub fn extract_variable(
             && (ast::IfStatement::cast(parent.clone()).is_some()
                 || ast::WhileStatement::cast(parent.clone()).is_some()
                 || ast::DoWhileStatement::cast(parent.clone()).is_some()
-                || ast::ForStatement::cast(parent).is_some())
+                || ast::ForStatement::cast(parent.clone()).is_some()
+                || ast::SynchronizedStatement::cast(parent.clone()).is_some())
         {
             return Err(RefactorError::ExtractNotSupported {
                 reason:
@@ -566,20 +567,30 @@ pub fn extract_variable(
         }
     }
 
-    // Reject statements that start mid-line (`if (cond) foo();`, `case 1: foo();`, ...). Our
-    // insertion strategy inserts at the start of the statement's line; doing so for a mid-line
-    // statement would either be syntactically invalid or change semantics.
-    let insert_pos = line_start(text, stmt_range.start);
-    if text[insert_pos..stmt_range.start]
-        .chars()
-        .any(|c| !c.is_whitespace())
-    {
-        return Err(RefactorError::ExtractNotSupported {
-            reason: "cannot extract when the enclosing statement starts mid-line",
-        });
-    }
+    let line_start = line_start(text, stmt_range.start);
+    let prefix = &text[line_start..stmt_range.start];
 
-    let indent = current_indent(text, insert_pos);
+    // Default insertion strategy inserts a new declaration at the start of the enclosing
+    // statement's line. For statements that start mid-line (e.g. `case 1: foo();`), that would
+    // be invalid or change semantics, so we reject those.
+    //
+    // Exception: if the statement begins after a `{` on the same line (e.g. `label: { foo(); }`),
+    // we can safely insert the declaration in-line right before the statement.
+    let (insert_pos, indent, newline) = if prefix.chars().all(|c| c.is_whitespace()) {
+        (
+            line_start,
+            current_indent(text, line_start),
+            NewlineStyle::detect(text).as_str(),
+        )
+    } else {
+        let last_non_ws = prefix.chars().rev().find(|c| !c.is_whitespace());
+        if last_non_ws != Some('{') {
+            return Err(RefactorError::ExtractNotSupported {
+                reason: "cannot extract when the enclosing statement starts mid-line",
+            });
+        }
+        (stmt_range.start, String::new(), " ")
+    };
 
     check_extract_variable_name_conflicts(&stmt, insert_pos, &name)?;
 
@@ -657,7 +668,7 @@ pub fn extract_variable(
         }
     }
 
-    let newline = NewlineStyle::detect(text).as_str();
+    let file_newline = NewlineStyle::detect(text).as_str();
 
     // Special-case: extracting inside a multi-declarator local variable declaration needs to
     // preserve scoping and initializer evaluation order. Naively inserting the extracted binding
@@ -673,7 +684,15 @@ pub fn extract_variable(
     //   int b = tmp;
     if let ast::Statement::LocalVariableDeclarationStatement(local) = &stmt {
         if let Some(replacement) = rewrite_multi_declarator_local_variable_declaration(
-            text, local, stmt_range, expr_range, &expr_text, &name, &ty, &indent, newline,
+            text,
+            local,
+            stmt_range,
+            expr_range,
+            &expr_text,
+            &name,
+            &ty,
+            &indent,
+            file_newline,
         ) {
             let mut edit = WorkspaceEdit::new(vec![TextEdit::replace(
                 params.file.clone(),
@@ -684,7 +703,6 @@ pub fn extract_variable(
             return Ok(edit);
         }
     }
-
     let decl = format!("{indent}{ty} {} = {expr_text};{newline}", &name);
 
     let occurrences = if params.replace_all {

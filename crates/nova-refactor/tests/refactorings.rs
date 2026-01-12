@@ -1927,6 +1927,108 @@ fn extract_variable_rejects_labeled_statement_body() {
 }
 
 #[test]
+fn extract_variable_rejects_synchronized_body_without_braces_multiline() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C {
+  void m(Object lock) {
+    synchronized(lock)
+      System.out.println(/*start*/1 + 2/*end*/);
+  }
+}
+"#;
+
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src)]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "sum".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    // Today this is rejected at parse time because Nova's Java parser requires a block
+    // after `synchronized (...)`. If we later accept single-statement synchronized bodies,
+    // we still want extraction to be rejected (it would need braces to preserve semantics).
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ParseError | SemanticRefactorError::ExtractNotSupported { .. }
+        ),
+        "expected ParseError or ExtractNotSupported, got: {err:?}"
+    );
+}
+
+#[test]
+fn extract_variable_allows_braced_synchronized_body_oneline() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C {
+  void m(Object lock) {
+    synchronized(lock) { System.out.println(/*start*/1 + 2/*end*/); }
+  }
+}
+"#;
+
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "sum".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    assert!(
+        after.contains("synchronized(lock) { var sum = 1 + 2; System.out.println(sum); }"),
+        "unexpected output: {after}"
+    );
+}
+
+#[test]
+fn extract_variable_allows_braced_labeled_statement_body_oneline() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C {
+  void m() {
+    label: { System.out.println(/*start*/1 + 2/*end*/); }
+  }
+}
+"#;
+
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "sum".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    assert!(
+        after.contains("label: { var sum = 1 + 2; System.out.println(sum); }"),
+        "unexpected output: {after}"
+    );
+}
+
+#[test]
 fn extract_variable_allows_extraction_inside_braced_if_block() {
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
