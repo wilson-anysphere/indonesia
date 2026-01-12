@@ -611,8 +611,6 @@ impl WorkspaceEngine {
             return;
         }
 
-        let files: Vec<FileId> = self.vfs.all_file_ids();
-
         // Coalesce rapid edit bursts (e.g. didChange storms) and cancel in-flight indexing when
         // superseded by a newer request.
         let query_db = self.query_db.clone();
@@ -622,6 +620,7 @@ impl WorkspaceEngine {
 
         self.index_debouncer
             .debounce("workspace-index", move |token| {
+                let token_for_cancel = token.clone();
                 let ctx = scheduler.request_context_with_token("workspace/indexing", token);
                 let progress = ctx.progress().start("Indexing workspace");
 
@@ -630,31 +629,55 @@ impl WorkspaceEngine {
                     WorkspaceEvent::Status(WorkspaceStatus::IndexingStarted),
                 );
 
-                let total = files.len();
-                let mut new_indexes = ProjectIndexes::default();
+                let project = ProjectId::from_raw(0);
+                let total = query_db.with_snapshot(|snap| snap.project_files(project).len());
 
-                for (idx, file_id) in files.iter().enumerate() {
-                    Cancelled::check(ctx.token())?;
+                // Ensure consumers always see at least one progress update, even if the project is
+                // empty or progress is coarse-grained.
+                progress.report(Some(format!("0/{}", total)), if total == 0 { None } else { Some(0) });
+                publish_to_subscribers(
+                    &subscribers,
+                    WorkspaceEvent::IndexProgress(IndexProgress { current: 0, total }),
+                );
 
-                    let delta = query_db.with_snapshot(|snap| snap.file_index_delta(*file_id));
-                    new_indexes.merge_from((*delta).clone());
+                // If this indexing request is cancelled while Salsa is in-flight, request Salsa
+                // cancellation so queries unwind at the next checkpoint (best-effort).
+                let query_db_for_cancel = query_db.clone();
+                let cancel_handle = scheduler.io_handle().spawn(async move {
+                    token_for_cancel.cancelled().await;
+                    query_db_for_cancel.request_cancellation();
+                });
 
-                    let percentage = if total == 0 {
-                        None
-                    } else {
-                        Some(((idx + 1) * 100 / total).min(100) as u32)
-                    };
-                    progress.report(Some(format!("{}/{}", idx + 1, total)), percentage);
-                    publish_to_subscribers(
-                        &subscribers,
-                        WorkspaceEvent::IndexProgress(IndexProgress {
-                            current: idx + 1,
-                            total,
-                        }),
-                    );
-                }
+                Cancelled::check(ctx.token())?;
 
-                *indexes_arc.lock().expect("workspace indexes lock poisoned") = new_indexes;
+                let new_indexes = query_db.with_snapshot_catch_cancelled(|snap| {
+                    // Project-level Salsa query that warm-starts from disk and only reindexes
+                    // invalidated files.
+                    snap.project_indexes(project)
+                });
+                // Always abort the cancellation watcher (even when Salsa cancels).
+                cancel_handle.abort();
+
+                let new_indexes = new_indexes.map_err(|_cancelled| Cancelled)?;
+
+                Cancelled::check(ctx.token())?;
+
+                *indexes_arc.lock().expect("workspace indexes lock poisoned") = (*new_indexes).clone();
+
+                progress.report(
+                    Some(format!("{}/{}", total, total)),
+                    if total == 0 { None } else { Some(100) },
+                );
+                publish_to_subscribers(
+                    &subscribers,
+                    WorkspaceEvent::IndexProgress(IndexProgress { current: total, total }),
+                );
+
+                // Best-effort persistence: indexing results are still valid even if we fail to
+                // write them to disk.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _ = query_db.persist_project_indexes(project);
+                }));
 
                 progress.finish(Some("Done".to_string()));
                 publish_to_subscribers(
@@ -1225,11 +1248,156 @@ fn reload_project_and_sync(
 
 #[cfg(test)]
 mod tests {
+    use nova_cache::{CacheConfig, CacheDir};
+    use nova_db::persistence::{PersistenceConfig, PersistenceMode};
     use nova_db::NovaInputs;
+    use nova_memory::MemoryBudget;
     use nova_project::BuildSystem;
     use std::fs;
+    use std::time::Duration;
+    use tokio::time::timeout;
 
     use super::*;
+
+    async fn wait_for_indexing_ready(rx: &async_channel::Receiver<WorkspaceEvent>) {
+        let mut saw_started = false;
+        let mut saw_progress = false;
+
+        loop {
+            let event = rx
+                .recv()
+                .await
+                .expect("workspace event channel unexpectedly closed");
+            match event {
+                WorkspaceEvent::Status(WorkspaceStatus::IndexingStarted) => {
+                    saw_started = true;
+                }
+                WorkspaceEvent::IndexProgress(_) => {
+                    saw_progress = true;
+                }
+                WorkspaceEvent::Status(WorkspaceStatus::IndexingReady) => {
+                    break;
+                }
+                WorkspaceEvent::Status(WorkspaceStatus::IndexingError(err)) => {
+                    panic!("indexing failed unexpectedly: {err}");
+                }
+                _ => {}
+            }
+        }
+
+        assert!(saw_started, "expected IndexingStarted status event");
+        assert!(saw_progress, "expected at least one IndexProgress event");
+    }
+
+    #[tokio::test]
+    async fn trigger_indexing_uses_project_level_indexing_queries() {
+        let workspace = crate::Workspace::new_in_memory();
+
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
+
+        // Open 2 Java files as in-memory overlays.
+        workspace.open_document(
+            VfsPath::local(root.join("A.java")),
+            "class A {}".to_string(),
+            1,
+        );
+        workspace.open_document(
+            VfsPath::local(root.join("B.java")),
+            "class B {}".to_string(),
+            1,
+        );
+
+        // Initialize workspace root so `project_files` is populated (and indexing is scoped to the
+        // project, not all known `FileId`s).
+        let engine = workspace.engine_for_tests();
+        engine.set_workspace_root(&root).unwrap();
+        let project = ProjectId::from_raw(0);
+        engine.query_db.with_snapshot(|snap| {
+            assert_eq!(snap.project_files(project).len(), 2);
+        });
+
+        engine.query_db.clear_query_stats();
+
+        let rx = workspace.subscribe();
+        workspace.trigger_indexing();
+
+        timeout(Duration::from_secs(10), wait_for_indexing_ready(&rx))
+            .await
+            .expect("timed out waiting for indexing");
+
+        let stats = engine.query_db.query_stats();
+        let project_shards_exec = stats
+            .by_query
+            .get("project_index_shards")
+            .map(|stat| stat.executions)
+            .unwrap_or(0);
+        let project_indexes_exec = stats
+            .by_query
+            .get("project_indexes")
+            .map(|stat| stat.executions)
+            .unwrap_or(0);
+
+        assert!(
+            project_shards_exec > 0 || project_indexes_exec > 0,
+            "expected project-level indexing query to execute; stats={stats:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn trigger_indexing_persists_project_index_shards_to_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path().join("project");
+        fs::create_dir_all(project_root.join("src")).unwrap();
+        fs::write(
+            project_root.join("src/Main.java"),
+            "class Main {}".as_bytes(),
+        )
+        .unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let project_root = project_root.canonicalize().unwrap();
+
+        let cache_root = dir.path().join("cache-root");
+
+        let persistence = PersistenceConfig {
+            mode: PersistenceMode::ReadWrite,
+            cache: CacheConfig {
+                cache_root_override: Some(cache_root.clone()),
+            },
+        };
+        let memory = MemoryManager::new(MemoryBudget::default_for_system_with_env_overrides());
+        let engine = WorkspaceEngine::new(WorkspaceEngineConfig {
+            workspace_root: project_root.clone(),
+            persistence: persistence.clone(),
+            memory,
+        });
+
+        engine.set_workspace_root(&project_root).unwrap();
+
+        let rx = engine.subscribe();
+        engine.trigger_indexing();
+        timeout(Duration::from_secs(20), wait_for_indexing_ready(&rx))
+            .await
+            .expect("timed out waiting for indexing");
+
+        let cache_dir =
+            CacheDir::new(&project_root, CacheConfig { cache_root_override: Some(cache_root) })
+                .expect("cache dir should be computable");
+        let shards_root = cache_dir.indexes_dir().join("shards");
+        let manifest_path = shards_root.join("manifest.txt");
+        assert!(
+            manifest_path.is_file(),
+            "expected shard manifest at {}",
+            manifest_path.display()
+        );
+        let shard0_symbols = shards_root.join("0").join("symbols.idx");
+        assert!(
+            shard0_symbols.is_file(),
+            "expected at least one persisted shard index file (missing {})",
+            shard0_symbols.display()
+        );
+    }
 
     #[test]
     fn file_id_mapping_is_stable_and_drives_salsa_inputs() {
