@@ -101,6 +101,41 @@ async fn dap_can_attach_set_breakpoints_and_stop() {
 }
 
 #[tokio::test]
+async fn dap_maps_breakpoints_to_nearest_executable_line() {
+    let jdwp = MockJdwpServer::spawn().await.unwrap();
+    let (client, server_task) = spawn_wire_server();
+
+    let temp = tempfile::tempdir().unwrap();
+    let main_path = temp.path().join("Main.java");
+    std::fs::write(
+        &main_path,
+        "class Main {\n  void main() {\n    int x = 0;\n  }\n}\n",
+    )
+    .unwrap();
+
+    client.initialize_handshake().await;
+    client.attach("127.0.0.1", jdwp.addr().port()).await;
+
+    let bp_resp = client
+        .set_breakpoints(main_path.to_str().unwrap(), &[4])
+        .await;
+    let verified = bp_resp
+        .pointer("/body/breakpoints/0/verified")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    assert!(verified);
+    assert_eq!(
+        bp_resp
+            .pointer("/body/breakpoints/0/line")
+            .and_then(|v| v.as_i64()),
+        Some(3)
+    );
+
+    client.disconnect().await;
+    server_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn dap_can_hot_swap_a_class() {
     let mut caps = vec![false; 32];
     caps[7] = true; // canRedefineClasses
@@ -844,6 +879,71 @@ async fn dap_evaluate_without_frame_id_returns_friendly_message() {
         .and_then(|v| v.as_str())
         .unwrap_or("");
     assert!(result.contains("frameId"));
+
+    client.disconnect().await;
+    server_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn dap_evaluate_supports_field_and_array_expressions() {
+    let jdwp = MockJdwpServer::spawn().await.unwrap();
+    let (client, server_task) = spawn_wire_server();
+
+    client.initialize_handshake().await;
+    client.attach("127.0.0.1", jdwp.addr().port()).await;
+
+    let thread_id = client.first_thread_id().await;
+    let frame_id = client.first_frame_id(thread_id).await;
+
+    let eval_obj_field = client
+        .request(
+            "evaluate",
+            json!({
+                "expression": "obj.field",
+                "frameId": frame_id,
+            }),
+        )
+        .await;
+    assert_eq!(
+        eval_obj_field
+            .pointer("/body/result")
+            .and_then(|v| v.as_str()),
+        Some("7")
+    );
+    assert_eq!(
+        eval_obj_field
+            .pointer("/body/variablesReference")
+            .and_then(|v| v.as_i64()),
+        Some(0)
+    );
+
+    let eval_arr = client
+        .request(
+            "evaluate",
+            json!({
+                "expression": "arr[2]",
+                "frameId": frame_id,
+            }),
+        )
+        .await;
+    assert_eq!(
+        eval_arr.pointer("/body/result").and_then(|v| v.as_str()),
+        Some("2")
+    );
+
+    let eval_this = client
+        .request(
+            "evaluate",
+            json!({
+                "expression": "this.field",
+                "frameId": frame_id,
+            }),
+        )
+        .await;
+    assert_eq!(
+        eval_this.pointer("/body/result").and_then(|v| v.as_str()),
+        Some("7")
+    );
 
     client.disconnect().await;
     server_task.await.unwrap().unwrap();

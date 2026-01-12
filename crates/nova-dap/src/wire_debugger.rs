@@ -12,12 +12,15 @@ use thiserror::Error;
 use tokio::time::{sleep, Instant};
 use tokio_util::sync::CancellationToken;
 
+use nova_core::Line;
+use nova_db::InMemoryFileStore;
 use nova_jdwp::wire::{
     inspect::{Inspector, ObjectKindPreview, ERROR_INVALID_OBJECT},
     ClassInfo, EventModifier, FrameInfo, JdwpClient, JdwpError, JdwpEvent, JdwpValue, LineTable,
     Location, MethodInfo, ObjectId, ReferenceTypeId, ThreadId, VariableInfo,
 };
 
+use crate::breakpoints::map_line_breakpoints;
 use crate::eval_context::EvalOptions;
 use crate::object_registry::{ObjectHandle, ObjectRegistry, PINNED_SCOPE_REF};
 
@@ -532,6 +535,7 @@ impl Debugger {
         breakpoints: Vec<BreakpointSpec>,
     ) -> Result<Vec<serde_json::Value>> {
         check_cancel(cancel)?;
+
         let file_name = Path::new(source_path)
             .file_name()
             .and_then(|s| s.to_str())
@@ -557,6 +561,48 @@ impl Debugger {
         };
         let file = file_key.clone();
 
+        struct BreakpointRequest {
+            requested_line: i32,
+            spec: BreakpointSpec,
+        }
+
+        let resolved_lines = if file_path.is_file() {
+            std::fs::read_to_string(&file_path)
+                .ok()
+                .map(|text| {
+                    let mut db = InMemoryFileStore::new();
+                    let file_id = db.file_id_for_path(&file_path);
+                    db.set_file_text(file_id, text);
+
+                    let requested_lines: Vec<Line> = breakpoints
+                        .iter()
+                        .map(|bp| bp.line.max(1) as Line)
+                        .collect();
+                    map_line_breakpoints(&db, file_id, &requested_lines)
+                        .into_iter()
+                        .map(|resolved| resolved.resolved_line as i32)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| breakpoints.iter().map(|bp| bp.line).collect())
+        } else {
+            breakpoints.iter().map(|bp| bp.line).collect()
+        };
+
+        let requests: Vec<BreakpointRequest> = breakpoints
+            .into_iter()
+            .zip(resolved_lines.into_iter())
+            .map(|(bp, resolved_line)| BreakpointRequest {
+                requested_line: bp.line,
+                spec: BreakpointSpec {
+                    line: resolved_line,
+                    ..bp
+                },
+            })
+            .collect();
+
+        let resolved_breakpoints: Vec<BreakpointSpec> =
+            requests.iter().map(|req| req.spec.clone()).collect();
+
         if let Some(existing) = self.breakpoints.remove(&file_key) {
             for bp in existing {
                 check_cancel(cancel)?;
@@ -566,14 +612,14 @@ impl Debugger {
             }
         }
 
-        if breakpoints.is_empty() {
+        if requests.is_empty() {
             self.requested_breakpoints.remove(&file);
         } else {
             self.requested_breakpoints
-                .insert(file.clone(), breakpoints.clone());
+                .insert(file.clone(), resolved_breakpoints);
         }
 
-        let mut results = Vec::with_capacity(breakpoints.len());
+        let mut results = Vec::with_capacity(requests.len());
 
         // Best-effort: attempt to apply now for already-loaded classes.
         let classes = cancellable_jdwp(cancel, self.jdwp.all_classes()).await?;
@@ -607,9 +653,9 @@ impl Debugger {
         }
 
         if class_candidates.is_empty() {
-            for bp in breakpoints {
+            for req in requests {
                 results.push(
-                    json!({"verified": false, "line": bp.line, "message": "class not loaded yet"}),
+                    json!({"verified": false, "line": req.spec.line, "message": "class not loaded yet"}),
                 );
             }
             return Ok(results);
@@ -617,12 +663,13 @@ impl Debugger {
 
         let mut all_entries = Vec::new();
 
-        for bp in breakpoints {
+        for req in requests {
             check_cancel(cancel)?;
-            let spec_line = bp.line;
-            let condition = normalize_breakpoint_string(bp.condition);
-            let mut hit_condition = normalize_breakpoint_string(bp.hit_condition);
-            let log_message = normalize_breakpoint_string(bp.log_message);
+            let spec_line = req.spec.line;
+            let requested_line = req.requested_line;
+            let condition = normalize_breakpoint_string(req.spec.condition);
+            let mut hit_condition = normalize_breakpoint_string(req.spec.hit_condition);
+            let log_message = normalize_breakpoint_string(req.spec.log_message);
 
             let count_modifier = hit_condition
                 .as_deref()
@@ -647,7 +694,16 @@ impl Debugger {
 
             for class in &class_candidates {
                 check_cancel(cancel)?;
-                match self.location_for_line(cancel, class, spec_line).await? {
+                let location = match self.location_for_line(cancel, class, spec_line).await? {
+                    Some(location) => Some(location),
+                    None if requested_line != spec_line => {
+                        self.location_for_line(cancel, class, requested_line)
+                            .await?
+                    }
+                    None => None,
+                };
+
+                match location {
                     Some(location) => {
                         saw_location = true;
                         let mut modifiers = vec![EventModifier::LocationOnly { location }];
@@ -1163,47 +1219,201 @@ impl Debugger {
         if expr.is_empty() {
             return Ok(Some(json!({"result": "", "variablesReference": 0})));
         }
-        if !is_identifier(expr) {
-            return Ok(Some(
-                json!({"result": format!("unsupported expression: {expr}"), "variablesReference": 0}),
-            ));
-        }
+
+        let parsed = match parse_eval_expression(expr) {
+            Ok(parsed) => parsed,
+            Err(()) => {
+                return Ok(Some(
+                    json!({"result": format!("unsupported expression: {expr}"), "variablesReference": 0}),
+                ))
+            }
+        };
+
         let Some(frame) = self.frame_handles.get(frame_id).copied() else {
             return Ok(Some(
                 json!({"result": format!("unknown frameId {frame_id}"), "variablesReference": 0}),
             ));
         };
-        let vars = self.locals_variables(cancel, &frame).await?;
-        for v in vars {
-            check_cancel(cancel)?;
-            if v.get("name").and_then(|v| v.as_str()) == Some(expr) {
-                let result = v
-                    .get("value")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let variables_reference = v
-                    .get("variablesReference")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0);
-                let type_name = v
-                    .get("type")
-                    .and_then(|v| v.as_str())
-                    .map(|v| v.to_string());
 
-                let mut obj = serde_json::Map::new();
-                obj.insert("result".to_string(), json!(result));
-                obj.insert("variablesReference".to_string(), json!(variables_reference));
-                if let Some(type_name) = type_name {
-                    obj.insert("type".to_string(), json!(type_name));
+        let (mut value, mut static_type) = match parsed.base {
+            EvalBase::This => {
+                let object_id = cancellable_jdwp(
+                    cancel,
+                    self.jdwp
+                        .stack_frame_this_object(frame.thread, frame.frame_id),
+                )
+                .await?;
+                (
+                    JdwpValue::Object {
+                        tag: b'L',
+                        id: object_id,
+                    },
+                    None,
+                )
+            }
+            EvalBase::Local(name) => {
+                let (_argc, vars) = cancellable_jdwp(
+                    cancel,
+                    self.jdwp
+                        .method_variable_table(frame.location.class_id, frame.location.method_id),
+                )
+                .await?;
+
+                let in_scope: Vec<VariableInfo> = vars
+                    .into_iter()
+                    .filter(|v| {
+                        v.code_index <= frame.location.index
+                            && frame.location.index < v.code_index + (v.length as u64)
+                    })
+                    .collect();
+
+                let slots: Vec<(u32, String)> = in_scope
+                    .iter()
+                    .map(|v| (v.slot, v.signature.clone()))
+                    .collect();
+
+                let values = cancellable_jdwp(
+                    cancel,
+                    self.jdwp
+                        .stack_frame_get_values(frame.thread, frame.frame_id, &slots),
+                )
+                .await?;
+
+                let mut found = None;
+                for (var, value) in in_scope.into_iter().zip(values.into_iter()) {
+                    check_cancel(cancel)?;
+                    if var.name == name {
+                        found = Some((value, signature_to_type_name(&var.signature)));
+                        break;
+                    }
                 }
 
-                return Ok(Some(Value::Object(obj)));
+                let Some((value, type_name)) = found else {
+                    return Ok(Some(
+                        json!({"result": format!("not found: {expr}"), "variablesReference": 0}),
+                    ));
+                };
+
+                (value, Some(type_name))
+            }
+        };
+
+        for segment in parsed.segments {
+            check_cancel(cancel)?;
+            match segment {
+                EvalSegment::Field(name) => match value {
+                    JdwpValue::Object { id: 0, .. } => {
+                        return Ok(Some(
+                            json!({"result": format!("not found: {expr}"), "variablesReference": 0}),
+                        ))
+                    }
+                    JdwpValue::Object { tag: b'[', id } if name == "length" => {
+                        let length =
+                            cancellable_jdwp(cancel, self.jdwp.array_reference_length(id)).await?;
+                        value = JdwpValue::Int(length.max(0));
+                        static_type = Some("int".to_string());
+                    }
+                    JdwpValue::Object { id, .. } => {
+                        let children = match cancellable_jdwp(
+                            cancel,
+                            self.inspector.object_children(id),
+                        )
+                        .await
+                        {
+                            Ok(children) => children,
+                            Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                            Err(err) => {
+                                return Ok(Some(json!({
+                                    "result": format!("error: {err}"),
+                                    "variablesReference": 0
+                                })))
+                            }
+                        };
+                        let Some(child) = children.into_iter().find(|child| child.name == name)
+                        else {
+                            return Ok(Some(
+                                json!({"result": format!("not found: {expr}"), "variablesReference": 0}),
+                            ));
+                        };
+
+                        value = child.value;
+                        static_type = child.static_type;
+                    }
+                    _ => {
+                        return Ok(Some(json!({
+                            "result": format!("unsupported expression: {expr}"),
+                            "variablesReference": 0,
+                        })))
+                    }
+                },
+                EvalSegment::Index(index) => match value {
+                    JdwpValue::Object { tag: b'[', id } => {
+                        if index < 0 {
+                            return Ok(Some(json!({
+                                "result": format!("unsupported expression: {expr}"),
+                                "variablesReference": 0,
+                            })));
+                        }
+                        let Ok(index) = i32::try_from(index) else {
+                            return Ok(Some(json!({
+                                "result": format!("unsupported expression: {expr}"),
+                                "variablesReference": 0,
+                            })));
+                        };
+                        let values = cancellable_jdwp(
+                            cancel,
+                            self.jdwp.array_reference_get_values(id, index, 1),
+                        )
+                        .await?;
+                        let Some(value0) = values.into_iter().next() else {
+                            return Ok(Some(json!({
+                                "result": format!("not found: {expr}"),
+                                "variablesReference": 0,
+                            })));
+                        };
+                        value = value0;
+                        static_type = None;
+                    }
+                    _ => {
+                        return Ok(Some(json!({
+                            "result": format!("unsupported expression: {expr}"),
+                            "variablesReference": 0,
+                        })))
+                    }
+                },
             }
         }
-        Ok(Some(
-            json!({"result": format!("not found: {expr}"), "variablesReference": 0}),
-        ))
+
+        let formatted = self
+            .format_value(cancel, &value, static_type.as_deref(), 0)
+            .await?;
+
+        if let Some(handle) = ObjectHandle::from_variables_reference(formatted.variables_reference)
+        {
+            self.objects.set_evaluate_name(handle, expr.to_string());
+        }
+
+        let mut obj = serde_json::Map::new();
+        obj.insert("result".to_string(), json!(formatted.value));
+        obj.insert(
+            "variablesReference".to_string(),
+            json!(formatted.variables_reference),
+        );
+        obj.insert("evaluateName".to_string(), json!(expr));
+        if let Some(type_name) = formatted.type_name {
+            obj.insert("type".to_string(), json!(type_name));
+        }
+        if let Some(presentation_hint) = formatted.presentation_hint {
+            obj.insert("presentationHint".to_string(), presentation_hint);
+        }
+        if let Some(named) = formatted.named_variables {
+            obj.insert("namedVariables".to_string(), json!(named));
+        }
+        if let Some(indexed) = formatted.indexed_variables {
+            obj.insert("indexedVariables".to_string(), json!(indexed));
+        }
+
+        Ok(Some(Value::Object(obj)))
     }
 
     pub async fn handle_breakpoint_event(
@@ -2201,6 +2411,91 @@ fn is_identifier(s: &str) -> bool {
         return false;
     }
     chars.all(|c| c == '_' || c == '$' || c.is_ascii_alphanumeric())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EvalSegment {
+    Field(String),
+    Index(i64),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EvalBase {
+    This,
+    Local(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedEvalExpression {
+    base: EvalBase,
+    segments: Vec<EvalSegment>,
+}
+
+fn parse_eval_expression(expr: &str) -> std::result::Result<ParsedEvalExpression, ()> {
+    fn split_identifier_prefix(input: &str) -> Option<(&str, &str)> {
+        let mut end = 0usize;
+        for (idx, ch) in input.char_indices() {
+            if idx == 0 {
+                if !(ch == '_' || ch == '$' || ch.is_ascii_alphabetic()) {
+                    return None;
+                }
+                end = ch.len_utf8();
+                continue;
+            }
+
+            if ch == '_' || ch == '$' || ch.is_ascii_alphanumeric() {
+                end = idx + ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        if end == 0 {
+            return None;
+        }
+        Some((&input[..end], &input[end..]))
+    }
+
+    let mut rest = expr.trim();
+    let (base_ident, next) = split_identifier_prefix(rest).ok_or(())?;
+    rest = next;
+
+    let base = if base_ident == "this" {
+        EvalBase::This
+    } else {
+        EvalBase::Local(base_ident.to_string())
+    };
+
+    let mut segments = Vec::new();
+    loop {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            break;
+        }
+
+        if let Some(after_dot) = rest.strip_prefix('.') {
+            let after_dot = after_dot.trim_start();
+            let (field, next) = split_identifier_prefix(after_dot).ok_or(())?;
+            rest = next;
+            segments.push(EvalSegment::Field(field.to_string()));
+            continue;
+        }
+
+        if let Some(after_bracket) = rest.strip_prefix('[') {
+            let close = after_bracket.find(']').ok_or(())?;
+            let raw = after_bracket[..close].trim();
+            if raw.is_empty() {
+                return Err(());
+            }
+            let index = raw.parse::<i64>().map_err(|_| ())?;
+            segments.push(EvalSegment::Index(index));
+            rest = &after_bracket[close + 1..];
+            continue;
+        }
+
+        return Err(());
+    }
+
+    Ok(ParsedEvalExpression { base, segments })
 }
 
 // `serde_json::Value` isn't in scope by default in this module, but we use it in evaluate to avoid

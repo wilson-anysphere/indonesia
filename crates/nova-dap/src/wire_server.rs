@@ -11,7 +11,7 @@ use std::{
 };
 
 use base64::{engine::general_purpose, Engine as _};
-use nova_build::BuildManager;
+use nova_build::{BuildManager, DefaultCommandRunner};
 use nova_jdwp::wire::{JdwpClient, JdwpError, JdwpValue, ObjectId};
 use nova_scheduler::CancellationToken;
 use serde::Deserialize;
@@ -2586,8 +2586,15 @@ async fn resolve_build_java_compile_config(
     }
 
     let cache_dir = std::env::temp_dir().join("nova-build-cache");
+    let build_cancel = CancellationToken::new();
+    let build_cancel_runner = build_cancel.clone();
+
     let mut handle = tokio::task::spawn_blocking(move || {
-        let manager = BuildManager::new(cache_dir);
+        let runner = Arc::new(DefaultCommandRunner {
+            timeout: Some(Duration::from_secs(10)),
+            cancellation: Some(build_cancel_runner),
+        });
+        let manager = BuildManager::with_runner(cache_dir, runner);
         if project_root.join("pom.xml").is_file() {
             manager.java_compile_config_maven(&project_root, None)
         } else {
@@ -2597,10 +2604,12 @@ async fn resolve_build_java_compile_config(
 
     let cfg = tokio::select! {
         _ = cancel.cancelled() => {
+            build_cancel.cancel();
             handle.abort();
             return None;
         }
         _ = tokio::time::sleep(Duration::from_secs(10)) => {
+            build_cancel.cancel();
             handle.abort();
             return None;
         }
