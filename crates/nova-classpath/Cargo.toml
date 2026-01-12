@@ -10,6 +10,7 @@ thiserror = "1.0.56"
 walkdir = "2.5.0"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 
+nova-cache = { path = "../nova-cache" }
 nova-classfile = { path = "../nova-classfile" }
 nova-core = { path = "../nova-core" }
 nova-deps-cache = { path = "../nova-deps-cache" }

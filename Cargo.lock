@@ -3441,6 +3441,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "criterion",
+ "nova-cache",
  "nova-classfile",
  "nova-core",
  "nova-deps-cache",
