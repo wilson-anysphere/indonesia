@@ -103,6 +103,27 @@ if [[ ${#nova_dap_root_tests[@]} -ne 1 || "${nova_dap_root_tests[0]}" != "crates
   exit 1
 fi
 
+# Ensure `nova-dap`'s real-JVM integration tests remain opt-in.
+#
+# These tests require external tooling (`java` + `javac`) and are only intended to run when
+# explicitly enabled with `--features real-jvm-tests`.
+#
+# We enforce this at the source level so the tests aren't even compiled into the default
+# `nova-dap` integration test binary.
+nova_dap_real_jvm_test="crates/nova-dap/tests/suite/real_jvm.rs"
+if [[ -f "${nova_dap_real_jvm_test}" ]]; then
+  # Allow an optional leading doc comment, then require an inner `#![cfg(...)]` gate near
+  # the top of the module.
+  if ! head -n 10 "${nova_dap_real_jvm_test}" | grep -q -E '^#!\[cfg\(feature[[:space:]]*=[[:space:]]*"real-jvm-tests"\)\]'; then
+    echo "repo invariant failed: nova-dap real JVM tests must be gated behind the real-jvm-tests feature" >&2
+    echo "  expected an inner attribute like: #![cfg(feature = \"real-jvm-tests\")]" >&2
+    echo "  file: ${nova_dap_real_jvm_test}" >&2
+    echo "  top of file:" >&2
+    head -n 10 "${nova_dap_real_jvm_test}" >&2
+    exit 1
+  fi
+fi
+
 # Enforce the single-harness integration test layout for framework crates.
 #
 # These crates intentionally consolidate their integration tests into a single root harness for
