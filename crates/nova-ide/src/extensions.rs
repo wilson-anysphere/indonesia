@@ -1065,9 +1065,7 @@ where
             actions.extend(type_mismatch_quick_fixes(
                 &cancel,
                 source,
-                &cancel,
                 &uri,
-                &cancel,
                 span,
                 &diagnostics,
             ));
@@ -1252,7 +1250,6 @@ where
 fn type_mismatch_quick_fixes(
     cancel: &CancellationToken,
     source: &str,
-    cancel: &CancellationToken,
     uri: &lsp_types::Uri,
     cancel: &CancellationToken,
     selection: Span,
