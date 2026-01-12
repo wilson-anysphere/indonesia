@@ -173,7 +173,8 @@ fn completion_new_expression_adds_import_edit_for_arraylist_without_imports() {
         .as_ref()
         .expect("expected additional_text_edits for ArrayList completion");
     assert!(
-        edits.iter()
+        edits
+            .iter()
             .any(|e| e.new_text == "import java.util.ArrayList;\n"),
         "expected import edit for java.util.ArrayList; got {edits:#?}"
     );
@@ -292,6 +293,28 @@ class A {
         edit.new_text.contains("if (s != null)"),
         "expected snippet to contain `if (s != null)`; got {:?}",
         edit.new_text
+    );
+}
+
+#[test]
+fn completion_does_not_offer_postfix_for_qualified_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  String s = "";
+  void m() {
+    this.s.nn<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        !items
+            .iter()
+            .any(|i| { i.label == "nn" && i.kind == Some(lsp_types::CompletionItemKind::SNIPPET) }),
+        "expected no postfix `nn` snippet for qualified receiver; got {items:#?}"
     );
 }
 
@@ -493,7 +516,8 @@ class Main {
         "expected references to include declaration; got {refs:#?}"
     );
     assert!(
-        refs.iter().any(|loc| loc.uri.as_str().contains("Main.java")),
+        refs.iter()
+            .any(|loc| loc.uri.as_str().contains("Main.java")),
         "expected references to include call site in Main.java; got {refs:#?}"
     );
 }
@@ -526,7 +550,8 @@ class Main {
         "expected references to include declaration; got {refs:#?}"
     );
     assert!(
-        refs.iter().any(|loc| loc.uri.as_str().contains("Main.java")),
+        refs.iter()
+            .any(|loc| loc.uri.as_str().contains("Main.java")),
         "expected references to include access in Main.java; got {refs:#?}"
     );
 }

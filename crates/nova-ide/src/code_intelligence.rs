@@ -760,7 +760,11 @@ fn java_type_needs_import(imports: &JavaImportInfo, ty: &str) -> bool {
     if imports.explicit_types.iter().any(|existing| existing == ty) {
         return false;
     }
-    if imports.star_packages.iter().any(|pkg_import| pkg_import == pkg) {
+    if imports
+        .star_packages
+        .iter()
+        .any(|pkg_import| pkg_import == pkg)
+    {
         return false;
     }
     true
@@ -907,7 +911,8 @@ fn new_expression_type_completions(
 
             let mut item = constructor_completion_item(simple, Some(name.clone()));
             if java_type_needs_import(&imports, &name) {
-                item.additional_text_edits = Some(vec![java_import_text_edit(text, text_index, &name)]);
+                item.additional_text_edits =
+                    Some(vec![java_import_text_edit(text, text_index, &name)]);
             }
             items.push(item);
             added_for_pkg += 1;
@@ -1292,6 +1297,15 @@ fn simple_receiver_before_dot(text: &str, dot_offset: usize) -> Option<SimpleRec
         return None;
     };
 
+    // Avoid offering postfix templates for qualified expressions like `this.foo.if`
+    // or `pkg.Type.if` (we only support single-token receivers for now). Without
+    // this guard we'd rewrite only the last segment (e.g. `foo.if`) and leave the
+    // qualifier behind (`this.`), producing invalid code.
+    let before_start = skip_whitespace_backwards(text, start);
+    if before_start > 0 && bytes.get(before_start - 1) == Some(&b'.') {
+        return None;
+    }
+
     Some(SimpleReceiverExpr {
         span_to_dot: Span::new(start, dot_offset),
         expr: expr.trim().to_string(),
@@ -1672,9 +1686,11 @@ fn general_completions(
         // Additionally, use a simple brace-stack check to avoid suggesting
         // variables from sibling blocks (e.g. `if { int x; } else { <cursor> }`)
         // or from blocks that have already ended.
-        for v in analysis.vars.iter().filter(|v| {
-            span_within(v.name_span, method.body_span) && v.name_span.start < offset
-        }) {
+        for v in analysis
+            .vars
+            .iter()
+            .filter(|v| span_within(v.name_span, method.body_span) && v.name_span.start < offset)
+        {
             let var_brace_stack = brace_stack_at_offset(&analysis.tokens, v.name_span.start);
             if !brace_stack_is_prefix(&var_brace_stack, &cursor_brace_stack) {
                 continue;
@@ -1706,7 +1722,10 @@ fn general_completions(
             Some("for (${1:int i = 0}; ${2:i < n}; ${3:i++}) {\n    $0\n}"),
         ),
         ("while", Some("while (${1:condition}) {\n    $0\n}")),
-        ("try", Some("try {\n    $0\n} catch (${1:Exception e}) {\n}")),
+        (
+            "try",
+            Some("try {\n    $0\n} catch (${1:Exception e}) {\n}"),
+        ),
         ("else", None),
         ("return", None),
         ("class", None),
@@ -1933,7 +1952,12 @@ fn infer_expected_type(
         .arg_starts
         .iter()
         .position(|start| *start == prefix_start)
-        .unwrap_or_else(|| call.arg_starts.iter().filter(|s| **s < prefix_start).count());
+        .unwrap_or_else(|| {
+            call.arg_starts
+                .iter()
+                .filter(|s| **s < prefix_start)
+                .count()
+        });
 
     let method = analysis.methods.iter().find(|m| m.name == call.name)?;
     method.params.get(arg_idx).map(|p| p.ty.clone())
@@ -2039,9 +2063,9 @@ pub fn goto_definition(db: &dyn Database, file: FileId, position: Position) -> O
         });
     }
 
-    let is_java = db.file_path(file).is_some_and(|path| {
-        path.extension().and_then(|e| e.to_str()) == Some("java")
-    });
+    let is_java = db
+        .file_path(file)
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"));
     if !is_java {
         return None;
     }
@@ -2151,9 +2175,9 @@ pub fn find_references(
             .collect();
     }
 
-    let is_java = db.file_path(file).is_some_and(|path| {
-        path.extension().and_then(|e| e.to_str()) == Some("java")
-    });
+    let is_java = db
+        .file_path(file)
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"));
     if !is_java {
         return Vec::new();
     }
@@ -2185,10 +2209,7 @@ pub fn find_references(
             };
             let file_index = TextIndex::new(&parsed.text);
             for span in spans {
-                if !include_declaration
-                    && file == target.def.file
-                    && span == target.def.name_span
-                {
+                if !include_declaration && file == target.def.file && span == target.def.name_span {
                     continue;
                 }
                 let Some(resolved) = resolver.resolve_at(file, span.start) else {
@@ -2203,7 +2224,9 @@ pub fn find_references(
                 });
             }
         }
-        nav_resolve::ResolvedKind::Field | nav_resolve::ResolvedKind::Method | nav_resolve::ResolvedKind::Type => {
+        nav_resolve::ResolvedKind::Field
+        | nav_resolve::ResolvedKind::Method
+        | nav_resolve::ResolvedKind::Type => {
             if include_declaration {
                 if let Some(def_parsed) = resolver.parsed_file(target.def.file) {
                     let def_index = TextIndex::new(&def_parsed.text);
@@ -2785,7 +2808,9 @@ pub fn inlay_hints(db: &dyn Database, file: FileId, range: Range) -> Vec<InlayHi
     // Some clients use `(u32::MAX, u32::MAX)` as a sentinel for "end of file".
     // Treat invalid positions as best-effort whole-file ranges.
     let start = text_index.position_to_offset(range.start).unwrap_or(0);
-    let end = text_index.position_to_offset(range.end).unwrap_or(text.len());
+    let end = text_index
+        .position_to_offset(range.end)
+        .unwrap_or(text.len());
     if start > end {
         return Vec::new();
     }
