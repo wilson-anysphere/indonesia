@@ -16,7 +16,7 @@ use lsp_types::{
     SignatureHelp, SignatureInformation, SymbolKind, TextEdit, TypeHierarchyItem,
 };
 
-use nova_core::{path_to_file_uri, AbsPathBuf};
+use nova_core::{path_to_file_uri, AbsPathBuf, QualifiedName, TypeIndex};
 use nova_db::{Database, FileId, NovaFlow, NovaInputs, NovaTypeck, SalsaDatabase};
 use nova_fuzzy::FuzzyMatcher;
 use nova_jdk::JdkIndex;
@@ -2061,6 +2061,10 @@ pub(crate) fn core_completions(
         }
     }
 
+    if let Some(items) = static_import_completions(text, offset, prefix_start, &prefix) {
+        return decorate_completions(&text_index, prefix_start, offset, items);
+    }
+
     if is_new_expression_type_completion_context(text, prefix_start) {
         return decorate_completions(
             &text_index,
@@ -2328,6 +2332,10 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         }
     }
 
+    if let Some(items) = static_import_completions(text, offset, prefix_start, &prefix) {
+        return decorate_completions(&text_index, prefix_start, offset, items);
+    }
+
     if is_new_expression_type_completion_context(text, prefix_start) {
         return decorate_completions(
             &text_index,
@@ -2378,6 +2386,138 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         offset,
         general_completions(db, file, offset, prefix_start, &prefix),
     )
+}
+
+fn static_import_completions(
+    text: &str,
+    offset: usize,
+    prefix_start: usize,
+    member_prefix: &str,
+) -> Option<Vec<CompletionItem>> {
+    let owner_source = static_import_owner_prefix(text, offset, prefix_start)?;
+    let jdk = JDK_INDEX
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(JdkIndex::new()));
+    let owner = resolve_static_import_owner(jdk.as_ref(), &owner_source)?;
+
+    let names = jdk
+        .static_member_names_with_prefix(&owner, member_prefix)
+        .unwrap_or_default();
+
+    let mut static_methods: HashSet<String> = HashSet::new();
+    let mut static_fields: HashSet<String> = HashSet::new();
+    if let Ok(Some(stub)) = jdk.lookup_type(&owner) {
+        for field in &stub.fields {
+            if field.access_flags & ACC_STATIC != 0 {
+                static_fields.insert(field.name.clone());
+            }
+        }
+        for method in &stub.methods {
+            if method.access_flags & ACC_STATIC != 0 {
+                static_methods.insert(method.name.clone());
+            }
+        }
+    }
+
+    let mut items = Vec::with_capacity(names.len() + 1);
+
+    // `import static Foo.*;`
+    items.push(CompletionItem {
+        label: "*".to_string(),
+        kind: Some(CompletionItemKind::KEYWORD),
+        insert_text: Some("*".to_string()),
+        ..Default::default()
+    });
+
+    for name in names {
+        let kind = if static_methods.contains(&name) {
+            CompletionItemKind::METHOD
+        } else if static_fields.contains(&name) {
+            CompletionItemKind::CONSTANT
+        } else if name.chars().any(|c| c.is_ascii_lowercase()) {
+            // Deterministic fallback for builtin mode where we only have member names.
+            CompletionItemKind::METHOD
+        } else {
+            CompletionItemKind::CONSTANT
+        };
+
+        items.push(CompletionItem {
+            label: name,
+            kind: Some(kind),
+            ..Default::default()
+        });
+    }
+
+    Some(items)
+}
+
+fn static_import_owner_prefix(text: &str, offset: usize, prefix_start: usize) -> Option<String> {
+    // We only support completing after the final `.` in `import static ...<dot><member_prefix>`.
+    let before = skip_whitespace_backwards(text, prefix_start);
+    if before == 0 || text.as_bytes()[before - 1] != b'.' {
+        return None;
+    }
+    let dot_offset = before - 1;
+
+    // Best-effort: only consider the current line.
+    let line_start = text[..dot_offset].rfind('\n').map(|idx| idx + 1).unwrap_or(0);
+    if text.get(line_start..offset)?.contains(';') {
+        return None;
+    }
+
+    let bytes = text.as_bytes();
+    let mut i = line_start;
+    while i < offset && (bytes[i] as char).is_ascii_whitespace() {
+        i += 1;
+    }
+
+    if !text.get(i..offset)?.starts_with("import") {
+        return None;
+    }
+    i += "import".len();
+    if i >= offset || i >= bytes.len() || !(bytes[i] as char).is_ascii_whitespace() {
+        return None;
+    }
+    while i < offset && (bytes[i] as char).is_ascii_whitespace() {
+        i += 1;
+    }
+
+    if !text.get(i..offset)?.starts_with("static") {
+        return None;
+    }
+    i += "static".len();
+    if i >= offset || i >= bytes.len() || !(bytes[i] as char).is_ascii_whitespace() {
+        return None;
+    }
+    while i < offset && (bytes[i] as char).is_ascii_whitespace() {
+        i += 1;
+    }
+
+    let path_start = i;
+    if path_start >= dot_offset {
+        return None;
+    }
+    let owner_raw = text.get(path_start..dot_offset)?;
+    let owner: String = owner_raw.chars().filter(|ch| !ch.is_whitespace()).collect();
+    (!owner.is_empty()).then_some(owner)
+}
+
+fn resolve_static_import_owner(jdk: &JdkIndex, owner: &str) -> Option<String> {
+    // `import static java.util.Map.Entry.*` uses source syntax (`.`), but the binary name is
+    // `java.util.Map$Entry`. Try progressively `$`-ifying suffixes until we find a type.
+    let mut candidate = owner.to_string();
+    loop {
+        if jdk
+            .resolve_type(&QualifiedName::from_dotted(&candidate))
+            .is_some()
+        {
+            return Some(candidate);
+        }
+
+        let (prefix, last) = candidate.rsplit_once('.')?;
+        candidate = format!("{prefix}${last}");
+    }
 }
 
 fn decorate_completions(

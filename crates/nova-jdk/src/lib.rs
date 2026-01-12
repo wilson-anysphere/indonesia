@@ -451,6 +451,58 @@ impl JdkIndex {
             .map(|name| name.as_str()))
     }
 
+    /// All static member names (methods + fields) on `owner` that start with `prefix`.
+    ///
+    /// `owner` should be a binary type name such as `java.lang.Math` (or a `/`-separated internal
+    /// name such as `java/lang/Math`, which will be normalized to dotted form).
+    ///
+    /// In builtin mode (no `symbols`) this is backed by the deterministic `static_members` map so
+    /// unit tests do not depend on a system JDK.
+    pub fn static_member_names_with_prefix(
+        &self,
+        owner: &str,
+        prefix: &str,
+    ) -> Result<Vec<String>, JdkIndexError> {
+        let owner = normalize_binary_prefix(owner);
+
+        match &self.symbols {
+            None => {
+                let mut out = self
+                    .static_members
+                    .get(owner.as_ref())
+                    .map(|m| {
+                        m.keys()
+                            .filter(|name| name.starts_with(prefix))
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                out.sort();
+                Ok(out)
+            }
+            Some(_) => {
+                let Some(stub) = self.lookup_type(owner.as_ref())? else {
+                    return Ok(Vec::new());
+                };
+
+                let mut seen = HashSet::new();
+                for field in &stub.fields {
+                    if is_static(field.access_flags) && field.name.starts_with(prefix) {
+                        seen.insert(field.name.clone());
+                    }
+                }
+                for method in &stub.methods {
+                    if is_static(method.access_flags) && method.name.starts_with(prefix) {
+                        seen.insert(method.name.clone());
+                    }
+                }
+
+                let mut out: Vec<String> = seen.into_iter().collect();
+                out.sort();
+                Ok(out)
+            }
+        }
+    }
     /// Module graph for the underlying JDK, if this index is backed by JMODs or `ct.sym`.
     pub fn module_graph(&self) -> Option<&ModuleGraph> {
         self.symbols

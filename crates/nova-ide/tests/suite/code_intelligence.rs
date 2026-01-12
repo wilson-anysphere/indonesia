@@ -461,6 +461,52 @@ fn completion_includes_workspace_annotation_types_after_at_sign() {
 }
 
 #[test]
+fn completion_includes_static_import_members() {
+    let (db, file, pos) = fixture(
+        r#"
+import static java.lang.Math.ma<|>;
+class A {}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"max"),
+        "expected completion list to contain Math.max; got {labels:?}"
+    );
+}
+
+#[test]
+fn static_import_completion_replaces_only_member_segment() {
+    let text_with_caret = r#"
+import static java.lang.Math.ma<|>;
+class A {}
+"#;
+    let (db, file, pos) = fixture(text_with_caret);
+
+    let text = text_with_caret.replace("<|>", "");
+    let member_start = text
+        .find("Math.ma")
+        .expect("expected Math.ma in fixture")
+        + "Math.".len();
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "max")
+        .expect("expected max completion item");
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+
+    assert_eq!(edit.range.start, offset_to_position(&text, member_start));
+    assert_eq!(edit.range.end, pos);
+}
+
+#[test]
 fn completion_includes_postfix_if_for_boolean() {
     let (db, file, pos) = fixture(
         r#"
