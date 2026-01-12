@@ -369,7 +369,7 @@ class $1Foo {}
 //- /A.java
 class A { Foo bar; }
 //- /Main.java
-class Main { void test(){ A a = new A(); a.$0bar.toString(); } }
+class Main { void test(){ A a$var = new A(); a$var.$0bar.toString(); } }
 "#,
     );
 

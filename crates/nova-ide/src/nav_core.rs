@@ -63,7 +63,7 @@ pub(crate) fn identifier_at(text: &str, offset: usize) -> Option<(String, Span)>
 #[inline]
 fn is_ident_char(b: u8) -> bool {
     let ch = b as char;
-    ch.is_ascii_alphanumeric() || ch == '_'
+    ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'
 }
 
 fn receiver_before_dot(text: &str, dot_idx: usize) -> Option<String> {
