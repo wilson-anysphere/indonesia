@@ -347,14 +347,35 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             self.root.join(file)
         };
 
-        let rel = abs_file.strip_prefix(&self.root).with_context(|| {
-            format!(
-                "path {} is outside the Bazel workspace root {}",
-                abs_file.display(),
-                self.root.display()
-            )
-        })?;
-        let rel = normalize_workspace_relative_path(rel)?;
+        let rel = match abs_file.strip_prefix(&self.root) {
+            Ok(rel) => rel.to_path_buf(),
+            Err(_) => {
+                // If the workspace root is a symlink, callers may pass canonical paths (e.g.
+                // editors that normalize paths). Fall back to canonicalization to avoid incorrectly
+                // rejecting files that are logically inside the workspace.
+                match (fs::canonicalize(&self.root), fs::canonicalize(&abs_file)) {
+                    (Ok(root), Ok(file)) => file
+                        .strip_prefix(&root)
+                        .map(|rel| rel.to_path_buf())
+                        .with_context(|| {
+                            format!(
+                                "path {} is outside the Bazel workspace root {}",
+                                abs_file.display(),
+                                self.root.display()
+                            )
+                        })?,
+                    _ => {
+                        bail!(
+                            "path {} is outside the Bazel workspace root {}",
+                            abs_file.display(),
+                            self.root.display()
+                        );
+                    }
+                }
+            }
+        };
+
+        let rel = normalize_workspace_relative_path(&rel)?;
         let abs_file = self.root.join(rel);
 
         let Some(mut dir) = abs_file.parent() else {

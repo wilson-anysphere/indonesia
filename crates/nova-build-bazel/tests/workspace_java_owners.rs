@@ -123,6 +123,27 @@ fn path_to_label_nested_package() {
 }
 
 #[test]
+#[cfg(unix)]
+fn path_to_label_accepts_canonical_paths_when_root_is_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let real = tempdir().unwrap();
+    std::fs::write(real.path().join("WORKSPACE"), "# test\n").unwrap();
+    write_file(&real.path().join("java/BUILD"), "# java package\n");
+    create_file(&real.path().join("java/Hello.java"));
+
+    let link_parent = tempdir().unwrap();
+    let link_root = link_parent.path().join("ws");
+    symlink(real.path(), &link_root).unwrap();
+
+    let workspace = BazelWorkspace::new(link_root, NoopRunner).unwrap();
+    let label = workspace
+        .workspace_file_label(&real.path().join("java/Hello.java"))
+        .unwrap();
+    assert_eq!(label.as_deref(), Some("//java:Hello.java"));
+}
+
+#[test]
 fn path_to_label_subpackage_prefers_nearest_build() {
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("WORKSPACE"), "# test\n").unwrap();
