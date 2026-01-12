@@ -224,9 +224,10 @@ impl<R: CommandRunner> BazelWorkspace<R> {
     /// - `srcs = [":srcs"]` where `:srcs` is a `filegroup` in the same package
     pub fn java_owning_targets_for_file(&mut self, file: impl AsRef<Path>) -> Result<Vec<String>> {
         let file = file.as_ref();
+        let input_is_absolute = file.is_absolute();
 
-        let file_abs = if file.is_absolute() {
-            file.to_path_buf()
+        let file_abs = if input_is_absolute {
+            normalize_absolute_path_lexically(file)
         } else {
             self.root.join(file)
         };
@@ -251,8 +252,12 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                         self.root.display()
                     )
                 })?;
-                let file_abs = std::fs::canonicalize(&file_abs)
-                    .with_context(|| format!("failed to canonicalize file path {}", file_abs.display()))?;
+                let file_abs = if input_is_absolute {
+                    std::fs::canonicalize(&file_abs)
+                } else {
+                    std::fs::canonicalize(&self.root.join(file))
+                }
+                .with_context(|| format!("failed to canonicalize file path {}", file_abs.display()))?;
                 if file_abs.strip_prefix(&workspace_root).is_err() {
                     bail!(
                         "file {} is outside the Bazel workspace root {}",
@@ -695,6 +700,25 @@ fn find_bazel_package_dir(workspace_root: &Path, file: &Path) -> Result<PathBuf>
         "no Bazel package found for {} (no BUILD/BUILD.bazel between file and workspace root)",
         file.display()
     )
+}
+
+fn normalize_absolute_path_lexically(path: &Path) -> PathBuf {
+    if !path.is_absolute() {
+        return path.to_path_buf();
+    }
+
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => continue,
+            Component::ParentDir => {
+                // For absolute paths, `..` at the root is a no-op.
+                let _ = out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 fn normalize_workspace_relative_path(path: &Path) -> Result<PathBuf> {

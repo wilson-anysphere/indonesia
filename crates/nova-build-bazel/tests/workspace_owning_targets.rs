@@ -239,6 +239,43 @@ fn java_owning_targets_for_file_normalizes_dotdots_within_workspace() {
 }
 
 #[test]
+fn java_owning_targets_for_file_normalizes_dotdots_that_escape_and_reenter_workspace() {
+    let root = tempdir().unwrap();
+    let build = root.path().join("java").join("BUILD");
+    let src = root.path().join("java").join("com").join("Hello.java");
+
+    write_file(&build, "java_library(name = \"lib\", srcs = glob([\"**/*.java\"]))\n");
+    write_file(&src, "class Hello {}\n");
+
+    let root_name = root.path().file_name().unwrap();
+    let messy_path = root
+        .path()
+        .join("..")
+        .join(root_name)
+        .join("java")
+        .join("com")
+        .join("Hello.java");
+
+    let file_label = "//java:com/Hello.java";
+    let universe = "//java:all";
+    let filegroups_expr =
+        format!(r#"kind("filegroup rule", rdeps({universe}, {file_label}))"#);
+    let java_expr =
+        format!(r#"kind("java_.* rule", rdeps({universe}, ({file_label}), 1))"#);
+
+    let mut outputs = HashMap::new();
+    outputs.insert(filegroups_expr.clone(), String::new());
+    outputs.insert(java_expr.clone(), "//java:lib\n".to_string());
+
+    let runner = TestRunner::new(outputs);
+    let mut workspace = BazelWorkspace::new(root.path().to_path_buf(), runner).unwrap();
+    let owning = workspace
+        .java_owning_targets_for_file(messy_path.as_path())
+        .unwrap();
+    assert_eq!(owning, vec!["//java:lib".to_string()]);
+}
+
+#[test]
 fn java_owning_targets_for_file_errors_for_file_outside_workspace() {
     let root = tempdir().unwrap();
     let runner = TestRunner::new(HashMap::new());
