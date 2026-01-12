@@ -2874,6 +2874,28 @@ fn completion_type_position_includes_var_keyword_in_local_var_declaration() {
 }
 
 #[test]
+fn completion_catch_param_type_position_does_not_suggest_var() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    try {
+    } catch (va<|> e) {
+    }
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        !labels.contains(&"var"),
+        "expected catch parameter type completion to not suggest `var`; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_includes_workspace_annotation_types_after_at_sign() {
     let anno_path = PathBuf::from("/workspace/src/main/java/p/MyAnno.java");
     let main_path = PathBuf::from("/workspace/src/main/java/p/Main.java");

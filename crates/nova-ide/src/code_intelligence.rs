@@ -5858,7 +5858,8 @@ pub(crate) fn core_completions(
         }
         return decorate_completions(&text_index, prefix_start, offset, items);
     }
-    if let Some(kind) = type_position_completion_kind(text, prefix_start, &prefix) {
+    let type_position_kind = type_position_completion_kind(text, prefix_start, &prefix);
+    if let Some(kind) = type_position_kind {
         if cancel.is_cancelled() {
             return Vec::new();
         }
@@ -5871,15 +5872,22 @@ pub(crate) fn core_completions(
         }
     }
 
-    if let Some(ctx) = type_position_completion_context(text, prefix_start, offset) {
-        if cancel.is_cancelled() {
-            return Vec::new();
+    // `type_position_completion_context` is a fallback for ambiguous type positions (e.g. local
+    // variable declarations). If `type_position_completion_kind` already triggered (even though it
+    // produced no matches), prefer falling back to general completions rather than offering
+    // primitive/`var` suggestions in contexts like `catch (...)` / `instanceof ...`.
+    if type_position_kind.is_none() {
+        if let Some(ctx) = type_position_completion_context(text, prefix_start, offset) {
+            if cancel.is_cancelled() {
+                return Vec::new();
+            }
+            let items =
+                type_position_completions(db, file, text, prefix_start, offset, &prefix, ctx);
+            if cancel.is_cancelled() {
+                return Vec::new();
+            }
+            return decorate_completions(&text_index, prefix_start, offset, items);
         }
-        let items = type_position_completions(db, file, text, prefix_start, offset, &prefix, ctx);
-        if cancel.is_cancelled() {
-            return Vec::new();
-        }
-        return decorate_completions(&text_index, prefix_start, offset, items);
     }
 
     if cancel.is_cancelled() {
@@ -6452,16 +6460,20 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         return decorate_completions(&text_index, prefix_start, offset, items);
     }
 
-    if let Some(kind) = type_position_completion_kind(text, prefix_start, &prefix) {
+    let type_position_kind = type_position_completion_kind(text, prefix_start, &prefix);
+    if let Some(kind) = type_position_kind {
         let items = type_name_completions(db, file, text, &text_index, &prefix, kind);
         if !items.is_empty() {
             return decorate_completions(&text_index, prefix_start, offset, items);
         }
     }
 
-    if let Some(ctx) = type_position_completion_context(text, prefix_start, offset) {
-        let items = type_position_completions(db, file, text, prefix_start, offset, &prefix, ctx);
-        return decorate_completions(&text_index, prefix_start, offset, items);
+    if type_position_kind.is_none() {
+        if let Some(ctx) = type_position_completion_context(text, prefix_start, offset) {
+            let items =
+                type_position_completions(db, file, text, prefix_start, offset, &prefix, ctx);
+            return decorate_completions(&text_index, prefix_start, offset, items);
+        }
     }
 
     decorate_completions(
