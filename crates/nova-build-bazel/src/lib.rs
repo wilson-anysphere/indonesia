@@ -6,6 +6,7 @@
 //! - Java target discovery via `bazel query`
 //! - per-target classpath / module-path / source roots via `bazel aquery` (Javac actions)
 //! - mapping workspace source files to owning `java_*` targets (for hot swap)
+//! - on-demand file -> compile-info resolution (find owners + load `JavaCompileInfo` for the best/first owner)
 //! - caching keyed by query/aquery expression version and Bazel build definition/config file digests
 
 mod aquery;
