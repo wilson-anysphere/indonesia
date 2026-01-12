@@ -1740,6 +1740,33 @@ void m() {}
 }
 
 #[test]
+fn completion_includes_javadoc_inline_link_snippet_after_open_brace() {
+    let (db, file, pos) = fixture(
+        r#"
+/**
+ * {<|>
+ */
+void m() {}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "{@link}")
+        .expect("expected {@link} snippet completion after `{`");
+
+    assert_eq!(item.kind, Some(lsp_types::CompletionItemKind::SNIPPET));
+    assert_eq!(item.insert_text_format, Some(InsertTextFormat::SNIPPET));
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+    assert_eq!(edit.new_text, "{@link ${1:TypeOrMember}}$0");
+}
+
+#[test]
 fn annotation_attribute_completion_suggests_elements() {
     let anno_path = PathBuf::from("/workspace/src/main/java/p/MyAnno.java");
     let java_path = PathBuf::from("/workspace/src/main/java/p/Main.java");
