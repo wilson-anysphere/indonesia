@@ -331,7 +331,9 @@ fn resolve_stream_method(receiver: &Type, name: &str, arg_count: usize) -> Optio
     let (return_type, ok) = match receiver_name {
         "java.util.stream.Stream" => (resolve_stream_method_stream(name, arg_count)?, true),
         "java.util.stream.IntStream" => (resolve_stream_method_int_stream(name, arg_count)?, true),
-        "java.util.stream.LongStream" => (resolve_stream_method_long_stream(name, arg_count)?, true),
+        "java.util.stream.LongStream" => {
+            (resolve_stream_method_long_stream(name, arg_count)?, true)
+        }
         "java.util.stream.DoubleStream" => {
             (resolve_stream_method_double_stream(name, arg_count)?, true)
         }
@@ -606,11 +608,13 @@ fn sample_suffix(stream_kind: StreamValueKind, max: usize) -> String {
             ".limit({}).collect(java.util.stream.Collectors.toList())",
             max
         ),
-        StreamValueKind::IntStream | StreamValueKind::LongStream | StreamValueKind::DoubleStream => {
+        StreamValueKind::IntStream
+        | StreamValueKind::LongStream
+        | StreamValueKind::DoubleStream => {
             format!(
-            ".limit({}).boxed().collect(java.util.stream.Collectors.toList())",
-            max
-        )
+                ".limit({}).boxed().collect(java.util.stream.Collectors.toList())",
+                max
+            )
         }
     }
 }
