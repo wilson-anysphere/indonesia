@@ -90,10 +90,12 @@ enum LifecycleState {
 }
 
 struct LaunchedProcess {
-    pid: Option<u32>,
     /// Cancellation token used to "detach" from the launched process (drop the child handle)
     /// without treating it as a debuggee exit.
     detach: CancellationToken,
+    /// Request that the launched process be terminated. We still emit `exited` when it actually
+    /// exits (best-effort).
+    kill: watch::Sender<bool>,
     /// Background task that waits for the child to exit and emits DAP events.
     monitor: tokio::task::JoinHandle<()>,
 }
@@ -3597,16 +3599,33 @@ fn spawn_launched_process_exit_task(
     terminated_sent: Arc<AtomicBool>,
     server_shutdown: CancellationToken,
 ) -> (LaunchedProcess, watch::Sender<Option<bool>>) {
-    let pid = child.id();
     let detach = CancellationToken::new();
     let detach_task = detach.clone();
+
+    let (kill_tx, mut kill_rx) = watch::channel(false);
 
     let (outcome_tx, mut outcome_rx) = watch::channel(None::<bool>);
 
     let monitor = tokio::spawn(async move {
-        let status = tokio::select! {
-            _ = detach_task.cancelled() => return,
-            status = child.wait() => status,
+        let mut kill_listener = true;
+        let mut kill_requested = false;
+
+        let status = loop {
+            if !kill_requested && *kill_rx.borrow() {
+                kill_requested = true;
+                let _ = child.start_kill();
+            }
+
+            tokio::select! {
+                _ = detach_task.cancelled() => return,
+                changed = kill_rx.changed(), if kill_listener && !kill_requested => {
+                    if changed.is_err() {
+                        kill_listener = false;
+                    }
+                    continue;
+                }
+                status = child.wait() => break status,
+            };
         };
 
         let exit_code = match status {
@@ -3639,8 +3658,8 @@ fn spawn_launched_process_exit_task(
 
     (
         LaunchedProcess {
-            pid,
             detach,
+            kill: kill_tx,
             monitor,
         },
         outcome_tx,
@@ -3667,63 +3686,10 @@ async fn terminate_existing_process(launched_process: &Arc<Mutex<Option<Launched
 
     let Some(proc) = proc else { return };
 
-    if let Some(pid) = proc.pid {
-        let _ = terminate_pid(pid).await;
-    }
+    let _ = proc.kill.send(true);
 
     // Reap the process via the monitor task, but don't hang shutdown if it refuses to die.
     let _ = tokio::time::timeout(Duration::from_secs(2), proc.monitor).await;
-}
-
-#[cfg(unix)]
-fn process_exists(pid: u32) -> bool {
-    let rc = unsafe { libc::kill(pid as i32, 0) };
-    if rc == 0 {
-        return true;
-    }
-    let err = std::io::Error::last_os_error();
-    !matches!(err.raw_os_error(), Some(libc::ESRCH))
-}
-
-async fn terminate_pid(pid: u32) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        // Best effort: send SIGTERM first so shutdown hooks can run.
-        let rc = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
-        if rc != 0 {
-            let err = std::io::Error::last_os_error();
-            if err.raw_os_error() != Some(libc::ESRCH) {
-                return Err(err);
-            }
-        }
-
-        let deadline = Instant::now() + Duration::from_millis(750);
-        while Instant::now() < deadline {
-            if !process_exists(pid) {
-                return Ok(());
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-
-        let rc = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
-        if rc != 0 {
-            let err = std::io::Error::last_os_error();
-            if err.raw_os_error() != Some(libc::ESRCH) {
-                return Err(err);
-            }
-        }
-    }
-
-    #[cfg(windows)]
-    {
-        // Best effort: `taskkill` is the most widely available mechanism without additional deps.
-        let _ = Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .output()
-            .await;
-    }
-
-    Ok(())
 }
 
 async fn disconnect_debugger(debugger: &Arc<Mutex<Option<Debugger>>>) {
