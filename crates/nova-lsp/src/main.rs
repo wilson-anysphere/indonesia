@@ -3842,46 +3842,233 @@ fn goto_definition_jdk(
     let (start, end) = ident_range_at(text, offset)?;
     let ident = text.get(start..end)?;
 
-    let mut stub = jdk.lookup_type(ident).ok().flatten();
-    if stub.is_none() && !ident.contains('.') && !ident.contains('/') {
-        let (explicit_imports, wildcard_imports) = parse_java_imports(text);
+    fn is_ident_continue(b: u8) -> bool {
+        (b as char).is_ascii_alphanumeric() || b == b'_' || b == b'$'
+    }
 
-        if let Some(fq_name) = explicit_imports.get(ident) {
-            stub = jdk.lookup_type(fq_name).ok().flatten();
+    fn looks_like_type_name(receiver: &str) -> bool {
+        receiver.contains('.')
+            || receiver
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_uppercase())
+    }
+
+    fn infer_variable_type(text: &str, var_name: &str, before: usize) -> Option<String> {
+        if var_name.is_empty() {
+            return None;
         }
 
-        if stub.is_none() {
-            for pkg in wildcard_imports {
-                let candidate = format!("{pkg}.{ident}");
-                stub = jdk.lookup_type(&candidate).ok().flatten();
-                if stub.is_some() {
+        let scope = text.get(..before)?;
+        let bytes = scope.as_bytes();
+        let var_len = var_name.len();
+
+        let mut search_from = 0usize;
+        let mut best: Option<String> = None;
+
+        while let Some(found_rel) = scope.get(search_from..)?.find(var_name) {
+            let found = search_from + found_rel;
+
+            // Ensure we matched an identifier.
+            let before_ok = found == 0 || !is_ident_continue(bytes[found - 1]);
+            let after_ok = found + var_len >= bytes.len() || !is_ident_continue(bytes[found + var_len]);
+            if !before_ok || !after_ok {
+                search_from = found + 1;
+                continue;
+            }
+
+            // Declarations should not be immediately followed by `.` (member access).
+            let mut after = found + var_len;
+            while after < bytes.len() && bytes[after].is_ascii_whitespace() {
+                after += 1;
+            }
+            if after < bytes.len() && bytes[after] == b'.' {
+                search_from = found + 1;
+                continue;
+            }
+
+            // Grab the token immediately before the variable name.
+            let mut ty_end = found;
+            while ty_end > 0 && bytes[ty_end - 1].is_ascii_whitespace() {
+                ty_end -= 1;
+            }
+            if ty_end == 0 {
+                search_from = found + 1;
+                continue;
+            }
+
+            let mut ty_start = ty_end;
+            while ty_start > 0 {
+                let b = bytes[ty_start - 1];
+                if is_ident_continue(b) || b == b'.' {
+                    ty_start -= 1;
+                } else {
                     break;
                 }
             }
+            if ty_start == ty_end {
+                search_from = found + 1;
+                continue;
+            }
+
+            let candidate = scope.get(ty_start..ty_end)?;
+            if looks_like_type_name(candidate) {
+                best = Some(candidate.to_string());
+            }
+
+            search_from = found + 1;
         }
 
-        if stub.is_none() {
-            let suffix = format!(".{ident}");
-            if let Ok(names) = jdk.class_names_with_prefix("") {
-                let matches: Vec<String> = names
-                    .into_iter()
-                    .filter(|name| name.ends_with(&suffix))
-                    .collect();
-                if matches.len() == 1 {
-                    stub = jdk.lookup_type(&matches[0]).ok().flatten();
+        best
+    }
+
+    fn resolve_jdk_type(
+        jdk: &nova_jdk::JdkIndex,
+        text: &str,
+        name: &str,
+    ) -> Option<Arc<nova_jdk::JdkClassStub>> {
+        let mut stub = jdk.lookup_type(name).ok().flatten();
+        if stub.is_none() && !name.contains('.') && !name.contains('/') {
+            let (explicit_imports, wildcard_imports) = parse_java_imports(text);
+
+            if let Some(fq_name) = explicit_imports.get(name) {
+                stub = jdk.lookup_type(fq_name).ok().flatten();
+            }
+
+            if stub.is_none() {
+                for pkg in wildcard_imports {
+                    let candidate = format!("{pkg}.{name}");
+                    stub = jdk.lookup_type(&candidate).ok().flatten();
+                    if stub.is_some() {
+                        break;
+                    }
+                }
+            }
+
+            if stub.is_none() {
+                let suffix = format!(".{name}");
+                if let Ok(names) = jdk.class_names_with_prefix("") {
+                    let matches: Vec<String> = names
+                        .into_iter()
+                        .filter(|candidate| candidate.ends_with(&suffix))
+                        .collect();
+                    if matches.len() == 1 {
+                        stub = jdk.lookup_type(&matches[0]).ok().flatten();
+                    }
                 }
             }
         }
+        stub
     }
-    let stub = stub?;
+
+    let bytes = text.as_bytes();
+
+    // Detect member access (`receiver.ident`) and resolve into the receiver's JDK class.
+    //
+    // Best-effort: Only attempt this when the character immediately preceding the identifier (after
+    // skipping whitespace) is `.`.
+    let mut before_start = start;
+    while before_start > 0 && bytes[before_start - 1].is_ascii_whitespace() {
+        before_start -= 1;
+    }
+
+    let mut stub: Option<Arc<nova_jdk::JdkClassStub>> = None;
+    let mut member_symbol: Option<nova_decompile::SymbolKey> = None;
+
+    if before_start > 0 && bytes[before_start - 1] == b'.' {
+        let dot = before_start - 1;
+
+        // Parse receiver expression just before the `.`.
+        let mut recv_end = dot;
+        while recv_end > 0 && bytes[recv_end - 1].is_ascii_whitespace() {
+            recv_end -= 1;
+        }
+
+        if recv_end == 0 {
+            return None;
+        }
+
+        // Optional: `"x".method()` treated as `String.method()`.
+        if bytes[recv_end - 1] == b'"' {
+            stub = resolve_jdk_type(jdk, text, "String");
+        } else {
+            let mut recv_start = recv_end;
+            while recv_start > 0 {
+                let b = bytes[recv_start - 1];
+                if is_ident_continue(b) || b == b'.' {
+                    recv_start -= 1;
+                } else {
+                    break;
+                }
+            }
+            if recv_start == recv_end {
+                return None;
+            }
+
+            let receiver = text.get(recv_start..recv_end)?;
+
+            // Avoid regressing type navigation for qualified names like `java.lang.String`. If the
+            // receiver + current identifier resolves to a JDK type, treat it as a type reference.
+            let qualified = format!("{receiver}.{ident}");
+            stub = resolve_jdk_type(jdk, text, &qualified);
+
+            if stub.is_none() {
+                let receiver_type_name = if looks_like_type_name(receiver) {
+                    Some(receiver.to_string())
+                } else {
+                    infer_variable_type(text, receiver, dot)
+                };
+                stub = receiver_type_name
+                    .as_deref()
+                    .and_then(|ty| resolve_jdk_type(jdk, text, ty));
+            }
+        }
+
+        if let Some(stub_value) = stub.as_ref() {
+            let is_method_call = {
+                let mut after_ident = end;
+                while after_ident < bytes.len() && bytes[after_ident].is_ascii_whitespace() {
+                    after_ident += 1;
+                }
+                after_ident < bytes.len() && bytes[after_ident] == b'('
+            };
+
+            member_symbol = if is_method_call {
+                stub_value
+                    .methods
+                    .iter()
+                    .find(|m| m.name == ident)
+                    .map(|m| nova_decompile::SymbolKey::Method {
+                        name: m.name.clone(),
+                        descriptor: m.descriptor.clone(),
+                    })
+            } else {
+                stub_value
+                    .fields
+                    .iter()
+                    .find(|f| f.name == ident)
+                    .map(|f| nova_decompile::SymbolKey::Field {
+                        name: f.name.clone(),
+                        descriptor: f.descriptor.clone(),
+                    })
+            };
+        }
+    }
+
+    // Existing behavior: resolve identifier as a type name.
+    let stub = stub.or_else(|| resolve_jdk_type(jdk, text, ident))?;
     let bytes = jdk.read_class_bytes(&stub.internal_name).ok().flatten()?;
 
     let uri_string = nova_decompile::decompiled_uri_for_classfile(&bytes, &stub.internal_name);
     let decompiled = nova_decompile::decompile_classfile(&bytes).ok()?;
-    let symbol = nova_decompile::SymbolKey::Class {
+
+    let class_symbol = nova_decompile::SymbolKey::Class {
         internal_name: stub.internal_name.clone(),
     };
-    let range = decompiled.range_for(&symbol)?;
+    let range = member_symbol
+        .as_ref()
+        .and_then(|symbol| decompiled.range_for(symbol))
+        .or_else(|| decompiled.range_for(&class_symbol))?;
 
     // Store the virtual document so follow-up requests can read it via `Vfs::read_to_string`.
     let uri: lsp_types::Uri = uri_string.parse().ok()?;

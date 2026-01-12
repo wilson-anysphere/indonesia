@@ -4028,6 +4028,7 @@ dependencies = [
  "tracing",
  "url",
  "walkdir",
+ "zip 0.6.6",
 ]
 
 [[package]]
