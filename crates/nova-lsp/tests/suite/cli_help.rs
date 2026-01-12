@@ -30,6 +30,14 @@ fn help_documents_distributed_flags() {
         usage_line.contains("--distributed-worker-command"),
         "expected Usage line to include `--distributed-worker-command`, got:\n{text}"
     );
+    assert!(
+        usage_line.contains("--config"),
+        "expected Usage line to include `--config`, got:\n{text}"
+    );
+    assert!(
+        usage_line.contains("--stdio"),
+        "expected Usage line to include `--stdio`, got:\n{text}"
+    );
 
     assert!(
         text.contains("--distributed"),
@@ -46,5 +54,13 @@ fn help_documents_distributed_flags() {
     assert!(
         text.contains("sibling nova-worker") && text.contains("PATH"),
         "expected default nova-worker lookup description, got:\n{text}"
+    );
+    assert!(
+        text.contains("--config <path>"),
+        "expected help output to mention `--config <path>`, got:\n{text}"
+    );
+    assert!(
+        text.contains("If omitted, uses NOVA_CONFIG") && text.contains(".nova.toml"),
+        "expected config description to mention default discovery via NOVA_CONFIG/NOVA_CONFIG_PATH and nova.toml/.nova.toml, got:\n{text}"
     );
 }
