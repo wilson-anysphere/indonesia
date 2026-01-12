@@ -1415,6 +1415,367 @@ impl Debugger {
         Ok(Some(Value::Object(obj)))
     }
 
+    pub async fn set_variable(
+        &mut self,
+        cancel: &CancellationToken,
+        variables_reference: i64,
+        name: &str,
+        value: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        check_cancel(cancel)?;
+
+        if let Some(handle) = self
+            .objects
+            .handle_from_variables_reference(variables_reference)
+        {
+            return self
+                .set_object_variable(cancel, handle, name.trim(), value)
+                .await;
+        }
+
+        let Some(var_ref) = self.var_handles.get(variables_reference).cloned() else {
+            return Err(DebuggerError::InvalidRequest(format!(
+                "unknown variablesReference {variables_reference}"
+            )));
+        };
+
+        match var_ref {
+            VarRef::FrameLocals(frame) => {
+                self.set_local_variable(cancel, &frame, name.trim(), value)
+                    .await
+            }
+        }
+    }
+
+    async fn set_local_variable(
+        &mut self,
+        cancel: &CancellationToken,
+        frame: &FrameHandle,
+        name: &str,
+        value: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        if name.is_empty() {
+            return Err(DebuggerError::InvalidRequest(
+                "setVariable.name is required".to_string(),
+            ));
+        }
+
+        let (_argc, vars) = cancellable_jdwp(
+            cancel,
+            self.jdwp
+                .method_variable_table(frame.location.class_id, frame.location.method_id),
+        )
+        .await?;
+
+        let in_scope: Vec<VariableInfo> = vars
+            .into_iter()
+            .filter(|v| {
+                v.code_index <= frame.location.index
+                    && frame.location.index < v.code_index + (v.length as u64)
+            })
+            .collect();
+
+        let Some(var) = in_scope.iter().find(|v| v.name == name) else {
+            return Err(DebuggerError::InvalidRequest(format!(
+                "unknown local `{name}`"
+            )));
+        };
+
+        let jdwp_value = self
+            .parse_set_variable_value(cancel, &var.signature, value)
+            .await?;
+
+        cancellable_jdwp(
+            cancel,
+            self.jdwp.stack_frame_set_values(
+                frame.thread,
+                frame.frame_id,
+                &[(var.slot, jdwp_value)],
+            ),
+        )
+        .await?;
+
+        // Fetch the current value so we can present whatever the VM accepted.
+        let values = cancellable_jdwp(
+            cancel,
+            self.jdwp.stack_frame_get_values(
+                frame.thread,
+                frame.frame_id,
+                &[(var.slot, var.signature.clone())],
+            ),
+        )
+        .await?;
+        let new_value = values.into_iter().next().unwrap_or(JdwpValue::Void);
+
+        let static_type = signature_to_type_name(&var.signature);
+        let formatted = self
+            .format_value(cancel, &new_value, Some(&static_type), 0)
+            .await?;
+
+        Ok(Some(json!({
+            "value": formatted.value,
+            "type": formatted.type_name,
+            "variablesReference": formatted.variables_reference,
+            "namedVariables": formatted.named_variables,
+            "indexedVariables": formatted.indexed_variables,
+        })))
+    }
+
+    async fn set_object_variable(
+        &mut self,
+        cancel: &CancellationToken,
+        handle: ObjectHandle,
+        name: &str,
+        value: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        if name.is_empty() {
+            return Err(DebuggerError::InvalidRequest(
+                "setVariable.name is required".to_string(),
+            ));
+        }
+
+        let Some(object_id) = self.objects.object_id(handle) else {
+            return Err(DebuggerError::InvalidRequest(format!(
+                "unknown object handle {handle}"
+            )));
+        };
+
+        let runtime_type = self
+            .objects
+            .runtime_type(handle)
+            .unwrap_or_default()
+            .to_string();
+
+        if runtime_type.ends_with("[]") {
+            return self
+                .set_array_variable(cancel, handle, object_id, name, value)
+                .await;
+        }
+
+        let (_ref_type_tag, mut type_id) =
+            cancellable_jdwp(cancel, self.jdwp.object_reference_reference_type(object_id)).await?;
+
+        const MODIFIER_STATIC: u32 = 0x0008;
+        let mut seen_types = std::collections::HashSet::new();
+        let mut field: Option<(u64, String)> = None;
+
+        while type_id != 0 && seen_types.insert(type_id) {
+            let fields = cancellable_jdwp(cancel, self.jdwp.reference_type_fields(type_id)).await?;
+            if let Some(found) = fields
+                .into_iter()
+                .find(|f| f.name == name && (f.mod_bits & MODIFIER_STATIC == 0))
+            {
+                field = Some((found.field_id, found.signature));
+                break;
+            }
+
+            type_id = cancellable_jdwp(cancel, self.jdwp.class_type_superclass(type_id)).await?;
+        }
+
+        let Some((field_id, signature)) = field else {
+            return Err(DebuggerError::InvalidRequest(format!(
+                "unknown field `{name}`"
+            )));
+        };
+
+        let jdwp_value = self
+            .parse_set_variable_value(cancel, &signature, value)
+            .await?;
+
+        cancellable_jdwp(
+            cancel,
+            self.jdwp
+                .object_reference_set_values(object_id, &[(field_id, jdwp_value)]),
+        )
+        .await?;
+
+        let new_value = cancellable_jdwp(
+            cancel,
+            self.jdwp
+                .object_reference_get_values(object_id, &[field_id]),
+        )
+        .await?
+        .into_iter()
+        .next()
+        .unwrap_or(JdwpValue::Void);
+
+        let static_type = signature_to_type_name(&signature);
+        let formatted = self
+            .format_value(cancel, &new_value, Some(&static_type), 0)
+            .await?;
+
+        Ok(Some(json!({
+            "value": formatted.value,
+            "type": formatted.type_name,
+            "variablesReference": formatted.variables_reference,
+            "namedVariables": formatted.named_variables,
+            "indexedVariables": formatted.indexed_variables,
+        })))
+    }
+
+    async fn set_array_variable(
+        &mut self,
+        cancel: &CancellationToken,
+        _handle: ObjectHandle,
+        array_id: ObjectId,
+        name: &str,
+        value: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        if name == "length" {
+            return Err(DebuggerError::InvalidRequest(
+                "cannot assign to array length".to_string(),
+            ));
+        }
+        let Some(index) = parse_array_index_name(name) else {
+            return Err(DebuggerError::InvalidRequest(format!(
+                "unsupported array element name `{name}`"
+            )));
+        };
+
+        let (_ref_type_tag, type_id) =
+            cancellable_jdwp(cancel, self.jdwp.object_reference_reference_type(array_id)).await?;
+        let sig = cancellable_jdwp(cancel, self.jdwp.reference_type_signature(type_id)).await?;
+        let Some(element_sig) = sig.strip_prefix('[') else {
+            return Err(DebuggerError::InvalidRequest(format!(
+                "invalid array signature `{sig}`"
+            )));
+        };
+
+        let element_value = self
+            .parse_set_variable_value(cancel, element_sig, value)
+            .await?;
+
+        let Ok(first_index) = i32::try_from(index) else {
+            return Err(DebuggerError::InvalidRequest(format!(
+                "array index {index} is too large"
+            )));
+        };
+
+        cancellable_jdwp(
+            cancel,
+            self.jdwp
+                .array_reference_set_values(array_id, first_index, &[element_value]),
+        )
+        .await?;
+
+        let new_value = cancellable_jdwp(
+            cancel,
+            self.jdwp
+                .array_reference_get_values(array_id, first_index, 1),
+        )
+        .await?
+        .into_iter()
+        .next()
+        .unwrap_or(JdwpValue::Void);
+
+        let static_type = signature_to_type_name(element_sig);
+        let formatted = self
+            .format_value(cancel, &new_value, Some(&static_type), 0)
+            .await?;
+
+        Ok(Some(json!({
+            "value": formatted.value,
+            "type": formatted.type_name,
+            "variablesReference": formatted.variables_reference,
+            "namedVariables": formatted.named_variables,
+            "indexedVariables": formatted.indexed_variables,
+        })))
+    }
+
+    async fn parse_set_variable_value(
+        &mut self,
+        cancel: &CancellationToken,
+        signature: &str,
+        raw_value: &str,
+    ) -> Result<JdwpValue> {
+        let value = raw_value.trim();
+        if value.eq_ignore_ascii_case("null") {
+            let tag = if signature.starts_with('[') {
+                b'['
+            } else if signature == "Ljava/lang/String;" {
+                b's'
+            } else {
+                b'L'
+            };
+            return Ok(JdwpValue::Object { tag, id: 0 });
+        }
+
+        let parse_err = || {
+            DebuggerError::InvalidRequest(format!(
+                "could not parse `{raw_value}` as `{}`",
+                signature_to_type_name(signature)
+            ))
+        };
+
+        match signature.as_bytes().first().copied() {
+            Some(b'Z') => {
+                let lowered = value.to_ascii_lowercase();
+                match lowered.as_str() {
+                    "true" => Ok(JdwpValue::Boolean(true)),
+                    "false" => Ok(JdwpValue::Boolean(false)),
+                    "1" => Ok(JdwpValue::Boolean(true)),
+                    "0" => Ok(JdwpValue::Boolean(false)),
+                    _ => Err(parse_err()),
+                }
+            }
+            Some(b'B') => Ok(JdwpValue::Byte(
+                value.parse::<i8>().map_err(|_| parse_err())?,
+            )),
+            Some(b'S') => Ok(JdwpValue::Short(
+                value.parse::<i16>().map_err(|_| parse_err())?,
+            )),
+            Some(b'I') => Ok(JdwpValue::Int(
+                value.parse::<i32>().map_err(|_| parse_err())?,
+            )),
+            Some(b'J') => Ok(JdwpValue::Long(
+                value.parse::<i64>().map_err(|_| parse_err())?,
+            )),
+            Some(b'F') => Ok(JdwpValue::Float(
+                value.parse::<f32>().map_err(|_| parse_err())?,
+            )),
+            Some(b'D') => Ok(JdwpValue::Double(
+                value.parse::<f64>().map_err(|_| parse_err())?,
+            )),
+            Some(b'C') => {
+                let trimmed = value.trim();
+                let char_value = if let Some(inner) = trimmed
+                    .strip_prefix('\'')
+                    .and_then(|s| s.strip_suffix('\''))
+                {
+                    let mut chars = inner.chars();
+                    let Some(ch) = chars.next() else {
+                        return Err(parse_err());
+                    };
+                    if chars.next().is_some() {
+                        return Err(parse_err());
+                    }
+                    ch as u16
+                } else {
+                    trimmed.parse::<u16>().map_err(|_| parse_err())?
+                };
+                Ok(JdwpValue::Char(char_value))
+            }
+            Some(b'L') | Some(b'[') => {
+                if signature == "Ljava/lang/String;" {
+                    let content = parse_java_string_literal(value);
+                    let object_id =
+                        cancellable_jdwp(cancel, self.jdwp.virtual_machine_create_string(&content))
+                            .await?;
+                    Ok(JdwpValue::Object {
+                        tag: b's',
+                        id: object_id,
+                    })
+                } else {
+                    Err(DebuggerError::InvalidRequest(format!(
+                        "setting non-String object references is not supported (type {})",
+                        signature_to_type_name(signature)
+                    )))
+                }
+            }
+            _ => Err(parse_err()),
+        }
+    }
+
     pub async fn handle_breakpoint_event(
         &mut self,
         request_id: i32,
@@ -2495,6 +2856,64 @@ fn parse_eval_expression(expr: &str) -> std::result::Result<ParsedEvalExpression
     }
 
     Ok(ParsedEvalExpression { base, segments })
+}
+
+fn parse_array_index_name(name: &str) -> Option<i64> {
+    let trimmed = name.trim();
+    let inner = trimmed.strip_prefix('[')?.strip_suffix(']')?;
+    inner.trim().parse::<i64>().ok()
+}
+
+fn parse_java_string_literal(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let Some(inner) = trimmed
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .or_else(|| {
+            trimmed
+                .strip_prefix('\'')
+                .and_then(|s| s.strip_suffix('\''))
+        })
+    else {
+        return trimmed.to_string();
+    };
+
+    let mut out = String::new();
+    let mut chars = inner.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        let Some(esc) = chars.next() else {
+            out.push('\\');
+            break;
+        };
+        match esc {
+            'n' => out.push('\n'),
+            'r' => out.push('\r'),
+            't' => out.push('\t'),
+            '\\' => out.push('\\'),
+            '"' => out.push('"'),
+            '\'' => out.push('\''),
+            'u' => {
+                let mut code = String::new();
+                for _ in 0..4 {
+                    match chars.next() {
+                        Some(h) => code.push(h),
+                        None => break,
+                    }
+                }
+                if let Ok(value) = u16::from_str_radix(&code, 16) {
+                    if let Some(ch) = std::char::from_u32(value as u32) {
+                        out.push(ch);
+                    }
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 // `serde_json::Value` isn't in scope by default in this module, but we use it in evaluate to avoid

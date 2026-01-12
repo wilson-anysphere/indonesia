@@ -136,6 +136,159 @@ async fn dap_maps_breakpoints_to_nearest_executable_line() {
 }
 
 #[tokio::test]
+async fn dap_can_set_variables_in_locals_objects_and_arrays() {
+    let jdwp = MockJdwpServer::spawn().await.unwrap();
+    let (client, server_task) = spawn_wire_server();
+
+    client.initialize_handshake().await;
+    client.attach("127.0.0.1", jdwp.addr().port()).await;
+    client.set_breakpoints("Main.java", &[3]).await;
+
+    let thread_id = client.first_thread_id().await;
+    let frame_id = client.first_frame_id(thread_id).await;
+    let locals_ref = client.first_scope_variables_reference(frame_id).await;
+
+    let vars_resp = client.variables(locals_ref).await;
+    let locals = vars_resp
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
+
+    let x_value = locals
+        .iter()
+        .find(|v| v.get("name").and_then(|n| n.as_str()) == Some("x"))
+        .and_then(|v| v.get("value"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert_eq!(x_value, "42");
+
+    let obj_ref = locals
+        .iter()
+        .find(|v| v.get("name").and_then(|n| n.as_str()) == Some("obj"))
+        .and_then(|v| v.get("variablesReference"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    assert!(obj_ref > OBJECT_HANDLE_BASE);
+
+    let arr_ref = locals
+        .iter()
+        .find(|v| v.get("name").and_then(|n| n.as_str()) == Some("arr"))
+        .and_then(|v| v.get("variablesReference"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    assert!(arr_ref > OBJECT_HANDLE_BASE);
+
+    // Set a local variable.
+    let set_local = client
+        .request(
+            "setVariable",
+            json!({
+                "variablesReference": locals_ref,
+                "name": "x",
+                "value": "99",
+            }),
+        )
+        .await;
+    assert_eq!(
+        set_local.get("success").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+
+    let stack_calls = jdwp.stack_frame_set_values_calls().await;
+    assert_eq!(stack_calls.len(), 1);
+    assert!(stack_calls[0]
+        .values
+        .iter()
+        .any(|(slot, value)| *slot == 0 && *value == nova_jdwp::wire::JdwpValue::Int(99)));
+
+    let vars_resp = client.variables(locals_ref).await;
+    let locals = vars_resp
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
+    let x_value = locals
+        .iter()
+        .find(|v| v.get("name").and_then(|n| n.as_str()) == Some("x"))
+        .and_then(|v| v.get("value"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert_eq!(x_value, "99");
+
+    // Set an object field.
+    let set_field = client
+        .request(
+            "setVariable",
+            json!({
+                "variablesReference": obj_ref,
+                "name": "field",
+                "value": "123",
+            }),
+        )
+        .await;
+    assert_eq!(
+        set_field.get("success").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+
+    let object_calls = jdwp.object_reference_set_values_calls().await;
+    assert_eq!(object_calls.len(), 1);
+    assert!(object_calls[0]
+        .values
+        .iter()
+        .any(|(_field_id, value)| *value == nova_jdwp::wire::JdwpValue::Int(123)));
+
+    let obj_vars = client.variables(obj_ref).await;
+    let obj_children = obj_vars
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
+    let field_value = obj_children
+        .iter()
+        .find(|v| v.get("name").and_then(|n| n.as_str()) == Some("field"))
+        .and_then(|v| v.get("value"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert_eq!(field_value, "123");
+
+    // Set an array element.
+    let set_arr = client
+        .request(
+            "setVariable",
+            json!({
+                "variablesReference": arr_ref,
+                "name": "[1]",
+                "value": "999",
+            }),
+        )
+        .await;
+    assert_eq!(set_arr.get("success").and_then(|v| v.as_bool()), Some(true));
+
+    let array_calls = jdwp.array_reference_set_values_calls().await;
+    assert_eq!(array_calls.len(), 1);
+    assert_eq!(array_calls[0].first_index, 1);
+    assert_eq!(
+        array_calls[0].values,
+        vec![nova_jdwp::wire::JdwpValue::Int(999)]
+    );
+
+    let arr_vars = client.variables(arr_ref).await;
+    let arr_children = arr_vars
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
+    let idx_value = arr_children
+        .iter()
+        .find(|v| v.get("name").and_then(|n| n.as_str()) == Some("[1]"))
+        .and_then(|v| v.get("value"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert_eq!(idx_value, "999");
+
+    client.disconnect().await;
+    server_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn dap_can_hot_swap_a_class() {
     let mut caps = vec![false; 32];
     caps[7] = true; // canRedefineClasses

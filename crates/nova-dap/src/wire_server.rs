@@ -62,6 +62,14 @@ struct EvaluateArguments {
     context: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetVariableArguments {
+    variables_reference: i64,
+    name: String,
+    value: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SessionKind {
     Attach,
@@ -314,7 +322,7 @@ async fn handle_request_inner(
                 "supportsCancelRequest": true,
                 "supportsTerminateRequest": true,
                 "supportsRestartRequest": false,
-                "supportsSetVariable": false,
+                "supportsSetVariable": true,
                 "supportsStepBack": false,
                 "supportsFunctionBreakpoints": true,
                 "supportsVariablePaging": true,
@@ -1570,6 +1578,73 @@ async fn handle_request_inner(
                         Some("cancelled".to_string()),
                     );
                 }
+                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+            }
+        }
+        "setVariable" => {
+            let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+                Some(guard) => guard,
+                None => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
+                    return;
+                }
+            };
+            let Some(dbg) = guard.as_mut() else {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("not attached".to_string()),
+                );
+                return;
+            };
+
+            let args: SetVariableArguments = match serde_json::from_value(request.arguments.clone())
+            {
+                Ok(args) => args,
+                Err(err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(format!("invalid setVariable arguments: {err}")),
+                    );
+                    return;
+                }
+            };
+
+            match dbg
+                .set_variable(cancel, args.variables_reference, &args.name, &args.value)
+                .await
+            {
+                Ok(body) if cancel.is_cancelled() => send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("cancelled".to_string()),
+                ),
+                Ok(body) => send_response(out_tx, seq, request, true, body, None),
+                Err(err) if is_cancelled_error(&err) => send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("cancelled".to_string()),
+                ),
                 Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
             }
         }
