@@ -418,7 +418,8 @@ fn value_completions_scan_disk_configs_when_all_files_is_unavailable() {
     let temp = TempDir::new().unwrap();
     let root: PathBuf = temp.path().canonicalize().unwrap();
 
-    // Ensure `nova_project::workspace_root` can locate the workspace root from the Java file path.
+    // Ensure the analyzer's best-effort workspace root discovery can locate the workspace root from
+    // the Java file path (so it can scan `application*.properties` on disk).
     std::fs::write(root.join("pom.xml"), "<project></project>").expect("write pom.xml");
 
     let config_path = root.join("src/main/resources/application.properties");

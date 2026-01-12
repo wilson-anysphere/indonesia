@@ -162,6 +162,96 @@ impl SpringAnalyzer {
     }
 }
 
+/// Best-effort workspace root discovery for filesystem fallbacks in the Spring analyzer.
+///
+/// This intentionally avoids depending on the `nova-project` workspace loader crate; framework
+/// analyzers should generally be usable in isolation and operate over the lightweight
+/// `nova-build-model` types.
+///
+/// The algorithm is a simplified version of `nova_project::workspace_root`:
+/// - Prefer Bazel workspaces via `nova_build_model::bazel_workspace_root`.
+/// - Otherwise consider the nearest Maven (`pom.xml`) and Gradle (`settings.gradle(.kts)` or
+///   `build.gradle(.kts)`) markers.
+/// - Fall back to the nearest ancestor containing a `src/` directory.
+fn workspace_root(start: &Path) -> Option<PathBuf> {
+    fn is_file(dir: &Path, name: &str) -> bool {
+        dir.join(name).is_file()
+    }
+
+    fn has_gradle_settings(dir: &Path) -> bool {
+        is_file(dir, "settings.gradle") || is_file(dir, "settings.gradle.kts")
+    }
+
+    fn has_gradle_build(dir: &Path) -> bool {
+        is_file(dir, "build.gradle") || is_file(dir, "build.gradle.kts")
+    }
+
+    fn nearest_ancestor(start: &Path, mut matches: impl FnMut(&Path) -> bool) -> Option<PathBuf> {
+        let mut dir = start;
+        loop {
+            if matches(dir) {
+                return Some(dir.to_path_buf());
+            }
+            let parent = dir.parent()?;
+            if parent == dir {
+                return None;
+            }
+            dir = parent;
+        }
+    }
+
+    let start_dir = if start.is_file() { start.parent()? } else { start };
+
+    // If the caller explicitly provided a directory that already looks like a self-contained
+    // "simple project" root, prefer it over ancestor build markers. This prevents unrelated
+    // files in shared temp directories (e.g. `/tmp`) from "stealing" workspace root discovery.
+    if start_dir.join("src").is_dir()
+        && !is_file(start_dir, "pom.xml")
+        && !has_gradle_settings(start_dir)
+        && !has_gradle_build(start_dir)
+        && !nova_build_model::is_bazel_workspace(start_dir)
+    {
+        return Some(start_dir.to_path_buf());
+    }
+
+    let bazel_root = nova_build_model::bazel_workspace_root(start_dir);
+    let maven_root = nearest_ancestor(start_dir, |dir| is_file(dir, "pom.xml"));
+    let gradle_root = nearest_ancestor(start_dir, has_gradle_settings)
+        .or_else(|| nearest_ancestor(start_dir, has_gradle_build));
+
+    // Mirror the "pick the deepest root; tie-break by build system priority" behavior from
+    // `nova_project::workspace_root`, but without the heavier Maven/Gradle parsing.
+    fn depth(path: &Path) -> usize {
+        path.components().count()
+    }
+
+    let mut best: Option<(u8, PathBuf)> = None;
+    for (priority, candidate) in [
+        (0u8, bazel_root),
+        (1u8, maven_root),
+        (2u8, gradle_root),
+    ] {
+        let Some(candidate) = candidate else { continue };
+        match best.as_ref() {
+            None => best = Some((priority, candidate)),
+            Some((best_priority, best_path)) => {
+                let best_depth = depth(best_path);
+                let cand_depth = depth(&candidate);
+                if cand_depth > best_depth || (cand_depth == best_depth && priority < *best_priority)
+                {
+                    best = Some((priority, candidate));
+                }
+            }
+        }
+    }
+
+    if let Some((_priority, path)) = best {
+        return Some(path);
+    }
+
+    nearest_ancestor(start_dir, |dir| dir.join("src").is_dir())
+}
+
 impl Default for SpringAnalyzer {
     fn default() -> Self {
         Self {
