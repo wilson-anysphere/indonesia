@@ -80,6 +80,10 @@ pub enum DebuggerError {
 
     #[error("invalid request: {0}")]
     InvalidRequest(String),
+
+    /// Stream-debug evaluation exceeded `StreamDebugConfig::max_total_time`.
+    #[error("evaluation exceeded time limit")]
+    Timeout,
 }
 
 pub type Result<T> = std::result::Result<T, DebuggerError>;
@@ -354,6 +358,51 @@ where
     tokio::select! {
         _ = token.cancelled() => Err(JdwpError::Cancelled),
         res = fut => res,
+    }
+}
+
+fn remaining_budget(token: &CancellationToken, started: Instant, budget: Duration) -> Result<Duration> {
+    if token.is_cancelled() {
+        return Err(JdwpError::Cancelled.into());
+    }
+
+    let elapsed = started.elapsed();
+    let remaining = budget.checked_sub(elapsed).unwrap_or(Duration::ZERO);
+    if remaining.is_zero() {
+        return Err(DebuggerError::Timeout);
+    }
+    Ok(remaining)
+}
+
+fn enforce_budget(token: &CancellationToken, started: Instant, budget: Duration) -> Result<()> {
+    remaining_budget(token, started, budget).map(|_| ())
+}
+
+async fn budgeted_jdwp<T, F>(
+    token: &CancellationToken,
+    started: Instant,
+    budget: Duration,
+    fut: F,
+) -> Result<T>
+where
+    F: Future<Output = std::result::Result<T, JdwpError>>,
+{
+    let remaining = remaining_budget(token, started, budget)?;
+
+    tokio::select! {
+        biased;
+        _ = token.cancelled() => Err(JdwpError::Cancelled.into()),
+        res = tokio::time::timeout(remaining, fut) => match res {
+            Ok(res) => Ok(res?),
+            Err(_elapsed) => {
+                // Cancellation should win over timeouts if both fire at roughly the same time.
+                if token.is_cancelled() {
+                    Err(JdwpError::Cancelled.into())
+                } else {
+                    Err(DebuggerError::Timeout)
+                }
+            }
+        }
     }
 }
 
@@ -2581,16 +2630,18 @@ impl Debugger {
         async fn format_stream_value(
             inspector: &mut Inspector,
             cancel: &CancellationToken,
+            started: Instant,
+            budget: Duration,
             value: &JdwpValue,
         ) -> Result<String> {
-            check_cancel(cancel)?;
+            enforce_budget(cancel, started, budget)?;
 
             // Follow primitive-wrapper previews so things like `java.lang.Integer` show up as `1`
             // (instead of `Integer@...`), matching the legacy stream-debug UX expectations.
             let mut current = value.clone();
 
             loop {
-                check_cancel(cancel)?;
+                enforce_budget(cancel, started, budget)?;
                 match current {
                     JdwpValue::Void => return Ok("void".to_string()),
                     JdwpValue::Boolean(v) => return Ok(v.to_string()),
@@ -2604,7 +2655,8 @@ impl Debugger {
                     JdwpValue::Object { id: 0, .. } => return Ok("null".to_string()),
                     JdwpValue::Object { id, .. } => {
                         let preview =
-                            cancellable_jdwp(cancel, inspector.preview_object(id)).await?;
+                            budgeted_jdwp(cancel, started, budget, inspector.preview_object(id))
+                                .await?;
                         let runtime_type = preview.runtime_type;
                         match preview.kind {
                             ObjectKindPreview::String { value } => return Ok(value),
@@ -2617,7 +2669,8 @@ impl Debugger {
                                     None => "Optional.empty".to_string(),
                                     Some(v) => format!(
                                         "Optional[{}]",
-                                        format_stream_value(inspector, cancel, &v).await?
+                                        format_stream_value(inspector, cancel, started, budget, &v)
+                                            .await?
                                     ),
                                 });
                             }
@@ -2631,21 +2684,26 @@ impl Debugger {
         async fn resolve_local_in_frame(
             jdwp: &JdwpClient,
             cancel: &CancellationToken,
+            started: Instant,
+            budget: Duration,
             thread: ThreadId,
             frame_id: u64,
             location: Location,
             name: &str,
         ) -> Result<Option<JdwpValue>> {
+            enforce_budget(cancel, started, budget)?;
+
             // Prefer `Method.VariableTableWithGeneric` when available. Some VMs (and the JDWP mock
             // server) only surface certain locals (e.g. generic `List<T>`) via the generic-aware
             // variant.
             let mut var: Option<(u32, String)> = None;
-            match cancellable_jdwp(
+            match budgeted_jdwp(
                 cancel,
+                started,
+                budget,
                 jdwp.method_variable_table_with_generic(location.class_id, location.method_id),
             )
-            .await
-            {
+            .await {
                 Ok((_argc, vars)) => {
                     let in_scope: Vec<_> = vars
                         .into_iter()
@@ -2658,20 +2716,29 @@ impl Debugger {
                         var = Some((found.slot, found.signature.clone()));
                     }
                 }
-                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
-                Err(_err) => {}
+                Err(err) => match err {
+                    DebuggerError::Jdwp(JdwpError::Cancelled) | DebuggerError::Timeout => {
+                        return Err(err)
+                    }
+                    _ => {}
+                },
             }
 
             if var.is_none() {
-                let (_argc, vars) = match cancellable_jdwp(
+                let (_argc, vars) = match budgeted_jdwp(
                     cancel,
+                    started,
+                    budget,
                     jdwp.method_variable_table(location.class_id, location.method_id),
                 )
-                .await
-                {
+                .await {
                     Ok(res) => res,
-                    Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
-                    Err(_err) => return Ok(None),
+                    Err(err) => match err {
+                        DebuggerError::Jdwp(JdwpError::Cancelled) | DebuggerError::Timeout => {
+                            return Err(err)
+                        }
+                        _ => return Ok(None),
+                    },
                 };
 
                 let in_scope: Vec<VariableInfo> = vars
@@ -2690,15 +2757,20 @@ impl Debugger {
                 return Ok(None);
             };
 
-            let mut values = match cancellable_jdwp(
+            let mut values = match budgeted_jdwp(
                 cancel,
+                started,
+                budget,
                 jdwp.stack_frame_get_values(thread, frame_id, &[(slot, signature)]),
             )
-            .await
-            {
+            .await {
                 Ok(values) => values,
-                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
-                Err(_err) => return Ok(None),
+                Err(err) => match err {
+                    DebuggerError::Jdwp(JdwpError::Cancelled) | DebuggerError::Timeout => {
+                        return Err(err)
+                    }
+                    _ => return Ok(None),
+                },
             };
             Ok(values.pop())
         }
@@ -2706,21 +2778,28 @@ impl Debugger {
         async fn resolve_field_in_frame(
             jdwp: &JdwpClient,
             cancel: &CancellationToken,
+            started: Instant,
+            budget: Duration,
             thread: ThreadId,
             frame_id: u64,
             name: &str,
         ) -> Result<Option<JdwpValue>> {
-            check_cancel(cancel)?;
+            enforce_budget(cancel, started, budget)?;
 
-            let this_id = match cancellable_jdwp(
+            let this_id = match budgeted_jdwp(
                 cancel,
+                started,
+                budget,
                 jdwp.stack_frame_this_object(thread, frame_id),
             )
-            .await
-            {
+            .await {
                 Ok(id) => id,
-                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
-                Err(_err) => return Ok(None),
+                Err(err) => match err {
+                    DebuggerError::Jdwp(JdwpError::Cancelled) | DebuggerError::Timeout => {
+                        return Err(err)
+                    }
+                    _ => return Ok(None),
+                },
             };
             if this_id == 0 {
                 return Ok(None);
@@ -2728,45 +2807,71 @@ impl Debugger {
 
             const MODIFIER_STATIC: u32 = 0x0008;
 
-            let (_ref_type_tag, mut type_id) =
-                match cancellable_jdwp(cancel, jdwp.object_reference_reference_type(this_id)).await
-                {
-                    Ok(res) => res,
-                    Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
-                    Err(_err) => return Ok(None),
-                };
+            let (_ref_type_tag, mut type_id) = match budgeted_jdwp(
+                cancel,
+                started,
+                budget,
+                jdwp.object_reference_reference_type(this_id),
+            )
+            .await {
+                Ok(res) => res,
+                Err(err) => match err {
+                    DebuggerError::Jdwp(JdwpError::Cancelled) | DebuggerError::Timeout => {
+                        return Err(err)
+                    }
+                    _ => return Ok(None),
+                },
+            };
 
             let mut seen_types = std::collections::HashSet::new();
             while type_id != 0 && seen_types.insert(type_id) {
+                enforce_budget(cancel, started, budget)?;
+
                 let fields =
-                    match cancellable_jdwp(cancel, jdwp.reference_type_fields(type_id)).await {
+                    match budgeted_jdwp(cancel, started, budget, jdwp.reference_type_fields(type_id))
+                        .await
+                    {
                         Ok(fields) => fields,
-                        Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
-                        Err(_err) => return Ok(None),
+                        Err(err) => match err {
+                            DebuggerError::Jdwp(JdwpError::Cancelled) | DebuggerError::Timeout => {
+                                return Err(err)
+                            }
+                            _ => return Ok(None),
+                        },
                     };
 
                 if let Some(field) = fields
                     .into_iter()
                     .find(|f| f.name == name && (f.mod_bits & MODIFIER_STATIC == 0))
                 {
-                    let mut values = match cancellable_jdwp(
+                    let mut values = match budgeted_jdwp(
                         cancel,
+                        started,
+                        budget,
                         jdwp.object_reference_get_values(this_id, &[field.field_id]),
                     )
-                    .await
-                    {
+                    .await {
                         Ok(values) => values,
-                        Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
-                        Err(_err) => return Ok(None),
+                        Err(err) => match err {
+                            DebuggerError::Jdwp(JdwpError::Cancelled) | DebuggerError::Timeout => {
+                                return Err(err)
+                            }
+                            _ => return Ok(None),
+                        },
                     };
                     return Ok(values.pop());
                 }
 
-                type_id = match cancellable_jdwp(cancel, jdwp.class_type_superclass(type_id)).await
+                type_id = match budgeted_jdwp(cancel, started, budget, jdwp.class_type_superclass(type_id))
+                    .await
                 {
                     Ok(id) => id,
-                    Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
-                    Err(_err) => break,
+                    Err(err) => match err {
+                        DebuggerError::Jdwp(JdwpError::Cancelled) | DebuggerError::Timeout => {
+                            return Err(err)
+                        }
+                        _ => break,
+                    },
                 };
             }
 
@@ -2874,6 +2979,8 @@ impl Debugger {
         }
 
         let started = Instant::now();
+        let budget = config.max_total_time;
+        enforce_budget(cancel, started, budget)?;
         let mut inspector = Inspector::new(jdwp.clone());
 
         fn unsafe_existing_stream_message(stream_expr: &str) -> String {
@@ -2978,12 +3085,22 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
             // Best-effort: if the variable isn't found in the requested frame, walk up the
             // stack and use the first frame where it is in-scope.
             let mut value = if force_field {
-                resolve_field_in_frame(&jdwp, cancel, frame.thread, frame.frame_id, lookup_name)
-                    .await?
+                resolve_field_in_frame(
+                    &jdwp,
+                    cancel,
+                    started,
+                    budget,
+                    frame.thread,
+                    frame.frame_id,
+                    lookup_name,
+                )
+                .await?
             } else {
                 resolve_local_in_frame(
                     &jdwp,
                     cancel,
+                    started,
+                    budget,
                     frame.thread,
                     frame.frame_id,
                     frame.location,
@@ -2996,6 +3113,8 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                 value = resolve_field_in_frame(
                     &jdwp,
                     cancel,
+                    started,
+                    budget,
                     frame.thread,
                     frame.frame_id,
                     lookup_name,
@@ -3004,7 +3123,9 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
             }
 
             if value.is_none() {
-                let frames = cancellable_jdwp(cancel, jdwp.frames(frame.thread, 0, -1)).await?;
+                let frames =
+                    budgeted_jdwp(cancel, started, budget, jdwp.frames(frame.thread, 0, -1))
+                        .await?;
                 for frame_info in frames {
                     if frame_info.frame_id == frame.frame_id {
                         continue;
@@ -3013,6 +3134,8 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                         resolve_field_in_frame(
                             &jdwp,
                             cancel,
+                            started,
+                            budget,
                             frame.thread,
                             frame_info.frame_id,
                             lookup_name,
@@ -3022,6 +3145,8 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                         resolve_local_in_frame(
                             &jdwp,
                             cancel,
+                            started,
+                            budget,
                             frame.thread,
                             frame_info.frame_id,
                             frame_info.location,
@@ -3037,6 +3162,8 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                         value = resolve_field_in_frame(
                             &jdwp,
                             cancel,
+                            started,
+                            budget,
                             frame.thread,
                             frame_info.frame_id,
                             lookup_name,
@@ -3075,7 +3202,8 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
             };
 
             // First attempt: use the built-in preview for known collection types.
-            let preview = cancellable_jdwp(cancel, inspector.preview_object(object_id)).await?;
+            let preview =
+                budgeted_jdwp(cancel, started, budget, inspector.preview_object(object_id)).await?;
             let collection_type = Some(preview.runtime_type.clone());
 
             let (size, mut raw_sample) = match preview.kind {
@@ -3085,8 +3213,13 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                 _ if preview.runtime_type == "java.util.Arrays$ArrayList" => {
                     // Arrays.asList uses `java.util.Arrays$ArrayList`, which isn't covered by
                     // the default preview helpers. Read the backing array field directly.
-                    let children =
-                        cancellable_jdwp(cancel, inspector.object_children(object_id)).await?;
+                    let children = budgeted_jdwp(
+                        cancel,
+                        started,
+                        budget,
+                        inspector.object_children(object_id),
+                    )
+                    .await?;
                     let array_id =
                         children
                             .iter()
@@ -3100,14 +3233,17 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                         ));
                     };
                     let length =
-                        cancellable_jdwp(cancel, jdwp.array_reference_length(array_id)).await?;
+                        budgeted_jdwp(cancel, started, budget, jdwp.array_reference_length(array_id))
+                            .await?;
                     let length = length.max(0) as usize;
                     let sample_len = length.min(config.max_sample_size);
                     let sample = if sample_len == 0 {
                         Vec::new()
                     } else {
-                        cancellable_jdwp(
+                        budgeted_jdwp(
                             cancel,
+                            started,
+                            budget,
                             jdwp.array_reference_get_values(array_id, 0, sample_len as i32),
                         )
                         .await?
@@ -3129,7 +3265,7 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
             let truncated = raw_sample.len() < size;
             let mut elements = Vec::with_capacity(raw_sample.len());
             for v in &raw_sample {
-                elements.push(format_stream_value(&mut inspector, cancel, v).await?);
+                elements.push(format_stream_value(&mut inspector, cancel, started, budget, v).await?);
             }
 
             (elements, truncated, collection_type)
@@ -3158,7 +3294,7 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
         let mut steps = Vec::new();
 
         for op in &analysis.intermediates {
-            check_cancel(cancel)?;
+            enforce_budget(cancel, started, budget)?;
             let step_start = Instant::now();
 
             if op.is_side_effecting() && !config.allow_side_effects {
@@ -3246,6 +3382,7 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                     duration_ms: 0,
                 })
             } else {
+                enforce_budget(cancel, started, budget)?;
                 match term.kind {
                     nova_stream_debug::StreamOperationKind::Count => Some(StreamTerminalResult {
                         operation: term.name.clone(),
@@ -5836,7 +5973,7 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    use nova_jdwp::wire::mock::{MockJdwpServer, THREAD_ID};
+    use nova_jdwp::wire::mock::{DelayedReply, MockJdwpServer, MockJdwpServerConfig, THREAD_ID};
 
     #[test]
     fn handle_table_intern_is_stable_and_refreshes_value() {
@@ -6095,10 +6232,97 @@ mod tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn stream_debug_enforces_max_total_time() {
+        let mut server_config = MockJdwpServerConfig::default();
+        // Delay a JDWP call that stream-debug relies on (`ArrayReference.GetValues`) so the
+        // evaluation exceeds the configured `max_total_time`.
+        server_config.delayed_replies = vec![DelayedReply {
+            command_set: 13, // ArrayReference
+            command: 2,     // GetValues
+            delay: Duration::from_millis(200),
+        }];
+
+        let server = MockJdwpServer::spawn_with_config(server_config).await.unwrap();
+        let addr = server.addr();
+        let mut dbg = Debugger::attach(AttachArgs {
+            host: addr.ip(),
+            port: addr.port(),
+            source_roots: Vec::new(),
+        })
+        .await
+        .unwrap();
+
+        let setup_cancel = CancellationToken::new();
+        let (frames, _total) = dbg
+            .stack_trace(&setup_cancel, THREAD_ID as i64, None, None)
+            .await
+            .unwrap();
+        let frame_id = frames
+            .first()
+            .and_then(|frame| frame.get("id"))
+            .and_then(|id| id.as_i64())
+            .expect("expected a stack frame id");
+
+        // Ensure the source expression resolves to an array so `Inspector::preview_object` hits
+        // `ArrayReference.GetValues` (which is delayed above).
+        let frame = dbg.frame_handles.get(frame_id).copied().unwrap();
+        let this_id = dbg
+            .jdwp
+            .stack_frame_this_object(frame.thread, frame.frame_id)
+            .await
+            .unwrap();
+        let (_tag, this_type_id) = dbg
+            .jdwp
+            .object_reference_reference_type(this_id)
+            .await
+            .unwrap();
+        let fields = dbg.jdwp.reference_type_fields(this_type_id).await.unwrap();
+        let field_id = fields
+            .iter()
+            .find(|f| f.name == "field")
+            .map(|f| f.field_id)
+            .expect("expected mock this object to have a `field` instance field");
+
+        let array_id = server.sample_int_array_id();
+        dbg.jdwp
+            .object_reference_set_values(
+                this_id,
+                &[(
+                    field_id,
+                    JdwpValue::Object {
+                        tag: b'[',
+                        id: array_id,
+                    },
+                )],
+            )
+            .await
+            .unwrap();
+
+        let cfg = nova_stream_debug::StreamDebugConfig {
+            max_sample_size: 3,
+            max_total_time: Duration::from_millis(10),
+            allow_side_effects: false,
+            allow_terminal_ops: true,
+        };
+
+        let fut = dbg
+            .stream_debug(
+                CancellationToken::new(),
+                frame_id,
+                "this.field.stream().count()".to_string(),
+                cfg,
+            )
+            .unwrap();
+        let err = fut.await.unwrap_err();
+        assert_eq!(err.to_string(), "evaluation exceeded time limit");
+    }
 }
 
 pub(crate) fn is_retryable_attach_error(err: &DebuggerError) -> bool {
     match err {
+        DebuggerError::Timeout => false,
         DebuggerError::InvalidRequest(_) => false,
         DebuggerError::Jdwp(JdwpError::Io(io_err)) => matches!(
             io_err.kind(),
