@@ -3,13 +3,99 @@ import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import * as ts from 'typescript';
+import { readTsSourceFile, unwrapExpression } from './__tests__/tsAstUtils';
+
+const SRC_ROOT = path.dirname(fileURLToPath(import.meta.url));
+const FRAMEWORKS_VIEW_PATH = path.join(SRC_ROOT, 'frameworksView.ts');
 
 async function readSrcFile(relativePath: string): Promise<string> {
-  const srcRoot = path.dirname(fileURLToPath(import.meta.url));
-  return await fs.readFile(path.join(srcRoot, relativePath), 'utf8');
+  return await fs.readFile(path.join(SRC_ROOT, relativePath), 'utf8');
 }
 
 describe('Frameworks dashboard UX', () => {
+  async function loadFrameworksViewSourceFile(): Promise<ts.SourceFile> {
+    return await readTsSourceFile(FRAMEWORKS_VIEW_PATH);
+  }
+
+  function containsStringLiteral(sourceFile: ts.SourceFile, value: string): boolean {
+    let found = false;
+    const visit = (node: ts.Node) => {
+      if (found) {
+        return;
+      }
+      if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+        if (node.text === value) {
+          found = true;
+          return;
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+    return found;
+  }
+
+  function containsVariableDeclaration(sourceFile: ts.SourceFile, name: string): boolean {
+    let found = false;
+    const visit = (node: ts.Node) => {
+      if (found) {
+        return;
+      }
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name) {
+        found = true;
+        return;
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+    return found;
+  }
+
+  function containsCallToIdentifier(sourceFile: ts.SourceFile, name: string): boolean {
+    let found = false;
+    const visit = (node: ts.Node) => {
+      if (found) {
+        return;
+      }
+      if (ts.isCallExpression(node)) {
+        const callee = unwrapExpression(node.expression);
+        if (ts.isIdentifier(callee) && callee.text === name) {
+          found = true;
+          return;
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+    return found;
+  }
+
+  function containsVscodeUriFileCall(sourceFile: ts.SourceFile): boolean {
+    let found = false;
+    const visit = (node: ts.Node) => {
+      if (found) {
+        return;
+      }
+      if (ts.isCallExpression(node)) {
+        const callee = unwrapExpression(node.expression);
+        if (ts.isPropertyAccessExpression(callee) && callee.name.text === 'file') {
+          const receiver = unwrapExpression(callee.expression);
+          if (ts.isPropertyAccessExpression(receiver) && receiver.name.text === 'Uri') {
+            const base = unwrapExpression(receiver.expression);
+            if (ts.isIdentifier(base) && base.text === 'vscode') {
+              found = true;
+              return;
+            }
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+    return found;
+  }
+
   it('Frameworks tree view exposes the three framework categories', async () => {
     const contents = await readSrcFile('frameworksView.ts');
 
@@ -49,10 +135,11 @@ describe('Frameworks dashboard UX', () => {
 
   it('Frameworks tree view uses the standard unsupported placeholder label', async () => {
     const contents = await readSrcFile('frameworksView.ts');
+    const sourceFile = await loadFrameworksViewSourceFile();
 
     // Ensure the Frameworks view uses the shared constant rather than duplicating the string literal.
-    expect(contents).not.toContain('const NOT_SUPPORTED_MESSAGE');
-    expect(contents).not.toContain('Not supported by this server');
+    expect(containsVariableDeclaration(sourceFile, 'NOT_SUPPORTED_MESSAGE')).toBe(false);
+    expect(containsStringLiteral(sourceFile, 'Not supported by this server')).toBe(false);
 
     expect(contents).toContain('NOVA_NOT_SUPPORTED_MESSAGE');
     expect(contents).toMatch(/return\s+messageNode\(NOVA_NOT_SUPPORTED_MESSAGE,\s*method,\s*new\s+vscode\.ThemeIcon\('warning'\)\);/);
@@ -78,11 +165,10 @@ describe('Frameworks dashboard UX', () => {
   });
 
   it('Frameworks view resolves files via uriFromFileLike (remote-safe)', async () => {
-    const contents = await readSrcFile('frameworksView.ts');
-
+    const sourceFile = await loadFrameworksViewSourceFile();
     // The Frameworks dashboard must resolve file-like paths against the workspace URI so it works
     // in remote/multi-root scenarios. Avoid hard-coding `vscode.Uri.file(...)` in this view.
-    expect(contents).toContain('uriFromFileLike(');
-    expect(contents).not.toContain('vscode.Uri.file(');
+    expect(containsCallToIdentifier(sourceFile, 'uriFromFileLike')).toBe(true);
+    expect(containsVscodeUriFileCall(sourceFile)).toBe(false);
   });
 });
