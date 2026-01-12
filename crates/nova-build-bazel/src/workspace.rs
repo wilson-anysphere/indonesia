@@ -10,7 +10,7 @@ use std::{
     fs,
     ops::ControlFlow,
     path::{Component, Path, PathBuf},
-    sync::OnceLock,
+    sync::{Mutex, OnceLock},
 };
 
 #[cfg(feature = "bsp")]
@@ -126,6 +126,7 @@ pub struct BazelWorkspace<R: CommandRunner> {
     supports_same_pkg_direct_rdeps: Option<bool>,
     java_owning_targets_cache: HashMap<String, Vec<String>>,
     preferred_java_compile_info_targets: HashMap<String, String>,
+    workspace_file_label_cache: Mutex<HashMap<PathBuf, Option<(String, String)>>>,
     #[cfg(feature = "bsp")]
     bsp: BspConnection,
     #[cfg(feature = "bsp")]
@@ -147,6 +148,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             supports_same_pkg_direct_rdeps: None,
             java_owning_targets_cache: HashMap::new(),
             preferred_java_compile_info_targets: HashMap::new(),
+            workspace_file_label_cache: Mutex::new(HashMap::new()),
             #[cfg(feature = "bsp")]
             bsp: BspConnection::NotTried,
             #[cfg(feature = "bsp")]
@@ -761,7 +763,17 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             return Ok(None);
         }
 
-        let abs_file = self.root.join(rel);
+        if let Some(cached) = self
+            .workspace_file_label_cache
+            .lock()
+            .expect("workspace_file_label_cache lock poisoned")
+            .get(&rel)
+            .cloned()
+        {
+            return Ok(cached);
+        }
+
+        let abs_file = self.root.join(&rel);
 
         let Some(mut dir) = abs_file.parent() else {
             return Ok(None);
@@ -785,10 +797,19 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                     format!("//{package_rel}:{name_rel}")
                 };
 
-                return Ok(Some((label, package_rel)));
+                let out = Some((label, package_rel));
+                self.workspace_file_label_cache
+                    .lock()
+                    .expect("workspace_file_label_cache lock poisoned")
+                    .insert(rel, out.clone());
+                return Ok(out);
             }
 
             if dir == self.root {
+                self.workspace_file_label_cache
+                    .lock()
+                    .expect("workspace_file_label_cache lock poisoned")
+                    .insert(rel, None);
                 return Ok(None);
             }
             dir = dir
@@ -1188,6 +1209,10 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         if saw_build_definition_change {
             self.java_owning_targets_cache.clear();
             self.preferred_java_compile_info_targets.clear();
+            self.workspace_file_label_cache
+                .lock()
+                .expect("workspace_file_label_cache lock poisoned")
+                .clear();
             // BSP-based compile info is invalidated conservatively because we do not track the full
             // transitive BUILD/.bzl closure without invoking `bazel query`.
             self.cache.invalidate_provider(CompileInfoProvider::Bsp);
@@ -1197,6 +1222,10 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             .any(|path| path.file_name().and_then(|n| n.to_str()) == Some(".bazelignore"))
         {
             let _ = self.ignored_prefixes.take();
+            self.workspace_file_label_cache
+                .lock()
+                .expect("workspace_file_label_cache lock poisoned")
+                .clear();
         }
         self.cache.invalidate_changed_files(&changed);
         self.persist_cache()
