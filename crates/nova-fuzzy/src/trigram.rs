@@ -89,6 +89,13 @@ fn trigrams_unicode_chars(chars: impl Iterator<Item = char>, out: &mut Vec<Trigr
 fn trigrams(text: &str, out: &mut Vec<Trigram>) {
     #[cfg(feature = "unicode")]
     {
+        // Avoid allocating a temporary normalization buffer when the input is
+        // already ASCII-only.
+        if text.is_ascii() {
+            trigrams_ascii_bytes(text.as_bytes(), out);
+            return;
+        }
+
         let mut buf = String::new();
         trigrams_with_unicode_buf(text, out, &mut buf);
         return;
