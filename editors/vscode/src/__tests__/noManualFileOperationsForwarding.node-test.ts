@@ -61,6 +61,29 @@ function evalConstString(expr: ts.Expression, env: Map<string, string>): string 
     return expr.text;
   }
 
+  if (ts.isPropertyAccessExpression(expr)) {
+    const base = expr.expression;
+    if (ts.isIdentifier(base)) {
+      const value = env.get(`${base.text}.${expr.name.text}`);
+      if (typeof value === 'string') {
+        return value;
+      }
+    }
+  }
+
+  if (ts.isElementAccessExpression(expr)) {
+    const base = expr.expression;
+    if (ts.isIdentifier(base)) {
+      const key = expr.argumentExpression ? evalConstString(expr.argumentExpression, env) : undefined;
+      if (typeof key === 'string') {
+        const value = env.get(`${base.text}.${key}`);
+        if (typeof value === 'string') {
+          return value;
+        }
+      }
+    }
+  }
+
   if (ts.isTemplateExpression(expr)) {
     let text = expr.head.text;
     for (const span of expr.templateSpans) {
@@ -484,6 +507,53 @@ function buildConstStringEnvFromVariableStatements(
 
       if (ts.isIdentifier(decl.name)) {
         declarations.push({ name: decl.name.text, initializer: decl.initializer });
+
+        const unwrappedInitializer = unwrapExpression(decl.initializer);
+        if (ts.isObjectLiteralExpression(unwrappedInitializer)) {
+          for (const element of unwrappedInitializer.properties) {
+            if (ts.isSpreadAssignment(element)) {
+              continue;
+            }
+
+            let propertyNameText: string | undefined;
+            if (ts.isPropertyAssignment(element)) {
+              const name = element.name;
+              if (ts.isIdentifier(name)) {
+                propertyNameText = name.text;
+              } else if (ts.isStringLiteral(name) || ts.isNoSubstitutionTemplateLiteral(name)) {
+                propertyNameText = name.text;
+              } else if (ts.isComputedPropertyName(name)) {
+                propertyNameText = evalConstString(name.expression, baseEnv);
+              }
+              if (!propertyNameText) {
+                continue;
+              }
+              declarations.push({
+                name: `${decl.name.text}.${propertyNameText}`,
+                initializer: element.initializer,
+              });
+              continue;
+            }
+
+            if (ts.isShorthandPropertyAssignment(element)) {
+              propertyNameText = element.name.text;
+              declarations.push({
+                name: `${decl.name.text}.${propertyNameText}`,
+                initializer: element.name,
+              });
+              continue;
+            }
+
+            if (ts.isMethodDeclaration(element)) {
+              // Ignore methods; they can't be constant strings for our purposes.
+              continue;
+            }
+
+            if (ts.isGetAccessorDeclaration(element) || ts.isSetAccessorDeclaration(element)) {
+              continue;
+            }
+          }
+        }
         continue;
       }
 
@@ -708,6 +778,35 @@ test('noManualFileOperationsForwarding scan flags Reflect.apply sendNotification
 
   const source = `
     Reflect.apply(client.sendNotification, client, ['workspace/didRenameFiles', { files: [] }]);
+  `;
+
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
+  const violations = scanSourceFileForManualFileOperationForwarding(sourceFile, { filePath, srcRoot });
+  assert.ok(Array.from(violations).some((entry) => entry.includes('workspace/didRenameFiles')));
+});
+
+test('noManualFileOperationsForwarding scan resolves const object property values (fixtures)', () => {
+  const srcRoot = '/';
+  const filePath = '/fixture.ts';
+
+  const source = `
+    const METHODS = { rename: 'workspace/didRenameFiles' } as const;
+    client.sendNotification(METHODS.rename, { files: [] });
+  `;
+
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
+  const violations = scanSourceFileForManualFileOperationForwarding(sourceFile, { filePath, srcRoot });
+  assert.ok(Array.from(violations).some((entry) => entry.includes('workspace/didRenameFiles')));
+});
+
+test('noManualFileOperationsForwarding scan resolves protocol constants nested inside objects (fixtures)', () => {
+  const srcRoot = '/';
+  const filePath = '/fixture.ts';
+
+  const source = `
+    import { DidRenameFilesNotification } from 'vscode-languageserver-protocol';
+    const METHODS = { rename: DidRenameFilesNotification.method } as const;
+    client.sendNotification(METHODS.rename, { files: [] });
   `;
 
   const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.ESNext, true);
