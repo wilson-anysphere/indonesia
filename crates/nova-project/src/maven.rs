@@ -1630,19 +1630,26 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
         }
     };
 
+    fn exists_as_jar(path: &Path) -> bool {
+        // `nova_archive::Archive` supports both `.jar` files and exploded directories, so treat
+        // either as a usable "jar" entry.
+        path.is_file() || path.is_dir()
+    }
+
     if version.ends_with("-SNAPSHOT") {
+        // Prefer using Maven metadata to resolve the timestamped SNAPSHOT jar filename.
         if let Some(resolved) =
             resolve_snapshot_jar_file_name(&version_dir, &dep.artifact_id, classifier)
         {
             let resolved_path = version_dir.join(&resolved);
-            if resolved_path.is_file() || resolved_path.is_dir() {
+            if exists_as_jar(&resolved_path) {
                 return Some(resolved_path);
             }
         }
     }
 
     let path = version_dir.join(default_file_name(version));
-    if path.is_file() || path.is_dir() {
+    if exists_as_jar(&path) {
         Some(path)
     } else {
         None

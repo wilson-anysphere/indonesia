@@ -26,7 +26,6 @@ fn repo_jar_path(repo: &Path, group_id: &str, artifact_id: &str, version: &str) 
         .join(version)
         .join(format!("{artifact_id}-{version}.jar"))
 }
-
 #[test]
 fn resolves_parent_bom_profiles_and_transitive_deps_offline() {
     let temp = tempfile::tempdir().expect("temp dir");

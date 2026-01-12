@@ -1,8 +1,14 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use nova_project::{load_project_with_options, ClasspathEntryKind, LoadOptions};
 use tempfile::tempdir;
+
+fn touch_guava_jar(repo: &Path) {
+    let jar = repo.join("com/google/guava/guava/33.0.0-jre/guava-33.0.0-jre.jar");
+    fs::create_dir_all(jar.parent().expect("jar parent")).expect("mkdir jar parent");
+    fs::write(&jar, b"not really a jar").expect("write fake jar");
+}
 
 #[test]
 fn loads_maven_repo_from_mvn_maven_config_and_allows_override() {
@@ -33,23 +39,12 @@ fn loads_maven_repo_from_mvn_maven_config_and_allows_override() {
 
     let repo_dir = tempdir().unwrap();
     let repo_path: PathBuf = repo_dir.path().to_path_buf();
+    touch_guava_jar(&repo_path);
     fs::write(
         workspace_root.join(".mvn/maven.config"),
         format!("-Dmaven.repo.local={}", repo_path.display()),
     )
     .unwrap();
-
-    // The Maven loader only includes jar dependencies when the jar exists in the local repo.
-    let guava_jar = repo_path
-        .join("com")
-        .join("google")
-        .join("guava")
-        .join("guava")
-        .join("33.0.0-jre")
-        .join("guava-33.0.0-jre.jar");
-    fs::create_dir_all(guava_jar.parent().unwrap()).unwrap();
-    fs::write(&guava_jar, b"").unwrap();
-
     let config = load_project_with_options(
         workspace_root,
         &LoadOptions {
@@ -79,15 +74,7 @@ fn loads_maven_repo_from_mvn_maven_config_and_allows_override() {
 
     let override_repo_dir = tempdir().unwrap();
     let override_repo: PathBuf = override_repo_dir.path().to_path_buf();
-    let override_guava_jar = override_repo
-        .join("com")
-        .join("google")
-        .join("guava")
-        .join("guava")
-        .join("33.0.0-jre")
-        .join("guava-33.0.0-jre.jar");
-    fs::create_dir_all(override_guava_jar.parent().unwrap()).unwrap();
-    fs::write(&override_guava_jar, b"").unwrap();
+    touch_guava_jar(&override_repo);
     let config_override = load_project_with_options(
         workspace_root,
         &LoadOptions {
