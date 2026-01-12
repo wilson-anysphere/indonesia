@@ -57,7 +57,8 @@ fn simple_workspace_model_puts_missing_jar_overrides_on_module_path_for_jpms_wor
 
     // Do not create the jar on disk: loaders often synthesize dependency jar paths without
     // downloading them, and JPMS needs jar deps on the module-path (automatic module name).
-    let jar_path = root.join("deps/mod-b.jar");
+    // Use an uppercase extension to ensure classpath override kind detection is case-insensitive.
+    let jar_path = root.join("deps/mod-b.JAR");
 
     let mut options = LoadOptions::default();
     options.classpath_overrides.push(jar_path.clone());

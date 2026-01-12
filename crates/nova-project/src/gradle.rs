@@ -880,7 +880,11 @@ pub(crate) fn load_gradle_workspace_model(
         }
         for entry in &options.classpath_overrides {
             classpath.push(ClasspathEntry {
-                kind: if entry.extension().is_some_and(|ext| ext == "jar") {
+                kind: if entry
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
+                {
                     ClasspathEntryKind::Jar
                 } else {
                     ClasspathEntryKind::Directory
@@ -947,7 +951,11 @@ pub(crate) fn load_gradle_workspace_model(
     let mut override_entries = Vec::new();
     for entry in &options.classpath_overrides {
         override_entries.push(ClasspathEntry {
-            kind: if entry.extension().is_some_and(|ext| ext == "jar") {
+            kind: if entry
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
+            {
                 ClasspathEntryKind::Jar
             } else {
                 ClasspathEntryKind::Directory
@@ -1834,7 +1842,11 @@ fn parse_gradle_local_classpath_entries_from_text(
             };
 
             if path.is_file() {
-                if path.extension().is_some_and(|ext| ext == "jar") {
+                if path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
+                {
                     out.push(ClasspathEntry {
                         kind: ClasspathEntryKind::Jar,
                         path,
@@ -1871,7 +1883,11 @@ fn parse_gradle_local_classpath_entries_from_text(
                 continue;
             }
             let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "jar") {
+            if path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
+            {
                 out.push(ClasspathEntry {
                     kind: ClasspathEntryKind::Jar,
                     path: path.to_path_buf(),

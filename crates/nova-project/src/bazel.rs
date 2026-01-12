@@ -84,7 +84,11 @@ pub(crate) fn load_bazel_workspace_model(
     let mut dependency_entries = Vec::new();
     for entry in &options.classpath_overrides {
         dependency_entries.push(ClasspathEntry {
-            kind: if entry.extension().is_some_and(|ext| ext == "jar") {
+            kind: if entry
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
+            {
                 ClasspathEntryKind::Jar
             } else {
                 ClasspathEntryKind::Directory
