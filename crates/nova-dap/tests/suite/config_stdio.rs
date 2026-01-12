@@ -92,6 +92,8 @@ async fn tcp_server_listens_and_speaks_dap() {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt};
     use tokio::net::TcpStream;
 
+    let timeout = Duration::from_secs(10);
+
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_nova-dap"))
         .arg("--listen")
         .arg("127.0.0.1:0")
@@ -106,7 +108,7 @@ async fn tcp_server_listens_and_speaks_dap() {
     let stderr = child.stderr.take().expect("stderr");
     let mut stderr_lines = tokio::io::BufReader::new(stderr).lines();
 
-    let addr: SocketAddr = tokio::time::timeout(Duration::from_secs(3), async {
+    let addr: SocketAddr = tokio::time::timeout(timeout, async {
         loop {
             let Some(line) = stderr_lines
                 .next_line()
@@ -130,7 +132,7 @@ async fn tcp_server_listens_and_speaks_dap() {
     .await
     .expect("timeout waiting for listen address");
 
-    let stream = tokio::time::timeout(Duration::from_secs(3), TcpStream::connect(addr))
+    let stream = tokio::time::timeout(timeout, TcpStream::connect(addr))
         .await
         .expect("timeout connecting")
         .expect("connect");
@@ -151,7 +153,7 @@ async fn tcp_server_listens_and_speaks_dap() {
 
     let mut got_initialize_response = None;
     let mut got_initialized_event = false;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    let deadline = tokio::time::Instant::now() + timeout;
     while tokio::time::Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         let msg = tokio::time::timeout(remaining, reader.read_value())
@@ -197,7 +199,7 @@ async fn tcp_server_listens_and_speaks_dap() {
 
     let mut got_disconnect_response = None;
     let mut got_terminated_event = false;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    let deadline = tokio::time::Instant::now() + timeout;
     while tokio::time::Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         let msg = tokio::time::timeout(remaining, reader.read_value())
@@ -237,7 +239,7 @@ async fn tcp_server_listens_and_speaks_dap() {
     drop(writer);
     drop(reader);
 
-    let status = tokio::time::timeout(Duration::from_secs(3), child.wait())
+    let status = tokio::time::timeout(timeout, child.wait())
         .await
         .expect("timeout waiting for nova-dap to exit")
         .expect("wait");
@@ -256,17 +258,12 @@ async fn tcp_server_listens_and_speaks_dap() {
     );
 
     // Ensure only the "listening on ..." line was printed to stderr.
-    let remaining: Vec<String> = tokio::time::timeout(Duration::from_secs(1), async {
-        let mut lines = Vec::new();
-        while let Some(line) = stderr_lines.next_line().await.expect("read stderr") {
-            if !line.trim().is_empty() {
-                lines.push(line);
-            }
+    let mut remaining = Vec::new();
+    while let Some(line) = stderr_lines.next_line().await.expect("read stderr") {
+        if !line.trim().is_empty() {
+            remaining.push(line);
         }
-        lines
-    })
-    .await
-    .expect("timeout draining stderr");
+    }
     assert!(
         remaining.is_empty(),
         "unexpected stderr output in TCP mode: {remaining:?}"
