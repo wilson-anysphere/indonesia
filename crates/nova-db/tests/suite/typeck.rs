@@ -2347,8 +2347,28 @@ class C { void m(){ Object x = String.class; } }
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
     assert!(
-        ty.contains("Class"),
-        "expected class literal type to mention Class, got {ty:?}"
+        ty.contains("Class") && ty.contains("String"),
+        "expected class literal type to mention Class<String>, got {ty:?}"
+    );
+}
+
+#[test]
+fn primitive_class_literal_is_typed_as_java_lang_class_wildcard() {
+    let src = r#"
+class C { void m(){ Object x = int.class; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("int.class")
+        .expect("snippet should contain class literal")
+        + "int.".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert!(
+        ty.contains("Class") && ty.contains('?'),
+        "expected primitive class literal type to be Class<?>, got {ty:?}"
     );
 }
 

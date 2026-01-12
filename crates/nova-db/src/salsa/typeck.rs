@@ -5584,20 +5584,32 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             }
             HirExpr::ClassLiteral { ty, .. } => {
                 let inner = self.infer_expr(loader, *ty);
-                if inner.is_type_ref {
-                    let class_id = loader.ensure_class("java.lang.Class");
-                    let ty = match class_id {
-                        Some(class_id) => Type::class(class_id, vec![inner.ty.clone()]),
-                        None => Type::Named("java.lang.Class".to_string()),
-                    };
-                    ExprInfo {
-                        ty,
-                        is_type_ref: false,
-                    }
-                } else {
+                if !inner.is_type_ref {
                     ExprInfo {
                         ty: Type::Unknown,
                         is_type_ref: false,
+                    }
+                } else {
+                    match loader
+                        .store
+                        .lookup_class("java.lang.Class")
+                        .or_else(|| loader.ensure_class("java.lang.Class"))
+                    {
+                        Some(class_id) => {
+                            let arg = if inner.ty.is_reference() {
+                                inner.ty
+                            } else {
+                                Type::Wildcard(WildcardBound::Unbounded)
+                            };
+                            ExprInfo {
+                                ty: Type::class(class_id, vec![arg]),
+                                is_type_ref: false,
+                            }
+                        }
+                        None => ExprInfo {
+                            ty: Type::Unknown,
+                            is_type_ref: false,
+                        },
                     }
                 }
             }
@@ -6690,6 +6702,67 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         name: &str,
         range: Span,
     ) -> ExprInfo {
+        // Primitive types can appear in expression position in a few places (notably `int.class`).
+        // Treat them as type references so downstream passes (e.g. class literal typing) can
+        // behave sensibly.
+        match name {
+            "boolean" => {
+                return ExprInfo {
+                    ty: Type::Primitive(PrimitiveType::Boolean),
+                    is_type_ref: true,
+                };
+            }
+            "byte" => {
+                return ExprInfo {
+                    ty: Type::Primitive(PrimitiveType::Byte),
+                    is_type_ref: true,
+                };
+            }
+            "short" => {
+                return ExprInfo {
+                    ty: Type::Primitive(PrimitiveType::Short),
+                    is_type_ref: true,
+                };
+            }
+            "char" => {
+                return ExprInfo {
+                    ty: Type::Primitive(PrimitiveType::Char),
+                    is_type_ref: true,
+                };
+            }
+            "int" => {
+                return ExprInfo {
+                    ty: Type::Primitive(PrimitiveType::Int),
+                    is_type_ref: true,
+                };
+            }
+            "long" => {
+                return ExprInfo {
+                    ty: Type::Primitive(PrimitiveType::Long),
+                    is_type_ref: true,
+                };
+            }
+            "float" => {
+                return ExprInfo {
+                    ty: Type::Primitive(PrimitiveType::Float),
+                    is_type_ref: true,
+                };
+            }
+            "double" => {
+                return ExprInfo {
+                    ty: Type::Primitive(PrimitiveType::Double),
+                    is_type_ref: true,
+                };
+            }
+            "void" => {
+                return ExprInfo {
+                    ty: Type::Void,
+                    is_type_ref: true,
+                };
+            }
+            _ => {}
+        }
+
         match name {
             "null" => {
                 return ExprInfo {
