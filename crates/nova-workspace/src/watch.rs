@@ -399,6 +399,7 @@ mod tests {
             root.join("dependencies.gradle"),
             root.join("dependencies.gradle.kts"),
             root.join("gradle").join("libs.versions.toml"),
+            root.join("gradle").join("foo.versions.toml"),
             root.join("gradle").join("deps.versions.toml"),
             root.join("gradle").join("dependencies.gradle"),
             root.join("gradle").join("dependencies.gradle.kts"),
@@ -438,6 +439,9 @@ mod tests {
             // Wrapper jars must be in their canonical wrapper locations.
             root.join("gradle-wrapper.jar"),
             root.join(".mvn").join("maven-wrapper.jar"),
+            // Custom version catalogs must live directly under `gradle/`.
+            root.join("foo.versions.toml"),
+            root.join("deps.versions.toml"),
             // Files under build output / cache dirs should not be treated as build inputs.
             root.join(".gradle").join("dependencies.gradle"),
             root.join(".gradle").join("deps.versions.toml"),
