@@ -219,3 +219,62 @@ fn is_windows_reserved_device_name(stem: &str) -> bool {
         }
     }
 }
+
+#[test]
+fn oversized_files_are_treated_as_cache_miss_and_deleted() {
+    let temp = TempDir::new().unwrap();
+    let store = DecompiledDocumentStore::new(temp.path().to_path_buf());
+
+    let content_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let binary_name = "com.example.Foo";
+
+    let safe_stem = Fingerprint::from_bytes(binary_name.as_bytes()).to_string();
+    let path = temp
+        .path()
+        .join(content_hash)
+        .join(format!("{safe_stem}.java"));
+
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let file = std::fs::File::create(&path).unwrap();
+    file.set_len(nova_cache::BINCODE_PAYLOAD_LIMIT_BYTES as u64 + 1)
+        .unwrap();
+    drop(file);
+
+    assert!(path.exists(), "precondition: oversize file should exist");
+
+    let loaded = store.load_text(content_hash, binary_name).unwrap();
+    assert!(loaded.is_none());
+    assert!(!path.exists(), "oversize cache file should be deleted");
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_entries_are_treated_as_cache_miss_and_deleted() {
+    use std::os::unix::fs::symlink;
+
+    let temp = TempDir::new().unwrap();
+    let store = DecompiledDocumentStore::new(temp.path().to_path_buf());
+
+    let content_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let binary_name = "com.example.Foo";
+
+    let outside = TempDir::new().unwrap();
+    let target = outside.path().join("outside.java");
+    std::fs::write(&target, "evil").unwrap();
+
+    let safe_stem = Fingerprint::from_bytes(binary_name.as_bytes()).to_string();
+    let path = temp
+        .path()
+        .join(content_hash)
+        .join(format!("{safe_stem}.java"));
+
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    symlink(&target, &path).unwrap();
+
+    assert!(path.exists(), "precondition: symlink should exist");
+
+    let loaded = store.load_text(content_hash, binary_name).unwrap();
+    assert!(loaded.is_none());
+    assert!(!path.exists(), "symlink should be deleted");
+    assert!(target.exists(), "target outside the store must not be deleted");
+}

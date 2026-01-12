@@ -491,34 +491,53 @@ fn remove_empty_parents_best_effort(root: &Path, file_path: &Path) {
 
 fn read_cache_file_bytes(path: &Path) -> Result<Option<Vec<u8>>, CacheError> {
     // Avoid following symlinks out of the cache directory.
+    //
+    // Any unexpected filesystem state should degrade to a cache miss.
     let meta = match std::fs::symlink_metadata(path) {
         Ok(meta) => meta,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(err.into()),
+        Err(_) => return Ok(None),
     };
     if meta.file_type().is_symlink() || !meta.is_file() {
-        let _ = std::fs::remove_file(path);
+        remove_corrupt_path(path);
         return Ok(None);
     }
 
     // Cap reads to avoid pathological allocations if the cache is corrupted.
     const MAX_DOC_BYTES: u64 = nova_cache::BINCODE_PAYLOAD_LIMIT_BYTES as u64;
     if meta.len() > MAX_DOC_BYTES {
-        let _ = std::fs::remove_file(path);
+        remove_corrupt_path(path);
         return Ok(None);
     }
 
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(err.into()),
+        Err(_) => {
+            remove_corrupt_path(path);
+            return Ok(None);
+        }
     };
     if bytes.len() as u64 > MAX_DOC_BYTES {
-        let _ = std::fs::remove_file(path);
+        remove_corrupt_path(path);
         return Ok(None);
     }
 
     Ok(Some(bytes))
+}
+
+fn remove_corrupt_path(path: &Path) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == io::ErrorKind::IsADirectory => {
+            let _ = std::fs::remove_dir_all(path);
+        }
+        Err(_) => {
+            // Best-effort cleanup: treat any unexpected entry as corruption and
+            // try to remove it so future reads degrade to cache misses.
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
