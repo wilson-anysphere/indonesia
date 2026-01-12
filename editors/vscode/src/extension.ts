@@ -1858,6 +1858,7 @@ export async function activate(context: vscode.ExtensionContext) {
   let aiWorkDoneTokenCounter = 0;
   const aiVirtualDocuments = new Map<string, string>();
   const AI_VIRTUAL_DOC_SCHEME = 'nova-ai';
+  const MAX_AI_VIRTUAL_DOCUMENTS = 50;
 
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(AI_VIRTUAL_DOC_SCHEME, {
@@ -1928,6 +1929,13 @@ export async function activate(context: vscode.ExtensionContext) {
     aiResultCounter += 1;
     const id = String(aiResultCounter);
     aiVirtualDocuments.set(id, opts.content);
+    while (aiVirtualDocuments.size > MAX_AI_VIRTUAL_DOCUMENTS) {
+      const oldest = aiVirtualDocuments.keys().next().value;
+      if (typeof oldest !== 'string') {
+        break;
+      }
+      aiVirtualDocuments.delete(oldest);
+    }
 
     const uri = vscode.Uri.from({
       scheme: AI_VIRTUAL_DOC_SCHEME,
