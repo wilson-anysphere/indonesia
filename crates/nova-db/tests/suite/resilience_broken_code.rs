@@ -38,8 +38,9 @@ fn setup_db(text: &str) -> (SalsaRootDatabase, TempDir, FileId) {
 
     let file = FileId::from_raw(1);
     db.set_file_project(file, project);
-    db.set_file_rel_path(file, Arc::new("src/C.java".to_string()));
-    db.set_file_path(file, "src/C.java");
+    let rel_path = Arc::new("src/C.java".to_string());
+    db.set_file_rel_path(file, Arc::clone(&rel_path));
+    db.set_file_path_arc(file, rel_path);
     db.set_source_root(file, SourceRootId::from_raw(0));
     db.set_file_text(file, text);
     db.set_all_file_ids(Arc::new(vec![file]));
