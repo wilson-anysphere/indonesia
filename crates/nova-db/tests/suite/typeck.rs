@@ -631,6 +631,48 @@ class C {
 }
 
 #[test]
+fn synchronized_on_null_is_error() {
+    let src = r#"
+class C {
+    void m() {
+        synchronized (null) { }
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-synchronized-expression"),
+        "expected invalid-synchronized-expression diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
+fn synchronized_on_void_is_error() {
+    let src = r#"
+class C {
+    void n() { }
+
+    void m() {
+        synchronized (n()) { }
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "invalid-synchronized-expression"),
+        "expected invalid-synchronized-expression diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn synchronized_on_reference_is_ok() {
     let src = r#"
 class C {

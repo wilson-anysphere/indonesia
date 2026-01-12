@@ -5291,7 +5291,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             }
             HirStmt::Synchronized { expr, body, .. } => {
                 let lock_ty = self.infer_expr(loader, *expr).ty;
-                if !lock_ty.is_errorish() && matches!(lock_ty, Type::Primitive(_)) {
+                if !lock_ty.is_errorish() && !lock_ty.is_reference() {
                     self.diagnostics.push(Diagnostic::error(
                         "invalid-synchronized-expression",
                         "synchronized expression must be a reference type",
