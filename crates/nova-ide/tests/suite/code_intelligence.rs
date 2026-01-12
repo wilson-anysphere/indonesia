@@ -2161,6 +2161,30 @@ class Foo {
 }
 
 #[test]
+fn completion_this_receiver_works_with_whitespace_around_dot() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo {
+  int inst;
+  void m() {}
+  void test() { this . <|> }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"inst"),
+        "expected completion list to contain this.inst even with whitespace around '.'; got {labels:?}"
+    );
+    assert!(
+        labels.contains(&"m"),
+        "expected completion list to contain this.m even with whitespace around '.'; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_super_receiver_works() {
     let (db, file, pos) = fixture(
         r#"
@@ -2174,6 +2198,23 @@ class Foo extends Base { void test() { super.<|> } }
     assert!(
         labels.contains(&"base"),
         "expected completion list to contain super.base; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_super_receiver_works_with_whitespace_around_dot() {
+    let (db, file, pos) = fixture(
+        r#"
+class Base { void base() {} }
+class Foo extends Base { void test() { super . <|> } }
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"base"),
+        "expected completion list to contain super.base even with whitespace around '.'; got {labels:?}"
     );
 }
 
