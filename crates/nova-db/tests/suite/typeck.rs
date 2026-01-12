@@ -6558,6 +6558,83 @@ class Outer {
 }
 
 #[test]
+fn inner_class_can_call_enclosing_instance_method_unqualified() {
+    let src = r#"
+class Outer {
+    void foo() {}
+    class Inner {
+        void m() {
+            foo();
+        }
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected inner class to allow unqualified enclosing instance method call; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "static-context"),
+        "expected inner class unqualified method call not to be treated as static-context; got {diags:?}"
+    );
+}
+
+#[test]
+fn static_member_class_rejects_enclosing_instance_method_unqualified() {
+    let src = r#"
+class Outer {
+    void foo() {}
+    static class Inner {
+        void m() {
+            foo();
+        }
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "static-context" && d.message.contains("static context")),
+        "expected static member class to reject unqualified enclosing instance method call; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected static-context error to avoid cascading unresolved-method diagnostics; got {diags:?}"
+    );
+}
+
+#[test]
+fn static_member_class_allows_enclosing_static_method_unqualified() {
+    let src = r#"
+class Outer {
+    static void foo() {}
+    static class Inner {
+        void m() {
+            foo();
+        }
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected static member class to allow unqualified enclosing static method call; got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "static-context"),
+        "expected no static-context diagnostic for enclosing static method call; got {diags:?}"
+    );
+}
+
+#[test]
 fn qualified_super_is_not_allowed_in_static_member_class() {
     let src = r#"
 class Base { void foo() {} }

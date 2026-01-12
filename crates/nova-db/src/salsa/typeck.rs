@@ -9071,11 +9071,21 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 // call kind for the current static/instance context), then fall back to
                 // static-imported methods.
                 let mut implicit_not_found: Option<MethodNotFound> = None;
-                if let Some(receiver_ty) = self.enclosing_class_type(loader) {
+                let is_static_context = self.is_static_context();
+                for item in self.enclosing_class_items() {
+                    let Some(owner_name) = self.scopes.type_name(item).map(|t| t.as_str()) else {
+                        continue;
+                    };
+
+                    let class_id = loader.store.intern_class_id(owner_name);
+                    let receiver_ty = Type::class(class_id, Vec::new());
                     self.ensure_type_loaded(loader, &receiver_ty);
 
-                    let is_static_context = self.is_static_context();
-                    let call_kind = if is_static_context {
+                    // For the innermost class, `call_kind` matches the usual static/instance rules.
+                    // For outer classes, decide whether an implicit enclosing instance is available;
+                    // if not, only allow static methods.
+                    let call_kind = if is_static_context || !self.has_enclosing_instance_of(owner_name)
+                    {
                         CallKind::Static
                     } else {
                         CallKind::Instance
@@ -9132,15 +9142,18 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             };
                         }
                         MethodResolution::NotFound(not_found) => {
-                            implicit_not_found = Some(not_found);
+                            if implicit_not_found.is_none() {
+                                implicit_not_found = Some(not_found);
+                            }
                         }
                     }
 
-                    if is_static_context {
+                    if call_kind == CallKind::Static {
                         // Best-effort: if this call *would* resolve in an instance context, emit a
-                        // more precise diagnostic instead of falling back to static imports.
+                        // more precise diagnostic instead of falling back to static imports or
+                        // outer-class lookup.
                         let call = MethodCall {
-                            receiver: receiver_ty,
+                            receiver: receiver_ty.clone(),
                             call_kind: CallKind::Instance,
                             name: name.as_str(),
                             args: arg_types.clone(),
@@ -12187,8 +12200,14 @@ fn find_enclosing_target_typed_expr_in_expr(
                     best,
                 );
             }
-            if let Some(init) = initializer {
-                find_enclosing_target_typed_expr_in_expr(body, *init, target, target_range, best);
+            if let Some(init_expr) = initializer {
+                find_enclosing_target_typed_expr_in_expr(
+                    body,
+                    *init_expr,
+                    target,
+                    target_range,
+                    best,
+                );
             }
         }
         HirExpr::Unary { expr, .. } => {
