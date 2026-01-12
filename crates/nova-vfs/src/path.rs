@@ -569,6 +569,23 @@ mod tests {
         assert_eq!(VfsPath::uri(uri), VfsPath::Local(expected));
     }
 
+    #[test]
+    fn local_paths_are_logically_normalized() {
+        #[cfg(not(windows))]
+        {
+            let local = VfsPath::local("/a/b/../c.java");
+            let uri = VfsPath::uri("file:///a/c.java");
+            assert_eq!(local, uri);
+        }
+
+        #[cfg(windows)]
+        {
+            let local = VfsPath::local(r"C:\a\b\..\c.java");
+            let uri = VfsPath::uri("file:///C:/a/c.java");
+            assert_eq!(local, uri);
+        }
+    }
+
     #[cfg(windows)]
     #[test]
     fn file_uri_unc_paths_are_logically_normalized() {
@@ -627,9 +644,24 @@ mod tests {
             VfsPath::Uri(_)
         ));
         assert!(matches!(
+            VfsPath::jar(archive_path.clone(), "a/b/../evil.class"),
+            VfsPath::Uri(_)
+        ));
+        assert!(matches!(
             VfsPath::jar(archive_path.clone(), "C:/evil.class"),
             VfsPath::Uri(_)
         ));
+    }
+
+    #[test]
+    fn jar_constructor_normalizes_archive_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let normalized = dir.path().join("lib.jar");
+        let with_dotdot = dir.path().join("x").join("..").join("lib.jar");
+
+        let a = VfsPath::jar(with_dotdot, "/com/example/Foo.class");
+        let b = VfsPath::jar(normalized, "/com/example/Foo.class");
+        assert_eq!(a, b);
     }
 
     #[test]
