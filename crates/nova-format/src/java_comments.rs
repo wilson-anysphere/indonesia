@@ -205,6 +205,14 @@ impl<'a> JavaComments<'a> {
                     // suffix in the correct position).
                     parts.push(Doc::break_parent());
                 }
+                CommentKind::Block => {
+                    // Ensure trailing block comments don't glue to the preceding token when the
+                    // source omits whitespace (block comments behave like whitespace in Java, so
+                    // `foo/*c*/bar` is legal). Spacing *after* the comment is handled by the
+                    // surrounding formatter/token docs.
+                    parts.push(Doc::text(" "));
+                    parts.push(fmt_comment(ctx, comment, self.source));
+                }
                 _ => {
                     parts.push(fmt_comment(ctx, comment, self.source));
                 }

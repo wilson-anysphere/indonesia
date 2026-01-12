@@ -1084,6 +1084,25 @@ class Foo {
 }
 
 #[test]
+fn pretty_inserts_space_before_trailing_block_comment_after_class() {
+    let input = "class Foo{}/* c */\n";
+    let edits = edits_for_document_formatting_with_strategy(
+        input,
+        &FormatConfig::default(),
+        FormatStrategy::JavaPrettyAst,
+    );
+    let formatted = apply_text_edits(input, &edits).unwrap();
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+class Foo {
+} /* c */
+"###
+    );
+}
+
+#[test]
 fn pretty_preserves_trailing_line_comment_after_import() {
     let input = "import java.util.List; // c\nclass Foo{int x;}\n";
     let edits = edits_for_document_formatting_with_strategy(

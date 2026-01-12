@@ -92,6 +92,28 @@ fn trailing_line_comment_has_exactly_one_space_before_slash_slash() {
 }
 
 #[test]
+fn trailing_block_comment_has_exactly_one_space_before_slash_star() {
+    let input = "class Foo { void m() { int x=1;/* c */\nint y=2; } }";
+    let parsed = parse_java(input);
+    let root = parsed.syntax();
+
+    let tokens = collect_tokens(&root);
+    let semi = nth_token(&tokens, SyntaxKind::Semicolon, 0);
+
+    let mut comments = JavaComments::new(&root, input);
+    let trailing = comments.take_trailing_doc(TokenKey::from(&semi), 0);
+
+    let doc = Doc::concat([
+        Doc::text("int x=1;"),
+        trailing,
+        Doc::hardline(),
+        Doc::text("int"),
+    ]);
+    assert_eq!(print(doc, PrintConfig::default()), "int x=1; /* c */\nint");
+    comments.assert_drained();
+}
+
+#[test]
 fn trailing_line_comment_forces_group_to_break() {
     let input = "class Foo { void m() { int x=1; // c\nint y=2; } }";
     let parsed = parse_java(input);
