@@ -226,6 +226,34 @@ fn json_schema_requires_non_empty_extension_patterns() {
 }
 
 #[test]
+fn json_schema_requires_non_whitespace_api_key_for_cloud_providers() {
+    let schema = json_schema();
+    let value = serde_json::to_value(schema).expect("schema serializes");
+
+    // This is the root-level semantic rule: cloud providers => api_key non-empty and non-whitespace.
+    let all_of = value
+        .pointer("/allOf")
+        .and_then(|v| v.as_array())
+        .expect("root schema should include allOf semantic constraints");
+
+    let rule = all_of
+        .iter()
+        .find(|entry| {
+            entry
+                .pointer("/then/properties/ai/properties/api_key/pattern")
+                .and_then(|v| v.as_str())
+                == Some("^\\S+$")
+        })
+        .expect("cloud api_key semantic rule should exist");
+
+    assert_eq!(
+        rule.pointer("/then/properties/ai/properties/api_key/minLength")
+            .and_then(|v| v.as_u64()),
+        Some(1)
+    );
+}
+
+#[test]
 fn json_schema_requires_non_empty_ai_privacy_patterns() {
     let schema = json_schema();
     let value = serde_json::to_value(schema).expect("schema serializes");

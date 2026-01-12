@@ -57,7 +57,7 @@ fn apply_semantic_constraints(schema: &mut RootSchema) {
                     "ai": {
                         "required": ["api_key"],
                         "properties": {
-                            "api_key": { "type": "string", "minLength": 1 }
+                            "api_key": { "type": "string", "minLength": 1, "pattern": "^\\S+$" }
                         }
                     }
                 }
