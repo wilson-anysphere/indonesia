@@ -1,9 +1,9 @@
 //! Expression and statement scope mapping for Java bodies.
 //!
-//! The existing scope builder in this crate is block-based and order-insensitive
-//! (locals are considered visible for the whole block). Java scoping is
-//! order-sensitive: a local variable is only in scope after its declaration, but
-//! (unlike Rust) *is* in scope within its own initializer.
+//! `ExprScopes` is a lightweight, body-only view of lexical scoping. It mirrors the
+//! same order-sensitive Java rules as the file-wide scope graph builder:
+//! - A local variable is only in scope after its declaration.
+//! - (Unlike Rust) a local *is* in scope within its own initializer.
 //!
 //! `ExprScopes` provides a query-friendly representation of the lexical scopes
 //! inside a single body (`nova_hir::hir::Body`), plus a mapping from each
