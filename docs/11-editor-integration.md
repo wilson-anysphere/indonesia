@@ -68,6 +68,7 @@ Notes:
 - The server currently implements `$/cancelRequest` and uses request-scoped cancellation tokens internally.
 - Diagnostics are provided via the LSP 3.17 **pull** model (`textDocument/diagnostic`). The server does not currently publish `textDocument/publishDiagnostics`.
 - The stdio server is tolerant of `workspace/didChangeWatchedFiles` and `workspace/didRenameFiles` notifications, but it does **not** currently advertise `workspace.fileOperations` or register file watchers dynamically, so editor clients may need explicit configuration if they want to send these.
+- OS file watching for the workspace engine (used by `nova` CLI / `nova-workspace`) is implemented in `nova-vfs` behind `watch-notify`. See [`file-watching.md`](file-watching.md) for the watcher layering and deterministic testing guidance.
 
 ### Server Architecture
 

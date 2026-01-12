@@ -31,6 +31,7 @@ This workstream owns the foundational infrastructure that all other components b
 - [10 - Performance Engineering](../docs/10-performance-engineering.md) - Caching, persistence
 - [03 - Architecture Overview](../docs/03-architecture-overview.md) - System design
 - [19 - Database Interfaces](../docs/19-database-interfaces.md) - Query DB design
+- [File watching](../docs/file-watching.md) - watcher layering (`nova-vfs`), rename normalization, deterministic tests
 
 **ADRs:**
 - [ADR-0001: Incremental Query Engine](../docs/adr/0001-incremental-query-engine.md)
@@ -70,6 +71,12 @@ The VFS abstracts file access and provides overlay support for unsaved editor bu
 2. Overlay (editor buffer) always takes precedence over disk
 3. All paths must be canonicalized for consistent identity
 4. Archive files (JARs) are accessed through the VFS
+
+**File watching:**
+- `nova-vfs` owns OS watcher integration (feature-gated, e.g. `watch-notify`) and path/rename
+  normalization for watcher streams.
+- Higher layers like `nova-workspace` consume the `nova_vfs::FileWatcher` abstraction rather than
+  depending on `notify` directly.
 
 **Cross-platform concerns:**
 ```rust
