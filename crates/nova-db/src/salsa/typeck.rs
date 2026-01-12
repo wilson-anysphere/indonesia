@@ -4814,8 +4814,15 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 expr: inner,
                 range,
             } => {
-                let from = self.infer_expr(loader, *inner).ty;
                 let to = self.resolve_source_type(loader, ty_text.as_str(), Some(*ty_range));
+                let from = if to.is_errorish() {
+                    self.infer_expr(loader, *inner).ty
+                } else {
+                    // A cast provides a target type for target-typed expressions like lambdas and
+                    // method references. Use it as the expected type so we can infer lambda
+                    // parameter types (and other target-typed behavior) correctly.
+                    self.infer_expr_with_expected(loader, *inner, Some(&to)).ty
+                };
 
                 if from.is_errorish() || to.is_errorish() {
                     ExprInfo {
@@ -8783,6 +8790,13 @@ fn find_enclosing_call_with_arg_in_expr(
 
     match &body.exprs[expr] {
         HirExpr::Cast { expr: inner, .. } => {
+            if contains_expr_in_expr(body, *inner, target) {
+                let len = range.len();
+                let replace = best.map(|(_, best_len)| len < best_len).unwrap_or(true);
+                if replace {
+                    *best = Some((expr, len));
+                }
+            }
             find_enclosing_call_with_arg_in_expr(body, *inner, target, target_range, best);
         }
         HirExpr::FieldAccess { receiver, .. } => {
@@ -8802,7 +8816,10 @@ fn find_enclosing_call_with_arg_in_expr(
             find_enclosing_call_with_arg_in_expr(body, *ty, target, target_range, best);
         }
         HirExpr::Call { callee, args, .. } => {
-            if args.iter().any(|arg| *arg == target) {
+            if args
+                .iter()
+                .any(|arg| contains_expr_in_expr(body, *arg, target))
+            {
                 let len = range.len();
                 let replace = best.map(|(_, best_len)| len < best_len).unwrap_or(true);
                 if replace {
@@ -8816,6 +8833,16 @@ fn find_enclosing_call_with_arg_in_expr(
             }
         }
         HirExpr::New { args, .. } => {
+            if args
+                .iter()
+                .any(|arg| contains_expr_in_expr(body, *arg, target))
+            {
+                let len = range.len();
+                let replace = best.map(|(_, best_len)| len < best_len).unwrap_or(true);
+                if replace {
+                    *best = Some((expr, len));
+                }
+            }
             for arg in args {
                 find_enclosing_call_with_arg_in_expr(body, *arg, target, target_range, best);
             }

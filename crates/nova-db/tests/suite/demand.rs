@@ -165,3 +165,77 @@ class C {
         res.diagnostics
     );
 }
+
+#[test]
+fn demand_type_of_expr_sees_cast_target_type_for_lambda() {
+    let src = r#"
+class C {
+    void m() {
+        Runnable r = (Runnable) () -> {};
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+
+    let tree = db.hir_item_tree(file);
+    let method_ast = tree
+        .methods
+        .iter()
+        .find_map(|(ast_id, m)| (m.name == "m" && m.body.is_some()).then_some(*ast_id))
+        .expect("expected method `m` with a body");
+    let method_id = nova_hir::ids::MethodId::new(file, method_ast);
+    let owner = DefWithBodyId::Method(method_id);
+
+    let body = db.hir_body(method_id);
+    let init_expr = match &body.stmts[body.root] {
+        nova_hir::hir::Stmt::Block { statements, .. } => statements
+            .iter()
+            .find_map(|stmt| match &body.stmts[*stmt] {
+                nova_hir::hir::Stmt::Let {
+                    initializer: Some(init),
+                    ..
+                } => Some(*init),
+                _ => None,
+            })
+            .expect("expected a let statement with an initializer"),
+        other => panic!("expected a block root statement, got {other:?}"),
+    };
+
+    let lambda_expr = match &body.exprs[init_expr] {
+        nova_hir::hir::Expr::Cast { expr, .. } => *expr,
+        other => panic!("expected initializer to be a Cast expression, got {other:?}"),
+    };
+    assert!(
+        matches!(&body.exprs[lambda_expr], nova_hir::hir::Expr::Lambda { .. }),
+        "expected cast to wrap a Lambda expression"
+    );
+
+    // Reset query stats so the assertion below only reflects the `type_of_expr_demand_result` call.
+    db.clear_query_stats();
+
+    let res = db.type_of_expr_demand_result(
+        file,
+        FileExprId {
+            owner,
+            expr: lambda_expr,
+        },
+    );
+
+    assert_eq!(
+        format_type(&*res.env, &res.ty),
+        "Runnable",
+        "expected demand-driven inference to use the cast target type for the lambda"
+    );
+
+    let typeck_body_executions = db
+        .query_stats()
+        .by_query
+        .get("typeck_body")
+        .map(|s| s.executions)
+        .unwrap_or(0);
+    assert_eq!(
+        typeck_body_executions, 0,
+        "type_of_expr_demand_result should not execute typeck_body"
+    );
+}
