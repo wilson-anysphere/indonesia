@@ -14,6 +14,7 @@ use nova_refactor::{
     TextDatabase,
 };
 use nova_scheduler::CancellationToken;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -1147,6 +1148,42 @@ where
         if let (Some(uri), Some(span)) = (uri, span) {
             let source_index = TextIndex::new(source);
             let selection = source_index.span_to_lsp_range(span);
+
+            // Convert LSP diagnostics to Nova diagnostics so we can reuse existing quick-fix logic
+            // without recomputing diagnostics for the whole file.
+            let mut diagnostics = Vec::new();
+            for diagnostic in context_diagnostics {
+                let Some(lsp_types::NumberOrString::String(code)) = diagnostic.code.as_ref() else {
+                    continue;
+                };
+                let Some(start) = source_index.position_to_offset(diagnostic.range.start) else {
+                    continue;
+                };
+                let Some(end) = source_index.position_to_offset(diagnostic.range.end) else {
+                    continue;
+                };
+                let severity = match diagnostic.severity {
+                    Some(lsp_types::DiagnosticSeverity::ERROR) => nova_ext::Severity::Error,
+                    Some(lsp_types::DiagnosticSeverity::WARNING) => nova_ext::Severity::Warning,
+                    Some(lsp_types::DiagnosticSeverity::INFORMATION)
+                    | Some(lsp_types::DiagnosticSeverity::HINT)
+                    | None => nova_ext::Severity::Info,
+                    // Be forward-compatible with unknown severities.
+                    Some(_) => nova_ext::Severity::Info,
+                };
+                diagnostics.push(Diagnostic {
+                    severity,
+                    code: Cow::Owned(code.clone()),
+                    message: diagnostic.message.clone(),
+                    span: Some(Span::new(start, end)),
+                });
+            }
+            actions.extend(crate::quick_fix::quick_fixes_for_diagnostics(
+                &uri,
+                source,
+                span,
+                &diagnostics,
+            ));
 
             actions.extend(crate::refactor::extract_member_code_actions(
                 &uri, source, selection,
