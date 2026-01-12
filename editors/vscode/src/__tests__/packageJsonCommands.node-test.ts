@@ -91,3 +91,48 @@ test('package.json contributes Nova framework search command', async () => {
   assert.ok(commandIds.has('nova.frameworks.search'));
   assert.ok(activationEvents.includes('onCommand:nova.frameworks.search'));
 });
+
+test('package.json contributes Nova Frameworks viewsWelcome empty-state guidance', async () => {
+  const pkgPath = path.resolve(__dirname, '../../package.json');
+  const raw = await fs.readFile(pkgPath, 'utf8');
+  const pkg = JSON.parse(raw) as {
+    activationEvents?: unknown;
+    contributes?: { views?: unknown; viewsWelcome?: unknown };
+  };
+
+  const activationEvents = Array.isArray(pkg.activationEvents) ? pkg.activationEvents : [];
+  assert.ok(activationEvents.includes('onView:novaFrameworks'));
+
+  const contributesViews = pkg.contributes?.views;
+  assert.ok(contributesViews && typeof contributesViews === 'object');
+  const explorerViews = (contributesViews as { explorer?: unknown }).explorer;
+  assert.ok(Array.isArray(explorerViews));
+  assert.ok((explorerViews as unknown[]).some((entry) => (entry as { id?: unknown })?.id === 'novaFrameworks'));
+
+  const viewsWelcome = Array.isArray(pkg.contributes?.viewsWelcome) ? pkg.contributes.viewsWelcome : [];
+  const frameworksWelcome = viewsWelcome.filter(
+    (entry): entry is { view?: unknown; contents?: unknown; when?: unknown } =>
+      entry && typeof entry === 'object' && (entry as { view?: unknown }).view === 'novaFrameworks',
+  );
+
+  assert.ok(frameworksWelcome.length >= 3);
+
+  const hasNoWorkspaceHint = frameworksWelcome.some((entry) => {
+    const when = typeof entry.when === 'string' ? entry.when : '';
+    const contents = typeof entry.contents === 'string' ? entry.contents : '';
+    return when.includes('workspaceFolderCount') && when.includes('0') && contents.toLowerCase().includes('open folder');
+  });
+  assert.ok(hasNoWorkspaceHint);
+
+  const hasServerMissingHint = frameworksWelcome.some((entry) => {
+    const contents = typeof entry.contents === 'string' ? entry.contents : '';
+    return contents.includes('nova.installOrUpdateServer');
+  });
+  assert.ok(hasServerMissingHint);
+
+  const hasUnsupportedHint = frameworksWelcome.some((entry) => {
+    const contents = typeof entry.contents === 'string' ? entry.contents : '';
+    return contents.toLowerCase().includes('upgrade') || contents.includes('nova.showServerVersion');
+  });
+  assert.ok(hasUnsupportedHint);
+});
