@@ -113,3 +113,38 @@ fn salsa_fast_path_is_read_only() {
         "import_diagnostics should not validate memoized results without any Salsa write"
     );
 }
+
+#[test]
+fn salsa_fast_path_falls_back_when_file_text_is_out_of_sync() {
+    let file = FileId::from_raw(0);
+    let project = ProjectId::from_raw(0);
+
+    // Host Salsa DB sees a stale on-disk snapshot.
+    let salsa = SalsaDatabase::new();
+    salsa.set_jdk_index(project, Arc::new(JdkIndex::new()));
+    salsa.set_classpath_index(project, None);
+    salsa.set_file_text(file, "class A {}".to_string());
+
+    // The legacy `Database` implementation serves a different in-memory overlay that contains an
+    // unresolved import. `with_salsa_snapshot_for_single_file` should detect the mismatch and
+    // avoid running Salsa queries against the stale host DB.
+    let overlay_text = r#"
+import does.not.Exist;
+class A {}
+"#
+    .to_string();
+
+    let db = TestDb {
+        salsa,
+        file_path: PathBuf::from("src/A.java"),
+        texts: [overlay_text.clone(), overlay_text],
+        next_text: Cell::new(0),
+    };
+
+    let cancel = CancellationToken::new();
+    let diags = nova_ide::core_file_diagnostics(&db, file, &cancel);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "unresolved-import"),
+        "expected unresolved-import diagnostic for overlay text; got {diags:#?}"
+    );
+}
