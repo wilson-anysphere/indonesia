@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use nova_db::InMemoryFileStore;
 use nova_ide::goto_definition;
 
-use crate::text_fixture::{offset_to_position, CARET};
+use crate::framework_harness::{offset_to_position, CARET};
 
 #[test]
 fn workspace_index_is_cached_across_navigation_requests() {

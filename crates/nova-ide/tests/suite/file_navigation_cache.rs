@@ -2,7 +2,7 @@ use nova_db::InMemoryFileStore;
 use nova_ide::{file_navigation_index_build_count_for_file_for_tests, implementation};
 use tempfile::TempDir;
 
-use crate::text_fixture::offset_to_position;
+use crate::framework_harness::offset_to_position;
 
 #[test]
 fn reuses_cached_file_navigation_index_between_requests() {

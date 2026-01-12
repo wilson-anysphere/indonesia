@@ -1,9 +1,9 @@
-use lsp_types::{Position, Range};
+use lsp_types::Range;
 use nova_db::InMemoryFileStore;
 use std::path::Path;
 use tempfile::TempDir;
 
-use crate::text_fixture::{offset_to_position, position_to_offset};
+use crate::framework_harness::{offset_to_position, position_to_offset};
 
 fn write_file(path: &Path, contents: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();

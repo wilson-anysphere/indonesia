@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::text_fixture::offset_to_position;
+use crate::framework_harness::offset_to_position;
 use lsp_types::{DiagnosticSeverity, NumberOrString, Range};
 use nova_config::NovaConfig;
 use nova_db::InMemoryFileStore;

@@ -8,7 +8,7 @@ use nova_ide::extensions::IdeExtensions;
 
 pub const CARET: &str = crate::text_fixture::CARET;
 
-pub use crate::text_fixture::offset_to_position;
+pub use crate::text_fixture::{offset_to_position, position_to_offset};
 
 pub struct Fixture {
     pub db: Arc<InMemoryFileStore>,

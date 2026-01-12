@@ -11,7 +11,7 @@ use nova_types::Severity;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::text_fixture::{offset_to_position as offset_to_lsp_position, position_to_offset};
+use crate::framework_harness::{offset_to_position as offset_to_lsp_position, position_to_offset};
 
 fn fixture_file(text: &str) -> (InMemoryFileStore, nova_db::FileId) {
     let mut db = InMemoryFileStore::new();

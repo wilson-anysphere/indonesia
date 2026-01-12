@@ -9,7 +9,7 @@ use nova_ide::extensions::IdeExtensions;
 use nova_scheduler::CancellationToken;
 use nova_types::Severity;
 
-use crate::text_fixture::{offset_to_position, position_to_offset};
+use crate::framework_harness::{offset_to_position, position_to_offset};
 
 fn apply_lsp_edits(text: &str, edits: &[lsp_types::TextEdit]) -> String {
     use nova_core::{LineIndex, Position as CorePosition};

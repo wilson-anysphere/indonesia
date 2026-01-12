@@ -1,7 +1,7 @@
 use lsp_types::{CodeActionKind, Diagnostic, DiagnosticSeverity, NumberOrString, Range, Uri};
 use nova_ide::code_action::diagnostic_quick_fixes;
 
-use crate::text_fixture::{offset_to_position, position_to_offset};
+use crate::framework_harness::{offset_to_position, position_to_offset};
 
 fn apply_lsp_text_edits(source: &str, edits: &[lsp_types::TextEdit]) -> String {
     let mut edits_with_offsets: Vec<(usize, usize, String)> = edits

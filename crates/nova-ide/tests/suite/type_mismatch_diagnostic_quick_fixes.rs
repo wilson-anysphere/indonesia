@@ -1,7 +1,7 @@
 use lsp_types::{CodeActionKind, Diagnostic, DiagnosticSeverity, NumberOrString, Range, Uri};
 use nova_ide::code_action::diagnostic_quick_fixes;
 
-use crate::text_fixture::offset_to_position;
+use crate::framework_harness::offset_to_position;
 
 #[test]
 fn type_mismatch_diagnostic_quick_fixes_offer_cast_and_convert_to_string() {

@@ -1,4 +1,4 @@
-use crate::text_fixture::offset_to_position;
+use crate::framework_harness::offset_to_position;
 use lsp_types::{CodeActionKind, CodeActionOrCommand, DiagnosticSeverity, NumberOrString, Range};
 use nova_config::NovaConfig;
 use nova_db::InMemoryFileStore;
