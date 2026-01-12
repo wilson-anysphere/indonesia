@@ -5265,6 +5265,37 @@ class C {
 }
 
 #[test]
+fn target_typing_infers_generic_method_return_from_constructor_argument() {
+    let src = r#"
+ import java.util.*;
+class Foo { Foo(List<String> xs) {} }
+class C {
+    void m() {
+        new Foo(Collections.emptyList());
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-constructor"
+            && d.code.as_ref() != "unresolved-method"
+            && d.code.as_ref() != "type-mismatch"),
+        "expected ctor-arg poly call to target-type without errors; got {diags:?}"
+    );
+
+    let offset = src
+        .find("emptyList(")
+        .expect("snippet should contain emptyList call")
+        + "emptyList".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "List<String>");
+}
+
+#[test]
 fn target_typing_infers_diamond_new_expr_from_call_argument() {
     let src = r#"
 import java.util.*;
