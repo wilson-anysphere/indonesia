@@ -2,6 +2,8 @@ use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use lsp_types::{Location, Position, Uri};
@@ -157,6 +159,9 @@ impl FileNavigationWorkspaceCache {
 static FILE_NAVIGATION_INDEX_CACHE: Lazy<FileNavigationWorkspaceCache> =
     Lazy::new(FileNavigationWorkspaceCache::default);
 
+#[cfg(test)]
+static FILE_NAVIGATION_INDEX_BUILD_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 #[derive(Clone, Debug)]
 struct TypeInfo {
     file_id: FileId,
@@ -276,6 +281,8 @@ fn cached_file_navigation_index(db: &dyn Database, file: FileId) -> Arc<FileNavi
     let file_ids: Vec<FileId> = workspace_files.into_iter().map(|f| f.file_id).collect();
 
     FILE_NAVIGATION_INDEX_CACHE.get_or_update_with(root, fingerprint, || {
+        #[cfg(test)]
+        FILE_NAVIGATION_INDEX_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
         FileNavigationIndex::new_for_file_ids(db, file_ids)
     })
 }
@@ -367,8 +374,7 @@ pub fn implementation(db: &dyn Database, file: FileId, position: Position) -> Ve
     let Some(parsed) = index.file(file) else {
         return Vec::new();
     };
-    let Some(offset) =
-        position_to_offset_with_index(&parsed.line_index, &parsed.text, position)
+    let Some(offset) = position_to_offset_with_index(&parsed.line_index, &parsed.text, position)
     else {
         return Vec::new();
     };
@@ -376,9 +382,8 @@ pub fn implementation(db: &dyn Database, file: FileId, position: Position) -> Ve
     let lookup_type_info = |name: &str| index.type_info(name);
     let lookup_file = |uri: &Uri| index.file_by_uri(uri);
     let lombok_fallback = |receiver_ty: &str, method_name: &str| {
-        lombok_intel::goto_virtual_member_definition(db, file, receiver_ty, method_name).map(
-            |(target_file, target_span)| (uri_for_file(db, target_file), target_span),
-        )
+        lombok_intel::goto_virtual_member_definition(db, file, receiver_ty, method_name)
+            .map(|(target_file, target_span)| (uri_for_file(db, target_file), target_span))
     };
 
     let mut locations = if let Some(call) = parsed
@@ -470,7 +475,6 @@ pub fn declaration(db: &dyn Database, file: FileId, position: Position) -> Optio
             .into_iter()
             .next();
     }
-
     location
 }
 
@@ -563,4 +567,86 @@ fn uri_for_path(path: &Path) -> Option<Uri> {
 
 fn fallback_unknown_uri() -> Uri {
     Uri::from_str("file:///unknown").expect("fallback URI is valid")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use nova_db::InMemoryFileStore;
+    use tempfile::TempDir;
+
+    #[test]
+    fn file_navigation_index_cache_reuses_index_until_workspace_changes() {
+        FILE_NAVIGATION_INDEX_BUILD_COUNT.store(0, Ordering::Relaxed);
+
+        let temp_dir = TempDir::new().expect("tempdir");
+        let root = temp_dir.path();
+
+        let mut db = InMemoryFileStore::new();
+
+        let i_path = root.join("I.java");
+        let c_path = root.join("C.java");
+
+        let i_file = db.file_id_for_path(&i_path);
+        let c_file = db.file_id_for_path(&c_path);
+
+        db.set_file_text(i_file, "interface I {\n    void foo();\n}\n".to_string());
+        db.set_file_text(
+            c_file,
+            "class C implements I {\n    public void foo() {}\n}\n".to_string(),
+        );
+
+        // "foo" in `I.java` is on line 1 after `    void ` (9 UTF-16 units).
+        let pos = Position {
+            line: 1,
+            character: 9,
+        };
+
+        let got_first = implementation(&db, i_file, pos);
+        assert_eq!(
+            FILE_NAVIGATION_INDEX_BUILD_COUNT.load(Ordering::Relaxed),
+            1,
+            "expected initial request to build the workspace index"
+        );
+
+        let got_second = implementation(&db, i_file, pos);
+        assert_eq!(
+            FILE_NAVIGATION_INDEX_BUILD_COUNT.load(Ordering::Relaxed),
+            1,
+            "expected repeated request to reuse the cached workspace index"
+        );
+        assert_eq!(got_first, got_second);
+
+        assert_eq!(got_first.len(), 1);
+        assert_eq!(got_first[0].uri, uri_for_path(&c_path).expect("c uri"));
+        assert_eq!(
+            got_first[0].range.start,
+            Position {
+                line: 1,
+                character: 16,
+            }
+        );
+
+        // Mutate `C.java` so the workspace fingerprint changes.
+        db.set_file_text(
+            c_file,
+            "class C implements I {\n    // shifted\n    public void foo() {}\n}\n".to_string(),
+        );
+
+        let got_third = implementation(&db, i_file, pos);
+        assert_eq!(
+            FILE_NAVIGATION_INDEX_BUILD_COUNT.load(Ordering::Relaxed),
+            2,
+            "expected cache invalidation after editing a Java file"
+        );
+        assert_eq!(got_third.len(), 1);
+        assert_eq!(
+            got_third[0].range.start,
+            Position {
+                line: 2,
+                character: 16,
+            }
+        );
+    }
 }

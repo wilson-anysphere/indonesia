@@ -205,16 +205,14 @@ impl CtSymReleaseIndex {
             add_vec_string(&mut bytes, &stub.interfaces_internal_names);
             add_opt_string(&mut bytes, &stub.signature);
 
-            bytes = bytes.saturating_add(
-                (stub.fields.capacity() * size_of::<JdkFieldStub>()) as u64,
-            );
+            bytes =
+                bytes.saturating_add((stub.fields.capacity() * size_of::<JdkFieldStub>()) as u64);
             for field in &stub.fields {
                 add_field_stub(&mut bytes, field);
             }
 
-            bytes = bytes.saturating_add(
-                (stub.methods.capacity() * size_of::<JdkMethodStub>()) as u64,
-            );
+            bytes =
+                bytes.saturating_add((stub.methods.capacity() * size_of::<JdkMethodStub>()) as u64);
             for method in &stub.methods {
                 add_method_stub(&mut bytes, method);
             }
@@ -338,9 +336,8 @@ impl CtSymReleaseIndex {
         };
 
         if let Some(map) = lock_best_effort(&self.by_internal) {
-            bytes = bytes.saturating_add(
-                (map.capacity() * size_of::<(String, Arc<JdkClassStub>)>()) as u64,
-            );
+            bytes = bytes
+                .saturating_add((map.capacity() * size_of::<(String, Arc<JdkClassStub>)>()) as u64);
             for (k, stub) in map.iter() {
                 add_string(&mut bytes, k);
                 add_stub(&mut bytes, stub);
@@ -348,9 +345,8 @@ impl CtSymReleaseIndex {
         }
 
         if let Some(map) = lock_best_effort(&self.by_binary) {
-            bytes = bytes.saturating_add(
-                (map.capacity() * size_of::<(String, Arc<JdkClassStub>)>()) as u64,
-            );
+            bytes = bytes
+                .saturating_add((map.capacity() * size_of::<(String, Arc<JdkClassStub>)>()) as u64);
             for (k, stub) in map.iter() {
                 add_string(&mut bytes, k);
                 add_stub(&mut bytes, stub);

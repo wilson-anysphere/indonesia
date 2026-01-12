@@ -1,6 +1,5 @@
 mod text_fixture;
 mod framework_harness;
-mod text_fixture;
 
 use framework_harness::fixture_multi;
 use nova_scheduler::CancellationToken;
