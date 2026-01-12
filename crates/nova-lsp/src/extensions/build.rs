@@ -2717,6 +2717,94 @@ esac\n",
     }
 
     #[test]
+    #[cfg(unix)]
+    fn project_model_uses_gradle_project_path_for_include_flat_modules() {
+        let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
+        let original_path = std::env::var("PATH").unwrap_or_default();
+
+        // `includeFlat` references a sibling directory of the Gradle workspace root.
+        let tmp = TempDir::new().unwrap();
+        let workspace_root = tmp.path().join("workspace");
+        let included_root = tmp.path().join("application");
+        fs::create_dir_all(&workspace_root).unwrap();
+        fs::create_dir_all(&included_root).unwrap();
+
+        fs::write(
+            workspace_root.join("settings.gradle"),
+            "includeFlat 'application'\n",
+        )
+        .unwrap();
+        fs::write(workspace_root.join("build.gradle"), "").unwrap();
+        fs::write(
+            included_root.join("build.gradle"),
+            "plugins { id 'java' }\n",
+        )
+        .unwrap();
+
+        let bin_dir = workspace_root.join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+
+        let fake_jar = workspace_root.join("flat.jar");
+        fs::write(&fake_jar, "").unwrap();
+        let fake_jar_str = fake_jar.to_string_lossy().to_string();
+
+        write_executable(
+            &bin_dir.join("gradle"),
+            &format!(
+                "#!/bin/sh\n\
+set -eu\n\
+\n\
+last=\"\"\n\
+for arg in \"$@\"; do\n\
+  last=\"$arg\"\n\
+done\n\
+\n\
+case \"$last\" in\n\
+  :application:printNovaJavaCompileConfig)\n\
+    cat <<'EOF'\n\
+NOVA_JSON_BEGIN\n\
+{{\"compileClasspath\":[\"{fake_jar_str}\"]}}\n\
+NOVA_JSON_END\n\
+EOF\n\
+    ;;\n\
+  *)\n\
+    echo \"unexpected gradle task: $last\" >&2\n\
+    exit 1\n\
+    ;;\n\
+esac\n",
+            ),
+        );
+
+        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));
+
+        let value = handle_project_model(serde_json::json!({
+            "projectRoot": workspace_root.to_string_lossy().to_string(),
+        }))
+        .unwrap();
+
+        std::env::set_var("PATH", original_path);
+
+        let result: ProjectModelResult = serde_json::from_value(value).unwrap();
+        assert_eq!(result.project_root, workspace_root.to_string_lossy().to_string());
+        assert_eq!(result.units.len(), 1);
+
+        match &result.units[0] {
+            ProjectModelUnit::Gradle {
+                project_path,
+                compile_classpath,
+                ..
+            } => {
+                assert_eq!(project_path, ":application");
+                assert!(
+                    compile_classpath.iter().any(|p| p == &fake_jar_str),
+                    "expected compile classpath to include jar from mocked `gradle`: {compile_classpath:?}"
+                );
+            }
+            other => panic!("expected Gradle unit, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn target_classpath_respects_workspace_config() {
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("src")).unwrap();
