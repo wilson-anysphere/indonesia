@@ -1185,6 +1185,19 @@ fn pretty_inserts_space_before_trailing_line_comment_in_body() {
 }
 
 #[test]
+fn pretty_inserts_space_before_trailing_block_comment_in_body() {
+    let input = "class Foo{int x;/* c */}\n";
+    let edits = edits_for_document_formatting_with_strategy(
+        input,
+        &FormatConfig::default(),
+        FormatStrategy::JavaPrettyAst,
+    );
+    let formatted = apply_text_edits(input, &edits).unwrap();
+
+    assert_eq!(formatted, "class Foo {\n    int x; /* c */\n}\n");
+}
+
+#[test]
 fn pretty_does_not_insert_space_before_standalone_line_comment_in_body() {
     let input = "class Foo{// a\n// b\nint x;}\n";
     let edits = edits_for_document_formatting_with_strategy(

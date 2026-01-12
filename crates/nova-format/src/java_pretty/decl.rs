@@ -298,6 +298,12 @@ impl<'a> JavaPrettyFormatter<'a> {
                         continue;
                     }
 
+                    if kind == CommentKind::Block && has_content && !had_ws && !at_line_start {
+                        // Ensure we don't glue `/* ... */` to the previous token when the source
+                        // omits whitespace (`int x;/* comment */`).
+                        parts.push(Doc::text(" "));
+                    }
+
                     let comment = Comment {
                         kind,
                         text_range: tok_range,
