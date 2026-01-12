@@ -2050,23 +2050,6 @@ fn split_top_level_types(text: &str, sep: char) -> Vec<String> {
     out
 }
 
-fn normalize_ws(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut prev_ws = false;
-    for ch in text.chars() {
-        if ch.is_whitespace() {
-            if !prev_ws {
-                out.push(' ');
-                prev_ws = true;
-            }
-        } else {
-            prev_ws = false;
-            out.push(ch);
-        }
-    }
-    out.trim().to_string()
-}
-
 fn format_method_header(prefix: &str, sig: &ParsedMethodSig, brace: char) -> String {
     let params = sig
         .params
