@@ -196,6 +196,15 @@ impl JdkSymbolIndex {
             Self::CtSym(index) => index.class_names_with_prefix(prefix),
         }
     }
+
+    /// Approximate heap memory usage of this index in bytes.
+    ///
+    /// This is intended for best-effort integration with `nova-memory`.
+    pub(crate) fn estimated_bytes(&self) -> u64 {
+        match self {
+            Self::Jmods(index) => index.estimated_bytes(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -999,6 +1008,145 @@ impl JmodSymbolIndex {
             .binary_names_sorted
             .get()
             .expect("binary_names_sorted OnceLock should be initialized"))
+    }
+
+    /// Approximate heap memory usage of this index in bytes.
+    ///
+    /// This is intended for best-effort integration with `nova-memory`.
+    pub(crate) fn estimated_bytes(&self) -> u64 {
+        use std::mem::size_of;
+
+        fn add_string(bytes: &mut u64, s: &String) {
+            *bytes = bytes.saturating_add(s.capacity() as u64);
+        }
+
+        fn add_opt_string(bytes: &mut u64, s: &Option<String>) {
+            if let Some(s) = s {
+                add_string(bytes, s);
+            }
+        }
+
+        fn add_vec_string(bytes: &mut u64, v: &Vec<String>) {
+            *bytes = bytes.saturating_add((v.capacity() * size_of::<String>()) as u64);
+            for s in v {
+                add_string(bytes, s);
+            }
+        }
+
+        fn add_field_stub(bytes: &mut u64, stub: &JdkFieldStub) {
+            add_string(bytes, &stub.name);
+            add_string(bytes, &stub.descriptor);
+            add_opt_string(bytes, &stub.signature);
+        }
+
+        fn add_method_stub(bytes: &mut u64, stub: &JdkMethodStub) {
+            add_string(bytes, &stub.name);
+            add_string(bytes, &stub.descriptor);
+            add_opt_string(bytes, &stub.signature);
+        }
+
+        fn class_stub_bytes(stub: &JdkClassStub) -> u64 {
+            let mut bytes = 0u64;
+            add_string(&mut bytes, &stub.internal_name);
+            add_string(&mut bytes, &stub.binary_name);
+            add_opt_string(&mut bytes, &stub.super_internal_name);
+            add_vec_string(&mut bytes, &stub.interfaces_internal_names);
+            add_opt_string(&mut bytes, &stub.signature);
+
+            bytes = bytes.saturating_add((stub.fields.capacity() * size_of::<JdkFieldStub>()) as u64);
+            for field in &stub.fields {
+                add_field_stub(&mut bytes, field);
+            }
+
+            bytes = bytes.saturating_add((stub.methods.capacity() * size_of::<JdkMethodStub>()) as u64);
+            for method in &stub.methods {
+                add_method_stub(&mut bytes, method);
+            }
+
+            bytes
+        }
+
+        fn lock_best_effort<T>(mutex: &Mutex<T>) -> Option<std::sync::MutexGuard<'_, T>> {
+            match mutex.lock() {
+                Ok(guard) => Some(guard),
+                Err(poisoned) => Some(poisoned.into_inner()),
+            }
+        }
+
+        let mut bytes = 0u64;
+
+        bytes = bytes.saturating_add((self.containers.capacity() * size_of::<JdkContainer>()) as u64);
+        for container in &self.containers {
+            bytes = bytes.saturating_add(container.path.as_os_str().len() as u64);
+            if let Some(module) = container.kind.module_name() {
+                bytes = bytes.saturating_add(module.as_str().len() as u64);
+            }
+        }
+
+        let mut seen_stubs: HashSet<usize> = HashSet::new();
+        let mut add_stub = |bytes: &mut u64, stub: &Arc<JdkClassStub>| {
+            let ptr = Arc::as_ptr(stub) as usize;
+            if seen_stubs.insert(ptr) {
+                *bytes = bytes.saturating_add(class_stub_bytes(stub.as_ref()));
+            }
+        };
+
+        if let Some(map) = lock_best_effort(&self.by_internal) {
+            bytes = bytes.saturating_add(
+                (map.capacity() * size_of::<(String, Arc<JdkClassStub>)>()) as u64,
+            );
+            for (k, v) in map.iter() {
+                add_string(&mut bytes, k);
+                add_stub(&mut bytes, v);
+            }
+        }
+
+        if let Some(map) = lock_best_effort(&self.by_binary) {
+            bytes = bytes.saturating_add(
+                (map.capacity() * size_of::<(String, Arc<JdkClassStub>)>()) as u64,
+            );
+            for (k, v) in map.iter() {
+                add_string(&mut bytes, k);
+                add_stub(&mut bytes, v);
+            }
+        }
+
+        if let Some(map) = lock_best_effort(&self.class_to_container) {
+            bytes = bytes.saturating_add((map.capacity() * size_of::<(String, usize)>()) as u64);
+            for (k, _) in map.iter() {
+                add_string(&mut bytes, k);
+            }
+        }
+
+        if let Some(set) = lock_best_effort(&self.missing) {
+            bytes = bytes.saturating_add((set.capacity() * size_of::<String>()) as u64);
+            for entry in set.iter() {
+                add_string(&mut bytes, entry);
+            }
+        }
+
+        if let Some(pkgs) = self.packages.get() {
+            bytes = bytes.saturating_add((pkgs.capacity() * size_of::<String>()) as u64);
+            for pkg in pkgs {
+                add_string(&mut bytes, pkg);
+            }
+        }
+
+        if let Some(names) = self.binary_names_sorted.get() {
+            bytes = bytes.saturating_add((names.capacity() * size_of::<String>()) as u64);
+            for name in names {
+                add_string(&mut bytes, name);
+            }
+        }
+
+        if let Some(java_lang) = self.java_lang.get() {
+            bytes = bytes.saturating_add((java_lang.capacity() * size_of::<Arc<JdkClassStub>>()) as u64);
+            for stub in java_lang {
+                add_stub(&mut bytes, stub);
+            }
+        }
+
+        bytes
     }
 }
 

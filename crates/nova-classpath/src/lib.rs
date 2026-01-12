@@ -501,6 +501,93 @@ impl ClasspathIndex {
         self.stubs_by_binary.len()
     }
 
+    /// Approximate heap memory usage of this index in bytes.
+    ///
+    /// This is intended for best-effort integration with `nova-memory`.
+    pub fn estimated_bytes(&self) -> u64 {
+        use std::mem::size_of;
+
+        fn add_string(bytes: &mut u64, s: &String) {
+            *bytes = bytes.saturating_add(s.capacity() as u64);
+        }
+
+        fn add_opt_string(bytes: &mut u64, s: &Option<String>) {
+            if let Some(s) = s {
+                add_string(bytes, s);
+            }
+        }
+
+        fn add_vec_string(bytes: &mut u64, v: &Vec<String>) {
+            *bytes = bytes.saturating_add((v.capacity() * size_of::<String>()) as u64);
+            for s in v {
+                add_string(bytes, s);
+            }
+        }
+
+        fn add_field_stub(bytes: &mut u64, stub: &ClasspathFieldStub) {
+            add_string(bytes, &stub.name);
+            add_string(bytes, &stub.descriptor);
+            add_opt_string(bytes, &stub.signature);
+            add_vec_string(bytes, &stub.annotations);
+        }
+
+        fn add_method_stub(bytes: &mut u64, stub: &ClasspathMethodStub) {
+            add_string(bytes, &stub.name);
+            add_string(bytes, &stub.descriptor);
+            add_opt_string(bytes, &stub.signature);
+            add_vec_string(bytes, &stub.annotations);
+        }
+
+        fn add_class_stub(bytes: &mut u64, stub: &ClasspathClassStub) {
+            add_string(bytes, &stub.binary_name);
+            add_string(bytes, &stub.internal_name);
+            add_opt_string(bytes, &stub.super_binary_name);
+            add_vec_string(bytes, &stub.interfaces);
+            add_opt_string(bytes, &stub.signature);
+            add_vec_string(bytes, &stub.annotations);
+
+            *bytes = bytes.saturating_add((stub.fields.capacity() * size_of::<ClasspathFieldStub>()) as u64);
+            for field in &stub.fields {
+                add_field_stub(bytes, field);
+            }
+
+            *bytes = bytes.saturating_add((stub.methods.capacity() * size_of::<ClasspathMethodStub>()) as u64);
+            for method in &stub.methods {
+                add_method_stub(bytes, method);
+            }
+        }
+
+        let mut bytes = 0u64;
+
+        bytes = bytes.saturating_add(
+            (self.stubs_by_binary.capacity() * size_of::<(String, ClasspathClassStub)>()) as u64,
+        );
+        for (key, stub) in &self.stubs_by_binary {
+            add_string(&mut bytes, key);
+            add_class_stub(&mut bytes, stub);
+        }
+
+        bytes = bytes.saturating_add(
+            (self.internal_to_binary.capacity() * size_of::<(String, String)>()) as u64,
+        );
+        for (k, v) in &self.internal_to_binary {
+            add_string(&mut bytes, k);
+            add_string(&mut bytes, v);
+        }
+
+        bytes = bytes.saturating_add((self.binary_names_sorted.capacity() * size_of::<String>()) as u64);
+        for name in &self.binary_names_sorted {
+            add_string(&mut bytes, name);
+        }
+
+        bytes = bytes.saturating_add((self.packages_sorted.capacity() * size_of::<String>()) as u64);
+        for pkg in &self.packages_sorted {
+            add_string(&mut bytes, pkg);
+        }
+
+        bytes
+    }
+
     pub fn lookup_binary(&self, binary_name: &str) -> Option<&ClasspathClassStub> {
         self.stubs_by_binary.get(binary_name)
     }

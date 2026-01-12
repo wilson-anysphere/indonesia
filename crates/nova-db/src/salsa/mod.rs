@@ -345,6 +345,148 @@ impl SalsaInputFootprint {
     }
 }
 
+#[derive(Debug)]
+struct InputIndexTracker {
+    name: String,
+    inner: Mutex<InputIndexTrackerInner>,
+    tracker: OnceLock<nova_memory::MemoryTracker>,
+    registration: OnceLock<nova_memory::MemoryRegistration>,
+}
+
+#[derive(Debug, Default)]
+struct InputIndexTrackerInner {
+    /// Project -> tracked value pointer.
+    by_project: HashMap<ProjectId, usize>,
+    /// Pointer -> (estimated bytes, number of projects referencing it).
+    by_ptr: HashMap<usize, TrackedPtrEntry>,
+    total_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TrackedPtrEntry {
+    bytes: u64,
+    refs: u32,
+}
+
+impl InputIndexTracker {
+    fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            inner: Mutex::new(InputIndexTrackerInner::default()),
+            tracker: OnceLock::new(),
+            registration: OnceLock::new(),
+        }
+    }
+
+    fn lock_inner(&self) -> std::sync::MutexGuard<'_, InputIndexTrackerInner> {
+        match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn register(&self, manager: &MemoryManager) {
+        if self.registration.get().is_some() {
+            return;
+        }
+
+        let registration = manager.register_tracker(self.name.clone(), MemoryCategory::Indexes);
+        let _ = self.tracker.set(registration.tracker());
+        let _ = self.registration.set(registration);
+        self.refresh_tracker();
+    }
+
+    fn refresh_tracker(&self) {
+        let Some(tracker) = self.tracker.get() else {
+            return;
+        };
+        let bytes = self.lock_inner().total_bytes;
+        tracker.set_bytes(bytes);
+    }
+
+    fn set_project_ptr(&self, project: ProjectId, ptr: Option<usize>, bytes: u64) {
+        let mut inner = self.lock_inner();
+
+        let prev_ptr = inner.by_project.get(&project).copied();
+        if prev_ptr == ptr {
+            // Same tracked allocation; refresh stored bytes (best-effort) in case
+            // the index grew (e.g. lazy caches populated).
+            if let Some(ptr) = ptr {
+                let update = match inner.by_ptr.get_mut(&ptr) {
+                    Some(entry) if entry.bytes != bytes => {
+                        let prev = entry.bytes;
+                        entry.bytes = bytes;
+                        Some((prev, bytes))
+                    }
+                    _ => None,
+                };
+                if let Some((prev, next)) = update {
+                    inner.total_bytes = inner.total_bytes.saturating_sub(prev).saturating_add(next);
+                }
+            }
+        } else {
+            // Drop old ptr (if any).
+            if let Some(old_ptr) = prev_ptr {
+                inner.by_project.remove(&project);
+                let removed_bytes = match inner.by_ptr.get_mut(&old_ptr) {
+                    Some(entry) => {
+                        entry.refs = entry.refs.saturating_sub(1);
+                        (entry.refs == 0).then_some(entry.bytes)
+                    }
+                    None => None,
+                };
+                if let Some(removed_bytes) = removed_bytes {
+                    inner.total_bytes = inner.total_bytes.saturating_sub(removed_bytes);
+                    inner.by_ptr.remove(&old_ptr);
+                }
+            }
+
+            // Add new ptr (if any).
+            if let Some(new_ptr) = ptr {
+                inner.by_project.insert(project, new_ptr);
+                let mut inserted = false;
+                let mut update = None;
+
+                match inner.by_ptr.get_mut(&new_ptr) {
+                    Some(entry) => {
+                        // Already counted this allocation; just bump ref count and
+                        // refresh the estimated size.
+                        entry.refs = entry.refs.saturating_add(1);
+                        if entry.bytes != bytes {
+                            let prev = entry.bytes;
+                            entry.bytes = bytes;
+                            update = Some((prev, bytes));
+                        }
+                    }
+                    None => {
+                        inner.by_ptr.insert(
+                            new_ptr,
+                            TrackedPtrEntry {
+                                bytes,
+                                refs: 1,
+                            },
+                        );
+                        inserted = true;
+                    }
+                }
+
+                if inserted {
+                    inner.total_bytes = inner.total_bytes.saturating_add(bytes);
+                } else if let Some((prev, next)) = update {
+                    inner.total_bytes = inner.total_bytes.saturating_sub(prev).saturating_add(next);
+                }
+            }
+        }
+
+        let total = inner.total_bytes;
+        drop(inner);
+
+        if let Some(tracker) = self.tracker.get() {
+            tracker.set_bytes(total);
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 struct SalsaInputs {
     // File IDs that have a `file_content` value.
@@ -728,6 +870,8 @@ pub struct Database {
     memo_evictor: Arc<OnceLock<Arc<SalsaMemoEvictor>>>,
     memo_footprint: Arc<SalsaMemoFootprint>,
     input_footprint: Arc<SalsaInputFootprint>,
+    jdk_index_tracker: Arc<InputIndexTracker>,
+    classpath_index_tracker: Arc<InputIndexTracker>,
 }
 
 impl Default for Database {
@@ -740,12 +884,16 @@ impl Default for Database {
         inputs
             .project_config
             .insert(default_project, db.project_config(default_project));
+        let jdk_index_tracker = Arc::new(InputIndexTracker::new("jdk_index"));
+        let classpath_index_tracker = Arc::new(InputIndexTracker::new("classpath_index"));
         Self {
             inner: Arc::new(ParkingMutex::new(db)),
             inputs: Arc::new(ParkingMutex::new(inputs)),
             memo_evictor: Arc::new(OnceLock::new()),
             memo_footprint,
             input_footprint,
+            jdk_index_tracker,
+            classpath_index_tracker,
         }
     }
 }
@@ -773,12 +921,16 @@ impl Database {
         inputs
             .project_config
             .insert(default_project, db.project_config(default_project));
+        let jdk_index_tracker = Arc::new(InputIndexTracker::new("jdk_index"));
+        let classpath_index_tracker = Arc::new(InputIndexTracker::new("classpath_index"));
         Self {
             inner: Arc::new(ParkingMutex::new(db)),
             inputs: Arc::new(ParkingMutex::new(inputs)),
             memo_evictor: Arc::new(OnceLock::new()),
             memo_footprint,
             input_footprint,
+            jdk_index_tracker,
+            classpath_index_tracker,
         }
     }
 
@@ -1121,9 +1273,13 @@ impl Database {
     }
 
     pub fn set_jdk_index(&self, project: ProjectId, index: Arc<nova_jdk::JdkIndex>) {
+        let bytes = index.estimated_bytes();
+        let ptr = Arc::as_ptr(&index) as usize;
         let index = ArcEq::new(index);
         self.inputs.lock().jdk_index.insert(project, index.clone());
         self.inner.lock().set_jdk_index(project, index);
+        self.jdk_index_tracker
+            .set_project_ptr(project, Some(ptr), bytes);
     }
 
     pub fn set_classpath_index(
@@ -1131,12 +1287,18 @@ impl Database {
         project: ProjectId,
         index: Option<Arc<nova_classpath::ClasspathIndex>>,
     ) {
+        let (ptr, bytes) = match &index {
+            Some(index) => (Some(Arc::as_ptr(index) as usize), index.estimated_bytes()),
+            None => (None, 0),
+        };
         let index = index.map(ArcEq::new);
         self.inputs
             .lock()
             .classpath_index
             .insert(project, index.clone());
         self.inner.lock().set_classpath_index(project, index);
+        self.classpath_index_tracker
+            .set_project_ptr(project, ptr, bytes);
     }
 
     pub fn set_source_root(&self, file: FileId, root: SourceRootId) {
@@ -1202,9 +1364,11 @@ impl Database {
     }
 
     pub fn register_salsa_memo_evictor(&self, manager: &MemoryManager) -> Arc<SalsaMemoEvictor> {
-        // `register_salsa_memo_evictor` is the main entrypoint used by workspace initialization, so
-        // also ensure Salsa input memory is visible to the manager.
+        // `register_salsa_memo_evictor` is the main entrypoint used by workspace
+        // initialization, so also ensure Salsa input memory and large external
+        // indexes are visible to the manager.
         self.register_salsa_input_tracker(manager);
+        self.register_input_index_trackers(manager);
 
         if let Some(existing) = self.memo_evictor.get() {
             existing.clone()
@@ -1218,6 +1382,12 @@ impl Database {
             let _ = self.memo_evictor.set(evictor.clone());
             evictor
         }
+    }
+
+    /// Register memory trackers for large Salsa inputs (JDK + classpath indexes).
+    pub fn register_input_index_trackers(&self, manager: &MemoryManager) {
+        self.jdk_index_tracker.register(manager);
+        self.classpath_index_tracker.register(manager);
     }
 
     pub fn persist_project_indexes(
@@ -2223,6 +2393,94 @@ class Foo {
         // The workspace wires memory through memo eviction registration.
         db.register_salsa_memo_evictor(&manager);
         assert_eq!(manager.report().usage.other, 3);
+    }
+
+    #[test]
+    fn salsa_input_jdk_index_is_tracked_in_memory_manager() {
+        let manager = MemoryManager::new(MemoryBudget::from_total(10 * 1024 * 1024));
+        let db = Database::new_with_memory_manager(&manager);
+        let project = ProjectId::from_raw(0);
+
+        assert_eq!(
+            manager.report().usage.indexes,
+            0,
+            "expected no tracked index usage before setting inputs"
+        );
+
+        let jdk1 = Arc::new(nova_jdk::JdkIndex::new());
+        let bytes1 = jdk1.estimated_bytes();
+        db.set_jdk_index(project, jdk1);
+        assert_eq!(
+            manager.report().usage.indexes,
+            bytes1,
+            "expected memory manager to track jdk_index bytes"
+        );
+
+        // Replace with an empty index and ensure the tracker updates.
+        let jdk2 = Arc::new(nova_jdk::JdkIndex::default());
+        let bytes2 = jdk2.estimated_bytes();
+        db.set_jdk_index(project, jdk2);
+        assert_eq!(
+            manager.report().usage.indexes,
+            bytes2,
+            "expected memory tracker to update when jdk_index is replaced"
+        );
+        assert!(bytes2 < bytes1, "expected replacement to reduce usage");
+    }
+
+    #[test]
+    fn salsa_input_classpath_index_is_tracked_in_memory_manager() {
+        let manager = MemoryManager::new(MemoryBudget::from_total(10 * 1024 * 1024));
+        let db = Database::new_with_memory_manager(&manager);
+        let project = ProjectId::from_raw(0);
+
+        assert_eq!(
+            manager.report().usage.indexes,
+            0,
+            "expected no tracked index usage before setting inputs"
+        );
+
+        let stub = nova_classpath::ClasspathClassStub {
+            binary_name: "com.example.Foo".to_string(),
+            internal_name: "com/example/Foo".to_string(),
+            access_flags: 0,
+            super_binary_name: None,
+            interfaces: Vec::new(),
+            signature: None,
+            annotations: Vec::new(),
+            fields: vec![nova_classpath::ClasspathFieldStub {
+                name: "FOO".to_string(),
+                descriptor: "I".to_string(),
+                signature: None,
+                access_flags: 0,
+                annotations: Vec::new(),
+            }],
+            methods: vec![nova_classpath::ClasspathMethodStub {
+                name: "bar".to_string(),
+                descriptor: "()V".to_string(),
+                signature: None,
+                access_flags: 0,
+                annotations: Vec::new(),
+            }],
+        };
+
+        let module_aware = nova_classpath::ModuleAwareClasspathIndex::from_stubs([(stub, None)]);
+        let classpath = module_aware.types;
+        let bytes1 = classpath.estimated_bytes();
+        db.set_classpath_index(project, Some(Arc::new(classpath)));
+        assert_eq!(
+            manager.report().usage.indexes,
+            bytes1,
+            "expected memory manager to track classpath_index bytes"
+        );
+
+        // Drop the classpath index and ensure usage returns to zero.
+        db.set_classpath_index(project, None);
+        assert_eq!(
+            manager.report().usage.indexes,
+            0,
+            "expected memory tracker to update when classpath_index is cleared"
+        );
     }
 
     #[test]

@@ -163,6 +163,68 @@ impl JdkIndex {
         this
     }
 
+    /// Approximate heap memory usage of this index in bytes.
+    ///
+    /// This is intended for best-effort integration with `nova-memory`.
+    pub fn estimated_bytes(&self) -> u64 {
+        use std::mem::size_of;
+
+        let mut bytes = 0u64;
+
+        bytes = bytes.saturating_add((self.types.capacity() * size_of::<(String, TypeName)>()) as u64);
+        for (k, v) in &self.types {
+            bytes = bytes.saturating_add(k.capacity() as u64);
+            // `TypeName` does not expose its backing `String` capacity, so we
+            // fall back to `len()` for a best-effort approximation.
+            bytes = bytes.saturating_add(v.as_str().len() as u64);
+        }
+
+        bytes = bytes.saturating_add(
+            (self.package_to_types.capacity() * size_of::<(String, HashMap<String, TypeName>)>())
+                as u64,
+        );
+        for (pkg, types) in &self.package_to_types {
+            bytes = bytes.saturating_add(pkg.capacity() as u64);
+            bytes =
+                bytes.saturating_add((types.capacity() * size_of::<(String, TypeName)>()) as u64);
+            for (name, ty) in types {
+                bytes = bytes.saturating_add(name.capacity() as u64);
+                bytes = bytes.saturating_add(ty.as_str().len() as u64);
+            }
+        }
+
+        bytes = bytes.saturating_add((self.packages.capacity() * size_of::<String>()) as u64);
+        for pkg in &self.packages {
+            bytes = bytes.saturating_add(pkg.capacity() as u64);
+        }
+
+        bytes = bytes.saturating_add(
+            (self.static_members.capacity()
+                * size_of::<(String, HashMap<String, StaticMemberId>)>()) as u64,
+        );
+        for (owner, members) in &self.static_members {
+            bytes = bytes.saturating_add(owner.capacity() as u64);
+            bytes = bytes.saturating_add(
+                (members.capacity() * size_of::<(String, StaticMemberId)>()) as u64,
+            );
+            for (name, member_id) in members {
+                bytes = bytes.saturating_add(name.capacity() as u64);
+                bytes = bytes.saturating_add(member_id.as_str().len() as u64);
+            }
+        }
+
+        bytes = bytes.saturating_add(self.info.root.as_os_str().len() as u64);
+        if let Some(src_zip) = &self.info.src_zip {
+            bytes = bytes.saturating_add(src_zip.as_os_str().len() as u64);
+        }
+
+        if let Some(symbols) = &self.symbols {
+            bytes = bytes.saturating_add(symbols.estimated_bytes());
+        }
+
+        bytes
+    }
+
     /// Build an index backed by a JDK installation's standard-library containers
     /// (`jmods/` on JPMS JDKs, `rt.jar`/`tools.jar` on legacy JDK 8).
     pub fn from_jdk_root(root: impl AsRef<Path>) -> Result<Self, JdkIndexError> {
