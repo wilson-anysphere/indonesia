@@ -6074,10 +6074,26 @@ fn collect_switch_contexts(
                     out,
                 );
 
-                let Some(&scope) = scope_result.expr_scopes.get(&(owner, *selector)) else {
-                    for arm in arms {
-                        for label in &arm.labels {
-                            if let hir::SwitchLabel::Case { values, .. } = label {
+                if let Some(&scope) = scope_result.expr_scopes.get(&(owner, *selector)) {
+                    let selector_enum = infer_switch_selector_enum_type(
+                        body,
+                        selector,
+                        scope,
+                        scope_result,
+                        resolver,
+                        item_trees,
+                    );
+
+                    out.entry(range.start).or_insert(SwitchContext {
+                        scope,
+                        selector_enum,
+                    });
+                }
+
+                for arm in arms {
+                    for label in &arm.labels {
+                        match label {
+                            hir::SwitchLabel::Case { values, .. } => {
                                 for value in values {
                                     walk_expr(
                                         body,
@@ -6090,68 +6106,15 @@ fn collect_switch_contexts(
                                     );
                                 }
                             }
-                        }
-                        match &arm.body {
-                            hir::SwitchArmBody::Expr(expr) => walk_expr(
-                                body,
-                                *expr,
-                                owner,
-                                scope_result,
-                                resolver,
-                                item_trees,
-                                out,
-                            ),
-                            hir::SwitchArmBody::Block(stmt) | hir::SwitchArmBody::Stmt(stmt) => {
-                                walk_stmt(
-                                    body,
-                                    *stmt,
-                                    owner,
-                                    scope_result,
-                                    resolver,
-                                    item_trees,
-                                    out,
-                                )
-                            }
-                        }
-                    }
-                    return;
-                };
-
-                let selector_enum = infer_switch_selector_enum_type(
-                    body,
-                    selector,
-                    scope,
-                    scope_result,
-                    resolver,
-                    item_trees,
-                );
-
-                out.entry(range.start).or_insert(SwitchContext {
-                    scope,
-                    selector_enum,
-                });
-                for arm in arms {
-                    for label in &arm.labels {
-                        if let hir::SwitchLabel::Case { values, .. } = label {
-                            for value in values {
-                                walk_expr(
-                                    body,
-                                    *value,
-                                    owner,
-                                    scope_result,
-                                    resolver,
-                                    item_trees,
-                                    out,
-                                );
-                            }
+                            hir::SwitchLabel::Default { .. } => {}
                         }
                     }
                     match &arm.body {
                         hir::SwitchArmBody::Expr(expr) => {
-                            walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out)
+                            walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out);
                         }
                         hir::SwitchArmBody::Block(stmt) | hir::SwitchArmBody::Stmt(stmt) => {
-                            walk_stmt(body, *stmt, owner, scope_result, resolver, item_trees, out)
+                            walk_stmt(body, *stmt, owner, scope_result, resolver, item_trees, out);
                         }
                     }
                 }

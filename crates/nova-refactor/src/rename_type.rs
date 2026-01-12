@@ -679,10 +679,10 @@ fn expr_scope_for_offset(
                     }
                     match &arm.body {
                         hir::SwitchArmBody::Expr(expr) => {
-                            visit_expr(body, *expr, offset, best_expr, best_stmt)
+                            visit_expr(body, *expr, offset, best_expr, best_stmt);
                         }
                         hir::SwitchArmBody::Block(stmt) | hir::SwitchArmBody::Stmt(stmt) => {
-                            visit_stmt(body, *stmt, offset, best_expr, best_stmt)
+                            visit_stmt(body, *stmt, offset, best_expr, best_stmt);
                         }
                     }
                 }

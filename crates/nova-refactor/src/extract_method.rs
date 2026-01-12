@@ -483,10 +483,10 @@ fn find_best_expr_in_expr(
                 }
                 match &arm.body {
                     hir::SwitchArmBody::Expr(expr) => {
-                        find_best_expr_in_expr(body, *expr, offset, owner, best)
+                        find_best_expr_in_expr(body, *expr, offset, owner, best);
                     }
                     hir::SwitchArmBody::Block(stmt) | hir::SwitchArmBody::Stmt(stmt) => {
-                        find_best_expr_in_stmt(body, *stmt, offset, owner, best)
+                        find_best_expr_in_stmt(body, *stmt, offset, owner, best);
                     }
                 }
             }
