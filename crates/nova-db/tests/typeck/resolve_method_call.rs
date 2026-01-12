@@ -111,6 +111,62 @@ class C {
 }
 
 #[test]
+fn resolve_method_call_infers_var_local_receiver() {
+    let src = r#"
+class C {
+    String m() {
+        var s = "x";
+        return s.substring(1);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+
+    // Locate the call expression id inside `C.m`.
+    let tree = db.hir_item_tree(file);
+    let (&m_ast_id, _) = tree
+        .methods
+        .iter()
+        .find(|(_, method)| method.name == "m")
+        .expect("expected C.m method");
+    let m_id = nova_hir::ids::MethodId::new(file, m_ast_id);
+    let body = db.hir_body(m_id);
+
+    let call_expr = match &body.stmts[body.root] {
+        nova_hir::hir::Stmt::Block { statements, .. } => statements
+            .iter()
+            .find_map(|stmt| match &body.stmts[*stmt] {
+                nova_hir::hir::Stmt::Return {
+                    expr: Some(expr), ..
+                } => Some(*expr),
+                _ => None,
+            })
+            .expect("expected return expr"),
+        other => panic!("expected root block, got {other:?}"),
+    };
+
+    db.clear_query_stats();
+
+    let resolved = db.resolve_method_call(
+        file,
+        FileExprId {
+            owner: DefWithBodyId::Method(m_id),
+            expr: call_expr,
+        },
+    );
+
+    let resolved = resolved.expect("expected method call to resolve");
+    assert_eq!(resolved.name, "substring");
+
+    assert_eq!(
+        executions(&db, "typeck_body"),
+        0,
+        "resolve_method_call should not force whole-body typeck"
+    );
+}
+
+#[test]
 fn resolve_method_call_returns_none_on_ambiguous_calls() {
     let src = r#"
 class C {

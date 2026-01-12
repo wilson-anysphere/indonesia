@@ -938,7 +938,7 @@ fn resolve_method_call_demand(
         field_owners,
         method_owners,
         java_level,
-        false,
+        true,
     );
 
     // Best-effort local type table for locals with explicit types. This improves overload
@@ -953,6 +953,7 @@ fn resolve_method_call_demand(
         }
         let ty = checker.resolve_source_type(&mut loader, &local.ty_text, Some(local.ty_range));
         checker.local_types[idx] = ty;
+        checker.local_ty_states[idx] = LocalTyState::Computed;
     }
 
     // Best-effort: infer a *minimal enclosing expression* that still propagates target typing.
