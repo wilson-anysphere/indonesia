@@ -637,8 +637,8 @@ fn expr_scope_for_offset(
                 for dim in dim_exprs {
                     visit_expr(body, *dim, offset, best_expr, best_stmt);
                 }
-                if let Some(initializer) = initializer {
-                    visit_expr(body, *initializer, offset, best_expr, best_stmt);
+                if let Some(init) = initializer {
+                    visit_expr(body, *init, offset, best_expr, best_stmt);
                 }
             }
             Expr::ArrayInitializer { items, .. } => {
@@ -743,6 +743,14 @@ fn expr_scope_for_offset(
                 }
             }
             Stmt::Expr { expr, .. } => visit_expr(body, *expr, offset, best_expr, best_stmt),
+            Stmt::Assert {
+                condition, message, ..
+            } => {
+                visit_expr(body, *condition, offset, best_expr, best_stmt);
+                if let Some(expr) = message {
+                    visit_expr(body, *expr, offset, best_expr, best_stmt);
+                }
+            }
             Stmt::Return { expr, .. } => {
                 if let Some(expr) = expr {
                     visit_expr(body, *expr, offset, best_expr, best_stmt);
