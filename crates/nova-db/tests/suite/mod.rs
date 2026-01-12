@@ -19,5 +19,6 @@ mod typeck_java_shadowing;
 mod typeck_jpms;
 mod typeck_jpms_regressions;
 mod typeck_regressions;
+mod typeck_target;
 mod workspace_class_ids;
 mod workspace_loader;

@@ -46,7 +46,3 @@ path = "src/lib.rs"
 [[bench]]
 name = "parse_java_incremental"
 harness = false
-
-[[test]]
-name = "typeck"
-path = "tests/suite/typeck_target.rs"
