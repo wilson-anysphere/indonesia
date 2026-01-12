@@ -20,6 +20,7 @@ pub(crate) fn load_maven_project(
     let root_pom = parse_pom(&root_pom_path)?;
     let include_root_module =
         root_pom.packaging.as_deref() != Some("pom") || root_pom.modules.is_empty();
+    let multi_module_workspace = !root_pom.modules.is_empty();
 
     let maven_repo = discover_maven_repo(root, options);
     let mut resolver = MavenResolver::new(maven_repo.clone());
@@ -175,6 +176,13 @@ pub(crate) fn load_maven_project(
             }
 
             if let Some(jar_path) = maven_dependency_jar_path(&maven_repo, dep) {
+                // Multi-module Maven workspaces can have extremely large dependency closures (and
+                // corresponding classpaths). Only include jars that exist on disk to keep the
+                // classpath lean (see `tests/cases/discovery.rs`).
+                if multi_module_workspace && !jar_path.is_file() && !jar_path.is_dir() {
+                    continue;
+                }
+
                 dependency_entries.push(ClasspathEntry {
                     // Maven dependency artifacts are typically jar files, but some build systems
                     // (and test fixtures) can "explode" jars into directories (often still ending
@@ -239,6 +247,7 @@ pub(crate) fn load_maven_workspace_model(
     let root_pom = parse_pom(&root_pom_path)?;
     let include_root_module =
         root_pom.packaging.as_deref() != Some("pom") || root_pom.modules.is_empty();
+    let multi_module_workspace = !root_pom.modules.is_empty();
 
     let maven_repo = discover_maven_repo(root, options);
     let mut resolver = MavenResolver::new(maven_repo.clone());
@@ -485,6 +494,10 @@ pub(crate) fn load_maven_workspace_model(
             }
 
             if let Some(jar_path) = maven_dependency_jar_path(&maven_repo, dep) {
+                if multi_module_workspace && !jar_path.is_file() && !jar_path.is_dir() {
+                    continue;
+                }
+
                 classpath.push(ClasspathEntry {
                     kind: if jar_path.is_dir() {
                         ClasspathEntryKind::Directory
@@ -2029,7 +2042,7 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
             resolve_snapshot_jar_file_name(&version_dir, base_version, &dep.artifact_id, classifier)
         {
             let resolved_path = version_dir.join(resolved);
-            if exists_as_jar(&resolved_path) {
+            if resolved_path.is_file() || resolved_path.is_dir() {
                 return Some(resolved_path);
             }
         }
