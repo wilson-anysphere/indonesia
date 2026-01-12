@@ -73,7 +73,7 @@ Nova can integrate with your build tool (Maven/Gradle/Bazel) to keep its project
 
 Nova resolves binaries in the following order:
 
-1. **User setting** (`nova.server.path` / `nova.dap.path`) if set to an absolute path.
+1. **Configured setting** (`nova.server.path` / `nova.dap.path`) if set to an absolute path.
 2. **Workspace-local path** if the setting is a relative path (resolved relative to the target workspace folder).
 3. **`$PATH`** discovery.
 4. **Extension-managed install** in VS Code global storage (`context.globalStorageUri`), with optional download.
