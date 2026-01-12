@@ -6,6 +6,7 @@
 // end-to-end tests (see repo guidance about using one integration test harness
 // per crate).
 mod cancel;
+mod attach_hostname;
 mod breakpoint_locations;
 mod config_stdio;
 mod configuration_done_before_launch;
@@ -27,6 +28,7 @@ mod source_mapping;
 mod stream_debug;
 mod wire_stream_debug;
 mod wire_stream_eval;
+mod watchpoints;
 mod wire_breakpoint_mapping;
 mod wire_format;
 mod wire_variables_preview;
