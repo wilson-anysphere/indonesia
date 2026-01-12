@@ -213,7 +213,7 @@ banned_test_target_patterns=(
   # `nova-syntax` suites were folded into the `harness` test binary.
   '--test(=|[[:space:]]+)javac_corpus([^[:alnum:]_-]|$)'
   '--test(=|[[:space:]]+)golden_corpus([^[:alnum:]_-]|$)'
-  # `nova-dap` real JVM tests live under the consolidated `tests` harness (run with a test-name filter),
+  # `nova-dap` real JVM tests are part of the consolidated `tests` harness (run with a test-name filter),
   # so there is no standalone integration test target named `real_jvm`.
   '--test(=|[[:space:]]+)real_jvm([^[:alnum:]_-]|$)'
   # `nova-cli` real-project tests are part of the consolidated `harness`.
