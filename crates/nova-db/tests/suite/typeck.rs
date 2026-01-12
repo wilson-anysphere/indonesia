@@ -875,7 +875,7 @@ class C {
 }
 
 #[test]
-fn post_inc_promotes_byte_to_int() {
+fn post_inc_preserves_byte_type() {
     let src = r#"
 class C {
     void m() {
@@ -888,13 +888,19 @@ class C {
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "type-mismatch"),
-        "expected type-mismatch for `byte c = b++` (b++ is int), got {diags:?}"
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected `byte c = b++` to type-check (b++ is byte in Java), got {diags:?}"
     );
     assert!(
         !diags.iter().any(|d| d.code.as_ref() == "invalid-inc-dec"),
         "expected b++ to be accepted for byte locals, got {diags:?}"
     );
+
+    let offset = src.find("++").expect("test source should contain ++");
+    let ty = db
+        .type_at_offset_display(file, (offset + 1) as u32)
+        .expect("expected type at offset");
+    assert_eq!(ty, "byte");
 }
 
 #[test]
