@@ -779,6 +779,10 @@ impl Default for BspServerConfig {
             // `bsp4bazel` is a commonly-installed BSP launcher for Bazel workspaces.
             //
             // Users can override this (and args) based on their environment (e.g. `bazel-bsp`).
+            //
+            // Note: when Nova is compiled with BSP support, `BazelWorkspace` prefers standard
+            // `.bsp/*.json` discovery over this hard-coded default when the config is still
+            // `BspServerConfig::default()`.
             program: "bsp4bazel".to_string(),
             args: Vec::new(),
         }
