@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use nova_cache::normalize_rel_path;
 use nova_classpath::{ClasspathEntry, ClasspathIndex, IndexOptions};
+use nova_core::ClassId;
 use nova_jdk::JdkIndex;
 use nova_project::{
     JavaConfig, JavaLanguageLevel, JpmsModuleRoot, JpmsWorkspace, Module, ProjectConfig,
@@ -15,6 +16,7 @@ use walkdir::WalkDir;
 use crate::{FileId, ProjectId, SourceRootId};
 
 use super::Database;
+use super::NovaResolve;
 
 /// Errors produced while loading a workspace and applying it to Salsa inputs.
 #[derive(Debug, Error)]
@@ -54,6 +56,10 @@ pub struct WorkspaceLoader {
 
     source_root_ids: HashMap<(ProjectId, PathBuf), SourceRootId>,
     next_source_root_id: u32,
+
+    // Stable type ids (host-managed `ClassId` allocator).
+    class_ids: HashMap<(ProjectId, String), ClassId>,
+    next_class_id: u32,
 
     // File ids are allocated by the host (typically a VFS); we cache the mapping so we can refer
     // back to files when they disappear.
@@ -211,7 +217,11 @@ impl WorkspaceLoader {
                 .into_iter()
                 .map(|(_path, id)| id)
                 .collect::<Vec<_>>();
-            db.set_project_files(project, Arc::new(files_for_project));
+            let files_for_project = Arc::new(files_for_project);
+            db.set_project_files(project, files_for_project.clone());
+
+            // Update the host-managed `ClassId` registry for all source types in this project.
+            self.apply_project_class_ids(db, project, &files_for_project);
         }
 
         Ok(())
@@ -313,6 +323,56 @@ impl WorkspaceLoader {
 
         db.set_classpath_index(project, index.clone());
         self.classpath_indexes.insert(project, index);
+    }
+
+    fn apply_project_class_ids(&mut self, db: &Database, project: ProjectId, files: &[FileId]) {
+        // Collect type binary names deterministically:
+        // - Files are already provided in stable order (sorted by `file_rel_path`).
+        // - Within each file, sort type names lexicographically.
+        let names: Vec<String> = db.with_snapshot(|snap| {
+            let mut names = Vec::new();
+
+            for &file in files {
+                let map = snap.def_map(file);
+                let mut file_names: Vec<String> = map
+                    .iter_type_defs()
+                    .map(|(_, def)| def.binary_name.as_str().to_string())
+                    .collect();
+                file_names.sort();
+                file_names.dedup();
+                names.extend(file_names);
+            }
+
+            names
+        });
+
+        for name in names {
+            let key = (project, name);
+            if self.class_ids.contains_key(&key) {
+                continue;
+            }
+
+            let id = ClassId::from_raw(self.next_class_id);
+            self.next_class_id = self.next_class_id.saturating_add(1);
+            self.class_ids.insert(key, id);
+        }
+
+        // Provide a stable per-project mapping input to Salsa.
+        let mut mapping: Vec<(Arc<str>, ClassId)> = self
+            .class_ids
+            .iter()
+            .filter_map(|((proj, name), &id)| {
+                (*proj == project).then(|| (Arc::<str>::from(name.as_str()), id))
+            })
+            .collect();
+        mapping.sort_by(|(a_name, a_id), (b_name, b_id)| {
+            a_name
+                .as_ref()
+                .cmp(b_name.as_ref())
+                .then_with(|| a_id.to_raw().cmp(&b_id.to_raw()))
+        });
+
+        db.set_project_class_ids(project, Arc::new(mapping));
     }
 }
 

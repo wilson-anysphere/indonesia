@@ -73,6 +73,7 @@ use parking_lot::Mutex as ParkingMutex;
 use parking_lot::RwLock;
 
 use nova_core::ProjectDatabase;
+use nova_core::ClassId;
 use nova_memory::{
     EvictionRequest, EvictionResult, MemoryCategory, MemoryEvictor, MemoryManager, MemoryPressure,
 };
@@ -557,6 +558,7 @@ struct SalsaInputs {
     source_root: HashMap<FileId, SourceRootId>,
     project_files: HashMap<ProjectId, Arc<Vec<FileId>>>,
     project_config: HashMap<ProjectId, Arc<ProjectConfig>>,
+    project_class_ids: HashMap<ProjectId, Arc<Vec<(Arc<str>, ClassId)>>>,
     jdk_index: HashMap<ProjectId, ArcEq<nova_jdk::JdkIndex>>,
     classpath_index: HashMap<ProjectId, Option<ArcEq<nova_classpath::ClasspathIndex>>>,
 }
@@ -590,6 +592,9 @@ impl SalsaInputs {
         }
         for (&project, config) in &self.project_config {
             db.set_project_config(project, config.clone());
+        }
+        for (&project, mapping) in &self.project_class_ids {
+            db.set_project_class_ids(project, mapping.clone());
         }
         for (&project, index) in &self.jdk_index {
             db.set_jdk_index(project, index.clone());
@@ -691,6 +696,10 @@ impl RootDatabase {
                 workspace_model: None,
             }),
         );
+
+        // Ensure the host-managed class id registry has a sensible default so snapshots can
+        // perform lookups without requiring a workspace loader.
+        db.set_project_class_ids(ProjectId::from_raw(0), Arc::new(Vec::new()));
 
         // Ensure "global" inputs have a sensible default so snapshots can be
         // used as a standalone read-only database facade.
@@ -1070,6 +1079,9 @@ impl Default for Database {
         inputs
             .project_config
             .insert(default_project, db.project_config(default_project));
+        inputs
+            .project_class_ids
+            .insert(default_project, db.project_class_ids(default_project));
         let jdk_index_tracker = Arc::new(InputIndexTracker::new("jdk_index"));
         let classpath_index_tracker = Arc::new(InputIndexTracker::new("classpath_index"));
         Self {
@@ -1161,6 +1173,9 @@ impl Database {
         inputs
             .project_config
             .insert(default_project, db.project_config(default_project));
+        inputs
+            .project_class_ids
+            .insert(default_project, db.project_class_ids(default_project));
         let jdk_index_tracker = Arc::new(InputIndexTracker::new("jdk_index"));
         let classpath_index_tracker = Arc::new(InputIndexTracker::new("classpath_index"));
         Self {
@@ -1597,6 +1612,14 @@ impl Database {
             .project_config
             .insert(project, config.clone());
         self.inner.lock().set_project_config(project, config);
+    }
+
+    pub fn set_project_class_ids(&self, project: ProjectId, mapping: Arc<Vec<(Arc<str>, ClassId)>>) {
+        self.inputs
+            .lock()
+            .project_class_ids
+            .insert(project, mapping.clone());
+        self.inner.lock().set_project_class_ids(project, mapping);
     }
 
     pub fn set_file_project(&self, file: FileId, project: ProjectId) {

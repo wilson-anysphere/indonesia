@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use nova_classpath::ClasspathIndex;
+use nova_core::ClassId;
 use nova_jdk::JdkIndex;
 use nova_project::ProjectConfig;
 
@@ -71,4 +72,40 @@ pub trait NovaInputs: ra_salsa::Database {
     /// Optional external project/classpath type index for the given project.
     #[ra_salsa::input]
     fn classpath_index(&self, project: ProjectId) -> Option<ArcEq<ClasspathIndex>>;
+
+    /// Stable mapping of source type binary names to globally unique [`ClassId`]s for `project`.
+    ///
+    /// This mapping is **host-managed** (typically by [`crate::salsa::WorkspaceLoader`]) to keep
+    /// `ClassId`s stable across Salsa memo eviction and across workspace reloads.
+    ///
+    /// Entries must be supplied in a deterministic order (sorted by `binary_name`) so that:
+    /// - Salsa snapshots observe deterministic results.
+    /// - Host updates that don't change the mapping won't spuriously invalidate downstream queries.
+    #[ra_salsa::input]
+    fn project_class_ids(&self, project: ProjectId) -> Arc<Vec<(Arc<str>, ClassId)>>;
+
+    /// Look up a stable [`ClassId`] for a Java binary name (e.g. `com.example.Foo$Inner`).
+    ///
+    /// This is derived solely from [`NovaInputs::project_class_ids`].
+    fn class_id_for_name(&self, project: ProjectId, binary_name: Arc<str>) -> Option<ClassId>;
+
+    /// Reverse lookup of a Java binary name for a stable [`ClassId`].
+    ///
+    /// This is derived solely from [`NovaInputs::project_class_ids`].
+    fn class_name_for_id(&self, project: ProjectId, id: ClassId) -> Option<Arc<str>>;
+}
+
+fn class_id_for_name(db: &dyn NovaInputs, project: ProjectId, binary_name: Arc<str>) -> Option<ClassId> {
+    let mapping = db.project_class_ids(project);
+    mapping
+        .binary_search_by(|(name, _)| name.as_ref().cmp(binary_name.as_ref()))
+        .ok()
+        .map(|idx| mapping[idx].1)
+}
+
+fn class_name_for_id(db: &dyn NovaInputs, project: ProjectId, id: ClassId) -> Option<Arc<str>> {
+    let mapping = db.project_class_ids(project);
+    mapping
+        .iter()
+        .find_map(|(name, stored_id)| (*stored_id == id).then(|| name.clone()))
 }
