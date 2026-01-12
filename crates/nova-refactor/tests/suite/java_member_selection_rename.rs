@@ -1,4 +1,8 @@
-use nova_refactor::{apply_text_edits, rename, FileId, RefactorJavaDatabase, RenameParams};
+use std::collections::BTreeMap;
+
+use nova_refactor::{
+    apply_text_edits, apply_workspace_edit, rename, FileId, RefactorJavaDatabase, RenameParams,
+};
 
 #[test]
 fn rename_field_updates_this_field_access() {
@@ -275,4 +279,120 @@ class Use {
         "expected qualified method call renamed: {after}"
     );
     assert!(!after.contains("foo()"), "expected old name gone: {after}");
+}
+
+#[test]
+fn rename_static_method_updates_fully_qualified_method_call() {
+    let foo_file = FileId::new("Foo.java");
+    let use_file = FileId::new("Use.java");
+
+    let src_foo = r#"package p;
+class Foo {
+  static void foo() {}
+}
+"#;
+    let src_use = r#"package q;
+class Use {
+  void m() {
+    p.Foo.foo();
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([
+        (foo_file.clone(), src_foo.to_string()),
+        (use_file.clone(), src_use.to_string()),
+    ]);
+
+    let offset = src_foo.find("static void foo").unwrap() + "static void ".len() + 1;
+    let symbol = db
+        .symbol_at(&foo_file, offset)
+        .expect("symbol at p.Foo.foo method");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "bar".into(),
+        },
+    )
+    .unwrap();
+
+    let files: BTreeMap<FileId, String> = [
+        (foo_file.clone(), src_foo.to_string()),
+        (use_file.clone(), src_use.to_string()),
+    ]
+    .into_iter()
+    .collect();
+    let out = apply_workspace_edit(&files, &edit).unwrap();
+    let after_foo = out.get(&foo_file).unwrap();
+    let after_use = out.get(&use_file).unwrap();
+
+    assert!(
+        after_foo.contains("static void bar()"),
+        "expected method decl renamed: {after_foo}"
+    );
+    assert!(
+        after_use.contains("p.Foo.bar();"),
+        "expected fully qualified call updated: {after_use}"
+    );
+    assert!(!after_use.contains("p.Foo.foo();"), "expected old call gone: {after_use}");
+}
+
+#[test]
+fn rename_static_field_updates_fully_qualified_field_access() {
+    let foo_file = FileId::new("Foo.java");
+    let use_file = FileId::new("Use.java");
+
+    let src_foo = r#"package p;
+class Foo {
+  static int SFOO;
+}
+"#;
+    let src_use = r#"package q;
+class Use {
+  void m() {
+    int x = p.Foo.SFOO;
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([
+        (foo_file.clone(), src_foo.to_string()),
+        (use_file.clone(), src_use.to_string()),
+    ]);
+
+    let offset = src_foo.find("static int SFOO").unwrap() + "static int ".len() + 1;
+    let symbol = db
+        .symbol_at(&foo_file, offset)
+        .expect("symbol at p.Foo.SFOO");
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "SBAR".into(),
+        },
+    )
+    .unwrap();
+
+    let files: BTreeMap<FileId, String> = [
+        (foo_file.clone(), src_foo.to_string()),
+        (use_file.clone(), src_use.to_string()),
+    ]
+    .into_iter()
+    .collect();
+    let out = apply_workspace_edit(&files, &edit).unwrap();
+    let after_foo = out.get(&foo_file).unwrap();
+    let after_use = out.get(&use_file).unwrap();
+
+    assert!(
+        after_foo.contains("static int SBAR;"),
+        "expected field decl renamed: {after_foo}"
+    );
+    assert!(
+        after_use.contains("p.Foo.SBAR"),
+        "expected fully qualified access updated: {after_use}"
+    );
+    assert!(!after_use.contains("p.Foo.SFOO"), "expected old access gone: {after_use}");
 }
