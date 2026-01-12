@@ -227,9 +227,14 @@ class C {
 #[test]
 fn extract_variable_code_action_not_offered_in_explicit_constructor_invocation() {
     let fixture = r#"
-class B { B(int x) {} }
+class B {
+    B(int x) {}
+}
+
 class C extends B {
-    C() { super(/*start*/1 + 2/*end*/); }
+    C() {
+        super(/*start*/1 + 2/*end*/);
+    }
 }
 "#;
 
@@ -249,7 +254,10 @@ fn extract_variable_code_action_not_offered_in_this_constructor_invocation() {
     let fixture = r#"
 class C {
     C(int x) {}
-    C() { this(/*start*/1 + 2/*end*/); }
+
+    C() {
+        this(/*start*/1 + 2/*end*/);
+    }
 }
 "#;
 
