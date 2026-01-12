@@ -241,12 +241,6 @@ fn loads_maven_profile_modules_active_by_default() {
 fn resolves_maven_managed_dependency_coordinates_placeholders() {
     let root = testdata_path("maven-managed-coordinates-placeholder");
     let repo_dir = tempdir().expect("tempdir");
-    // Create a fake jar in the configured Maven repo so jar-path resolution includes it.
-    let managed_jar = repo_dir
-        .path()
-        .join("com/example/managed-dep/1.2.3/managed-dep-1.2.3.jar");
-    std::fs::create_dir_all(managed_jar.parent().unwrap()).expect("create jar parent");
-    std::fs::write(&managed_jar, b"not really a jar").expect("write jar placeholder");
     let options = LoadOptions {
         maven_repo: Some(repo_dir.path().to_path_buf()),
         ..LoadOptions::default()

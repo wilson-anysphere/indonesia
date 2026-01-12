@@ -2003,12 +2003,6 @@ fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<Path
     exists_as_jar(&path).then_some(path)
 }
 
-fn exists_as_jar(path: &Path) -> bool {
-    // Maven dependencies are usually `.jar` files, but some build setups (and test fixtures)
-    // "explode" jars into directories (sometimes still ending with `.jar`).
-    path.is_file() || path.is_dir()
-}
-
 fn resolve_snapshot_jar_file_name(
     version_dir: &Path,
     artifact_id: &str,
