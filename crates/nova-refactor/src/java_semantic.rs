@@ -6138,10 +6138,10 @@ fn collect_switch_contexts(
                 hir::LambdaBody::Expr(expr) => {
                     walk_expr(body, *expr, owner, scope_result, resolver, item_trees, out)
                 }
-                hir::LambdaBody::Block(stmt) => {
-                    walk_stmt(body, *stmt, owner, scope_result, resolver, item_trees, out)
-                }
-            },
+            hir::LambdaBody::Block(stmt) => {
+                walk_stmt(body, *stmt, owner, scope_result, resolver, item_trees, out)
+            }
+        },
             hir::Expr::Invalid { children, .. } => {
                 for child in children {
                     walk_expr(body, *child, owner, scope_result, resolver, item_trees, out);

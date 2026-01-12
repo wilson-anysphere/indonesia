@@ -123,6 +123,10 @@ mod stdio_safe_mode_enforcement;
 mod stdio_semantic_tokens;
 #[path = "suite/stdio_server.rs"]
 mod stdio_server;
+#[path = "suite/stdio_type_hierarchy.rs"]
+mod stdio_type_hierarchy;
+#[path = "suite/stdio_unresolved_type_code_actions.rs"]
+mod stdio_unresolved_type_code_actions;
 #[path = "suite/stdio_utf16_refactors.rs"]
 mod stdio_utf16_refactors;
 #[path = "suite/stdio_will_save.rs"]
