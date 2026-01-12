@@ -321,6 +321,8 @@ fn apply_semantic_constraints(schema: &mut RootSchema) {
 
     // Minor semantic constraints that are easier to express by post-processing the generated schema.
     set_min_items(schema, "GeneratedSourcesConfig", "override_roots", 1);
+    set_min_length(schema, "AiProviderConfig", "model", 1);
+    set_min_length(schema, "AiProviderConfig", "azure_api_version", 1);
     set_property_write_only(schema, "AiConfig", "api_key", true);
 }
 
@@ -433,6 +435,32 @@ fn set_min_items(
     };
 
     prop_obj.array().min_items = Some(min_items);
+}
+
+fn set_min_length(
+    schema: &mut RootSchema,
+    definition_name: &str,
+    property_name: &str,
+    min_length: u32,
+) {
+    let Some(definition) = schema.definitions.get_mut(definition_name) else {
+        return;
+    };
+
+    let Schema::Object(obj) = definition else {
+        return;
+    };
+
+    let object_validation = obj.object();
+    let Some(prop_schema) = object_validation.properties.get_mut(property_name) else {
+        return;
+    };
+
+    let Schema::Object(prop_obj) = prop_schema else {
+        return;
+    };
+
+    prop_obj.string().min_length = Some(min_length);
 }
 
 fn set_property_write_only(

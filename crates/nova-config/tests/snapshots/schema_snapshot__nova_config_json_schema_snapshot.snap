@@ -795,7 +795,8 @@ expression: schema
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "minLength": 1
         },
         "azure_deployment": {
           "description": "Azure OpenAI deployment name.\n\nRequired when `kind = \"azure_open_ai\"`.",
@@ -846,7 +847,8 @@ expression: schema
         "model": {
           "description": "Default model name.",
           "default": "llama3",
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         },
         "timeout_ms": {
           "description": "Per-request timeout.",
