@@ -232,4 +232,24 @@ mod tests {
             other => panic!("expected protocol error, got {other:?}"),
         }
     }
+
+    #[tokio::test]
+    async fn rejects_overlong_header_lines() {
+        let long = "A".repeat(MAX_DAP_HEADER_LINE_BYTES + 1);
+        let framed = format!("{long}\n\n");
+        let (mut writer, reader) = tokio::io::duplex(framed.len());
+        writer.write_all(framed.as_bytes()).await.unwrap();
+        writer.shutdown().await.unwrap();
+        drop(writer);
+
+        let mut reader = DapReader::new(reader);
+        let err = reader.read_value().await.unwrap_err();
+        match err {
+            DapError::Io(io_err) => {
+                assert_eq!(io_err.kind(), io::ErrorKind::InvalidData);
+                assert!(io_err.to_string().contains("header line exceeds maximum size"));
+            }
+            other => panic!("expected io error, got {other:?}"),
+        }
+    }
 }

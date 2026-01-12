@@ -174,4 +174,15 @@ mod tests {
             .to_string()
             .contains("exceeds maximum allowed size"));
     }
+
+    #[test]
+    fn rejects_overlong_header_lines() {
+        // Ensure a malicious client can't force us to allocate an unbounded header line buffer.
+        let long = "A".repeat(MAX_DAP_HEADER_LINE_BYTES + 1);
+        let framed = format!("{long}\n\n");
+        let mut cursor = Cursor::new(framed.into_bytes());
+        let err = read_raw_message(&mut cursor).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("header line exceeds maximum size"));
+    }
 }
