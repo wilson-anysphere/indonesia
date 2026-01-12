@@ -121,6 +121,53 @@ async fn handshake_rejects_zero_max_frame_len() {
 }
 
 #[tokio::test]
+async fn handshake_replies_with_legacy_error_for_v2_worker_hello() {
+    use nova_remote_proto::legacy_v2::RpcMessage as LegacyMessage;
+
+    let (router_io, mut worker_io) = tokio::io::duplex(64 * 1024);
+
+    let router_task =
+        tokio::spawn(async move { RpcConnection::handshake_as_router(router_io, None).await });
+
+    // Simulate a legacy v2 worker sending a v2 WorkerHello in a length-prefixed frame.
+    let hello = LegacyMessage::WorkerHello {
+        shard_id: 7,
+        auth_token: None,
+        has_cached_index: false,
+    };
+    let payload = nova_remote_proto::encode_message(&hello).unwrap();
+    let len: u32 = payload.len().try_into().unwrap();
+    worker_io.write_u32_le(len).await.unwrap();
+    worker_io.write_all(&payload).await.unwrap();
+    worker_io.flush().await.unwrap();
+
+    // The v3 router implementation replies with a legacy v2 Error frame for clearer diagnostics.
+    let len = tokio::time::timeout(std::time::Duration::from_millis(200), worker_io.read_u32_le())
+        .await
+        .expect("timed out waiting for router reply")
+        .unwrap();
+    let mut buf = vec![0u8; len as usize];
+    worker_io.read_exact(&mut buf).await.unwrap();
+    let msg = nova_remote_proto::decode_message(&buf).unwrap();
+    match msg {
+        LegacyMessage::Error { message } => assert_eq!(message, "router only supports v3"),
+        other => panic!("expected legacy error response, got {other:?}"),
+    }
+
+    let router_res = router_task.await.unwrap();
+    let err = match router_res {
+        Ok(_) => panic!("expected router handshake to fail for legacy v2 worker"),
+        Err(err) => err,
+    };
+    match err {
+        RpcTransportError::HandshakeFailed { message } => {
+            assert_eq!(message, "router only supports v3");
+        }
+        other => panic!("unexpected router error: {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn handshake_allows_router_to_reject_before_welcome() {
     let (router_io, mut worker_io) = tokio::io::duplex(64 * 1024);
 
