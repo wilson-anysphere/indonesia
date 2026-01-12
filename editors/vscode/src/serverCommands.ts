@@ -371,11 +371,7 @@ export function registerNovaServerCommands(
   };
 
   const runOrDebugMain = async (commandId: 'nova.runMain' | 'nova.debugMain', args: unknown[]): Promise<void> => {
-    const mainClass = extractMainClassFromCommandArgs(args);
-    if (!mainClass) {
-      void vscode.window.showErrorMessage(`Nova: ${commandId} requires a mainClass argument.`);
-      return;
-    }
+    const desiredMainClass = extractMainClassFromCommandArgs(args);
 
     const workspaces = vscode.workspace.workspaceFolders ?? [];
     const workspaceFolder = await resolveWorkspaceFolderForActiveContext(workspaces, 'Select workspace folder');
@@ -412,10 +408,25 @@ export function registerNovaServerCommands(
       return;
     }
 
-    const config = selectDebugConfigurationForMain(configs, mainClass);
-    if (!config) {
-      void vscode.window.showErrorMessage(`Nova: No debug configuration found for ${mainClass}.`);
-      return;
+    let config: NovaLspDebugConfiguration | undefined;
+    let mainClass: string | undefined = desiredMainClass;
+
+    if (mainClass) {
+      config = selectDebugConfigurationForMain(configs, mainClass);
+      if (!config) {
+        void vscode.window.showErrorMessage(`Nova: No debug configuration found for ${mainClass}.`);
+        return;
+      }
+    } else {
+      const picked = await vscode.window.showQuickPick(
+        configs.map((cfg) => ({ label: cfg.name, description: cfg.mainClass, config: cfg })),
+        { placeHolder: commandId === 'nova.runMain' ? 'Select main class to run' : 'Select main class to debug' },
+      );
+      config = picked?.config;
+      mainClass = config?.mainClass;
+      if (!config || !mainClass) {
+        return;
+      }
     }
 
     if (config.type === 'java' && !hasJavaDebugger()) {
