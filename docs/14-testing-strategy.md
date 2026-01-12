@@ -451,6 +451,7 @@ bench suites:
 - `crates/nova-syntax/benches/parse_java.rs` (`cargo bench --locked -p nova-syntax --bench parse_java`)
 - `crates/nova-format/benches/format.rs` (`cargo bench --locked -p nova-format --bench format`)
 - `crates/nova-refactor/benches/refactor.rs` (`cargo bench --locked -p nova-refactor --bench refactor`)
+- `crates/nova-ide/benches/completion.rs` (`cargo bench --locked -p nova-ide --bench completion`)
 - `crates/nova-classpath/benches/index.rs` (`cargo bench --locked -p nova-classpath --bench index`)
 
 Benchmark thresholds live in `perf/thresholds.toml`. Runtime snapshot thresholds live in
