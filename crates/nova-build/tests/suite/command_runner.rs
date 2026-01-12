@@ -591,6 +591,23 @@ fn gradle_java_compile_configs_all_parses_and_populates_cache() {
         .java_compile_config(&root, Some(":app"), &cache)
         .expect("cached per-project config");
 
+    // Root queries should also be cache hits: for aggregator roots (compileClasspath == null),
+    // `java_compile_config(None)` unions subprojects. The batch method caches that union under
+    // `<root>` to avoid an extra Gradle invocation.
+    let root_cp = build.classpath(&root, None, &cache).expect("cached root union");
+    assert_eq!(
+        root_cp,
+        Classpath::new(vec![
+            root.join("app")
+                .join("build")
+                .join("classes")
+                .join("java")
+                .join("main"),
+            shared.clone(),
+            app_dep.clone(),
+        ])
+    );
+
     let invocations = runner.invocations();
     assert_eq!(invocations.len(), 1);
     assert_eq!(

@@ -177,7 +177,17 @@ impl GradleBuild {
         data.projects = Some(cached_projects);
 
         let mut out = Vec::new();
+        let mut root_config = None::<JavaCompileConfig>;
+        let mut root_missing_compile_classpath = false;
+        let mut non_root_configs_for_union = Vec::new();
         for project in projects {
+            let is_root = project.path == ":";
+            // Remember whether the root project lacked a `compileClasspath` configuration
+            // (common for aggregator roots).
+            if is_root && project.config.compile_classpath.is_none() {
+                root_missing_compile_classpath = true;
+            }
+
             let project_dir = PathBuf::from(project.project_dir);
             let main_output_fallback = project_dir
                 .join("build")
@@ -198,19 +208,33 @@ impl GradleBuild {
                 config.test_source_roots = collect_source_roots(&project_dir, "test");
             }
 
-            // Root project path can't be used as a task prefix; callers use `None` instead.
-            let module_key = if project.path == ":" {
-                "<root>"
+            if is_root {
+                root_config = Some(config.clone());
             } else {
-                project.path.as_str()
-            };
-
-            let module = data.modules.entry(module_key.to_string()).or_default();
-            module.java_compile_config = Some(config.clone());
-            // Keep populating the legacy classpath field for older readers.
-            module.classpath = Some(config.compile_classpath.clone());
+                let module = data.modules.entry(project.path.clone()).or_default();
+                module.java_compile_config = Some(config.clone());
+                // Keep populating the legacy classpath field for older readers.
+                module.classpath = Some(config.compile_classpath.clone());
+                non_root_configs_for_union.push(config.clone());
+            }
 
             out.push((project.path, config));
+        }
+
+        // Cache the root module under `<root>`:
+        // - If the root is an aggregator (no compileClasspath), store the union of subprojects so
+        //   subsequent `java_compile_config(project_path=None)` calls are cache hits and preserve
+        //   the existing union fallback semantics.
+        // - Otherwise, store the root project's own config.
+        if root_missing_compile_classpath {
+            let union = JavaCompileConfig::union(non_root_configs_for_union);
+            let module = data.modules.entry("<root>".to_string()).or_default();
+            module.java_compile_config = Some(union.clone());
+            module.classpath = Some(union.compile_classpath.clone());
+        } else if let Some(root) = root_config {
+            let module = data.modules.entry("<root>".to_string()).or_default();
+            module.java_compile_config = Some(root.clone());
+            module.classpath = Some(root.compile_classpath.clone());
         }
 
         cache.store(project_root, BuildSystemKind::Gradle, &fingerprint, &data)?;
