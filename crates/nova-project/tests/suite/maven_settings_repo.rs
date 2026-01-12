@@ -87,6 +87,18 @@ fn touch_expected_jar(repo: &Path) {
     std::fs::write(&jar, b"not really a jar").expect("write fake jar");
 }
 
+fn assert_jar_entries_contain_expected(jar_entries: &[PathBuf], expected: &Path) {
+    let expected = expected.to_path_buf();
+    let expected_canon = std::fs::canonicalize(&expected).unwrap_or(expected.clone());
+    assert!(
+        jar_entries.iter().any(|jar| {
+            let jar_canon = std::fs::canonicalize(jar).unwrap_or_else(|_| jar.clone());
+            jar_canon == expected_canon
+        }),
+        "expected jar path {expected:?} (canonicalized to {expected_canon:?}) in classpath entries: {jar_entries:?}"
+    );
+}
+
 #[test]
 fn settings_xml_local_repository_is_used_for_dependency_jars() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -113,10 +125,7 @@ fn settings_xml_local_repository_is_used_for_dependency_jars() {
             .collect::<Vec<_>>();
 
         let expected = expected_guava_jar(&repo);
-        assert!(
-            jar_entries.contains(&expected),
-            "expected jar path {expected:?} in classpath entries: {jar_entries:?}"
-        );
+        assert_jar_entries_contain_expected(&jar_entries, &expected);
     });
 }
 
@@ -149,10 +158,7 @@ fn settings_xml_placeholder_local_repository_expands_user_home() {
             .collect::<Vec<_>>();
 
         let expected = expected_guava_jar(&expanded_repo);
-        assert!(
-            jar_entries.contains(&expected),
-            "expected expanded jar path {expected:?} in classpath entries: {jar_entries:?}"
-        );
+        assert_jar_entries_contain_expected(&jar_entries, &expected);
     });
 }
 
@@ -190,10 +196,7 @@ fn settings_xml_tilde_local_repository_expands_user_home() {
             .collect::<Vec<_>>();
 
         let expected = expected_guava_jar(&expanded_repo);
-        assert!(
-            jar_entries.contains(&expected),
-            "expected expanded jar path {expected:?} in classpath entries: {jar_entries:?}"
-        );
+        assert_jar_entries_contain_expected(&jar_entries, &expected);
     });
 }
 
@@ -225,10 +228,121 @@ fn settings_xml_env_local_repository_expands_env_home() {
             .collect::<Vec<_>>();
 
         let expected = expected_guava_jar(&expanded_repo);
-        assert!(
-            jar_entries.contains(&expected),
-            "expected expanded jar path {expected:?} in classpath entries: {jar_entries:?}"
-        );
+        assert_jar_entries_contain_expected(&jar_entries, &expected);
+    });
+}
+
+#[test]
+fn maven_config_tilde_repo_local_expands_user_home() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("home");
+    let workspace_root = temp.path().join("workspace");
+
+    std::fs::create_dir_all(&home).expect("create home");
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+    write_pom_xml(&workspace_root);
+
+    let expanded_repo = home.join(".m2").join("custom-repo");
+    touch_expected_jar(&expanded_repo);
+
+    let mvn_dir = workspace_root.join(".mvn");
+    std::fs::create_dir_all(&mvn_dir).expect("create .mvn");
+    std::fs::write(
+        mvn_dir.join("maven.config"),
+        "-Dmaven.repo.local=~/.m2/custom-repo\n",
+    )
+    .expect("write .mvn/maven.config");
+
+    with_home_dir(&home, || {
+        let options = LoadOptions::default();
+        let cfg = load_project_with_options(&workspace_root, &options).expect("load project");
+
+        let jar_entries = cfg
+            .classpath
+            .iter()
+            .filter(|e| e.kind == ClasspathEntryKind::Jar)
+            .map(|e| e.path.clone())
+            .collect::<Vec<_>>();
+
+        let expected = expected_guava_jar(&expanded_repo);
+        assert_jar_entries_contain_expected(&jar_entries, &expected);
+    });
+}
+
+#[test]
+fn maven_config_placeholder_repo_local_expands_user_home() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("home");
+    let workspace_root = temp.path().join("workspace");
+
+    std::fs::create_dir_all(&home).expect("create home");
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+    write_pom_xml(&workspace_root);
+
+    let expanded_repo = home.join(".m2").join("custom-repo");
+    touch_expected_jar(&expanded_repo);
+
+    let mvn_dir = workspace_root.join(".mvn");
+    std::fs::create_dir_all(&mvn_dir).expect("create .mvn");
+    std::fs::write(
+        mvn_dir.join("maven.config"),
+        "-Dmaven.repo.local=${user.home}/.m2/custom-repo\n",
+    )
+    .expect("write .mvn/maven.config");
+
+    with_home_dir(&home, || {
+        let options = LoadOptions::default();
+        let cfg = load_project_with_options(&workspace_root, &options).expect("load project");
+
+        let jar_entries = cfg
+            .classpath
+            .iter()
+            .filter(|e| e.kind == ClasspathEntryKind::Jar)
+            .map(|e| e.path.clone())
+            .collect::<Vec<_>>();
+
+        let expected = expected_guava_jar(&expanded_repo);
+        assert_jar_entries_contain_expected(&jar_entries, &expected);
+    });
+}
+
+#[test]
+fn maven_config_env_repo_local_expands_env_home() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("home");
+    let m2_home = temp.path().join("m2-home");
+    let workspace_root = temp.path().join("workspace");
+
+    std::fs::create_dir_all(&home).expect("create home");
+    std::fs::create_dir_all(&m2_home).expect("create m2 home");
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+    write_pom_xml(&workspace_root);
+
+    let expanded_repo = m2_home.join("custom-repo");
+    touch_expected_jar(&expanded_repo);
+
+    let mvn_dir = workspace_root.join(".mvn");
+    std::fs::create_dir_all(&mvn_dir).expect("create .mvn");
+    std::fs::write(
+        mvn_dir.join("maven.config"),
+        "-Dmaven.repo.local=${env.M2_HOME}/custom-repo\n",
+    )
+    .expect("write .mvn/maven.config");
+
+    with_home_dir(&home, || {
+        let _m2_home_guard = EnvVarGuard::set("M2_HOME", &m2_home);
+        let options = LoadOptions::default();
+        let cfg = load_project_with_options(&workspace_root, &options).expect("load project");
+
+        let jar_entries = cfg
+            .classpath
+            .iter()
+            .filter(|e| e.kind == ClasspathEntryKind::Jar)
+            .map(|e| e.path.clone())
+            .collect::<Vec<_>>();
+
+        let expected = expected_guava_jar(&expanded_repo);
+        assert_jar_entries_contain_expected(&jar_entries, &expected);
     });
 }
 
@@ -272,14 +386,7 @@ fn maven_config_repo_local_overrides_settings_xml() {
             .collect::<Vec<_>>();
 
         let expected = expected_guava_jar(&repo_from_config);
-        let expected_canon = std::fs::canonicalize(&expected).unwrap_or(expected.clone());
-        assert!(
-            jar_entries.iter().any(|jar| {
-                let jar_canon = std::fs::canonicalize(jar).unwrap_or_else(|_| jar.clone());
-                jar_canon == expected_canon
-            }),
-            "expected jar path {expected:?} (canonicalized to {expected_canon:?}) in classpath entries: {jar_entries:?}"
-        );
+        assert_jar_entries_contain_expected(&jar_entries, &expected);
 
         let repo_from_settings_canon =
             std::fs::canonicalize(&repo_from_settings).unwrap_or(repo_from_settings.clone());
