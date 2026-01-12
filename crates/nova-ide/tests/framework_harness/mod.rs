@@ -27,7 +27,7 @@ pub struct Fixture {
 pub fn ide_with_default_registry(
     db: Arc<InMemoryFileStore>,
 ) -> IdeExtensions<InMemoryFileStore> {
-    IdeExtensions::with_default_registry(
+    IdeExtensions::<InMemoryFileStore>::with_default_registry(
         db,
         Arc::new(NovaConfig::default()),
         ProjectId::new(0),
