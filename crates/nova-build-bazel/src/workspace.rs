@@ -131,6 +131,7 @@ pub struct BazelWorkspace<R: CommandRunner> {
     root: PathBuf,
     canonical_root: OnceLock<std::result::Result<PathBuf, String>>,
     ignored_prefixes: OnceLock<Vec<PathBuf>>,
+    bazelrc_imports: OnceLock<Vec<PathBuf>>,
     execution_root: OnceLock<std::result::Result<PathBuf, String>>,
     runner: R,
     cache_path: Option<PathBuf>,
@@ -151,6 +152,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             root,
             canonical_root: OnceLock::new(),
             ignored_prefixes: OnceLock::new(),
+            bazelrc_imports: OnceLock::new(),
             execution_root: OnceLock::new(),
             runner,
             cache_path: None,
@@ -254,6 +256,11 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             prefixes.dedup();
             prefixes
         })
+    }
+
+    fn bazelrc_imports(&self) -> &Vec<PathBuf> {
+        self.bazelrc_imports
+            .get_or_init(|| bazelrc_imported_files(&self.root))
     }
 
     fn is_ignored_workspace_path(&self, workspace_rel: &Path) -> bool {
@@ -1083,23 +1090,37 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             })
             .collect::<Vec<_>>();
 
+        // If a `.bazelrc` file changed, invalidate any cached import graph so new imports are
+        // discovered.
+        if changed.iter().any(|path| {
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n == ".bazelrc" || n.starts_with(".bazelrc."))
+        }) {
+            let _ = self.bazelrc_imports.take();
+        }
+
         // Owning-target results are derived from BUILD/BUILD.bazel/.bzl state. Avoid clearing the
         // cache for plain source edits (hot swap calls this frequently) but still invalidate on
         // build definition changes for correctness.
-        let mut saw_build_definition_change = changed.iter().any(|path| is_bazel_build_definition_file(path));
+        let mut saw_build_definition_change = changed
+            .iter()
+            .any(|path| is_bazel_build_definition_file(path));
+
         // `.bazelrc` can import arbitrary files; treat changes to those as build-definition changes
-        // too. To keep `invalidate_changed_files` lightweight for frequent source edits, only scan
-        // imports when a changed file *looks* like a bazelrc fragment.
-        if !saw_build_definition_change
-            && !self.java_owning_targets_cache.is_empty()
-            && changed
-                .iter()
-                .any(|p| p.extension().and_then(|e| e.to_str()) == Some("rc"))
-        {
-            let imported = bazelrc_imported_files(&self.root);
-            if changed.iter().any(|p| imported.iter().any(|i| i == p)) {
-                saw_build_definition_change = true;
-            }
+        // too. We keep a cached import graph so we don't need to re-parse `.bazelrc` for every
+        // invalidate call (e.g. frequent source edits).
+        let mut saw_bazelrc_import_change = false;
+        if !saw_build_definition_change && !self.java_owning_targets_cache.is_empty() {
+            let imports = self.bazelrc_imports();
+            saw_bazelrc_import_change = changed.iter().any(|p| imports.iter().any(|i| i == p));
+        } else if let Some(imports) = self.bazelrc_imports.get() {
+            saw_bazelrc_import_change = changed.iter().any(|p| imports.iter().any(|i| i == p));
+        }
+        if saw_bazelrc_import_change {
+            saw_build_definition_change = true;
+            // Imports may have changed transitively; recompute on demand.
+            let _ = self.bazelrc_imports.take();
         }
 
         if saw_build_definition_change {
