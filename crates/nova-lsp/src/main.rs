@@ -1157,6 +1157,13 @@ impl ServerState {
                 memory_events.lock().unwrap().push(event);
             })
         });
+        // File texts are *inputs* (not caches) and are effectively non-evictable
+        // while a document is open. We still want their footprint to contribute
+        // to overall memory pressure and drive eviction of caches/memos.
+        //
+        // We track them under `Other` to reflect their "input" nature; the
+        // memory manager is responsible for compensating across categories when
+        // large non-evictable consumers dominate.
         let documents_memory = memory.register_tracker("open_documents", MemoryCategory::Other);
 
         #[cfg(feature = "ai")]

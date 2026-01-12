@@ -128,6 +128,45 @@ fn pressure_event_and_degraded_mode_when_non_evictable_memory_dominates() {
 }
 
 #[test]
+fn non_evictable_other_can_force_query_cache_eviction_under_high_pressure() {
+    // Regression test:
+    // A large non-evictable consumer (like file texts stored as Salsa inputs)
+    // may be tracked under `Other` and have no evictors. Under high total
+    // pressure, we still want evictable caches (QueryCache) to shrink, even if
+    // they're below their own per-category target.
+    //
+    // Use a very large budget to avoid process RSS affecting pressure on Linux.
+    let budget = MemoryBudget::from_total(1_000_000_000_000);
+    let manager = MemoryManager::new(budget);
+
+    // Simulate file text memory (non-evictable) dominating `Other`.
+    let file_texts = manager.register_tracker("file_texts", MemoryCategory::Other);
+    file_texts.tracker().set_bytes(budget.total * 90 / 100);
+
+    // An evictable cache in QueryCache that is still under its category target
+    // at High pressure (targets are scaled to 50%).
+    let cache = TestEvictor::new(&manager, "query_cache", MemoryCategory::QueryCache);
+    let cache_bytes = budget.total * 4 / 100; // total usage = 94% => High (not Critical)
+    cache.set_bytes(cache_bytes);
+
+    let high_target = ((budget.categories.query_cache as f64) * 0.50).round() as u64;
+    assert!(
+        cache_bytes < high_target,
+        "cache should start under its per-category target to reproduce the regression"
+    );
+
+    assert_eq!(manager.report().pressure, nova_memory::MemoryPressure::High);
+
+    manager.enforce();
+
+    assert_eq!(
+        cache.bytes(),
+        0,
+        "non-evictable memory in `Other` should drive eviction of query caches"
+    );
+}
+
+#[test]
 fn medium_pressure_scales_targets() {
     let budget = MemoryBudget::from_total(1_000_000_000_000);
     let manager = MemoryManager::new(budget);

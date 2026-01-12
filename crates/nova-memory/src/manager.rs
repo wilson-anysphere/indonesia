@@ -304,9 +304,84 @@ impl MemoryManager {
                 .collect()
         };
 
+        // --- Cross-category compensation ---
+        //
+        // Eviction targets start out as per-category budgets (`target`). That
+        // works well when each category's usage is mostly evictable.
+        //
+        // In practice, some large consumers are *non-evictable* (for example,
+        // file texts stored as Salsa inputs). These often get tracked in a
+        // category that has few/no evictors (e.g. `Other`).
+        //
+        // If such a category exceeds its target, `within_targets()` keeps
+        // requesting eviction passes, but the per-category loop below will
+        // skip it (`evictable_usage == 0`). Without cross-category
+        // compensation, evictors in other categories may never run if they're
+        // already under their own category targets, even though overall memory
+        // pressure is high and *evicting caches is the only remaining lever*.
+        //
+        // To address this, we compute a global "evictable budget":
+        //
+        //   global_evictable_budget = target_total - total_non_evictable
+        //
+        // and, if necessary, scale down per-category evictable allowances so
+        // the remaining evictable memory fits within it. This allows
+        // non-evictable input memory (like file texts) to drive eviction of
+        // evictable caches in other categories.
+        let compensated_target = {
+            let mut evictable_by_category = MemoryBreakdown::default();
+            for (_id, category, usage_counter, _evictor) in &entries {
+                let bytes = usage_counter.load(Ordering::Relaxed);
+                let prev = evictable_by_category.get(*category);
+                evictable_by_category.set(*category, prev.saturating_add(bytes));
+            }
+
+            let mut non_evictable_by_category = MemoryBreakdown::default();
+            for category in MemoryBreakdown::categories() {
+                let category_usage = usage.get(category);
+                let evictable_usage = evictable_by_category.get(category);
+                non_evictable_by_category.set(category, category_usage.saturating_sub(evictable_usage));
+            }
+
+            let total_non_evictable = non_evictable_by_category.total();
+            let global_evictable_budget = target.total().saturating_sub(total_non_evictable);
+
+            // First, compute the per-category "desired" eviction outcome:
+            // shrink evictable usage down to its max budget, but do not request
+            // growth if currently below budget.
+            let mut desired_keep = MemoryBreakdown::default();
+            for category in MemoryBreakdown::categories() {
+                let evictable_usage = evictable_by_category.get(category);
+                let max_keep =
+                    target.get(category).saturating_sub(non_evictable_by_category.get(category));
+                desired_keep.set(category, evictable_usage.min(max_keep));
+            }
+
+            let total_desired_keep = desired_keep.total();
+            let mut adjusted_keep = desired_keep;
+
+            if total_desired_keep > global_evictable_budget && total_desired_keep > 0 {
+                for category in MemoryBreakdown::categories() {
+                    let desired = desired_keep.get(category);
+                    let scaled = ((desired as u128) * (global_evictable_budget as u128)
+                        / (total_desired_keep as u128)) as u64;
+                    adjusted_keep.set(category, scaled);
+                }
+            }
+
+            let mut compensated = MemoryBreakdown::default();
+            for category in MemoryBreakdown::categories() {
+                let non_evictable = non_evictable_by_category.get(category);
+                let keep = adjusted_keep.get(category);
+                compensated.set(category, non_evictable.saturating_add(keep));
+            }
+
+            compensated
+        };
+
         for category in MemoryBreakdown::categories() {
             let category_usage = usage.get(category);
-            let category_target = target.get(category);
+            let category_target = compensated_target.get(category);
 
             if category_usage <= category_target {
                 continue;
