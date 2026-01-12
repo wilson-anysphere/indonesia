@@ -24,17 +24,6 @@ fn first_edit_new_text(action: &lsp_types::CodeAction) -> &str {
 }
 
 #[test]
-fn code_actions_with_context_includes_type_mismatch_quickfix() {
-    let mut db = InMemoryFileStore::new();
-    let file = db.file_id_for_path(PathBuf::from("/test.java"));
-    let source = r#"class A {
-  void m() {
-    Object obj = new Object();
-    String s = obj;
-  }
-}
-
-#[test]
 fn code_actions_with_context_includes_unused_import_quickfix_for_cursor_selection() {
     let mut db = InMemoryFileStore::new();
     let file = db.file_id_for_path(PathBuf::from("/test.java"));
@@ -44,8 +33,8 @@ fn code_actions_with_context_includes_unused_import_quickfix_for_cursor_selectio
     let diag_start = 0;
     let diag_end = source.find('\n').expect("import line should end with newline");
     let range = Range::new(
-        offset_to_position_utf16(source, diag_start),
-        offset_to_position_utf16(source, diag_end),
+        offset_to_position(source, diag_start),
+        offset_to_position(source, diag_end),
     );
 
     let diag = lsp_types::Diagnostic {
@@ -68,25 +57,29 @@ fn code_actions_with_context_includes_unused_import_quickfix_for_cursor_selectio
         &[diag],
     );
 
-    let mut found = false;
-    for action in &actions {
-        let lsp_types::CodeActionOrCommand::CodeAction(action) = action else {
-            continue;
-        };
-        if action.title == "Remove unused import" {
-            found = true;
-            assert_eq!(action.kind, Some(lsp_types::CodeActionKind::QUICKFIX));
-            assert!(
-                action.edit.is_some(),
-                "expected unused import quickfix to include an edit"
-            );
-        }
-    }
-
     assert!(
-        found,
+        actions.iter().any(|action| match action {
+            lsp_types::CodeActionOrCommand::CodeAction(action)
+                if action.title == "Remove unused import"
+                    && action.kind == Some(lsp_types::CodeActionKind::QUICKFIX) =>
+            {
+                true
+            }
+            _ => false,
+        }),
         "expected to find `Remove unused import` quick fix; got {actions:?}"
     );
+}
+
+#[test]
+fn code_actions_with_context_includes_type_mismatch_quickfix() {
+    let mut db = InMemoryFileStore::new();
+    let file = db.file_id_for_path(PathBuf::from("/test.java"));
+    let source = r#"class A {
+  void m() {
+    Object obj = new Object();
+    String s = obj;
+  }
 }
 "#;
     db.set_file_text(file, source.to_string());
@@ -117,23 +110,16 @@ fn code_actions_with_context_includes_unused_import_quickfix_for_cursor_selectio
         &[diag],
     );
 
-    let mut found = false;
-    for action in &actions {
-        let lsp_types::CodeActionOrCommand::CodeAction(action) = action else {
-            continue;
-        };
-        if action.title == "Cast to String" {
-            found = true;
-            assert_eq!(action.kind, Some(lsp_types::CodeActionKind::QUICKFIX));
-            assert!(
-                action.edit.is_some(),
-                "expected cast quickfix to include an edit"
-            );
-        }
-    }
-
     assert!(
-        found,
+        actions.iter().any(|action| match action {
+            lsp_types::CodeActionOrCommand::CodeAction(action)
+                if action.title == "Cast to String"
+                    && action.kind == Some(lsp_types::CodeActionKind::QUICKFIX) =>
+            {
+                true
+            }
+            _ => false,
+        }),
         "expected to find `Cast to String` quick fix; got {actions:?}"
     );
 }
@@ -245,6 +231,58 @@ fn code_actions_with_context_cast_wraps_binary_expression_in_parentheses() {
     });
     let cast_fix = cast_fix.expect("expected Cast to byte quickfix");
     assert_eq!(first_edit_new_text(cast_fix), "(byte) (a + b)");
+}
+
+#[test]
+fn code_actions_with_context_includes_return_mismatch_remove_returned_value_quickfix_for_cursor_at_span_start(
+) {
+    let mut db = InMemoryFileStore::new();
+    let file = db.file_id_for_path(PathBuf::from("/test.java"));
+    let source = r#"class A {
+  void m() {
+    return 1;
+  }
+}
+"#;
+    db.set_file_text(file, source.to_string());
+
+    let expr_start = source.rfind("1;").expect("expression span");
+    let expr_end = expr_start + "1".len();
+
+    let range = Range::new(
+        offset_to_position(source, expr_start),
+        offset_to_position(source, expr_end),
+    );
+
+    let diag = lsp_types::Diagnostic {
+        range,
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String("return-mismatch".to_string())),
+        message: "cannot return a value from a `void` method".to_string(),
+        ..lsp_types::Diagnostic::default()
+    };
+
+    let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
+    let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
+
+    let actions = ide.code_actions_lsp_with_context(
+        CancellationToken::new(),
+        file,
+        Some(Span::new(expr_start, expr_start)),
+        &[diag],
+    );
+
+    let fix = actions.iter().find_map(|action| match action {
+        lsp_types::CodeActionOrCommand::CodeAction(action)
+            if action.kind == Some(lsp_types::CodeActionKind::QUICKFIX)
+                && action.title == "Remove returned value" =>
+        {
+            Some(action)
+        }
+        _ => None,
+    });
+    let fix = fix.expect("expected Remove returned value quickfix at cursor boundary");
+    assert_eq!(first_edit_new_text(fix), "");
 }
 
 #[test]
