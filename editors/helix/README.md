@@ -1,11 +1,11 @@
 # Helix setup (template)
 
-This template configures Helix's built-in LSP client to launch `nova-lsp` over stdio for Java files.
+This template configures Helix's built-in LSP client to launch Nova's LSP server over stdio for Java files.
 
 ## Prerequisites
 
 - Helix
-- `nova-lsp` available on your `$PATH`
+- `nova` available on your `$PATH` (recommended), or `nova-lsp` if you prefer to run the server binary directly.
 
 ## `languages.toml`
 
@@ -13,8 +13,8 @@ Add the following to `~/.config/helix/languages.toml` (create the file if it doe
 
 ```toml
 [language-server.nova-lsp]
-command = "nova-lsp"
-args = ["--stdio"]
+command = "nova"
+args = ["lsp"]
 
 [[language]]
 name = "java"

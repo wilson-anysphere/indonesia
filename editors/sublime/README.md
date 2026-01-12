@@ -1,13 +1,13 @@
 # Sublime Text setup (template)
 
 This template configures the [Sublime Text LSP package](https://packagecontrol.io/packages/LSP) to
-launch `nova-lsp` over stdio for Java files.
+launch Nova's LSP server over stdio for Java files.
 
 ## Prerequisites
 
 - Sublime Text
 - The `LSP` package (via Package Control)
-- `nova-lsp` available on your `$PATH`
+- `nova` available on your `$PATH` (recommended), or `nova-lsp` if you prefer to run the server binary directly.
 
 ## Configure the LSP client
 
@@ -18,7 +18,7 @@ Create `Packages/User/LSP-nova-lsp.sublime-settings` (Preferences → Browse Pac
   "clients": {
     "nova-lsp": {
       "enabled": true,
-      "command": ["nova-lsp", "--stdio"],
+      "command": ["nova", "lsp"],
       "selector": "source.java"
     }
   }

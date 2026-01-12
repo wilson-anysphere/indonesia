@@ -1,13 +1,13 @@
 # Emacs setup (template)
 
-This template configures Emacs to launch `nova-lsp` over stdio for `java-mode`.
+This template configures Emacs to launch Nova's LSP server over stdio for `java-mode`.
 
 The repo includes a copy/paste-ready config file at [`editors/emacs/nova.el`](./nova.el).
 
 ## Prerequisites
 
 - Emacs 28+
-- `nova-lsp` available on your `$PATH`
+- `nova` available on your `$PATH` (recommended), or `nova-lsp` if you prefer to run the server binary directly.
 
 ## Quick start
 
@@ -24,7 +24,7 @@ The repo includes a copy/paste-ready config file at [`editors/emacs/nova.el`](./
 
 Emacs' built-in project system (`project.el`) is often VCS-based. If you open a Maven/Gradle/Bazel
 workspace that is not checked into git (or if you're opening a nested file), `eglot`/`lsp-mode` may
-start `nova-lsp` with the wrong workspace root.
+start the server with the wrong workspace root.
 
 The template provides an opt-in helper that treats common Nova/build-system marker files as project
 roots (`nova.toml`, `.nova/`, `pom.xml`, `build.gradle(.kts)`, `settings.gradle(.kts)`, `WORKSPACE(.bazel)`, `MODULE.bazel`):
@@ -44,7 +44,7 @@ Or, inline:
 ```elisp
 (with-eval-after-load 'eglot
   (add-to-list 'eglot-server-programs
-               '(java-mode . ("nova-lsp" "--stdio"))))
+               '(java-mode . ("nova" "lsp"))))
 
 (add-hook 'java-mode-hook #'eglot-ensure)
 ```
@@ -61,7 +61,7 @@ Or, inline:
 (with-eval-after-load 'lsp-mode
   (lsp-register-client
    (make-lsp-client
-    :new-connection (lsp-stdio-connection '("nova-lsp" "--stdio"))
+    :new-connection (lsp-stdio-connection '("nova" "lsp"))
     :activation-fn (lsp-activate-on "java")
     :server-id 'nova-lsp)))
 

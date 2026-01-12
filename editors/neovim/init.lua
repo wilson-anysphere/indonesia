@@ -1,7 +1,7 @@
--- Minimal Neovim LSP setup for `nova-lsp` (stdio) for Java.
+-- Minimal Neovim LSP setup for Nova (stdio) for Java.
 --
 -- This file is meant to be copied into your own Neovim config. It assumes you
--- have `neovim/nvim-lspconfig` installed and `nova-lsp` available on $PATH.
+-- have `neovim/nvim-lspconfig` installed and `nova` available on $PATH.
 --
 -- Copy to:
 --   - Linux/macOS: ~/.config/nvim/init.lua
@@ -21,7 +21,7 @@ local util = require("lspconfig.util")
 if not configs.nova_lsp then
   configs.nova_lsp = {
     default_config = {
-      cmd = { "nova-lsp", "--stdio" },
+      cmd = { "nova", "lsp" },
       filetypes = { "java" },
       root_dir = util.root_pattern(
         -- Nova config.

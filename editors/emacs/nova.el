@@ -1,6 +1,6 @@
 ;;; nova.el --- Nova LSP configuration (template) -*- lexical-binding: t; -*-
 
-;; This is a minimal template that connects Emacs to `nova-lsp` for Java.
+;; This is a minimal template that connects Emacs to Nova's LSP server for Java.
 ;;
 ;; Copy this file somewhere on your `load-path` (for example `~/.emacs.d/lisp/nova.el`)
 ;; and then, in your init:
@@ -13,8 +13,12 @@
   "Run the Nova language server."
   :group 'tools)
 
-(defcustom nova-lsp-command '("nova-lsp" "--stdio")
-  "Command used to start `nova-lsp`."
+(defcustom nova-lsp-command '("nova" "lsp")
+  "Command used to start Nova's LSP server.
+
+By default, this uses the `nova lsp` launcher subcommand. If you prefer to run
+the server binary directly, you can set this to something like:
+  '(\"nova-lsp\" \"--stdio\")"
   :type '(repeat string)
   :group 'nova)
 
@@ -24,7 +28,7 @@
 ;; If a workspace is not in VCS, `project-current` may not find a project root automatically.
 ;;
 ;; This helper lets users opt into treating common Java build-system marker files as project roots
-;; so `nova-lsp` starts with the correct workspace root even for non-git checkouts.
+;; so the server starts with the correct workspace root even for non-git checkouts.
 (defcustom nova-project-root-files
   '(
     ;; Nova config (works for "simple" projects without build tools).
@@ -82,7 +86,7 @@ This adds a `project-find-functions` entry that treats directories containing a 
 
 ;;;###autoload
 (defun nova-eglot-setup ()
-  "Configure `eglot` to use `nova-lsp` for Java."
+  "Configure `eglot` to use Nova's LSP server for Java."
   (with-eval-after-load 'eglot
     (add-to-list 'eglot-server-programs
                  `((java-mode java-ts-mode) . ,nova-lsp-command)))
@@ -93,7 +97,7 @@ This adds a `project-find-functions` entry that treats directories containing a 
 
 ;;;###autoload
 (defun nova-lsp-mode-setup ()
-  "Configure `lsp-mode` to use `nova-lsp` for Java."
+  "Configure `lsp-mode` to use Nova's LSP server for Java."
   (with-eval-after-load 'lsp-mode
     (lsp-register-client
      (make-lsp-client
