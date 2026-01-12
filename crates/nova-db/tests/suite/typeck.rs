@@ -8468,6 +8468,22 @@ class C {
 }
 
 #[test]
+fn void_parameter_type_is_error_in_abstract_method_signature() {
+    let src = r#"
+interface I {
+    void m(void x);
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "void-parameter-type"),
+        "expected void-parameter-type diagnostic; got {diags:?}"
+    );
+}
+
+#[test]
 fn void_catch_parameter_type_is_error() {
     let src = r#"
 class C {

@@ -2428,6 +2428,13 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                         Some(param.ty_range),
                     );
                     extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
+                    if resolved.ty == Type::Void {
+                        out.push(Diagnostic::error(
+                            "void-parameter-type",
+                            "`void` is not a valid parameter type",
+                            Some(param.ty_range),
+                        ));
+                    }
                 }
 
                 for (idx, thrown) in method.throws.iter().enumerate() {
