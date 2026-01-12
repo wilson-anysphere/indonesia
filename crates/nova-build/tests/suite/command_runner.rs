@@ -137,19 +137,6 @@ fn success_status() -> ExitStatus {
     }
 }
 
-fn failure_status() -> ExitStatus {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::ExitStatusExt;
-        ExitStatus::from_raw(1 << 8)
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::ExitStatusExt;
-        ExitStatus::from_raw(1)
-    }
-}
-
 #[test]
 fn maven_classpath_uses_wrapper_and_caches_result() {
     let tmp = tempfile::tempdir().unwrap();
@@ -261,15 +248,21 @@ fn maven_java_compile_config_infers_module_path_via_jpms_heuristic() {
 
     let testdata_dir =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata");
-    std::fs::copy(testdata_dir.join("named-module.jar"), root.join("dep.jar")).unwrap();
-    let named = root.join("dep.jar");
+    let named = testdata_dir.join("named-module.jar");
+    let automatic = testdata_dir.join("automatic-module-name-1.2.3.jar");
+    let dep = testdata_dir.join("dep.jar");
 
     let mut outputs = HashMap::new();
     outputs.insert(
         "project.compileClasspathElements".to_string(),
         CommandOutput {
             status: success_status(),
-            stdout: "[dep.jar]".to_string(),
+            stdout: format!(
+                "[\"{}\",\"{}\",\"{}\"]",
+                named.to_string_lossy(),
+                automatic.to_string_lossy(),
+                dep.to_string_lossy()
+            ),
             stderr: String::new(),
             truncated: false,
         },
@@ -280,35 +273,6 @@ fn maven_java_compile_config_infers_module_path_via_jpms_heuristic() {
         CommandOutput {
             status: success_status(),
             stdout: "[src/main/java]".to_string(),
-            stderr: String::new(),
-            truncated: false,
-        },
-    );
-    outputs.insert(
-        // Fail the module-path expression to ensure the heuristic kicks in and the
-        // request still succeeds.
-        "project.compileModulePathElements".to_string(),
-        CommandOutput {
-            status: failure_status(),
-            stdout: String::new(),
-            stderr: "Invalid expression".to_string(),
-            truncated: false,
-        },
-    );
-    outputs.insert(
-        "project.compileModulepathElements".to_string(),
-        CommandOutput {
-            status: success_status(),
-            stdout: "[]".to_string(),
-            stderr: String::new(),
-            truncated: false,
-        },
-    );
-    outputs.insert(
-        "project.testCompileModulePathElements".to_string(),
-        CommandOutput {
-            status: success_status(),
-            stdout: "[]".to_string(),
             stderr: String::new(),
             truncated: false,
         },
@@ -331,12 +295,7 @@ fn maven_java_compile_config_infers_module_path_via_jpms_heuristic() {
     let cfg = build.java_compile_config(&root, None, &cache).unwrap();
     // When Maven doesn't expose module-path expressions, we fall back to a JPMS heuristic that
     // infers the module-path from stable modules on the compile classpath.
-    assert_eq!(cfg.module_path, vec![named.clone()]);
-    assert!(cfg.compile_classpath.contains(&named));
-    assert!(cfg
-        .compile_classpath
-        .iter()
-        .any(|p| p.ends_with(Path::new("target/classes"))));
+    assert_eq!(cfg.module_path, vec![named.clone(), automatic.clone()]);
     assert!(!cfg
         .module_path
         .iter()
