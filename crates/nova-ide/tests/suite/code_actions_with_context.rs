@@ -216,6 +216,19 @@ fn code_actions_with_context_includes_type_mismatch_quickfix_for_cursor_at_span_
     assert!(
         actions.iter().any(|action| match action {
             lsp_types::CodeActionOrCommand::CodeAction(action)
+                if action.title == "Convert to String"
+                    && action.kind == Some(lsp_types::CodeActionKind::QUICKFIX) =>
+            {
+                true
+            }
+            _ => false,
+        }),
+        "expected to find `Convert to String` quick fix at cursor boundary; got {actions:?}"
+    );
+
+    assert!(
+        actions.iter().any(|action| match action {
+            lsp_types::CodeActionOrCommand::CodeAction(action)
                 if action.title == "Cast to String"
                     && action.kind == Some(lsp_types::CodeActionKind::QUICKFIX) =>
             {
@@ -264,6 +277,19 @@ fn code_actions_with_context_includes_type_mismatch_quickfix_for_cursor_at_span_
         file,
         Some(Span::new(expr_end, expr_end)),
         &[diag],
+    );
+
+    assert!(
+        actions.iter().any(|action| match action {
+            lsp_types::CodeActionOrCommand::CodeAction(action)
+                if action.title == "Convert to String"
+                    && action.kind == Some(lsp_types::CodeActionKind::QUICKFIX) =>
+            {
+                true
+            }
+            _ => false,
+        }),
+        "expected to find `Convert to String` quick fix at cursor boundary; got {actions:?}"
     );
 
     assert!(

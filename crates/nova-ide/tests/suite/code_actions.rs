@@ -128,6 +128,19 @@ class A {
     let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
     let actions = ide.code_actions_lsp(CancellationToken::new(), file, Some(selection));
 
+    assert!(
+        actions.iter().any(|action| match action {
+            lsp_types::CodeActionOrCommand::CodeAction(action)
+                if action.kind == Some(lsp_types::CodeActionKind::QUICKFIX)
+                    && action.title == "Convert to String" =>
+            {
+                true
+            }
+            _ => false,
+        }),
+        "expected Convert to String quickfix at cursor boundary; got {actions:?}"
+    );
+
     let cast_fix = actions.iter().find_map(|action| match action {
         lsp_types::CodeActionOrCommand::CodeAction(action)
             if action.kind == Some(lsp_types::CodeActionKind::QUICKFIX)
@@ -172,6 +185,19 @@ class A {
     let db: Arc<InMemoryFileStore> = Arc::new(db);
     let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
     let actions = ide.code_actions_lsp(CancellationToken::new(), file, Some(selection));
+
+    assert!(
+        actions.iter().any(|action| match action {
+            lsp_types::CodeActionOrCommand::CodeAction(action)
+                if action.kind == Some(lsp_types::CodeActionKind::QUICKFIX)
+                    && action.title == "Convert to String" =>
+            {
+                true
+            }
+            _ => false,
+        }),
+        "expected Convert to String quickfix at cursor boundary; got {actions:?}"
+    );
 
     let cast_fix = actions.iter().find_map(|action| match action {
         lsp_types::CodeActionOrCommand::CodeAction(action)
