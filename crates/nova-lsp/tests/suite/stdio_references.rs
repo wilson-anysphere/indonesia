@@ -66,7 +66,14 @@ fn stdio_server_supports_text_document_references_for_open_documents() {
             "params": { "rootUri": root_uri, "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    let initialize_resp = read_response_with_id(&mut stdout, 1);
+    assert_eq!(
+        initialize_resp
+            .pointer("/result/capabilities/referencesProvider")
+            .and_then(|v| v.as_bool()),
+        Some(true),
+        "server must advertise referencesProvider"
+    );
     write_jsonrpc_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
