@@ -134,6 +134,27 @@ impl JdkIndex {
         Self::discover_with_cache_and_stats_policy(config, cache_dir, allow_write, None)
     }
 
+    /// Discover a JDK installation for the requested API release and build an index backed by its
+    /// platform containers.
+    ///
+    /// When `requested_release` is `None`, Nova falls back to `config.release`.
+    pub fn discover_for_release(
+        config: Option<&JdkConfig>,
+        requested_release: Option<u16>,
+    ) -> Result<Self, JdkIndexError> {
+        let policy = cache_policy_from_env();
+        let cache_dir = policy.as_ref().map(|p| p.dir.as_path());
+        let allow_write = policy.as_ref().is_some_and(|p| p.allow_write);
+
+        let install = JdkInstallation::discover_for_release(config, requested_release)?;
+        Self::from_jdk_root_with_cache_and_stats_policy(
+            install.root(),
+            cache_dir,
+            allow_write,
+            None,
+        )
+    }
+
     /// Build an index backed by a JDK installation's platform containers and an optional persisted cache.
     pub fn from_jdk_root_with_cache(
         root: impl AsRef<Path>,

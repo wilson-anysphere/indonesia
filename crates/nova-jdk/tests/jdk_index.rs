@@ -400,6 +400,30 @@ fn discovery_for_release_prefers_requested_toolchain() -> Result<(), Box<dyn std
 }
 
 #[test]
+fn jdk_index_discover_for_release_prefers_requested_toolchain(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _guard = ENV_LOCK.lock().unwrap();
+
+    let cfg = JdkConfig {
+        home: Some(fake_jdk_root()),
+        release: None,
+        toolchains: vec![nova_core::JdkToolchain {
+            release: 8,
+            home: fake_jdk8_root(),
+        }],
+    };
+
+    let index = JdkIndex::discover_for_release(Some(&cfg), Some(8))?;
+    assert!(
+        index.module_graph().is_none(),
+        "requested legacy release should pick jar-backed toolchain"
+    );
+    assert!(index.lookup_type("java.lang.String")?.is_some());
+
+    Ok(())
+}
+
+#[test]
 fn discovery_coerces_java_home_jre_subdir() -> Result<(), Box<dyn std::error::Error>> {
     let _guard = ENV_LOCK.lock().unwrap();
 
