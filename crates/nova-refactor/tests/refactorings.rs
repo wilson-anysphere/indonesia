@@ -1438,6 +1438,81 @@ fn extract_variable_allows_extraction_inside_braced_if_block() {
 }
 
 #[test]
+fn extract_variable_rejects_try_with_resources_resource_specification() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C {
+  void m(java.io.InputStream in) throws Exception {
+    try (java.io.BufferedInputStream r = new java.io.BufferedInputStream(/*start*/in/*end*/)) {
+      r.read();
+    }
+  }
+}
+"#;
+
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src)]);
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "x".into(),
+            use_var: true,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            SemanticRefactorError::ExtractNotSupported { reason }
+                if reason == "cannot extract from try-with-resources resource specification"
+        ),
+        "expected ExtractNotSupported error, got: {err:?}"
+    );
+}
+
+#[test]
+fn extract_variable_allows_extraction_inside_try_body() {
+    let file = FileId::new("Test.java");
+    let fixture = r#"class C {
+  void m(java.io.InputStream in) throws Exception {
+    try (java.io.BufferedInputStream r = new java.io.BufferedInputStream(in)) {
+      System.out.println(/*start*/1 + 2/*end*/);
+    }
+  }
+}
+"#;
+
+    let (src, expr_range) = extract_range(fixture);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.clone())]);
+
+    let edit = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range,
+            name: "sum".into(),
+            use_var: true,
+        },
+    )
+    .unwrap();
+
+    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
+    let expected = r#"class C {
+  void m(java.io.InputStream in) throws Exception {
+    try (java.io.BufferedInputStream r = new java.io.BufferedInputStream(in)) {
+      var sum = 1 + 2;
+      System.out.println(sum);
+    }
+  }
+}
+"#;
+    assert_eq!(after, expected);
+}
+
+#[test]
 fn extract_variable_rejected_in_annotation_value() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
