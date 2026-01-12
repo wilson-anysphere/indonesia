@@ -23,6 +23,7 @@ use nova_framework_parse::{
 use nova_types::{ClassId, CompletionItem, Diagnostic, Span};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, OnceLock};
 use tree_sitter::Node;
 
 mod workspace;
@@ -2154,6 +2155,185 @@ fn goto_target_property(
     }))
 }
 
+/// Workspace-scoped filesystem index for Java type resolution.
+///
+/// `find_type_file` uses this as a fallback when the conventional package-derived
+/// path doesn't exist. Building the index requires a full directory walk, so we
+/// build it once per `project_root` and reuse it across calls (best-effort).
+#[derive(Debug, Default)]
+struct FsWorkspaceCache {
+    inner: Mutex<HashMap<PathBuf, Arc<FsTypeIndexEntry>>>,
+}
+
+#[derive(Debug, Default)]
+struct FsTypeIndexEntry {
+    index: OnceLock<Arc<FsTypeIndex>>,
+}
+
+#[derive(Debug, Default)]
+struct FsTypeIndex {
+    by_simple_name: HashMap<String, Vec<PathBuf>>,
+}
+
+static FS_WORKSPACE_CACHE: LazyLock<FsWorkspaceCache> = LazyLock::new(FsWorkspaceCache::default);
+
+impl FsWorkspaceCache {
+    fn type_index(&self, project_root: &Path, roots: &[PathBuf]) -> Arc<FsTypeIndex> {
+        let key = project_root.to_path_buf();
+        let entry = {
+            let mut cache = lock_unpoison(&self.inner);
+            cache
+                .entry(key.clone())
+                .or_insert_with(|| Arc::new(FsTypeIndexEntry::default()))
+                .clone()
+        };
+
+        entry
+            .index
+            .get_or_init(|| {
+                #[cfg(test)]
+                bump_fs_type_index_build_count(&key);
+                Arc::new(FsTypeIndex::build(roots))
+            })
+            .clone()
+    }
+}
+
+impl FsTypeIndex {
+    fn build(roots: &[PathBuf]) -> Self {
+        let scan_roots = scan_roots_for_type_index(roots);
+        let mut by_simple_name: HashMap<String, Vec<PathBuf>> = HashMap::new();
+
+        for root in scan_roots {
+            let Ok(files) = collect_java_files(&root) else {
+                continue;
+            };
+            for file in files {
+                let Some(stem) = file.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                if stem.is_empty() {
+                    continue;
+                }
+                by_simple_name
+                    .entry(stem.to_string())
+                    .or_default()
+                    .push(file);
+            }
+        }
+
+        for paths in by_simple_name.values_mut() {
+            paths.sort();
+            paths.dedup();
+        }
+
+        Self { by_simple_name }
+    }
+}
+
+fn scan_roots_for_type_index(roots: &[PathBuf]) -> Vec<PathBuf> {
+    // Avoid scanning nested roots redundantly (e.g. scanning `src/main/java` and `src` when `src`
+    // already covers it).
+    let mut out = Vec::new();
+    for root in roots {
+        let nested_in_other = roots
+            .iter()
+            .any(|other| root != other && root.starts_with(other));
+        if nested_in_other {
+            continue;
+        }
+        out.push(root.clone());
+    }
+    if out.is_empty() {
+        roots.to_vec()
+    } else {
+        out
+    }
+}
+
+fn lock_unpoison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|err| err.into_inner())
+}
+
+#[cfg(test)]
+static FS_TYPE_INDEX_BUILD_COUNTS: LazyLock<Mutex<HashMap<PathBuf, usize>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+fn bump_fs_type_index_build_count(project_root: &Path) {
+    let mut counts = lock_unpoison(&FS_TYPE_INDEX_BUILD_COUNTS);
+    *counts.entry(project_root.to_path_buf()).or_insert(0) += 1;
+}
+
+#[cfg(test)]
+fn fs_type_index_build_count(project_root: &Path) -> usize {
+    let counts = lock_unpoison(&FS_TYPE_INDEX_BUILD_COUNTS);
+    counts.get(project_root).copied().unwrap_or(0)
+}
+
+fn select_type_file_candidate(
+    candidates: &[PathBuf],
+    ty: &JavaType,
+    roots: &[PathBuf],
+) -> Option<PathBuf> {
+    if candidates.is_empty() {
+        return None;
+    }
+
+    // Prefer an exact package match when package information is available. This is intentionally
+    // suffix-based so it can still succeed even when the source roots are non-standard (and the
+    // package-derived `root.join(...)` candidate doesn't exist).
+    let package_suffix = ty.package.as_deref().and_then(|pkg| {
+        let pkg = pkg.trim();
+        if pkg.is_empty() {
+            return None;
+        }
+        let pkg_path = pkg.replace('.', "/");
+        Some(PathBuf::from(pkg_path).join(format!("{}.java", ty.name)))
+    });
+
+    let mut considered: Vec<&PathBuf> = Vec::new();
+    if let Some(suffix) = package_suffix.as_ref() {
+        considered.extend(candidates.iter().filter(|p| p.ends_with(suffix)));
+    }
+    if considered.is_empty() {
+        considered.extend(candidates.iter());
+    }
+
+    let root_lens: Vec<usize> = roots.iter().map(|r| r.components().count()).collect();
+    let mut best: Option<(&PathBuf, usize, usize)> = None;
+
+    for cand in considered {
+        let mut best_root_len = 0usize;
+        let mut best_root_idx = usize::MAX;
+        for (idx, root) in roots.iter().enumerate() {
+            if cand.starts_with(root) {
+                let len = root_lens.get(idx).copied().unwrap_or(0);
+                if len > best_root_len || (len == best_root_len && idx < best_root_idx) {
+                    best_root_len = len;
+                    best_root_idx = idx;
+                }
+            }
+        }
+
+        match best {
+            None => best = Some((cand, best_root_len, best_root_idx)),
+            Some((best_path, prev_root_len, prev_root_idx)) => {
+                let better = best_root_len > prev_root_len
+                    || (best_root_len == prev_root_len && best_root_idx < prev_root_idx)
+                    || (best_root_len == prev_root_len
+                        && best_root_idx == prev_root_idx
+                        && cand < best_path);
+                if better {
+                    best = Some((cand, best_root_len, best_root_idx));
+                }
+            }
+        }
+    }
+
+    best.map(|(path, ..)| path.clone())
+}
+
 fn find_type_file(
     project_root: &Path,
     roots: &[PathBuf],
@@ -2171,21 +2351,14 @@ fn find_type_file(
         }
     }
 
-    // Fallback: brute force search within source roots.
-    for root in roots {
-        for file in collect_java_files(root)? {
-            if file
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .is_some_and(|s| s == ty.name)
-            {
-                return Ok(Some(file));
-            }
-        }
-    }
+    // Fallback: consult the workspace-scoped filesystem index rather than walking the tree on
+    // every call. This is best-effort and may be stale within a single process.
+    let index = FS_WORKSPACE_CACHE.type_index(project_root, roots);
+    let Some(candidates) = index.by_simple_name.get(&ty.name) else {
+        return Ok(None);
+    };
 
-    let _ = project_root;
-    Ok(None)
+    Ok(select_type_file_candidate(candidates, ty, roots))
 }
 
 fn find_generated_method_span_in_file(
@@ -2712,5 +2885,77 @@ fn decapitalize(s: &str) -> String {
     match chars.next() {
         None => String::new(),
         Some(first) => first.to_lowercase().collect::<String>() + chars.as_str(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn write_java(path: &Path, package: &str, name: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(
+            path,
+            format!("package {package};\npublic class {name} {{}}\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn fs_type_resolution_prefers_exact_package_match() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        let foo_example = root.join("module1/com/example/Foo.java");
+        let foo_other = root.join("module2/com/other/Foo.java");
+        write_java(&foo_example, "com.example", "Foo");
+        write_java(&foo_other, "com.other", "Foo");
+
+        let roots = source_roots(root);
+        let ty = JavaType {
+            package: Some("com.example".to_string()),
+            name: "Foo".to_string(),
+        };
+
+        let resolved = find_type_file(root, &roots, &ty).unwrap();
+        assert_eq!(resolved, Some(foo_example));
+    }
+
+    #[test]
+    fn fs_type_index_is_built_once_per_project_root() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        let foo_example = root.join("module1/com/example/Foo.java");
+        let foo_other = root.join("module2/com/other/Foo.java");
+        write_java(&foo_example, "com.example", "Foo");
+        write_java(&foo_other, "com.other", "Foo");
+
+        let roots = source_roots(root);
+        let before = fs_type_index_build_count(root);
+
+        let ty_example = JavaType {
+            package: Some("com.example".to_string()),
+            name: "Foo".to_string(),
+        };
+        let resolved = find_type_file(root, &roots, &ty_example).unwrap();
+        assert_eq!(resolved, Some(foo_example));
+
+        let after_first = fs_type_index_build_count(root);
+        assert_eq!(after_first, before + 1);
+
+        let ty_other = JavaType {
+            package: Some("com.other".to_string()),
+            name: "Foo".to_string(),
+        };
+        let resolved = find_type_file(root, &roots, &ty_other).unwrap();
+        assert_eq!(resolved, Some(foo_other));
+
+        let after_second = fs_type_index_build_count(root);
+        assert_eq!(after_second, after_first);
     }
 }
