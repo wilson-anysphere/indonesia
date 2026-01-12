@@ -21,7 +21,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
 use tokio::net::TcpListener;
 use tokio::process::Command;
 use tokio::sync::{watch, Mutex, Notify, OwnedSemaphorePermit, RwLock, Semaphore};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{timeout, Duration, Instant};
 use tracing::{error, info, warn};
 
@@ -521,7 +521,9 @@ impl InProcessRouter {
     async fn index_workspace(&self) -> Result<()> {
         let token = self.next_index_token().await;
         let revision = self.global_revision.fetch_add(1, Ordering::SeqCst) + 1;
-        let mut indexes = HashMap::new();
+        let mut join_set = JoinSet::new();
+
+        // Spawn all per-shard indexing tasks first so multi-shard work actually runs concurrently.
         for (shard_id, root) in self.layout.source_roots.iter().enumerate() {
             let files = collect_java_files(&root.path).await?;
             let shard_id = shard_id as ShardId;
@@ -533,7 +535,21 @@ impl InProcessRouter {
                     Cancelled::check(&token)?;
                     Ok(symbols)
                 });
-            let symbols = match task.join().await {
+
+            join_set.spawn(async move { (shard_id, task.join().await) });
+        }
+
+        let mut indexes = HashMap::new();
+        while let Some(res) = join_set.join_next().await {
+            let (shard_id, symbols) = match res {
+                Ok((shard_id, res)) => (shard_id, res),
+                Err(err) => {
+                    // The join task itself should never panic, but surface it as an indexing error.
+                    return Err(anyhow!("indexing task panicked: {err}"));
+                }
+            };
+
+            let symbols = match symbols {
                 Ok(symbols) => symbols,
                 Err(TaskError::Cancelled) => return Ok(()),
                 Err(TaskError::Panicked) => return Err(anyhow!("indexing task panicked")),
@@ -541,10 +557,11 @@ impl InProcessRouter {
                     return Err(anyhow!("indexing task exceeded deadline"))
                 }
             };
+
             indexes.insert(
-                shard_id as ShardId,
+                shard_id,
                 ShardIndex {
-                    shard_id: shard_id as ShardId,
+                    shard_id,
                     revision,
                     index_generation: revision,
                     symbols,
@@ -792,21 +809,78 @@ impl DistributedRouter {
             results.push((shard_id, worker, files));
         }
 
+        // Fan out indexing requests to all workers concurrently.
+        let mut join_set = JoinSet::new();
         for (shard_id, worker, files) in results {
-            let resp = worker_call(&worker, Request::IndexShard { revision, files }).await?;
+            join_set.spawn(async move {
+                let resp = worker_call(&worker, Request::IndexShard { revision, files }).await;
+                (shard_id, worker, resp)
+            });
+        }
+
+        let mut updated_any = false;
+        let mut error: Option<anyhow::Error> = None;
+
+        while let Some(res) = join_set.join_next().await {
+            let (shard_id, worker, resp) = match res {
+                Ok(res) => res,
+                Err(err) => {
+                    error = Some(anyhow!("indexing task panicked: {err}"));
+                    break;
+                }
+            };
+
+            let resp = match resp {
+                Ok(resp) => resp,
+                Err(err) => {
+                    error = Some(err);
+                    break;
+                }
+            };
+
             match resp {
                 Response::ShardIndex(index) => {
                     if index.shard_id != shard_id {
                         self.disconnect_worker(&worker).await;
-                        return Err(anyhow!(
+                        error = Some(anyhow!(
                             "worker returned index for wrong shard {} (expected {shard_id})",
                             index.shard_id
                         ));
+                        break;
                     }
-                    apply_shard_index(self.state.clone(), index).await;
+
+                    // Apply the shard index immediately, but defer rebuilding the global symbol
+                    // index until the end to avoid quadratic rebuild work.
+                    {
+                        let mut guard = self.state.shard_indexes.lock().await;
+                        guard.insert(index.shard_id, index);
+                    }
+                    updated_any = true;
                 }
-                other => return Err(anyhow!("unexpected worker response: {other:?}")),
+                other => {
+                    error = Some(anyhow!("unexpected worker response: {other:?}"));
+                    break;
+                }
             }
+        }
+
+        // If anything went wrong mid-flight, abort remaining RPC tasks.
+        drop(join_set);
+
+        // Keep `global_symbols` consistent with `shard_indexes` while avoiding quadratic rebuilds:
+        // rebuild once from a full snapshot at the end (even if we return early on error after
+        // applying some shard indexes).
+        if updated_any {
+            let indexes_snapshot = {
+                let guard = self.state.shard_indexes.lock().await;
+                guard.clone()
+            };
+            let symbols = build_global_symbols(indexes_snapshot.values());
+            write_global_symbols(&self.state.global_symbols, symbols).await;
+        }
+
+        if let Some(err) = error {
+            return Err(err);
         }
 
         Ok(())
