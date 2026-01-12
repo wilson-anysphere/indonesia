@@ -208,6 +208,25 @@ mod tests {
         let plain = root.join("plain");
         std::fs::create_dir_all(&plain).unwrap();
         assert!(!stable_module_path_entry(&plain));
+
+        // Exploded JMOD-style layout (`classes/module-info.class`).
+        let exploded = root.join("exploded");
+        std::fs::create_dir_all(exploded.join("classes")).unwrap();
+        std::fs::write(exploded.join("classes").join("module-info.class"), b"cafebabe").unwrap();
+        assert!(stable_module_path_entry(&exploded));
+
+        // Exploded JMOD-style manifest (`classes/META-INF/MANIFEST.MF`).
+        let exploded_manifest = root.join("exploded-manifest");
+        std::fs::create_dir_all(exploded_manifest.join("classes").join("META-INF")).unwrap();
+        std::fs::write(
+            exploded_manifest
+                .join("classes")
+                .join("META-INF")
+                .join("MANIFEST.MF"),
+            "Manifest-Version: 1.0\nAutomatic-Module-Name: com.example.exploded\n\n",
+        )
+        .unwrap();
+        assert!(stable_module_path_entry(&exploded_manifest));
     }
 
     #[test]
