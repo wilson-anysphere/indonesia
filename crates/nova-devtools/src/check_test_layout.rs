@@ -1,4 +1,6 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
@@ -15,9 +17,25 @@ pub fn check(
     manifest_path: Option<&Path>,
     metadata_path: Option<&Path>,
 ) -> anyhow::Result<CheckTestLayoutReport> {
+    let allowlist_path = Path::new("test-layout-allowlist.txt");
+    let allowlist_raw = match std::fs::read_to_string(allowlist_path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == ErrorKind::NotFound => String::new(),
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!(
+                    "failed to read test layout allowlist {}",
+                    allowlist_path.display()
+                )
+            })
+        }
+    };
+    let allowlist = parse_allowlist(&allowlist_raw);
+
     let workspace = crate::workspace::load_workspace_graph(manifest_path, metadata_path)?;
 
     let mut diagnostics = Vec::new();
+    let mut root_test_file_counts: BTreeMap<String, usize> = BTreeMap::new();
 
     for (krate, manifest) in &workspace.packages {
         let Some(crate_dir) = manifest.parent() else {
@@ -51,9 +69,61 @@ pub fn check(
             }
         };
 
-        if let Some(diag) = diagnostic_for_root_test_files(krate, manifest, &tests_dir, &root_rs_files)
+        root_test_file_counts.insert(krate.clone(), root_rs_files.len());
+
+        if root_rs_files.len() > 2 && allowlist.contains(krate) {
+            let mut file_names: Vec<String> = root_rs_files
+                .iter()
+                .filter_map(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
+                .collect();
+            file_names.sort();
+
+            diagnostics.push(
+                Diagnostic::warning(
+                    "test-layout-too-many-root-tests-allowlisted",
+                    format!(
+                        "crate `{krate}` has {} root-level integration test files in {}: {} (allowlisted; max allowed without allowlist: 2)",
+                        root_rs_files.len(),
+                        tests_dir.display(),
+                        file_names.join(", ")
+                    ),
+                )
+                .with_file(manifest.display().to_string())
+                .with_suggestion(test_layout_suggestion()),
+            );
+        } else if let Some(diag) =
+            diagnostic_for_root_test_files(krate, manifest, &tests_dir, &root_rs_files)
         {
             diagnostics.push(diag);
+        }
+    }
+
+    // Warn about stale allowlist entries (crate is compliant or removed).
+    for entry in &allowlist {
+        match root_test_file_counts.get(entry) {
+            Some(count) => {
+                if *count > 2 {
+                    continue;
+                }
+                diagnostics.push(
+                    Diagnostic::warning(
+                        "stale-test-layout-allowlist-entry",
+                        format!(
+                            "allowlist entry `{entry}` is stale: crate now has {count} root-level `tests/*.rs` file(s)"
+                        ),
+                    )
+                    .with_file(allowlist_path.display().to_string()),
+                );
+            }
+            None => {
+                diagnostics.push(
+                    Diagnostic::warning(
+                        "unknown-test-layout-allowlist-entry",
+                        format!("allowlist entry `{entry}` does not match any workspace crate"),
+                    )
+                    .with_file(allowlist_path.display().to_string()),
+                );
+            }
         }
     }
 
@@ -104,6 +174,30 @@ fn diagnostic_for_root_test_files(
         diag.with_file(manifest.display().to_string())
             .with_suggestion(test_layout_suggestion()),
     )
+}
+
+fn parse_allowlist(raw: &str) -> BTreeSet<String> {
+    let mut allowlist = BTreeSet::new();
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        let mut without_comment = trimmed;
+        if let Some((before, _after)) = trimmed.split_once('#') {
+            without_comment = before.trim();
+        }
+
+        if without_comment.is_empty() {
+            continue;
+        }
+
+        allowlist.insert(without_comment.to_string());
+    }
+
+    allowlist
 }
 
 fn root_level_rs_files(tests_dir: &Path) -> anyhow::Result<Vec<PathBuf>> {

@@ -1,8 +1,10 @@
 # Integration test layout allowlist
 #
-# Each `tests/*.rs` file becomes its own integration test binary. Our repo guidance is to keep
-# only ONE root-level `tests/*.rs` per crate (a single harness), and put additional tests into
-# submodules under a directory.
+# Each `tests/*.rs` file becomes its own integration test binary. `nova-devtools` warns at 2 root
+# test files and errors at >2 by default.
+#
+# This allowlist is a temporary escape hatch for crates that still exceed the limit (so repo
+# invariants can pass while we consolidate test harnesses incrementally).
 #
 # This allowlist is a temporary escape hatch for crates that haven't been consolidated yet.
 # We prefer WARNINGS (not failures) for stale entries so the list can be cleaned up gradually.
@@ -11,10 +13,7 @@
 
 nova-lsp
 nova-ide
-nova-ai
 nova-db
-nova-build
 nova-project
-nova-classpath
 nova-refactor
 nova-framework-spring
