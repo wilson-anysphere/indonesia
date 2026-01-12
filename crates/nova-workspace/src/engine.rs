@@ -6345,7 +6345,7 @@ enabled = false
         let snapshot_dir = root.join(".nova").join("apt-cache");
         fs::create_dir_all(&snapshot_dir).unwrap();
         let snapshot = serde_json::json!({
-            "schema_version": 1,
+            "schema_version": nova_project::GENERATED_ROOTS_SNAPSHOT_SCHEMA_VERSION,
             "modules": [{
                 "module_root": root.to_string_lossy(),
                 "roots": [{

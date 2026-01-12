@@ -174,7 +174,7 @@ mod tests {
 
         let custom_root = module_root.join("custom-generated");
         let snapshot = serde_json::json!({
-            "schema_version": 1,
+            "schema_version": GENERATED_ROOTS_SNAPSHOT_SCHEMA_VERSION,
             "modules": [{
                 "module_root": module_root.to_string_lossy(),
                 "roots": [{

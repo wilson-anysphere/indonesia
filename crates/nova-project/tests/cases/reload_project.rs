@@ -2,7 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use nova_project::{
-    load_project_with_options, reload_project, LoadOptions, SourceRootKind, SourceRootOrigin,
+    load_project_with_options, reload_project, LoadOptions,
+    GENERATED_ROOTS_SNAPSHOT_SCHEMA_VERSION, SourceRootKind, SourceRootOrigin,
 };
 use tempfile::tempdir;
 
@@ -35,7 +36,7 @@ fn write_generated_roots_snapshot(
     fs::create_dir_all(&snapshot_dir).expect("create snapshot dir");
 
     let snapshot = serde_json::json!({
-        "schema_version": 1,
+        "schema_version": GENERATED_ROOTS_SNAPSHOT_SCHEMA_VERSION,
         "modules": [{
             "module_root": module_root.to_string_lossy(),
             "roots": [{
@@ -90,7 +91,7 @@ fn reload_project_reloads_when_generated_roots_snapshot_is_created() {
         .expect("create snapshot dir");
 
     let snapshot = serde_json::json!({
-        "schema_version": 1,
+        "schema_version": GENERATED_ROOTS_SNAPSHOT_SCHEMA_VERSION,
         "modules": [{
             "module_root": config.workspace_root.to_string_lossy(),
             "roots": [{
