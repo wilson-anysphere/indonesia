@@ -104,16 +104,16 @@ pub(crate) struct JpaResolvedDefinition {
     pub(crate) span: Span,
 }
 
-pub(crate) fn project_for_file(
-    db: &dyn FileDatabase,
+pub(crate) fn project_for_file<DB: ?Sized + FileDatabase>(
+    db: &DB,
     file: FileId,
 ) -> Option<Arc<CachedJpaProject>> {
     let cancel = CancellationToken::new();
     project_for_file_with_cancel(db, file, &cancel)
 }
 
-pub(crate) fn project_for_file_with_cancel(
-    db: &dyn FileDatabase,
+pub(crate) fn project_for_file_with_cancel<DB: ?Sized + FileDatabase>(
+    db: &DB,
     file: FileId,
     cancel: &CancellationToken,
 ) -> Option<Arc<CachedJpaProject>> {
@@ -263,8 +263,8 @@ pub(crate) fn resolve_definition_in_jpql(
     None
 }
 
-fn collect_java_files(
-    db: &dyn FileDatabase,
+fn collect_java_files<DB: ?Sized + FileDatabase>(
+    db: &DB,
     root: &Path,
     cancel: &CancellationToken,
 ) -> Option<Vec<(PathBuf, FileId)>> {
@@ -288,8 +288,8 @@ fn collect_java_files(
     Some(out)
 }
 
-fn fingerprint_sources(
-    db: &dyn FileDatabase,
+fn fingerprint_sources<DB: ?Sized + FileDatabase>(
+    db: &DB,
     files: &[(PathBuf, FileId)],
     cancel: &CancellationToken,
 ) -> Option<u64> {
@@ -317,7 +317,7 @@ fn fingerprint_sources(
     Some(hasher.finish())
 }
 
-fn fallback_root(db: &dyn FileDatabase) -> Option<PathBuf> {
+fn fallback_root<DB: ?Sized + FileDatabase>(db: &DB) -> Option<PathBuf> {
     let mut paths: Vec<PathBuf> = db
         .all_file_ids()
         .into_iter()

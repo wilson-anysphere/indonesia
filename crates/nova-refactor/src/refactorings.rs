@@ -1131,6 +1131,36 @@ pub fn extract_variable(
         .find_map(ast::Statement::cast)
         .ok_or(RefactorError::InvalidSelection)?;
 
+    // Extracting a side-effectful expression into a new statement can change evaluation order or
+    // conditionality (e.g. when the expression appears under `?:`, `&&`, etc). Be conservative.
+    //
+    // The only side-effectful extraction we currently support is extracting the *entire* expression
+    // of an expression statement (e.g. `new Foo();`). In that case, we rewrite the statement
+    // in-place to a local declaration (`Foo tmp = new Foo();`) rather than inserting a new
+    // statement before it.
+    if has_side_effects(expr.syntax()) {
+        let selection_is_whole_expression_statement = match &stmt {
+            ast::Statement::ExpressionStatement(expr_stmt) => {
+                if params.use_var {
+                    false
+                } else if let Some(stmt_expr) = expr_stmt.expression() {
+                    let stmt_expr_range = trimmed_syntax_range(stmt_expr.syntax());
+                    let stmt_expr_range_ws = trim_range(text, syntax_range(stmt_expr.syntax()));
+                    (stmt_expr_range.start == selection.start && stmt_expr_range.end == selection.end)
+                        || (stmt_expr_range_ws.start == selection.start
+                            && stmt_expr_range_ws.end == selection.end)
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        };
+
+        if !selection_is_whole_expression_statement {
+            return Err(RefactorError::ExtractSideEffects);
+        }
+    }
+
     // Java requires an explicit constructor invocation (`this(...)` / `super(...)`) to be the
     // first statement in a constructor body. Extracting a variable would insert a new statement
     // before it, producing uncompilable code.

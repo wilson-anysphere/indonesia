@@ -46,13 +46,16 @@ impl CachedDaggerProject {
 static DAGGER_ANALYSIS_CACHE: Lazy<Mutex<HashMap<PathBuf, Arc<CachedDaggerProject>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
-pub(crate) fn diagnostics_for_file(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
+pub(crate) fn diagnostics_for_file<DB: ?Sized + Database>(
+    db: &DB,
+    file: FileId,
+) -> Vec<Diagnostic> {
     let cancel = CancellationToken::new();
     diagnostics_for_file_with_cancel(db, file, &cancel)
 }
 
-pub(crate) fn diagnostics_for_file_with_cancel(
-    db: &dyn Database,
+pub(crate) fn diagnostics_for_file_with_cancel<DB: ?Sized + Database>(
+    db: &DB,
     file: FileId,
     cancel: &CancellationToken,
 ) -> Vec<Diagnostic> {
@@ -188,13 +191,16 @@ pub(crate) fn find_references(
     Some(out)
 }
 
-fn project_analysis(db: &dyn Database, file_path: &Path) -> Option<Arc<CachedDaggerProject>> {
+fn project_analysis<DB: ?Sized + Database>(
+    db: &DB,
+    file_path: &Path,
+) -> Option<Arc<CachedDaggerProject>> {
     let cancel = CancellationToken::new();
     project_analysis_with_cancel(db, file_path, &cancel)
 }
 
-fn project_analysis_with_cancel(
-    db: &dyn Database,
+fn project_analysis_with_cancel<DB: ?Sized + Database>(
+    db: &DB,
     file_path: &Path,
     cancel: &CancellationToken,
 ) -> Option<Arc<CachedDaggerProject>> {
@@ -265,8 +271,8 @@ fn project_has_dagger_dependency(root: &Path) -> bool {
     })
 }
 
-fn collect_java_file_ids(
-    db: &dyn Database,
+fn collect_java_file_ids<DB: ?Sized + Database>(
+    db: &DB,
     root: &Path,
     canonical_root: &Path,
     cancel: &CancellationToken,

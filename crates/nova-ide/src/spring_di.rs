@@ -176,13 +176,16 @@ pub(crate) enum AnnotationStringContext {
 static SPRING_DI_CACHE: Lazy<SpringWorkspaceCache<SpringDiWorkspaceEntry>> =
     Lazy::new(SpringWorkspaceCache::default);
 
-pub(crate) fn diagnostics_for_file(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
+pub(crate) fn diagnostics_for_file<DB: ?Sized + Database>(
+    db: &DB,
+    file: FileId,
+) -> Vec<Diagnostic> {
     let cancel = CancellationToken::new();
     diagnostics_for_file_with_cancel(db, file, &cancel)
 }
 
-pub(crate) fn diagnostics_for_file_with_cancel(
-    db: &dyn Database,
+pub(crate) fn diagnostics_for_file_with_cancel<DB: ?Sized + Database>(
+    db: &DB,
     file: FileId,
     cancel: &CancellationToken,
 ) -> Vec<Diagnostic> {
@@ -220,13 +223,16 @@ pub(crate) fn diagnostics_for_file_with_cancel(
         .collect()
 }
 
-pub(crate) fn qualifier_completion_items(db: &dyn Database, file: FileId) -> Vec<CompletionItem> {
+pub(crate) fn qualifier_completion_items<DB: ?Sized + Database>(
+    db: &DB,
+    file: FileId,
+) -> Vec<CompletionItem> {
     let cancel = CancellationToken::new();
     qualifier_completion_items_with_cancel(db, file, &cancel)
 }
 
-pub(crate) fn qualifier_completion_items_with_cancel(
-    db: &dyn Database,
+pub(crate) fn qualifier_completion_items_with_cancel<DB: ?Sized + Database>(
+    db: &DB,
     file: FileId,
     cancel: &CancellationToken,
 ) -> Vec<CompletionItem> {
@@ -243,13 +249,16 @@ pub(crate) fn qualifier_completion_items_with_cancel(
     nova_framework_spring::qualifier_completions(&analysis.model)
 }
 
-pub(crate) fn profile_completion_items(db: &dyn Database, file: FileId) -> Vec<CompletionItem> {
+pub(crate) fn profile_completion_items<DB: ?Sized + Database>(
+    db: &DB,
+    file: FileId,
+) -> Vec<CompletionItem> {
     let cancel = CancellationToken::new();
     profile_completion_items_with_cancel(db, file, &cancel)
 }
 
-pub(crate) fn profile_completion_items_with_cancel(
-    db: &dyn Database,
+pub(crate) fn profile_completion_items_with_cancel<DB: ?Sized + Database>(
+    db: &DB,
     file: FileId,
     cancel: &CancellationToken,
 ) -> Vec<CompletionItem> {
@@ -511,13 +520,16 @@ pub(crate) fn annotation_string_context(
     Some(kind)
 }
 
-fn workspace_entry(db: &dyn Database, file: FileId) -> Option<Arc<SpringDiWorkspaceEntry>> {
+fn workspace_entry<DB: ?Sized + Database>(
+    db: &DB,
+    file: FileId,
+) -> Option<Arc<SpringDiWorkspaceEntry>> {
     let cancel = CancellationToken::new();
     workspace_entry_with_cancel(db, file, &cancel)
 }
 
-fn workspace_entry_with_cancel(
-    db: &dyn Database,
+fn workspace_entry_with_cancel<DB: ?Sized + Database>(
+    db: &DB,
     file: FileId,
     cancel: &CancellationToken,
 ) -> Option<Arc<SpringDiWorkspaceEntry>> {
@@ -568,8 +580,8 @@ struct JavaSource {
     file_id: FileId,
 }
 
-fn build_workspace_entry(
-    db: &dyn Database,
+fn build_workspace_entry<DB: ?Sized + Database>(
+    db: &DB,
     root: PathBuf,
     java_sources: Vec<JavaSource>,
     cancel: &CancellationToken,
@@ -599,8 +611,8 @@ fn build_workspace_entry(
     }
 }
 
-fn collect_java_sources(
-    db: &dyn Database,
+fn collect_java_sources<DB: ?Sized + Database>(
+    db: &DB,
     root: &Path,
     cancel: &CancellationToken,
 ) -> Option<Vec<JavaSource>> {
@@ -627,8 +639,8 @@ fn collect_java_sources(
     Some(out)
 }
 
-fn sources_fingerprint(
-    db: &dyn Database,
+fn sources_fingerprint<DB: ?Sized + Database>(
+    db: &DB,
     sources: &[JavaSource],
     cancel: &CancellationToken,
 ) -> Option<u64> {
@@ -656,8 +668,8 @@ fn looks_like_spring_source(text: &str) -> bool {
     text.contains("import org.springframework") || text.contains("@org.springframework")
 }
 
-fn discovered_profile_completions(
-    db: &dyn Database,
+fn discovered_profile_completions<DB: ?Sized + Database>(
+    db: &DB,
     root: &Path,
     cancel: &CancellationToken,
 ) -> Vec<CompletionItem> {

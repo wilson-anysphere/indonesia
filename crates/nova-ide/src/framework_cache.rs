@@ -41,8 +41,8 @@ static WORKSPACE_CACHE: Lazy<FrameworkWorkspaceCache> = Lazy::new(FrameworkWorks
 /// independent in-memory databases but reuse the same virtual roots (e.g. `/workspace`). Include
 /// the database address in keys for db-backed workspace caches to avoid cross-test interference
 /// under parallel execution.
-fn db_cache_id(db: &dyn Database) -> usize {
-    db as *const dyn Database as *const () as usize
+fn db_cache_id<DB: ?Sized + Database>(db: &DB) -> usize {
+    db as *const DB as *const () as usize
 }
 
 type DbRootKey = (usize, PathBuf);
@@ -90,7 +90,7 @@ pub fn project_root_for_path(path: &Path) -> PathBuf {
 /// Returns `None` when the database does not know the file path (e.g. virtual
 /// buffers).
 #[must_use]
-pub fn project_root_for_file(db: &dyn Database, file: FileId) -> Option<PathBuf> {
+pub fn project_root_for_file<DB: ?Sized + Database>(db: &DB, file: FileId) -> Option<PathBuf> {
     Some(project_root_for_path(db.file_path(file)?))
 }
 
@@ -152,8 +152,8 @@ pub fn spring_metadata_index(root: &Path) -> Arc<MetadataIndex> {
 /// Callers should pass the request cancellation token so heavy workspace scanning cooperates with
 /// Nova's timeouts.
 #[must_use]
-pub fn framework_diagnostics(
-    db: &dyn Database,
+pub fn framework_diagnostics<DB: ?Sized + Database>(
+    db: &DB,
     file: FileId,
     cancel: &CancellationToken,
 ) -> Vec<Diagnostic> {
@@ -283,8 +283,8 @@ pub fn framework_diagnostics(
 
 /// Returns framework completion items for `(file, offset)` (Spring/JPA/Micronaut/Quarkus).
 #[must_use]
-pub fn framework_completions(
-    db: &dyn Database,
+pub fn framework_completions<DB: ?Sized + Database>(
+    db: &DB,
     file: FileId,
     offset: usize,
     cancel: &CancellationToken,
@@ -610,9 +610,9 @@ impl FrameworkWorkspaceCache {
         value
     }
 
-    fn spring_workspace(
+    fn spring_workspace<DB: ?Sized + Database>(
         &self,
-        db: &dyn Database,
+        db: &DB,
         root: &Path,
         cancel: &CancellationToken,
     ) -> SpringWorkspace {
@@ -764,9 +764,9 @@ impl FrameworkWorkspaceCache {
         SpringWorkspace { is_spring, index }
     }
 
-    fn quarkus_analysis(
+    fn quarkus_analysis<DB: ?Sized + Database>(
         &self,
-        db: &dyn Database,
+        db: &DB,
         root: &Path,
         cancel: &CancellationToken,
         applicability_sources: Option<&[&str]>,
@@ -1070,7 +1070,7 @@ fn hash_mtime(hasher: &mut impl Hasher, time: Option<SystemTime>) {
     duration.subsec_nanos().hash(hasher);
 }
 
-fn is_java_file(db: &dyn Database, file: FileId) -> bool {
+fn is_java_file<DB: ?Sized + Database>(db: &DB, file: FileId) -> bool {
     db.file_path(file)
         .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
 }
@@ -1141,8 +1141,8 @@ fn cursor_inside_value_placeholder(java_source: &str, cursor: usize) -> bool {
     rel_cursor <= key_end_rel
 }
 
-fn spring_value_completion_applicable(
-    db: &dyn Database,
+fn spring_value_completion_applicable<DB: ?Sized + Database>(
+    db: &DB,
     file: FileId,
     java_source: &str,
     cancel: &CancellationToken,
@@ -1162,8 +1162,8 @@ fn spring_value_completion_applicable(
         || looks_like_spring_source(java_source)
 }
 
-fn quarkus_diagnostics_for_file(
-    db: &dyn Database,
+fn quarkus_diagnostics_for_file<DB: ?Sized + Database>(
+    db: &DB,
     file: FileId,
     java_source: &str,
     cancel: &CancellationToken,
@@ -1197,8 +1197,8 @@ fn quarkus_diagnostics_for_file(
         .collect()
 }
 
-fn micronaut_diagnostics_for_file(
-    db: &dyn Database,
+fn micronaut_diagnostics_for_file<DB: ?Sized + Database>(
+    db: &DB,
     file: FileId,
     java_source: &str,
     cancel: &CancellationToken,
@@ -1231,8 +1231,8 @@ fn micronaut_diagnostics_for_file(
         .collect()
 }
 
-fn quarkus_config_completions(
-    db: &dyn Database,
+fn quarkus_config_completions<DB: ?Sized + Database>(
+    db: &DB,
     root: &Path,
     prefix: &str,
     cancel: &CancellationToken,
@@ -1285,7 +1285,11 @@ fn quarkus_config_completions(
         .collect()
 }
 
-fn is_quarkus_project_with_root(_db: &dyn Database, root: &Path, java_sources: &[&str]) -> bool {
+fn is_quarkus_project_with_root<DB: ?Sized + Database>(
+    _db: &DB,
+    root: &Path,
+    java_sources: &[&str],
+) -> bool {
     if let Some(config) = project_config(root) {
         let dep_strings: Vec<String> = config
             .dependencies

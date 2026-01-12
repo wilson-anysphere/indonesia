@@ -50,13 +50,16 @@ struct CachedAnalysis {
 static ANALYSIS_CACHE: Lazy<Mutex<HashMap<PathBuf, CachedAnalysis>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
-pub(crate) fn analysis_for_file(db: &dyn Database, file: FileId) -> Option<Arc<AnalysisResult>> {
+pub(crate) fn analysis_for_file<DB: ?Sized + Database>(
+    db: &DB,
+    file: FileId,
+) -> Option<Arc<AnalysisResult>> {
     let cancel = CancellationToken::new();
     analysis_for_file_with_cancel(db, file, &cancel)
 }
 
-pub(crate) fn analysis_for_file_with_cancel(
-    db: &dyn Database,
+pub(crate) fn analysis_for_file_with_cancel<DB: ?Sized + Database>(
+    db: &DB,
     file: FileId,
     cancel: &CancellationToken,
 ) -> Option<Arc<AnalysisResult>> {
@@ -223,7 +226,11 @@ fn combined_signature(base: u64, config: u64) -> u64 {
     hasher.finish()
 }
 
-fn workspace_signature(db: &dyn Database, root: &Path, cancel: &CancellationToken) -> Option<u64> {
+fn workspace_signature<DB: ?Sized + Database>(
+    db: &DB,
+    root: &Path,
+    cancel: &CancellationToken,
+) -> Option<u64> {
     let mut paths: Vec<(PathBuf, FileId)> = db
         .all_file_ids()
         .into_iter()
@@ -264,8 +271,8 @@ fn workspace_signature(db: &dyn Database, root: &Path, cancel: &CancellationToke
     Some(hasher.finish())
 }
 
-fn gather_workspace_inputs(
-    db: &dyn Database,
+fn gather_workspace_inputs<DB: ?Sized + Database>(
+    db: &DB,
     root: &Path,
     cancel: &CancellationToken,
 ) -> Option<(Vec<JavaSource>, Vec<ConfigFile>)> {

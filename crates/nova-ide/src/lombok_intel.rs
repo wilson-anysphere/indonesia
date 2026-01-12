@@ -55,8 +55,8 @@ struct CachedIntel {
 
 static CACHE: Lazy<Mutex<HashMap<PathBuf, CachedIntel>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
-pub(crate) fn complete_members(
-    db: &dyn TextDatabase,
+pub(crate) fn complete_members<DB: ?Sized + TextDatabase>(
+    db: &DB,
     file: FileId,
     receiver_type: &str,
 ) -> Vec<MemberCompletion> {
@@ -272,7 +272,10 @@ fn find_virtual_member_span_in_inner_members(
     None
 }
 
-fn workspace_intel(db: &dyn TextDatabase, root: &Path) -> Option<Arc<WorkspaceLombokIntel>> {
+fn workspace_intel<DB: ?Sized + TextDatabase>(
+    db: &DB,
+    root: &Path,
+) -> Option<Arc<WorkspaceLombokIntel>> {
     let root = root.to_path_buf();
     let fingerprint = workspace_fingerprint(db, &root);
 
@@ -298,7 +301,7 @@ fn workspace_intel(db: &dyn TextDatabase, root: &Path) -> Option<Arc<WorkspaceLo
     Some(intel)
 }
 
-fn workspace_fingerprint(db: &dyn TextDatabase, root: &Path) -> u64 {
+fn workspace_fingerprint<DB: ?Sized + TextDatabase>(db: &DB, root: &Path) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     // Use (path, content) for all files under `root`. This is intentionally
     // coarse-grained but good enough to avoid reparsing on every completion.
@@ -315,7 +318,10 @@ fn workspace_fingerprint(db: &dyn TextDatabase, root: &Path) -> u64 {
     hasher.finish()
 }
 
-fn build_workspace_intel(db: &dyn TextDatabase, root: &Path) -> Option<WorkspaceLombokIntel> {
+fn build_workspace_intel<DB: ?Sized + TextDatabase>(
+    db: &DB,
+    root: &Path,
+) -> Option<WorkspaceLombokIntel> {
     let mut mem_db = MemoryDatabase::new();
     let project = mem_db.add_project();
 

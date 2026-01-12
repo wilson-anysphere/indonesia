@@ -1085,9 +1085,7 @@ where
 
         let source = self.db.file_content(file);
         let source_index = TextIndex::new(source);
-        let uri: Option<lsp_types::Uri> = self
-            .db
-            .file_path(file)
+        let uri: Option<lsp_types::Uri> = nova_db::Database::file_path(self.db.as_ref(), file)
             .and_then(|path| nova_core::AbsPathBuf::new(path.to_path_buf()).ok())
             .and_then(|path| nova_core::path_to_file_uri(&path).ok())
             .and_then(|uri| uri.parse().ok());
@@ -1208,9 +1206,7 @@ where
 
         let source = self.db.file_content(file);
         let source_index = TextIndex::new(source);
-        let uri: Option<lsp_types::Uri> = self
-            .db
-            .file_path(file)
+        let uri: Option<lsp_types::Uri> = nova_db::Database::file_path(self.db.as_ref(), file)
             .and_then(|path| nova_core::AbsPathBuf::new(path.to_path_buf()).ok())
             .and_then(|path| nova_core::path_to_file_uri(&path).ok())
             .and_then(|uri| uri.parse().ok());
@@ -1804,7 +1800,6 @@ where
         crate::framework_cache::framework_completions(db, params.file, params.offset, &ctx.cancel)
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

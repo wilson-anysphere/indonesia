@@ -8898,28 +8898,46 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
     let selection_range =
         insert_range_from_ide_range(&source, selection).map_err(|message| (-32602, message))?;
 
-    let source_snippet = nova_lsp::text_pos::byte_range(&source, selection_range)
-        .and_then(|bytes| source.get(bytes).map(str::to_string))
-        .filter(|snippet| !snippet.trim().is_empty());
+    let target = Some(target);
+    let source_file = Some(file_rel.clone());
+    let source_snippet = byte_range_for_ide_range(&source, selection)
+        .and_then(|r| source.get(r).map(|s| s.to_string()))
+        .filter(|s| !s.trim().is_empty());
 
-    // Prefer writing tests into a derived `src/test/java/...` file when the selected source file
-    // comes from a standard Maven/Gradle layout.
+    let llm = ai.llm();
+    let provider = LlmPromptCompletionProvider { llm: llm.as_ref() };
+    let mut config = CodeGenerationConfig::default();
+    config.safety.excluded_path_globs = state.ai_config.privacy.excluded_paths.clone();
+
     let (action_file, insert_range, workspace) = if file_rel.starts_with("src/main/java/") {
         if let Some(test_file) = derive_test_file_path(&source, &abs_path) {
-            let insert_range = lsp_types::Range::new(
-                lsp_types::Position::new(0, 0),
-                lsp_types::Position::new(0, 0),
-            );
+            config.safety.allowed_path_prefixes = vec![test_file.clone()];
+            config.safety.allow_new_files = true;
 
             let mut workspace = VirtualWorkspace::new([(file_rel.clone(), source)]);
-            // Best-effort: include existing test file contents so the model can append new tests.
-            if let Some(root_path) = path_from_uri(root_uri.as_str()) {
-                if let Ok(existing) = std::fs::read_to_string(root_path.join(&test_file)) {
-                    workspace.insert(test_file.clone(), existing);
-                }
+            let root_path = state
+                .project_root
+                .as_deref()
+                .filter(|root| abs_path.starts_with(root))
+                .or_else(|| abs_path.parent())
+                .ok_or_else(|| {
+                    (
+                        -32603,
+                        format!(
+                            "failed to determine workspace root for `{}`",
+                            abs_path.display()
+                        ),
+                    )
+                })?;
+            if let Ok(existing) = std::fs::read_to_string(root_path.join(&test_file)) {
+                workspace.insert(test_file.clone(), existing);
             }
 
-            (test_file, insert_range, workspace)
+            (
+                test_file,
+                LspTypesRange::new(LspTypesPosition::new(0, 0), LspTypesPosition::new(0, 0)),
+                workspace,
+            )
         } else {
             (
                 file_rel.clone(),
@@ -8934,17 +8952,6 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
             VirtualWorkspace::new([(file_rel.clone(), source)]),
         )
     };
-
-    let llm = ai.llm();
-    let provider = LlmPromptCompletionProvider { llm: llm.as_ref() };
-    let mut config = CodeGenerationConfig::default();
-    config.safety.excluded_path_globs = state.ai_config.privacy.excluded_paths.clone();
-    // If we derived a concrete test file, restrict edits to that single file (and allow creating it
-    // when it doesn't yet exist).
-    if action_file != file_rel {
-        config.safety.allowed_path_prefixes = vec![action_file.clone()];
-        config.safety.allow_new_files = true;
-    }
 
     let executor = AiCodeActionExecutor::new(&provider, config, state.ai_config.privacy.clone());
 
@@ -8962,8 +8969,8 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
             AiCodeAction::GenerateTest {
                 file: action_file,
                 insert_range,
-                target: Some(target),
-                source_file: Some(file_rel),
+                target,
+                source_file,
                 source_snippet,
                 context,
             },
