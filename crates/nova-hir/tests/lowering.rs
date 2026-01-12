@@ -581,6 +581,29 @@ record Point(@A int x, int y) {
 }
 
 #[test]
+fn lower_record_compact_constructor_inherits_record_component_modifiers() {
+    let source = r#"
+record Point(final int x, int y) {
+    Point { }
+}
+"#;
+
+    let db = TestDb {
+        files: vec![Arc::from(source)],
+    };
+    let file = FileId::from_raw(0);
+
+    let tree = item_tree(&db, file);
+    assert_eq!(tree.constructors.len(), 1);
+    let ctor = tree.constructors.values().next().expect("constructor");
+    assert_eq!(ctor.params.len(), 2);
+    assert_ne!(
+        ctor.params[0].modifiers.raw & nova_hir::item_tree::Modifiers::FINAL,
+        0
+    );
+}
+
+#[test]
 fn lower_type_header_clauses_and_generics() {
     let source = r#"
 sealed class C<T> extends Base implements I, J permits A, B {}
