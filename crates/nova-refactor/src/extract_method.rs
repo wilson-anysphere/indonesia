@@ -1007,8 +1007,9 @@ impl EnclosingMethod {
         match self {
             EnclosingMethod::Method(method) => method.parameter_list(),
             EnclosingMethod::Constructor(ctor) => ctor.parameter_list(),
-            // Compact constructors have no explicit parameter list, but record components are in
-            // scope as if they were constructor parameters.
+            // Compact record constructors have no explicit parameter list, but their bodies can
+            // reference record components by name (as implicit parameters). Treat record components
+            // as parameters for flow lowering and signature generation.
             EnclosingMethod::CompactConstructor(ctor) => ctor
                 .syntax()
                 .ancestors()
