@@ -14,7 +14,7 @@ fn uri_for_path(path: &Path) -> String {
 }
 
 #[test]
-fn stdio_server_supports_semantic_tokens_full() {
+fn stdio_server_supports_semantic_tokens_full_delta() {
     let _lock = stdio_server_lock();
 
     let temp = TempDir::new().expect("tempdir");
@@ -29,7 +29,10 @@ fn stdio_server_supports_semantic_tokens_full() {
     let text = r#"
         public class Foo {
             int field;
-            void bar() {}
+            void bar(int a) {
+                int b = 1;
+                System.out.println(a + b);
+            }
         }
     "#;
 
@@ -45,6 +48,7 @@ fn stdio_server_supports_semantic_tokens_full() {
     let stdout = child.stdout.take().expect("stdout");
     let mut stdout = BufReader::new(stdout);
 
+    // 1) initialize
     write_jsonrpc_message(
         &mut stdin,
         &json!({
@@ -76,6 +80,7 @@ fn stdio_server_supports_semantic_tokens_full() {
         &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
     );
 
+    // 2) open document
     write_jsonrpc_message(
         &mut stdin,
         &json!({
@@ -92,6 +97,7 @@ fn stdio_server_supports_semantic_tokens_full() {
         }),
     );
 
+    // 3) request full tokens
     write_jsonrpc_message(
         &mut stdin,
         &json!({
@@ -111,11 +117,46 @@ fn stdio_server_supports_semantic_tokens_full() {
         "expected non-empty semantic tokens result.data"
     );
 
+    let result_id = resp
+        .pointer("/result/resultId")
+        .and_then(|v| v.as_str())
+        .expect("semantic tokens resultId")
+        .to_string();
+
+    // 4) request delta
     write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "textDocument/semanticTokens/full/delta",
+            "params": {
+                "textDocument": { "uri": file_uri },
+                "previousResultId": result_id,
+            }
+        }),
     );
-    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    let delta_resp = read_response_with_id(&mut stdout, 3);
+    let delta_result = delta_resp.get("result").expect("semantic tokens delta result");
+
+    if let Some(data) = delta_result.get("data").and_then(|v| v.as_array()) {
+        assert!(
+            !data.is_empty(),
+            "expected non-empty semantic tokens delta result.data"
+        );
+    } else if delta_result.get("edits").and_then(|v| v.as_array()).is_some() {
+        // Accept a delta response (edits may be empty when the token stream is unchanged).
+        assert!(
+            delta_result.get("resultId").is_some(),
+            "expected semantic tokens delta resultId"
+        );
+    } else {
+        panic!("unexpected semantic tokens delta response: {delta_resp}");
+    }
+
+    // 5) shutdown + exit
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }));
+    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 

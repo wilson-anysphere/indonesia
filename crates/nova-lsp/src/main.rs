@@ -63,6 +63,13 @@ use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
+static SEMANTIC_TOKENS_RESULT_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_semantic_tokens_result_id() -> String {
+    let id = SEMANTIC_TOKENS_RESULT_ID.fetch_add(1, Ordering::Relaxed);
+    format!("nova-semantic:{id}")
+}
+
 #[derive(Debug, Clone)]
 struct SingleFileDb {
     file_id: DbFileId,
@@ -554,7 +561,8 @@ fn initialize_result_json() -> serde_json::Value {
             },
             "semanticTokensProvider": {
                 "legend": semantic_tokens_legend,
-                "full": true
+                "range": false,
+                "full": { "delta": true }
             },
             "documentFormattingProvider": true,
             "documentRangeFormattingProvider": true,
@@ -2175,11 +2183,11 @@ fn handle_request_json(
                 }
             })
         }
-        "textDocument/documentSymbol" => {
+        "textDocument/semanticTokens/full" => {
             if state.shutdown_requested {
                 return Ok(server_shutting_down_error(id));
             }
-            let result = handle_document_symbol(params, state);
+            let result = handle_semantic_tokens_full(params, state);
             Ok(match result {
                 Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
                 Err(err) => {
@@ -2187,11 +2195,23 @@ fn handle_request_json(
                 }
             })
         }
-        "textDocument/semanticTokens/full" => {
+        "textDocument/semanticTokens/full/delta" => {
             if state.shutdown_requested {
                 return Ok(server_shutting_down_error(id));
             }
-            let result = handle_semantic_tokens_full(params, state);
+            let result = handle_semantic_tokens_full_delta(params, state);
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
+            })
+        }
+        "textDocument/documentSymbol" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_document_symbol(params, state);
             Ok(match result {
                 Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
                 Err(err) => {
@@ -4138,22 +4158,6 @@ fn handle_inlay_hints(
     serde_json::to_value(hints).map_err(|e| e.to_string())
 }
 
-fn handle_document_symbol(
-    params: serde_json::Value,
-    state: &mut ServerState,
-) -> Result<serde_json::Value, String> {
-    let params: DocumentSymbolParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
-    let uri = params.text_document.uri;
-
-    let file_id = state.analysis.ensure_loaded(&uri);
-    if !state.analysis.exists(file_id) {
-        return Ok(serde_json::Value::Null);
-    }
-
-    let symbols = nova_ide::document_symbols(&state.analysis, file_id);
-    serde_json::to_value(symbols).map_err(|e| e.to_string())
-}
-
 fn handle_semantic_tokens_full(
     params: serde_json::Value,
     state: &mut ServerState,
@@ -4169,10 +4173,47 @@ fn handle_semantic_tokens_full(
 
     let tokens = nova_ide::semantic_tokens(&state.analysis, file_id);
     let result = lsp_types::SemanticTokens {
-        result_id: None,
+        result_id: Some(next_semantic_tokens_result_id()),
         data: tokens,
     };
     serde_json::to_value(result).map_err(|e| e.to_string())
+}
+
+fn handle_semantic_tokens_full_delta(
+    params: serde_json::Value,
+    state: &mut ServerState,
+) -> Result<serde_json::Value, String> {
+    let params: lsp_types::SemanticTokensDeltaParams =
+        serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let uri = params.text_document.uri;
+
+    let file_id = state.analysis.ensure_loaded(&uri);
+    if !state.analysis.exists(file_id) {
+        return Ok(serde_json::Value::Null);
+    }
+
+    let tokens = nova_ide::semantic_tokens(&state.analysis, file_id);
+    let result = lsp_types::SemanticTokens {
+        result_id: Some(next_semantic_tokens_result_id()),
+        data: tokens,
+    };
+    serde_json::to_value(result).map_err(|e| e.to_string())
+}
+
+fn handle_document_symbol(
+    params: serde_json::Value,
+    state: &mut ServerState,
+) -> Result<serde_json::Value, String> {
+    let params: DocumentSymbolParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let uri = params.text_document.uri;
+
+    let file_id = state.analysis.ensure_loaded(&uri);
+    if !state.analysis.exists(file_id) {
+        return Ok(serde_json::Value::Null);
+    }
+
+    let symbols = nova_ide::document_symbols(&state.analysis, file_id);
+    serde_json::to_value(symbols).map_err(|e| e.to_string())
 }
 
 #[derive(Debug, Deserialize)]
