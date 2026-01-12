@@ -5107,12 +5107,28 @@ fn java_string_escape_completions(
 
     // Unicode escape snippet. We show a concrete label but insert a snippet so users can type the
     // 4 hex digits quickly.
-    if prefix.is_empty() || "u".starts_with(prefix) {
+    if prefix.is_empty()
+        || prefix.starts_with('u')
+            && prefix
+                .strip_prefix('u')
+                .is_some_and(|digits| digits.len() <= 4 && digits.chars().all(|c| c.is_ascii_hexdigit()))
+    {
+        let digits = prefix.strip_prefix('u').unwrap_or("");
+        let missing = 4usize.saturating_sub(digits.len());
+        let label = format!(r#"\u{}{}"#, digits, "0".repeat(missing));
+        let (insert_text, insert_text_format) = if missing == 0 {
+            (label.clone(), None)
+        } else {
+            (
+                format!(r#"\u{}${{1:{}}}"#, digits, "0".repeat(missing)),
+                Some(InsertTextFormat::SNIPPET),
+            )
+        };
         items.push(CompletionItem {
-            label: r#"\u0000"#.to_string(),
+            label,
             kind: Some(CompletionItemKind::SNIPPET),
-            insert_text: Some(r#"\u${1:0000}"#.to_string()),
-            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            insert_text: Some(insert_text),
+            insert_text_format,
             ..Default::default()
         });
     }
@@ -6051,6 +6067,39 @@ class A {
                 )
             });
         assert_eq!(unicode.insert_text.as_deref(), Some(r#"\u${1:0000}"#));
+        assert_eq!(unicode.insert_text_format, Some(InsertTextFormat::SNIPPET));
+    }
+
+    #[test]
+    fn core_completions_inside_string_literal_unicode_escape_sequence_with_partial_hex_suggests_unicode_snippet(
+    ) {
+        let mut db = InMemoryFileStore::new();
+        let file = db.file_id_for_path(PathBuf::from("/test.java"));
+        let source = r#"
+class A {
+  void m() {
+    String s = "\u0";
+  }
+}
+"#;
+        db.set_file_text(file, source.to_string());
+
+        let offset = source
+            .find("\\u0")
+            .expect("expected `\\\\u0` in fixture")
+            + "\\u0".len();
+        let position = crate::text::offset_to_position(source, offset);
+
+        let cancel = nova_scheduler::CancellationToken::new();
+        let items = core_completions(&db, file, position, &cancel);
+
+        let unicode = items.iter().find(|i| i.label == r#"\u0000"#).unwrap_or_else(|| {
+            panic!(
+                "expected unicode escape completion inside string literal; got labels {:?}",
+                items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+            )
+        });
+        assert_eq!(unicode.insert_text.as_deref(), Some(r#"\u0${1:000}"#));
         assert_eq!(unicode.insert_text_format, Some(InsertTextFormat::SNIPPET));
     }
 }
