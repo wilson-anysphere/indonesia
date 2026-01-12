@@ -606,7 +606,11 @@ pub(crate) fn load_gradle_project(
     // Add user-provided classpath entries for unresolved dependencies (Gradle).
     for entry in &options.classpath_overrides {
         dependency_entries.push(ClasspathEntry {
-            kind: if entry.extension().is_some_and(|ext| ext == "jar") {
+            kind: if entry
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
+            {
                 ClasspathEntryKind::Jar
             } else {
                 ClasspathEntryKind::Directory
