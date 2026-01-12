@@ -1,4 +1,4 @@
-use nova_index::{Index, SymbolKind};
+use nova_index::Index;
 use nova_refactor::{
     change_signature, workspace_edit_to_lsp, ChangeSignature, ChangeSignatureConflict, FileId,
     HierarchyPropagation, ParameterOperation, WorkspaceEdit,
@@ -7,7 +7,7 @@ use nova_types::MethodId;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
 
-fn apply_workspace_edit(files: &mut BTreeMap<String, String>, mut edit: WorkspaceEdit) {
+fn apply_workspace_edit(files: &mut BTreeMap<String, String>, edit: WorkspaceEdit) {
     let input: BTreeMap<FileId, String> = files
         .iter()
         .map(|(file, text)| (FileId::new(file.clone()), text.clone()))
@@ -24,21 +24,43 @@ fn build_index(files: Vec<(&str, &str)>) -> (Index, BTreeMap<String, String>) {
     (Index::new(map.clone()), map)
 }
 
+fn normalize_ascii_ws(s: &str) -> String {
+    s.chars().filter(|c| !c.is_ascii_whitespace()).collect()
+}
+
+fn param_types_equal(a: &[String], b: &[String]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter()
+        .zip(b)
+        .all(|(a, b)| normalize_ascii_ws(a) == normalize_ascii_ws(b))
+}
+
 fn method_id(index: &Index, class: &str, name: &str, param_types: &[&str]) -> MethodId {
     let wanted: Vec<String> = param_types.iter().map(|s| s.to_string()).collect();
-    for sym in index.symbols() {
-        if sym.kind != SymbolKind::Method {
+
+    // Fast path: use the index's stored param type vectors (whitespace-insensitive).
+    if let Some(sym_id) = index.method_overload_by_param_types(class, name, &wanted) {
+        return MethodId(sym_id.0);
+    }
+
+    // Best-effort fallback for methods where signature extraction failed.
+    for sym_id in index.method_overloads(class, name) {
+        let Some(sym) = index.find_symbol(sym_id) else {
+            continue;
+        };
+
+        if let Some(sig_types) = index.method_param_types(sym_id) {
+            if param_types_equal(sig_types, &wanted) {
+                return MethodId(sym_id.0);
+            }
             continue;
         }
-        if sym.container.as_deref() != Some(class) {
-            continue;
-        }
-        if sym.name != name {
-            continue;
-        }
+
         let parsed = parse_param_types(index, sym);
-        if parsed == wanted {
-            return MethodId(sym.id.0);
+        if param_types_equal(&parsed, &wanted) {
+            return MethodId(sym_id.0);
         }
     }
     panic!("method not found: {class}.{name}({wanted:?})");
@@ -121,6 +143,7 @@ fn split_top_level(text: &str, sep: char) -> Vec<String> {
     let mut depth_paren = 0i32;
     let mut depth_brack = 0i32;
     let mut depth_brace = 0i32;
+    let mut depth_angle = 0i32;
     let mut start = 0usize;
     let mut in_string = false;
     let mut escaped = false;
@@ -148,10 +171,13 @@ fn split_top_level(text: &str, sep: char) -> Vec<String> {
             ']' => depth_brack -= 1,
             '{' => depth_brace += 1,
             '}' => depth_brace -= 1,
+            '<' => depth_angle += 1,
+            '>' => depth_angle -= 1,
             _ => {}
         }
 
-        if ch == sep && depth_paren == 0 && depth_brack == 0 && depth_brace == 0 {
+        if ch == sep && depth_paren == 0 && depth_brack == 0 && depth_brace == 0 && depth_angle == 0
+        {
             out.push(text[start..i].to_string());
             start = i + 1;
         }
@@ -338,6 +364,72 @@ fn rename_method_updates_overrides_and_calls() {
         r#"class Main {
     void test() {
         new B().bar(1);
+    }
+}
+"#
+    );
+}
+
+#[test]
+fn generic_param_types_do_not_split_and_resolve_overloads() {
+    let (index, mut files) = build_index(vec![(
+        "file:///A.java",
+        r#"class Map<K, V> {}
+
+class A {
+    void foo(Map<String, Integer> map) {
+    }
+
+    void foo(int x) {
+    }
+
+    void test() {
+        foo(new Map<String, Integer>());
+        foo(1);
+    }
+}
+"#,
+    )]);
+
+    // Assert that the sketch index preserves generic type args as a single parameter type entry
+    // (i.e. it does not split on commas inside `<...>`).
+    let wanted = vec!["Map<String, Integer>".to_string()];
+    let sym_id = index
+        .method_overload_by_param_types("A", "foo", &wanted)
+        .expect("index param type extraction should keep `Map<String, Integer>` intact");
+    assert_eq!(index.method_param_types(sym_id).unwrap(), wanted.as_slice());
+
+    let target = MethodId(sym_id.0);
+    let change = ChangeSignature {
+        target,
+        new_name: Some("bar".to_string()),
+        parameters: vec![ParameterOperation::Existing {
+            old_index: 0,
+            new_name: None,
+            new_type: None,
+        }],
+        new_return_type: None,
+        new_throws: None,
+        propagate_hierarchy: HierarchyPropagation::None,
+    };
+
+    let edit = change_signature(&index, &change).expect("refactor succeeds");
+    apply_workspace_edit(&mut files, edit);
+
+    assert_eq!(
+        files.get("file:///A.java").unwrap(),
+        r#"class Map<K, V> {}
+
+class A {
+    void bar(Map<String, Integer> map) {
+    }
+
+    void foo(int x) {
+    }
+
+    void test() {
+        bar(new Map<String, Integer>());
+        foo(1);
     }
 }
 "#

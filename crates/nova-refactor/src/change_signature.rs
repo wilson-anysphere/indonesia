@@ -1173,6 +1173,35 @@ fn param_types_match_expected(param_types: &[String], expected: &[Option<String>
 }
 
 fn types_equivalent_ignoring_whitespace(a: &str, b: &str) -> bool {
+    fn erase_generic_args(ty: &str) -> String {
+        let mut out = String::with_capacity(ty.len());
+        let mut depth: i32 = 0;
+        for ch in ty.chars() {
+            match ch {
+                '<' => {
+                    depth += 1;
+                    continue;
+                }
+                '>' => {
+                    if depth > 0 {
+                        depth -= 1;
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+            if depth == 0 {
+                out.push(ch);
+            }
+        }
+        out
+    }
+
+    // For overload disambiguation we can ignore generic type arguments entirely: Java overloads
+    // are resolved on the *erased* signature, so `<...>` never affects which overload is called.
+    let a = erase_generic_args(a);
+    let b = erase_generic_args(b);
+
     let mut ia = a.chars().filter(|c| !c.is_whitespace());
     let mut ib = b.chars().filter(|c| !c.is_whitespace());
     loop {
@@ -2106,20 +2135,24 @@ fn split_top_level(text: &str, sep: char) -> Vec<String> {
     let mut depth_paren = 0i32;
     let mut depth_brack = 0i32;
     let mut depth_brace = 0i32;
+    let mut depth_angle = 0i32;
     let mut start = 0usize;
     let mut in_string = false;
+    let mut in_char = false;
     let mut escaped = false;
     let bytes = text.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
         let ch = bytes[i] as char;
-        if in_string {
+        if in_string || in_char {
             if escaped {
                 escaped = false;
             } else if ch == '\\' {
                 escaped = true;
-            } else if ch == '"' {
+            } else if in_string && ch == '"' {
                 in_string = false;
+            } else if in_char && ch == '\'' {
+                in_char = false;
             }
             i += 1;
             continue;
@@ -2127,16 +2160,79 @@ fn split_top_level(text: &str, sep: char) -> Vec<String> {
 
         match ch {
             '"' => in_string = true,
+            '\'' => in_char = true,
             '(' => depth_paren += 1,
             ')' => depth_paren -= 1,
             '[' => depth_brack += 1,
             ']' => depth_brack -= 1,
             '{' => depth_brace += 1,
             '}' => depth_brace -= 1,
+            '<' => {
+                // We only want to treat `<...>` as nested structure when it's likely to be a
+                // generic type argument list (e.g. `new Map<String, Integer>()`). Treating all
+                // `<` as nesting would break splitting call args like `foo(a < b, c)`.
+                //
+                // Best-effort heuristic: count `<`/`>` only when the `<` is directly attached to
+                // the preceding token (no whitespace) and that token looks like either a type
+                // (UpperCamelCase) or an explicit type-arg prefix (`obj.<T>m()`).
+                let immediately_preceded_by_ws =
+                    i > 0 && bytes.get(i - 1).copied().is_some_and(|b| b.is_ascii_whitespace());
+                if depth_angle > 0 {
+                    depth_angle += 1;
+                } else if !immediately_preceded_by_ws {
+                    // Look left for previous non-whitespace byte.
+                    let mut j = i;
+                    while j > 0 && bytes[j - 1].is_ascii_whitespace() {
+                        j -= 1;
+                    }
+                    let prev = j.checked_sub(1).and_then(|k| bytes.get(k)).copied();
+                    let looks_like_explicit_type_args = prev == Some(b'.');
+                    let looks_like_type = (|| {
+                        let Some(prev) = prev else {
+                            return false;
+                        };
+                        if !is_ident_continue(prev) && prev != b'.' && prev != b'$' {
+                            return false;
+                        }
+                        // Find the start of the `Foo.Bar` token immediately before `<`.
+                        let mut start = j.saturating_sub(1);
+                        while start > 0 {
+                            let b = bytes[start - 1];
+                            if is_ident_continue(b) || b == b'.' || b == b'$' {
+                                start -= 1;
+                            } else {
+                                break;
+                            }
+                        }
+                        let Ok(token) = std::str::from_utf8(&bytes[start..j]) else {
+                            return false;
+                        };
+                        let last = token.rsplit('.').next().unwrap_or(token);
+                        last.chars()
+                            .next()
+                            .map(|c| c.is_ascii_uppercase())
+                            .unwrap_or(false)
+                    })();
+
+                    if looks_like_explicit_type_args || looks_like_type {
+                        depth_angle += 1;
+                    }
+                }
+            }
+            '>' => {
+                if depth_angle > 0 {
+                    depth_angle -= 1;
+                }
+            }
             _ => {}
         }
 
-        if ch == sep && depth_paren == 0 && depth_brack == 0 && depth_brace == 0 {
+        if ch == sep
+            && depth_paren == 0
+            && depth_brack == 0
+            && depth_brace == 0
+            && depth_angle == 0
+        {
             out.push(text[start..i].to_string());
             start = i + 1;
         }
