@@ -164,22 +164,31 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
     }
 
     fn diagnostics(&self, db: &dyn Database, file: nova_vfs::FileId) -> Vec<Diagnostic> {
+        let Some(text) = db.file_text(file) else {
+            return Vec::new();
+        };
         let Some(path) = db.file_path(file) else {
             return Vec::new();
         };
         if path.extension().and_then(|e| e.to_str()) != Some("java") {
             return Vec::new();
         }
-        let Some(text) = db.file_text(file) else {
-            return Vec::new();
-        };
         if !looks_like_mapstruct_source(text) {
             return Vec::new();
         }
 
+        let Some(root) = nova_project::workspace_root(path) else {
+            return Vec::new();
+        };
+
         let project = db.project_of_file(file);
-        let workspace = self.workspace.workspace(db, project);
-        workspace.diagnostics_for_file(path)
+        let has_mapstruct_dependency = db.has_dependency(project, "org.mapstruct", "mapstruct")
+            || db.has_dependency(project, "org.mapstruct", "mapstruct-processor");
+
+        match crate::diagnostics_for_file(&root, path, text, has_mapstruct_dependency) {
+            Ok(diagnostics) => diagnostics,
+            Err(_) => Vec::new(),
+        }
     }
 
     fn completions(&self, db: &dyn Database, ctx: &CompletionContext) -> Vec<CompletionItem> {
@@ -247,6 +256,109 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
 
         items
     }
+}
+
+/// Compute MapStruct diagnostics for a single source file.
+///
+/// This is intended for editor integrations that only have access to the current
+/// file's text (e.g. unsaved buffers). Any cross-file lookups (DTO property sets,
+/// etc.) are performed best-effort via filesystem scanning rooted at `project_root`.
+pub fn diagnostics_for_file(
+    project_root: &Path,
+    file: &Path,
+    text: &str,
+    has_mapstruct_dependency: bool,
+) -> std::io::Result<Vec<Diagnostic>> {
+    let mappers = discover_mappers_in_source(file, text)?;
+    if mappers.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let roots = source_roots(project_root);
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+    // Missing dependency diagnostic for any mapper usage.
+    if !has_mapstruct_dependency {
+        for mapper in &mappers {
+            diagnostics.push(Diagnostic::error(
+                "MAPSTRUCT_MISSING_DEPENDENCY",
+                "MapStruct annotations are present but no org.mapstruct dependency was detected",
+                Some(mapper.name_span),
+            ));
+        }
+    }
+
+    // Ambiguous mapping methods (same source->target).
+    for mapper in &mappers {
+        let mut seen: HashMap<(String, String), Span> = HashMap::new();
+        for method in &mapper.methods {
+            let key = (
+                method.source_type.qualified_name(),
+                method.target_type.qualified_name(),
+            );
+            if let Some(prev) = seen.get(&key) {
+                diagnostics.push(Diagnostic::error(
+                    "MAPSTRUCT_AMBIGUOUS_MAPPING_METHOD",
+                    format!(
+                        "Ambiguous mapping method for {} -> {} (another candidate at {}..{})",
+                        key.0, key.1, prev.start, prev.end
+                    ),
+                    Some(method.name_span),
+                ));
+            } else {
+                seen.insert(key, method.name_span);
+            }
+        }
+    }
+
+    // Unmapped target properties (best-effort, file-system based).
+    for mapper in &mappers {
+        for method in &mapper.methods {
+            let Some(source_props) =
+                properties_for_type(project_root, &roots, &method.source_type)
+                    .ok()
+                    .flatten()
+            else {
+                continue;
+            };
+            let Some(target_props) =
+                properties_for_type(project_root, &roots, &method.target_type)
+                    .ok()
+                    .flatten()
+            else {
+                continue;
+            };
+
+            if target_props.is_empty() {
+                continue;
+            }
+
+            let mut mapped: HashSet<String> =
+                source_props.intersection(&target_props).cloned().collect();
+            for mapping in &method.mappings {
+                mapped.insert(mapping.target.clone());
+            }
+
+            let mut unmapped: Vec<String> = target_props.difference(&mapped).cloned().collect();
+            unmapped.sort();
+            if unmapped.is_empty() {
+                continue;
+            }
+
+            diagnostics.push(Diagnostic::warning(
+                "MAPSTRUCT_UNMAPPED_TARGET_PROPERTIES",
+                format!(
+                    "Potentially unmapped target properties for {} -> {}: {}",
+                    method.source_type.qualified_name(),
+                    method.target_type.qualified_name(),
+                    unmapped.join(", ")
+                ),
+                Some(method.name_span),
+            ));
+        }
+    }
+
+    Ok(diagnostics)
 }
 
 /// Analyze a workspace directory (best-effort).
@@ -557,11 +669,10 @@ fn looks_like_mapstruct_source(text: &str) -> bool {
     // file clearly isn't participating in MapStruct.
     //
     // We intentionally keep this conservative (false negatives are acceptable).
-    text.contains("org.mapstruct.")
-        || text.contains("@Mapper")
+    text.contains("@Mapper")
         || text.contains("@org.mapstruct.Mapper")
         || text.contains("@Mapping")
-        || text.contains("@org.mapstruct.Mapping")
+        || text.contains("org.mapstruct")
 }
 
 fn mapping_property_completions(

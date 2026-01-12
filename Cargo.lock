@@ -3803,6 +3803,7 @@ dependencies = [
  "nova-framework",
  "nova-framework-parse",
  "nova-hir",
+ "nova-project",
  "nova-types",
  "nova-vfs",
  "tempfile",

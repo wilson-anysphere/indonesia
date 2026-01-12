@@ -1,9 +1,19 @@
-use nova_framework::{AnalyzerRegistry, CompletionContext, MemoryDatabase};
+use nova_framework::{AnalyzerRegistry, CompletionContext, FrameworkAnalyzer, MemoryDatabase};
 use nova_framework_mapstruct::MapStructAnalyzer;
 use nova_types::Span;
+use std::path::Path;
+use tempfile::TempDir;
+
+fn write_file(path: &Path, contents: &str) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, contents).unwrap();
+}
 
 #[test]
 fn missing_dependency_diagnostic_when_mapper_present() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+
     let mut db = MemoryDatabase::new();
     let project = db.add_project();
 
@@ -17,19 +27,18 @@ package com.example;
 import org.mapstruct.Mapper;
 
 @Mapper
-public interface FooMapper {}
+ public interface FooMapper {}
 "#;
 
-    let mapper_file = db.add_file_with_path_and_text(
-        project,
-        "src/main/java/com/example/FooMapper.java",
-        mapper,
-    );
+    let mapper_path = root.join("src/main/java/com/example/FooMapper.java");
+    write_file(&mapper_path, mapper);
 
-    let mut registry = AnalyzerRegistry::new();
-    registry.register(Box::new(MapStructAnalyzer::new()));
+    let mapper_file = db.add_file_with_path_and_text(project, mapper_path, mapper);
 
-    let diags = registry.framework_diagnostics(&db, mapper_file);
+    let analyzer = MapStructAnalyzer::new();
+    assert!(analyzer.applies_to(&db, project));
+
+    let diags = analyzer.diagnostics(&db, mapper_file);
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].code.as_ref(), "MAPSTRUCT_MISSING_DEPENDENCY");
 }

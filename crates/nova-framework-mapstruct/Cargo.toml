@@ -11,6 +11,7 @@ nova-hir = { path = "../nova-hir" }
 nova-types = { path = "../nova-types" }
 nova-framework-parse = { path = "../nova-framework-parse" }
 nova-vfs = { path = "../nova-vfs" }
+nova-project = { path = "../nova-project" }
 
 tree-sitter = "0.20"
 
