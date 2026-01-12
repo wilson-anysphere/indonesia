@@ -474,6 +474,36 @@ export async function activate(context: vscode.ExtensionContext) {
       vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(workspaceFolder, pattern)),
     );
 
+    // `nova.lsp.configPath` can point at a workspace-local config file with a custom name, or even
+    // a file outside the workspace folder. In those cases, our default glob list (which watches
+    // `nova.toml` / `.nova/config.toml` etc.) won't catch edits, and Nova may not see updated config
+    // until the user reloads/restarts manually.
+    //
+    // Add an explicit watcher for the resolved config path, but skip standard in-workspace config
+    // locations that are already covered by the default glob list.
+    const config = vscode.workspace.getConfiguration('nova', workspaceFolder.uri);
+    const configPath = config.get<string | null>('lsp.configPath', null);
+    const resolvedConfigPath = resolveNovaConfigPath({ configPath, workspaceRoot: workspaceFolder.uri.fsPath });
+    if (resolvedConfigPath) {
+      const normalizedWorkspaceRoot = workspaceFolder.uri.fsPath.replace(/\\/g, '/').replace(/\/$/, '');
+      const normalizedConfigPath = resolvedConfigPath.replace(/\\/g, '/');
+      const isWithinWorkspace = normalizedConfigPath.startsWith(`${normalizedWorkspaceRoot}/`);
+
+      if (
+        !isWithinWorkspace ||
+        (path.basename(resolvedConfigPath) !== 'nova.toml' &&
+          path.basename(resolvedConfigPath) !== '.nova.toml' &&
+          path.basename(resolvedConfigPath) !== 'nova.config.toml' &&
+          !normalizedConfigPath.endsWith('/.nova/config.toml'))
+      ) {
+        const dir = path.dirname(resolvedConfigPath);
+        const base = path.basename(resolvedConfigPath);
+        fileWatchers.push(
+          vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(dir), base)),
+        );
+      }
+    }
+
     const disposables: vscode.Disposable[] = [...fileWatchers];
 
     const multiRoot = (vscode.workspace.workspaceFolders?.length ?? 0) > 1;

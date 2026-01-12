@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'node:path';
 import { getNovaBuildFileGlobPatterns } from './fileWatchers';
+import { resolveNovaConfigPath } from './lspArgs';
 
 export type NovaRequestOptions = {
   allowMethodFallback?: boolean;
@@ -163,6 +164,45 @@ export function registerNovaBuildFileWatchers(
     watcher.onDidCreate(handleUri, undefined, context.subscriptions);
     watcher.onDidChange(handleUri, undefined, context.subscriptions);
     watcher.onDidDelete(handleUri, undefined, context.subscriptions);
+  }
+
+  // Also watch `nova.lsp.configPath` when it points at a custom-named config file or a file outside
+  // the workspace folder. This ensures editing that config triggers a project reload (so generated
+  // source roots, build integration toggles, etc. take effect) even when the config isn't named
+  // `nova.toml` / `.nova/config.toml`.
+  for (const workspaceFolder of vscode.workspace.workspaceFolders ?? []) {
+    const config = vscode.workspace.getConfiguration('nova', workspaceFolder.uri);
+    const configPath = config.get<string | null>('lsp.configPath', null);
+    const resolvedConfigPath = resolveNovaConfigPath({ configPath, workspaceRoot: workspaceFolder.uri.fsPath });
+    if (!resolvedConfigPath) {
+      continue;
+    }
+
+    const normalizedWorkspaceRoot = workspaceFolder.uri.fsPath.replace(/\\/g, '/').replace(/\/$/, '');
+    const normalizedConfigPath = resolvedConfigPath.replace(/\\/g, '/');
+    const isWithinWorkspace = normalizedConfigPath.startsWith(`${normalizedWorkspaceRoot}/`);
+
+    // Skip standard in-workspace config locations already covered by the default build-file glob list.
+    if (isWithinWorkspace) {
+      const baseName = path.basename(resolvedConfigPath);
+      if (
+        baseName === 'nova.toml' ||
+        baseName === '.nova.toml' ||
+        baseName === 'nova.config.toml' ||
+        normalizedConfigPath.endsWith('/.nova/config.toml')
+      ) {
+        continue;
+      }
+    }
+
+    const dir = path.dirname(resolvedConfigPath);
+    const base = path.basename(resolvedConfigPath);
+    const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(dir), base));
+    context.subscriptions.push(watcher);
+    const schedule = () => scheduleReload(workspaceFolder);
+    watcher.onDidCreate(() => schedule(), undefined, context.subscriptions);
+    watcher.onDidChange(() => schedule(), undefined, context.subscriptions);
+    watcher.onDidDelete(() => schedule(), undefined, context.subscriptions);
   }
 
   context.subscriptions.push(
