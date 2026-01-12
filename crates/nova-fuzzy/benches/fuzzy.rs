@@ -201,9 +201,9 @@ fn bench_trigram_candidates(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(id), &query, |b, query| {
             let mut scratch = TrigramCandidateScratch::default();
             // Warm up scratch buffer capacities outside the timed loop.
-            black_box(index.candidates_with_scratch(*query, &mut scratch).len());
+            black_box(index.candidates_with_scratch(query, &mut scratch).len());
             b.iter(|| {
-                let candidates = index.candidates_with_scratch(black_box(*query), &mut scratch);
+                let candidates = index.candidates_with_scratch(black_box(query), &mut scratch);
                 black_box(candidates.len())
             })
         });
@@ -244,7 +244,7 @@ fn build_unicode_trigram_index(symbol_count: usize) -> (Vec<String>, nova_fuzzy:
         let base = gen_ident(&mut seed);
         let x = lcg(&mut seed);
 
-        let symbol = if (x % 16) == 0 {
+        let symbol = if x.is_multiple_of(16) {
             let unicode = UNICODE_BASE[(x as usize) % UNICODE_BASE.len()];
             match i % 64 {
                 0 => format!("get_{unicode}_{base}"),
@@ -304,10 +304,10 @@ fn bench_unicode_fuzzy_search(c: &mut Criterion) {
     for (id, query) in cases {
         group.bench_with_input(BenchmarkId::from_parameter(id), &query, |b, query| {
             let mut scratch = TrigramCandidateScratch::default();
-            let mut matcher = FuzzyMatcher::new(*query);
+            let mut matcher = FuzzyMatcher::new(query);
 
             // Warm up internal buffers and scratch capacities outside the timed loop.
-            let candidates = index.candidates_with_scratch(*query, &mut scratch);
+            let candidates = index.candidates_with_scratch(query, &mut scratch);
             if let Some(&first) = candidates.first() {
                 black_box(matcher.score(&symbols[first as usize]));
             } else {
@@ -318,7 +318,7 @@ fn bench_unicode_fuzzy_search(c: &mut Criterion) {
 
             b.iter(|| {
                 best.clear();
-                let candidates = index.candidates_with_scratch(black_box(*query), &mut scratch);
+                let candidates = index.candidates_with_scratch(black_box(query), &mut scratch);
                 for &id in candidates {
                     if let Some(score) = matcher.score(&symbols[id as usize]) {
                         best.push((score.rank_key(), id));
