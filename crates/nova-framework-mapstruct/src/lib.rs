@@ -510,13 +510,16 @@ fn discover_mappers_in_source(
 ) -> Result<Vec<MapperModel>, std::io::Error> {
     let tree =
         parse_java(source).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    let package = package_of_source(tree.root_node(), source);
+    let root = tree.root_node();
+    let package = package_of_source(root, source);
+    let imports = imports_of_source(root, source);
 
     Ok(discover_mappers_in_tree(
         file,
         source,
-        tree.root_node(),
+        root,
         package.as_deref(),
+        &imports,
     ))
 }
 
@@ -525,11 +528,12 @@ fn discover_mappers_in_tree(
     source: &str,
     root: Node<'_>,
     default_package: Option<&str>,
+    imports: &JavaImports,
 ) -> Vec<MapperModel> {
     let mut out = Vec::new();
     visit_nodes(root, &mut |node| {
         if node.kind() == "interface_declaration" || node.kind() == "class_declaration" {
-            if let Some(mapper) = parse_mapper_decl(file, source, node, default_package) {
+            if let Some(mapper) = parse_mapper_decl(file, source, node, default_package, imports) {
                 out.push(mapper);
             }
         }
@@ -555,11 +559,52 @@ fn package_of_source(root: Node<'_>, source: &str) -> Option<String> {
     package
 }
 
+#[derive(Debug, Default, Clone)]
+struct JavaImports {
+    /// Explicit (non-wildcard) imports mapping simple name -> package.
+    explicit: HashMap<String, String>,
+}
+
+fn imports_of_source(root: Node<'_>, source: &str) -> JavaImports {
+    let mut out = JavaImports::default();
+    let mut cursor = root.walk();
+    for child in root.named_children(&mut cursor) {
+        if child.kind() != "import_declaration" {
+            continue;
+        }
+
+        let name_node = child
+            .child_by_field_name("name")
+            .or_else(|| find_named_child(child, "scoped_identifier"))
+            .or_else(|| find_named_child(child, "identifier"));
+        let Some(name_node) = name_node else {
+            continue;
+        };
+
+        let raw = node_text(source, name_node).trim();
+        if raw.ends_with(".*") {
+            // Wildcard import; we don't have enough information here to resolve a
+            // specific type name.
+            continue;
+        }
+
+        let Some((pkg, name)) = raw.rsplit_once('.') else {
+            continue;
+        };
+        if pkg.is_empty() || name.is_empty() {
+            continue;
+        }
+        out.explicit.insert(name.to_string(), pkg.to_string());
+    }
+    out
+}
+
 fn parse_mapper_decl(
     file: &Path,
     source: &str,
     node: Node<'_>,
     default_package: Option<&str>,
+    imports: &JavaImports,
 ) -> Option<MapperModel> {
     let modifiers = node
         .child_by_field_name("modifiers")
@@ -599,7 +644,7 @@ fn parse_mapper_decl(
     let implementation_package =
         apply_package_name_placeholder(implementation_package, package.as_deref());
 
-    let methods = parse_mapper_methods(file, source, node, package.as_deref());
+    let methods = parse_mapper_methods(file, source, node, package.as_deref(), imports);
 
     Some(MapperModel {
         file: file.to_path_buf(),
@@ -653,6 +698,7 @@ fn parse_mapper_methods(
     source: &str,
     decl: Node<'_>,
     default_package: Option<&str>,
+    imports: &JavaImports,
 ) -> Vec<MappingMethodModel> {
     let body = decl
         .child_by_field_name("body")
@@ -668,7 +714,7 @@ fn parse_mapper_methods(
         if child.kind() != "method_declaration" {
             continue;
         }
-        if let Some(model) = parse_mapping_method(file, source, child, default_package) {
+        if let Some(model) = parse_mapping_method(file, source, child, default_package, imports) {
             methods.push(model);
         }
     }
@@ -680,6 +726,7 @@ fn parse_mapping_method(
     source: &str,
     node: Node<'_>,
     default_package: Option<&str>,
+    imports: &JavaImports,
 ) -> Option<MappingMethodModel> {
     let name_node = node
         .child_by_field_name("name")
@@ -691,12 +738,12 @@ fn parse_mapping_method(
         .child_by_field_name("type")
         .or_else(|| infer_type_node(node))?;
     let return_type_raw = node_text(source, return_node);
-    let return_type = parse_java_type(return_type_raw, default_package);
+    let return_type = parse_java_type_with_imports(return_type_raw, default_package, imports);
 
     let params_node = node
         .child_by_field_name("parameters")
         .or_else(|| find_named_child(node, "formal_parameters"))?;
-    let params = parse_formal_parameters(params_node, source, default_package);
+    let params = parse_formal_parameters(params_node, source, default_package, imports);
     let param_types: Vec<JavaType> = params.iter().map(|p| p.ty.clone()).collect();
 
     let mapping_target_params: Vec<usize> = params
@@ -787,6 +834,7 @@ fn parse_formal_parameters(
     params: Node<'_>,
     source: &str,
     default_package: Option<&str>,
+    imports: &JavaImports,
 ) -> Vec<FormalParameterModel> {
     let mut out = Vec::new();
     let mut cursor = params.walk();
@@ -802,7 +850,7 @@ fn parse_formal_parameters(
             continue;
         };
         let raw = node_text(source, ty_node);
-        let ty = parse_java_type(raw, default_package);
+        let ty = parse_java_type_with_imports(raw, default_package, imports);
 
         let modifiers = child
             .child_by_field_name("modifiers")
@@ -877,6 +925,37 @@ fn parse_java_type(raw: &str, default_package: Option<&str>) -> JavaType {
         Some((pkg, name)) => (Some(pkg.to_string()), name.to_string()),
         None => (default_package.map(str::to_string), no_array.to_string()),
     };
+
+    JavaType { package: pkg, name }
+}
+
+fn parse_java_type_with_imports(raw: &str, default_package: Option<&str>, imports: &JavaImports) -> JavaType {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return JavaType {
+            package: default_package.map(str::to_string),
+            name: String::new(),
+        };
+    }
+
+    let compact = clean_type(raw);
+    let no_generics = compact.split('<').next().unwrap_or(&compact);
+    let no_array = no_generics.trim_end_matches("[]");
+
+    // Qualified type already includes its package.
+    if let Some((pkg, name)) = no_array.rsplit_once('.') {
+        return JavaType {
+            package: Some(pkg.to_string()),
+            name: name.to_string(),
+        };
+    }
+
+    let name = no_array.to_string();
+    let pkg = imports
+        .explicit
+        .get(&name)
+        .cloned()
+        .or_else(|| default_package.map(str::to_string));
 
     JavaType { package: pkg, name }
 }

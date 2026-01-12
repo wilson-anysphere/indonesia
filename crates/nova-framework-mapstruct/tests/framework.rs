@@ -257,3 +257,90 @@ public class Car {
     assert_eq!(span, Span::new(cursor_offset - 2, cursor_offset));
 }
 
+#[test]
+fn completion_resolves_explicit_imported_types() {
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+    db.add_classpath_class(project, "org.mapstruct.Mapper");
+
+    // Two `CarDto` types exist; only the explicitly imported one should be used.
+    db.add_file_with_path_and_text(
+        project,
+        "src/main/java/com/aaa/CarDto.java",
+        r#"
+package com.aaa;
+
+public class CarDto {
+  public int otherProp;
+}
+"#,
+    );
+
+    db.add_file_with_path_and_text(
+        project,
+        "src/main/java/com/example/dto/CarDto.java",
+        r#"
+package com.example.dto;
+
+public class CarDto {
+  public int seatCount;
+}
+"#,
+    );
+
+    db.add_file_with_path_and_text(
+        project,
+        "src/main/java/com/example/Car.java",
+        r#"
+package com.example;
+
+public class Car {
+  public String name;
+}
+"#,
+    );
+
+    let mapper_with_cursor = r#"
+package com.example;
+
+import com.example.dto.CarDto;
+import org.mapstruct.Mapper;
+import org.mapstruct.Mapping;
+
+@Mapper
+public interface CarMapper {
+  @Mapping(target="se<cursor>", source="name")
+  CarDto carToCarDto(Car car);
+}
+"#;
+
+    let cursor_offset = mapper_with_cursor
+        .find("<cursor>")
+        .expect("cursor marker");
+    let mapper = mapper_with_cursor.replace("<cursor>", "");
+
+    let mapper_file = db.add_file_with_path_and_text(
+        project,
+        "src/main/java/com/example/CarMapper.java",
+        mapper.clone(),
+    );
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(MapStructAnalyzer::new()));
+
+    let ctx = CompletionContext {
+        project,
+        file: mapper_file,
+        offset: cursor_offset,
+    };
+    let items = registry.framework_completions(&db, &ctx);
+    assert!(
+        items.iter().any(|i| i.label == "seatCount"),
+        "expected `seatCount` completion from imported CarDto, got: {items:?}"
+    );
+
+    let seat = items.iter().find(|i| i.label == "seatCount").unwrap();
+    let span = seat.replace_span.expect("replace_span");
+    assert_eq!(&mapper[span.start..span.end], "se");
+}
+

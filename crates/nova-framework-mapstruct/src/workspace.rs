@@ -105,6 +105,7 @@ impl MapStructWorkspace {
             };
             let root = tree.root_node();
             let package = crate::package_of_source(root, text);
+            let imports = crate::imports_of_source(root, text);
 
             // Index local type declarations so we can resolve DTO property sets without
             // filesystem scanning.
@@ -118,6 +119,7 @@ impl MapStructWorkspace {
                 text,
                 root,
                 package.as_deref(),
+                &imports,
             ));
         }
 
