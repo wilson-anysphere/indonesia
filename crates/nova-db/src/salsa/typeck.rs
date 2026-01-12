@@ -2178,6 +2178,33 @@ fn project_base_type_store(db: &dyn NovaTypeck, project: ProjectId) -> ArcEq<Typ
             collect_item_ids(&tree, *item, &mut item_ids);
         }
 
+        // Import statements can introduce types (including static-import owner types) that are only
+        // referenced from expression position (e.g. `Map.of(...)`, `Entry.comparingByKey()`,
+        // `max(1, 2)` after `import static java.lang.Math.max;`). Pre-intern those types so their
+        // `ClassId`s remain stable across per-body `TypeStore` clones.
+        for import in &tree.imports {
+            let raw = import.path.trim();
+            if raw.is_empty() {
+                continue;
+            }
+
+            // For `import static X.Y;` treat `X` as the type owner and ignore the member segment.
+            // For star imports, the stored `path` already excludes `.*`.
+            let candidate = if import.is_static && !import.is_star {
+                raw.rsplit_once('.').map(|(ty, _)| ty).unwrap_or(raw)
+            } else {
+                raw
+            };
+
+            collect_resolved_type_names(
+                &resolver,
+                &scopes.scopes,
+                scopes.file_scope,
+                candidate,
+                &mut referenced_type_names,
+            );
+        }
+
         for item in item_ids.iter().copied() {
             let class_scope = scopes
                 .class_scopes
@@ -2283,6 +2310,40 @@ fn project_base_type_store(db: &dyn NovaTypeck, project: ProjectId) -> ArcEq<Typ
                         &mut referenced_type_names,
                     );
                 }
+            }
+
+            // Best-effort: scan expressions for qualified type names used in expression position
+            // (primarily static member receivers and nested types, e.g. `Map.Entry`).
+            //
+            // Use a conservative heuristic (first segment starts with an ASCII uppercase letter) to
+            // avoid doing resolver work for the vast majority of value expressions.
+            for (_, expr) in body.exprs.iter() {
+                let candidate = match expr {
+                    HirExpr::Name { name, .. } => Some(name.as_str().to_string()),
+                    HirExpr::FieldAccess { receiver, name, .. } => {
+                        expr_qualified_name_from_field_access(&body, *receiver, name)
+                    }
+                    _ => None,
+                };
+
+                let Some(candidate) = candidate else {
+                    continue;
+                };
+                if !candidate
+                    .as_bytes()
+                    .first()
+                    .is_some_and(|b| b.is_ascii_uppercase())
+                {
+                    continue;
+                }
+
+                collect_resolved_type_names(
+                    &resolver,
+                    &scopes.scopes,
+                    body_scope,
+                    &candidate,
+                    &mut referenced_type_names,
+                );
             }
         }
     }
@@ -7216,6 +7277,33 @@ fn collect_body_owners_in_item(
             nova_hir::item_tree::Member::Field(_) => {}
         }
     }
+}
+
+fn expr_qualified_name_from_field_access(
+    body: &HirBody,
+    receiver: HirExprId,
+    name: &str,
+) -> Option<String> {
+    let mut segments: Vec<&str> = Vec::new();
+    segments.push(name);
+
+    let mut current = receiver;
+    loop {
+        match &body.exprs[current] {
+            HirExpr::Name { name, .. } => {
+                segments.push(name.as_str());
+                break;
+            }
+            HirExpr::FieldAccess { receiver, name, .. } => {
+                segments.push(name.as_str());
+                current = *receiver;
+            }
+            _ => return None,
+        }
+    }
+
+    segments.reverse();
+    Some(segments.join("."))
 }
 
 fn def_file(def: DefWithBodyId) -> FileId {
