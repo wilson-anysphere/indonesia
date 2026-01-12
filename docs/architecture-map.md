@@ -82,7 +82,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 ### `nova-build`
 - **Purpose:** Maven/Gradle build integration for classpaths + build diagnostics + background build orchestration.
 - **Key entry points:** `crates/nova-build/src/lib.rs` (`BuildManager`, `BuildResult`, `Classpath`, `BuildOrchestrator`, `BuildRequest`, `BuildStatusSnapshot`, `BuildDiagnosticsSnapshot`).
-- **LSP endpoints:** `crates/nova-lsp/src/extensions/build.rs` (`nova/buildProject`, `nova/build/status`, `nova/build/diagnostics`).
+- **LSP endpoints:** `crates/nova-lsp/src/extensions/build.rs` (`nova/buildProject`, `nova/build/targetClasspath`, `nova/build/status`, `nova/build/diagnostics`).
 - **Maturity:** productionizing
 - **Known gaps vs intended docs:**
   - Background build state/diagnostics are surfaced via custom `nova/*` endpoints and are not yet wired into Nova’s main workspace/Salsa diagnostics pipeline or standard LSP progress notifications.
