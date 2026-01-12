@@ -2306,6 +2306,17 @@ enum LocalTyState {
     Computed,
 }
 
+fn is_placeholder_class_def(def: &ClassDef) -> bool {
+    def.kind == ClassKind::Class
+        && def.name != "java.lang.Object"
+        && def.super_class.is_none()
+        && def.type_params.is_empty()
+        && def.interfaces.is_empty()
+        && def.fields.is_empty()
+        && def.constructors.is_empty()
+        && def.methods.is_empty()
+}
+
 struct BodyChecker<'a, 'idx> {
     db: &'a dyn NovaTypeck,
     owner: DefWithBodyId,
@@ -2430,21 +2441,34 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         let workspace = self.db.workspace_def_map(project);
         let item = workspace.item_by_type_name(&TypeName::new(binary_name.to_string()))?;
 
-        // Reserve the id early so self-referential members (e.g. `A next;`) can resolve to a stable
-        // `Type::Class` instead of forcing `Type::Named`.
-        let class_id = loader.store.intern_class_id(binary_name);
-        self.workspace_in_progress.insert(binary_name.to_string());
-
-        let item_file = item.file();
-        let tree = self.db.hir_item_tree(item_file);
-        let scopes = self.db.scope_graph(item_file);
-
         let kind = match item {
             nova_hir::ids::ItemId::Interface(_) | nova_hir::ids::ItemId::Annotation(_) => {
                 ClassKind::Interface
             }
             _ => ClassKind::Class,
         };
+
+        // Reserve the id early so self-referential members (e.g. `A next;`) can resolve to a stable
+        // `Type::Class` instead of forcing `Type::Named`.
+        let class_id = loader.store.intern_class_id(binary_name);
+
+        // If the class is already defined (i.e. not the minimal placeholder inserted by
+        // `TypeStore::intern_class_id`), avoid re-loading it. Re-defining would allocate duplicate
+        // type params and overwrite constructor metadata (e.g. varargs tagging).
+        let already_defined = loader
+            .store
+            .class(class_id)
+            .is_some_and(|def| !is_placeholder_class_def(def) && def.kind == kind);
+        if already_defined {
+            self.workspace_loaded.insert(binary_name.to_string());
+            return Some(class_id);
+        }
+
+        self.workspace_in_progress.insert(binary_name.to_string());
+
+        let item_file = item.file();
+        let tree = self.db.hir_item_tree(item_file);
+        let scopes = self.db.scope_graph(item_file);
 
         let super_class = match kind {
             ClassKind::Interface => None,
@@ -2501,8 +2525,8 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         };
 
         let mut fields = Vec::new();
-        let mut constructors = Vec::new();
         let mut methods = Vec::new();
+        let mut constructors = Vec::new();
 
         if let Some(members) = members {
             for member in members {
@@ -2634,7 +2658,6 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             .get(&cid)
                             .copied()
                             .unwrap_or(class_scope);
-
                         // Best-effort: treat class type params as in-scope for constructor
                         // signatures.
                         let vars = class_vars.clone();
