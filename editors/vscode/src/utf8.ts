@@ -4,11 +4,14 @@
  * VS Code's `TextDocument.positionAt` expects UTF-16 offsets, but Nova's Micronaut
  * introspection endpoints return spans as UTF-8 byte offsets.
  *
+ * NOTE: The Frameworks tree view should reuse this helper when implementing Micronaut span navigation
+ * (Task 55) to avoid duplicating UTF-8/UTF-16 offset math.
+ *
  * If `byteOffset` points into the middle of a multi-byte code point, this returns
  * the UTF-16 offset at the start of that code point (best-effort + resilient).
  */
 export function utf8ByteOffsetToUtf16Offset(text: string, byteOffset: number): number {
-  if (!Number.isFinite(byteOffset) || byteOffset <= 0) {
+  if (Number.isNaN(byteOffset) || byteOffset <= 0) {
     return 0;
   }
 
@@ -40,6 +43,21 @@ export function utf8ByteOffsetToUtf16Offset(text: string, byteOffset: number): n
   return utf16Offset;
 }
 
+export interface Utf8Span {
+  start: number;
+  end: number;
+}
+
+export function utf8SpanToUtf16Offsets(text: string, span: Utf8Span): Utf8Span {
+  const startByte = typeof span.start === 'number' ? span.start : 0;
+  const endByte = typeof span.end === 'number' ? span.end : startByte;
+
+  return {
+    start: utf8ByteOffsetToUtf16Offset(text, startByte),
+    end: utf8ByteOffsetToUtf16Offset(text, Math.max(endByte, startByte)),
+  };
+}
+
 function utf8ByteLengthOfCodePoint(codePoint: number): number {
   if (codePoint <= 0x7f) {
     return 1;
@@ -52,4 +70,3 @@ function utf8ByteLengthOfCodePoint(codePoint: number): number {
   }
   return 4;
 }
-
