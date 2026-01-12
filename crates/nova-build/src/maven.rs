@@ -378,11 +378,21 @@ impl MavenBuild {
             }
         }
 
-        let module_path = {
-            // Best-effort JPMS module-path extraction. Maven computes these properties when
-            // configured for module-path compilation; however, older versions and some
-            // plugin configurations may not expose them. We never fail the overall request
-            // if these expressions are unsupported.
+        // Match Gradle behavior by considering only stable modules
+        // (`module-info.class` or `Automatic-Module-Name`) from the resolved compile classpath.
+        let module_path = if compiler_args_looks_like_jpms
+            || main_source_roots_have_module_info(&main_source_roots)
+        {
+            infer_module_path_for_compile_config(
+                &compile_classpath,
+                &main_source_roots,
+                main_output_dir.as_ref(),
+                compiler_args_looks_like_jpms,
+            )
+        } else {
+            // Optional JPMS signal: if Maven provides computed `*ModulePathElements`, treat the
+            // project as JPMS even if we didn't find a `module-info.java` under the source roots
+            // and can't detect JPMS flags via the `maven.compiler.*` properties.
             let mut main_module_path = self.evaluate_path_list_best_effort(
                 project_root,
                 module_relative,
@@ -402,21 +412,20 @@ impl MavenBuild {
                 module_relative,
                 "project.testCompileModulePathElements",
             )?;
+
             let maven_reports_module_path_elements =
                 !main_module_path.is_empty() || !test_module_path.is_empty();
 
-            // Match Gradle behavior by considering only stable modules
-            // (`module-info.class` or `Automatic-Module-Name`) from the resolved compile classpath.
-            //
-            // Treat Maven's computed `*ModulePathElements` (when non-empty) as an additional JPMS
-            // signal, but always derive the actual `module_path` from the resolved compile classpath
-            // to keep behavior consistent across build tools.
-            infer_module_path_for_compile_config(
-                &compile_classpath,
-                &main_source_roots,
-                main_output_dir.as_ref(),
-                compiler_args_looks_like_jpms || maven_reports_module_path_elements,
-            )
+            if maven_reports_module_path_elements {
+                infer_module_path_for_compile_config(
+                    &compile_classpath,
+                    &main_source_roots,
+                    main_output_dir.as_ref(),
+                    true,
+                )
+            } else {
+                Vec::new()
+            }
         };
 
         let cfg = JavaCompileConfig {
