@@ -95,7 +95,31 @@ fn type_at_offset_fully_qualified(
 
     let (owner, expr, _) = best?;
     let expr_res = snapshot.type_of_expr_demand_result(file, FileExprId { owner, expr });
-    Some(format_type_fully_qualified(&*expr_res.env, &expr_res.ty))
+    Some(strip_java_lang_prefix(format_type_fully_qualified(
+        &*expr_res.env,
+        &expr_res.ty,
+    )))
+}
+
+fn strip_java_lang_prefix(ty: String) -> String {
+    // Java implicitly imports `java.lang.*`, but not subpackages (e.g. `java.lang.reflect`).
+    // Strip the prefix only for "direct" `java.lang` types to keep emitted signatures readable.
+    const PREFIX: &str = "java.lang.";
+    let Some(rest) = ty.strip_prefix(PREFIX) else {
+        return ty;
+    };
+
+    // Heuristic: `java.lang` type names start with an uppercase letter, while subpackages are
+    // conventionally lowercase.
+    if rest
+        .as_bytes()
+        .first()
+        .is_some_and(|b| b.is_ascii_uppercase())
+    {
+        rest.to_string()
+    } else {
+        ty
+    }
 }
 
 fn infer_type_at_offsets(
@@ -366,17 +390,17 @@ fn find_best_expr_in_stmt(
                 find_best_expr_in_expr(body, *expr, offset, owner, best);
             }
         }
-        HirStmt::Return { expr, .. } => {
-            if let Some(expr) = expr {
-                find_best_expr_in_expr(body, *expr, offset, owner, best);
-            }
-        }
         HirStmt::Assert {
             condition, message, ..
         } => {
             find_best_expr_in_expr(body, *condition, offset, owner, best);
-            if let Some(message) = message {
-                find_best_expr_in_expr(body, *message, offset, owner, best);
+            if let Some(expr) = message {
+                find_best_expr_in_expr(body, *expr, offset, owner, best);
+            }
+        }
+        HirStmt::Return { expr, .. } => {
+            if let Some(expr) = expr {
+                find_best_expr_in_expr(body, *expr, offset, owner, best);
             }
         }
         HirStmt::If {
