@@ -543,6 +543,24 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
         &type_vars,
         &mut loader,
     );
+    let type_param_bound_diags = resolve_owner_type_param_bounds(
+        &resolver,
+        &scopes.scopes,
+        body_scope,
+        &tree,
+        owner,
+        &type_vars,
+        &mut loader,
+    );
+    let throws_diags = resolve_owner_throws_clause_types(
+        &resolver,
+        &scopes.scopes,
+        body_scope,
+        &tree,
+        owner,
+        &type_vars,
+        &mut loader,
+    );
 
     let mut checker = BodyChecker::new(
         db,
@@ -561,6 +579,8 @@ fn typeck_body(db: &dyn NovaTypeck, owner: DefWithBodyId) -> Arc<BodyTypeckResul
     );
     checker.diagnostics.extend(signature_diags);
     checker.diagnostics.extend(param_diags);
+    checker.diagnostics.extend(type_param_bound_diags);
+    checker.diagnostics.extend(throws_diags);
 
     checker.check_body(&mut loader);
 
@@ -1157,7 +1177,6 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     ));
                     return;
                 };
-
                 let expected = (!expected_return.is_errorish()).then_some(expected_return.clone());
                 let expr_ty = self
                     .infer_expr_with_expected(loader, *expr, expected.as_ref())
@@ -2785,6 +2804,73 @@ fn resolve_param_types<'idx>(
     }
 
     (out, diags)
+}
+
+fn resolve_owner_type_param_bounds<'idx>(
+    resolver: &nova_resolve::Resolver<'idx>,
+    scopes: &nova_resolve::ScopeGraph,
+    scope_id: nova_resolve::ScopeId,
+    tree: &nova_hir::item_tree::ItemTree,
+    owner: DefWithBodyId,
+    type_vars: &HashMap<String, TypeVarId>,
+    loader: &mut ExternalTypeLoader<'_>,
+) -> Vec<Diagnostic> {
+    let type_params = match owner {
+        DefWithBodyId::Method(m) => tree.method(m).type_params.as_slice(),
+        DefWithBodyId::Constructor(c) => tree.constructor(c).type_params.as_slice(),
+        DefWithBodyId::Initializer(_) => &[],
+    };
+
+    let mut diags = Vec::new();
+    for tp in type_params {
+        for (idx, bound) in tp.bounds.iter().enumerate() {
+            let bound_range = tp.bounds_ranges.get(idx).copied();
+            let resolved = resolve_type_ref_text(
+                resolver,
+                scopes,
+                scope_id,
+                loader,
+                type_vars,
+                bound,
+                bound_range,
+            );
+            diags.extend(resolved.diagnostics);
+        }
+    }
+
+    diags
+}
+
+fn resolve_owner_throws_clause_types<'idx>(
+    resolver: &nova_resolve::Resolver<'idx>,
+    scopes: &nova_resolve::ScopeGraph,
+    scope_id: nova_resolve::ScopeId,
+    tree: &nova_hir::item_tree::ItemTree,
+    owner: DefWithBodyId,
+    type_vars: &HashMap<String, TypeVarId>,
+    loader: &mut ExternalTypeLoader<'_>,
+) -> Vec<Diagnostic> {
+    let (throws, throws_ranges) = match owner {
+        DefWithBodyId::Method(m) => {
+            let method = tree.method(m);
+            (method.throws.as_slice(), method.throws_ranges.as_slice())
+        }
+        DefWithBodyId::Constructor(c) => {
+            let ctor = tree.constructor(c);
+            (ctor.throws.as_slice(), ctor.throws_ranges.as_slice())
+        }
+        DefWithBodyId::Initializer(_) => (&[][..], &[][..]),
+    };
+
+    let mut diags = Vec::new();
+    for (idx, thrown) in throws.iter().enumerate() {
+        let range = throws_ranges.get(idx).copied();
+        let resolved =
+            resolve_type_ref_text(resolver, scopes, scope_id, loader, type_vars, thrown, range);
+        diags.extend(resolved.diagnostics);
+    }
+
+    diags
 }
 
 fn resolve_type_ref_text<'idx>(

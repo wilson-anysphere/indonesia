@@ -712,7 +712,13 @@ fn cross_file_signature_type_resolves_in_same_package() {
     let a_file = FileId::from_raw(1);
     let b_file = FileId::from_raw(2);
 
-    set_file(&mut db, project, a_file, "src/p/Foo.java", "package p; class Foo {}");
+    set_file(
+        &mut db,
+        project,
+        a_file,
+        "src/p/Foo.java",
+        "package p; class Foo {}",
+    );
     set_file(
         &mut db,
         project,
@@ -838,6 +844,71 @@ class C {
         assert!(
             snippet == "DoesNotExist" || snippet == "AlsoMissing",
             "expected span to cover the unresolved type name, got {snippet:?} for {span:?}"
+        );
+    }
+}
+
+#[test]
+fn unresolved_type_param_bounds_are_anchored() {
+    let src = r#"
+class C {
+    <T extends Missing> T id(T t) { return t; }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    let unresolved: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code.as_ref() == "unresolved-type")
+        .collect();
+    assert!(
+        unresolved.iter().any(|d| d.message.contains("Missing")),
+        "expected an unresolved-type diagnostic for the type parameter bound; got {diags:?}"
+    );
+
+    for diag in unresolved {
+        if !diag.message.contains("Missing") {
+            continue;
+        }
+        let span = diag
+            .span
+            .expect("unresolved-type diagnostic should have a span");
+        let snippet = &src[span.start..span.end];
+        assert_eq!(
+            snippet, "Missing",
+            "expected span to cover the unresolved bound type name"
+        );
+    }
+}
+
+#[test]
+fn unresolved_throws_clause_types_are_anchored() {
+    let src = r#"
+class C {
+    void m() throws Missing, AlsoMissing { }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    let unresolved: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code.as_ref() == "unresolved-type")
+        .collect();
+    assert!(
+        unresolved.len() >= 2,
+        "expected at least two unresolved-type diagnostics, got {diags:?}"
+    );
+
+    for diag in unresolved {
+        let span = diag
+            .span
+            .expect("unresolved-type diagnostic should have a span");
+        let snippet = &src[span.start..span.end];
+        assert!(
+            snippet == "Missing" || snippet == "AlsoMissing",
+            "expected span to cover the unresolved throws type name, got {snippet:?} for {span:?}"
         );
     }
 }
