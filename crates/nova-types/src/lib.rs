@@ -837,18 +837,56 @@ impl TypeStore {
                 is_final: true,
             }],
             constructors: vec![],
-            methods: vec![MethodDef {
-                name: "max".to_string(),
-                type_params: vec![],
-                params: vec![
-                    Type::Primitive(PrimitiveType::Int),
-                    Type::Primitive(PrimitiveType::Int),
-                ],
-                return_type: Type::Primitive(PrimitiveType::Int),
-                is_static: true,
-                is_varargs: false,
-                is_abstract: false,
-            }],
+            methods: vec![
+                MethodDef {
+                    name: "max".to_string(),
+                    type_params: vec![],
+                    params: vec![
+                        Type::Primitive(PrimitiveType::Int),
+                        Type::Primitive(PrimitiveType::Int),
+                    ],
+                    return_type: Type::Primitive(PrimitiveType::Int),
+                    is_static: true,
+                    is_varargs: false,
+                    is_abstract: false,
+                },
+                MethodDef {
+                    name: "max".to_string(),
+                    type_params: vec![],
+                    params: vec![
+                        Type::Primitive(PrimitiveType::Long),
+                        Type::Primitive(PrimitiveType::Long),
+                    ],
+                    return_type: Type::Primitive(PrimitiveType::Long),
+                    is_static: true,
+                    is_varargs: false,
+                    is_abstract: false,
+                },
+                MethodDef {
+                    name: "max".to_string(),
+                    type_params: vec![],
+                    params: vec![
+                        Type::Primitive(PrimitiveType::Float),
+                        Type::Primitive(PrimitiveType::Float),
+                    ],
+                    return_type: Type::Primitive(PrimitiveType::Float),
+                    is_static: true,
+                    is_varargs: false,
+                    is_abstract: false,
+                },
+                MethodDef {
+                    name: "max".to_string(),
+                    type_params: vec![],
+                    params: vec![
+                        Type::Primitive(PrimitiveType::Double),
+                        Type::Primitive(PrimitiveType::Double),
+                    ],
+                    return_type: Type::Primitive(PrimitiveType::Double),
+                    is_static: true,
+                    is_varargs: false,
+                    is_abstract: false,
+                },
+            ],
         });
         let _boolean = store.add_class(ClassDef {
             name: "java.lang.Boolean".to_string(),

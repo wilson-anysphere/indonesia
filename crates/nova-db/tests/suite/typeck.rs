@@ -2320,6 +2320,48 @@ class C { int m(){ return max(1,2); } }
 }
 
 #[test]
+fn static_imported_math_max_long_resolves() {
+    let src = r#"
+import static java.lang.Math.max;
+class C {
+    long m() {
+        long a = 1;
+        long b = 2;
+        return max(a, b);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected static-imported Math.max(long,long) call to resolve; got {diags:?}"
+    );
+}
+
+#[test]
+fn static_imported_math_max_float_resolves() {
+    let src = r#"
+import static java.lang.Math.max;
+class C {
+    float m() {
+        float a = 1;
+        float b = 2;
+        return max(a, b);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected static-imported Math.max(float,float) call to resolve; got {diags:?}"
+    );
+}
+
+#[test]
 fn static_imported_math_pi_resolves() {
     let src = r#"
 import static java.lang.Math.PI;
