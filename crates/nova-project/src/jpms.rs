@@ -35,12 +35,31 @@ pub(crate) fn workspace_uses_jpms(jpms_modules: &[JpmsModuleRoot]) -> bool {
 ///
 /// For now we treat "workspace has any `module-info.java`" as the signal that
 /// the workspace is JPMS-enabled.
+///
+/// When JPMS is enabled, we mimic build-tool module-path inference by only
+/// placing dependencies with *stable module names* onto the module-path:
+/// - an explicit `module-info.class` (including multi-release
+///   `META-INF/versions/9/module-info.class`), or
+/// - an `Automatic-Module-Name` attribute in `META-INF/MANIFEST.MF`.
+///
+/// All remaining dependencies stay on the classpath.
 pub(crate) fn classify_dependency_entries(
     jpms_modules: &[JpmsModuleRoot],
     entries: Vec<ClasspathEntry>,
 ) -> (Vec<ClasspathEntry>, Vec<ClasspathEntry>) {
     if workspace_uses_jpms(jpms_modules) {
-        (entries, Vec::new())
+        let mut module_path = Vec::new();
+        let mut classpath = Vec::new();
+
+        for entry in entries {
+            if is_stable_named_module(&entry.path) {
+                module_path.push(entry);
+            } else {
+                classpath.push(entry);
+            }
+        }
+
+        (module_path, classpath)
     } else {
         (Vec::new(), entries)
     }
@@ -202,6 +221,33 @@ fn module_candidate_from_module_path_entry(path: &Path) -> Option<ModuleCandidat
         root: path.to_path_buf(),
         kind: ModuleCandidateKind::Filename,
     })
+}
+
+fn is_stable_named_module(path: &Path) -> bool {
+    let archive = Archive::new(path.to_path_buf());
+
+    let has_module_info = archive
+        .read("module-info.class")
+        .ok()
+        .flatten()
+        .or_else(|| {
+            archive
+                .read("META-INF/versions/9/module-info.class")
+                .ok()
+                .flatten()
+        })
+        .or_else(|| archive.read("classes/module-info.class").ok().flatten())
+        .is_some();
+
+    if has_module_info {
+        return true;
+    }
+
+    if let Some(bytes) = archive.read("META-INF/MANIFEST.MF").ok().flatten() {
+        return automatic_module_name_from_manifest(&bytes).is_some();
+    }
+
+    false
 }
 
 fn empty_module_info(name: ModuleName) -> ModuleInfo {
@@ -450,6 +496,127 @@ mod tests {
             module_candidate_from_module_path_entry(&dep_dir).expect("module candidate");
         assert_eq!(candidate.kind, ModuleCandidateKind::Explicit);
         assert_eq!(candidate.info.name.as_str(), "mod.b");
+    }
+
+    #[test]
+    fn classify_dependency_entries_partitions_stable_modules_when_jpms_enabled() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        std::fs::write(root.join("module-info.java"), "module mod.a { }")
+            .expect("write module-info.java");
+
+        let deps_dir = root.join("deps");
+        let explicit_dir = deps_dir.join("explicit");
+        let manifest_dir = deps_dir.join("manifest");
+        let plain_dir = deps_dir.join("plain");
+
+        std::fs::create_dir_all(&explicit_dir).expect("mkdir explicit");
+        std::fs::write(explicit_dir.join("module-info.class"), make_module_info_class())
+            .expect("write module-info.class");
+
+        std::fs::create_dir_all(manifest_dir.join("META-INF")).expect("mkdir manifest META-INF");
+        std::fs::write(
+            manifest_dir.join("META-INF/MANIFEST.MF"),
+            b"Manifest-Version: 1.0\r\nAutomatic-Module-Name: com.example.foo\r\n\r\n",
+        )
+        .expect("write MANIFEST.MF");
+
+        std::fs::create_dir_all(&plain_dir).expect("mkdir plain");
+
+        let jpms_modules = discover_jpms_modules(&[Module {
+            name: "root".to_string(),
+            root: root.to_path_buf(),
+            annotation_processing: Default::default(),
+        }]);
+        assert!(workspace_uses_jpms(&jpms_modules), "JPMS should be enabled");
+
+        let entries = vec![
+            ClasspathEntry {
+                kind: ClasspathEntryKind::Directory,
+                path: explicit_dir.clone(),
+            },
+            ClasspathEntry {
+                kind: ClasspathEntryKind::Directory,
+                path: manifest_dir.clone(),
+            },
+            ClasspathEntry {
+                kind: ClasspathEntryKind::Directory,
+                path: plain_dir.clone(),
+            },
+        ];
+
+        let (module_path, classpath) = classify_dependency_entries(&jpms_modules, entries);
+
+        assert_eq!(
+            module_path.iter().map(|e| &e.path).collect::<Vec<_>>(),
+            vec![&explicit_dir, &manifest_dir],
+            "explicit + Automatic-Module-Name deps should be placed on module-path"
+        );
+        assert_eq!(
+            classpath.iter().map(|e| &e.path).collect::<Vec<_>>(),
+            vec![&plain_dir],
+            "plain deps should remain on classpath"
+        );
+    }
+
+    #[test]
+    fn classify_dependency_entries_keeps_all_deps_on_classpath_when_jpms_disabled() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        // No module-info.java => JPMS disabled.
+        let deps_dir = root.join("deps");
+        let explicit_dir = deps_dir.join("explicit");
+        let manifest_dir = deps_dir.join("manifest");
+        let plain_dir = deps_dir.join("plain");
+
+        std::fs::create_dir_all(&explicit_dir).expect("mkdir explicit");
+        std::fs::write(explicit_dir.join("module-info.class"), make_module_info_class())
+            .expect("write module-info.class");
+
+        std::fs::create_dir_all(manifest_dir.join("META-INF")).expect("mkdir manifest META-INF");
+        std::fs::write(
+            manifest_dir.join("META-INF/MANIFEST.MF"),
+            b"Manifest-Version: 1.0\r\nAutomatic-Module-Name: com.example.foo\r\n\r\n",
+        )
+        .expect("write MANIFEST.MF");
+
+        std::fs::create_dir_all(&plain_dir).expect("mkdir plain");
+
+        let jpms_modules = discover_jpms_modules(&[Module {
+            name: "root".to_string(),
+            root: root.to_path_buf(),
+            annotation_processing: Default::default(),
+        }]);
+        assert!(
+            !workspace_uses_jpms(&jpms_modules),
+            "JPMS should be disabled"
+        );
+
+        let entries = vec![
+            ClasspathEntry {
+                kind: ClasspathEntryKind::Directory,
+                path: explicit_dir.clone(),
+            },
+            ClasspathEntry {
+                kind: ClasspathEntryKind::Directory,
+                path: manifest_dir.clone(),
+            },
+            ClasspathEntry {
+                kind: ClasspathEntryKind::Directory,
+                path: plain_dir.clone(),
+            },
+        ];
+
+        let (module_path, classpath) = classify_dependency_entries(&jpms_modules, entries);
+
+        assert!(module_path.is_empty(), "module-path should be empty");
+        assert_eq!(
+            classpath.iter().map(|e| &e.path).collect::<Vec<_>>(),
+            vec![&explicit_dir, &manifest_dir, &plain_dir],
+            "all deps should remain on classpath when JPMS is disabled"
+        );
     }
 
     #[test]
