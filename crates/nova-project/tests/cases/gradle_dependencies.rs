@@ -1,6 +1,6 @@
 use anyhow::Context;
 
-use nova_project::{load_project, BuildSystem, Dependency};
+use nova_project::{load_project_with_options, BuildSystem, Dependency, LoadOptions};
 
 #[test]
 fn gradle_extracts_versionless_dependencies() -> anyhow::Result<()> {
@@ -32,7 +32,12 @@ dependencies {
     )
     .context("write build.gradle")?;
 
-    let config = load_project(dir.path()).context("load_project")?;
+    let gradle_home = tempfile::tempdir().context("tempdir (gradle home)")?;
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(dir.path(), &options).context("load_project")?;
     assert_eq!(config.build_system, BuildSystem::Gradle);
 
     assert_eq!(
@@ -67,4 +72,3 @@ dependencies {
 
     Ok(())
 }
-

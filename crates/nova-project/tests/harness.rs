@@ -28,6 +28,9 @@ mod discovery;
 #[path = "cases/gradle_cache.rs"]
 mod gradle_cache;
 
+#[path = "cases/gradle_dependencies.rs"]
+mod gradle_dependencies;
+
 #[path = "cases/gradle_jpms_workspace_model.rs"]
 mod gradle_jpms_workspace_model;
 
