@@ -12,9 +12,10 @@ use crate::FileId;
 use super::cancellation as cancel;
 use super::inputs::NovaInputs;
 use super::stats::HasQueryStats;
-use super::HasJavaParseStore;
-use super::HasFilePaths;
-use super::{HasJavaParseCache, HasSalsaMemoStats, HasSyntaxTreeStore, TrackedSalsaMemo};
+use super::{
+    HasFilePaths, HasJavaParseCache, HasJavaParseStore, HasSalsaMemoStats, HasSyntaxTreeStore,
+    TrackedSalsaMemo,
+};
 
 /// The parsed syntax tree type exposed by the database.
 pub type SyntaxTree = GreenNode;
@@ -150,21 +151,81 @@ fn parse_java(db: &dyn NovaSyntax, file: FileId) -> Arc<JavaParseResult> {
         }
     }
 
-    // NOTE: `nova_syntax` supports incremental reparsing (`parse_java_incremental` /
-    // `reparse_java`) by splicing updated green subtrees into the previous tree.
-    // Wiring edit propagation through Salsa inputs is handled separately.
+    fn edit_applies_exactly(old_text: &str, edit: &TextEdit, new_text: &str) -> bool {
+        let start = edit.range.start as usize;
+        let end = edit.range.end as usize;
+
+        if start > end || end > old_text.len() {
+            return false;
+        }
+        if !old_text.is_char_boundary(start) || !old_text.is_char_boundary(end) {
+            return false;
+        }
+
+        let replacement = edit.replacement.as_str();
+        let removed_len = end - start;
+        let expected_len = match old_text.len().checked_add(replacement.len()) {
+            Some(len) => match len.checked_sub(removed_len) {
+                Some(len) => len,
+                None => return false,
+            },
+            None => return false,
+        };
+        if new_text.len() != expected_len {
+            return false;
+        }
+
+        // Validate boundaries in the new text before slicing.
+        let mid_end = start + replacement.len();
+        if !new_text.is_char_boundary(start) || !new_text.is_char_boundary(mid_end) {
+            return false;
+        }
+
+        // Check prefix / replacement / suffix without allocating.
+        if &new_text[..start] != &old_text[..start] {
+            return false;
+        }
+        if &new_text[start..mid_end] != replacement {
+            return false;
+        }
+        if &new_text[mid_end..] != &old_text[end..] {
+            return false;
+        }
+
+        true
+    }
     let new_text = text.as_str();
     let mut parsed = None;
 
     if let Some(prev) = db.java_parse_cache().get(file) {
         let old_parse = prev.parse;
         let old_text = prev.text;
-        if let Some(edit) = diff_as_single_edit(old_text.as_str(), new_text) {
-            parsed = Some(nova_syntax::parse_java_incremental(
-                Some((old_parse.as_ref(), old_text.as_str())),
-                Some(edit),
-                new_text,
-            ));
+
+        // Ensure the cached parse still corresponds to the cached text.
+        let cached_len = u32::from(old_parse.syntax().text_range().end()) as usize;
+        if cached_len == old_text.len() {
+            // Prefer the edit recorded by the host (e.g. LSP/VFS) when available and consistent
+            // with the cached parse+text.
+            if let Some(edit) = db.file_last_edit(file) {
+                if edit_applies_exactly(old_text.as_str(), &edit, new_text) {
+                    parsed = Some(nova_syntax::parse_java_incremental(
+                        Some((old_parse.as_ref(), old_text.as_str())),
+                        Some(edit),
+                        new_text,
+                    ));
+                }
+            }
+
+            // Fallback: derive a single edit by diffing the previous and current text.
+            if parsed.is_none() {
+                if let Some(edit) = diff_as_single_edit(old_text.as_str(), new_text) {
+                    parsed = Some(nova_syntax::parse_java_incremental(
+                        Some((old_parse.as_ref(), old_text.as_str())),
+                        Some(edit),
+                        new_text,
+                    ));
+                }
+            }
         }
     }
 
