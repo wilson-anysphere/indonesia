@@ -243,16 +243,17 @@ These must be true once this ADR is implemented:
 
 1. **Project-wide identity**
    - For a fixed `ProjectId`, a canonical **class key** maps to exactly one `ClassId`.
-     - In the simplest classpath-only model this key is just `binary_name`.
-     - In JPMS mode (and in the presence of split packages / duplicate names across modules), the
-       key likely needs an origin component (e.g. defining module). See ADR 0012.
+      - In the simplest classpath-only model this key is just `binary_name`.
+      - In JPMS mode (and in the presence of split packages / duplicate names across modules), the
+        key likely needs an origin component (source/classpath/JDK) and/or the defining module to
+        disambiguate duplicates. See ADR 0012.
 
 2. **Cross-body stability**
    - Within a project, the same class key yields the same `ClassId` across all bodies, regardless of
      which body is type-checked first.
 
 3. **No reuse**
-   - A `ClassId` must never be reused for a different `binary_name` within the same project.
+   - A `ClassId` must never be reused for a different class key within the same project.
 
 ### Required tests (regressions)
 
