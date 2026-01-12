@@ -7114,6 +7114,21 @@ fn format_type_for_postfix_snippet(
     import_ctx: &JavaImportContext,
     ty: &Type,
 ) -> String {
+    if matches!(ty, Type::Array(_)) {
+        let mut base = ty;
+        let mut dims = 0usize;
+        while let Type::Array(inner) = base {
+            dims += 1;
+            base = inner;
+        }
+
+        let mut out = format_type_for_postfix_snippet(types, import_ctx, base);
+        for _ in 0..dims {
+            out.push_str("[]");
+        }
+        return out;
+    }
+
     let Type::Class(class_ty) = ty else {
         return nova_types::format_type(types, ty);
     };
