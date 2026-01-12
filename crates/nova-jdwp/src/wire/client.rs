@@ -2019,6 +2019,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connect_falls_back_to_legacy_capabilities_when_capabilities_new_is_not_found() {
+        let mut capabilities = vec![false; 32];
+        capabilities[2] = true; // canGetBytecodes
+        capabilities[3] = true; // canGetSyntheticAttribute
+
+        let server = MockJdwpServer::spawn_with_config(MockJdwpServerConfig {
+            capabilities,
+            capabilities_new_error_code: Some(41), // NOT_FOUND
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+        let caps = client.capabilities().await;
+
+        let mut expected = JdwpCapabilitiesNew::default();
+        expected.can_get_bytecodes = true;
+        expected.can_get_synthetic_attribute = true;
+
+        assert_eq!(caps, expected);
+    }
+
+    #[tokio::test]
     async fn connect_falls_back_to_legacy_capabilities_when_capabilities_new_is_unsupported_version(
     ) {
         let mut capabilities = vec![false; 32];
@@ -2048,6 +2072,20 @@ mod tests {
         let server = MockJdwpServer::spawn_with_config(MockJdwpServerConfig {
             capabilities_new_not_implemented: true,
             capabilities_legacy_not_implemented: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+        assert_eq!(client.capabilities().await, JdwpCapabilitiesNew::default());
+    }
+
+    #[tokio::test]
+    async fn connect_succeeds_when_both_capability_commands_are_not_found() {
+        let server = MockJdwpServer::spawn_with_config(MockJdwpServerConfig {
+            capabilities_new_error_code: Some(41),    // NOT_FOUND
+            capabilities_legacy_error_code: Some(41), // NOT_FOUND
             ..Default::default()
         })
         .await
