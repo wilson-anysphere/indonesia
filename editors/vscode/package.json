@@ -18,6 +18,7 @@
   "activationEvents": [
     "onLanguage:java",
     "onView:novaFrameworks",
+    "onView:novaProjectExplorer",
     "onCommand:nova.installOrUpdateServer",
     "onCommand:nova.useLocalServerBinary",
     "onCommand:nova.showServerVersion",
@@ -42,6 +43,11 @@
     "onCommand:nova.frameworks.copyBeanId",
     "onCommand:nova.frameworks.copyBeanType",
     "onCommand:nova.frameworks.revealInExplorer",
+    "onCommand:nova.refreshProjectExplorer",
+    "onCommand:nova.showProjectModel",
+    "onCommand:nova.showProjectConfiguration",
+    "onCommand:nova.buildProject",
+    "onCommand:nova.reloadProject",
     "onDebug"
   ],
   "main": "./out/extension.js",
@@ -146,6 +152,26 @@
       {
         "command": "nova.frameworks.revealInExplorer",
         "title": "Nova: Reveal In Explorer"
+      },
+      {
+        "command": "nova.refreshProjectExplorer",
+        "title": "Nova: Refresh Project Explorer"
+      },
+      {
+        "command": "nova.showProjectModel",
+        "title": "Nova: Show Project Model"
+      },
+      {
+        "command": "nova.showProjectConfiguration",
+        "title": "Nova: Show Project Configuration"
+      },
+      {
+        "command": "nova.buildProject",
+        "title": "Nova: Build Project"
+      },
+      {
+        "command": "nova.reloadProject",
+        "title": "Nova: Reload Project"
       }
     ],
     "views": {
@@ -153,6 +179,10 @@
         {
           "id": "novaFrameworks",
           "name": "Nova Frameworks"
+        },
+        {
+          "id": "novaProjectExplorer",
+          "name": "Nova Project"
         }
       ]
     },
@@ -179,6 +209,21 @@
           "command": "nova.frameworks.refresh",
           "when": "view == novaFrameworks",
           "group": "navigation@1"
+        },
+        {
+          "command": "nova.refreshProjectExplorer",
+          "when": "view == novaProjectExplorer",
+          "group": "navigation"
+        },
+        {
+          "command": "nova.showProjectModel",
+          "when": "view == novaProjectExplorer",
+          "group": "navigation"
+        },
+        {
+          "command": "nova.showProjectConfiguration",
+          "when": "view == novaProjectExplorer",
+          "group": "navigation"
         }
       ],
       "view/item/context": [
@@ -211,6 +256,16 @@
           "command": "nova.frameworks.revealInExplorer",
           "when": "view == novaFrameworks && viewItem == novaFrameworkBean",
           "group": "navigation@1"
+        },
+        {
+          "command": "nova.reloadProject",
+          "when": "view == novaProjectExplorer && viewItem == novaProjectExplorerWorkspace",
+          "group": "inline"
+        },
+        {
+          "command": "nova.buildProject",
+          "when": "view == novaProjectExplorer && viewItem == novaProjectExplorerUnit",
+          "group": "inline"
         }
       ]
     },

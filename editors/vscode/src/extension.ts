@@ -13,6 +13,7 @@ import { registerNovaFrameworksView, type NovaFrameworksViewController } from '.
 import { registerNovaFrameworkSearch } from './frameworkSearch';
 import { registerNovaHotSwap } from './hotSwap';
 import { registerNovaMetricsCommands } from './metricsCommands';
+import { registerNovaProjectExplorer } from './projectExplorer';
 import { registerNovaTestDebugRunProfile } from './testDebug';
 import { toDidRenameFilesParams } from './fileOperations';
 import {
@@ -255,6 +256,7 @@ export async function activate(context: vscode.ExtensionContext) {
       frameworksView.refresh();
     }),
   );
+  registerNovaProjectExplorer(context, sendNovaRequest);
 
   const readServerSettings = (): NovaServerSettings => {
     const cfg = vscode.workspace.getConfiguration('nova');
