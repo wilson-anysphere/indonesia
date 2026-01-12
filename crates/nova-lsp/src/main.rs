@@ -4902,7 +4902,7 @@ fn type_definition_jdk(
 
             if stub.is_none() {
                 let suffix = format!(".{name}");
-                if let Ok(names) = jdk.iter_binary_class_names() {
+                if let Ok(names) = jdk.iter_binary_names() {
                     let mut found: Option<&str> = None;
                     for candidate in names {
                         if candidate.ends_with(&suffix) {
