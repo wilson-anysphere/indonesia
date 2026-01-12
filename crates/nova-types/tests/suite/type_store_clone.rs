@@ -156,6 +156,12 @@ fn default_type_store_can_be_cloned_and_mutated_independently() {
 
     // `well_known` ids should resolve to the expected class names in both stores.
     let wk = store.well_known().clone();
+    // Ensure the implicit `java.lang.*` lookup still works through a clone.
+    assert_eq!(store.lookup_class("Object"), Some(wk.object));
+    assert_eq!(store.lookup_class("String"), Some(wk.string));
+    assert_eq!(cloned.lookup_class("Object"), Some(wk.object));
+    assert_eq!(cloned.lookup_class("String"), Some(wk.string));
+
     for (id, expected_name) in [
         (wk.object, "java.lang.Object"),
         (wk.string, "java.lang.String"),
