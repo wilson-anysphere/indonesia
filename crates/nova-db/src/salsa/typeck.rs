@@ -1719,7 +1719,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                 bound,
                 base_span,
             );
-            out.extend(resolved.diagnostics);
+            extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
         }
     }
 
@@ -1748,7 +1748,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                     ext,
                     base_span,
                 );
-                out.extend(resolved.diagnostics);
+                extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
             }
             for (idx, imp) in class.implements.iter().enumerate() {
                 let base_span = class.implements_ranges.get(idx).copied();
@@ -1771,7 +1771,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                     imp,
                     base_span,
                 );
-                out.extend(resolved.diagnostics);
+                extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
             }
             for (idx, perm) in class.permits.iter().enumerate() {
                 let base_span = class.permits_ranges.get(idx).copied();
@@ -1794,7 +1794,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                     perm,
                     base_span,
                 );
-                out.extend(resolved.diagnostics);
+                extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
             }
         }
         HirItemId::Interface(id) => {
@@ -1820,7 +1820,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                     ext,
                     base_span,
                 );
-                out.extend(resolved.diagnostics);
+                extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
             }
             for (idx, perm) in iface.permits.iter().enumerate() {
                 let base_span = iface.permits_ranges.get(idx).copied();
@@ -1843,7 +1843,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                     perm,
                     base_span,
                 );
-                out.extend(resolved.diagnostics);
+                extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
             }
         }
         HirItemId::Enum(id) => {
@@ -1869,7 +1869,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                     imp,
                     base_span,
                 );
-                out.extend(resolved.diagnostics);
+                extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
             }
             for (idx, perm) in enm.permits.iter().enumerate() {
                 let base_span = enm.permits_ranges.get(idx).copied();
@@ -1892,7 +1892,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                     perm,
                     base_span,
                 );
-                out.extend(resolved.diagnostics);
+                extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
             }
         }
         HirItemId::Record(id) => {
@@ -1918,7 +1918,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                     imp,
                     base_span,
                 );
-                out.extend(resolved.diagnostics);
+                extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
             }
             for (idx, perm) in record.permits.iter().enumerate() {
                 let base_span = record.permits_ranges.get(idx).copied();
@@ -1941,7 +1941,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                     perm,
                     base_span,
                 );
-                out.extend(resolved.diagnostics);
+                extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
             }
         }
         HirItemId::Annotation(_) => {}
@@ -1984,7 +1984,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                     &field.ty,
                     Some(field.ty_range),
                 );
-                out.extend(resolved.diagnostics);
+                extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
             }
             Member::Method(mid) => {
                 let method = tree.method(mid);
@@ -2045,7 +2045,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                             bound,
                             base_span,
                         );
-                        out.extend(resolved.diagnostics);
+                        extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
                     }
                 }
 
@@ -2068,7 +2068,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                     &method.return_ty,
                     Some(method.return_ty_range),
                 );
-                out.extend(resolved.diagnostics);
+                extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
 
                 for param in &method.params {
                     collect_type_use_annotation_diagnostics(
@@ -2090,7 +2090,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                         &param.ty,
                         Some(param.ty_range),
                     );
-                    out.extend(resolved.diagnostics);
+                    extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
                 }
 
                 for (idx, thrown) in method.throws.iter().enumerate() {
@@ -2114,7 +2114,7 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
                         thrown,
                         base_span,
                     );
-                    out.extend(resolved.diagnostics);
+                    extend_type_ref_diagnostics(out, file_text, resolved.diagnostics);
                 }
             }
             Member::Constructor(cid) => {
@@ -2156,6 +2156,25 @@ fn collect_signature_type_diagnostics_in_item<'idx>(
             ),
         }
     }
+}
+
+fn extend_type_ref_diagnostics(out: &mut Vec<Diagnostic>, file_text: &str, diags: Vec<Diagnostic>) {
+    // NOTE: Type-use annotations are currently ignored by Nova's type checker. The type-ref
+    // parser is resilient to annotations (and can optionally diagnose them when anchored), but we
+    // intentionally suppress diagnostics for annotation *type names* in type-use positions when
+    // reporting type-check diagnostics.
+    //
+    // Example: `List<@Missing String>` should not surface an `unresolved-type` diagnostic for the
+    // annotation name `Missing` in `db.type_diagnostics`.
+    out.extend(diags.into_iter().filter(|d| {
+        let Some(span) = d.span else {
+            return true;
+        };
+        if span.start == 0 || span.start > file_text.len() {
+            return true;
+        }
+        file_text.as_bytes().get(span.start - 1) != Some(&b'@')
+    }));
 }
 
 fn collect_annotation_use_diagnostics<'idx>(
@@ -3658,13 +3677,57 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             }
         }
 
-        // Best-effort: Java default constructor for classes that declare none.
-        if kind == ClassKind::Class && constructors.is_empty() {
-            constructors.push(ConstructorDef {
-                params: Vec::new(),
-                is_varargs: false,
-                is_accessible: true,
-            });
+        // Best-effort: Java implicit constructors.
+        //
+        // - Classes with no declared constructors get an implicit no-arg constructor.
+        // - Records always have a canonical constructor matching their components; if none was
+        //   declared (or if only non-canonical ctors were declared), add it.
+        match item {
+            nova_hir::ids::ItemId::Class(_) if constructors.is_empty() => {
+                constructors.push(ConstructorDef {
+                    params: Vec::new(),
+                    is_varargs: false,
+                    is_accessible: true,
+                });
+            }
+            nova_hir::ids::ItemId::Record(id) => {
+                let record = tree.record(id);
+                let canonical_params = record
+                    .components
+                    .iter()
+                    .map(|component| {
+                        preload_type_names(
+                            self.resolver,
+                            &scopes.scopes,
+                            class_scope,
+                            loader,
+                            &component.ty,
+                        );
+                        nova_resolve::type_ref::resolve_type_ref_text(
+                            self.resolver,
+                            &scopes.scopes,
+                            class_scope,
+                            &*loader.store,
+                            &class_vars,
+                            &component.ty,
+                            None,
+                        )
+                        .ty
+                    })
+                    .collect::<Vec<_>>();
+
+                let canonical_exists = constructors.iter().any(|ctor| {
+                    !ctor.is_varargs && ctor.params == canonical_params
+                });
+                if !canonical_exists {
+                    constructors.push(ConstructorDef {
+                        params: canonical_params,
+                        is_varargs: false,
+                        is_accessible: true,
+                    });
+                }
+            }
+            _ => {}
         }
 
         loader.store.define_class(
@@ -7963,13 +8026,57 @@ fn define_source_types<'idx>(
             }
         }
 
-        // Best-effort: Java default constructor for classes that declare none.
-        if matches!(item, nova_hir::ids::ItemId::Class(_)) && constructors.is_empty() {
-            constructors.push(ConstructorDef {
-                params: Vec::new(),
-                is_varargs: false,
-                is_accessible: true,
-            });
+        // Best-effort: Java implicit constructors.
+        //
+        // - Classes with no declared constructors get an implicit no-arg constructor.
+        // - Records always have a canonical constructor matching their components; if none was
+        //   declared (or if only non-canonical ctors were declared), add it.
+        match item {
+            nova_hir::ids::ItemId::Class(_) if constructors.is_empty() => {
+                constructors.push(ConstructorDef {
+                    params: Vec::new(),
+                    is_varargs: false,
+                    is_accessible: true,
+                });
+            }
+            nova_hir::ids::ItemId::Record(id) => {
+                let record = tree.record(id);
+                let canonical_params = record
+                    .components
+                    .iter()
+                    .map(|component| {
+                        preload_type_names(
+                            resolver,
+                            &scopes.scopes,
+                            class_scope,
+                            loader,
+                            &component.ty,
+                        );
+                        nova_resolve::type_ref::resolve_type_ref_text(
+                            resolver,
+                            &scopes.scopes,
+                            class_scope,
+                            &*loader.store,
+                            &class_vars,
+                            &component.ty,
+                            Some(component.ty_range),
+                        )
+                        .ty
+                    })
+                    .collect::<Vec<_>>();
+
+                let canonical_exists = constructors.iter().any(|ctor| {
+                    !ctor.is_varargs && ctor.params == canonical_params
+                });
+                if !canonical_exists {
+                    constructors.push(ConstructorDef {
+                        params: canonical_params,
+                        is_varargs: false,
+                        is_accessible: true,
+                    });
+                }
+            }
+            _ => {}
         }
 
         // Best-effort: Java canonical constructor for records that declare none.

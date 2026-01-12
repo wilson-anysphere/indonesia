@@ -6239,6 +6239,21 @@ class D { void m(){ new C<String>("x"); } }
 }
 
 #[test]
+fn record_implicit_canonical_constructor_resolves() {
+    let src = r#"
+record R(int x) { }
+class C { void m(){ new R(1); } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-constructor"),
+        "expected record canonical constructor call to resolve; got {diags:?}"
+    );
+}
+
+#[test]
 fn class_ids_are_stable_across_files_for_jdk_nested_types() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
