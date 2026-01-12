@@ -1818,9 +1818,28 @@ class C {
 }
 
 #[test]
+fn method_reference_initializer_does_not_report_type_mismatch() {
+    let src = r#"
+ import java.util.function.Function;
+class C {
+    void m() {
+        Function<String,Integer> f = String::length;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected no type-mismatch diagnostics; got {diags:?}"
+    );
+}
+
+#[test]
 fn method_reference_is_typed_from_call_argument_target() {
     let src = r#"
-import java.util.function.Function;
+ import java.util.function.Function;
 class C {
     static void take(Function<String, Integer> f) {}
     void m() {
@@ -1903,6 +1922,27 @@ class C { void m(){ Object x = String.class; } }
         ty.contains("Class"),
         "expected class literal type to mention Class, got {ty:?}"
     );
+}
+
+#[test]
+fn class_literal_infers_var_type_as_java_lang_class() {
+    let src = r#"
+class C {
+    void m() {
+        var c = String.class;
+        c.toString();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("c.toString")
+        .expect("snippet should contain c.toString");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Class<String>");
 }
 
 #[test]
