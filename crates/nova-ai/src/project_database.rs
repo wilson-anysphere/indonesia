@@ -48,7 +48,20 @@ impl ProjectDatabase for DbProjectDatabase<'_> {
     }
 
     fn file_text(&self, path: &Path) -> Option<String> {
-        let file_id = self.db.file_id(path)?;
+        let file_id = match self.db.file_id(path) {
+            Some(file_id) => file_id,
+            None => {
+                // `Database::file_id` is an optional surface (default impl returns `None`).
+                // Fall back to a best-effort reverse lookup so callers can still index/search
+                // databases that only expose `all_file_ids` + `file_path`.
+                let mut file_ids = self.db.all_file_ids();
+                file_ids.sort();
+                file_ids
+                    .into_iter()
+                    .find(|file_id| self.db.file_path(*file_id) == Some(path))?
+            }
+        };
+
         Some(self.db.file_content(file_id).to_string())
     }
 }
