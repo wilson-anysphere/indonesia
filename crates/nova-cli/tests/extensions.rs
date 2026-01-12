@@ -206,7 +206,9 @@ wasm_paths = ["extensions"]
         let temp = TempDir::new().unwrap();
         write_workspace_config(&temp);
 
-        temp.child("extensions/bad_manifest").create_dir_all().unwrap();
+        temp.child("extensions/bad_manifest")
+            .create_dir_all()
+            .unwrap();
         temp.child("extensions/bad_manifest/nova-ext.toml")
             .write_str("not = [valid")
             .unwrap();
@@ -218,6 +220,8 @@ wasm_paths = ["extensions"]
             .arg(temp.path())
             .assert()
             .failure()
-            .stderr(predicate::str::contains("failed to parse extension manifest"));
+            .stderr(predicate::str::contains(
+                "failed to parse extension manifest",
+            ));
     }
 }
