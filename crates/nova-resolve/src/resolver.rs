@@ -517,6 +517,28 @@ impl<'a> Resolver<'a> {
             }
         }
 
+        // Ensure deterministic diagnostic ordering. `diagnose_imports` uses
+        // `HashMap`-based grouping for ambiguous imports, which would otherwise
+        // produce non-deterministic output ordering due to randomized hashing.
+        //
+        // Sort by span (source order), then by code/message for stable tie-breaks.
+        diags.sort_by(|a, b| {
+            let a_span = a.span.unwrap_or(nova_types::Span::new(0, 0));
+            let b_span = b.span.unwrap_or(nova_types::Span::new(0, 0));
+            (
+                a_span.start,
+                a_span.end,
+                a.code.as_ref(),
+                a.message.as_str(),
+            )
+                .cmp(&(
+                    b_span.start,
+                    b_span.end,
+                    b.code.as_ref(),
+                    b.message.as_str(),
+                ))
+        });
+
         diags
     }
 

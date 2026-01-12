@@ -143,6 +143,48 @@ class C {
 }
 
 #[test]
+fn unresolved_import_produces_diagnostic_with_span() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+
+    let file = FileId::from_raw(1);
+    let text = r#"
+package p;
+import does.not.Exist;
+
+class C {}
+"#;
+    set_file(&mut db, project, file, "src/C.java", text);
+    db.set_project_files(project, Arc::new(vec![file]));
+
+    let diags = db.import_diagnostics(file);
+    let diag = diags
+        .iter()
+        .find(|d| d.code.as_ref() == "unresolved-import")
+        .unwrap_or_else(|| panic!("expected unresolved-import diagnostic, got {diags:?}"));
+    assert!(diag.span.is_some(), "expected diagnostic span, got {diag:?}");
+    assert!(
+        diag.message.contains("does.not.Exist"),
+        "expected message to contain imported path, got: {:?}",
+        diag.message
+    );
+    let span = diag.span.unwrap();
+    assert!(
+        text[span.start..span.end].contains("does.not.Exist"),
+        "expected diagnostic span to cover import declaration; span={span:?}, slice={:?}",
+        &text[span.start..span.end]
+    );
+}
+
+#[test]
 fn body_only_edit_does_not_recompute_resolution() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
@@ -335,7 +377,9 @@ fn ambiguous_single_type_imports_produce_diagnostics() {
 
     let a_file = FileId::from_raw(1);
     let b_file = FileId::from_raw(2);
-    let c_file = FileId::from_raw(3);
+    let a_bar_file = FileId::from_raw(3);
+    let b_bar_file = FileId::from_raw(4);
+    let c_file = FileId::from_raw(5);
     set_file(
         &mut db,
         project,
@@ -359,30 +403,124 @@ public class Foo {}
     set_file(
         &mut db,
         project,
-        c_file,
-        "src/c/C.java",
+        a_bar_file,
+        "src/a/Bar.java",
         r#"
+package a;
+public class Bar {}
+"#,
+    );
+    set_file(
+        &mut db,
+        project,
+        b_bar_file,
+        "src/b/Bar.java",
+        r#"
+package b;
+public class Bar {}
+"#,
+    );
+    let text = r#"
 package c;
 import a.Foo;
 import b.Foo;
+import does.not.Exist;
+import a.Bar;
+import b.Bar;
 
 class C {
     Foo field;
+    void m() {
+        int x = 1;
+    }
 }
-
-"#,
-    );
-    db.set_project_files(project, Arc::new(vec![a_file, b_file, c_file]));
+"#;
+    set_file(&mut db, project, c_file, "src/c/C.java", text);
+    // Keep file list stable + sorted by relative path for determinism.
+    db.set_project_files(project, Arc::new(vec![a_bar_file, a_file, b_bar_file, b_file, c_file]));
 
     let diags = db.import_diagnostics(c_file);
+    assert_eq!(
+        diags.len(),
+        3,
+        "expected three import diagnostics (2 ambiguous + 1 unresolved), got {diags:?}"
+    );
+
+    // Diagnostics should be returned in deterministic (source) order.
+    let starts: Vec<_> = diags
+        .iter()
+        .map(|d| d.span.map(|s| s.start).unwrap_or(0))
+        .collect();
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "ambiguous-import"),
-        "expected ambiguous-import diagnostic, got {diags:?}"
+        starts.windows(2).all(|w| w[0] <= w[1]),
+        "expected diagnostics to be sorted by span; got starts={starts:?} diags={diags:?}"
+    );
+
+    assert_eq!(diags[0].code.as_ref(), "ambiguous-import");
+    assert!(
+        diags[0].message.contains("`Foo`")
+            && diags[0].message.contains("a.Foo")
+            && diags[0].message.contains("b.Foo"),
+        "expected ambiguous import diagnostic message to mention Foo and both candidates, got: {:?}",
+        diags[0].message
+    );
+    let foo_span = diags[0].span.expect("ambiguous Foo diagnostic should have a span");
+    assert!(
+        text[foo_span.start..foo_span.end].contains("import a.Foo"),
+        "expected Foo diagnostic span to cover the first import; span={foo_span:?}, slice={:?}",
+        &text[foo_span.start..foo_span.end]
+    );
+
+    assert_eq!(diags[1].code.as_ref(), "unresolved-import");
+    assert!(
+        diags[1].message.contains("does.not.Exist"),
+        "expected unresolved import diagnostic message to mention full path, got: {:?}",
+        diags[1].message
+    );
+    let missing_span = diags[1]
+        .span
+        .expect("unresolved import diagnostic should have a span");
+    assert!(
+        text[missing_span.start..missing_span.end].contains("does.not.Exist"),
+        "expected unresolved import diagnostic span to cover import; span={missing_span:?}, slice={:?}",
+        &text[missing_span.start..missing_span.end]
+    );
+
+    assert_eq!(diags[2].code.as_ref(), "ambiguous-import");
+    assert!(
+        diags[2].message.contains("`Bar`")
+            && diags[2].message.contains("a.Bar")
+            && diags[2].message.contains("b.Bar"),
+        "expected ambiguous import diagnostic message to mention Bar and both candidates, got: {:?}",
+        diags[2].message
     );
 
     let scopes = db.scope_graph(c_file);
     let resolved = db.resolve_name(c_file, scopes.file_scope, Name::from("Foo"));
     assert_eq!(resolved, None);
+
+    assert_eq!(executions(&db, "import_diagnostics"), 1);
+    assert_eq!(executions(&db, "import_map"), 1);
+
+    // Body-only edit: the method body changes, but imports stay identical.
+    db.set_file_content(
+        c_file,
+        Arc::new(text.replace("int x = 1;", "int x = 2;")),
+    );
+
+    let second = db.import_diagnostics(c_file);
+    assert_eq!(second.as_ref(), diags.as_ref());
+
+    assert_eq!(
+        executions(&db, "import_diagnostics"),
+        1,
+        "import diagnostics should be reused via early-cutoff when only method bodies change"
+    );
+    assert_eq!(
+        executions(&db, "import_map"),
+        1,
+        "import map should be reused via early-cutoff when only method bodies change"
+    );
 }
 
 #[test]

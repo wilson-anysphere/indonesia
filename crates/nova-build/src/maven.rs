@@ -1,6 +1,6 @@
 use crate::cache::{BuildCache, BuildFileFingerprint};
 use crate::command::format_command;
-use crate::jpms::main_source_roots_have_module_info;
+use crate::jpms::{main_source_roots_have_module_info, stable_module_path_entry};
 use crate::{
     BuildError, BuildResult, BuildSystemKind, Classpath, CommandOutput, CommandRunner,
     DefaultCommandRunner, JavaCompileConfig, MavenBuildGoal, Result,
