@@ -271,13 +271,44 @@ impl WorkspaceEngine {
                 }
             };
 
-            if watch_root.exists() {
-                if let Err(err) = watcher.watch(&watch_root, RecursiveMode::Recursive) {
+            let mut roots: Vec<(PathBuf, RecursiveMode)> = Vec::new();
+            roots.push((watch_root.clone(), RecursiveMode::Recursive));
+            for root in watch_config
+                .source_roots
+                .iter()
+                .chain(watch_config.generated_source_roots.iter())
+            {
+                // If the configured root is outside the workspace root, we need to watch it
+                // explicitly. Roots under the workspace root are already covered by the recursive
+                // watch.
+                if root.starts_with(&watch_root) {
+                    continue;
+                }
+                roots.push((root.clone(), RecursiveMode::Recursive));
+            }
+
+            roots.sort_by(|(a, _), (b, _)| a.cmp(b));
+            roots.dedup_by(|(a, mode_a), (b, mode_b)| {
+                if a != b {
+                    return false;
+                }
+                // Prefer recursive mode when duplicates exist.
+                if *mode_a == RecursiveMode::Recursive || *mode_b == RecursiveMode::Recursive {
+                    *mode_a = RecursiveMode::Recursive;
+                }
+                true
+            });
+
+            for (root, mode) in roots {
+                if !root.exists() {
+                    continue;
+                }
+                if let Err(err) = watcher.watch(&root, mode) {
                     publish_to_subscribers(
                         &subscribers,
                         WorkspaceEvent::Status(WorkspaceStatus::IndexingError(format!(
                             "Failed to watch {}: {err}",
-                            watch_root.display()
+                            root.display()
                         ))),
                     );
                 }

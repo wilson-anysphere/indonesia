@@ -452,7 +452,7 @@ pub(crate) fn core_file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diag
         }));
     }
 
-    // 2) Demand-driven type-checking + control-flow diagnostics (best-effort, Salsa-backed).
+    // 2) Demand-driven type-checking + flow (control-flow) diagnostics (best-effort, Salsa-backed).
     if is_java {
         let project = nova_db::ProjectId::from_raw(0);
         let jdk = JDK_INDEX

@@ -58,10 +58,18 @@ pub fn categorize_event(config: &WatchConfig, event: &NormalizedEvent) -> Option
         if path.extension().and_then(|s| s.to_str()) != Some("java") {
             continue;
         }
-        if path.starts_with(&config.workspace_root)
-            || is_within_any(path, &config.source_roots)
-            || is_within_any(path, &config.generated_source_roots)
-        {
+        let has_configured_roots =
+            !config.source_roots.is_empty() || !config.generated_source_roots.is_empty();
+
+        if has_configured_roots {
+            if is_within_any(path, &config.source_roots)
+                || is_within_any(path, &config.generated_source_roots)
+            {
+                return Some(ChangeCategory::Source);
+            }
+        } else if path.starts_with(&config.workspace_root) {
+            // Fall back to treating the entire workspace root as a source root when we don't have
+            // more specific roots (e.g. simple projects).
             return Some(ChangeCategory::Source);
         }
     }
@@ -345,6 +353,24 @@ mod tests {
         let path = root.join("Example.java");
         assert!(!is_build_file(&path));
         let event = NormalizedEvent::Modified(path);
+        assert_eq!(
+            categorize_event(&config, &event),
+            Some(ChangeCategory::Source)
+        );
+    }
+
+    #[test]
+    fn java_files_outside_configured_roots_are_ignored() {
+        let root = PathBuf::from("/tmp/workspace");
+        let mut config = WatchConfig::new(root.clone());
+        config.source_roots = vec![root.join("src/main/java")];
+
+        let path = root.join("Scratch.java");
+        let event = NormalizedEvent::Modified(path);
+        assert_eq!(categorize_event(&config, &event), None);
+
+        let in_root = root.join("src/main/java/Example.java");
+        let event = NormalizedEvent::Modified(in_root);
         assert_eq!(
             categorize_event(&config, &event),
             Some(ChangeCategory::Source)
