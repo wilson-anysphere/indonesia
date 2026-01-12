@@ -1690,6 +1690,45 @@ fn collect_declared_types(
         }
     }
 
+    // Variables introduced by classic `for` headers (e.g. `for (int i = 0; ...)`) and
+    // enhanced-for headers (e.g. `for (int x : xs)`).
+    for for_stmt in method_body
+        .syntax()
+        .descendants()
+        .filter_map(ast::ForStatement::cast)
+    {
+        let Some(header) = for_stmt.header() else {
+            continue;
+        };
+
+        // Local variable declaration form: `Type x = ...` / `Type x, y = ...` / `Type x : ...`.
+        let (Some(ty), Some(list)) = (
+            header.syntax().children().find_map(ast::Type::cast),
+            header
+                .syntax()
+                .children()
+                .find_map(ast::VariableDeclaratorList::cast),
+        ) else {
+            continue;
+        };
+
+        let ty_text = slice_syntax(source, ty.syntax())
+            .unwrap_or("Object")
+            .trim()
+            .to_string();
+        for decl in list.declarators() {
+            let Some(name_tok) = decl.name_token() else {
+                continue;
+            };
+            let name_span = span_of_token(&name_tok);
+            types.insert(name_span, ty_text.clone());
+
+            if let Some(initializer) = decl.initializer() {
+                initializer_offsets.insert(name_span, syntax_range(initializer.syntax()).start);
+            }
+        }
+    }
+
     // Try-with-resources variables are declared in `ResourceSpecification`, not in ordinary local
     // variable declaration statements.
     for try_stmt in method_body
@@ -1770,9 +1809,9 @@ fn collect_declared_types(
         types.insert(span_of_token(name_tok), ty_text);
     }
 
-    // Catch parameters, enhanced-for variables, explicitly typed lambda parameters, etc. are all
-    // represented as `Parameter` nodes but are not part of the enclosing method's `ParameterList`.
-    // Collect them too so we can recover types for extractions inside nested blocks.
+    // Some constructs (e.g. explicitly typed lambda parameters) are represented as `Parameter`
+    // nodes but are not part of the enclosing method's `ParameterList`. Collect them too so we
+    // can recover types for extractions inside nested blocks.
     for param in method_body
         .syntax()
         .descendants()

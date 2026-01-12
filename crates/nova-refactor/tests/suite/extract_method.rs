@@ -388,6 +388,142 @@ class C {
 }
 
 #[test]
+fn extract_method_do_while_without_braces() {
+    let fixture = r#"
+class C {
+    void m(boolean cond, int a) {
+        do
+            /*start*/System.out.println(a);/*end*/
+        while (cond);
+        System.out.println("done");
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m(boolean cond, int a) {
+        do
+            extracted(a);
+        while (cond);
+        System.out.println("done");
+    }
+
+    private void extracted(int a) {
+        System.out.println(a);
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn extract_method_enhanced_for_without_braces() {
+    let fixture = r#"
+class C {
+    void m(int[] xs) {
+        for (int x : xs)
+            /*start*/System.out.println(x);/*end*/
+        System.out.println("done");
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m(int[] xs) {
+        for (int x : xs)
+            extracted(x);
+        System.out.println("done");
+    }
+
+    private void extracted(int x) {
+        System.out.println(x);
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn extract_method_switch_case_without_braces() {
+    let fixture = r#"
+class C {
+    void m(int a) {
+        switch (0) {
+            case 0:
+                /*start*/System.out.println(a);/*end*/
+                break;
+            default:
+                System.out.println("other");
+        }
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    void m(int a) {
+        switch (0) {
+            case 0:
+                extracted(a);
+                break;
+            default:
+                System.out.println("other");
+        }
+    }
+
+    private void extracted(int a) {
+        System.out.println(a);
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn extract_method_switch_expression_arm_reads_become_parameters() {
     // Regression test: locals referenced only inside switch expression arms must still be
     // discovered by flow-based parameter analysis.
