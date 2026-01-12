@@ -4670,9 +4670,38 @@ fn goto_definition_jdk(
             return None;
         }
 
+        let is_method_call = {
+            let mut after_ident = end;
+            while after_ident < bytes.len() && bytes[after_ident].is_ascii_whitespace() {
+                after_ident += 1;
+            }
+            after_ident < bytes.len() && bytes[after_ident] == b'('
+        };
+
         // Optional: `"x".method()` treated as `String.method()`.
         if bytes[recv_end - 1] == b'"' {
-            stub = resolve_jdk_type(jdk, text, "String");
+            if let Some(receiver_stub) = resolve_jdk_type(jdk, text, "String") {
+                member_symbol = if is_method_call {
+                    receiver_stub
+                        .methods
+                        .iter()
+                        .find(|m| m.name == ident)
+                        .map(|m| nova_decompile::SymbolKey::Method {
+                            name: m.name.clone(),
+                            descriptor: m.descriptor.clone(),
+                        })
+                } else {
+                    receiver_stub
+                        .fields
+                        .iter()
+                        .find(|f| f.name == ident)
+                        .map(|f| nova_decompile::SymbolKey::Field {
+                            name: f.name.clone(),
+                            descriptor: f.descriptor.clone(),
+                        })
+                };
+                stub = Some(receiver_stub);
+            }
         } else {
             let mut recv_start = recv_end;
             while recv_start > 0 {
@@ -4689,51 +4718,45 @@ fn goto_definition_jdk(
 
             let receiver = text.get(recv_start..recv_end)?;
 
-            // Avoid regressing type navigation for qualified names like `java.lang.String`. If the
-            // receiver + current identifier resolves to a JDK type, treat it as a type reference.
-            let qualified = format!("{receiver}.{ident}");
-            stub = resolve_jdk_type(jdk, text, &qualified);
-
-            if stub.is_none() {
-                let receiver_type_name = if looks_like_type_name(receiver) {
-                    Some(receiver.to_string())
-                } else {
-                    infer_variable_type(text, receiver, dot)
-                };
-                stub = receiver_type_name
-                    .as_deref()
-                    .and_then(|ty| resolve_jdk_type(jdk, text, ty));
-            }
-        }
-
-        if let Some(stub_value) = stub.as_ref() {
-            let is_method_call = {
-                let mut after_ident = end;
-                while after_ident < bytes.len() && bytes[after_ident].is_ascii_whitespace() {
-                    after_ident += 1;
-                }
-                after_ident < bytes.len() && bytes[after_ident] == b'('
-            };
-
-            member_symbol = if is_method_call {
-                stub_value
-                    .methods
-                    .iter()
-                    .find(|m| m.name == ident)
-                    .map(|m| nova_decompile::SymbolKey::Method {
-                        name: m.name.clone(),
-                        descriptor: m.descriptor.clone(),
-                    })
+            let receiver_type_name = if looks_like_type_name(receiver) {
+                Some(receiver.to_string())
             } else {
-                stub_value
-                    .fields
-                    .iter()
-                    .find(|f| f.name == ident)
-                    .map(|f| nova_decompile::SymbolKey::Field {
-                        name: f.name.clone(),
-                        descriptor: f.descriptor.clone(),
-                    })
+                infer_variable_type(text, receiver, dot)
             };
+            let receiver_stub = receiver_type_name
+                .as_deref()
+                .and_then(|ty| resolve_jdk_type(jdk, text, ty));
+
+            if let Some(stub_value) = receiver_stub.as_ref() {
+                member_symbol = if is_method_call {
+                    stub_value
+                        .methods
+                        .iter()
+                        .find(|m| m.name == ident)
+                        .map(|m| nova_decompile::SymbolKey::Method {
+                            name: m.name.clone(),
+                            descriptor: m.descriptor.clone(),
+                        })
+                } else {
+                    stub_value
+                        .fields
+                        .iter()
+                        .find(|f| f.name == ident)
+                        .map(|f| nova_decompile::SymbolKey::Field {
+                            name: f.name.clone(),
+                            descriptor: f.descriptor.clone(),
+                        })
+                };
+            }
+
+            // If member resolution fails, also treat `receiver.ident` as a fully-qualified type
+            // name (e.g. `java.util.List`).
+            if member_symbol.is_some() {
+                stub = receiver_stub;
+            } else {
+                let qualified = format!("{receiver}.{ident}");
+                stub = resolve_jdk_type(jdk, text, &qualified).or(receiver_stub);
+            }
         }
     }
 

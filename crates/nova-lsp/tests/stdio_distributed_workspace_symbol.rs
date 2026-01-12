@@ -32,7 +32,10 @@ fn ensure_worker_binary() -> PathBuf {
         .arg("build")
         .arg("--quiet")
         // Keep this build serial to avoid exhausting thread/process limits in constrained test
-        // environments.
+        // environments. Also match the `test` profile settings (notably, reduced debuginfo) to
+        // stay within the default `scripts/cargo_agent.sh` RLIMIT_AS budget.
+        .arg("--profile")
+        .arg("test")
         .arg("-j")
         .arg("1")
         .arg("-p")
