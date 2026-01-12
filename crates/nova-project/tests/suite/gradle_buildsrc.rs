@@ -828,3 +828,100 @@ fn gradle_buildsrc_uses_its_own_version_catalog() {
         "did not expect buildSrc to use the outer build's version catalog"
     );
 }
+
+#[test]
+fn gradle_buildsrc_subproject_uses_buildsrc_version_catalog() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let workspace_root = tmp.path();
+
+    std::fs::write(
+        workspace_root.join("settings.gradle"),
+        "rootProject.name = \"demo\"\n",
+    )
+    .expect("write settings.gradle");
+    std::fs::write(workspace_root.join("build.gradle"), "// root build\n")
+        .expect("write build.gradle");
+
+    // Outer build has its own version catalog.
+    std::fs::create_dir_all(workspace_root.join("gradle")).expect("mkdir gradle/");
+    std::fs::write(
+        workspace_root.join("gradle/libs.versions.toml"),
+        r#"
+            [versions]
+            guava = "33.0.0-jre"
+
+            [libraries]
+            guava = { module = "com.google.guava:guava", version = { ref = "guava" } }
+        "#,
+    )
+    .expect("write outer libs.versions.toml");
+
+    // buildSrc is a multi-project build with a subproject `plugins` that uses `libs.guava`. It
+    // should resolve `libs.*` from the buildSrc build's version catalog, not the outer build's.
+    std::fs::create_dir_all(workspace_root.join("buildSrc/gradle")).expect("mkdir buildSrc/gradle");
+    std::fs::write(
+        workspace_root.join("buildSrc/gradle/libs.versions.toml"),
+        r#"
+            [versions]
+            guava = "32.0.0-jre"
+
+            [libraries]
+            guava = { module = "com.google.guava:guava", version = { ref = "guava" } }
+        "#,
+    )
+    .expect("write buildSrc libs.versions.toml");
+    std::fs::write(
+        workspace_root.join("buildSrc/settings.gradle"),
+        "include(\"plugins\")\n",
+    )
+    .expect("write buildSrc/settings.gradle");
+
+    std::fs::create_dir_all(workspace_root.join("buildSrc/plugins/src/main/java/com/example"))
+        .expect("mkdir buildSrc/plugins sources");
+    std::fs::write(
+        workspace_root.join("buildSrc/plugins/src/main/java/com/example/Plugin.java"),
+        "package com.example; class Plugin {}",
+    )
+    .expect("write Plugin.java");
+    std::fs::write(
+        workspace_root.join("buildSrc/plugins/build.gradle"),
+        r#"
+            plugins { id 'java' }
+            dependencies {
+              implementation(libs.guava)
+            }
+        "#,
+    )
+    .expect("write buildSrc/plugins/build.gradle");
+
+    let gradle_home = tempfile::tempdir().expect("tempdir (gradle home)");
+    let options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+
+    let model =
+        load_workspace_model_with_options(workspace_root, &options).expect("load workspace model");
+    assert_eq!(model.build_system, BuildSystem::Gradle);
+
+    let plugins = model
+        .module_by_id("gradle::__buildSrc:plugins")
+        .expect("buildSrc:plugins module");
+    assert!(
+        plugins.dependencies.iter().any(|d| {
+            d.group_id == "com.google.guava"
+                && d.artifact_id == "guava"
+                && d.version.as_deref() == Some("32.0.0-jre")
+        }),
+        "expected buildSrc:plugins to resolve libs.guava from buildSrc version catalog; deps={:?}",
+        plugins.dependencies
+    );
+    assert!(
+        !plugins.dependencies.iter().any(|d| {
+            d.group_id == "com.google.guava"
+                && d.artifact_id == "guava"
+                && d.version.as_deref() == Some("33.0.0-jre")
+        }),
+        "did not expect buildSrc:plugins to use the outer build's version catalog"
+    );
+}
