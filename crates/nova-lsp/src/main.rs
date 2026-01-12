@@ -6951,17 +6951,11 @@ fn handle_execute_command(
         }
         COMMAND_GENERATE_METHOD_BODY => {
             let args: GenerateMethodBodyArgs = parse_first_arg(params.arguments)?;
-            run_ai_generate_method_body_apply(
-                args,
-                params.work_done_token,
-                state,
-                client,
-                cancel.clone(),
-            )
+            run_ai_generate_method_body(args, params.work_done_token, state, client, cancel.clone())
         }
         COMMAND_GENERATE_TESTS => {
             let args: GenerateTestsArgs = parse_first_arg(params.arguments)?;
-            run_ai_generate_tests_apply(args, params.work_done_token, state, client, cancel.clone())
+            run_ai_generate_tests(args, params.work_done_token, state, client, cancel.clone())
         }
         nova_lsp::SAFE_DELETE_COMMAND => {
             nova_lsp::hardening::record_request();
