@@ -2060,6 +2060,38 @@ class C { int m(int[] a){ return a[0]; } }
 }
 
 #[test]
+fn nested_array_access_returns_element_type() {
+    let src = r#"
+class C { int m(int[][] a){ return a[0][1]; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    // Use the second index expression so the best matching expression is the outer array access.
+    let offset = src.find("[1]").expect("snippet should contain [1]") + 1;
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "int");
+}
+
+#[test]
+fn array_access_then_length_is_int() {
+    let src = r#"
+class C { int m(int[][] a){ return a[0].length; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("length")
+        .expect("snippet should contain length")
+        + 1;
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "int");
+}
+
+#[test]
 fn indexing_non_array_is_error() {
     let src = r#"
 class C { int m(int a){ return a[0]; } }
