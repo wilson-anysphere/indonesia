@@ -112,9 +112,17 @@ fn gradle_snapshot_overrides_project_dir_and_populates_module_config() {
     // aligning `nova-project`'s fingerprinting logic, their presence would cause a fingerprint
     // mismatch and the snapshot handoff would be ignored.
     std::fs::write(workspace_root.join("deps.gradle"), "").unwrap();
+    std::fs::write(workspace_root.join("deps.gradle.kts"), "").unwrap();
     let version_catalog = workspace_root.join("gradle").join("libs.versions.toml");
     std::fs::create_dir_all(version_catalog.parent().unwrap()).unwrap();
     std::fs::write(&version_catalog, "[versions]\nexample = \"1.0\"\n").unwrap();
+    // Custom version catalog name (still ends with `.versions.toml`) used by some builds via
+    // `dependencyResolutionManagement.versionCatalogs.create(...)` in `settings.gradle*`.
+    std::fs::write(
+        workspace_root.join("gradle").join("custom.versions.toml"),
+        "[versions]\ncustom = \"1.0\"\n",
+    )
+    .unwrap();
     let wrapper_jar = workspace_root
         .join("gradle")
         .join("wrapper")
