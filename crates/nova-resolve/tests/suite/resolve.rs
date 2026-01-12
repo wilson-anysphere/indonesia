@@ -924,6 +924,44 @@ class C {
 }
 
 #[test]
+fn qualified_type_does_not_resolve_to_subpackage_type_when_outer_is_type() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(
+        file,
+        r#"
+import p.B;
+class C {}
+"#,
+    );
+
+    let mut index = TestIndex::default();
+    index.add_type("p", "B");
+    index.add_type("p", "B$Inner");
+    // `p.B` also exists as a package containing `p.B.C`.
+    index.add_type("p.B", "C");
+
+    let scopes = build_scopes(&db, file);
+    let resolver = Resolver::new(&index);
+
+    // `B.Inner` should resolve as nested type.
+    let inner = resolver.resolve_qualified_type_in_scope(
+        &scopes.scopes,
+        scopes.file_scope,
+        &QualifiedName::from_dotted("B.Inner"),
+    );
+    assert_eq!(inner, Some(TypeName::from("p.B$Inner")));
+
+    // `B.C` should NOT resolve to the type `p.B.C` in package `p.B`.
+    let c = resolver.resolve_qualified_type_in_scope(
+        &scopes.scopes,
+        scopes.file_scope,
+        &QualifiedName::from_dotted("B.C"),
+    );
+    assert_eq!(c, None);
+}
+
+#[test]
 fn resolves_imported_type_from_dependency_jar() {
     let mut db = TestDb::default();
     let file = FileId::from_raw(0);

@@ -257,14 +257,28 @@ impl<'a> Resolver<'a> {
     ) -> Option<TypeName> {
         // Static imports use a `TypeName` as their qualifier; require the qualifier to resolve as
         // a type before treating `owner.member` as a member type.
-        self.resolve_type_in_index(owner)?;
+        let owner_ty = self.resolve_type_in_index(owner)?;
 
-        let path = if owner.segments().is_empty() {
-            member.as_str().to_string()
-        } else {
-            format!("{}.{}", owner.to_dotted(), member.as_str())
-        };
-        let ty = self.resolve_type_in_index(&QualifiedName::from_dotted(&path))?;
+        // Prefer resolving the member as a binary nested name (`Outer$Inner`) so we don't
+        // accidentally treat a subpackage type (`Outer.Inner`) as a member type.
+        let binary_candidate =
+            QualifiedName::from_dotted(&format!("{}${}", owner_ty.as_str(), member.as_str()));
+        let ty = self
+            .resolve_type_in_index_exact(&binary_candidate)
+            .or_else(|| {
+                // Best-effort fallback: allow indices that only resolve dotted names through the
+                // nesting heuristic, but ensure the resolved type is actually nested under `owner`
+                // (i.e. `owner$Member`).
+                let path = if owner.segments().is_empty() {
+                    member.as_str().to_string()
+                } else {
+                    format!("{}.{}", owner.to_dotted(), member.as_str())
+                };
+                let ty = self.resolve_type_in_index(&QualifiedName::from_dotted(&path))?;
+                ty.as_str()
+                    .starts_with(&format!("{}$", owner_ty.as_str()))
+                    .then_some(ty)
+            })?;
 
         self.workspace_allows_static_import_of_member_type(&ty)
             .then_some(ty)
@@ -797,7 +811,7 @@ impl<'a> Resolver<'a> {
             candidate_binary.push('$');
             candidate_binary.push_str(seg.as_str());
         }
-        if let Some(item) = scopes.item_by_type_name(&TypeName::new(candidate_binary)) {
+        if let Some(item) = scopes.item_by_type_name(&TypeName::new(candidate_binary.clone())) {
             return Some(TypeResolution::Source(item));
         }
 
@@ -805,9 +819,17 @@ impl<'a> Resolver<'a> {
         //    - some accept source-like `Outer.Inner` names directly
         //    - others use binary names (`Outer$Inner`)
         //
-        // Pass a dotted candidate (`Outer.Inner...`) through `resolve_type_in_index`,
-        // which in turn uses `resolve_type_with_nesting` to translate to `$` as
-        // needed.
+        // Prefer a binary lookup (`Outer$Inner...`) to avoid accidentally resolving types from a
+        // subpackage (`Outer.Inner...`) when the qualifier resolves as a type.
+        let expected_binary = candidate_binary;
+        if let Some(ty) =
+            self.resolve_type_in_index_exact(&QualifiedName::from_dotted(&expected_binary))
+        {
+            return Some(self.type_resolution_from_name(ty));
+        }
+
+        // Fallback: pass a dotted candidate (`Outer.Inner...`) through `resolve_type_in_index`,
+        // which in turn uses `resolve_type_with_nesting` to translate to `$` as needed.
         let mut candidate_dotted = owner_name.replace('$', ".");
         for seg in rest {
             candidate_dotted.push('.');
@@ -815,7 +837,10 @@ impl<'a> Resolver<'a> {
         }
 
         self.resolve_type_in_index(&QualifiedName::from_dotted(&candidate_dotted))
-            .map(|ty| self.type_resolution_from_name(ty))
+            .and_then(|ty| {
+                (ty.as_str() == expected_binary)
+                    .then_some(self.type_resolution_from_name(ty))
+            })
     }
 
     /// Resolve a simple name against a given scope.
