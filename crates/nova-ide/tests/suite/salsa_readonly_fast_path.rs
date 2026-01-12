@@ -2,7 +2,8 @@ use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use nova_db::{Database as LegacyDatabase, FileId, ProjectId, QueryStat, SalsaDatabase};
+use nova_classpath::ClasspathIndex;
+use nova_db::{Database as LegacyDatabase, FileId, NovaInputs, ProjectId, QueryStat, SalsaDatabase};
 use nova_jdk::JdkIndex;
 use nova_scheduler::CancellationToken;
 
@@ -121,8 +122,10 @@ fn salsa_fast_path_falls_back_when_file_text_is_out_of_sync() {
 
     // Host Salsa DB sees a stale on-disk snapshot.
     let salsa = SalsaDatabase::new();
-    salsa.set_jdk_index(project, Arc::new(JdkIndex::new()));
-    salsa.set_classpath_index(project, None);
+    let host_jdk = Arc::new(JdkIndex::new());
+    salsa.set_jdk_index(project, Arc::clone(&host_jdk));
+    let host_classpath = Arc::new(ClasspathIndex::default());
+    salsa.set_classpath_index(project, Some(Arc::clone(&host_classpath)));
     salsa.set_file_text(file, "class A {}".to_string());
 
     // The legacy `Database` implementation serves a different in-memory overlay that contains an
@@ -135,7 +138,7 @@ class A {}
     .to_string();
 
     let db = TestDb {
-        salsa,
+        salsa: salsa.clone(),
         file_path: PathBuf::from("src/A.java"),
         texts: [overlay_text.clone(), overlay_text],
         next_text: Cell::new(0),
@@ -147,4 +150,22 @@ class A {}
         diags.iter().any(|d| d.code.as_ref() == "unresolved-import"),
         "expected unresolved-import diagnostic for overlay text; got {diags:#?}"
     );
+
+    // Ensure we didn't \"fix\" the mismatch by mutating the host Salsa DB (which would clobber
+    // host-managed inputs and invalidate memoized state).
+    salsa.with_snapshot(|snap| {
+        assert_eq!(
+            snap.file_content(file).as_str(),
+            "class A {}",
+            "expected host Salsa DB file_content to remain unchanged when nova-ide falls back"
+        );
+        assert!(
+            Arc::ptr_eq(&snap.jdk_index(project).0, &host_jdk),
+            "expected host Salsa DB to preserve the provided jdk_index"
+        );
+        assert!(
+            snap.classpath_index(project).is_some_and(|cp| Arc::ptr_eq(&cp.0, &host_classpath)),
+            "expected host Salsa DB to preserve the provided classpath_index"
+        );
+    });
 }
