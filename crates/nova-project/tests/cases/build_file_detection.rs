@@ -242,6 +242,43 @@ fn reload_project_reloads_on_gradle_lockfile_change() {
 }
 
 #[test]
+fn reload_project_reloads_on_gradle_dependency_lockfile_change() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().canonicalize().expect("canonicalize");
+
+    // Minimal Gradle project with one module.
+    write(&root.join("settings.gradle"), r#"include("app")"#);
+    write(&root.join("build.gradle"), "// root");
+    write(&root.join("app/build.gradle"), "// app");
+    write(
+        &root.join("gradle/dependency-locks/compileClasspath.lockfile"),
+        "locked=1\n",
+    );
+
+    let gradle_home = tempfile::tempdir().expect("tempdir");
+    let mut options = LoadOptions {
+        gradle_user_home: Some(gradle_home.path().to_path_buf()),
+        ..LoadOptions::default()
+    };
+    let config = load_project_with_options(&root, &options).expect("load gradle project");
+    assert_eq!(config.build_system, BuildSystem::Gradle);
+    assert_eq!(config.modules.len(), 1);
+
+    // Update settings to add another module; this should only be observed if reload_project decides
+    // to reload on our chosen changed-file path.
+    write(&root.join("settings.gradle"), r#"include("app", "lib")"#);
+    write(&root.join("lib/build.gradle"), "// lib");
+
+    // The changed file is not settings.gradle; it is a dependency lockfile that should trigger a
+    // full reload.
+    let lockfile = root.join("gradle/dependency-locks/compileClasspath.lockfile");
+    write(&lockfile, "locked=2\n");
+
+    let reloaded = reload_project(&config, &mut options, &[lockfile]).expect("reload project");
+    assert_eq!(reloaded.modules.len(), 2);
+}
+
+#[test]
 fn reload_project_reloads_on_maven_wrapper_file_change() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().canonicalize().expect("canonicalize");
