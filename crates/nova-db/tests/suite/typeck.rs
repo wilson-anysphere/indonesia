@@ -272,6 +272,26 @@ class C {
 }
 
 #[test]
+fn constructor_type_args_do_not_become_method_type_args() {
+    let src = r#"
+class Foo {
+    <T> Foo(T t) {}
+    void bar() {}
+    void m() {
+        new <String> Foo("x").bar();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected bar() call to resolve, got {diags:?}"
+    );
+}
+
+#[test]
 fn invalid_cast_produces_diagnostic() {
     let src = r#"
 class C {

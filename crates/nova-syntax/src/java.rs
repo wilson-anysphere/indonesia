@@ -2498,7 +2498,14 @@ impl Lowerer {
             .children()
             .find(|child| child.kind() == SyntaxKind::TypeArguments)
             .or_else(|| {
+                // `TypeArguments` appear on the *method name* in explicit generic invocation
+                // syntax (`expr.<T>m(...)` / `<T>m(...)`). Avoid scanning arbitrary callee nodes
+                // like `new <T> Foo(...)` where `TypeArguments` are constructor type arguments and
+                // must not be treated as method type arguments.
                 callee_node.as_ref().and_then(|callee| {
+                    if callee.kind() != SyntaxKind::FieldAccessExpression {
+                        return None;
+                    }
                     callee
                         .children()
                         .find(|child| child.kind() == SyntaxKind::TypeArguments)
