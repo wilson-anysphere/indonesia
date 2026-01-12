@@ -408,12 +408,12 @@
         "nova.ai.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Master toggle for Nova AI features. When disabled, the extension hides AI code actions/completions and will not pass NOVA_AI_* environment variables to nova-lsp."
+          "description": "Master toggle for Nova AI features. When disabled, the extension hides AI code actions/completions, forces server-side AI off (e.g. via NOVA_DISABLE_AI=1), and strips NOVA_AI_* environment variables from nova-lsp."
         },
         "nova.aiCompletions.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Enable Nova AI multi-token completions via nova/completion/more."
+          "description": "Enable Nova AI multi-token completions via nova/completion/more. When disabled, the extension stops polling and disables multi-token completions server-side (e.g. via NOVA_DISABLE_AI_COMPLETIONS=1)."
         },
         "nova.aiCompletions.maxItems": {
           "type": "number",

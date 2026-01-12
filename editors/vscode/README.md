@@ -289,12 +289,22 @@ Changing these settings requires restarting the language server; the extension p
 
 ### AI
 
+Nova’s AI behavior is controlled by two settings:
+`nova.ai.enabled` (master toggle) and `nova.aiCompletions.enabled` (multi-token completions).
+
+These settings affect **both** client-side behavior (what the extension shows/polls) and
+**server-side** behavior (environment variables passed to `nova-lsp`). Changing them may require
+restarting the language server to take full effect.
+
 - `nova.ai.enabled` (boolean): master toggle for AI features. When disabled, the extension:
   - stops polling `nova/completion/more`
   - does not surface cached AI completion items
   - hides Nova AI code actions (e.g. "Explain this error", "Generate tests with AI")
+  - forces server-side AI off (equivalent to setting `NOVA_DISABLE_AI=1` for the `nova-lsp` process)
   - strips `NOVA_AI_*` environment variables from the `nova-lsp` process env
-- `nova.aiCompletions.enabled` (boolean): enable multi-token completion requests.
+- `nova.aiCompletions.enabled` (boolean): enable multi-token completion requests. When disabled, the
+  extension stops polling `nova/completion/more` and disables multi-token completions server-side
+  (equivalent to setting `NOVA_DISABLE_AI_COMPLETIONS=1` for the `nova-lsp` process).
 - `nova.aiCompletions.maxItems` (number): maximum number of AI completion items to request.
 - `nova.aiCompletions.requestTimeoutMs` (number): max wall-clock time (ms) to poll `nova/completion/more` for async AI completions.
 - `nova.aiCompletions.pollIntervalMs` (number): base polling interval (ms). Nova uses a short exponential backoff derived from this value.

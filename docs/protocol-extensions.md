@@ -1471,9 +1471,11 @@ This is the “poll for async AI completions” endpoint used by the VS Code ext
 Notes:
 
 - The stdio server only spawns background AI completions when `ai.enabled = true` and
-  `ai.features.multi_token_completion = true` in `nova.toml`. Clients should also gate polling on
-  `CompletionList.isIncomplete = true`; when AI completions are disabled, the server returns
-  `isIncomplete = false` and `nova/completion/more` will return an empty result.
+  `ai.features.multi_token_completion = true` in `nova.toml`, and neither `NOVA_DISABLE_AI` nor
+  `NOVA_DISABLE_AI_COMPLETIONS` is set (these environment variables override `nova.toml`). Clients
+  should also gate polling on `CompletionList.isIncomplete = true`; when AI completions are
+  disabled, the server returns `isIncomplete = false` and `nova/completion/more` will return an
+  empty result.
 
 #### Request params (note: snake_case)
 
