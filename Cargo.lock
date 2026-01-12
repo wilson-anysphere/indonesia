@@ -3542,6 +3542,7 @@ dependencies = [
  "dunce",
  "lasso",
  "lsp-types",
+ "nova-hir",
  "nova-ide",
  "nova-ids",
  "nova-index",

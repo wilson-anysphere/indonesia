@@ -4,8 +4,9 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use once_cell::sync::Lazy;
 
 use nova_core::{CompletionItem, CompletionItemKind};
+use nova_hir::ast_id::AstId;
 use nova_ide::filter_and_rank_completions;
-use nova_index::{ReferenceIndex, ReferenceLocation, SearchSymbol, SymbolSearchIndex};
+use nova_index::{ReferenceIndex, ReferenceLocation, SearchSymbol, SymbolLocation, SymbolSearchIndex};
 
 static SMALL_JAVA: &str = include_str!("fixtures/small.java");
 static MEDIUM_JAVA: &str = include_str!("fixtures/medium.java");
@@ -192,12 +193,19 @@ fn find_references(index: &ReferenceIndex, symbol: &str) -> Vec<ReferenceLocatio
 
 fn generate_symbols(count: usize) -> Vec<SearchSymbol> {
     (0..count)
-        .map(|i| SearchSymbol {
-            name: format!("Class{i}"),
-            qualified_name: format!("bench.pkg.Class{i}"),
-            container_name: None,
-            location: None,
-            ast_id: None,
+        .map(|i| {
+            let name = format!("Class{i}");
+            SearchSymbol {
+                qualified_name: format!("bench.pkg.{name}"),
+                container_name: Some("bench.pkg".into()),
+                location: Some(SymbolLocation {
+                    file: format!("src/{name}.java"),
+                    line: 2,
+                    column: 13,
+                }),
+                ast_id: Some(AstId::new(i as u32)),
+                name,
+            }
         })
         .collect()
 }
