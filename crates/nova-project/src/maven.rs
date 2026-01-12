@@ -737,11 +737,88 @@ fn java_from_properties(props: &BTreeMap<String, String>) -> Option<JavaConfig> 
     }
 }
 
+fn discover_maven_repo(workspace_root: &Path, options: &LoadOptions) -> PathBuf {
+    options
+        .maven_repo
+        .clone()
+        .or_else(|| maven_repo_from_maven_config(workspace_root))
+        .or_else(maven_repo_from_user_settings)
+        .or_else(default_maven_repo)
+        .unwrap_or_else(|| PathBuf::from(".m2/repository"))
+}
+
+fn maven_repo_from_maven_config(workspace_root: &Path) -> Option<PathBuf> {
+    let path = workspace_root.join(".mvn").join("maven.config");
+    let contents = std::fs::read_to_string(&path).ok()?;
+
+    let tokens = contents.split_whitespace().collect::<Vec<_>>();
+    let mut it = tokens.into_iter().peekable();
+    while let Some(token) = it.next() {
+        if let Some(value) = token.strip_prefix("-Dmaven.repo.local=") {
+            return resolve_maven_repo_path(value, workspace_root);
+        }
+        if token == "-Dmaven.repo.local" {
+            if let Some(value) = it.next() {
+                return resolve_maven_repo_path(value, workspace_root);
+            }
+        }
+    }
+
+    None
+}
+
+fn maven_repo_from_user_settings() -> Option<PathBuf> {
+    let home = home_dir()?;
+    let path = home.join(".m2").join("settings.xml");
+    let contents = std::fs::read_to_string(&path).ok()?;
+
+    let doc = roxmltree::Document::parse(&contents).ok()?;
+    let local_repo = doc
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == "localRepository")
+        .and_then(|node| node.text())
+        .map(str::trim)
+        .filter(|text| !text.is_empty())?;
+
+    resolve_maven_repo_path(local_repo, &home)
+}
+
+fn resolve_maven_repo_path(value: &str, base: &Path) -> Option<PathBuf> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    // Best-effort: don't try to resolve placeholders in Maven repo configuration.
+    if value.contains("${") {
+        return None;
+    }
+
+    let value = value
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim()
+        .to_string();
+    if value.is_empty() || value.contains("${") {
+        return None;
+    }
+
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        Some(path)
+    } else {
+        Some(base.join(path))
+    }
+}
+
 fn default_maven_repo() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")
+    Some(home_dir()?.join(".m2/repository"))
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)?;
-    Some(home.join(".m2/repository"))
+        .map(PathBuf::from)
 }
 
 fn discover_maven_repo(workspace_root: &Path, options: &LoadOptions) -> PathBuf {
