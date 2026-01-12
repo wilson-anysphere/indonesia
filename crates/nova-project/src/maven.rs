@@ -2357,6 +2357,31 @@ mod tests {
     }
 
     #[test]
+    fn maven_dependency_jar_path_accepts_exploded_jar_directory() {
+        let repo = tempfile::tempdir().expect("tempdir maven repo");
+
+        // Some build systems "explode" jars into directories (often still ending with `.jar`)
+        // instead of producing a single archive file.
+        let jar_dir_path = repo.path().join("com/example/dep/1.0/dep-1.0.jar");
+        std::fs::create_dir_all(&jar_dir_path).expect("mkdir exploded jar dir");
+
+        let dep = Dependency {
+            group_id: "com.example".to_string(),
+            artifact_id: "dep".to_string(),
+            version: Some("1.0".to_string()),
+            scope: None,
+            classifier: None,
+            type_: None,
+        };
+
+        assert_eq!(
+            maven_dependency_jar_path(repo.path(), &dep),
+            Some(jar_dir_path),
+            "expected exploded jar directories to be accepted when present on disk"
+        );
+    }
+
+    #[test]
     fn snapshot_dependency_jar_prefers_timestamped_metadata_file_name() {
         let repo = tempfile::tempdir().expect("tempdir");
 
