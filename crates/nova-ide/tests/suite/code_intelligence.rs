@@ -1403,6 +1403,34 @@ class A {
 }
 
 #[test]
+fn completion_suggests_arraylist_adds_import_when_not_in_scope() {
+    let (db, file, pos) = fixture(
+        r#"
+import java.util.List;
+class A {
+  void m() {
+    List l = <|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label.contains("new ArrayList"))
+        .expect("expected completion list to contain `new ArrayList`");
+    let edits = item
+        .additional_text_edits
+        .as_ref()
+        .expect("expected `new ArrayList` completion to add an import");
+    assert!(
+        edits.iter().any(|e| e.new_text.contains("import java.util.ArrayList;")),
+        "expected import edit for java.util.ArrayList; got {edits:#?}"
+    );
+}
+
+#[test]
 fn completion_suggests_local_impl_for_interface_expected_type() {
     let (db, file, pos) = fixture(
         r#"

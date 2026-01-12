@@ -10905,6 +10905,7 @@ fn general_completions(
         db,
         file,
         text,
+        text_index,
         &analysis,
         &mut types,
         expected_arg_ty.as_ref(),
@@ -11163,6 +11164,7 @@ fn maybe_add_smart_constructor_completions(
     db: &dyn Database,
     file: FileId,
     text: &str,
+    text_index: &TextIndex<'_>,
     analysis: &Analysis,
     types: &mut TypeStore,
     expected_arg_ty: Option<&Type>,
@@ -11219,9 +11221,22 @@ fn maybe_add_smart_constructor_completions(
 
     match expected_def.kind {
         ClassKind::Class => {
-            if let Some(item) =
-                smart_constructor_completion_item(env_types, expected_id, &expected_detail, prefix)
-            {
+            if let Some(mut item) = smart_constructor_completion_item(
+                env_types,
+                expected_id,
+                &expected_detail,
+                prefix,
+            ) {
+                decorate_smart_constructor_completion_item(
+                    &mut item,
+                    env_types
+                        .class(expected_id)
+                        .map(|c| c.name.as_str())
+                        .unwrap_or(""),
+                    &imports,
+                    text,
+                    text_index,
+                );
                 items.push(item);
             }
         }
@@ -11251,13 +11266,40 @@ fn maybe_add_smart_constructor_completions(
 
             const MAX_IMPL_CANDIDATES: usize = 8;
             for id in candidates.into_iter().take(MAX_IMPL_CANDIDATES) {
-                if let Some(item) =
+                if let Some(mut item) =
                     smart_constructor_completion_item(env_types, id, &expected_detail, prefix)
                 {
+                    let cand_name = env_types.class(id).map(|c| c.name.as_str()).unwrap_or("");
+                    decorate_smart_constructor_completion_item(
+                        &mut item,
+                        cand_name,
+                        &imports,
+                        text,
+                        text_index,
+                    );
                     items.push(item);
                 }
             }
         }
+    }
+}
+
+fn decorate_smart_constructor_completion_item(
+    item: &mut CompletionItem,
+    binary_name: &str,
+    imports: &JavaImportInfo,
+    text: &str,
+    text_index: &TextIndex<'_>,
+) {
+    if !binary_name.starts_with("java.") {
+        mark_workspace_completion_item(item);
+    }
+    if !binary_name.contains('$') && java_type_needs_import(imports, binary_name) {
+        item.additional_text_edits = Some(vec![java_import_text_edit(
+            text,
+            text_index,
+            binary_name,
+        )]);
     }
 }
 
@@ -11394,13 +11436,22 @@ fn smart_constructor_completion_item(
     }
 
     let use_diamond = !class_def.type_params.is_empty();
-    let param_count = class_def
-        .constructors
-        .iter()
-        .filter(|ctor| ctor.is_accessible)
+    let mut accessible_ctors = class_def.constructors.iter().filter(|ctor| ctor.is_accessible);
+    let param_count = match accessible_ctors
+        .by_ref()
         .map(|ctor| ctor.params.len())
         .min()
-        .unwrap_or(0);
+    {
+        Some(count) => count,
+        None => {
+            // If we know there are constructors but none are accessible (e.g. all `private`), don't
+            // suggest instantiation.
+            if !class_def.constructors.is_empty() {
+                return None;
+            }
+            0
+        }
+    };
 
     let snippet = new_expression_snippet(&simple, use_diamond, param_count);
     let diamond = if use_diamond { "<>" } else { "" };
