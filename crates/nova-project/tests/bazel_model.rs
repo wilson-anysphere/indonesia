@@ -86,6 +86,11 @@ fn loads_bazel_targets_as_module_configs() {
     let aquery_alias = read_fixture("bazel/aquery_alias.textproto");
 
     let runner = MockRunner::default()
+        .with_stdout(
+            "bazel",
+            &["info", "execution_root"],
+            format!("{}\n", tmp.path().display()),
+        )
         .with_stdout("bazel", &["query", r#"kind("java_.* rule", //...)"#], query)
         .with_stdout(
             "bazel",
@@ -222,6 +227,11 @@ fn loads_bazel_targets_as_module_configs_with_target_universe() {
     let java_query = format!(r#"kind("java_.* rule", {universe})"#);
 
     let runner = MockRunner::default()
+        .with_stdout(
+            "bazel",
+            &["info", "execution_root"],
+            format!("{}\n", tmp.path().display()),
+        )
         // Intentionally only provide the scoped-universe query; if Nova issues a `//...` query the
         // mock runner will fail the test.
         .with_stdout("bazel", &["query", &java_query], query)
@@ -296,6 +306,83 @@ fn loads_bazel_targets_as_module_configs_with_target_universe() {
 }
 
 #[test]
+fn resolves_aquery_paths_relative_to_execution_root() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    fs::write(tmp.path().join("WORKSPACE"), "").expect("WORKSPACE");
+
+    let execroot = tempfile::tempdir().expect("execroot");
+
+    let query = read_fixture("bazel/query.txt");
+    let aquery_lib = read_fixture("bazel/aquery_lib.textproto");
+
+    let runner = MockRunner::default()
+        .with_stdout(
+            "bazel",
+            &["info", "execution_root"],
+            format!("{}\n", execroot.path().display()),
+        )
+        .with_stdout("bazel", &["query", r#"kind("java_.* rule", //...)"#], query)
+        .with_stdout(
+            "bazel",
+            &[
+                "aquery",
+                "--output=textproto",
+                r#"mnemonic("Javac", //java/com/example:lib)"#,
+            ],
+            aquery_lib.clone(),
+        )
+        .with_stdout(
+            "bazel",
+            &[
+                "aquery",
+                "--output=textproto",
+                r#"mnemonic("Javac", deps(//java/com/example:lib))"#,
+            ],
+            aquery_lib,
+        );
+
+    let mut options = options_with_bazel_enabled();
+    options.bazel.targets = Some(vec!["//java/com/example:lib".to_string()]);
+
+    let model = nova_project::load_bazel_workspace_model_with_runner(tmp.path(), &options, runner)
+        .expect("load bazel workspace model");
+
+    assert_eq!(model.modules.len(), 1);
+    let lib = model
+        .modules
+        .iter()
+        .find(|m| m.id == "//java/com/example:lib")
+        .unwrap();
+
+    assert!(
+        lib.source_roots
+            .iter()
+            .all(|root| root.path.starts_with(tmp.path())),
+        "expected source roots to be resolved relative to workspace root"
+    );
+
+    assert!(
+        lib.classpath.iter().all(|cp| cp.path.starts_with(execroot.path())),
+        "expected classpath entries to be resolved relative to execroot"
+    );
+    assert!(
+        lib.module_path
+            .iter()
+            .all(|cp| cp.path.starts_with(execroot.path())),
+        "expected module-path entries to be resolved relative to execroot"
+    );
+
+    assert_eq!(
+        lib.output_dir
+            .as_ref()
+            .unwrap()
+            .strip_prefix(execroot.path())
+            .unwrap(),
+        Path::new("bazel-out/k8-fastbuild/bin/java/com/example/lib_classes"),
+    );
+}
+
+#[test]
 fn applies_bazel_target_limit_after_skipping_aliases() {
     let tmp = tempfile::tempdir().expect("tempdir");
     fs::write(tmp.path().join("WORKSPACE"), "").expect("WORKSPACE");
@@ -305,6 +392,11 @@ fn applies_bazel_target_limit_after_skipping_aliases() {
     let aquery_alias = read_fixture("bazel/aquery_alias.textproto");
 
     let runner = MockRunner::default()
+        .with_stdout(
+            "bazel",
+            &["info", "execution_root"],
+            format!("{}\n", tmp.path().display()),
+        )
         .with_stdout("bazel", &["query", r#"kind("java_.* rule", //...)"#], query)
         .with_stdout(
             "bazel",
@@ -365,6 +457,11 @@ fn reuses_bazel_query_cache_file() {
     let aquery_alias = read_fixture("bazel/aquery_alias.textproto");
 
     let runner = MockRunner::default()
+        .with_stdout(
+            "bazel",
+            &["info", "execution_root"],
+            format!("{}\n", tmp.path().display()),
+        )
         .with_stdout(
             "bazel",
             &["query", r#"kind("java_.* rule", //...)"#],
@@ -439,6 +536,11 @@ fn reuses_bazel_query_cache_file() {
     // The module-producing targets should be served from the on-disk cache; if Nova tries to
     // `aquery` them again, the mock runner will fail the test.
     let runner = MockRunner::default()
+        .with_stdout(
+            "bazel",
+            &["info", "execution_root"],
+            format!("{}\n", tmp.path().display()),
+        )
         .with_stdout("bazel", &["query", r#"kind("java_.* rule", //...)"#], query)
         .with_stdout(
             "bazel",
@@ -475,6 +577,11 @@ fn loads_bazel_targets_as_workspace_modules() {
     let aquery_alias = read_fixture("bazel/aquery_alias.textproto");
 
     let runner = MockRunner::default()
+        .with_stdout(
+            "bazel",
+            &["info", "execution_root"],
+            format!("{}\n", tmp.path().display()),
+        )
         .with_stdout("bazel", &["query", r#"kind("java_.* rule", //...)"#], query)
         .with_stdout(
             "bazel",

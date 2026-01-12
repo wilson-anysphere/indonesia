@@ -130,6 +130,7 @@ impl BazelWorkspaceDiscovery {
 pub struct BazelWorkspace<R: CommandRunner> {
     root: PathBuf,
     canonical_root: OnceLock<std::result::Result<PathBuf, String>>,
+    execution_root: OnceLock<std::result::Result<PathBuf, String>>,
     runner: R,
     cache_path: Option<PathBuf>,
     cache: BazelCache,
@@ -147,6 +148,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         Ok(Self {
             root,
             canonical_root: OnceLock::new(),
+            execution_root: OnceLock::new(),
             runner,
             cache_path: None,
             cache: BazelCache::default(),
@@ -180,6 +182,44 @@ impl<R: CommandRunner> BazelWorkspace<R> {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The Bazel execution root (`bazel info execution_root`).
+    ///
+    /// Paths in `bazel aquery` output (e.g. `bazel-out/...`, `external/...`) are typically
+    /// relative to the execution root, not the workspace root.
+    pub fn execution_root(&mut self) -> Result<PathBuf> {
+        let result = self.execution_root.get_or_init(|| {
+            self.runner
+                .run_with_stdout(&self.root, "bazel", &["info", "execution_root"], |stdout| {
+                    let mut line = String::new();
+                    loop {
+                        line.clear();
+                        let bytes = stdout.read_line(&mut line)?;
+                        if bytes == 0 {
+                            break;
+                        }
+                        let trimmed = line.trim();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        let path = PathBuf::from(trimmed);
+                        anyhow::ensure!(
+                            path.is_absolute(),
+                            "bazel info execution_root returned a non-absolute path: {}",
+                            trimmed
+                        );
+                        return Ok(path);
+                    }
+                    bail!("bazel info execution_root returned no output");
+                })
+                .map_err(|err| err.to_string())
+        });
+
+        match result {
+            Ok(path) => Ok(path.clone()),
+            Err(message) => bail!("{message}"),
+        }
     }
 
     /// Convert a workspace-local file path into a Bazel file label.

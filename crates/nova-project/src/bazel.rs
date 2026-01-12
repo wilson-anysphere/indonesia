@@ -278,6 +278,10 @@ pub fn load_bazel_workspace_model_with_runner<R: CommandRunner>(
             message: err.to_string(),
         })?;
 
+    // Best-effort: `bazel info execution_root` can fail in some environments; fall back to
+    // workspace-root-relative resolution if it does.
+    let execution_root = workspace.execution_root().ok();
+
     let mut targets = match options.bazel.target_universe.as_deref() {
         Some(universe) => workspace.java_targets_in_universe(universe),
         None => workspace.java_targets(),
@@ -308,7 +312,12 @@ pub fn load_bazel_workspace_model_with_runner<R: CommandRunner>(
             }
         };
 
-        modules.push(module_config_from_compile_info(root, &target, &info));
+        modules.push(module_config_from_compile_info(
+            root,
+            execution_root.as_deref(),
+            &target,
+            &info,
+        ));
     }
 
     modules.sort_by(|a, b| a.id.cmp(&b.id));
@@ -457,9 +466,12 @@ fn project_config_from_workspace_model(
 #[cfg(feature = "bazel")]
 fn module_config_from_compile_info(
     root: &Path,
+    execution_root: Option<&Path>,
     target: &str,
     info: &JavaCompileInfo,
 ) -> ModuleConfig {
+    let aquery_root = execution_root.unwrap_or(root);
+
     let mut source_roots = Vec::new();
     for rel in &info.source_roots {
         let kind = classify_bazel_source_root(Path::new(rel));
@@ -473,12 +485,12 @@ fn module_config_from_compile_info(
     let mut classpath = info
         .classpath
         .iter()
-        .map(|entry| classpath_entry(root, entry))
+        .map(|entry| classpath_entry(aquery_root, entry))
         .collect::<Vec<_>>();
     let mut module_path = info
         .module_path
         .iter()
-        .map(|entry| classpath_entry(root, entry))
+        .map(|entry| classpath_entry(aquery_root, entry))
         .collect::<Vec<_>>();
 
     sort_dedup_source_roots(&mut source_roots);
@@ -498,7 +510,10 @@ fn module_config_from_compile_info(
         classpath,
         module_path,
         language_level,
-        output_dir: info.output_dir.as_deref().map(|p| resolve_path(root, p)),
+        output_dir: info
+            .output_dir
+            .as_deref()
+            .map(|p| resolve_path(aquery_root, p)),
     }
 }
 
