@@ -3,12 +3,12 @@ use crate::{
     cache::{digest_file_or_absent, BazelCache, CacheEntry, CompileInfoProvider, FileDigest},
     command::CommandRunner,
 };
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use std::{
     collections::BTreeSet,
     fs,
     ops::ControlFlow,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 #[cfg(feature = "bsp")]
@@ -208,6 +208,105 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                 Ok(targets)
             },
         )
+    }
+
+    /// Resolve Bazel `java_*` target labels that own (compile) the given source file.
+    ///
+    /// This accepts either an absolute path or a workspace-relative path.
+    ///
+    /// The owning package is resolved by walking upwards from the file's directory until a
+    /// `BUILD`/`BUILD.bazel` file is found, stopping at the workspace root.
+    ///
+    /// The owning targets are then resolved using package-scoped `bazel query` expressions, which
+    /// handle common patterns such as:
+    /// - direct `srcs = ["Foo.java"]`
+    /// - `srcs = glob(["**/*.java"])`
+    /// - `srcs = [":srcs"]` where `:srcs` is a `filegroup` in the same package
+    pub fn java_owning_targets_for_file(&mut self, file: impl AsRef<Path>) -> Result<Vec<String>> {
+        let file = file.as_ref();
+
+        let file_abs = if file.is_absolute() {
+            file.to_path_buf()
+        } else {
+            self.root.join(file)
+        };
+
+        // Prefer a purely lexical check first; fall back to canonicalization for common symlink
+        // cases (e.g. editor reports canonical paths while the workspace root comes from a symlink).
+        let (workspace_root, file_abs) = if file_abs.strip_prefix(&self.root).is_ok() {
+            (self.root.clone(), file_abs)
+        } else {
+            let workspace_root = std::fs::canonicalize(&self.root).with_context(|| {
+                format!(
+                    "failed to canonicalize Bazel workspace root {}",
+                    self.root.display()
+                )
+            })?;
+            let file_abs = std::fs::canonicalize(&file_abs)
+                .with_context(|| format!("failed to canonicalize file path {}", file_abs.display()))?;
+            if file_abs.strip_prefix(&workspace_root).is_err() {
+                bail!(
+                    "file {} is outside the Bazel workspace root {}",
+                    file_abs.display(),
+                    workspace_root.display()
+                );
+            }
+            (workspace_root, file_abs)
+        };
+
+        let package_dir = find_bazel_package_dir(&workspace_root, &file_abs).with_context(|| {
+            format!(
+                "failed to locate Bazel package for {}",
+                file_abs.display()
+            )
+        })?;
+
+        let package_rel = package_dir
+            .strip_prefix(&workspace_root)
+            .expect("package dir should be inside workspace");
+        let package = path_to_bazel_path(package_rel)?;
+
+        let file_rel_to_pkg = file_abs
+            .strip_prefix(&package_dir)
+            .expect("file should be inside package dir");
+        let file_target = path_to_bazel_path(file_rel_to_pkg)?;
+
+        let file_label = if package.is_empty() {
+            format!("//:{file_target}")
+        } else {
+            format!("//{package}:{file_target}")
+        };
+
+        let universe = if package.is_empty() {
+            "//:all".to_string()
+        } else {
+            format!("//{package}:all")
+        };
+
+        // 1) Find filegroups in the same package that include this file (directly or indirectly).
+        let filegroups_expr = format!(r#"kind("filegroup rule", rdeps({universe}, {file_label}))"#);
+        let filegroups = self
+            .query_labels(&filegroups_expr)
+            .with_context(|| format!("bazel query failed while resolving filegroups for {file_label}"))?;
+
+        // 2) Find java rules in the same package that directly depend on the file or any matching
+        // filegroup. Depth=1 keeps the query local and avoids pulling in unrelated reverse deps
+        // (e.g. `java_binary` that depends on a `java_library` that owns the file).
+        let mut roots_expr = file_label.clone();
+        for fg in &filegroups {
+            roots_expr.push_str(" + ");
+            roots_expr.push_str(fg);
+        }
+        let java_expr = format!(
+            r#"kind("java_.* rule", rdeps({universe}, ({roots_expr}), 1))"#
+        );
+        let mut owning = self
+            .query_labels(&java_expr)
+            .with_context(|| format!("bazel query failed while resolving owning java targets for {file_label}"))?;
+
+        owning.sort();
+        owning.dedup();
+        Ok(owning)
     }
 
     /// Resolve Java compilation information for a Bazel target.
@@ -536,6 +635,78 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         digests.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(digests)
     }
+
+    fn query_labels(&self, expr: &str) -> Result<Vec<String>> {
+        self.runner.run_with_stdout(
+            &self.root,
+            "bazel",
+            &["query", expr, "--output=label"],
+            |stdout| {
+                let mut out = Vec::new();
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    let bytes = stdout.read_line(&mut line)?;
+                    if bytes == 0 {
+                        break;
+                    }
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() {
+                        out.push(trimmed.to_string());
+                    }
+                }
+                Ok(out)
+            },
+        )
+    }
+}
+
+fn find_bazel_package_dir(workspace_root: &Path, file: &Path) -> Result<PathBuf> {
+    let mut dir = if file.is_dir() {
+        file
+    } else {
+        file.parent()
+            .with_context(|| format!("file path has no parent: {}", file.display()))?
+    };
+
+    loop {
+        if dir.join("BUILD").is_file() || dir.join("BUILD.bazel").is_file() {
+            return Ok(dir.to_path_buf());
+        }
+        if dir == workspace_root {
+            break;
+        }
+        dir = dir
+            .parent()
+            .with_context(|| format!("file {} is outside the workspace root", file.display()))?;
+    }
+
+    bail!(
+        "no Bazel package found for {} (no BUILD/BUILD.bazel between file and workspace root)",
+        file.display()
+    )
+}
+
+fn path_to_bazel_path(path: &Path) -> Result<String> {
+    let mut out = String::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => continue,
+            Component::Normal(part) => {
+                if !out.is_empty() {
+                    out.push('/');
+                }
+                out.push_str(&part.to_string_lossy());
+            }
+            other => {
+                bail!(
+                    "expected a workspace-relative path, found unsupported component {other:?} in {}",
+                    path.display()
+                );
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn build_file_for_label(workspace_root: &Path, label: &str) -> Result<Option<PathBuf>> {
