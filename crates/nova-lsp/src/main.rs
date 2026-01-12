@@ -5358,11 +5358,11 @@ fn type_definition_jdk(
                     binary_name,
                 } = &vfs_path
                 {
-                    if let Err(err) = state
-                        .analysis
-                        .decompiled_store
-                        .store_text(content_hash, binary_name, &decompiled.text)
-                    {
+                    if let Err(err) = state.analysis.decompiled_store.store_text(
+                        content_hash,
+                        binary_name,
+                        &decompiled.text,
+                    ) {
                         tracing::warn!(
                             target = "nova.lsp",
                             uri = %uri_string,
@@ -5409,10 +5409,11 @@ fn type_definition_jdk(
         binary_name,
     } = &vfs_path
     {
-        if let Err(err) = state
-            .analysis
-            .decompiled_store
-            .store_text(content_hash, binary_name, &decompiled.text)
+        if let Err(err) =
+            state
+                .analysis
+                .decompiled_store
+                .store_text(content_hash, binary_name, &decompiled.text)
         {
             tracing::warn!(
                 target = "nova.lsp",

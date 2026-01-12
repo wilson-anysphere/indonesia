@@ -701,7 +701,11 @@ fn extract_identifier_from_snippet(snippet: &str) -> Option<String> {
 
     // For calls, drop `(...)`. For qualified accesses, drop the receiver prefix.
     let before_paren = trimmed.split('(').next().unwrap_or(trimmed).trim();
-    let tail = before_paren.rsplit('.').next().unwrap_or(before_paren).trim();
+    let tail = before_paren
+        .rsplit('.')
+        .next()
+        .unwrap_or(before_paren)
+        .trim();
 
     (!tail.is_empty()).then_some(tail.to_string())
 }
@@ -728,7 +732,11 @@ fn is_ident_continue(c: char) -> bool {
 fn source_range_text<'a>(source: &'a str, range: &Range) -> Option<&'a str> {
     let start = crate::text::position_to_offset(source, range.start)?;
     let end = crate::text::position_to_offset(source, range.end)?;
-    let (start, end) = if start <= end { (start, end) } else { (end, start) };
+    let (start, end) = if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    };
     source.get(start..end)
 }
 

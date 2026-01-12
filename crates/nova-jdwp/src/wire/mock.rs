@@ -2068,9 +2068,9 @@ async fn handle_packet(
             let _method_id = r.read_id(sizes.method_id).unwrap_or(0);
             let mut w = JdwpWriter::new();
             w.write_u32(0); // arg count
-            // Keep this reasonably close to `Method.VariableTable` so higher-level
-            // stream-debug/stream-eval code can rely on `VariableTableWithGeneric` without
-            // dropping variables like `arr`.
+                            // Keep this reasonably close to `Method.VariableTable` so higher-level
+                            // stream-debug/stream-eval code can rely on `VariableTableWithGeneric` without
+                            // dropping variables like `arr`.
             w.write_u32(4); // slots
 
             // List<String> list (slot 0)

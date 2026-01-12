@@ -1657,18 +1657,22 @@ mod tests {
     fn collect_maven_build_files_ignores_bazel_dirs_at_any_depth() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
- 
+
         // Real build files.
         std::fs::write(root.join("pom.xml"), "<project></project>").unwrap();
         std::fs::write(root.join("mvnw"), "echo mvnw").unwrap();
         std::fs::write(root.join("mvnw.cmd"), "@echo mvnw").unwrap();
         std::fs::create_dir_all(root.join("module-a")).unwrap();
         std::fs::write(root.join("module-a").join("pom.xml"), "<project></project>").unwrap();
- 
+
         // Bazel output trees can contain files that look like build markers, but they should not
         // influence Maven fingerprinting.
         std::fs::create_dir_all(root.join("bazel-out")).unwrap();
-        std::fs::write(root.join("bazel-out").join("pom.xml"), "<project></project>").unwrap();
+        std::fs::write(
+            root.join("bazel-out").join("pom.xml"),
+            "<project></project>",
+        )
+        .unwrap();
         std::fs::create_dir_all(root.join("nested").join("bazel-out")).unwrap();
         std::fs::write(
             root.join("nested").join("bazel-out").join("pom.xml"),
@@ -1683,13 +1687,13 @@ mod tests {
             "<project></project>",
         )
         .unwrap();
- 
+
         let files = collect_maven_build_files(root).unwrap();
         let rel: BTreeSet<PathBuf> = files
             .into_iter()
             .map(|p| p.strip_prefix(root).unwrap().to_path_buf())
             .collect();
- 
+
         let expected: BTreeSet<PathBuf> = [
             PathBuf::from("module-a/pom.xml"),
             PathBuf::from("mvnw"),
@@ -1698,7 +1702,7 @@ mod tests {
         ]
         .into_iter()
         .collect();
- 
+
         assert_eq!(rel, expected);
     }
 

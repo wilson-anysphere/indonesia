@@ -264,10 +264,7 @@ class C {
         "expected explicit type args to yield String element type, got {diags:?}"
     );
 
-    let offset = src
-        .find("get(0)")
-        .expect("snippet should contain get call")
-        + "get".len();
+    let offset = src.find("get(0)").expect("snippet should contain get call") + "get".len();
     let ty = db
         .type_at_offset_display(file, offset as u32)
         .expect("expected a type at offset");
@@ -395,7 +392,9 @@ class C { void m(){ int[] a = new int[1.0]; } }
     let (db, file) = setup_db(src);
     let diags = db.type_diagnostics(file);
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "array-dimension-type"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "array-dimension-type"),
         "expected array-dimension-type diagnostic; got {diags:?}"
     );
 }

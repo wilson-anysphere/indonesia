@@ -291,8 +291,11 @@ fn maven_workspace_model_falls_back_to_conventional_snapshot_jar_when_timestampe
 
     let src_dir = root.join("src/main/java/com/example");
     std::fs::create_dir_all(&src_dir).expect("mkdir src/main/java");
-    std::fs::write(src_dir.join("Main.java"), "package com.example; class Main {}")
-        .expect("write Main.java");
+    std::fs::write(
+        src_dir.join("Main.java"),
+        "package com.example; class Main {}",
+    )
+    .expect("write Main.java");
 
     let mut options = LoadOptions::default();
     options.maven_repo = Some(repo_root.to_path_buf());

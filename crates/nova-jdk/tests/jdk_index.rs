@@ -210,7 +210,6 @@ fn read_zip_entry_bytes(
     Ok(bytes)
 }
 
-
 #[test]
 fn loads_java_lang_string_from_test_jmod() -> Result<(), Box<dyn std::error::Error>> {
     let root = fake_jdk_root();

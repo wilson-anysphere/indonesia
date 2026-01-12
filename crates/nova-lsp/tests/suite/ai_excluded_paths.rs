@@ -166,7 +166,10 @@ excluded_paths = ["secret/**"]
     );
 
     // Code-edit actions should be suppressed for excluded paths.
-    for cmd in [nova_ide::COMMAND_GENERATE_METHOD_BODY, nova_ide::COMMAND_GENERATE_TESTS] {
+    for cmd in [
+        nova_ide::COMMAND_GENERATE_METHOD_BODY,
+        nova_ide::COMMAND_GENERATE_TESTS,
+    ] {
         assert!(
             actions.iter().all(|a| {
                 a.get("command")

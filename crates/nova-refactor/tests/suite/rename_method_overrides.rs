@@ -151,7 +151,9 @@ fn rename_method_override_chain_detects_collisions_in_overrides() {
     let db = RefactorJavaDatabase::new(files.clone().into_iter());
 
     let offset = base_src.find("process").unwrap() + 1;
-    let symbol = db.symbol_at(&base_file, offset).expect("Base.process symbol");
+    let symbol = db
+        .symbol_at(&base_file, offset)
+        .expect("Base.process symbol");
 
     let err = rename(
         &db,
