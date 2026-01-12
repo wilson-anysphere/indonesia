@@ -227,8 +227,7 @@ mod notify_impl {
     fn paths_to_moves(paths: Vec<PathBuf>) -> Vec<FileChange> {
         let mut out = Vec::new();
         let mut it = paths.into_iter().map(VfsPath::local);
-        loop {
-            let Some(from) = it.next() else { break };
+        while let Some(from) = it.next() {
             let Some(to) = it.next() else {
                 out.push(FileChange::Modified { path: from });
                 break;
@@ -240,7 +239,7 @@ mod notify_impl {
 
     #[cfg(feature = "watch-notify")]
     fn notify_error_to_io(err: notify::Error) -> io::Error {
-        io::Error::new(io::ErrorKind::Other, err)
+        io::Error::other(err)
     }
 
     #[cfg(feature = "watch-notify")]
@@ -266,8 +265,26 @@ mod notify_impl {
             let thread = std::thread::spawn(move || {
                 let mut normalizer = EventNormalizer::new();
                 loop {
+                    let tick = match normalizer.pending_renames.front() {
+                        Some((started_at, _)) => {
+                            let now = Instant::now();
+                            let deadline = *started_at + EventNormalizer::MAX_AGE;
+                            let timeout = deadline.saturating_duration_since(now);
+                            channel::after(timeout)
+                        }
+                        None => channel::after(Duration::from_secs(3600)),
+                    };
+
                     channel::select! {
-                        recv(stop_rx) -> _ => break,
+                        recv(stop_rx) -> _ => {
+                            // Flush any pending rename-froms so they aren't silently dropped when
+                            // shutting down the watcher.
+                            let changes = normalizer.flush(Instant::now());
+                            if !changes.is_empty() {
+                                let _ = events_tx.send(Ok(WatchEvent { changes }));
+                            }
+                            break;
+                        },
                         recv(raw_rx) -> msg => {
                             let Ok(res) = msg else { break };
                             match res {
@@ -281,6 +298,12 @@ mod notify_impl {
                                 Err(err) => {
                                     let _ = events_tx.send(Err(notify_error_to_io(err)));
                                 }
+                            }
+                        }
+                        recv(tick) -> _ => {
+                            let changes = normalizer.flush(Instant::now());
+                            if !changes.is_empty() {
+                                let _ = events_tx.send(Ok(WatchEvent { changes }));
                             }
                         }
                     }
@@ -548,7 +571,7 @@ mod tests {
         watcher.unwatch_root(&root_a).unwrap();
 
         assert_eq!(watcher.watch_calls(), &[root_a.clone(), root_b.clone()]);
-        assert_eq!(watcher.unwatch_calls(), &[root_a.clone()]);
+        assert_eq!(watcher.unwatch_calls(), std::slice::from_ref(&root_a));
         assert_eq!(watcher.watched_roots(), vec![root_b.clone()]);
 
         let path = VfsPath::local(root_b.join("Main.java"));
