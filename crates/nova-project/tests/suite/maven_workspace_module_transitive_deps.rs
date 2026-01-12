@@ -284,6 +284,133 @@ fn maven_workspace_model_does_not_propagate_test_deps_of_workspace_module_deps()
 }
 
 #[test]
+fn maven_workspace_model_does_not_propagate_optional_deps_of_workspace_module_deps() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+
+    let maven_repo = root.join("m2");
+    fs::create_dir_all(&maven_repo).expect("mkdir m2");
+
+    // `nova-project` is intentionally offline, so dependency jars must already exist.
+    let dep_a_jar = repo_jar_path(&maven_repo, "com.dep", "dep-a", "1.0.0");
+    fs::create_dir_all(dep_a_jar.parent().expect("dep-a jar parent")).expect("mkdir dep-a parent");
+    fs::write(&dep_a_jar, b"").expect("write dep-a jar placeholder");
+
+    write_file(
+        &root.join("pom.xml"),
+        r#"<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>root</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+
+  <modules>
+    <module>lib</module>
+    <module>app</module>
+  </modules>
+</project>
+"#,
+    );
+
+    // `lib` has an optional dependency (dep-a).
+    write_file(
+        &root.join("lib/pom.xml"),
+        r#"<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>root</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>lib</artifactId>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.dep</groupId>
+      <artifactId>dep-a</artifactId>
+      <version>1.0.0</version>
+      <optional>true</optional>
+    </dependency>
+  </dependencies>
+</project>
+"#,
+    );
+
+    // `app` depends on `lib` only (no direct dep-a dependency).
+    write_file(
+        &root.join("app/pom.xml"),
+        r#"<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>root</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>app</artifactId>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>lib</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+  </dependencies>
+ </project>
+"#,
+    );
+
+    let options = LoadOptions {
+        maven_repo: Some(maven_repo),
+        ..LoadOptions::default()
+    };
+    let model = load_workspace_model_with_options(root, &options).expect("load workspace model");
+
+    let lib_module = model
+        .modules
+        .iter()
+        .find(|m| m.name == "lib")
+        .expect("lib module");
+    let lib_jars: Vec<String> = lib_module
+        .module_path
+        .iter()
+        .chain(lib_module.classpath.iter())
+        .filter(|e| e.kind == ClasspathEntryKind::Jar)
+        .map(|e| e.path.to_string_lossy().replace('\\', "/"))
+        .collect();
+    assert!(
+        lib_jars
+            .iter()
+            .any(|p| p.contains("com/dep/dep-a/1.0.0/dep-a-1.0.0.jar")),
+        "expected dep-a jar (lib optional dep) to be present for lib itself; got: {lib_jars:?}"
+    );
+
+    let app_module = model
+        .modules
+        .iter()
+        .find(|m| m.name == "app")
+        .expect("app module");
+    let app_jars: Vec<String> = app_module
+        .module_path
+        .iter()
+        .chain(app_module.classpath.iter())
+        .filter(|e| e.kind == ClasspathEntryKind::Jar)
+        .map(|e| e.path.to_string_lossy().replace('\\', "/"))
+        .collect();
+    assert!(
+        !app_jars
+            .iter()
+            .any(|p| p.contains("com/dep/dep-a/1.0.0/dep-a-1.0.0.jar")),
+        "expected dep-a jar (lib optional dep) to NOT be propagated to app; got: {app_jars:?}"
+    );
+
+    // Determinism.
+    let model2 = load_workspace_model_with_options(root, &options).expect("reload workspace model");
+    assert_eq!(model.modules, model2.modules);
+    assert_eq!(model.jpms_modules, model2.jpms_modules);
+}
+
+#[test]
 fn maven_workspace_model_includes_transitive_external_closure_of_workspace_module_deps() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
