@@ -39,6 +39,12 @@ fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf
         let file_name = file_name.to_string_lossy();
 
         if path.is_dir() {
+            if file_name == "node_modules" {
+                continue;
+            }
+            if dir == root && file_name.starts_with("bazel-") {
+                continue;
+            }
             if file_name == ".git"
                 || file_name == ".gradle"
                 || file_name == "build"
@@ -58,6 +64,21 @@ fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf
             continue;
         }
 
+        if name.ends_with(".gradle") || name.ends_with(".gradle.kts") {
+            out.push(path);
+            continue;
+        }
+
+        if name.ends_with(".versions.toml")
+            && path
+                .parent()
+                .and_then(|p| p.file_name())
+                .is_some_and(|p| p == std::ffi::OsStr::new("gradle"))
+        {
+            out.push(path);
+            continue;
+        }
+
         match name {
             "gradle.properties" => out.push(path),
             "gradlew" | "gradlew.bat" => {
@@ -67,6 +88,11 @@ fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf
             }
             "gradle-wrapper.properties" => {
                 if path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.properties")) {
+                    out.push(path);
+                }
+            }
+            "gradle-wrapper.jar" => {
+                if path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.jar")) {
                     out.push(path);
                 }
             }

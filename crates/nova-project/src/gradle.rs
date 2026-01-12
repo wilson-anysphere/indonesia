@@ -90,6 +90,18 @@ fn collect_gradle_build_files_rec(
         let file_name = file_name.to_string_lossy();
 
         if path.is_dir() {
+            // Avoid scanning huge non-source directories that commonly show up in mono-repos.
+            // These trees can contain many files that look like build files but should not
+            // influence Nova's build fingerprint (e.g. vendored JS dependencies).
+            if file_name == "node_modules" {
+                continue;
+            }
+            // Bazel output trees are typically created at the workspace root and can be enormous.
+            // Skip any top-level `bazel-*` entries (`bazel-out`, `bazel-bin`, `bazel-testlogs`,
+            // `bazel-<workspace>`, etc).
+            if dir == root && file_name.starts_with("bazel-") {
+                continue;
+            }
             if file_name == ".git"
                 || file_name == ".gradle"
                 || file_name == "build"
@@ -112,6 +124,30 @@ fn collect_gradle_build_files_rec(
             continue;
         }
 
+        // Applied Gradle script plugins can influence dependencies and tasks
+        // without being named `build.gradle*` / `settings.gradle*`.
+        if name.ends_with(".gradle") || name.ends_with(".gradle.kts") {
+            out.push(path);
+            continue;
+        }
+
+        // Gradle version catalogs can define dependency versions and thus affect resolved
+        // classpaths. In addition to the default `gradle/libs.versions.toml`, Gradle supports
+        // custom catalogs referenced from `settings.gradle*` (e.g. `gradle/foo.versions.toml`).
+        //
+        // Only include catalogs that are direct children of a directory named `gradle` to avoid
+        // accidentally picking up unrelated `*.toml` files elsewhere in the repo (including under
+        // `node_modules/`).
+        if name.ends_with(".versions.toml")
+            && path
+                .parent()
+                .and_then(|p| p.file_name())
+                .is_some_and(|p| p == std::ffi::OsStr::new("gradle"))
+        {
+            out.push(path);
+            continue;
+        }
+
         match name {
             "gradle.properties" => out.push(path),
             "gradlew" | "gradlew.bat" => {
@@ -121,6 +157,11 @@ fn collect_gradle_build_files_rec(
             }
             "gradle-wrapper.properties" => {
                 if path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.properties")) {
+                    out.push(path);
+                }
+            }
+            "gradle-wrapper.jar" => {
+                if path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.jar")) {
                     out.push(path);
                 }
             }
