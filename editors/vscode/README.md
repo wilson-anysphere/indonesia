@@ -190,9 +190,16 @@ npm run compile
   - Prompts for a discovered test ID and runs it via `nova/test/run`.
   - Nova also provides **Run Test** / **Debug Test** code lenses in Java test files. Clicking a code lens runs/debugs the specific test without prompting.
 
+- **Nova: Debug Test** (`nova.debugTest`)
+  - Uses the active editor's workspace folder when possible; otherwise prompts you to pick a workspace folder.
+  - Prompts for a discovered test ID and starts a Nova debug session for it (spawns the build tool in debug mode and attaches via `nova-dap`).
+
 - **Run Main / Debug Main (code lens)**
   - Nova provides **Run Main** / **Debug Main** code lenses on Java `main` methods.
   - These code lenses start a VS Code debug session using the `java` debug type, which requires the **Debugger for Java** extension (`vscjava.vscode-java-debug`).
+
+- **Nova: Run Main…** (`nova.runMain`) / **Nova: Debug Main…** (`nova.debugMain`)
+  - Prompts for a discovered main class and starts a `java` debug session (same dependency as the code lenses).
 
 - **Nova: Add Debug Configuration…** (`nova.addDebugConfiguration`)
   - Queries `nova/debug/configurations` and appends discovered launch configs to `.vscode/launch.json` (prompts to select a workspace folder in multi-root workspaces).

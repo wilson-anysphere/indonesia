@@ -37,6 +37,9 @@
     "onCommand:nova.discoverTests",
     "onCommand:nova.reloadProject",
     "onCommand:nova.runTest",
+    "onCommand:nova.debugTest",
+    "onCommand:nova.runMain",
+    "onCommand:nova.debugMain",
     "onCommand:nova.addDebugConfiguration",
     "onCommand:nova.frameworks.search",
     "onCommand:nova.frameworks.refresh",
@@ -127,6 +130,18 @@
       {
         "command": "nova.runTest",
         "title": "Nova: Run Test"
+      },
+      {
+        "command": "nova.debugTest",
+        "title": "Nova: Debug Test"
+      },
+      {
+        "command": "nova.runMain",
+        "title": "Nova: Run Main\u2026"
+      },
+      {
+        "command": "nova.debugMain",
+        "title": "Nova: Debug Main\u2026"
       },
       {
         "command": "nova.addDebugConfiguration",
