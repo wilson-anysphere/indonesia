@@ -3813,7 +3813,14 @@ enum JavaCommentKind {
     Doc,
 }
 
-fn java_comment_kind_at_offset(text: &str, offset: usize) -> Option<JavaCommentKind> {
+#[derive(Clone, Copy, Debug)]
+struct JavaCommentAtOffset {
+    kind: JavaCommentKind,
+    start: usize,
+    end: usize,
+}
+
+fn java_comment_at_offset(text: &str, offset: usize) -> Option<JavaCommentAtOffset> {
     if offset > text.len() {
         return None;
     }
@@ -3835,7 +3842,11 @@ fn java_comment_kind_at_offset(text: &str, offset: usize) -> Option<JavaCommentK
                 // editor point of view the cursor at the end-of-line still counts as "inside" the
                 // comment.
                 if offset >= start.saturating_add(2) && offset <= end {
-                    return Some(JavaCommentKind::Line);
+                    return Some(JavaCommentAtOffset {
+                        kind: JavaCommentKind::Line,
+                        start,
+                        end,
+                    });
                 }
             }
             nova_syntax::SyntaxKind::BlockComment | nova_syntax::SyntaxKind::DocComment => {
@@ -3847,10 +3858,11 @@ fn java_comment_kind_at_offset(text: &str, offset: usize) -> Option<JavaCommentK
                 // If the comment is unterminated, allow `offset == end` (EOF) to count as inside.
                 let terminated = tok.text(text).ends_with("*/");
                 if offset < end || (!terminated && offset == end) {
-                    return Some(match tok.kind {
+                    let kind = match tok.kind {
                         nova_syntax::SyntaxKind::DocComment => JavaCommentKind::Doc,
                         _ => JavaCommentKind::Block,
-                    });
+                    };
+                    return Some(JavaCommentAtOffset { kind, start, end });
                 }
             }
             _ => {}
@@ -3860,14 +3872,12 @@ fn java_comment_kind_at_offset(text: &str, offset: usize) -> Option<JavaCommentK
     None
 }
 
-fn offset_in_java_comment(text: &str, offset: usize) -> bool {
-    java_comment_kind_at_offset(text, offset).is_some()
-}
-
 fn javadoc_tag_snippet_completions(
     text: &str,
     text_index: &TextIndex<'_>,
     offset: usize,
+    comment_start: usize,
+    comment_end: usize,
 ) -> Option<Vec<CompletionItem>> {
     let bytes = text.as_bytes();
     if offset > bytes.len() {
@@ -3911,6 +3921,42 @@ fn javadoc_tag_snippet_completions(
     let mut items = Vec::new();
 
     if "param".starts_with(prefix.as_str()) {
+        let analysis = analyze(text);
+        let should_suggest_params = !analysis
+            .methods
+            .iter()
+            .any(|method| span_contains(method.body_span, comment_start));
+
+        if should_suggest_params {
+            if let Some(next_method) = analysis
+                .methods
+                .iter()
+                .filter(|method| method.name_span.start >= comment_end)
+                .min_by_key(|method| method.name_span.start)
+            {
+                // Only accept comments that are directly above the method signature: avoid class /
+                // field doc comments by rejecting braces/semicolons between the comment and method name.
+                let gap = next_method.name_span.start.saturating_sub(comment_end);
+                if gap <= 200 {
+                    let between = text
+                        .get(comment_end..next_method.name_span.start)
+                        .unwrap_or_default();
+                    if !between.contains('{') && !between.contains('}') && !between.contains(';') {
+                        for param in &next_method.params {
+                            let name = &param.name;
+                            items.push(CompletionItem {
+                                label: format!("@param {name}"),
+                                kind: Some(CompletionItemKind::SNIPPET),
+                                insert_text: Some(format!("@param ${{1:{name}}} $0")),
+                                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                                ..Default::default()
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
         items.push(CompletionItem {
             label: "@param".to_string(),
             kind: Some(CompletionItemKind::SNIPPET),
@@ -3951,6 +3997,47 @@ fn javadoc_tag_snippet_completions(
     }
 
     Some(decorate_completions(text_index, at_pos, offset, items))
+}
+
+fn offset_in_java_comment(text: &str, offset: usize) -> bool {
+    if offset > text.len() {
+        return false;
+    }
+
+    // Best-effort: use the lexer so we don't get confused by comment-like sequences inside
+    // string/char literals.
+    let parse = nova_syntax::parse(text);
+    for tok in parse.tokens() {
+        let start = tok.range.start as usize;
+        let end = tok.range.end as usize;
+
+        if start > offset {
+            break;
+        }
+
+        match tok.kind {
+            nova_syntax::SyntaxKind::LineComment
+            | nova_syntax::SyntaxKind::BlockComment
+            | nova_syntax::SyntaxKind::DocComment => {
+                if start <= offset && offset < end {
+                    return true;
+                }
+            }
+            nova_syntax::SyntaxKind::Error => {
+                // Unterminated block comments can be lexed as `Error` tokens. Keep the logic simple:
+                // if the token starts with a comment delimiter, treat its range as a comment.
+                let raw = tok.text(text);
+                if (raw.starts_with("/*") || raw.starts_with("//")) && start <= offset {
+                    if offset < end {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    false
 }
 
 fn offset_in_java_string_or_char_literal(text: &str, offset: usize) -> bool {
@@ -4499,9 +4586,15 @@ pub(crate) fn core_completions(
         .position_to_offset(position)
         .unwrap_or_else(|| text.len())
         .min(text.len());
-    if let Some(kind) = java_comment_kind_at_offset(text, offset) {
-        if kind == JavaCommentKind::Doc {
-            if let Some(items) = javadoc_tag_snippet_completions(text, &text_index, offset) {
+    if let Some(comment) = java_comment_at_offset(text, offset) {
+        if comment.kind == JavaCommentKind::Doc {
+            if let Some(items) = javadoc_tag_snippet_completions(
+                text,
+                &text_index,
+                offset,
+                comment.start,
+                comment.end,
+            ) {
                 if cancel.is_cancelled() {
                     return Vec::new();
                 }
@@ -4892,9 +4985,15 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
     // Javadoc tag snippets should be available even though general completion is
     // suppressed inside comments.
     if is_java {
-        if let Some(kind) = java_comment_kind_at_offset(text, offset) {
-            if kind == JavaCommentKind::Doc {
-                if let Some(items) = javadoc_tag_snippet_completions(text, &text_index, offset) {
+        if let Some(comment) = java_comment_at_offset(text, offset) {
+            if comment.kind == JavaCommentKind::Doc {
+                if let Some(items) = javadoc_tag_snippet_completions(
+                    text,
+                    &text_index,
+                    offset,
+                    comment.start,
+                    comment.end,
+                ) {
                     return items;
                 }
             }

@@ -1109,6 +1109,35 @@ void m(int x) {}
 }
 
 #[test]
+fn completion_includes_javadoc_param_snippet_with_method_param_name() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  /**
+   * @par<|>
+   */
+  void m(int x) {}
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "@param x")
+        .expect("expected @param completion to include method parameter name `x`");
+
+    assert_eq!(item.kind, Some(lsp_types::CompletionItemKind::SNIPPET));
+    assert_eq!(item.insert_text_format, Some(InsertTextFormat::SNIPPET));
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+    assert_eq!(edit.new_text, "@param ${1:x} $0");
+}
+
+#[test]
 fn annotation_attribute_completion_suggests_elements() {
     let anno_path = PathBuf::from("/workspace/src/main/java/p/MyAnno.java");
     let java_path = PathBuf::from("/workspace/src/main/java/p/Main.java");
