@@ -283,10 +283,19 @@ impl WorkspaceLoader {
             .filter_map(|entry| classpath_entry_for_project_entry(entry))
             .collect::<Vec<_>>();
 
+        // If persistence is enabled, use the per-project classpath cache directory for class-dir
+        // indexing (jar/jmod entries are cached separately in the global deps cache).
+        let classpath_cache_dir = db
+            .inner
+            .lock()
+            .persistence
+            .cache_dir()
+            .map(|dir| dir.classpath_dir());
+
         let index = if entries.is_empty() {
             None
         } else {
-            match ClasspathIndex::build(&entries, None) {
+            match ClasspathIndex::build(&entries, classpath_cache_dir.as_deref()) {
                 Ok(index) => Some(Arc::new(index)),
                 Err(_) => None,
             }

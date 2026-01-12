@@ -116,3 +116,4 @@ Shared dependency caches live under `<cache_root>/deps/`:
 | Artifact | Location | Format | Version gating |
 |---|---|---|---|
 | Dependency index bundle | `<sha256>/classpath.idx` | `nova-storage` (`rkyv`) | `DEPS_INDEX_SCHEMA_VERSION` + `NOVA_VERSION` (+ platform: endian/pointer-width) |
+| JDK symbol index | `jdk/<fingerprint>/jdk-symbol-index.idx` | `nova-storage` (`rkyv`) | `JDK_SYMBOL_INDEX_SCHEMA_VERSION` + `NOVA_VERSION` (+ platform: endian/pointer-width) |

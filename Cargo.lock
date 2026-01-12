@@ -3442,7 +3442,6 @@ name = "nova-classpath"
 version = "0.1.0"
 dependencies = [
  "criterion",
- "nova-cache",
  "nova-classfile",
  "nova-core",
  "nova-deps-cache",
