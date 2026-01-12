@@ -26,6 +26,30 @@ pub enum BuildTaskState {
     Cancelled,
 }
 
+#[cfg(test)]
+mod build_task_state_tests {
+    use super::BuildTaskState;
+
+    #[test]
+    fn serde_roundtrip_is_snake_case() {
+        for (state, expected) in [
+            (BuildTaskState::Idle, "idle"),
+            (BuildTaskState::Queued, "queued"),
+            (BuildTaskState::Running, "running"),
+            (BuildTaskState::Success, "success"),
+            (BuildTaskState::Failure, "failure"),
+            (BuildTaskState::Cancelled, "cancelled"),
+        ] {
+            let encoded = serde_json::to_value(state).expect("serialize BuildTaskState");
+            assert_eq!(encoded, serde_json::Value::String(expected.to_string()));
+
+            let decoded =
+                serde_json::from_value::<BuildTaskState>(encoded).expect("deserialize BuildTaskState");
+            assert_eq!(decoded, state);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct JavaVersion(pub u16);
 
