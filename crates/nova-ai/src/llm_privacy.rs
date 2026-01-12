@@ -3,7 +3,7 @@ use crate::{types::CodeSnippet, AiError};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use nova_config::AiPrivacyConfig;
 use regex::Regex;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 /// Privacy filtering for LLM backends configured via `nova-config`.
 ///
@@ -80,7 +80,38 @@ impl PrivacyFilter {
     }
 
     pub fn is_excluded(&self, path: &Path) -> bool {
-        self.excluded_paths.is_match(path)
+        if self.excluded_paths.is_match(path) {
+            return true;
+        }
+
+        // In real LSP usage we often receive absolute paths, while configuration globs are usually
+        // written relative to the workspace root (e.g. `src/secrets/**`). `globset` matches from
+        // the beginning of the path, so `src/secrets/**` won't match
+        // `/home/user/project/src/secrets/Secret.java`.
+        //
+        // Best-effort fix: if the provided path is absolute, also attempt to match the configured
+        // globs against each suffix of the path (dropping leading components). This preserves the
+        // behavior of explicitly absolute patterns (e.g. `/home/user/**`) while avoiding false
+        // negatives for workspace-relative globs.
+        if path.is_absolute() {
+            let components: Vec<Component<'_>> = path.components().collect();
+            for start in 0..components.len() {
+                if matches!(components[start], Component::Prefix(_) | Component::RootDir) {
+                    continue;
+                }
+
+                let mut suffix = PathBuf::new();
+                for component in &components[start..] {
+                    suffix.push(component.as_os_str());
+                }
+
+                if self.excluded_paths.is_match(&suffix) {
+                    return true;
+                }
+            }
+        }
+
+        false
     }
 
     /// Apply redaction patterns to arbitrary prompt text.

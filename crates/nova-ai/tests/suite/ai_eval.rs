@@ -52,6 +52,56 @@ fn privacy_excluded_paths_omit_snippet() {
 }
 
 #[test]
+fn privacy_excluded_paths_omit_snippet_for_absolute_path() {
+    let client = AiClient::from_config(&dummy_ai_client_config(AiPrivacyConfig {
+        local_only: true,
+        anonymize_identifiers: Some(true),
+        excluded_paths: vec!["src/secrets/**".to_string()],
+        ..AiPrivacyConfig::default()
+    }))
+    .expect("client");
+
+    // In LSP usage snippet paths are usually absolute.
+    let excluded = nova_ai::CodeSnippet::new(
+        "/home/user/project/src/secrets/Secret.java",
+        "class Secret { String token = \"sk-verysecretstringthatislong\"; }",
+    );
+    assert!(
+        client.sanitize_snippet(&excluded).is_none(),
+        "workspace-relative excluded_paths globs must also match absolute paths"
+    );
+
+    #[cfg(windows)]
+    {
+        let excluded = nova_ai::CodeSnippet::new(
+            r"C:\Users\user\project\src\secrets\Secret.java",
+            "class Secret { String token = \"sk-verysecretstringthatislong\"; }",
+        );
+        assert!(client.sanitize_snippet(&excluded).is_none());
+    }
+}
+
+#[test]
+fn privacy_excluded_paths_allow_non_excluded_absolute_path() {
+    let client = AiClient::from_config(&dummy_ai_client_config(AiPrivacyConfig {
+        local_only: true,
+        anonymize_identifiers: Some(true),
+        excluded_paths: vec!["src/secrets/**".to_string()],
+        ..AiPrivacyConfig::default()
+    }))
+    .expect("client");
+
+    let allowed = nova_ai::CodeSnippet::new(
+        "/home/user/project/src/Main.java",
+        "class Main { String token = \"sk-verysecretstringthatislong\"; }",
+    );
+    assert!(
+        client.sanitize_snippet(&allowed).is_some(),
+        "excluded_paths must not match unrelated absolute paths"
+    );
+}
+
+#[test]
 fn cloud_mode_disabling_identifier_anonymization_still_redacts_string_literals_by_default() {
     let client = AiClient::from_config(&dummy_ai_client_config(AiPrivacyConfig {
         local_only: false,
