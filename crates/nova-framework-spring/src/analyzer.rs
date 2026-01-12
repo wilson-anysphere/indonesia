@@ -316,18 +316,37 @@ fn workspace_fingerprint(db: &dyn Database, all_files: &[FileId]) -> (u64, Vec<F
 
     let mut hasher = DefaultHasher::new();
     for &file in &relevant {
+        file.to_raw().hash(&mut hasher);
         if let Some(path) = db.file_path(file) {
             path.hash(&mut hasher);
         }
         if let Some(text) = db.file_text(file) {
-            text.len().hash(&mut hasher);
-            (text.as_ptr() as usize).hash(&mut hasher);
+            fingerprint_text(text, &mut hasher);
         } else {
             0usize.hash(&mut hasher);
         }
     }
 
     (hasher.finish(), relevant)
+}
+
+fn fingerprint_text(text: &str, hasher: &mut impl Hasher) {
+    // We intentionally avoid hashing entire files: framework analyzers run on every
+    // request and full workspace hashing can be expensive. At the same time, we
+    // can't rely solely on `(len, ptr)` because some database implementations may
+    // mutate text in-place (keeping both stable).
+    //
+    // Hashing a small prefix/suffix gives a cheap best-effort invalidation signal.
+    let bytes = text.as_bytes();
+    bytes.len().hash(hasher);
+    (text.as_ptr() as usize).hash(hasher);
+
+    const EDGE: usize = 64;
+    let prefix_len = bytes.len().min(EDGE);
+    bytes[..prefix_len].hash(hasher);
+    if bytes.len() > EDGE {
+        bytes[bytes.len() - EDGE..].hash(hasher);
+    }
 }
 
 fn build_workspace(db: &dyn Database, files: &[FileId]) -> CachedWorkspace {
