@@ -261,16 +261,20 @@ pub(crate) struct WorkspaceEngine {
     indexes_evictor: Arc<WorkspaceProjectIndexesEvictor>,
 
     config: RwLock<EffectiveConfig>,
-    scheduler: Scheduler,
     memory: MemoryManager,
+    scheduler: Scheduler,
     index_debouncer: KeyedDebouncer<&'static str>,
     project_reload_debouncer: KeyedDebouncer<&'static str>,
+    memory_enforce_debouncer: KeyedDebouncer<&'static str>,
     subscribers: Arc<Mutex<Vec<Sender<WorkspaceEvent>>>>,
 
     project_state: Arc<Mutex<ProjectState>>,
     ide_project: RwLock<Option<Project>>,
     watch_config: Arc<RwLock<WatchConfig>>,
     watcher_command_store: Arc<Mutex<Option<channel::Sender<WatchCommand>>>>,
+
+    #[cfg(test)]
+    memory_enforce_observer: Arc<MemoryEnforceObserver>,
 }
 
 #[derive(Debug, Clone)]
@@ -328,6 +332,56 @@ fn workspace_scheduler() -> Scheduler {
     SCHEDULER.get_or_init(Scheduler::default).clone()
 }
 
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct MemoryEnforceObserver {
+    inner: Mutex<usize>,
+    cv: std::sync::Condvar,
+}
+
+#[cfg(test)]
+impl MemoryEnforceObserver {
+    fn record(&self) {
+        let mut guard = self
+            .inner
+            .lock()
+            .expect("memory enforce observer mutex poisoned");
+        *guard += 1;
+        self.cv.notify_all();
+    }
+
+    fn wait_for_at_least(&self, expected: usize, timeout: Duration) -> bool {
+        let started = Instant::now();
+        let mut guard = self
+            .inner
+            .lock()
+            .expect("memory enforce observer mutex poisoned");
+        while *guard < expected {
+            let elapsed = started.elapsed();
+            if elapsed >= timeout {
+                return false;
+            }
+            let remaining = timeout - elapsed;
+            let (next_guard, wait_res) = self
+                .cv
+                .wait_timeout(guard, remaining)
+                .expect("memory enforce observer mutex poisoned");
+            guard = next_guard;
+            if wait_res.timed_out() {
+                break;
+            }
+        }
+        *guard >= expected
+    }
+
+    fn count(&self) -> usize {
+        *self
+            .inner
+            .lock()
+            .expect("memory enforce observer mutex poisoned")
+    }
+}
+
 impl WorkspaceEngine {
     pub fn new(config: WorkspaceEngineConfig) -> Self {
         let scheduler = workspace_scheduler();
@@ -370,10 +424,14 @@ impl WorkspaceEngine {
             PoolKind::Background,
             Duration::from_millis(1200),
         );
-
         let indexes = Arc::new(Mutex::new(ProjectIndexes::default()));
         let indexes_evictor = WorkspaceProjectIndexesEvictor::new(&memory, Arc::clone(&indexes));
 
+        let memory_enforce_debouncer = KeyedDebouncer::new(
+            scheduler.clone(),
+            PoolKind::Background,
+            Duration::from_millis(750),
+        );
         Self {
             vfs,
             overlay_docs_memory_registration,
@@ -381,16 +439,43 @@ impl WorkspaceEngine {
             indexes,
             indexes_evictor,
             config: RwLock::new(EffectiveConfig::default()),
-            scheduler,
             memory,
+            scheduler,
             index_debouncer,
             project_reload_debouncer,
+            memory_enforce_debouncer,
             subscribers: Arc::new(Mutex::new(Vec::new())),
             project_state: Arc::new(Mutex::new(ProjectState::default())),
             ide_project: RwLock::new(None),
             watch_config: Arc::new(RwLock::new(WatchConfig::new(workspace_root))),
             watcher_command_store: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            memory_enforce_observer: Arc::new(MemoryEnforceObserver::default()),
         }
+    }
+
+    fn enforce_memory(&self) {
+        let _ = self.memory.enforce();
+        #[cfg(test)]
+        self.memory_enforce_observer.record();
+    }
+
+    fn schedule_memory_enforcement(&self, delay: Duration) {
+        let memory = self.memory.clone();
+        #[cfg(test)]
+        let observer = Arc::clone(&self.memory_enforce_observer);
+
+        self.memory_enforce_debouncer.debounce_with_delay(
+            "workspace-memory-enforce",
+            delay,
+            move |token| {
+                Cancelled::check(&token)?;
+                let _ = memory.enforce();
+                #[cfg(test)]
+                observer.record();
+                Ok(())
+            },
+        );
     }
 
     pub fn subscribe(&self) -> Receiver<WorkspaceEvent> {
@@ -786,6 +871,9 @@ impl WorkspaceEngine {
             // reload even though they are `.java` sources.
             self.request_project_reload(paths);
         }
+
+        // Drive memory eviction once per batch, not once per file.
+        self.schedule_memory_enforcement(Duration::from_millis(250));
     }
 
     pub fn request_project_reload(&self, changed_files: Vec<PathBuf>) {
@@ -825,6 +913,10 @@ impl WorkspaceEngine {
         let scheduler = self.scheduler.clone();
         let watch_config = Arc::clone(&self.watch_config);
         let watcher_command_store = Arc::clone(&self.watcher_command_store);
+        let memory = self.memory.clone();
+        let memory_enforce_debouncer = self.memory_enforce_debouncer.clone();
+        #[cfg(test)]
+        let memory_observer = Arc::clone(&self.memory_enforce_observer);
 
         self.project_reload_debouncer.debounce_with_delay(
             "workspace-reload",
@@ -859,6 +951,22 @@ impl WorkspaceEngine {
                     );
                 }
 
+                // Project reload can update many file inputs at once; request an eviction pass.
+                let memory_for_task = memory.clone();
+                #[cfg(test)]
+                let observer_for_task = Arc::clone(&memory_observer);
+                memory_enforce_debouncer.debounce_with_delay(
+                    "workspace-memory-enforce",
+                    Duration::from_millis(0),
+                    move |token| {
+                        Cancelled::check(&token)?;
+                        let _ = memory_for_task.enforce();
+                        #[cfg(test)]
+                        observer_for_task.record();
+                        Ok(())
+                    },
+                );
+
                 Ok(())
             },
         );
@@ -876,7 +984,7 @@ impl WorkspaceEngine {
                 .context("workspace root not set")?
         };
 
-        reload_project_and_sync(
+        let result = reload_project_and_sync(
             &root,
             changed_files,
             &self.vfs,
@@ -884,7 +992,12 @@ impl WorkspaceEngine {
             &self.project_state,
             &self.watch_config,
             &self.watcher_command_store,
-        )
+        );
+
+        // Ensure we drive eviction after loading/updating a potentially large set of files.
+        self.enforce_memory();
+
+        result
     }
 
     pub fn open_document(&self, path: VfsPath, text: String, version: i32) -> FileId {
@@ -943,6 +1056,8 @@ impl WorkspaceEngine {
 
         self.publish(WorkspaceEvent::FileChanged { file: path.clone() });
         self.publish_diagnostics(path);
+        // Opening a document can allocate large `Arc<String>` values and trigger diagnostics.
+        self.schedule_memory_enforcement(Duration::from_millis(0));
         file_id
     }
 
@@ -971,6 +1086,9 @@ impl WorkspaceEngine {
             self.query_db.unpin_syntax_tree(file_id);
             self.query_db.unpin_item_tree(file_id);
         }
+
+        // Closing can read disk contents back into Salsa, and often follows large edit sessions.
+        self.schedule_memory_enforcement(Duration::from_millis(0));
     }
 
     pub fn apply_changes(
@@ -1007,6 +1125,9 @@ impl WorkspaceEngine {
 
         self.publish(WorkspaceEvent::FileChanged { file: path.clone() });
         self.publish_diagnostics(path.clone());
+        // Document edits can generate large transient allocations; debounce eviction to avoid
+        // enforcing on every keystroke.
+        self.schedule_memory_enforcement(Duration::from_millis(750));
         Ok(edits)
     }
 
@@ -2058,17 +2179,21 @@ mod tests {
     use nova_db::persistence::{PersistenceConfig, PersistenceMode};
     use nova_db::salsa::HasFilePaths;
     use nova_db::NovaInputs;
-    use nova_memory::{MemoryBudget, MemoryCategory};
     use nova_index::{
         AnnotationLocation, IndexedSymbol, IndexSymbolKind, InheritanceEdge, ReferenceLocation,
         SymbolLocation,
     };
+    use nova_memory::{
+        EvictionRequest, EvictionResult, MemoryBudget, MemoryCategory, MemoryEvictor,
+    };
     use nova_project::BuildSystem;
     use nova_vfs::{ManualFileWatcher, ManualFileWatcherHandle};
     use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex, OnceLock};
     use std::time::Duration;
     use tokio::time::timeout;
-    use std::path::PathBuf;
 
     use super::*;
 
@@ -2441,6 +2566,108 @@ mod tests {
         )
         .expect("plan should be present in Reduced mode");
         assert_eq!(files, vec![FileId::from_raw(2)]);
+    }
+
+    struct TestEvictor {
+        name: String,
+        category: MemoryCategory,
+        bytes: Mutex<u64>,
+        _registration: OnceLock<nova_memory::MemoryRegistration>,
+        tracker: OnceLock<nova_memory::MemoryTracker>,
+        evict_calls: AtomicUsize,
+    }
+
+    impl TestEvictor {
+        fn new(manager: &MemoryManager, name: &str, category: MemoryCategory) -> Arc<Self> {
+            let evictor = Arc::new(Self {
+                name: name.to_string(),
+                category,
+                bytes: Mutex::new(0),
+                _registration: OnceLock::new(),
+                tracker: OnceLock::new(),
+                evict_calls: AtomicUsize::new(0),
+            });
+
+            let registration =
+                manager.register_evictor(name.to_string(), category, evictor.clone());
+            evictor
+                .tracker
+                .set(registration.tracker())
+                .expect("tracker should only be set once");
+            evictor
+                ._registration
+                .set(registration)
+                .expect("registration should only be set once");
+
+            evictor
+        }
+
+        fn set_bytes(&self, bytes: u64) {
+            *self.bytes.lock().unwrap() = bytes;
+            self.tracker.get().unwrap().set_bytes(bytes);
+        }
+
+        fn bytes(&self) -> u64 {
+            *self.bytes.lock().unwrap()
+        }
+
+        fn evict_calls(&self) -> usize {
+            self.evict_calls.load(Ordering::Relaxed)
+        }
+    }
+
+    impl MemoryEvictor for TestEvictor {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn category(&self) -> MemoryCategory {
+            self.category
+        }
+
+        fn evict(&self, request: EvictionRequest) -> EvictionResult {
+            self.evict_calls.fetch_add(1, Ordering::Relaxed);
+            let mut bytes = self.bytes.lock().unwrap();
+            let before = *bytes;
+            let after = before.min(request.target_bytes);
+            *bytes = after;
+            self.tracker.get().unwrap().set_bytes(after);
+            EvictionResult {
+                before_bytes: before,
+                after_bytes: after,
+            }
+        }
+    }
+
+    #[test]
+    fn memory_enforcement_is_triggered_by_open_document() {
+        let manager = MemoryManager::new(MemoryBudget::from_total(1_000));
+        let evictor = TestEvictor::new(&manager, "test", MemoryCategory::Other);
+        evictor.set_bytes(10_000);
+
+        let engine = WorkspaceEngine::new(WorkspaceEngineConfig {
+            workspace_root: PathBuf::new(),
+            persistence: PersistenceConfig::default(),
+            memory: manager.clone(),
+        });
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = VfsPath::local(tmp.path().join("Main.java"));
+        engine.open_document(path, "class Main {}".to_string(), 1);
+
+        assert!(
+            engine
+                .memory_enforce_observer
+                .wait_for_at_least(1, Duration::from_secs(2)),
+            "timed out waiting for MemoryManager.enforce (count={})",
+            engine.memory_enforce_observer.count(),
+        );
+
+        assert!(
+            evictor.evict_calls() > 0,
+            "expected test evictor to be invoked during enforcement"
+        );
+        assert_eq!(evictor.bytes(), 0, "expected eviction under tiny budget");
     }
 
     #[test]
