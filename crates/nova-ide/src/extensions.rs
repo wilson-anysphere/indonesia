@@ -765,24 +765,6 @@ impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
     }
 }
 
-impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
-    pub fn with_default_registry(
-        db: Arc<dyn nova_db::Database + Send + Sync>,
-        config: Arc<NovaConfig>,
-        project: ProjectId,
-    ) -> Self {
-        let mut this = Self::new(db, config, project);
-        let registry = this.registry_mut();
-        let _ = registry.register_diagnostic_provider(Arc::new(FrameworkDiagnosticProvider));
-        let _ = registry.register_completion_provider(Arc::new(FrameworkCompletionProvider));
-
-        let provider = FrameworkAnalyzerRegistryProvider::empty().into_arc();
-        let _ = registry.register_diagnostic_provider(provider.clone());
-        let _ = registry.register_completion_provider(provider);
-        this
-    }
-}
-
 #[allow(private_bounds)]
 impl<DB: ?Sized> IdeExtensions<DB>
 where
@@ -1033,7 +1015,8 @@ fn type_mismatch_quick_fixes(
 
     let mut actions = Vec::new();
 
-    let diagnostics = crate::code_intelligence::core_file_diagnostics(db, file);
+    let cancel = CancellationToken::new();
+    let diagnostics = crate::code_intelligence::core_file_diagnostics(db, file, &cancel);
     let source_index = TextIndex::new(source);
     for diag in diagnostics {
         if diag.code != "type-mismatch" {
