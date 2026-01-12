@@ -139,11 +139,24 @@ export async function debugTestById(
 
   const buildTool = await getBuildToolFromUser(workspaceFolder);
 
-  const resp = (await novaRequest('nova/test/debugConfiguration', {
-    projectRoot: target.projectRoot,
-    buildTool,
-    test: testId,
-  })) as TestDebugResponse | undefined;
+  const resp = await vscode.window.withProgress<TestDebugResponse | undefined>(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: `Nova: Preparing debug session (${testId})…`,
+      cancellable: true,
+    },
+    async (_progress, token) => {
+      return (await novaRequest<TestDebugResponse | undefined>(
+        'nova/test/debugConfiguration',
+        {
+          projectRoot: target.projectRoot,
+          buildTool,
+          test: testId,
+        },
+        { token },
+      )) as TestDebugResponse | undefined;
+    },
+  );
   if (!resp) {
     return;
   }

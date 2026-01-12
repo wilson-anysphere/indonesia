@@ -5,7 +5,11 @@ import { extractMainClassFromCommandArgs, extractTestIdFromCommandArgs } from '.
 import { debugTestById } from './testDebug';
 import { formatError } from './safeMode';
 
-export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R | undefined>;
+export type NovaRequest = <R>(
+  method: string,
+  params?: unknown,
+  opts?: { token?: vscode.CancellationToken },
+) => Promise<R | undefined>;
 
 export type NovaServerCommandHandlers = {
   runTest: (...args: unknown[]) => Promise<void>;
@@ -212,11 +216,25 @@ export function registerNovaServerCommands(
       channel.show(true);
 
       try {
-        const resp = await opts.novaRequest<RunResponse>('nova/test/run', {
-          projectRoot: workspaceFolder.uri.fsPath,
-          buildTool: await getTestBuildTool(workspaceFolder),
-          tests: [testId],
-        });
+        const buildTool = await getTestBuildTool(workspaceFolder);
+        const resp = await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: `Nova: Running test (${testId})…`,
+            cancellable: true,
+          },
+          async (_progress, token) => {
+            return await opts.novaRequest<RunResponse>(
+              'nova/test/run',
+              {
+                projectRoot: workspaceFolder.uri.fsPath,
+                buildTool,
+                tests: [testId],
+              },
+              { token },
+            );
+          },
+        );
         if (!resp) {
           return;
         }
@@ -254,9 +272,22 @@ export function registerNovaServerCommands(
     channel.show(true);
 
     try {
-      const discover = await opts.novaRequest<DiscoverResponse>('nova/test/discover', {
-        projectRoot: workspaceFolder.uri.fsPath,
-      });
+      const discover = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: 'Nova: Discovering tests…',
+          cancellable: true,
+        },
+        async (_progress, token) => {
+          return await opts.novaRequest<DiscoverResponse>(
+            'nova/test/discover',
+            {
+              projectRoot: workspaceFolder.uri.fsPath,
+            },
+            { token },
+          );
+        },
+      );
       if (!discover) {
         return;
       }
@@ -275,11 +306,25 @@ export function registerNovaServerCommands(
         return;
       }
 
-      const resp = await opts.novaRequest<RunResponse>('nova/test/run', {
-        projectRoot: workspaceFolder.uri.fsPath,
-        buildTool: await getTestBuildTool(workspaceFolder),
-        tests: [picked.testId],
-      });
+      const buildTool = await getTestBuildTool(workspaceFolder);
+      const resp = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `Nova: Running test (${picked.label})…`,
+          cancellable: true,
+        },
+        async (_progress, token) => {
+          return await opts.novaRequest<RunResponse>(
+            'nova/test/run',
+            {
+              projectRoot: workspaceFolder.uri.fsPath,
+              buildTool,
+              tests: [picked.testId],
+            },
+            { token },
+          );
+        },
+      );
       if (!resp) {
         return;
       }
@@ -324,9 +369,22 @@ export function registerNovaServerCommands(
 
     if (!resolvedTestId) {
       try {
-        const discover = await opts.novaRequest<DiscoverResponse>('nova/test/discover', {
-          projectRoot: workspaceFolder.uri.fsPath,
-        });
+        const discover = await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: 'Nova: Discovering tests…',
+            cancellable: true,
+          },
+          async (_progress, token) => {
+            return await opts.novaRequest<DiscoverResponse>(
+              'nova/test/discover',
+              {
+                projectRoot: workspaceFolder.uri.fsPath,
+              },
+              { token },
+            );
+          },
+        );
         if (!discover) {
           return;
         }
@@ -376,9 +434,22 @@ export function registerNovaServerCommands(
 
     let configs: NovaLspDebugConfiguration[] | undefined;
     try {
-      const raw = await opts.novaRequest('nova/debug/configurations', {
-        projectRoot: workspaceFolder.uri.fsPath,
-      });
+      const raw = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: 'Nova: Loading debug configurations…',
+          cancellable: true,
+        },
+        async (_progress, token) => {
+          return await opts.novaRequest(
+            'nova/debug/configurations',
+            {
+              projectRoot: workspaceFolder.uri.fsPath,
+            },
+            { token },
+          );
+        },
+      );
       if (typeof raw === 'undefined') {
         // Request was gated (unsupported method) and the shared request helper already displayed
         // a user-facing message.
