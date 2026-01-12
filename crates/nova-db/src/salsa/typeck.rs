@@ -6499,7 +6499,21 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
     ) -> ExprInfo {
         let arg_types = args
             .iter()
-            .map(|arg| self.infer_expr(loader, *arg).ty)
+            .map(|arg| match &self.body.exprs[*arg] {
+                // Target-typed expressions need the constructor parameter types to infer correctly;
+                // avoid inferring them eagerly to prevent spurious diagnostics (and allow diamond
+                // inference to use the parameter target type).
+                HirExpr::Lambda { .. } => Type::Unknown,
+                HirExpr::MethodReference { receiver, .. }
+                | HirExpr::ConstructorReference { receiver, .. } => {
+                    let _ = self.infer_expr(loader, *receiver);
+                    Type::Unknown
+                }
+                HirExpr::New { class, .. } if is_diamond_type_ref_text(class.as_str()) => {
+                    Type::Unknown
+                }
+                _ => self.infer_expr(loader, *arg).ty,
+            })
             .collect::<Vec<_>>();
 
         let raw_text = class_text.trim();
@@ -6571,6 +6585,11 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
             let expected_for_call = Some(&receiver_ty);
             match nova_types::resolve_constructor_call(env_ro, def, &arg_types, expected_for_call) {
                 MethodResolution::Found(method) => {
+                    // Target-type arguments now that we know the selected constructor signature.
+                    for (arg, param_ty) in args.iter().zip(method.params.iter()) {
+                        self.ensure_type_loaded(loader, param_ty);
+                        let _ = self.infer_expr_with_expected(loader, *arg, Some(param_ty));
+                    }
                     self.call_resolutions[expr.idx()] = Some(method);
                 }
                 MethodResolution::Ambiguous(amb) => {
@@ -6581,6 +6600,10 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         self.body.exprs[expr].range(),
                     ));
                     if let Some(first) = amb.candidates.first() {
+                        for (arg, param_ty) in args.iter().zip(first.params.iter()) {
+                            self.ensure_type_loaded(loader, param_ty);
+                            let _ = self.infer_expr_with_expected(loader, *arg, Some(param_ty));
+                        }
                         self.call_resolutions[expr.idx()] = Some(first.clone());
                     }
                 }
@@ -7978,7 +8001,18 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
     ) -> ExprInfo {
         let arg_types = args
             .iter()
-            .map(|arg| self.infer_expr(loader, *arg).ty)
+            .map(|arg| match &self.body.exprs[*arg] {
+                HirExpr::Lambda { .. } => Type::Unknown,
+                HirExpr::MethodReference { receiver, .. }
+                | HirExpr::ConstructorReference { receiver, .. } => {
+                    let _ = self.infer_expr(loader, *receiver);
+                    Type::Unknown
+                }
+                HirExpr::New { class, .. } if is_diamond_type_ref_text(class.as_str()) => {
+                    Type::Unknown
+                }
+                _ => self.infer_expr(loader, *arg).ty,
+            })
             .collect::<Vec<_>>();
 
         if !matches!(self.owner, DefWithBodyId::Constructor(_)) {
@@ -8064,6 +8098,10 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         let env_ro: &dyn TypeEnv = &*loader.store;
         match nova_types::resolve_constructor_call(env_ro, class_id, &arg_types, None) {
             MethodResolution::Found(method) => {
+                for (arg, param_ty) in args.iter().zip(method.params.iter()) {
+                    self.ensure_type_loaded(loader, param_ty);
+                    let _ = self.infer_expr_with_expected(loader, *arg, Some(param_ty));
+                }
                 self.call_resolutions[expr.idx()] = Some(method);
                 ExprInfo {
                     ty: Type::Void,
@@ -8078,6 +8116,10 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     self.body.exprs[expr].range(),
                 ));
                 if let Some(first) = amb.candidates.first() {
+                    for (arg, param_ty) in args.iter().zip(first.params.iter()) {
+                        self.ensure_type_loaded(loader, param_ty);
+                        let _ = self.infer_expr_with_expected(loader, *arg, Some(param_ty));
+                    }
                     self.call_resolutions[expr.idx()] = Some(first.clone());
                 }
                 ExprInfo {

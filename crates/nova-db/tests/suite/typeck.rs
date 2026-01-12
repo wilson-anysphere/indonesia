@@ -4671,6 +4671,37 @@ class C {
 }
 
 #[test]
+fn diamond_inference_uses_target_type_from_constructor_argument() {
+    let src = r#"
+import java.util.*;
+class Foo { Foo(List<String> xs) {} }
+class C {
+    void m() {
+        new Foo(new ArrayList<>());
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-constructor"
+            && d.code.as_ref() != "unresolved-method"
+            && d.code.as_ref() != "unchecked"),
+        "expected ctor-arg diamond to target-type without warnings; got {diags:?}"
+    );
+
+    let offset = src
+        .find("ArrayList<>")
+        .expect("snippet should contain ArrayList diamond")
+        + "ArrayList".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "ArrayList<String>");
+}
+
+#[test]
 fn diamond_inference_for_var_defaults_to_object() {
     let src = r#"
  import java.util.*;
