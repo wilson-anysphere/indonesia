@@ -134,6 +134,11 @@ Two acceptable implementations:
 2. **A persistent interner outside Salsa**
    - A project-scoped interner stored as database state, updated only by the single writer thread.
    - Must preserve the same semantics as Salsa interning: same key ⇒ same id, never reused.
+   - **Implementation note (current repo):** Nova already uses this pattern for workspace *source*
+     types: `WorkspaceLoader` allocates stable ids and stores them in the input
+     `NovaInputs::project_class_ids` (see ADR 0012). Extending that registry to include
+     classpath/JDK types (or replacing it with a single `(ProjectId, binary_name)` interner) is a
+     plausible migration path toward a truly project-global type environment.
 
 In this long-term model:
 
