@@ -2185,6 +2185,28 @@ mod tests {
     }
 
     #[test]
+    fn reads_module_info_from_exploded_jmod_directory_entry() {
+        let tmp = TempDir::new().unwrap();
+
+        let file = std::fs::File::open(test_named_module_jar()).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut entry = archive.by_name("module-info.class").unwrap();
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).unwrap();
+
+        let classes_dir = tmp.path().join("classes");
+        std::fs::create_dir_all(&classes_dir).unwrap();
+        std::fs::write(classes_dir.join("module-info.class"), bytes).unwrap();
+
+        let class_dir = ClasspathEntry::ClassDir(tmp.path().to_path_buf());
+        let info = class_dir
+            .module_info()
+            .unwrap()
+            .expect("expected classes/module-info.class in temp dir");
+        assert_eq!(info.name.as_str(), "example.mod");
+    }
+
+    #[test]
     fn lookup_type_from_jar() {
         let tmp = TempDir::new().unwrap();
         let deps_store = DependencyIndexStore::new(tmp.path().join("deps"));
