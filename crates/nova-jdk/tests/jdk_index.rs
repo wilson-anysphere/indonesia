@@ -344,6 +344,62 @@ fn discovery_supports_workspace_config_override() -> Result<(), Box<dyn std::err
 }
 
 #[test]
+fn discovery_prefers_toolchain_for_configured_release() -> Result<(), Box<dyn std::error::Error>> {
+    let _guard = ENV_LOCK.lock().unwrap();
+
+    let toolchain_dir = tempdir()?;
+    let toolchain_root = toolchain_dir.path();
+    let jmods_dir = toolchain_root.join("jmods");
+    std::fs::create_dir_all(&jmods_dir)?;
+    std::fs::copy(
+        fake_jdk_root().join("jmods/java.base.jmod"),
+        jmods_dir.join("java.base.jmod"),
+    )?;
+
+    let cfg = JdkConfig {
+        home: Some(fake_jdk_root()),
+        release: Some(17),
+        toolchains: vec![nova_core::JdkToolchain {
+            release: 17,
+            home: toolchain_root.to_path_buf(),
+        }],
+    };
+
+    let install = JdkInstallation::discover(Some(&cfg))?;
+    assert_eq!(install.root(), toolchain_root);
+
+    Ok(())
+}
+
+#[test]
+fn discovery_for_release_prefers_requested_toolchain() -> Result<(), Box<dyn std::error::Error>> {
+    let _guard = ENV_LOCK.lock().unwrap();
+
+    let toolchain_dir = tempdir()?;
+    let toolchain_root = toolchain_dir.path();
+    let jmods_dir = toolchain_root.join("jmods");
+    std::fs::create_dir_all(&jmods_dir)?;
+    std::fs::copy(
+        fake_jdk_root().join("jmods/java.base.jmod"),
+        jmods_dir.join("java.base.jmod"),
+    )?;
+
+    let cfg = JdkConfig {
+        home: Some(fake_jdk_root()),
+        release: None,
+        toolchains: vec![nova_core::JdkToolchain {
+            release: 8,
+            home: toolchain_root.to_path_buf(),
+        }],
+    };
+
+    let install = JdkInstallation::discover_for_release(Some(&cfg), Some(8))?;
+    assert_eq!(install.root(), toolchain_root);
+
+    Ok(())
+}
+
+#[test]
 fn discovery_coerces_java_home_jre_subdir() -> Result<(), Box<dyn std::error::Error>> {
     let _guard = ENV_LOCK.lock().unwrap();
 

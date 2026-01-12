@@ -86,12 +86,25 @@ impl JdkInstallation {
     /// Discover a JDK installation.
     ///
     /// When `JdkConfig.home` is set it is used as an explicit override.
+    /// When `JdkConfig.release` is set and a matching `JdkConfig.toolchains` entry exists, the
+    /// toolchain home is preferred over `home`.
     /// Otherwise discovery sources are tried in this order:
     /// 1. `JAVA_HOME`
     /// 2. `java` on `PATH` (via `java -XshowSettings:properties -version`, then symlink resolution)
     pub fn discover(config: Option<&JdkConfig>) -> Result<Self, JdkDiscoveryError> {
+        Self::discover_for_release(config, None)
+    }
+
+    /// Like [`Self::discover`] but allows callers to request a specific Java feature release.
+    ///
+    /// When `requested_release` is `Some`, a matching `config.toolchains` entry is preferred over
+    /// `config.home`. When it is `None`, Nova falls back to `config.release`.
+    pub fn discover_for_release(
+        config: Option<&JdkConfig>,
+        requested_release: Option<u16>,
+    ) -> Result<Self, JdkDiscoveryError> {
         // Optional config override: when present it should win regardless of environment.
-        if let Some(override_home) = config.and_then(|c| c.home.as_deref()) {
+        if let Some(override_home) = config.and_then(|c| c.preferred_home(requested_release)) {
             let candidate = coerce_to_jdk_root(override_home.to_path_buf())
                 .unwrap_or_else(|| override_home.to_path_buf());
             return Self::from_root(candidate);
