@@ -721,7 +721,7 @@ fn stdio_server_offers_inline_variable_code_actions() {
     let temp = TempDir::new().expect("tempdir");
     let file_path = temp.path().join("Test.java");
 
-    let source = "class C {\n    void m() {\n        int a = 1 + 2;\n        System.out.println(a);\n    }\n}\n";
+    let source = "class C {\n    void m() {\n        int a = 1 + 2;\n        System.out.println(a);\n        System.out.println(a);\n    }\n}\n";
     fs::write(&file_path, source).expect("write file");
 
     let uri: Uri = Url::from_file_path(&file_path)
@@ -822,7 +822,7 @@ fn stdio_server_offers_inline_variable_code_actions() {
     let edits = changes.get(&uri).expect("edits for file");
     let updated = apply_lsp_text_edits(source, edits);
 
-    let expected = "class C {\n    void m() {\n        System.out.println((1 + 2));\n    }\n}\n";
+    let expected = "class C {\n    void m() {\n        System.out.println((1 + 2));\n        System.out.println((1 + 2));\n    }\n}\n";
     assert_eq!(updated, expected);
 
     // 4) shutdown + exit
