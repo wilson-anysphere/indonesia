@@ -1104,18 +1104,7 @@ where
             });
         actions.extend(extension_actions);
 
-        // Some quick-fix sources overlap (e.g. multiple passes offering the same "Create field"
-        // action). Dedupe by (kind, title) to avoid noisy duplicate entries in the UI.
-        let mut seen: HashSet<(Option<lsp_types::CodeActionKind>, String)> = HashSet::new();
-        actions.retain(|action| {
-            let (kind, title) = match action {
-                lsp_types::CodeActionOrCommand::CodeAction(action) => {
-                    (action.kind.clone(), action.title.clone())
-                }
-                lsp_types::CodeActionOrCommand::Command(command) => (None, command.title.clone()),
-            };
-            seen.insert((kind, title))
-        });
+        dedupe_code_actions_by_kind_and_title(&mut actions);
 
         actions
     }
@@ -1204,6 +1193,11 @@ where
                 span,
                 &diagnostics,
             ));
+            actions.extend(crate::quick_fixes::create_symbol_quick_fixes(
+                self.db.as_ref().as_dyn_nova_db(),
+                file,
+                Some(span),
+            ));
 
             actions.extend(crate::refactor::extract_member_code_actions(
                 &uri, source, selection,
@@ -1258,6 +1252,8 @@ where
                 })
             });
         actions.extend(extension_actions);
+
+        dedupe_code_actions_by_kind_and_title(&mut actions);
 
         actions
     }
@@ -1327,6 +1323,19 @@ where
 
         hints
     }
+}
+
+fn dedupe_code_actions_by_kind_and_title(actions: &mut Vec<lsp_types::CodeActionOrCommand>) {
+    // Some quick-fix sources overlap (e.g. multiple passes offering the same "Create field"
+    // action). Dedupe by (kind, title) to avoid noisy duplicate entries in the UI.
+    let mut seen: HashSet<(Option<lsp_types::CodeActionKind>, String)> = HashSet::new();
+    actions.retain(|action| {
+        let (kind, title) = match action {
+            lsp_types::CodeActionOrCommand::CodeAction(action) => (action.kind.clone(), action.title.clone()),
+            lsp_types::CodeActionOrCommand::Command(command) => (None, command.title.clone()),
+        };
+        seen.insert((kind, title))
+    });
 }
 
 fn type_mismatch_quick_fixes(

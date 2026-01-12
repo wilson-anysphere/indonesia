@@ -134,7 +134,6 @@ thread_local! {
 #[cfg(any(test, debug_assertions))]
 static FILE_NAVIGATION_INDEX_BUILD_COUNTS_BY_ROOT: Lazy<Mutex<HashMap<PathBuf, usize>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
-
 impl FileNavigationIndex {
     #[allow(dead_code)]
     fn new(db: &dyn Database) -> Self {
