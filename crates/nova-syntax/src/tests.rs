@@ -1403,6 +1403,84 @@ fn feature_gate_var_local_inference_version_matrix() {
 }
 
 #[test]
+fn reserved_type_name_var_version_matrix() {
+    let type_decl = "class var {}";
+
+    let java8 = parse_java_with_options(
+        type_decl,
+        ParseOptions {
+            language_level: JavaLanguageLevel::JAVA_8,
+        },
+    );
+    assert_eq!(java8.result.errors, Vec::new());
+    assert!(java8.diagnostics.is_empty());
+
+    let java10 = parse_java_with_options(
+        type_decl,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 10,
+                preview: false,
+            },
+        },
+    );
+    assert_eq!(java10.result.errors, Vec::new());
+    assert_eq!(
+        java10
+            .diagnostics
+            .iter()
+            .map(|d| d.code.as_ref())
+            .collect::<Vec<_>>(),
+        vec!["JAVA_RESERVED_TYPE_NAME_VAR"]
+    );
+
+    let non_local_type_uses = r#"
+class Foo {
+  var x = 1;
+  var m() { return 1; }
+  void p(var x) {}
+  void c(Object o) { (var) o; }
+}
+"#;
+    let java10 = parse_java_with_options(
+        non_local_type_uses,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 10,
+                preview: false,
+            },
+        },
+    );
+    assert_eq!(java10.result.errors, Vec::new());
+    assert_eq!(
+        java10
+            .diagnostics
+            .iter()
+            .map(|d| d.code.as_ref())
+            .collect::<Vec<_>>(),
+        vec![
+            "JAVA_RESERVED_TYPE_NAME_VAR",
+            "JAVA_RESERVED_TYPE_NAME_VAR",
+            "JAVA_RESERVED_TYPE_NAME_VAR",
+            "JAVA_RESERVED_TYPE_NAME_VAR",
+        ]
+    );
+
+    let local_var_inference = "class Foo { void m() { var x = 1; } }";
+    let java10 = parse_java_with_options(
+        local_var_inference,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 10,
+                preview: false,
+            },
+        },
+    );
+    assert_eq!(java10.result.errors, Vec::new());
+    assert!(java10.diagnostics.is_empty());
+}
+
+#[test]
 fn feature_gate_var_lambda_parameters_version_matrix() {
     let input =
         "class Foo { void m() { java.util.function.IntUnaryOperator f = (var x) -> x + 1; } }";

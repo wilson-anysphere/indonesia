@@ -19,10 +19,106 @@ pub(crate) fn feature_gate_diagnostics(
     gate_pattern_matching_instanceof(root, level, &mut diagnostics);
     gate_var_local_inference(root, level, &mut diagnostics);
     gate_var_lambda_parameters(root, level, &mut diagnostics);
+    gate_reserved_type_name_var(root, level, &mut diagnostics);
     gate_unnamed_variables(root, level, &mut diagnostics);
     gate_string_templates(root, level, &mut diagnostics);
 
     diagnostics
+}
+
+const JAVA_RESERVED_TYPE_NAME_VAR: &str = "JAVA_RESERVED_TYPE_NAME_VAR";
+
+fn gate_reserved_type_name_var(root: &SyntaxNode, level: JavaLanguageLevel, out: &mut Vec<Diagnostic>) {
+    // `var` becomes a reserved type name in Java 10. It's still tokenized as `VarKw` at all
+    // language levels, but only treated as illegal in type-name positions for Java 10+.
+    if level.major < 10 {
+        return;
+    }
+
+    // Type declarations named `var`: `class var {}` / `interface var {}` / ...
+    for decl in root.descendants().filter(|n| {
+        matches!(
+            n.kind(),
+            SyntaxKind::ClassDeclaration
+                | SyntaxKind::InterfaceDeclaration
+                | SyntaxKind::EnumDeclaration
+                | SyntaxKind::RecordDeclaration
+                | SyntaxKind::AnnotationTypeDeclaration
+        )
+    }) {
+        let Some(name_tok) = last_ident_like_child_token(&decl) else {
+            continue;
+        };
+        if name_tok.kind() == SyntaxKind::VarKw {
+            out.push(reserved_type_name_var_error(&name_tok));
+        }
+    }
+
+    // Generic type parameters named `var`: `class Foo<var> {}`
+    for param in root
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::TypeParameter)
+    {
+        let Some(name_tok) = param
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .find(|t| t.kind().is_identifier_like())
+        else {
+            continue;
+        };
+        if name_tok.kind() == SyntaxKind::VarKw {
+            out.push(reserved_type_name_var_error(&name_tok));
+        }
+    }
+
+    // `var` used as an explicit type in non-inference contexts (field types, method return types,
+    // parameters, casts, type arguments, ...).
+    //
+    // We diagnose `var` tokens that appear as part of a named type. `var` remains allowed *only*
+    // in local variable inference contexts (and later, lambda parameters - handled separately).
+    for ty in root.descendants().filter(|n| n.kind() == SyntaxKind::Type) {
+        let Some(named_type) = ty.children().find(|n| n.kind() == SyntaxKind::NamedType) else {
+            continue;
+        };
+
+        // Only consider the *direct* identifier-like tokens that make up this named type's
+        // qualified name. This avoids double-diagnosing `var` inside nested type arguments.
+        let segments: Vec<_> = named_type
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .filter(|t| t.kind().is_identifier_like())
+            .collect();
+
+        if segments.iter().all(|t| t.kind() != SyntaxKind::VarKw) {
+            continue;
+        }
+
+        // `var` is allowed as a special "inferred type" only when it appears as an unqualified,
+        // unparameterized type in a handful of local contexts.
+        let is_plain_var_type =
+            segments.len() == 1 && segments[0].kind() == SyntaxKind::VarKw && !named_type
+                .children()
+                .any(|n| n.kind() == SyntaxKind::TypeArguments);
+
+        let parent_kind = ty.parent().map(|p| p.kind());
+
+        // NOTE: `var` for lambda parameters is Java 11+; this is feature-gated separately (task
+        // #8). Avoid diagnosing lambda parameters here to prevent false positives.
+        let is_allowed_inference_context = matches!(
+            parent_kind,
+            Some(SyntaxKind::LocalVariableDeclarationStatement | SyntaxKind::Resource | SyntaxKind::ForHeader)
+        );
+        if is_plain_var_type && is_allowed_inference_context {
+            continue;
+        }
+        if matches!(parent_kind, Some(SyntaxKind::LambdaParameter)) {
+            continue;
+        }
+
+        for tok in segments.into_iter().filter(|t| t.kind() == SyntaxKind::VarKw) {
+            out.push(reserved_type_name_var_error(&tok));
+        }
+    }
 }
 
 fn gate_modules(root: &SyntaxNode, level: JavaLanguageLevel, out: &mut Vec<Diagnostic>) {
@@ -475,10 +571,25 @@ fn feature_error(
     )
 }
 
+fn reserved_type_name_var_error(token: &SyntaxToken) -> Diagnostic {
+    Diagnostic::error(
+        JAVA_RESERVED_TYPE_NAME_VAR,
+        "`var` is a reserved type name since Java 10 and cannot be used here",
+        Some(span(token)),
+    )
+}
+
 fn first_token(node: &SyntaxNode) -> Option<SyntaxToken> {
     node.descendants_with_tokens()
         .filter_map(|e| e.into_token())
         .find(|t| !t.kind().is_trivia())
+}
+
+fn last_ident_like_child_token(node: &SyntaxNode) -> Option<SyntaxToken> {
+    node.children_with_tokens()
+        .filter_map(|e| e.into_token())
+        .filter(|t| t.kind().is_identifier_like())
+        .last()
 }
 
 fn span(token: &SyntaxToken) -> Span {
