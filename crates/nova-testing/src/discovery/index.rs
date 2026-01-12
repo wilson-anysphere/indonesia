@@ -64,8 +64,19 @@ impl TestDiscoveryIndex {
             }
 
             // Parse into a temporary value so a failure doesn't invalidate an existing cached entry.
-            let tests = super::discover_tests_in_file(&self.workspace_root, &path)?;
-            self.files.insert(path, FileEntry { stamp, tests });
+            match super::discover_tests_in_file(&self.workspace_root, &path) {
+                Ok(tests) => {
+                    self.files.insert(path, FileEntry { stamp, tests });
+                }
+                Err(_) => {
+                    // Best-effort: a single unreadable/invalid file should not abort discovery for
+                    // the whole workspace.
+                    //
+                    // - If we have a cached entry, keep it (do not update the stamp so we'll retry
+                    //   parsing on the next refresh).
+                    // - If this is a new file, skip it.
+                }
+            }
         }
 
         Ok(())
@@ -101,8 +112,9 @@ impl TestDiscoveryIndex {
                     !super::SKIP_DIRS.iter().any(|skip| skip == &name.as_ref())
                 })
             {
-                let entry =
-                    entry.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+                let Ok(entry) = entry else {
+                    continue;
+                };
                 if !entry.file_type().is_file() {
                     continue;
                 }
@@ -112,9 +124,9 @@ impl TestDiscoveryIndex {
                     continue;
                 }
 
-                let metadata = entry
-                    .metadata()
-                    .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+                let Ok(metadata) = entry.metadata() else {
+                    continue;
+                };
                 out.insert(path.to_path_buf(), FileStamp::from_metadata(&metadata));
             }
         }

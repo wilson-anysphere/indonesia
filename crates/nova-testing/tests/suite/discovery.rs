@@ -375,6 +375,49 @@ class AlphaTest {
 }
 
 #[test]
+fn skips_files_with_invalid_utf8() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+
+    let test_dir = root.join("src/test/java/com/example");
+    fs::create_dir_all(&test_dir).unwrap();
+
+    let good = test_dir.join("GoodTest.java");
+    fs::write(
+        &good,
+        r#"
+package com.example;
+
+import org.junit.jupiter.api.Test;
+
+class GoodTest {
+    @Test
+    void works() {}
+}
+"#,
+    )
+    .unwrap();
+
+    let bad = test_dir.join("BrokenTest.java");
+    fs::write(&bad, [0xff, 0xfe, 0xfd]).unwrap();
+
+    let req = TestDiscoverRequest {
+        project_root: root.to_string_lossy().to_string(),
+    };
+
+    let resp = discover_tests(&req).unwrap();
+
+    let good_item = resp
+        .tests
+        .iter()
+        .find(|t| t.id == "com.example.GoodTest")
+        .unwrap();
+
+    let child_ids: Vec<_> = good_item.children.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(child_ids, vec!["com.example.GoodTest#works"]);
+}
+
+#[test]
 fn discovers_unique_ids_in_multi_module_maven_fixture() {
     let root = fixture_root("maven-multi-module");
     let resp = discover_tests(&TestDiscoverRequest {
