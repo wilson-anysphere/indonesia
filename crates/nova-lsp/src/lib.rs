@@ -37,6 +37,7 @@
 //!   - `nova/bugReport`
 
 pub mod code_action;
+pub mod patch_paths;
 mod completion_resolve;
 pub mod decompile;
 pub mod extensions;
