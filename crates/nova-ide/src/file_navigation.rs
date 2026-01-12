@@ -461,33 +461,9 @@ pub fn type_definition(db: &dyn Database, file: FileId, position: Position) -> O
     let parsed = index.file(file)?;
     let offset = position_to_offset_with_index(&parsed.line_index, &parsed.text, position)?;
 
-    if let Some((ident, _ident_span)) = nav_core::identifier_at(&parsed.text, offset) {
-        if let Some(type_info) = index.type_info(&ident) {
-            let def_file = index.file(type_info.file_id)?;
-            return Some(Location {
-                uri: type_info.uri.clone(),
-                range: span_to_lsp_range_with_index(
-                    &def_file.line_index,
-                    &def_file.text,
-                    type_info.def.name_span,
-                ),
-            });
-        }
-
-        let ty = nav_core::resolve_name_type(parsed, offset, &ident)?;
-        let type_info = index.type_info(&ty)?;
-        let def_file = index.file(type_info.file_id)?;
-        return Some(Location {
-            uri: type_info.uri.clone(),
-            range: span_to_lsp_range_with_index(
-                &def_file.line_index,
-                &def_file.text,
-                type_info.def.name_span,
-            ),
-        });
-    }
-
-    None
+    let lookup_type_info = |name: &str| index.type_info(name);
+    let lookup_file = |uri: &Uri| index.file_by_uri(uri);
+    nav_core::type_definition_best_effort(&lookup_type_info, &lookup_file, parsed, offset)
 }
 
 fn uri_for_file(db: &dyn Database, file_id: FileId) -> Uri {

@@ -253,6 +253,50 @@ class Main {
 }
 
 #[test]
+fn go_to_type_definition_on_direct_field_access_returns_field_type() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Foo.java
+class $1Foo {}
+//- /A.java
+class A { Foo bar; }
+//- /Main.java
+class Main { void test(){ A a = new A(); a.$0bar.toString(); } }
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = type_definition(&fixture.db, file, pos).expect("expected type definition location");
+
+    assert_eq!(got.uri, fixture.marker_uri(1));
+    assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
+fn go_to_type_definition_on_inherited_field_access_returns_field_type() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /Foo.java
+class $1Foo {}
+//- /Base.java
+class Base { Foo baz; }
+//- /Derived.java
+class Derived extends Base {}
+//- /Main.java
+class Main { void test(){ Derived d = new Derived(); d.$0baz.toString(); } }
+"#,
+    );
+
+    let file = fixture.marker_file(0);
+    let pos = fixture.marker_position(0);
+    let got = type_definition(&fixture.db, file, pos).expect("expected type definition location");
+
+    assert_eq!(got.uri, fixture.marker_uri(1));
+    assert_eq!(got.range.start, fixture.marker_position(1));
+}
+
+#[test]
 fn go_to_declaration_on_override_returns_interface_declaration() {
     let fixture = FileIdFixture::parse(
         r#"

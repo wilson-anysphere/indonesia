@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use lsp_types::{Location, Uri};
 use nova_index::InheritanceIndex;
 use nova_types::Span;
@@ -58,6 +60,64 @@ pub(crate) fn identifier_at(text: &str, offset: usize) -> Option<(String, Span)>
     Some((text[start..end].to_string(), Span::new(start, end)))
 }
 
+#[inline]
+fn is_ident_char(b: u8) -> bool {
+    let ch = b as char;
+    ch.is_ascii_alphanumeric() || ch == '_'
+}
+
+fn receiver_before_dot(text: &str, dot_idx: usize) -> Option<String> {
+    let bytes = text.as_bytes();
+    if dot_idx == 0 || dot_idx > bytes.len() {
+        return None;
+    }
+
+    let mut recv_end = dot_idx;
+    while recv_end > 0 && (bytes[recv_end - 1] as char).is_ascii_whitespace() {
+        recv_end -= 1;
+    }
+
+    let mut recv_start = recv_end;
+    while recv_start > 0 && is_ident_char(bytes[recv_start - 1]) {
+        recv_start -= 1;
+    }
+
+    if recv_start == recv_end {
+        None
+    } else {
+        Some(text[recv_start..recv_end].to_string())
+    }
+}
+
+fn is_member_field_access(text: &str, ident_span: Span) -> Option<String> {
+    // Best-effort member field access detection:
+    // - The non-whitespace byte immediately before the identifier span is `.`
+    // - Receiver is a single identifier token before that `.`
+    //
+    // This intentionally ignores complex receivers like `foo().bar` or `a.b.c`.
+    let bytes = text.as_bytes();
+
+    let mut i = ident_span.start;
+    while i > 0 && (bytes[i - 1] as char).is_ascii_whitespace() {
+        i -= 1;
+    }
+    if i == 0 || bytes[i - 1] != b'.' {
+        return None;
+    }
+    let dot_idx = i - 1;
+
+    // If the identifier is followed by `(` (allowing whitespace), it's a member call, not a field.
+    let mut j = ident_span.end;
+    while j < bytes.len() && (bytes[j] as char).is_ascii_whitespace() {
+        j += 1;
+    }
+    if j < bytes.len() && bytes[j] == b'(' {
+        return None;
+    }
+
+    receiver_before_dot(text, dot_idx)
+}
+
 pub(crate) fn method_decl_at(parsed: &ParsedFile, offset: usize) -> Option<(String, String)> {
     for ty in &parsed.types {
         for m in &ty.methods {
@@ -90,6 +150,131 @@ pub(crate) fn resolve_name_type(parsed: &ParsedFile, offset: usize, name: &str) 
     }
 
     None
+}
+
+pub(crate) fn resolve_receiver_type_best_effort<'a, TI, FTypeInfo>(
+    lookup_type_info: &'a FTypeInfo,
+    parsed: &ParsedFile,
+    offset: usize,
+    receiver: &str,
+) -> Option<String>
+where
+    TI: NavTypeInfo + 'a,
+    FTypeInfo: Fn(&str) -> Option<&'a TI>,
+{
+    let containing_type = parsed
+        .types
+        .iter()
+        .find(|ty| span_contains(ty.body_span, offset));
+
+    if receiver == "this" {
+        return containing_type.map(|ty| ty.name.clone());
+    }
+    if receiver == "super" {
+        return containing_type.and_then(|ty| ty.super_class.clone());
+    }
+
+    // Locals/fields
+    if let Some(ty) = resolve_name_type(parsed, offset, receiver) {
+        return Some(ty);
+    }
+
+    // Type name (static access)
+    if lookup_type_info(receiver).is_some() {
+        return Some(receiver.to_string());
+    }
+
+    None
+}
+
+pub(crate) fn resolve_field_declared_type_best_effort<'a, TI, FTypeInfo>(
+    lookup_type_info: &'a FTypeInfo,
+    receiver_ty: &str,
+    field_name: &str,
+) -> Option<String>
+where
+    TI: NavTypeInfo + 'a,
+    FTypeInfo: Fn(&str) -> Option<&'a TI>,
+{
+    let mut cur = receiver_ty.to_string();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    loop {
+        if !seen.insert(cur.clone()) {
+            // Cycle in the superclass chain.
+            return None;
+        }
+
+        let info = lookup_type_info(&cur)?;
+        if let Some(field) = info.def().fields.iter().find(|f| f.name == field_name) {
+            return Some(field.ty.clone());
+        }
+
+        let Some(next) = info.def().super_class.clone() else {
+            return None;
+        };
+        cur = next;
+    }
+}
+
+fn type_info_name_location<'a, TI, FTypeInfo, FFile>(
+    lookup_type_info: &'a FTypeInfo,
+    file: &'a FFile,
+    ty_name: &str,
+) -> Option<Location>
+where
+    TI: NavTypeInfo + 'a,
+    FTypeInfo: Fn(&str) -> Option<&'a TI>,
+    FFile: Fn(&Uri) -> Option<&'a ParsedFile>,
+{
+    let info = lookup_type_info(ty_name)?;
+    let def_file = file(info.uri())?;
+    Some(Location {
+        uri: info.uri().clone(),
+        range: span_to_lsp_range_with_index(&def_file.line_index, &def_file.text, info.def().name_span),
+    })
+}
+
+/// Best-effort `textDocument/typeDefinition` shared between FileId-based databases and
+/// `DatabaseSnapshot`.
+pub(crate) fn type_definition_best_effort<'a, TI, FTypeInfo, FFile>(
+    lookup_type_info: &'a FTypeInfo,
+    file: &'a FFile,
+    parsed: &ParsedFile,
+    offset: usize,
+) -> Option<Location>
+where
+    TI: NavTypeInfo + 'a,
+    FTypeInfo: Fn(&str) -> Option<&'a TI>,
+    FFile: Fn(&Uri) -> Option<&'a ParsedFile>,
+{
+    let (ident, ident_span) = identifier_at(&parsed.text, offset)?;
+
+    // Member field access: `recv.field` -> type definition of the field's declared type.
+    if let Some(receiver) = is_member_field_access(&parsed.text, ident_span) {
+        if let Some(receiver_ty) =
+            resolve_receiver_type_best_effort::<TI, FTypeInfo>(lookup_type_info, parsed, ident_span.start, &receiver)
+        {
+            if let Some(field_ty) = resolve_field_declared_type_best_effort::<TI, FTypeInfo>(
+                lookup_type_info,
+                &receiver_ty,
+                &ident,
+            ) {
+                // If the field's type is external/JDK, return `None` so the LSP layer can
+                // provide a separate fallback.
+                return type_info_name_location::<TI, FTypeInfo, FFile>(lookup_type_info, file, &field_ty);
+            }
+        }
+    }
+
+    // Type name under cursor.
+    if let Some(loc) = type_info_name_location::<TI, FTypeInfo, FFile>(lookup_type_info, file, &ident) {
+        return Some(loc);
+    }
+
+    // Local/field variable under cursor.
+    let ty = resolve_name_type(parsed, offset, &ident)?;
+    type_info_name_location::<TI, FTypeInfo, FFile>(lookup_type_info, file, &ty)
 }
 
 pub(crate) fn variable_declaration(
