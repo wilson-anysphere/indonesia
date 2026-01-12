@@ -399,6 +399,143 @@ fn fingerprint_changes_on_build_gradle_prefixed_file_edit() {
 }
 
 #[test]
+fn gradle_collection_skips_node_modules_and_bazel_output_trees() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+
+    std::fs::write(root.join("build.gradle"), "plugins { id 'java' }\n").unwrap();
+
+    // `node_modules` should be ignored at any depth.
+    std::fs::create_dir_all(root.join("node_modules").join("sub")).unwrap();
+    let node_modules_gradle = root.join("node_modules").join("sub").join("build.gradle");
+    std::fs::write(&node_modules_gradle, "ext.foo = 1\n").unwrap();
+
+    std::fs::create_dir_all(root.join("app").join("node_modules").join("sub")).unwrap();
+    let nested_node_modules_gradle = root
+        .join("app")
+        .join("node_modules")
+        .join("sub")
+        .join("build.gradle");
+    std::fs::write(&nested_node_modules_gradle, "ext.foo = 1\n").unwrap();
+
+    // Bazel output directories exist at the workspace root and can contain build-like files.
+    std::fs::create_dir_all(root.join("bazel-out")).unwrap();
+    let bazel_out_gradle = root.join("bazel-out").join("build.gradle");
+    std::fs::write(&bazel_out_gradle, "ext.foo = 1\n").unwrap();
+
+    std::fs::create_dir_all(root.join("bazel-myworkspace")).unwrap();
+    let bazel_workspace_gradle = root.join("bazel-myworkspace").join("build.gradle");
+    std::fs::write(&bazel_workspace_gradle, "ext.foo = 1\n").unwrap();
+
+    let files = collect_gradle_build_files(&root).unwrap();
+    let mut rel: Vec<_> = files
+        .iter()
+        .map(|p| p.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/"))
+        .collect();
+    rel.sort();
+    assert_eq!(rel, vec!["build.gradle"]);
+
+    let fp1 = BuildFileFingerprint::from_files(&root, files).unwrap();
+
+    std::fs::write(&node_modules_gradle, "ext.foo = 2\n").unwrap();
+    std::fs::write(&nested_node_modules_gradle, "ext.foo = 2\n").unwrap();
+    std::fs::write(&bazel_out_gradle, "ext.foo = 2\n").unwrap();
+    std::fs::write(&bazel_workspace_gradle, "ext.foo = 2\n").unwrap();
+
+    let fp2 =
+        BuildFileFingerprint::from_files(&root, collect_gradle_build_files(&root).unwrap())
+            .unwrap();
+
+    assert_eq!(fp1.digest, fp2.digest);
+}
+
+#[test]
+fn maven_collection_skips_node_modules_and_bazel_output_trees() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+
+    std::fs::write(
+        root.join("pom.xml"),
+        "<project><modelVersion>4.0.0</modelVersion></project>",
+    )
+    .unwrap();
+
+    std::fs::create_dir_all(root.join("node_modules").join("sub")).unwrap();
+    let node_modules_pom = root.join("node_modules").join("sub").join("pom.xml");
+    std::fs::write(
+        &node_modules_pom,
+        "<project><modelVersion>4.0.0</modelVersion><!--nm--></project>",
+    )
+    .unwrap();
+
+    std::fs::create_dir_all(root.join("app").join("node_modules").join("sub")).unwrap();
+    let nested_node_modules_pom = root
+        .join("app")
+        .join("node_modules")
+        .join("sub")
+        .join("pom.xml");
+    std::fs::write(
+        &nested_node_modules_pom,
+        "<project><modelVersion>4.0.0</modelVersion><!--nested nm--></project>",
+    )
+    .unwrap();
+
+    std::fs::create_dir_all(root.join("bazel-out")).unwrap();
+    let bazel_out_pom = root.join("bazel-out").join("pom.xml");
+    std::fs::write(
+        &bazel_out_pom,
+        "<project><modelVersion>4.0.0</modelVersion><!--bazel--></project>",
+    )
+    .unwrap();
+
+    std::fs::create_dir_all(root.join("bazel-myworkspace")).unwrap();
+    let bazel_workspace_pom = root.join("bazel-myworkspace").join("pom.xml");
+    std::fs::write(
+        &bazel_workspace_pom,
+        "<project><modelVersion>4.0.0</modelVersion><!--bazel workspace--></project>",
+    )
+    .unwrap();
+
+    let files = collect_maven_build_files(&root).unwrap();
+    let mut rel: Vec<_> = files
+        .iter()
+        .map(|p| p.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/"))
+        .collect();
+    rel.sort();
+    assert_eq!(rel, vec!["pom.xml"]);
+
+    let fp1 = BuildFileFingerprint::from_files(&root, files).unwrap();
+
+    std::fs::write(
+        &node_modules_pom,
+        "<project><modelVersion>4.0.0</modelVersion><!--nm changed--></project>",
+    )
+    .unwrap();
+    std::fs::write(
+        &nested_node_modules_pom,
+        "<project><modelVersion>4.0.0</modelVersion><!--nested nm changed--></project>",
+    )
+    .unwrap();
+    std::fs::write(
+        &bazel_out_pom,
+        "<project><modelVersion>4.0.0</modelVersion><!--bazel changed--></project>",
+    )
+    .unwrap();
+    std::fs::write(
+        &bazel_workspace_pom,
+        "<project><modelVersion>4.0.0</modelVersion><!--bazel workspace changed--></project>",
+    )
+    .unwrap();
+
+    let fp2 = BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap())
+        .unwrap();
+
+    assert_eq!(fp1.digest, fp2.digest);
+}
+
+#[test]
 fn fingerprint_changes_on_gradle_version_catalog_edit() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("proj");

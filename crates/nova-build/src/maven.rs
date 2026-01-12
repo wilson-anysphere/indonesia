@@ -1449,6 +1449,19 @@ fn collect_maven_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf>
         let file_name = file_name.to_string_lossy();
 
         if path.is_dir() {
+            // Avoid scanning huge non-source directories that commonly show up in mono-repos.
+            // These trees can contain many files that look like build files but should not
+            // influence Nova's build fingerprint (e.g. vendored JS dependencies).
+            if file_name == "node_modules" {
+                continue;
+            }
+            // Bazel output trees are typically created at the workspace root and can be enormous.
+            // Skip any top-level `bazel-*` entries (`bazel-out`, `bazel-bin`, `bazel-testlogs`,
+            // `bazel-<workspace>`, etc).
+            if dir == root && file_name.starts_with("bazel-") {
+                continue;
+            }
+
             if file_name == ".mvn" {
                 let config = path.join("maven.config");
                 if config.is_file() {
