@@ -1,6 +1,6 @@
 use std::collections::{hash_map::DefaultHasher, HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use nova_config_metadata::MetadataIndex;
@@ -118,12 +118,25 @@ impl SpringAnalyzer {
         Some(built)
     }
 
-    fn file_local_index(path: &Path, text: &str) -> SpringWorkspaceIndex {
+    fn file_local_index(path: Option<&Path>, text: &str) -> SpringWorkspaceIndex {
         let mut index = SpringWorkspaceIndex::new(Arc::new(MetadataIndex::new()));
-        if is_application_config_file(path) {
-            index.add_config_file(path.to_path_buf(), text);
-        } else if is_java_file(path) && (text.contains("@Value") || text.contains("@ConfigurationProperties")) {
-            index.add_java_file(path.to_path_buf(), text);
+        match path {
+            Some(path) if is_application_config_file(path) => {
+                index.add_config_file(path.to_path_buf(), text);
+            }
+            Some(path) if is_java_file(path) => {
+                if text.contains("@Value") || text.contains("@ConfigurationProperties") {
+                    index.add_java_file(path.to_path_buf(), text);
+                }
+            }
+            None => {
+                if text.contains("@Value") || text.contains("@ConfigurationProperties") {
+                    // Best-effort: provide a stable synthetic path so the index can still record
+                    // usages/definitions when the DB doesn't expose `file_path`.
+                    index.add_java_file(PathBuf::from("<memory>"), text);
+                }
+            }
+            _ => {}
         }
         index
     }
@@ -165,21 +178,24 @@ impl FrameworkAnalyzer for SpringAnalyzer {
         let Some(text) = db.file_text(file) else {
             return Vec::new();
         };
-        let Some(path) = db.file_path(file) else {
-            return Vec::new();
-        };
+        let path = db.file_path(file);
 
-        if is_application_config_file(path) {
+        if path.is_some_and(is_application_config_file) {
+            let path = path.expect("path present (checked by is_some_and)");
             let project = db.project_of_file(file);
             let metadata_and_index = self
                 .cached_workspace(db, project)
                 .map(|w| Arc::clone(&w.index))
-                .unwrap_or_else(|| Arc::new(Self::file_local_index(path, text)));
+                .unwrap_or_else(|| Arc::new(Self::file_local_index(Some(path), text)));
 
             return diagnostics_for_config_file(path, text, metadata_and_index.metadata());
         }
 
-        if is_java_file(path) {
+        let is_java = match path {
+            Some(path) => is_java_file(path),
+            None => looks_like_java_source(text),
+        };
+        if is_java {
             let project = db.project_of_file(file);
             let Some(workspace) = self.cached_workspace(db, project) else {
                 // Graceful degradation: without project-wide enumeration we avoid emitting
@@ -209,16 +225,15 @@ impl FrameworkAnalyzer for SpringAnalyzer {
         let Some(text) = db.file_text(ctx.file) else {
             return Vec::new();
         };
-        let Some(path) = db.file_path(ctx.file) else {
-            return Vec::new();
-        };
+        let path = db.file_path(ctx.file);
         let offset = ctx.offset.min(text.len());
 
-        if is_application_properties(path) {
+        if path.is_some_and(is_application_properties) {
+            let path = path.expect("path present (checked by is_some_and)");
             let index = self
                 .cached_workspace(db, ctx.project)
                 .map(|w| Arc::clone(&w.index))
-                .unwrap_or_else(|| Arc::new(Self::file_local_index(path, text)));
+                .unwrap_or_else(|| Arc::new(Self::file_local_index(Some(path), text)));
 
             let mut items = completions_for_properties_file(path, text, offset, &index);
             if let Some(span) = completion_span_for_properties_file(path, text, offset) {
@@ -229,11 +244,12 @@ impl FrameworkAnalyzer for SpringAnalyzer {
             return items;
         }
 
-        if is_application_yaml(path) {
+        if path.is_some_and(is_application_yaml) {
+            let path = path.expect("path present (checked by is_some_and)");
             let index = self
                 .cached_workspace(db, ctx.project)
                 .map(|w| Arc::clone(&w.index))
-                .unwrap_or_else(|| Arc::new(Self::file_local_index(path, text)));
+                .unwrap_or_else(|| Arc::new(Self::file_local_index(Some(path), text)));
 
             let mut items = completions_for_yaml_file(path, text, offset, &index);
             if let Some(span) = completion_span_for_yaml_file(text, offset) {
@@ -244,7 +260,11 @@ impl FrameworkAnalyzer for SpringAnalyzer {
             return items;
         }
 
-        if !is_java_file(path) {
+        let is_java = match path {
+            Some(path) => is_java_file(path),
+            None => looks_like_java_source(text),
+        };
+        if !is_java {
             return Vec::new();
         }
 
@@ -302,12 +322,23 @@ fn workspace_fingerprint(db: &dyn Database, all_files: &[FileId]) -> (u64, Vec<F
     let mut relevant = Vec::new();
 
     for &file in all_files {
-        let Some(path) = db.file_path(file) else {
-            continue;
-        };
-
-        if is_java_file(path) || is_application_config_file(path) || is_spring_metadata_file(path) {
-            relevant.push(file);
+        match db.file_path(file) {
+            Some(path) => {
+                if is_java_file(path)
+                    || is_application_config_file(path)
+                    || is_spring_metadata_file(path)
+                {
+                    relevant.push(file);
+                }
+            }
+            None => {
+                // Best-effort: treat path-less files as Java candidates when they look like Java.
+                if let Some(text) = db.file_text(file) {
+                    if looks_like_java_source(text) {
+                        relevant.push(file);
+                    }
+                }
+            }
         }
     }
 
@@ -355,16 +386,26 @@ fn build_workspace(db: &dyn Database, files: &[FileId]) -> CachedWorkspace {
     let mut metadata_files: Vec<(std::path::PathBuf, FileId)> = Vec::new();
 
     for &file in files {
-        let Some(path) = db.file_path(file) else {
-            continue;
-        };
-        let path = path.to_path_buf();
-        if is_java_file(&path) {
-            java_files.push((path, file));
-        } else if is_application_config_file(&path) {
-            config_files.push((path, file));
-        } else if is_spring_metadata_file(&path) {
-            metadata_files.push((path, file));
+        match db.file_path(file) {
+            Some(path) => {
+                let path = path.to_path_buf();
+                if is_java_file(&path) {
+                    java_files.push((path, file));
+                } else if is_application_config_file(&path) {
+                    config_files.push((path, file));
+                } else if is_spring_metadata_file(&path) {
+                    metadata_files.push((path, file));
+                }
+            }
+            None => {
+                let Some(text) = db.file_text(file) else {
+                    continue;
+                };
+                if looks_like_java_source(text) {
+                    let synthetic = PathBuf::from(format!("<memory:{}>", file.to_raw()));
+                    java_files.push((synthetic, file));
+                }
+            }
         }
     }
 
@@ -426,6 +467,15 @@ fn build_workspace(db: &dyn Database, files: &[FileId]) -> CachedWorkspace {
 
 fn is_java_file(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()) == Some("java")
+}
+
+fn looks_like_java_source(text: &str) -> bool {
+    // Lightweight heuristic used when the database doesn't provide file paths.
+    text.contains("package ")
+        || text.contains("import ")
+        || text.contains("class ")
+        || text.contains("interface ")
+        || text.contains("enum ")
 }
 
 fn is_application_properties(path: &Path) -> bool {
