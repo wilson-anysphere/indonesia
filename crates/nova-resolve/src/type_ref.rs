@@ -739,7 +739,6 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         // Greedily consume a qualified identifier, but don't accidentally swallow
         // varargs `...` (only accept `.` when followed by another identifier).
         let greedy_end = self.scan_greedy_qualified_ident_end();
-        let mut name_end = greedy_end;
 
         // Greedy path: consume the full qualified name + optional arg list.
         self.pos = greedy_end;
@@ -752,12 +751,10 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         if ctx == AnnotationSkipContext::BeforeSuffix {
             // Array/varargs suffixes provide a delimiter, so we don't need to do
             // any heuristic splitting.
-            self.resolve_annotation_name(name_start..name_end);
             return;
         }
 
         if self.annotation_follow_is_ok(ctx) {
-            self.resolve_annotation_name(name_start..name_end);
             return;
         }
 
@@ -766,14 +763,13 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         // `AString` as a single identifier, leaving nothing (or only `<...>` /
         // `[]`) for the actual type. Try to split the identifier so the
         // remainder parses as a type/segment.
-        name_end = self.find_best_annotation_name_end(name_start, greedy_end, ctx);
+        let name_end = self.find_best_annotation_name_end(name_start, greedy_end, ctx);
         self.pos = name_end;
         self.skip_ws();
         if self.peek_char() == Some('(') {
             self.skip_paren_group();
         }
         self.skip_ws();
-        self.resolve_annotation_name(name_start..name_end);
     }
 
     fn scan_greedy_qualified_ident_end(&self) -> usize {
@@ -847,28 +843,6 @@ impl<'a, 'idx> Parser<'a, 'idx> {
             AnnotationSkipContext::BeforeQualifiedSegment => ch == '@' || is_ident_start(ch),
             AnnotationSkipContext::BeforeSuffix => true,
         }
-    }
-
-    fn resolve_annotation_name(&mut self, name_range: Range<usize>) {
-        if name_range.is_empty() {
-            return;
-        }
-        let text = self.text.get(name_range.clone()).unwrap_or("");
-        if text.is_empty() {
-            return;
-        }
-
-        let segments: Vec<String> = text
-            .split('.')
-            .filter(|seg| !seg.is_empty())
-            .map(|seg| seg.to_string())
-            .collect();
-        if segments.is_empty() {
-            return;
-        }
-
-        let per_segment_args = vec![Vec::new(); segments.len()];
-        let _ = self.resolve_named_type(segments, per_segment_args, name_range);
     }
 
     fn find_best_annotation_name_end(
