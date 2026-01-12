@@ -55,7 +55,41 @@ pub struct TrigramCandidateScratch {
     q_trigrams: Vec<Trigram>,
     /// Posting list ranges into [`TrigramIndex::values`] (start, end).
     lists: Vec<(u32, u32)>,
+    cursors: Vec<usize>,
     out: Vec<SymbolId>,
+}
+
+#[inline]
+fn advance_to(list: &[SymbolId], cursor: &mut usize, target: SymbolId) -> bool {
+    let len = list.len();
+    let mut ix = *cursor;
+    if ix >= len {
+        return false;
+    }
+
+    if list[ix] < target {
+        // Exponential ("galloping") search starting from `cursor` to find a small range
+        // that may contain `target`, then finish with a binary search.
+        let mut step = 1usize;
+        while ix + step < len && list[ix + step] < target {
+            step <<= 1;
+        }
+
+        // We know that `target` (if present) is in `list[lo..hi]`, and the insertion
+        // point is also within that range. `lo` is chosen so that the search range
+        // size is proportional to the distance traveled from `cursor` to `target`.
+        let lo = ix + (step >> 1);
+        let hi = (ix + step + 1).min(len);
+
+        match list[lo..hi].binary_search(&target) {
+            Ok(pos) | Err(pos) => {
+                ix = lo + pos;
+            }
+        }
+    }
+
+    *cursor = ix;
+    ix < len && list[ix] == target
 }
 
 impl TrigramIndex {
@@ -118,13 +152,21 @@ impl TrigramIndex {
             return base;
         }
 
+        scratch.cursors.resize(scratch.lists.len() - 1, 0);
+        for c in scratch.cursors.iter_mut() {
+            *c = 0;
+        }
+
         // We expect `base` to be the smallest list. For each id in base, check
         // that it is present in every other list.
         scratch.out.reserve(base.len());
         'outer: for &id in base {
-            for &(start, end) in &scratch.lists[1..] {
+            for (cursor, &(start, end)) in scratch.cursors.iter_mut().zip(&scratch.lists[1..]) {
                 let other = &self.values[start as usize..end as usize];
-                if other.binary_search(&id).is_err() {
+                if !advance_to(other, cursor, id) {
+                    if *cursor >= other.len() {
+                        break 'outer;
+                    }
                     continue 'outer;
                 }
             }
@@ -436,6 +478,85 @@ mod tests {
                 multi.candidates(q),
                 "candidates diverged for query {q:?}"
             );
+        }
+    }
+
+    fn candidates_naive(index: &TrigramIndex, query: &str) -> Vec<SymbolId> {
+        let mut q_trigrams = Vec::new();
+        trigrams(query, &mut q_trigrams);
+        if q_trigrams.is_empty() {
+            return Vec::new();
+        }
+        q_trigrams.sort_unstable();
+        q_trigrams.dedup();
+
+        let mut lists: Vec<&[SymbolId]> = q_trigrams
+            .iter()
+            .map(|&t| index.postings(t))
+            .filter(|list| !list.is_empty())
+            .collect();
+
+        if lists.is_empty() {
+            return Vec::new();
+        }
+
+        lists.sort_by_key(|list| list.len());
+
+        let base = lists[0];
+        if lists.len() == 1 {
+            return base.to_vec();
+        }
+
+        let mut out = Vec::new();
+        'outer: for &id in base {
+            for other in &lists[1..] {
+                if other.binary_search(&id).is_err() {
+                    continue 'outer;
+                }
+            }
+            out.push(id);
+        }
+        out
+    }
+
+    fn lcg(seed: &mut u64) -> u64 {
+        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        *seed
+    }
+
+    fn gen_text(seed: &mut u64) -> String {
+        let len = (lcg(seed) % 24) as usize;
+        let mut s = String::new();
+        for i in 0..len {
+            let x = lcg(seed);
+            let mut ch = (b'a' + (x % 26) as u8) as char;
+            if i == 0 && (x & 1) == 0 {
+                ch = ch.to_ascii_uppercase();
+            }
+            s.push(ch);
+            if (x & 0x3f) == 0 {
+                s.push('_');
+            }
+        }
+        s
+    }
+
+    #[test]
+    fn trigram_candidates_randomized_equivalence() {
+        let mut seed = 0x1234_5678_9abc_def0u64;
+        let mut builder = TrigramIndexBuilder::new();
+
+        for id in 0u32..200 {
+            let text = gen_text(&mut seed);
+            builder.insert(id, &text);
+        }
+        let index = builder.build();
+
+        for _ in 0..500 {
+            let query = gen_text(&mut seed);
+            let fast = index.candidates(&query);
+            let slow = candidates_naive(&index, &query);
+            assert_eq!(fast, slow, "query={query:?}");
         }
     }
 }

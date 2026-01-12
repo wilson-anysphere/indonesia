@@ -116,6 +116,18 @@ fn bench_trigram_candidates(c: &mut Criterion) {
     const SYMBOLS: usize = 100_000;
     let index = build_trigram_index(SYMBOLS);
 
+    let dense_count: usize = std::env::var("NOVA_FUZZY_BENCH_DENSE_SYMBOLS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50_000);
+    let dense_haystack = "abcdefghijklmnopqrstuvwxyz";
+    let dense_query = "abcdefghijklmnop";
+    let mut dense_builder = TrigramIndexBuilder::new();
+    for id in 0u32..dense_count as u32 {
+        dense_builder.insert(id, dense_haystack);
+    }
+    let dense_index = dense_builder.build();
+
     let mut group = c.benchmark_group("trigram_candidates");
     group.measurement_time(Duration::from_secs(2));
     group.warm_up_time(Duration::from_secs(1));
@@ -134,13 +146,29 @@ fn bench_trigram_candidates(c: &mut Criterion) {
     for (id, query) in cases {
         group.bench_with_input(BenchmarkId::from_parameter(id), &query, |b, query| {
             let mut scratch = TrigramCandidateScratch::default();
+            black_box(index.candidates_with_scratch(*query, &mut scratch).len());
             b.iter(|| {
-                let candidates =
-                    index.candidates_with_scratch(black_box(*query), black_box(&mut scratch));
+                let candidates = index.candidates_with_scratch(black_box(*query), &mut scratch);
                 black_box(candidates.len())
             })
         });
     }
+
+    // A synthetic worst-case-ish intersection where all posting lists have the
+    // same (large) set of ids. This is sensitive to per-id membership check
+    // overhead.
+    group.bench_function("dense_multi_trigram_intersection", |b| {
+        let mut scratch = TrigramCandidateScratch::default();
+        black_box(
+            dense_index
+                .candidates_with_scratch(dense_query, &mut scratch)
+                .len(),
+        );
+        b.iter(|| {
+            let candidates = dense_index.candidates_with_scratch(black_box(dense_query), &mut scratch);
+            black_box(candidates.len())
+        })
+    });
 
     group.finish();
 }
