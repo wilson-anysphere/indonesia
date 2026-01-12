@@ -988,6 +988,94 @@ fn loads_maven_multi_module_workspace_model() {
 }
 
 #[test]
+fn maven_workspace_model_java_version_is_max_across_modules() {
+    let temp = tempdir().expect("tempdir");
+    let root = temp.path().join("workspace");
+    fs::create_dir_all(&root).expect("mkdir workspace");
+
+    // Root declares Java 11; `app` overrides to Java 21; `lib` overrides to Java 8.
+    fs::write(
+        root.join("pom.xml"),
+        r#"
+            <project xmlns="http://maven.apache.org/POM/4.0.0">
+              <modelVersion>4.0.0</modelVersion>
+              <groupId>com.example</groupId>
+              <artifactId>root</artifactId>
+              <version>1.0.0</version>
+              <packaging>pom</packaging>
+              <properties>
+                <maven.compiler.source>11</maven.compiler.source>
+                <maven.compiler.target>11</maven.compiler.target>
+              </properties>
+              <modules>
+                <module>app</module>
+                <module>lib</module>
+              </modules>
+            </project>
+        "#,
+    )
+    .expect("write root pom.xml");
+
+    fs::create_dir_all(root.join("app")).expect("mkdir app");
+    fs::write(
+        root.join("app/pom.xml"),
+        r#"
+            <project xmlns="http://maven.apache.org/POM/4.0.0">
+              <modelVersion>4.0.0</modelVersion>
+              <parent>
+                <groupId>com.example</groupId>
+                <artifactId>root</artifactId>
+                <version>1.0.0</version>
+              </parent>
+              <artifactId>app</artifactId>
+              <properties>
+                <maven.compiler.release>21</maven.compiler.release>
+              </properties>
+            </project>
+        "#,
+    )
+    .expect("write app pom.xml");
+
+    fs::create_dir_all(root.join("lib")).expect("mkdir lib");
+    fs::write(
+        root.join("lib/pom.xml"),
+        r#"
+            <project xmlns="http://maven.apache.org/POM/4.0.0">
+              <modelVersion>4.0.0</modelVersion>
+              <parent>
+                <groupId>com.example</groupId>
+                <artifactId>root</artifactId>
+                <version>1.0.0</version>
+              </parent>
+              <artifactId>lib</artifactId>
+              <properties>
+                <maven.compiler.release>8</maven.compiler.release>
+              </properties>
+            </project>
+        "#,
+    )
+    .expect("write lib pom.xml");
+
+    let maven_repo = temp.path().join("m2");
+    fs::create_dir_all(&maven_repo).expect("mkdir maven repo");
+    let options = LoadOptions {
+        maven_repo: Some(maven_repo),
+        ..LoadOptions::default()
+    };
+
+    let model =
+        load_workspace_model_with_options(&root, &options).expect("load maven workspace model");
+    assert_eq!(model.build_system, BuildSystem::Maven);
+    assert_eq!(model.java.source, JavaVersion(21));
+    assert_eq!(model.java.target, JavaVersion(21));
+
+    // `ProjectConfig` should match the workspace model's aggregated Java config.
+    let config = load_project_with_options(&root, &options).expect("load maven project");
+    assert_eq!(config.java.source, JavaVersion(21));
+    assert_eq!(config.java.target, JavaVersion(21));
+}
+
+#[test]
 fn loads_gradle_multi_module_workspace_model() {
     let root = testdata_path("gradle-multi");
     let gradle_home = tempdir().expect("tempdir");

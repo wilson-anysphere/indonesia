@@ -280,6 +280,10 @@ pub(crate) fn load_maven_workspace_model(
     let workspace_modules =
         build_workspace_module_index(root, include_root_module, &discovered_modules);
 
+    // Workspace-level Java config: take the maximum across modules so we don't
+    // under-report language features used anywhere in the workspace.
+    let mut workspace_java = root_effective.java.unwrap_or_default();
+
     let mut module_configs = Vec::new();
     for module in &discovered_modules {
         let module_root = &module.root;
@@ -292,6 +296,10 @@ pub(crate) fn load_maven_workspace_model(
         let module_java = effective
             .java
             .unwrap_or(root_effective.java.unwrap_or_default());
+
+        workspace_java.source = workspace_java.source.max(module_java.source);
+        workspace_java.target = workspace_java.target.max(module_java.target);
+        workspace_java.enable_preview |= module_java.enable_preview;
 
         let module_display_name = if module_root == root {
             module
@@ -610,7 +618,7 @@ pub(crate) fn load_maven_workspace_model(
     Ok(WorkspaceProjectModel::new(
         root.to_path_buf(),
         BuildSystem::Maven,
-        root_effective.java.unwrap_or_default(),
+        workspace_java,
         module_configs,
         jpms_modules,
     ))
