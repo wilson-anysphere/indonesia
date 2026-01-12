@@ -139,11 +139,13 @@ struct FrameHandle {
 #[derive(Debug, Clone)]
 enum VarRef {
     FrameLocals(FrameHandle),
+    StaticFields(ReferenceTypeId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum VarKey {
     FrameLocals(FrameKey),
+    StaticFields(ReferenceTypeId),
 }
 
 struct HandleTable<K, T> {
@@ -485,6 +487,11 @@ impl Debugger {
             VarRef::FrameLocals(frame),
         );
 
+        let static_ref = self.var_handles.intern(
+            VarKey::StaticFields(frame.location.class_id),
+            VarRef::StaticFields(frame.location.class_id),
+        );
+
         Ok(vec![
             json!({
                 "name": "Locals",
@@ -496,6 +503,11 @@ impl Debugger {
                 "name": "Pinned Objects",
                 "presentationHint": "pinned",
                 "variablesReference": PINNED_SCOPE_REF,
+                "expensive": false,
+            }),
+            json!({
+                "name": "Static",
+                "variablesReference": static_ref,
                 "expensive": false,
             }),
         ])
@@ -526,6 +538,7 @@ impl Debugger {
 
         match var_ref {
             VarRef::FrameLocals(frame) => self.locals_variables(cancel, &frame).await,
+            VarRef::StaticFields(class_id) => self.static_variables(cancel, class_id).await,
         }
     }
 
@@ -1446,6 +1459,10 @@ impl Debugger {
                 self.set_local_variable(cancel, &frame, name.trim(), value)
                     .await
             }
+            VarRef::StaticFields(class_id) => {
+                self.set_static_variable(cancel, class_id, name.trim(), value)
+                    .await
+            }
         }
     }
 
@@ -1671,6 +1688,66 @@ impl Debugger {
         .unwrap_or(JdwpValue::Void);
 
         let static_type = signature_to_type_name(element_sig);
+        let formatted = self
+            .format_value(cancel, &new_value, Some(&static_type), 0)
+            .await?;
+
+        Ok(Some(json!({
+            "value": formatted.value,
+            "type": formatted.type_name,
+            "variablesReference": formatted.variables_reference,
+            "namedVariables": formatted.named_variables,
+            "indexedVariables": formatted.indexed_variables,
+        })))
+    }
+
+    async fn set_static_variable(
+        &mut self,
+        cancel: &CancellationToken,
+        class_id: ReferenceTypeId,
+        name: &str,
+        value: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        if name.is_empty() {
+            return Err(DebuggerError::InvalidRequest(
+                "setVariable.name is required".to_string(),
+            ));
+        }
+
+        const MODIFIER_STATIC: u32 = 0x0008;
+
+        let fields = cancellable_jdwp(cancel, self.jdwp.reference_type_fields(class_id)).await?;
+        let Some(field) = fields
+            .into_iter()
+            .find(|f| f.name == name && f.mod_bits & MODIFIER_STATIC != 0)
+        else {
+            return Err(DebuggerError::InvalidRequest(format!(
+                "unknown static field `{name}`"
+            )));
+        };
+
+        let jdwp_value = self
+            .parse_set_variable_value(cancel, &field.signature, value)
+            .await?;
+
+        cancellable_jdwp(
+            cancel,
+            self.jdwp
+                .class_type_set_values(class_id, &[(field.field_id, jdwp_value)]),
+        )
+        .await?;
+
+        let new_value = cancellable_jdwp(
+            cancel,
+            self.jdwp
+                .reference_type_get_values(class_id, &[field.field_id]),
+        )
+        .await?
+        .into_iter()
+        .next()
+        .unwrap_or(JdwpValue::Void);
+
+        let static_type = signature_to_type_name(&field.signature);
         let formatted = self
             .format_value(cancel, &new_value, Some(&static_type), 0)
             .await?;
@@ -2148,6 +2225,49 @@ impl Debugger {
                 }
             }
         }
+        Ok(out)
+    }
+
+    async fn static_variables(
+        &mut self,
+        cancel: &CancellationToken,
+        class_id: ReferenceTypeId,
+    ) -> Result<Vec<serde_json::Value>> {
+        check_cancel(cancel)?;
+        const MODIFIER_STATIC: u32 = 0x0008;
+
+        let fields = cancellable_jdwp(cancel, self.jdwp.reference_type_fields(class_id)).await?;
+        let static_fields: Vec<_> = fields
+            .into_iter()
+            .filter(|field| field.mod_bits & MODIFIER_STATIC != 0)
+            .collect();
+
+        if static_fields.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let field_ids: Vec<u64> = static_fields.iter().map(|field| field.field_id).collect();
+        let values = cancellable_jdwp(
+            cancel,
+            self.jdwp.reference_type_get_values(class_id, &field_ids),
+        )
+        .await?;
+
+        let mut out = Vec::with_capacity(static_fields.len());
+        for (field, value) in static_fields.into_iter().zip(values.into_iter()) {
+            check_cancel(cancel)?;
+            out.push(
+                self.render_variable(
+                    cancel,
+                    field.name,
+                    None,
+                    value,
+                    Some(signature_to_type_name(&field.signature)),
+                )
+                .await?,
+            );
+        }
+
         Ok(out)
     }
 

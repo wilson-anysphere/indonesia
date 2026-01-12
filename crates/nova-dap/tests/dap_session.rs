@@ -333,6 +333,90 @@ async fn dap_locals_include_this_object() {
 }
 
 #[tokio::test]
+async fn dap_static_scope_can_read_and_set_static_fields() {
+    let jdwp = MockJdwpServer::spawn().await.unwrap();
+    let (client, server_task) = spawn_wire_server();
+
+    client.initialize_handshake().await;
+    client.attach("127.0.0.1", jdwp.addr().port()).await;
+
+    let bp_resp = client.set_breakpoints("Main.java", &[3]).await;
+    assert!(bp_resp
+        .pointer("/body/breakpoints/0/verified")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
+
+    let thread_id = client.first_thread_id().await;
+    client.continue_with_thread_id(Some(thread_id)).await;
+    let _ = client.wait_for_stopped_reason("breakpoint").await;
+
+    let frame_id = client.first_frame_id(thread_id).await;
+    let scopes = client
+        .request("scopes", json!({ "frameId": frame_id }))
+        .await;
+    assert_eq!(scopes.get("success").and_then(|v| v.as_bool()), Some(true));
+
+    let scopes_arr = scopes
+        .pointer("/body/scopes")
+        .and_then(|v| v.as_array())
+        .unwrap();
+    let static_ref = scopes_arr
+        .iter()
+        .find(|scope| scope.get("name").and_then(|v| v.as_str()) == Some("Static"))
+        .and_then(|scope| scope.get("variablesReference"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    assert!(static_ref > 0);
+
+    let static_vars = client.variables(static_ref).await;
+    let vars = static_vars
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
+    let initial = vars
+        .iter()
+        .find(|v| v.get("name").and_then(|n| n.as_str()) == Some("staticField"))
+        .and_then(|v| v.get("value"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert_eq!(initial, "0");
+
+    let set_resp = client
+        .request(
+            "setVariable",
+            json!({
+                "variablesReference": static_ref,
+                "name": "staticField",
+                "value": "123",
+            }),
+        )
+        .await;
+    assert_eq!(
+        set_resp.get("success").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+
+    let calls = jdwp.class_type_set_values_calls().await;
+    assert_eq!(calls.len(), 1);
+
+    let static_vars = client.variables(static_ref).await;
+    let vars = static_vars
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
+    let updated = vars
+        .iter()
+        .find(|v| v.get("name").and_then(|n| n.as_str()) == Some("staticField"))
+        .and_then(|v| v.get("value"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert_eq!(updated, "123");
+
+    client.disconnect().await;
+    server_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn dap_can_hot_swap_a_class() {
     let mut caps = vec![false; 32];
     caps[7] = true; // canRedefineClasses
