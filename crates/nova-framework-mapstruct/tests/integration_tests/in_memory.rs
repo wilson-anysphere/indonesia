@@ -277,3 +277,29 @@ public interface TestMapper {
         "expected MAPSTRUCT_MISSING_DEPENDENCY, got: {diags:?}"
     );
 }
+
+#[test]
+fn diagnostics_for_file_recognizes_import_with_comment() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+
+    let mapper_file = root.join("src/main/java/com/example/TestMapper.java");
+    let mapper_source = r#"package com.example;
+
+import /*comment*/ org.mapstruct.Mapper;
+
+@Mapper
+public interface TestMapper {
+    Target map(Source source);
+}
+"#;
+    write_file(&mapper_file, mapper_source);
+
+    let diags = diagnostics_for_file(root, &mapper_file, mapper_source, false).unwrap();
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "MAPSTRUCT_MISSING_DEPENDENCY"),
+        "expected MAPSTRUCT_MISSING_DEPENDENCY, got: {diags:?}"
+    );
+}

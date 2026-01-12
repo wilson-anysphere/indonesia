@@ -1048,35 +1048,45 @@ fn imports_of_source(root: Node<'_>, source: &str) -> JavaImports {
             continue;
         }
 
-        // Parse the full import declaration text so we can reliably distinguish wildcard imports.
-        // Tree-sitter represents `import foo.*;` as a separate `*` token, so looking only at the
-        // `name` field can misparse wildcard imports as explicit imports (e.g. `mapstruct -> org`).
-        let mut raw = node_text(source, child).trim();
-        let Some(rest) = raw.strip_prefix("import") else {
+        // Tree-sitter represents `import foo.*;` as a separate `*` token, so we must detect
+        // wildcards using the import declaration node rather than relying on the `name` field.
+        //
+        // Use the `name` field for the scoped identifier so we don't get tripped up by comments
+        // (`import /*comment*/ org.mapstruct.Mapper;`).
+        let name_node = child
+            .child_by_field_name("name")
+            .or_else(|| find_named_child(child, "scoped_identifier"))
+            .or_else(|| find_named_child(child, "identifier"));
+        let Some(name_node) = name_node else {
             continue;
         };
-        raw = rest.trim_start();
+        let raw_name = node_text(source, name_node).trim();
+        if raw_name.is_empty() {
+            continue;
+        }
+
+        let mut has_star = false;
+        let mut is_static = false;
+        let mut import_cursor = child.walk();
+        for token in child.children(&mut import_cursor) {
+            match token.kind() {
+                "*" | "asterisk" => has_star = true,
+                "static" => is_static = true,
+                _ => {}
+            }
+        }
 
         // Ignore static imports (`import static foo.Bar.*;`): they don't affect type resolution.
-        if let Some(rest) = raw.strip_prefix("static") {
-            let _ = rest;
+        if is_static {
             continue;
         }
 
-        raw = raw.strip_suffix(';').unwrap_or(raw).trim();
-        if raw.is_empty() {
+        if has_star {
+            out.wildcard.insert(raw_name.to_string());
             continue;
         }
 
-        if let Some(pkg) = raw.strip_suffix(".*") {
-            let pkg = pkg.trim_end_matches('.').trim();
-            if !pkg.is_empty() {
-                out.wildcard.insert(pkg.to_string());
-            }
-            continue;
-        }
-
-        let Some((pkg, name)) = raw.rsplit_once('.') else {
+        let Some((pkg, name)) = raw_name.rsplit_once('.') else {
             continue;
         };
         if pkg.is_empty() || name.is_empty() {
