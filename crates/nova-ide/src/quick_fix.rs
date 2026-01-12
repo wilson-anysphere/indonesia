@@ -183,9 +183,18 @@ fn create_local_variable_action(
 
 fn create_field_action(uri: &Uri, source: &str, name: &str) -> Option<CodeAction> {
     let close_brace_offset = source.rfind('}')?;
-    let insert_offset = line_start_offset(source, close_brace_offset)?;
-    let close_indent = line_indent(source, insert_offset);
-    let new_text = format!("{close_indent}  private Object {name};\n");
+    let line_start = line_start_offset(source, close_brace_offset)?;
+    let prefix = source.get(line_start..close_brace_offset)?;
+    let (insert_offset, new_text) = if prefix.trim().is_empty() {
+        // `}` is on its own (possibly indented) line. Insert before the indentation so the closing
+        // brace remains aligned, and indent the new field one level deeper.
+        let close_indent = line_indent(source, line_start);
+        (line_start, format!("{close_indent}  private Object {name};\n"))
+    } else {
+        // Single-line files (or brace-with-code-on-the-same-line): insert before the final `}`.
+        // Use a fixed 2-space indent, per requirements.
+        (close_brace_offset, format!("\n  private Object {name};\n"))
+    };
 
     Some(CodeAction {
         title: format!("Create field '{name}'"),

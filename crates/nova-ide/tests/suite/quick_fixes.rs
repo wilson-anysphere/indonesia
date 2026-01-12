@@ -189,3 +189,48 @@ fn unresolved_type_offers_create_class_quick_fix() {
         "unexpected updated text:\n{updated}"
     );
 }
+
+#[test]
+fn create_field_quick_fix_in_single_line_file_inserts_before_final_brace() {
+    let source = "class A { void m() { int x = y; } }";
+
+    let mut db = InMemoryFileStore::new();
+    let path = PathBuf::from("/test.java");
+    let file = db.file_id_for_path(&path);
+    db.set_file_text(file, source.to_string());
+
+    // `IdeExtensions` requires a `Send + Sync` database; wrap our in-memory store in a
+    // snapshot-like view.
+    let view = SalsaDbView::from_source_db(&db);
+    let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(view);
+    let ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
+
+    let y_offset = source.find("y;").expect("expected `y` in fixture");
+    let y_span = Span::new(y_offset, y_offset + 1);
+
+    let actions = ide.code_actions_lsp(CancellationToken::new(), file, Some(y_span));
+    let field = actions
+        .iter()
+        .filter_map(|action| match action {
+            CodeActionOrCommand::CodeAction(action) => Some(action),
+            CodeActionOrCommand::Command(_) => None,
+        })
+        .find(|action| action.title == "Create field 'y'")
+        .expect("expected Create field quick fix");
+
+    let field_edit = field.edit.as_ref().expect("field quick fix should have edit");
+    let updated = apply_workspace_edit(source, field_edit);
+
+    assert!(
+        updated.starts_with("class A"),
+        "expected file to still start with class declaration; got:\n{updated}"
+    );
+    assert!(
+        updated.contains("private Object y;"),
+        "expected inserted field; got:\n{updated}"
+    );
+    assert!(
+        updated.ends_with("\n}"),
+        "expected inserted field to end with closing brace on its own line; got:\n{updated}"
+    );
+}
