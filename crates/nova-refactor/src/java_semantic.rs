@@ -2884,7 +2884,23 @@ fn record_body_references(
                 //   - `com.example.Foo.staticM()`
                 if let Some(path) = qualified_name_for_field_access(body, *receiver, name.as_str())
                 {
-                    if let Some(resolved) = resolver.resolve_qualified_type_resolution_in_scope(
+                    let root_is_value = (|| {
+                        let root = path.segments().first()?;
+                        let root_resolved =
+                            resolver.resolve_name(&scope_result.scopes, scope, root)?;
+                        Some(matches!(
+                            root_resolved,
+                            Resolution::Local(_)
+                                | Resolution::Parameter(_)
+                                | Resolution::Field(_)
+                        ))
+                    })()
+                    .unwrap_or(false);
+                    if root_is_value {
+                        // If the root segment is a value, this is an expression (`obj.foo`), not a
+                        // type/package qualification (`p.Foo`). Avoid recording a type reference
+                        // which would cause type rename to rewrite value-based member accesses.
+                    } else if let Some(resolved) = resolver.resolve_qualified_type_resolution_in_scope(
                         &scope_result.scopes,
                         scope,
                         &path,

@@ -272,3 +272,68 @@ public class ServiceImpl implements p.Service {}
         "{out_module}"
     );
 }
+
+#[test]
+fn rename_type_does_not_touch_value_based_field_access_chain_that_looks_like_qualified_type() {
+    let type_file = FileId::new("obj/foo.java");
+    let use_file = FileId::new("p/Use.java");
+
+    let src_type = r#"package obj;
+class foo {}
+"#;
+
+    let src_use = r#"package p;
+
+class Holder { int bar; }
+class Obj { Holder foo = new Holder(); }
+
+class Use {
+  obj.foo t;
+
+  void m() {
+    Obj obj = new Obj();
+    int x = obj.foo.bar;
+  }
+}
+"#;
+
+    let db = RefactorJavaDatabase::new([
+        (type_file.clone(), src_type.to_string()),
+        (use_file.clone(), src_use.to_string()),
+    ]);
+
+    let offset = src_type.find("class foo").unwrap() + "class ".len();
+    let symbol = db.symbol_at(&type_file, offset).expect("type symbol");
+    assert_eq!(db.symbol_kind(symbol), Some(JavaSymbolKind::Type));
+
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "baz".to_string(),
+        },
+    )
+    .expect("rename succeeds");
+
+    let mut files = BTreeMap::new();
+    files.insert(type_file.clone(), src_type.to_string());
+    files.insert(use_file.clone(), src_use.to_string());
+    let out = apply_workspace_edit(&files, &edit).expect("edit applies");
+
+    let out_type = out.get(&type_file).expect("foo.java updated");
+    assert!(out_type.contains("class baz"), "{out_type}");
+
+    let out_use = out.get(&use_file).expect("Use.java updated");
+    assert!(
+        out_use.contains("obj.baz t;"),
+        "expected real type usage to update: {out_use}"
+    );
+    assert!(
+        out_use.contains("obj.foo.bar"),
+        "expected value chain to remain unchanged: {out_use}"
+    );
+    assert!(
+        !out_use.contains("obj.baz.bar"),
+        "expected value chain to not be rewritten as type: {out_use}"
+    );
+}
