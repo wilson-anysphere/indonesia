@@ -4998,29 +4998,32 @@ fn inline_variable_inline_one_single_use_side_effectful_initializer_deletes_decl
 }
 
 #[test]
-fn inline_variable_rejects_side_effectful_initializer_with_intervening_statement() {
+fn inline_variable_single_use_side_effectful_initializer_in_if_is_rejected() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
-  int foo() { return 1; }
-  void bar() {}
-  void m() {
-    int a = foo();
-    bar();
-    System.out.println(a);
+  int compute() { return 1; }
+  void m(boolean cond) {
+    int x = compute();
+    if (cond) System.out.println(x);
   }
 }
 "#;
-
     let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
-    let offset = src.find("int a").unwrap() + "int ".len();
-    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
+
+    let offset = src.find("int x").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at x");
+
+    let mut refs = db.find_references(symbol);
+    refs.sort_by_key(|r| r.range.start);
+    assert_eq!(refs.len(), 1, "expected one reference");
+    let usage = refs[0].range;
 
     let err = inline_variable(
         &db,
         InlineVariableParams {
             symbol,
-            inline_all: true,
-            usage_range: None,
+            inline_all: false,
+            usage_range: Some(usage),
         },
     )
     .unwrap_err();
@@ -5031,40 +5034,71 @@ fn inline_variable_rejects_side_effectful_initializer_with_intervening_statement
 }
 
 #[test]
-fn inline_variable_allows_side_effectful_initializer_when_usage_is_immediately_next_statement() {
+fn inline_variable_single_use_side_effectful_initializer_in_loop_is_rejected() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {
-  int foo() { return 1; }
-  void m() {
-    int a = foo();
-    System.out.println(a);
+  int compute() { return 1; }
+  void m(boolean cond) {
+    int x = compute();
+    while (cond) System.out.println(x);
   }
 }
 "#;
-
     let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
-    let offset = src.find("int a").unwrap() + "int ".len();
-    let symbol = db.symbol_at(&file, offset).expect("symbol at a");
 
-    let edit = inline_variable(
+    let offset = src.find("int x").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at x");
+
+    let mut refs = db.find_references(symbol);
+    refs.sort_by_key(|r| r.range.start);
+    assert_eq!(refs.len(), 1, "expected one reference");
+    let usage = refs[0].range;
+
+    let err = inline_variable(
         &db,
         InlineVariableParams {
             symbol,
-            inline_all: true,
-            usage_range: None,
+            inline_all: false,
+            usage_range: Some(usage),
         },
     )
-    .unwrap();
+    .unwrap_err();
+    assert!(matches!(err, SemanticRefactorError::InlineSideEffects));
+}
 
-    let after = apply_text_edits(src, &edit.text_edits).unwrap();
-    let expected = r#"class Test {
-  int foo() { return 1; }
+#[test]
+fn inline_variable_single_use_side_effectful_initializer_with_intervening_statement_is_rejected() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  int compute() { return 1; }
+  void side() {}
   void m() {
-    System.out.println(foo());
+    int x = compute();
+    side();
+    System.out.println(x);
   }
 }
 "#;
-    assert_eq!(after, expected);
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+
+    let offset = src.find("int x").unwrap() + "int ".len();
+    let symbol = db.symbol_at(&file, offset).expect("symbol at x");
+
+    let mut refs = db.find_references(symbol);
+    refs.sort_by_key(|r| r.range.start);
+    assert_eq!(refs.len(), 1, "expected one reference");
+    let usage = refs[0].range;
+
+    let err = inline_variable(
+        &db,
+        InlineVariableParams {
+            symbol,
+            inline_all: false,
+            usage_range: Some(usage),
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(err, SemanticRefactorError::InlineSideEffects));
 }
 
 #[test]

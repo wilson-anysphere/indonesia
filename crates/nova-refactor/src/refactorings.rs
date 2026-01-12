@@ -1260,7 +1260,11 @@ pub fn inline_variable(
         for usage in &targets {
             let usage_ctx = lambda_context_at(db, &mut cache, &usage.file, usage.range)?;
             if decl_ctx != usage_ctx {
-                return Err(RefactorError::InlineNotSupported);
+                return Err(if init_has_side_effects {
+                    RefactorError::InlineSideEffects
+                } else {
+                    RefactorError::InlineNotSupported
+                });
             }
         }
     }
@@ -1307,10 +1311,15 @@ pub fn inline_variable(
     }
 
     if init_has_side_effects {
-        // If we would need to duplicate the initializer (multiple targets) or keep the
-        // declaration (inline-one with multiple usages), reject to avoid changing evaluation
-        // count.
-        if !(remove_decl && targets.len() == 1) {
+        // Side-effectful initializer inlining is only safe when we can guarantee it is evaluated
+        // exactly once and that we preserve statement-level evaluation order.
+        //
+        // - If we would need to duplicate the initializer (multiple targets) or keep the
+        //   declaration (inline-one with multiple usages), reject to avoid changing evaluation
+        //   count.
+        // - If the usage is conditional/repeated (e.g. under `if`/loops) or not adjacent to the
+        //   declaration statement, reject to avoid changing conditionality/order.
+        if !(all_refs.len() == 1 && remove_decl && targets.len() == 1) {
             return Err(RefactorError::InlineSideEffects);
         }
 
@@ -1322,9 +1331,144 @@ pub fn inline_variable(
             return Err(RefactorError::InlineSideEffects);
         }
 
-        // Prevent reordering side effects by ensuring the inlined usage statement is the
-        // immediately-following statement in the same block statement list.
-        check_side_effectful_inline_order(&root, &decl_stmt, &targets, &def.file)?;
+        let usage = targets
+            .first()
+            .expect("targets.len() == 1 checked above")
+            .clone();
+
+        // Side-effectful initializer inlining is only safe when we can guarantee:
+        // - the usage executes exactly once (no conditional/loop execution boundaries)
+        // - there are no intervening statements between declaration and usage
+        // - we preserve statement-level evaluation order by requiring adjacency
+        //
+        // Be conservative and reject anything we can't confidently classify.
+        if usage.file != def.file {
+            return Err(RefactorError::InlineSideEffects);
+        }
+
+        let Some(usage_tok) = root
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .find(|tok| syntax_token_range(tok) == usage.range)
+        else {
+            return Err(RefactorError::InlineNotSupported);
+        };
+
+        let Some(usage_stmt) = usage_tok
+            .parent()
+            .and_then(|n| n.ancestors().find_map(ast::Statement::cast))
+        else {
+            return Err(RefactorError::InlineNotSupported);
+        };
+
+        let decl_stmt = ast::Statement::cast(decl_stmt.syntax().clone())
+            .ok_or(RefactorError::InlineNotSupported)?;
+
+        // 1) Ensure the usage statement is the immediate next statement after the declaration,
+        // within the same enclosing block/switch block.
+        let Some(decl_parent) = decl_stmt.syntax().parent() else {
+            return Err(RefactorError::InlineSideEffects);
+        };
+        let Some(usage_parent) = usage_stmt.syntax().parent() else {
+            return Err(RefactorError::InlineSideEffects);
+        };
+        if decl_parent != usage_parent {
+            return Err(RefactorError::InlineSideEffects);
+        }
+
+        let container_stmts: Vec<ast::Statement> = if let Some(block) = ast::Block::cast(decl_parent.clone()) {
+            block.statements().collect()
+        } else if let Some(block) = ast::SwitchBlock::cast(decl_parent.clone()) {
+            block.statements().collect()
+        } else if let Some(group) = ast::SwitchGroup::cast(decl_parent.clone()) {
+            group.statements().collect()
+        } else {
+            return Err(RefactorError::InlineSideEffects);
+        };
+
+        let mut decl_idx: Option<usize> = None;
+        let mut usage_idx: Option<usize> = None;
+        let usage_stmt_range = syntax_range(usage_stmt.syntax());
+        for (idx, stmt) in container_stmts.iter().enumerate() {
+            let stmt_range = syntax_range(stmt.syntax());
+            if stmt_range == decl.statement_range {
+                decl_idx = Some(idx);
+            }
+            if stmt_range == usage_stmt_range {
+                usage_idx = Some(idx);
+            }
+        }
+
+        let (Some(decl_idx), Some(usage_idx)) = (decl_idx, usage_idx) else {
+            return Err(RefactorError::InlineSideEffects);
+        };
+        if usage_idx != decl_idx + 1 {
+            return Err(RefactorError::InlineSideEffects);
+        }
+
+        // 2) Reject when the usage is nested under an execution boundary relative to the
+        // declaration (conservative).
+        let decl_stmt_range = decl.statement_range;
+        let usage_tok_parent = usage_tok
+            .parent()
+            .ok_or(RefactorError::InlineNotSupported)?;
+        for ancestor in usage_tok_parent.ancestors() {
+            let boundary_range = if ast::IfStatement::cast(ancestor.clone()).is_some()
+                || ast::WhileStatement::cast(ancestor.clone()).is_some()
+                || ast::DoWhileStatement::cast(ancestor.clone()).is_some()
+                || ast::ForStatement::cast(ancestor.clone()).is_some()
+                || matches!(
+                    ancestor.kind(),
+                    SyntaxKind::BasicForStatement | SyntaxKind::EnhancedForStatement
+                )
+                || ast::TryStatement::cast(ancestor.clone()).is_some()
+                || ast::CatchClause::cast(ancestor.clone()).is_some()
+                || ast::FinallyClause::cast(ancestor.clone()).is_some()
+                || ast::LambdaExpression::cast(ancestor.clone()).is_some()
+                || ast::SwitchGroup::cast(ancestor.clone()).is_some()
+                || ast::SwitchRule::cast(ancestor.clone()).is_some()
+                || ast::AssertStatement::cast(ancestor.clone()).is_some()
+            {
+                Some(syntax_range(&ancestor))
+            } else {
+                None
+            };
+
+            if let Some(boundary_range) = boundary_range {
+                if !contains_range(boundary_range, decl_stmt_range) {
+                    return Err(RefactorError::InlineSideEffects);
+                }
+            }
+        }
+
+        // 3) Reject inlining into short-circuit/conditional expression segments where the variable
+        // usage may be evaluated conditionally.
+        for ancestor in usage_tok_parent.ancestors() {
+            if let Some(binary) = ast::BinaryExpression::cast(ancestor.clone()) {
+                if let Some(op) = binary_short_circuit_operator_kind(&binary) {
+                    if matches!(op, SyntaxKind::AmpAmp | SyntaxKind::PipePipe) {
+                        if let Some(rhs) = binary.rhs() {
+                            if contains_range(syntax_range(rhs.syntax()), usage.range) {
+                                return Err(RefactorError::InlineSideEffects);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(cond_expr) = ast::ConditionalExpression::cast(ancestor.clone()) {
+                if let Some(then_branch) = cond_expr.then_branch() {
+                    if contains_range(syntax_range(then_branch.syntax()), usage.range) {
+                        return Err(RefactorError::InlineSideEffects);
+                    }
+                }
+                if let Some(else_branch) = cond_expr.else_branch() {
+                    if contains_range(syntax_range(else_branch.syntax()), usage.range) {
+                        return Err(RefactorError::InlineSideEffects);
+                    }
+                }
+            }
+        }
     }
 
     // --- Initializer dependency stability analysis ---
