@@ -145,7 +145,8 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Key entry points:** `crates/nova-config-metadata/src/lib.rs` (`MetadataIndex`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
-  - Not yet wired into `nova-lsp` completion/diagnostics paths; used by higher-level helpers only.
+  - Not yet backed by incremental/Salsa queries; currently consumed by `nova-ide` framework support
+    (Spring config diagnostics/completions) via workspace-scoped caches.
 
 ### `nova-core`
 - **Purpose:** dependency-minimized core types (names, ranges, edits, IDs, URI/path helpers).
@@ -248,14 +249,16 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Key entry points:** `crates/nova-framework-dagger/src/lib.rs` (`DaggerAnalyzer`, `analyze_java_files`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
-  - Uses text scanning, not HIR/typed resolution; not integrated into `nova-lsp` yet.
+  - Uses text scanning, not HIR/typed resolution. Diagnostics are surfaced via `nova-ide`
+    (`crates/nova-ide/src/dagger_intel.rs`) and therefore show up in `nova-lsp`.
 
 ### `nova-framework-jpa`
 - **Purpose:** JPA/Jakarta EE analysis + JPQL parsing/completions/diagnostics.
 - **Key entry points:** `crates/nova-framework-jpa/src/lib.rs` (`analyze_java_sources`, `jpql_*`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
-  - Mostly standalone; only partially surfaced via CLI diagnostics today.
+  - Best-effort and mostly text-based (JPQL strings + simple entity model). Integrated into the IDE
+    via `crates/nova-ide/src/jpa_intel.rs` (diagnostics + JPQL completions).
 
 ### `nova-framework-lombok`
 - **Purpose:** Lombok “virtual member” synthesis for common annotations (getters/setters/builders/etc).
@@ -276,7 +279,8 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Key entry points:** `crates/nova-framework-micronaut/src/lib.rs` (`analyze_sources_with_config`, `Bean`, `Endpoint`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
-  - Primarily consumed via the custom LSP endpoints (`nova/micronaut/*`), not through a unified diagnostics engine.
+  - Exposed both via custom LSP endpoints (`nova/micronaut/*`) and via `nova-ide` framework support
+    for diagnostics/completions; still best-effort and not semantically resolved.
 
 ### `nova-framework-parse`
 - **Purpose:** shared Tree-sitter based parsing helpers for framework analyzers (node traversal, annotation parsing).
