@@ -52,6 +52,7 @@ and shows “location unavailable”.
 
 Right-click endpoints / beans in the **Nova Frameworks** view to:
 
+- Open the framework item (same as clicking) (`nova.frameworks.open`)
 - Copy endpoint path (`nova.frameworks.copyEndpointPath`)
 - Copy endpoint method + path (`nova.frameworks.copyEndpointMethodAndPath`)
 - Copy bean id / type (Micronaut) (`nova.frameworks.copyBeanId`, `nova.frameworks.copyBeanType`)
