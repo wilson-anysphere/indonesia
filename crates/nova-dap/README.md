@@ -7,6 +7,44 @@ This crate is still intentionally small, but it supports the core requests
 required for a basic debugging session: breakpoints, stepping, threads,
 stack frames, locals, and best-effort evaluation.
 
+## Running `nova-dap` (binary)
+
+> **Nova agents:** all `cargo` commands in this repo must be run via the wrapper
+> script from [`AGENTS.md`](../../AGENTS.md):
+>
+> `bash scripts/cargo_agent.sh ...`
+
+### Adapter modes
+
+`nova-dap` currently has two adapter implementations:
+
+- **Default (recommended):** the *wire* adapter (JDWP-backed, async). This is
+  what runs when you start `nova-dap` with no flags.
+- **Legacy (`--legacy`):** the older synchronous/skeleton adapter. It is kept
+  for compatibility and incremental bring-up, and does **not** support all of
+  the functionality described in this README.
+
+### DAP transport (stdio vs TCP)
+
+By default, `nova-dap` speaks DAP over **stdio** (this is what most DAP clients
+expect when they spawn the adapter process).
+
+For tooling and tests, `nova-dap` can instead listen on TCP:
+
+```bash
+# Fixed port:
+target/debug/nova-dap --listen 127.0.0.1:4711
+
+# Ephemeral port (OS chooses a free port):
+target/debug/nova-dap --listen 127.0.0.1:0
+```
+
+When `--listen` is used, `nova-dap` accepts a single incoming connection and
+prints the bound address to stderr (for example: `listening on 127.0.0.1:4711`).
+
+`--listen` is only supported by the default wire adapter; `--legacy --listen` is
+rejected.
+
 ## DAP lifecycle / request ordering
 
 `nova-dap` follows the standard DAP initialization flow:
@@ -42,7 +80,7 @@ resume automatically once `launch` completes.)
 From the repo root:
 
 ```bash
-cargo build -p nova-dap
+bash scripts/cargo_agent.sh build -p nova-dap
 ```
 
 The adapter binary will be at:
@@ -104,7 +142,7 @@ For example, in VS Code you can use a DAP client/extension that supports a
 `debugAdapterPath` style configuration and point it at `target/debug/nova-dap`.
 Then create an `attach` configuration using the host/port above.
 
-## `launch` (wire server)
+## `launch` (wire adapter; default)
 
 The default adapter implementation (`nova_dap::wire_server`) supports launching a process
 and then attaching to a JDWP socket once it becomes available.
@@ -191,5 +229,5 @@ stable in environments without a JDK.
 Run it locally with:
 
 ```bash
-cargo test -p nova-dap --features real-jvm-tests --test real_jvm -- --nocapture
+bash scripts/cargo_agent.sh test -p nova-dap --features real-jvm-tests --test real_jvm -- --nocapture
 ```

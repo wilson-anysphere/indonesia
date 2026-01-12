@@ -15,6 +15,14 @@ This workstream owns the Debug Adapter Protocol implementation and JVM debugging
 | `nova-jdwp` | Java Debug Wire Protocol client |
 | `nova-stream-debug` | Stream debugging (Java Streams API) |
 
+## `nova-dap` CLI quick reference
+
+- **Default:** wire (JDWP-backed) adapter, serving DAP over **stdio**
+- **`--legacy`:** older synchronous/skeleton adapter (stdio only)
+- **`--listen <addr>`:** serve DAP over **TCP** instead of stdio (wire adapter only)
+  - Example: `--listen 127.0.0.1:4711`
+  - Use port `0` to auto-pick a free port: `--listen 127.0.0.1:0`
+
 ---
 
 ## Key Documents

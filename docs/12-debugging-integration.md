@@ -36,6 +36,20 @@ Debugging is essential for Java development. Nova integrates with the Debug Adap
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### `nova-dap` adapter modes and transport
+
+`nova-dap` defaults to the **wire** (JDWP-backed) adapter. The older `--legacy`
+flag runs the previous synchronous/skeleton adapter.
+
+The wire adapter serves DAP over **stdio** by default. For tooling/tests, it can
+also listen on TCP with `--listen <addr>` (single incoming connection):
+
+- `nova-dap --listen 127.0.0.1:4711` (fixed port)
+- `nova-dap --listen 127.0.0.1:0` (port `0` = ask the OS to pick a free port)
+
+`--listen` is only supported for the default wire adapter; `--legacy --listen`
+is rejected.
+
 ### DAP Capabilities
 
 ```
