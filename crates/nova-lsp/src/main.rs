@@ -2215,6 +2215,15 @@ fn handle_rename(
             .and_then(|offset| db.symbol_at(&file, offset))
     });
     let Some(symbol) = symbol else {
+        // If the cursor is on an identifier but we can't resolve it to a refactor symbol, prefer a
+        // "rename not supported" error over "no symbol" to avoid confusing clients that attempt
+        // rename on fields/methods/types (which are not yet supported by the semantic refactorer).
+        if ident_range_at(&source, offset).is_some() {
+            return Err((
+                -32602,
+                SemanticRefactorError::RenameNotSupported { kind: None }.to_string(),
+            ));
+        }
         return Err((-32602, "no symbol at cursor".to_string()));
     };
 
