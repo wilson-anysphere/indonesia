@@ -760,6 +760,26 @@ class C {
 }
 
 #[test]
+fn static_context_rejects_unqualified_instance_field_access() {
+    let src = r#"
+class C {
+    int x;
+    static void m() {
+        x = 1;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "static-context"
+            && d.message.contains("static context")),
+        "expected static context to reject implicit-this field access, got {diags:?}"
+    );
+}
+
+#[test]
 fn system_out_println_has_no_unresolved_member_diags() {
     let src = r#"
 class C {
