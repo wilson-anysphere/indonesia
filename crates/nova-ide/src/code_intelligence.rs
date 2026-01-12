@@ -4782,93 +4782,168 @@ fn offset_in_java_string_or_char_literal(text: &str, offset: usize) -> bool {
 
     let bytes = text.as_bytes();
 
-    // Best-effort: use the lexer-backed parser so we correctly handle escapes and avoid treating
-    // quotes in comments as literals.
-    let parse = nova_syntax::parse(text);
-    for tok in parse.tokens() {
+    #[derive(Debug, Clone, Copy)]
+    struct TemplateFrame {
+        in_interpolation: bool,
+    }
+
+    // Best-effort: use the full lexer so we correctly handle escapes and avoid treating quotes in
+    // comments as literals. Unlike `nova_syntax::parse`, this preserves string-template tokens so
+    // we can treat template interpolations (`\{ ... }`) as normal Java code (allowing completions)
+    // while still suppressing noisy completions in template text segments.
+    let tokens = nova_syntax::lex(text);
+    let mut template_stack: Vec<TemplateFrame> = Vec::new();
+    let mut prev_end = 0usize;
+
+    for (idx, tok) in tokens.iter().enumerate() {
         let start = tok.range.start as usize;
         let end = tok.range.end as usize;
 
+        // Handle gaps between tokens (inclusive). This is primarily needed for empty string
+        // template segments like `STR."<cursor>"`, where there may be no `StringTemplateText` token
+        // covering the cursor position.
+        if offset >= prev_end && offset <= start {
+            if template_stack
+                .last()
+                .is_some_and(|frame| !frame.in_interpolation)
+            {
+                return true;
+            }
+        }
+
+        // Fast path: if the current token starts after the cursor, no subsequent token can
+        // contain the cursor.
         if start > offset {
             break;
         }
 
         match tok.kind {
+            nova_syntax::SyntaxKind::StringTemplateStart => {
+                // Suppress completions inside the delimiter itself (e.g. between quotes in `"""`).
+                if offset > start && offset < end {
+                    return true;
+                }
+                template_stack.push(TemplateFrame {
+                    in_interpolation: false,
+                });
+            }
+            nova_syntax::SyntaxKind::StringTemplateExprStart => {
+                // Treat the `\{` delimiter itself as part of the string template (suppress).
+                if offset > start && offset < end {
+                    return true;
+                }
+                if let Some(frame) = template_stack.last_mut() {
+                    frame.in_interpolation = true;
+                }
+            }
+            nova_syntax::SyntaxKind::StringTemplateExprEnd => {
+                if let Some(frame) = template_stack.last_mut() {
+                    frame.in_interpolation = false;
+                }
+            }
+            nova_syntax::SyntaxKind::StringTemplateEnd => {
+                if offset > start && offset < end {
+                    return true;
+                }
+                template_stack.pop();
+            }
+            nova_syntax::SyntaxKind::StringTemplateText => {
+                // Template text segments behave like string literals: suppress completions when
+                // the cursor is inside the segment (boundaries are handled by the gap check above).
+                if offset > start && offset < end {
+                    return true;
+                }
+            }
             nova_syntax::SyntaxKind::StringLiteral
             | nova_syntax::SyntaxKind::TextBlock
             | nova_syntax::SyntaxKind::CharLiteral => {
-                // Token ranges include the opening + closing quote. Treat the cursor strictly
-                // inside the token (i.e. after the opening quote, before the closing quote) as
-                // "inside the literal".
-                if offset > start {
-                    if offset < end {
-                        return true;
-                    }
-
-                    // `nova_syntax::parse` maps lexer `Error` tokens that look like literals
-                    // (e.g. unterminated strings/text blocks) to `StringLiteral`/`CharLiteral`.
-                    // In that case, the token range has no closing delimiter, so the cursor at
-                    // `offset == end` should still be treated as being inside the literal.
-                    if offset == end {
-                        let raw = tok.text(text);
-                        let terminated = match tok.kind {
-                            nova_syntax::SyntaxKind::CharLiteral => {
-                                raw.len() >= 2
-                                    && raw.ends_with('\'')
-                                    && end > 0
-                                    && !is_escaped_quote(bytes, end - 1)
-                            }
-                            _ => {
-                                // Treat anything containing a `"""` run as a text block (including
-                                // string templates like `STR."""..."""`).
-                                if raw.contains("\"\"\"") {
-                                    raw.len() >= 6
-                                        && raw.ends_with("\"\"\"")
-                                        && end >= 3
-                                        && !is_escaped_quote(bytes, end - 3)
-                                } else {
-                                    raw.len() >= 2
-                                        && raw.ends_with('"')
-                                        && end > 0
-                                        && !is_escaped_quote(bytes, end - 1)
-                                }
-                            }
-                        };
-                        if !terminated {
-                            return true;
-                        }
-                    }
+                // Token ranges include the opening + closing delimiter. Treat the cursor strictly
+                // inside the token (i.e. after the opening delimiter, before the closing delimiter)
+                // as "inside the literal".
+                if offset > start && offset < end {
+                    return true;
                 }
             }
             nova_syntax::SyntaxKind::Error => {
-                // The lexer uses `Error` tokens for unterminated literals. We treat the end of an
-                // unterminated literal as still "inside" so we don't suggest completions while the
-                // user is still typing.
+                // When lexing a string template, the lexer can emit `Error` tokens for unexpected
+                // characters *inside the template text* (without leaving template mode), as well
+                // as for unterminated templates (which *do* leave template mode). If we're
+                // currently in a template text segment, treat the error token as string-like.
+                let in_template_text = template_stack
+                    .last()
+                    .is_some_and(|frame| !frame.in_interpolation);
+
+                if in_template_text && offset > start && offset <= end {
+                    return true;
+                }
+
+                // The lexer uses `Error` tokens for unterminated literals (including
+                // unterminated text blocks / char literals). We treat the end of an unterminated
+                // literal as still "inside" so we don't suggest completions while the user is
+                // still typing.
                 let raw = tok.text(text);
 
                 // Only consider error tokens that look like literals.
                 let terminated = if raw.starts_with("\"\"\"") {
-                    // Text blocks terminate with `"""` (not a single `"`). Treat partial closing
-                    // delimiters (`""` at EOF) as unterminated so we keep suppressing completions.
-                    raw.len() >= 6 && raw.ends_with("\"\"\"")
+                    Some(
+                        raw.len() >= 6
+                            && raw.ends_with("\"\"\"")
+                            && end >= 3
+                            && !is_escaped_quote(bytes, end - 3),
+                    )
                 } else if raw.starts_with('"') {
-                    raw.len() >= 2 && raw.ends_with('"')
+                    Some(
+                        raw.len() >= 2
+                            && raw.ends_with('"')
+                            && end > 0
+                            && !is_escaped_quote(bytes, end - 1),
+                    )
                 } else if raw.starts_with('\'') {
-                    raw.len() >= 2 && raw.ends_with('\'')
+                    Some(
+                        raw.len() >= 2
+                            && raw.ends_with('\'')
+                            && end > 0
+                            && !is_escaped_quote(bytes, end - 1),
+                    )
                 } else {
-                    continue;
+                    None
                 };
 
-                // Suppress completions when:
-                // - the cursor is inside the token, or
-                // - the literal is unterminated (no closing delimiter) and the cursor is at the
-                //   end of the token (e.g. at EOF).
-                if offset > start && (offset < end || (!terminated && offset == end)) {
-                    return true;
+                if let Some(terminated) = terminated {
+                    // Suppress completions when:
+                    // - the cursor is inside the token, or
+                    // - the literal is unterminated (no closing delimiter) and the cursor is at the
+                    //   end of the token (e.g. at EOF).
+                    if offset > start && (offset < end || (!terminated && offset == end)) {
+                        return true;
+                    }
+                }
+
+                // Keep our template stack in sync with the lexer: unterminated quote-delimited
+                // templates are ended by an `Error` token (no `StringTemplateEnd`), after which the
+                // lexer returns to normal Java tokenization. Detect that case by peeking at the
+                // next token: if it isn't a template token, the current template was terminated
+                // early by the lexer.
+                if in_template_text {
+                    let next_kind = tokens.get(idx + 1).map(|t| t.kind);
+                    let stays_in_template = matches!(
+                        next_kind,
+                        Some(
+                            nova_syntax::SyntaxKind::StringTemplateText
+                                | nova_syntax::SyntaxKind::StringTemplateExprStart
+                                | nova_syntax::SyntaxKind::StringTemplateEnd
+                                | nova_syntax::SyntaxKind::Error
+                        )
+                    );
+                    if !stays_in_template {
+                        template_stack.pop();
+                    }
                 }
             }
             _ => {}
         }
+
+        prev_end = end;
     }
 
     false

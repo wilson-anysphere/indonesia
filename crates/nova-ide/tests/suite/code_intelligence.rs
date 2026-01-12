@@ -163,6 +163,67 @@ class A {
 }
 
 #[test]
+fn completion_is_suppressed_in_string_template_text() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    String s = STR."hel<|>lo";
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.is_empty(),
+        "expected no completions inside string template text; got {:?}",
+        items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn completion_is_suppressed_in_empty_string_template() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    String s = STR."<|>";
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.is_empty(),
+        "expected no completions inside empty string template; got {:?}",
+        items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn completion_in_string_template_interpolation_is_not_suppressed() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  int x;
+  void m() {
+    String s = STR."x=\{ this.<|> }";
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"x"),
+        "expected completion list to contain member from interpolation expression; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_includes_this_members() {
     let (db, file, pos) = fixture(
         r#"
