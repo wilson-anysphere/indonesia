@@ -353,27 +353,10 @@ fn selected_module_root(
         }
         nova_project::BuildSystem::Gradle => {
             let path = params.project_path.as_deref().map(str::trim)?;
-            if path.is_empty() || path == ":" {
-                None
-            } else {
-                Some(
-                    project
-                        .workspace_root
-                        .join(gradle_project_path_to_dir(path)),
-                )
-            }
+            super::gradle::resolve_gradle_module_root(&project.workspace_root, path)
         }
         nova_project::BuildSystem::Bazel | nova_project::BuildSystem::Simple => None,
     }
-}
-
-fn gradle_project_path_to_dir(project_path: &str) -> PathBuf {
-    let trimmed = project_path.trim_matches(':');
-    let mut rel = PathBuf::new();
-    for part in trimmed.split(':').filter(|p| !p.is_empty()) {
-        rel.push(part);
-    }
-    rel
 }
 
 fn group_diagnostics_by_module(
@@ -523,23 +506,19 @@ mod tests {
 
     #[test]
     fn selected_module_root_normalizes_gradle_root_project() {
-        let project = nova_project::ProjectConfig {
-            workspace_root: PathBuf::from("/workspace"),
-            build_system: nova_project::BuildSystem::Gradle,
-            java: nova_project::JavaConfig::default(),
-            modules: Vec::new(),
-            jpms_modules: Vec::new(),
-            jpms_workspace: None,
-            source_roots: Vec::new(),
-            module_path: Vec::new(),
-            classpath: Vec::new(),
-            output_dirs: Vec::new(),
-            dependencies: Vec::new(),
-            workspace_model: None,
-        };
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("settings.gradle"),
+            "include ':app', ':lib:core'\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("app")).unwrap();
+        std::fs::create_dir_all(dir.path().join("lib/core")).unwrap();
+
+        let (project, _config) = load_project_with_workspace_config(dir.path()).unwrap();
 
         let params = NovaGeneratedSourcesParams {
-            project_root: "/workspace".into(),
+            project_root: dir.path().to_string_lossy().to_string(),
             module: None,
             project_path: Some(":".into()),
             target: None,
@@ -547,25 +526,50 @@ mod tests {
         assert_eq!(selected_module_root(&project, &params), None);
 
         let params = NovaGeneratedSourcesParams {
-            project_root: "/workspace".into(),
+            project_root: dir.path().to_string_lossy().to_string(),
             module: None,
             project_path: Some(":app".into()),
             target: None,
         };
         assert_eq!(
             selected_module_root(&project, &params),
-            Some(PathBuf::from("/workspace/app"))
+            Some(dir.path().join("app").canonicalize().unwrap())
         );
 
         let params = NovaGeneratedSourcesParams {
-            project_root: "/workspace".into(),
+            project_root: dir.path().to_string_lossy().to_string(),
             module: None,
             project_path: Some(":lib:core".into()),
             target: None,
         };
         assert_eq!(
             selected_module_root(&project, &params),
-            Some(PathBuf::from("/workspace/lib/core"))
+            Some(dir.path().join("lib/core").canonicalize().unwrap())
+        );
+    }
+
+    #[test]
+    fn selected_module_root_resolves_gradle_project_dir_override() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("settings.gradle"),
+            "include ':app'\nproject(':app').projectDir = file('modules/application')\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("modules/application")).unwrap();
+
+        let (project, _config) = load_project_with_workspace_config(dir.path()).unwrap();
+
+        let params = NovaGeneratedSourcesParams {
+            project_root: dir.path().to_string_lossy().to_string(),
+            module: None,
+            project_path: Some(":app".into()),
+            target: None,
+        };
+
+        assert_eq!(
+            selected_module_root(&project, &params),
+            Some(dir.path().join("modules/application").canonicalize().unwrap())
         );
     }
 

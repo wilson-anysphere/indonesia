@@ -667,13 +667,15 @@ fn load_build_metadata(params: &NovaProjectParams) -> BuildMetadata {
             }
         }
         BuildKind::Gradle => {
-            if let Some(project_path) = params
-                .project_path
-                .as_deref()
-                .filter(|p| !p.trim().is_empty())
-            {
-                let rel = gradle_project_path_to_dir(project_path);
-                vec![project.workspace_root.join(rel)]
+            if let Some(project_path) = params.project_path.as_deref() {
+                if let Some(root) = super::gradle::resolve_gradle_module_root(
+                    &project.workspace_root,
+                    project_path,
+                ) {
+                    vec![root]
+                } else {
+                    project.modules.iter().map(|m| m.root.clone()).collect()
+                }
             } else {
                 project.modules.iter().map(|m| m.root.clone()).collect()
             }
@@ -740,15 +742,6 @@ fn load_build_metadata(params: &NovaProjectParams) -> BuildMetadata {
         },
         output_dirs,
     }
-}
-
-fn gradle_project_path_to_dir(project_path: &str) -> PathBuf {
-    let trimmed = project_path.trim_matches(':');
-    let mut rel = PathBuf::new();
-    for part in trimmed.split(':').filter(|p| !p.is_empty()) {
-        rel.push(part);
-    }
-    rel
 }
 
 // -----------------------------------------------------------------------------
@@ -940,9 +933,9 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
                     let cfg = manager
                         .java_compile_config_gradle(&project_root, project_path.as_deref())
                         .map_err(map_build_error)?;
-                    let selected_root = project_path
-                        .as_deref()
-                        .map(|path| project_root.join(gradle_project_path_to_dir(path)));
+                    let selected_root = project_path.as_deref().and_then(|path| {
+                        super::gradle::resolve_gradle_module_root(&project_root, path)
+                    });
 
                     let JavaCompileConfig {
                         compile_classpath,
@@ -1932,6 +1925,42 @@ mod tests {
         assert_eq!(
             normalize_maven_module_relative(Some(" module-b ")),
             Some(Path::new("module-b"))
+        );
+    }
+
+    #[test]
+    fn load_build_metadata_resolves_gradle_project_dir_override() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        std::fs::write(
+            root.join("settings.gradle"),
+            "include ':app'\nproject(':app').projectDir = file('modules/application')\n",
+        )
+        .unwrap();
+
+        let src_root = root.join("modules/application/src/main/java");
+        std::fs::create_dir_all(&src_root).unwrap();
+        std::fs::write(src_root.join("Hello.java"), "class Hello {}").unwrap();
+
+        let params = NovaProjectParams {
+            project_root: root.to_string_lossy().to_string(),
+            build_tool: Some(BuildTool::Gradle),
+            module: None,
+            project_path: Some(":app".to_string()),
+            target: None,
+        };
+
+        let metadata = load_build_metadata(&params);
+        let expected = src_root.canonicalize().unwrap();
+        let actual: Vec<PathBuf> = metadata
+            .source_roots
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+
+        assert!(
+            actual.iter().any(|root| *root == expected),
+            "expected {expected:?} in {actual:?}"
         );
     }
 
