@@ -142,63 +142,6 @@ impl TrigramIndex {
         self.candidates_with_scratch(query, &mut scratch).to_vec()
     }
 
-    /// Generates candidate ids by intersecting posting lists for query trigrams, reusing `scratch`.
-    ///
-    /// The returned slice is sorted and contains no duplicates.
-    ///
-    /// Unlike [`TrigramIndex::candidates`], this avoids copying the posting list when the query
-    /// expands to exactly one trigram: in that case the returned slice points directly into the
-    /// index. If the query expands to multiple trigrams, the intersection is written into
-    /// `scratch` and the returned slice points into `scratch`.
-    pub fn candidates_with_scratch<'a>(
-        &'a self,
-        query: &str,
-        scratch: &'a mut Vec<SymbolId>,
-    ) -> &'a [SymbolId] {
-        scratch.clear();
-
-        let mut q_trigrams = Vec::new();
-        trigrams(query, &mut q_trigrams);
-        if q_trigrams.is_empty() {
-            return &[];
-        }
-        q_trigrams.sort_unstable();
-        q_trigrams.dedup();
-
-        // Collect posting lists and sort by length ascending (rarest first).
-        let mut lists: Vec<&[SymbolId]> = q_trigrams
-            .iter()
-            .map(|&t| self.postings(t))
-            .filter(|list| !list.is_empty())
-            .collect();
-
-        if lists.is_empty() {
-            return &[];
-        }
-
-        lists.sort_by_key(|a| a.len());
-
-        let base = lists[0];
-        if lists.len() == 1 {
-            return base;
-        }
-
-        scratch.reserve(base.len());
-
-        // We expect `base` to be the smallest list. For each id in base, check
-        // that it is present in every other list.
-        'outer: for &id in base {
-            for other in &lists[1..] {
-                if other.binary_search(&id).is_err() {
-                    continue 'outer;
-                }
-            }
-            scratch.push(id);
-        }
-
-        scratch
-    }
-
     /// Approximate heap memory usage of this index in bytes.
     ///
     /// This is intended for best-effort integration with `nova-memory`.

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context};
 use nova_bugreport::{install_panic_hook, PanicHookConfig};
 use nova_config::{init_tracing_with_config, NovaConfig};
-use nova_fuzzy::{FuzzyMatcher, MatchScore, TrigramIndex, TrigramIndexBuilder};
+use nova_fuzzy::{FuzzyMatcher, MatchScore, TrigramCandidateScratch, TrigramIndex, TrigramIndexBuilder};
 use nova_remote_proto::v3::{
     HandshakeReject, Notification, RejectCode, RemoteDiagnostic, Request, Response,
 };
@@ -2483,7 +2483,7 @@ impl GlobalSymbolIndex {
             return self.finish(scored, limit);
         }
 
-        let mut candidate_scratch = Vec::new();
+        let mut candidate_scratch = TrigramCandidateScratch::default();
         let candidates = self
             .trigram
             .candidates_with_scratch(query, &mut candidate_scratch);
