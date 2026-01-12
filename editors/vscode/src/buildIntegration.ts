@@ -1097,7 +1097,9 @@ export function registerNovaBuildIntegration(
       const module = selector?.module;
       const projectPath = selector?.projectPath;
       const target = selector?.target;
-      const buildTool = await getBuildBuildTool(folder);
+      // When reloading a Bazel target, always use `buildTool=auto` and skip any prompt (matching
+      // `nova.buildProject` behaviour for Bazel selectors).
+      const buildTool: BuildTool = target ? 'auto' : await getBuildBuildTool(folder);
 
       try {
         const response = await request('nova/reloadProject', {
