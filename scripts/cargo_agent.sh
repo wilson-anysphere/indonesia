@@ -176,18 +176,31 @@ if [[ -z "${slots}" ]]; then
   if [[ "${slots}" -gt 8 ]]; then slots=8; fi
 fi
 
+limit_as="${NOVA_CARGO_LIMIT_AS:-${LIMIT_AS:-4G}}"
+limit_as_is_default=1
+if [[ -n "${NOVA_CARGO_LIMIT_AS:-}" || -n "${LIMIT_AS:-}" ]]; then
+  limit_as_is_default=0
+fi
+
 jobs="${NOVA_CARGO_JOBS:-}"
+if [[ -z "${jobs}" ]]; then
+  # Cargo defaults its job count to the detected CPU count. On large machines this can spawn a lot
+  # of `rustc` processes (each with many helper threads), which can exceed container / CI process
+  # limits even when system memory is plentiful.
+  #
+  # When we're running under an address-space cap (the default `scripts/cargo_agent.sh` mode), cap
+  # `-j` to keep builds reliable in constrained environments. Consumers that want higher parallelism
+  # can opt back in by setting `NOVA_CARGO_JOBS`.
+  if [[ -n "${limit_as}" && "${limit_as}" != "0" && "${limit_as}" != "off" && "${limit_as}" != "unlimited" ]]; then
+    jobs=$(( nproc < 32 ? nproc : 32 ))
+  fi
+fi
+
 if [[ -n "${jobs}" ]]; then
   if ! [[ "${jobs}" =~ ^[0-9]+$ ]] || [[ "${jobs}" -lt 1 ]]; then
     echo "invalid NOVA_CARGO_JOBS: ${jobs}" >&2
     exit 2
   fi
-fi
-
-limit_as="${NOVA_CARGO_LIMIT_AS:-${LIMIT_AS:-4G}}"
-limit_as_is_default=1
-if [[ -n "${NOVA_CARGO_LIMIT_AS:-}" || -n "${LIMIT_AS:-}" ]]; then
-  limit_as_is_default=0
 fi
 
 lock_dir="${NOVA_CARGO_LOCK_DIR:-${repo_root}/target/.cargo_agent_locks}"
