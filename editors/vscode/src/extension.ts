@@ -25,6 +25,15 @@ import { ServerManager, type NovaServerSettings } from './serverManager';
 import { buildNovaLspLaunchConfig, resolveNovaConfigPath } from './lspArgs';
 import { routeWorkspaceFolderUri } from './workspaceRouting';
 import {
+  SAFE_MODE_EXEMPT_REQUESTS,
+  formatError,
+  formatSafeModeReason,
+  isMethodNotFoundError,
+  isSafeModeError,
+  parseSafeModeEnabled,
+  parseSafeModeReason,
+} from './safeMode';
+import {
   deriveReleaseUrlFromBaseUrl,
   findOnPath,
   getBinaryVersion,
@@ -58,17 +67,6 @@ const MAX_AI_CONTEXT_IDS = 50;
 
 const BUG_REPORT_COMMAND = 'nova.bugReport';
 const SAFE_DELETE_WITH_PREVIEW_COMMAND = 'nova.safeDeleteWithPreview';
-
-const SAFE_MODE_EXEMPT_REQUESTS = new Set<string>([
-  'nova/bugReport',
-  // These endpoints are intentionally available even while Nova is in safe mode, so a successful
-  // response should not be treated as an indication that safe mode has exited.
-  'nova/memoryStatus',
-  'nova/metrics',
-  'nova/resetMetrics',
-  // Best-effort: safe mode status endpoints may exist in newer server builds.
-  'nova/safeModeStatus',
-]);
 
 type TestKind = 'class' | 'test';
 
@@ -2390,64 +2388,6 @@ async function promptForBugReportMaxLogLines(): Promise<number | null | undefine
   return Number.parseInt(trimmed, 10);
 }
 
-function parseSafeModeEnabled(payload: unknown): boolean | undefined {
-  if (typeof payload === 'boolean') {
-    return payload;
-  }
-
-  if (!payload || typeof payload !== 'object') {
-    return undefined;
-  }
-
-  const obj = payload as Record<string, unknown>;
-  const enabled = obj.enabled ?? obj.safeMode ?? obj.active;
-  if (typeof enabled === 'boolean') {
-    return enabled;
-  }
-
-  const status = obj.status;
-  if (status && typeof status === 'object') {
-    const nested = (status as Record<string, unknown>).enabled ?? (status as Record<string, unknown>).active;
-    if (typeof nested === 'boolean') {
-      return nested;
-    }
-  }
-
-  return undefined;
-}
-
-function parseSafeModeReason(payload: unknown): string | undefined {
-  if (!payload || typeof payload !== 'object') {
-    return undefined;
-  }
-
-  const obj = payload as Record<string, unknown>;
-  const reason = obj.reason ?? obj.kind ?? obj.cause;
-  if (typeof reason === 'string') {
-    return reason;
-  }
-
-  const status = obj.status;
-  if (status && typeof status === 'object') {
-    const nested = (status as Record<string, unknown>).reason ?? (status as Record<string, unknown>).kind;
-    if (typeof nested === 'string') {
-      return nested;
-    }
-  }
-
-  return undefined;
-}
-
-function formatSafeModeReason(reason: string): string {
-  const trimmed = reason.trim();
-  if (!trimmed) {
-    return trimmed;
-  }
-
-  const normalized = trimmed.replace(/[_-]+/g, ' ');
-  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
-}
-
 function normalizeMemoryPressure(value: unknown): MemoryPressureLevel | undefined {
   if (typeof value !== 'string') {
     return undefined;
@@ -2540,31 +2480,4 @@ function formatMemoryTooltip(
   }
 
   return tooltip;
-}
-
-function formatError(err: unknown): string {
-  if (err instanceof Error) {
-    return err.message;
-  }
-  if (typeof err === 'string') {
-    return err;
-  }
-  if (err && typeof err === 'object' && 'message' in err && typeof (err as { message: unknown }).message === 'string') {
-    return (err as { message: string }).message;
-  }
-  try {
-    return JSON.stringify(err);
-  } catch {
-    return String(err);
-  }
-}
-
-function isSafeModeError(err: unknown): boolean {
-  const message = formatError(err).toLowerCase();
-  if (message.includes('safe-mode') || message.includes('safe mode')) {
-    return true;
-  }
-
-  // Defensive: handle safe-mode guard messages that might not include the exact phrase.
-  return message.includes('nova/bugreport') && message.includes('only') && message.includes('available');
 }
