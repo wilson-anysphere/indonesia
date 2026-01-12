@@ -533,11 +533,23 @@ fn collect_call_site_updates(
     let old_arity = target.params.len();
 
     let new_name = change.new_name.clone().unwrap_or_else(|| old_name.clone());
-    let new_param_count = change.parameters.len();
     let new_param_types = compute_new_params(&target.params, &change.parameters, &mut Vec::new())
         .into_iter()
         .map(|p| p.ty)
         .collect::<Vec<_>>();
+
+    // Exclude method declaration name tokens. `find_name_candidates` is intentionally lexical
+    // and reports method declarations as call candidates (identifier followed by `(`).
+    let mut method_decl_name_ranges: HashMap<String, HashSet<TextRange>> = HashMap::new();
+    for sym in index.symbols() {
+        if sym.kind != SymbolKind::Method {
+            continue;
+        }
+        method_decl_name_ranges
+            .entry(sym.file.clone())
+            .or_default()
+            .insert(sym.name_range);
+    }
 
     // Exclude occurrences that live inside any affected declaration header. The index's
     // candidate collection is intentionally lexical and will report method declarations
@@ -561,6 +573,12 @@ fn collect_call_site_updates(
 
     let mut updates = Vec::new();
     for candidate in index.find_name_candidates(old_name) {
+        if method_decl_name_ranges
+            .get(&candidate.file)
+            .is_some_and(|ranges| ranges.contains(&candidate.range))
+        {
+            continue;
+        }
         if let Some(spans) = header_spans_by_file.get(&candidate.file) {
             if spans
                 .iter()
@@ -587,6 +605,18 @@ fn collect_call_site_updates(
             continue;
         }
 
+        // Best-effort overload disambiguation: if we can infer an argument's type and it
+        // doesn't match the target signature, treat it as a call to a different overload.
+        let inferred_arg_types = infer_call_arg_types(text, call_range.start, &args);
+        if inferred_arg_types.len() == old_param_types.len()
+            && inferred_arg_types
+                .iter()
+                .zip(old_param_types.iter())
+                .any(|(arg_ty, param_ty)| matches!(arg_ty, Some(t) if t != param_ty))
+        {
+            continue;
+        }
+
         let Some(receiver_class) =
             infer_receiver_class(index, &candidate.file, candidate.range.start, text)
         else {
@@ -602,12 +632,13 @@ fn collect_call_site_updates(
         }
 
         // Ambiguity (best-effort): multiple overload candidates after the change.
+        let new_expected_types = rewrite_types_for_call(&inferred_arg_types, &change.parameters);
         let overloads = overload_candidates_after_change(
             index,
             &receiver_class,
             affected_ids,
             &new_name,
-            new_param_count,
+            &new_expected_types,
             &new_param_types,
         );
         if overloads.len() > 1 {
@@ -653,10 +684,12 @@ fn overload_candidates_after_change(
     receiver_class: &str,
     affected: &HashSet<MethodId>,
     new_name: &str,
-    new_param_count: usize,
+    expected_param_types: &[Option<String>],
     new_param_types: &[String],
 ) -> Vec<MethodId> {
     let mut by_sig: HashMap<Vec<String>, MethodId> = HashMap::new();
+    let expected_param_count = expected_param_types.len();
+
     let mut cur = Some(receiver_class);
     while let Some(class) = cur {
         for sym in index.symbols() {
@@ -666,32 +699,31 @@ fn overload_candidates_after_change(
             if sym.container.as_deref() != Some(class) {
                 continue;
             }
+
             let id = MethodId(sym.id.0);
-            if affected.contains(&id) {
-                if new_param_types.len() == new_param_count {
-                    by_sig.entry(new_param_types.to_vec()).or_insert(id);
+            let (name, param_types) = if affected.contains(&id) {
+                (new_name, new_param_types.to_vec())
+            } else {
+                if sym.name != new_name {
+                    continue;
                 }
-                continue;
-            }
-
-            if sym.name != new_name {
-                continue;
-            }
-
-            if let Some(sig_types) = index.method_param_types(sym.id) {
-                if sig_types.len() == new_param_count {
-                    by_sig.entry(sig_types.to_vec()).or_insert(id);
-                }
-                continue;
-            }
-
-            let parsed = match parse_method(index, sym, id) {
-                Ok(m) => m,
-                Err(_) => continue,
+                let param_types: Vec<String> = if let Some(sig_types) = index.method_param_types(sym.id)
+                {
+                    sig_types.to_vec()
+                } else {
+                    let parsed = match parse_method(index, sym, id) {
+                        Ok(m) => m,
+                        Err(_) => continue,
+                    };
+                    parsed.params.iter().map(|p| p.ty.clone()).collect()
+                };
+                (sym.name.as_str(), param_types)
             };
-            let parsed_types: Vec<String> = parsed.params.iter().map(|p| p.ty.clone()).collect();
-            if parsed_types.len() == new_param_count {
-                by_sig.entry(parsed_types).or_insert(id);
+
+            if name == new_name && param_types.len() == expected_param_count {
+                if param_types_match_expected(&param_types, expected_param_types) {
+                    by_sig.entry(param_types).or_insert(id);
+                }
             }
         }
         cur = index.class_extends(class);
@@ -742,6 +774,156 @@ fn rewrite_args(old_args: &[String], ops: &[ParameterOperation]) -> Vec<String> 
         }
     }
     out
+}
+
+fn param_types_match_expected(param_types: &[String], expected: &[Option<String>]) -> bool {
+    if param_types.len() != expected.len() {
+        return false;
+    }
+    for (actual, exp) in param_types.iter().zip(expected.iter()) {
+        if let Some(t) = exp {
+            if actual != t {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn rewrite_types_for_call(
+    old_types: &[Option<String>],
+    ops: &[ParameterOperation],
+) -> Vec<Option<String>> {
+    let mut out = Vec::new();
+    for op in ops {
+        match op {
+            ParameterOperation::Existing { old_index, .. } => {
+                out.push(old_types.get(*old_index).cloned().unwrap_or(None));
+            }
+            ParameterOperation::Add { ty, .. } => out.push(Some(ty.clone())),
+        }
+    }
+    out
+}
+
+fn infer_call_arg_types(text: &str, call_start: usize, args: &[String]) -> Vec<Option<String>> {
+    args.iter()
+        .map(|arg| infer_expr_type(text, call_start, arg))
+        .collect()
+}
+
+fn infer_expr_type(text: &str, offset: usize, expr: &str) -> Option<String> {
+    let e = expr.trim();
+    if e.is_empty() {
+        return None;
+    }
+    if e.starts_with('"') {
+        return Some("String".to_string());
+    }
+    if e.starts_with('\'') {
+        return Some("char".to_string());
+    }
+    if e == "true" || e == "false" {
+        return Some("boolean".to_string());
+    }
+    if looks_like_int_literal(e) {
+        return Some("int".to_string());
+    }
+    if let Some(rest) = e.strip_prefix("new") {
+        let rest = rest.trim_start();
+        let bytes = rest.as_bytes();
+        if bytes.first().copied().map(is_ident_continue).unwrap_or(false) {
+            let mut end = 0usize;
+            while end < bytes.len()
+                && (is_ident_continue(bytes[end]) || bytes[end] == b'.' || bytes[end] == b'$')
+            {
+                end += 1;
+            }
+            let ty = rest[..end].trim();
+            if !ty.is_empty() {
+                return Some(ty.to_string());
+            }
+        }
+    }
+    if is_simple_identifier(e) {
+        return infer_var_type_in_scope_any(text, offset, e);
+    }
+    None
+}
+
+fn looks_like_int_literal(expr: &str) -> bool {
+    let e = expr.trim();
+    let e = e.strip_prefix('+').or_else(|| e.strip_prefix('-')).unwrap_or(e);
+    if e.is_empty() {
+        return false;
+    }
+    e.bytes().all(|b| b.is_ascii_digit() || b == b'_')
+}
+
+fn is_simple_identifier(expr: &str) -> bool {
+    let bytes = expr.as_bytes();
+    if bytes.is_empty() {
+        return false;
+    }
+    let first = bytes[0];
+    if !((first as char).is_ascii_alphabetic() || first == b'_' || first == b'$') {
+        return false;
+    }
+    bytes.iter().copied().all(is_ident_continue)
+}
+
+fn infer_var_type_in_scope_any(text: &str, offset: usize, var_name: &str) -> Option<String> {
+    // Best-effort heuristic: search backwards in the same file for `<Type> <var_name>` before the
+    // usage site. Unlike `infer_var_type_in_scope`, this also accepts primitive types.
+    let before = &text[..offset.min(text.len())];
+    let needle = format!(" {}", var_name);
+    let mut search_pos = before.len();
+    while let Some(pos) = before[..search_pos].rfind(&needle) {
+        let prefix = before[..pos].trim_end();
+        let mut start = prefix.len();
+        while start > 0 && is_type_token_char(prefix.as_bytes()[start - 1]) {
+            start -= 1;
+        }
+        let ty = prefix[start..].trim();
+        if is_plausible_type_token(ty) {
+            return Some(ty.to_string());
+        }
+        search_pos = pos;
+    }
+    None
+}
+
+fn is_type_token_char(b: u8) -> bool {
+    // Allow generic/array/package tokens in best-effort type extraction.
+    (b as char).is_ascii_alphanumeric()
+        || matches!(b, b'_' | b'$' | b'.' | b'<' | b'>' | b',' | b'[' | b']' | b'?')
+}
+
+fn is_plausible_type_token(ty: &str) -> bool {
+    if ty.is_empty() {
+        return false;
+    }
+    let mut base = ty.trim();
+
+    // Strip generic arguments.
+    if let Some((head, _)) = base.split_once('<') {
+        base = head.trim_end();
+    }
+
+    // Strip array suffixes.
+    while let Some(stripped) = base.strip_suffix("[]") {
+        base = stripped.trim_end();
+    }
+
+    matches!(
+        base,
+        "byte" | "short" | "int" | "long" | "float" | "double" | "boolean" | "char"
+    ) || base
+        .rsplit('.')
+        .next()
+        .and_then(|seg| seg.chars().next())
+        .map(|c| c.is_ascii_uppercase())
+        .unwrap_or(false)
 }
 
 fn infer_receiver_class(

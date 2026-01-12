@@ -102,6 +102,59 @@ fn reorder_params_updates_calls() {
 }
 
 #[test]
+fn overloaded_methods_do_not_update_other_overload_headers_or_calls() {
+    let (index, mut files) = build_index(vec![(
+        "file:///A.java",
+        r#"class A {
+    int foo(int a, int b) { return a + b; }
+    int foo(String a, String b) { return 0; }
+    void test() {
+        int x = foo(1, 2);
+        int y = foo("a", "b");
+    }
+}
+"#,
+    )]);
+
+    let target = method_id(&index, "A", "foo", &["int", "int"]);
+    let change = ChangeSignature {
+        target,
+        new_name: None,
+        parameters: vec![
+            ParameterOperation::Existing {
+                old_index: 1,
+                new_name: None,
+                new_type: None,
+            },
+            ParameterOperation::Existing {
+                old_index: 0,
+                new_name: None,
+                new_type: None,
+            },
+        ],
+        new_return_type: None,
+        new_throws: None,
+        propagate_hierarchy: HierarchyPropagation::None,
+    };
+
+    let edit = change_signature(&index, &change).expect("refactor succeeds");
+    apply_workspace_edit(&mut files, edit);
+
+    assert_eq!(
+        files.get("file:///A.java").unwrap(),
+        r#"class A {
+    int foo(int b, int a) { return a + b; }
+    int foo(String a, String b) { return 0; }
+    void test() {
+        int x = foo(2, 1);
+        int y = foo("a", "b");
+    }
+}
+"#
+    );
+}
+
+#[test]
 fn add_param_with_default_updates_calls() {
     let (index, mut files) = build_index(vec![(
         "file:///A.java",
