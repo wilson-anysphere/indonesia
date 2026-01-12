@@ -74,18 +74,44 @@ impl Ord for CandidateKey<'_> {
         // This ordering is the "best first" ordering used by `search_with_stats`.
         // `BinaryHeap` is a max-heap, so we store `Reverse<CandidateKey>` and pop
         // the worst candidate when maintaining a bounded top-K heap.
-        self.rank_key
-            .cmp(&other.rank_key)
-            // Shorter names rank higher for the same fuzzy score.
-            .then_with(|| other.name.len().cmp(&self.name.len()))
-            // Stable disambiguators.
-            .then_with(|| other.name.cmp(self.name))
-            .then_with(|| other.qualified_name.cmp(self.qualified_name))
-            .then_with(|| other.location_file.cmp(self.location_file))
-            .then_with(|| other.location_line.cmp(&self.location_line))
-            .then_with(|| other.location_column.cmp(&self.location_column))
-            .then_with(|| other.ast_id.cmp(&self.ast_id))
-            .then_with(|| other.id.cmp(&self.id))
+        let mut ord = self.rank_key.cmp(&other.rank_key);
+        if ord != Ordering::Equal {
+            return ord;
+        }
+
+        // Shorter names rank higher for the same fuzzy score.
+        ord = other.name.len().cmp(&self.name.len());
+        if ord != Ordering::Equal {
+            return ord;
+        }
+
+        // Stable disambiguators.
+        ord = other.name.cmp(self.name);
+        if ord != Ordering::Equal {
+            return ord;
+        }
+        ord = other.qualified_name.cmp(self.qualified_name);
+        if ord != Ordering::Equal {
+            return ord;
+        }
+        ord = other.location_file.cmp(self.location_file);
+        if ord != Ordering::Equal {
+            return ord;
+        }
+        ord = other.location_line.cmp(&self.location_line);
+        if ord != Ordering::Equal {
+            return ord;
+        }
+        ord = other.location_column.cmp(&self.location_column);
+        if ord != Ordering::Equal {
+            return ord;
+        }
+        ord = other.ast_id.cmp(&self.ast_id);
+        if ord != Ordering::Equal {
+            return ord;
+        }
+
+        other.id.cmp(&self.id)
     }
 }
 
