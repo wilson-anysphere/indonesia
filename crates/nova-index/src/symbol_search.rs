@@ -45,7 +45,7 @@ pub struct SearchStats {
 pub struct SymbolSearchIndex {
     symbols: Vec<SymbolEntry>,
     trigram: TrigramIndex,
-    /// Maps first ASCII-lowercased byte to symbol ids.
+    /// Maps first ASCII-lowercased byte (from either `name` or `qualified_name`) to symbol ids.
     prefix1: Vec<Vec<SymbolId>>,
 }
 
@@ -66,8 +66,27 @@ impl SymbolSearchIndex {
 
         let mut prefix1: Vec<Vec<SymbolId>> = vec![Vec::new(); 256];
         for (id, entry) in entries.iter().enumerate() {
-            if let Some(&b0) = entry.symbol.name.as_bytes().first() {
-                prefix1[b0.to_ascii_lowercase() as usize].push(id as SymbolId);
+            let id = id as SymbolId;
+            let name_key = entry
+                .symbol
+                .name
+                .as_bytes()
+                .first()
+                .map(|&b0| b0.to_ascii_lowercase());
+            let qualified_key = entry
+                .symbol
+                .qualified_name
+                .as_bytes()
+                .first()
+                .map(|&b0| b0.to_ascii_lowercase());
+
+            if let Some(key) = name_key {
+                prefix1[key as usize].push(id);
+            }
+            if let Some(key) = qualified_key {
+                if Some(key) != name_key {
+                    prefix1[key as usize].push(id);
+                }
             }
         }
 
@@ -506,5 +525,38 @@ mod tests {
 
         let results = index.search("fb", 10);
         assert_eq!(results[0].symbol.name, "FooBar");
+    }
+
+    #[test]
+    fn short_queries_can_match_qualified_name_prefix_when_name_bucket_empty() {
+        // Regression test: prefix buckets were previously built from `symbol.name` only.
+        // For short queries (len < 3) this could force a bounded "first 50k" scan, which
+        // can miss matches depending on insertion order.
+        //
+        // Here, no symbol names start with 'c', but one qualified name starts with "com.".
+        // The match must still be found for query "co".
+        let mut symbols = Vec::with_capacity(50_001);
+        // Fill the first 50k entries with symbols that cannot match "co" at all
+        // (they contain no 'c').
+        for _ in 0..50_000 {
+            symbols.push(Symbol {
+                name: "aa".into(),
+                qualified_name: "bb".into(),
+            });
+        }
+        // Put the only matching symbol after the bounded scan window.
+        symbols.push(Symbol {
+            name: "Foo".into(),
+            qualified_name: "com.example.Foo".into(),
+        });
+
+        let index = SymbolSearchIndex::build(symbols);
+        let results = index.search("co", 10);
+        assert!(
+            results
+                .iter()
+                .any(|r| r.symbol.qualified_name.starts_with("com.")),
+            "expected query to match via qualified_name, got: {results:?}"
+        );
     }
 }
