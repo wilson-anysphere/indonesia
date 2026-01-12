@@ -248,7 +248,11 @@ async fn dap_attach_emits_process_event() {
         .get("body")
         .and_then(|v| v.as_object())
         .expect("process event missing body");
-    assert_eq!(body.get("name").and_then(|v| v.as_str()), Some("java"));
+    let expected_name = format!("127.0.0.1:{}", jdwp.addr().port());
+    assert_eq!(
+        body.get("name").and_then(|v| v.as_str()),
+        Some(expected_name.as_str())
+    );
     assert_eq!(
         body.get("isLocalProcess").and_then(|v| v.as_bool()),
         Some(true)

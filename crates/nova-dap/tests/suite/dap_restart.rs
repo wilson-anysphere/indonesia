@@ -1,4 +1,8 @@
-use std::{path::Path, time::Duration};
+use std::{
+    path::Path,
+    process::{Command as StdCommand, Stdio},
+    time::Duration,
+};
 
 use nova_dap::dap_tokio::{DapReader, DapWriter};
 use nova_dap::wire_server;
@@ -68,6 +72,57 @@ async fn wait_for_new_pid(path: &Path, old_pid: u32) -> u32 {
     panic!("pid file {path:?} was not updated after restart");
 }
 
+fn is_event(msg: &Value, name: &str) -> bool {
+    msg.get("type").and_then(|v| v.as_str()) == Some("event")
+        && msg.get("event").and_then(|v| v.as_str()) == Some(name)
+}
+
+fn file_len(path: &Path) -> u64 {
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
+
+async fn wait_for_file_contains(path: &Path, needle: &str) {
+    for _ in 0..200 {
+        if let Ok(contents) = std::fs::read_to_string(path) {
+            if contents.contains(needle) {
+                return;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("file {path:?} did not contain {needle:?}");
+}
+
+struct KillOnDrop(u32);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let pid = self.0;
+        if pid == 0 {
+            return;
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let _ = StdCommand::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = StdCommand::new("kill")
+                .arg("-9")
+                .arg(pid.to_string())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
+}
+
 #[tokio::test]
 async fn dap_restart_command_launch_terminates_old_process_spawns_new_and_adapter_stays_alive() {
     let jdwp = MockJdwpServer::spawn().await.unwrap();
@@ -97,6 +152,7 @@ async fn dap_restart_command_launch_terminates_old_process_spawns_new_and_adapte
 
     let temp = TempDir::new().unwrap();
     let pid_path = temp.path().join("pid.txt");
+    let heartbeat_path = temp.path().join("heartbeat.txt");
 
     let helper = env!("CARGO_BIN_EXE_nova_dap_test_helper");
     send_request(
@@ -106,7 +162,14 @@ async fn dap_restart_command_launch_terminates_old_process_spawns_new_and_adapte
         json!({
             "cwd": temp.path().to_string_lossy(),
             "command": helper,
-            "args": ["--pid-file", pid_path.to_string_lossy()],
+            "args": [
+                "--pid-file",
+                pid_path.to_string_lossy(),
+                "--heartbeat-file",
+                heartbeat_path.to_string_lossy(),
+                "--sleep-ms",
+                "25"
+            ],
             "env": { "NOVA_DAP_TEST": "1" },
             "host": "127.0.0.1",
             "port": jdwp.addr().port(),
@@ -121,6 +184,7 @@ async fn dap_restart_command_launch_terminates_old_process_spawns_new_and_adapte
         .unwrap_or(false));
 
     let pid1 = wait_for_pid_file(&pid_path).await;
+    wait_for_file_contains(&heartbeat_path, &format!("heartbeat pid={pid1}")).await;
 
     #[cfg(target_os = "linux")]
     assert!(
@@ -129,14 +193,22 @@ async fn dap_restart_command_launch_terminates_old_process_spawns_new_and_adapte
     );
 
     send_request(&mut writer, 3, "restart", json!({})).await;
-    let (restart_resp, _) = read_until_response(&mut reader, 3).await;
+    let (restart_resp, restart_messages) = read_until_response(&mut reader, 3).await;
     assert!(restart_resp
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
+    assert!(
+        !restart_messages
+            .iter()
+            .any(|msg| is_event(msg, "terminated") || is_event(msg, "exited")),
+        "did not expect terminated/exited events during restart"
+    );
 
     let pid2 = wait_for_new_pid(&pid_path, pid1).await;
     assert_ne!(pid1, pid2, "expected restart to spawn a new process");
+    let _kill = KillOnDrop(pid2);
+    wait_for_file_contains(&heartbeat_path, &format!("heartbeat pid={pid2}")).await;
 
     #[cfg(target_os = "linux")]
     {
@@ -155,6 +227,24 @@ async fn dap_restart_command_launch_terminates_old_process_spawns_new_and_adapte
         assert!(
             Path::new(&proc2).exists(),
             "expected new helper process {pid2} to be running"
+        );
+    }
+
+    // Ensure the old process is not still producing heartbeats after the new process starts.
+    // (This is a coarse cross-platform check to catch regressions where `restart` doesn't kill the
+    // old debuggee.)
+    let len_at_pid2 = file_len(&heartbeat_path) as usize;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    if let Ok(bytes) = std::fs::read(&heartbeat_path) {
+        let start = len_at_pid2.min(bytes.len());
+        let new_text = String::from_utf8_lossy(&bytes[start..]);
+        assert!(
+            !new_text.contains(&format!("heartbeat pid={pid1}")),
+            "expected old process {pid1} to stop writing heartbeats after restart; saw: {new_text:?}"
+        );
+        assert!(
+            new_text.contains(&format!("heartbeat pid={pid2}")),
+            "expected new process {pid2} to be writing heartbeats after restart; saw: {new_text:?}"
         );
     }
 

@@ -41,10 +41,7 @@ fn main() {
                 print_line_len_stderr = args.next().and_then(|v| v.parse::<usize>().ok());
             }
             "--heartbeat" => heartbeat = true,
-            "--heartbeat-file" => {
-                heartbeat_file_path = args.next();
-                heartbeat = true;
-            }
+            "--heartbeat-file" => heartbeat_file_path = args.next(),
             _ => {}
         }
     }
@@ -101,11 +98,11 @@ fn main() {
             let mut err = io::stderr().lock();
             let _ = writeln!(&mut err, "nova-dap test helper heartbeat stderr pid={pid}");
             let _ = err.flush();
+        }
 
-            if let Some(file) = heartbeat_file.as_mut() {
-                let _ = writeln!(file, "heartbeat pid={pid}");
-                let _ = file.flush();
-            }
+        if let Some(file) = heartbeat_file.as_mut() {
+            let _ = writeln!(file, "heartbeat pid={pid}");
+            let _ = file.flush();
         }
     }
 }
