@@ -647,6 +647,38 @@ fn lexer_string_templates_allow_nested_templates_inside_interpolations() {
 }
 
 #[test]
+fn lexer_reports_unterminated_string_templates() {
+    for (input, expected_msg) in [
+        ("STR.\"unterminated", "unterminated string template"),
+        ("STR.\"hello \\{name", "unterminated string template interpolation"),
+        ("STR.\"\"\"\nunterminated", "unterminated text block template"),
+        (
+            "STR.\"\"\"\nhello \\{name",
+            "unterminated text block template interpolation",
+        ),
+    ] {
+        let (tokens, errors) = lex_with_errors(input);
+        assert!(
+            tokens.iter().any(|t| t.kind == SyntaxKind::Error),
+            "expected an Error token for `{input}`, got: {:?}",
+            tokens
+                .iter()
+                .map(|t| (t.kind, t.text(input).to_string()))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            errors.iter().any(|e| e.message.contains(expected_msg)),
+            "expected `{expected_msg}` in `{}`",
+            errors
+                .iter()
+                .map(|e| e.message.as_str())
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
+    }
+}
+
+#[test]
 fn lexer_text_block_templates_lex_without_error_tokens() {
     let input = "STR.\"\"\"\nhello \\{name}\n\"\"\"";
     let (tokens, errors) = lex_with_errors(input);
