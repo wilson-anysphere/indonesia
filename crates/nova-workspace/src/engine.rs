@@ -1301,11 +1301,14 @@ impl WorkspaceEngine {
             None
         }
         .unwrap_or_else(|| normalize_rel_path(&path.to_string()));
-        let rel_path_arc = Arc::new(rel_path.clone());
+        let rel_path_arc = Arc::new(rel_path);
         self.query_db.set_file_rel_path(file_id, rel_path_arc);
-        // `file_path` is a non-tracked persistence key used to warm-start Salsa queries (parse/HIR/typeck/flow).
-        // It is intentionally kept project-relative and normalized for cross-platform cache reuse.
-        self.query_db.set_file_path(file_id, rel_path);
+        // `file_path` is a non-tracked persistence key used to warm-start Salsa queries
+        // (parse/HIR/typeck/flow). It is intentionally kept project-relative and normalized for
+        // cross-platform cache reuse.
+        //
+        // `nova-db` keeps it in sync with `file_rel_path` (sharing the same `Arc<String>`), so
+        // workspace-managed files should only set `file_rel_path` here.
     }
 
     fn apply_path_event(&self, path: &Path) {
@@ -2039,6 +2042,7 @@ mod tests {
 
     use nova_cache::{CacheConfig, CacheDir};
     use nova_db::persistence::{PersistenceConfig, PersistenceMode};
+    use nova_db::salsa::HasFilePaths;
     use nova_db::NovaInputs;
     use nova_memory::{MemoryBudget, MemoryCategory};
     use nova_index::{AnnotationLocation, InheritanceEdge, ReferenceLocation, SymbolLocation};
@@ -2049,6 +2053,35 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    #[test]
+    fn open_document_keeps_file_rel_path_shared_with_persistent_file_path() {
+        let workspace = crate::Workspace::new_in_memory();
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let root = dir.path().canonicalize().unwrap();
+
+        // Initialize workspace root so `ensure_file_inputs` derives a stable project-relative path.
+        let engine = workspace.engine_for_tests();
+        engine.set_workspace_root(&root).unwrap();
+
+        let file = workspace.open_document(
+            VfsPath::local(root.join("A.java")),
+            "class A {}".to_string(),
+            1,
+        );
+
+        engine.query_db.with_snapshot(|snap| {
+            let rel_path = snap.file_rel_path(file);
+            let persistent_path = snap.file_path(file).expect("expected file path for FileId");
+
+            assert_eq!(&*rel_path, &*persistent_path);
+            assert!(
+                Arc::ptr_eq(&rel_path, &persistent_path),
+                "expected file_rel_path and file_path to share the same Arc"
+            );
+        });
+    }
 
     async fn wait_for_indexing_ready(rx: &async_channel::Receiver<WorkspaceEvent>) {
         let mut saw_started = false;
