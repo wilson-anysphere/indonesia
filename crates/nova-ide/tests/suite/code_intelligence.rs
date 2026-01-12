@@ -1,4 +1,4 @@
-use lsp_types::CompletionTextEdit;
+use lsp_types::{CompletionTextEdit, InsertTextFormat};
 use nova_db::InMemoryFileStore;
 use nova_ide::{
     call_hierarchy_outgoing_calls, completions, document_symbols, file_diagnostics,
@@ -89,6 +89,62 @@ class A {
     assert!(
         labels.contains(&"length"),
         "expected completion list to contain String.length; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_new_expression_includes_arraylist_with_star_import() {
+    let (db, file, pos) = fixture(
+        r#"
+import java.util.*;
+class A {
+  void m() {
+    Object x = new Arr<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "ArrayList")
+        .expect("expected ArrayList completion item");
+
+    assert_eq!(
+        item.insert_text_format,
+        Some(InsertTextFormat::SNIPPET),
+        "expected ArrayList completion to use snippet insertion"
+    );
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+    assert!(
+        edit.new_text.starts_with("ArrayList("),
+        "expected snippet insertion to start with `ArrayList(`; got {:?}",
+        edit.new_text
+    );
+}
+
+#[test]
+fn completion_new_expression_includes_string_without_imports() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    Object x = new Str<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"String"),
+        "expected completion list to contain String; got {labels:?}"
     );
 }
 

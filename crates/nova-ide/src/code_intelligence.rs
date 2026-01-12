@@ -4,7 +4,7 @@
 //! and semantic models. For this repository we keep the implementation lightweight
 //! and text-based so that user-visible IDE features can be exercised end-to-end.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -14,7 +14,7 @@ use lsp_types::{
     CompletionItemKind, CompletionTextEdit, DiagnosticSeverity, DocumentSymbol, Hover,
     HoverContents, InlayHint, InlayHintKind, Location, MarkupContent, MarkupKind, NumberOrString,
     Position, Range, SemanticToken, SemanticTokenType, SemanticTokensLegend, SignatureHelp,
-    SignatureInformation, SymbolKind, TextEdit, TypeHierarchyItem,
+    SignatureInformation, SymbolKind, TextEdit, TypeHierarchyItem, InsertTextFormat,
 };
 
 use nova_core::{path_to_file_uri, AbsPathBuf};
@@ -685,6 +685,169 @@ pub(crate) const STREAM_MEMBER_METHODS: &[(&str, &str)] = &[
     ),
 ];
 
+const MAX_NEW_TYPE_COMPLETIONS: usize = 100;
+const MAX_NEW_TYPE_JDK_CANDIDATES_PER_PACKAGE: usize = 200;
+
+#[derive(Default)]
+struct JavaImportInfo {
+    /// Fully-qualified imported type names (e.g. `java.util.ArrayList`).
+    explicit_types: Vec<String>,
+    /// Star-imported packages (e.g. `java.util` for `import java.util.*;`).
+    star_packages: Vec<String>,
+}
+
+fn parse_java_imports(text: &str) -> JavaImportInfo {
+    let mut out = JavaImportInfo::default();
+    for line in text.lines() {
+        let line = line.trim_start();
+        if !line.starts_with("import ") {
+            continue;
+        }
+
+        // Ignore `import static ...` for now; those introduce members, not types.
+        if line.starts_with("import static ") {
+            continue;
+        }
+
+        let mut rest = line["import ".len()..].trim();
+        if let Some(rest2) = rest.strip_suffix(';') {
+            rest = rest2.trim();
+        }
+        if rest.is_empty() {
+            continue;
+        }
+
+        if let Some(pkg) = rest.strip_suffix(".*") {
+            let pkg = pkg.trim();
+            if !pkg.is_empty() {
+                out.star_packages.push(pkg.to_string());
+            }
+            continue;
+        }
+
+        out.explicit_types.push(rest.to_string());
+    }
+
+    out
+}
+
+fn is_new_expression_type_completion_context(text: &str, prefix_start: usize) -> bool {
+    let new_end = skip_whitespace_backwards(text, prefix_start);
+    if new_end < 3 {
+        return false;
+    }
+    if &text[new_end - 3..new_end] != "new" {
+        return false;
+    }
+
+    // Ensure `new` is a standalone keyword, not a suffix of an identifier.
+    let new_start = new_end - 3;
+    if new_start > 0 {
+        let prev = text.as_bytes()[new_start - 1] as char;
+        if is_ident_continue(prev) {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn constructor_completion_item(label: String, detail: Option<String>) -> CompletionItem {
+    CompletionItem {
+        label: label.clone(),
+        kind: Some(CompletionItemKind::CONSTRUCTOR),
+        detail,
+        insert_text: Some(format!("{label}($0)")),
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
+        ..Default::default()
+    }
+}
+
+fn new_expression_type_completions(
+    db: &dyn Database,
+    file: FileId,
+    prefix: &str,
+) -> Vec<CompletionItem> {
+    let text = db.file_content(file);
+    let analysis = analyze(text);
+    let imports = parse_java_imports(text);
+
+    let jdk = JDK_INDEX
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(JdkIndex::new()));
+
+    let mut items = Vec::new();
+    let mut seen_labels: HashSet<String> = HashSet::new();
+
+    // 1) Classes declared in this file.
+    for class in &analysis.classes {
+        if seen_labels.insert(class.name.clone()) {
+            items.push(constructor_completion_item(class.name.clone(), None));
+        }
+    }
+
+    // 2) Explicit imports.
+    for ty in imports.explicit_types {
+        let simple = ty.rsplit('.').next().unwrap_or(&ty).to_string();
+        if seen_labels.insert(simple.clone()) {
+            items.push(constructor_completion_item(simple, Some(ty)));
+        }
+    }
+
+    // 3) JDK types from `java.lang.*` + `java.util.*` + any star-imported packages.
+    let mut packages = imports.star_packages;
+    packages.push("java.lang".to_string());
+    packages.push("java.util".to_string());
+    packages.sort();
+    packages.dedup();
+
+    for pkg in packages {
+        if items.len() >= MAX_NEW_TYPE_JDK_CANDIDATES_PER_PACKAGE * 4 {
+            break;
+        }
+
+        let pkg_prefix = format!("{pkg}.");
+        let Ok(names) = jdk.class_names_with_prefix(&pkg_prefix) else {
+            continue;
+        };
+
+        let mut added_for_pkg = 0usize;
+        for name in names {
+            if added_for_pkg >= MAX_NEW_TYPE_JDK_CANDIDATES_PER_PACKAGE {
+                break;
+            }
+
+            if !name.starts_with(&pkg_prefix) {
+                continue;
+            }
+
+            let rest = &name[pkg_prefix.len()..];
+            // Star-imports only expose direct package members (no subpackages).
+            if rest.contains('.') {
+                continue;
+            }
+
+            // Avoid nested (`$`) types for now; they require different syntax (`Outer.Inner`).
+            if rest.contains('$') {
+                continue;
+            }
+
+            let simple = rest.to_string();
+            if !seen_labels.insert(simple.clone()) {
+                continue;
+            }
+
+            items.push(constructor_completion_item(simple, Some(name)));
+            added_for_pkg += 1;
+        }
+    }
+
+    rank_completions(prefix, &mut items);
+    items.truncate(MAX_NEW_TYPE_COMPLETIONS);
+    items
+}
+
 /// Core (non-framework) completions for a Java source file.
 ///
 /// Framework completions are provided via the unified `nova-ext` framework providers and
@@ -706,6 +869,15 @@ pub(crate) fn core_completions(
         return Vec::new();
     };
     let (prefix_start, prefix) = identifier_prefix(text, offset);
+
+    if is_new_expression_type_completion_context(text, prefix_start) {
+        return decorate_completions(
+            text,
+            prefix_start,
+            offset,
+            new_expression_type_completions(db, file, &prefix),
+        );
+    }
 
     let before = skip_whitespace_backwards(text, prefix_start);
     if before > 0 && text.as_bytes()[before - 1] == b'.' {
@@ -898,6 +1070,15 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
                 }
             }
         }
+    }
+
+    if is_new_expression_type_completion_context(text, prefix_start) {
+        return decorate_completions(
+            text,
+            prefix_start,
+            offset,
+            new_expression_type_completions(db, file, &prefix),
+        );
     }
 
     let before = skip_whitespace_backwards(text, prefix_start);
