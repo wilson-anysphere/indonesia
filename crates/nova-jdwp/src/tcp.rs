@@ -275,7 +275,7 @@ impl TcpJdwpClient {
             let mut cursor = Cursor::new(&reply);
             let count = cursor.read_u32()? as usize;
 
-            let mut fields = Vec::with_capacity(count);
+            let mut fields = Vec::new();
             for _ in 0..count {
                 let field_id = cursor.read_id(self.id_sizes.field_id)?;
                 let name = cursor.read_string()?;
@@ -393,7 +393,7 @@ impl TcpJdwpClient {
         let mut cursor = Cursor::new(&reply);
         let tag = cursor.read_u8()?;
         let count = cursor.read_u32()? as usize;
-        let mut values = Vec::with_capacity(count);
+        let mut values = Vec::new();
         for _ in 0..count {
             values.push(self.read_value_with_tag(&mut cursor, tag)?);
         }
@@ -423,7 +423,7 @@ impl TcpJdwpClient {
 
         let mut cursor = Cursor::new(&reply);
         let count = cursor.read_u32()? as usize;
-        let mut values = Vec::with_capacity(count);
+        let mut values = Vec::new();
         for _ in 0..count {
             values.push(self.read_tagged_value(&mut cursor)?);
         }
@@ -545,7 +545,7 @@ impl TcpJdwpClient {
             let mut cursor = Cursor::new(&reply);
             let _arg_count = cursor.read_u32()?;
             let count = cursor.read_u32()? as usize;
-            let mut vars = Vec::with_capacity(count);
+            let mut vars = Vec::new();
             for _ in 0..count {
                 let code_index = cursor.read_i64()?;
                 let name = cursor.read_string()?;
@@ -591,7 +591,7 @@ impl TcpJdwpClient {
         let reply = self.send_command(16, 1, &body)?;
         let mut cursor = Cursor::new(&reply);
         let count = cursor.read_u32()? as usize;
-        let mut values = Vec::with_capacity(count);
+        let mut values = Vec::new();
         for _ in 0..count {
             values.push(self.read_tagged_value(&mut cursor)?);
         }
@@ -862,7 +862,7 @@ impl JdwpClient for TcpJdwpClient {
         let mut cursor = Cursor::new(&reply);
         let count = cursor.read_u32()? as usize;
 
-        let mut threads = Vec::with_capacity(count);
+        let mut threads = Vec::new();
         for _ in 0..count {
             let id = cursor.read_id(self.id_sizes.object_id)?;
 
@@ -888,7 +888,7 @@ impl JdwpClient for TcpJdwpClient {
         let mut cursor = Cursor::new(&reply);
         let count = cursor.read_u32()? as usize;
 
-        let mut frames = Vec::with_capacity(count);
+        let mut frames = Vec::new();
         for _ in 0..count {
             let frame_id = cursor.read_id(self.id_sizes.frame_id)?;
             let _type_tag = cursor.read_u8()?;
@@ -1937,7 +1937,7 @@ mod tests {
                         let _thread_id = cursor.read_id(8).unwrap();
                         let _frame_id = cursor.read_id(8).unwrap();
                         let count = cursor.read_u32().unwrap() as usize;
-                        let mut requests = Vec::with_capacity(count);
+                        let mut requests = Vec::new();
                         for _ in 0..count {
                             let slot = cursor.read_u32().unwrap();
                             let tag = cursor.read_u8().unwrap();

@@ -341,13 +341,13 @@ impl JdwpClient {
 
         let base_dir = r.read_string()?;
         let classpath_count = r.read_u32()? as usize;
-        let mut classpaths = Vec::with_capacity(classpath_count);
+        let mut classpaths = Vec::new();
         for _ in 0..classpath_count {
             classpaths.push(r.read_string()?);
         }
 
         let boot_classpath_count = r.read_u32()? as usize;
-        let mut boot_classpaths = Vec::with_capacity(boot_classpath_count);
+        let mut boot_classpaths = Vec::new();
         for _ in 0..boot_classpath_count {
             boot_classpaths.push(r.read_string()?);
         }
@@ -382,7 +382,7 @@ impl JdwpClient {
         let sizes = self.id_sizes().await;
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
-        let mut threads = Vec::with_capacity(count);
+        let mut threads = Vec::new();
         for _ in 0..count {
             threads.push(r.read_object_id(&sizes)?);
         }
@@ -395,7 +395,7 @@ impl JdwpClient {
         let sizes = self.id_sizes().await;
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
-        let mut groups = Vec::with_capacity(count);
+        let mut groups = Vec::new();
         for _ in 0..count {
             groups.push(r.read_object_id(&sizes)?);
         }
@@ -469,7 +469,7 @@ impl JdwpClient {
         let payload = self.send_command_raw(11, 8, w.into_vec()).await?;
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
-        let mut monitors = Vec::with_capacity(count);
+        let mut monitors = Vec::new();
         for _ in 0..count {
             monitors.push(r.read_object_id(&sizes)?);
         }
@@ -507,7 +507,7 @@ impl JdwpClient {
         let payload = self.send_command_raw(11, 13, w.into_vec()).await?;
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
-        let mut monitors = Vec::with_capacity(count);
+        let mut monitors = Vec::new();
         for _ in 0..count {
             let monitor = r.read_object_id(&sizes)?;
             let stack_depth = r.read_i32()?;
@@ -529,7 +529,7 @@ impl JdwpClient {
         let payload = self.send_command_raw(11, 6, w.into_vec()).await?;
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
-        let mut frames = Vec::with_capacity(count);
+        let mut frames = Vec::new();
         for _ in 0..count {
             let frame_id = r.read_id(sizes.frame_id)?;
             let location = r.read_location(&sizes)?;
@@ -573,13 +573,13 @@ impl JdwpClient {
         let mut r = JdwpReader::new(&payload);
 
         let group_count = r.read_u32()? as usize;
-        let mut groups = Vec::with_capacity(group_count);
+        let mut groups = Vec::new();
         for _ in 0..group_count {
             groups.push(r.read_object_id(&sizes)?);
         }
 
         let thread_count = r.read_u32()? as usize;
-        let mut threads = Vec::with_capacity(thread_count);
+        let mut threads = Vec::new();
         for _ in 0..thread_count {
             threads.push(r.read_object_id(&sizes)?);
         }
@@ -592,7 +592,7 @@ impl JdwpClient {
         let sizes = self.id_sizes().await;
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
-        let mut classes = Vec::with_capacity(count);
+        let mut classes = Vec::new();
         for _ in 0..count {
             classes.push(ClassInfo {
                 ref_type_tag: r.read_u8()?,
@@ -614,7 +614,7 @@ impl JdwpClient {
 
         let count = r.read_u32()? as usize;
         let signature = signature.to_string();
-        let mut classes = Vec::with_capacity(count);
+        let mut classes = Vec::new();
         for _ in 0..count {
             classes.push(ClassInfo {
                 ref_type_tag: r.read_u8()?,
@@ -765,7 +765,7 @@ impl JdwpClient {
         let payload = self.send_command_raw(2, 10, w.into_vec()).await?;
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
-        let mut interfaces = Vec::with_capacity(count);
+        let mut interfaces = Vec::new();
         for _ in 0..count {
             interfaces.push(r.read_reference_type_id(&sizes)?);
         }
@@ -800,7 +800,7 @@ impl JdwpClient {
         let payload = self.send_command_raw(2, 5, w.into_vec()).await?;
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
-        let mut methods = Vec::with_capacity(count);
+        let mut methods = Vec::new();
         for _ in 0..count {
             methods.push(MethodInfo {
                 method_id: r.read_id(sizes.method_id)?,
@@ -823,7 +823,7 @@ impl JdwpClient {
         let payload = self.send_command_raw(2, 15, w.into_vec()).await?;
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
-        let mut methods = Vec::with_capacity(count);
+        let mut methods = Vec::new();
         for _ in 0..count {
             let method_id = r.read_id(sizes.method_id)?;
             let name = r.read_string()?;
@@ -890,7 +890,7 @@ impl JdwpClient {
         let start = r.read_u64()?;
         let end = r.read_u64()?;
         let count = r.read_u32()? as usize;
-        let mut lines = Vec::with_capacity(count);
+        let mut lines = Vec::new();
         for _ in 0..count {
             lines.push(LineTableEntry {
                 code_index: r.read_u64()?,
@@ -913,7 +913,7 @@ impl JdwpClient {
         let mut r = JdwpReader::new(&payload);
         let arg_count = r.read_u32()?;
         let count = r.read_u32()? as usize;
-        let mut vars = Vec::with_capacity(count);
+        let mut vars = Vec::new();
         for _ in 0..count {
             vars.push(VariableInfo {
                 code_index: r.read_u64()?,
@@ -940,7 +940,7 @@ impl JdwpClient {
         let mut r = JdwpReader::new(&payload);
         let arg_count = r.read_u32()?;
         let count = r.read_u32()? as usize;
-        let mut vars = Vec::with_capacity(count);
+        let mut vars = Vec::new();
         for _ in 0..count {
             let code_index = r.read_u64()?;
             let name = r.read_string()?;
@@ -995,7 +995,7 @@ impl JdwpClient {
         let payload = self.send_command_raw(16, 1, w.into_vec()).await?;
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
-        let mut values = Vec::with_capacity(count);
+        let mut values = Vec::new();
         for _ in 0..count {
             let tag = r.read_u8()?;
             values.push(r.read_value(tag, &sizes)?);
@@ -1230,7 +1230,7 @@ impl JdwpClient {
         let payload = self.send_command_raw(2, 4, w.into_vec()).await?;
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
-        let mut fields = Vec::with_capacity(count);
+        let mut fields = Vec::new();
         for _ in 0..count {
             fields.push(FieldInfo {
                 field_id: r.read_id(sizes.field_id)?,
@@ -1253,7 +1253,7 @@ impl JdwpClient {
         let payload = self.send_command_raw(2, 14, w.into_vec()).await?;
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
-        let mut fields = Vec::with_capacity(count);
+        let mut fields = Vec::new();
         for _ in 0..count {
             let field_id = r.read_id(sizes.field_id)?;
             let name = r.read_string()?;
@@ -1374,7 +1374,7 @@ impl JdwpClient {
         let payload = self.send_command_raw(2, 6, w.into_vec()).await?;
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
-        let mut values = Vec::with_capacity(count);
+        let mut values = Vec::new();
         for _ in 0..count {
             let tag = r.read_u8()?;
             values.push(r.read_value(tag, &sizes)?);
@@ -1397,7 +1397,7 @@ impl JdwpClient {
         let payload = self.send_command_raw(9, 2, w.into_vec()).await?;
         let mut r = JdwpReader::new(&payload);
         let count = r.read_u32()? as usize;
-        let mut values = Vec::with_capacity(count);
+        let mut values = Vec::new();
         for _ in 0..count {
             let tag = r.read_u8()?;
             values.push(r.read_value(tag, &sizes)?);
@@ -1461,7 +1461,7 @@ impl JdwpClient {
         let owner = r.read_object_id(&sizes)?;
         let entry_count = r.read_i32()?;
         let waiter_count = r.read_u32()? as usize;
-        let mut waiters = Vec::with_capacity(waiter_count);
+        let mut waiters = Vec::new();
         for _ in 0..waiter_count {
             waiters.push(r.read_object_id(&sizes)?);
         }
@@ -1501,7 +1501,7 @@ impl JdwpClient {
         // tagged value so the debugger can distinguish Strings/arrays/etc.
         let element_tag = r.read_u8()?;
         let count = r.read_u32()? as usize;
-        let mut values = Vec::with_capacity(count);
+        let mut values = Vec::new();
 
         let is_primitive = matches!(
             element_tag,
