@@ -120,17 +120,17 @@ impl ItemTreeStore {
         self.update_tracker_locked(&inner);
     }
 
-    pub fn release_closed_files(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.retain(|file, _| self.open_docs.is_open(*file));
-        self.update_tracker_locked(&inner);
-    }
-
     pub fn remove(&self, file: FileId) {
         let mut inner = self.inner.lock().unwrap();
         if inner.remove(&file).is_some() {
             self.update_tracker_locked(&inner);
         }
+    }
+
+    pub fn release_closed_files(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.retain(|file, _| self.open_docs.is_open(*file));
+        self.update_tracker_locked(&inner);
     }
 
     fn clear_all(&self) {

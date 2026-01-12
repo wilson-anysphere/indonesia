@@ -224,6 +224,13 @@ pub enum TrackedSalsaMemo {
     /// accounted under [`MemoryCategory::SyntaxTrees`].
     Parse,
     ParseJava,
+    /// Token-based structural summary for [`NovaSemantic::item_tree`].
+    ///
+    /// When an `item_tree` result is pinned in [`ItemTreeStore`] (e.g. for an
+    /// open document), the `Arc<TokenItemTree>` allocation is shared between
+    /// Salsa memo tables and the store. In that case we record `0` bytes here
+    /// to avoid double-counting; the bytes are instead accounted under
+    /// [`MemoryCategory::SyntaxTrees`].
     ItemTree,
 }
 
@@ -1076,19 +1083,17 @@ impl Database {
         self.memo_footprint.record(file, TrackedSalsaMemo::Parse, bytes);
     }
 
-    /// Remove any pinned item tree for `file` from the shared item tree store (if configured) and
-    /// restore the memo entry in the Salsa memo footprint.
-    ///
-    /// This is intended to be called when an editor document is closed: the item tree is no longer
-    /// pinned and should once again be attributed to Salsa memoization for accounting purposes.
+    /// Remove any pinned `item_tree` result for `file` from the shared
+    /// [`ItemTreeStore`] (if configured) and restore the query-cache entry in
+    /// the Salsa memo footprint.
     pub fn unpin_item_tree(&self, file: FileId) {
         let store = self.inner.lock().item_tree_store.clone();
         if let Some(store) = store.as_ref() {
             store.remove(file);
         }
 
-        // Best-effort: restore the item-tree memo approximation based on the most recent input
-        // text snapshot.
+        // Best-effort: restore the item_tree memo approximation based on the
+        // most recent input text snapshot.
         let bytes = self
             .inputs
             .lock()
@@ -2986,10 +2991,10 @@ class Foo {
 
         let manager = MemoryManager::new(MemoryBudget::from_total(10 * 1024 * 1024));
         let open_docs = Arc::new(OpenDocuments::default());
-        let syntax_trees = SyntaxTreeStore::new(&manager, open_docs.clone());
+        let syntax_store = SyntaxTreeStore::new(&manager, open_docs.clone());
 
         let db = Database::new_with_memory_manager(&manager);
-        db.set_syntax_tree_store(syntax_trees);
+        db.set_syntax_tree_store(syntax_store);
         db.attach_item_tree_store(&manager, open_docs.clone());
 
         let file = FileId::from_raw(43);
@@ -3010,7 +3015,16 @@ class Foo {
         let report = manager.report();
         assert!(
             report.usage.syntax_trees > 0,
-            "expected syntax tree store(s) to report usage for open document"
+            "expected syntax tree + item tree stores to report usage for open document"
+        );
+
+        let syntax_and_cache = report.usage.query_cache.saturating_add(report.usage.syntax_trees);
+        assert!(
+            syntax_and_cache <= text_len.saturating_mul(5) / 2,
+            "expected (query_cache+syntax_trees) to be ~2x text_len (<= 2.5x) when parse + item_tree are pinned, got sum={} (query_cache={}, syntax_trees={}) for text_len={text_len}",
+            syntax_and_cache,
+            report.usage.query_cache,
+            report.usage.syntax_trees
         );
         assert!(
             report.usage.query_cache < text_len / 2,
