@@ -49,6 +49,22 @@ class A {}
 }
 
 #[test]
+fn diagnostics_include_unresolved_import() {
+    let (db, file) = fixture_file(
+        r#"
+import does.not.Exist;
+class A {}
+"#,
+    );
+
+    let diags = file_diagnostics(&db, file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "unresolved-import"),
+        "expected unresolved-import diagnostic; got {diags:#?}"
+    );
+}
+
+#[test]
 fn file_diagnostics_include_language_level_feature_gate() {
     use tempfile::TempDir;
 

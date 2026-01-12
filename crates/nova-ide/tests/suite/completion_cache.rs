@@ -8,12 +8,11 @@ use crate::framework_harness::{offset_to_position, CARET};
 
 #[test]
 fn completion_env_is_reused_across_completion_requests() {
-    let mut db = InMemoryFileStore::new();
-
     // Use an isolated, unique root so this test doesn't fight other tests over the global
     // completion cache entry for a shared path (e.g. "/workspace").
     let tmp = TempDir::new().expect("tempdir");
     let root = tmp.path();
+    let mut db = InMemoryFileStore::new();
 
     let file_a_path = root.join("src/main/java/p/FooBar.java");
     let file_b_path = root.join("src/main/java/p/Main.java");
