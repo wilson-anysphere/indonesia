@@ -8766,10 +8766,12 @@ fn apply_code_action_outcome<O: RpcOut>(
                         "edit": edit.clone(),
                     }),
                 )
-                .map_err(|e| (-32603, e.to_string()))?;
+            .map_err(|e| (-32603, e.to_string()))?;
 
             // LSP clients generally ignore the `workspace/executeCommand` result for
             // edit-producing commands; tests and existing integrations expect `null`.
+            // `workspace/executeCommand` for patch-based AI code actions returns `null` on success
+            // and applies edits via `workspace/applyEdit` (see `docs/protocol-extensions.md`).
             //
             // Returning `null` also avoids leaking large edit payloads into clients that display
             // executeCommand results verbatim (e.g. Nova's VS Code extension "show" commands).

@@ -3034,7 +3034,10 @@ local_only = true
         "expected generated method body in new text: {new_text}"
     );
 
-    // ExecuteCommand result is `null`; the actual edit is delivered via `workspace/applyEdit`.
+    assert!(
+        exec_resp.get("error").is_none(),
+        "expected executeCommand success, got: {exec_resp:#?}"
+    );
     assert!(
         exec_resp.get("error").is_none(),
         "expected executeCommand success, got: {exec_resp:#?}"

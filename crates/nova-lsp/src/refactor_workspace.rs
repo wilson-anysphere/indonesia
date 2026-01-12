@@ -304,6 +304,7 @@ fn is_java_file(path: &Path) -> bool {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+    use std::fs;
 
     #[test]
     fn includes_overlay_java_files_when_not_scanning() {
@@ -333,5 +334,69 @@ mod tests {
         assert_eq!(paths.len(), 2);
         assert!(paths.contains(&focus_path));
         assert!(paths.contains(&other_path));
+    }
+
+    #[test]
+    fn includes_overlay_java_files_in_subdirs_when_not_scanning() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let focus_path = dir.path().join("Foo.java");
+        let other_path = dir.path().join("nested").join("Bar.java");
+
+        let focus_uri_string = uri_string_for_path(&focus_path).expect("focus uri");
+        let other_uri_string = uri_string_for_path(&other_path).expect("other uri");
+
+        let focus_uri: Uri = focus_uri_string.parse().expect("parse focus uri");
+
+        let overlays: HashMap<String, Arc<str>> = HashMap::from([
+            (focus_uri_string, Arc::<str>::from("class Foo {}")),
+            (other_uri_string, Arc::<str>::from("class Bar {}")),
+        ]);
+
+        let snapshot = RefactorWorkspaceSnapshot::build(&focus_uri, &overlays).expect("snapshot");
+
+        let paths: BTreeSet<PathBuf> = snapshot
+            .files()
+            .values()
+            .map(|file| file.path.clone())
+            .collect();
+
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains(&focus_path));
+        assert!(paths.contains(&other_path));
+    }
+
+    #[test]
+    fn does_not_include_disk_java_files_when_not_scanning() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let focus_path = dir.path().join("Foo.java");
+        let other_path = dir.path().join("Bar.java");
+        let disk_path = dir.path().join("OnDisk.java");
+
+        fs::write(&disk_path, "class OnDisk {}").expect("write disk file");
+
+        let focus_uri_string = uri_string_for_path(&focus_path).expect("focus uri");
+        let other_uri_string = uri_string_for_path(&other_path).expect("other uri");
+
+        let focus_uri: Uri = focus_uri_string.parse().expect("parse focus uri");
+
+        let overlays: HashMap<String, Arc<str>> = HashMap::from([
+            (focus_uri_string, Arc::<str>::from("class Foo {}")),
+            (other_uri_string, Arc::<str>::from("class Bar {}")),
+        ]);
+
+        let snapshot = RefactorWorkspaceSnapshot::build(&focus_uri, &overlays).expect("snapshot");
+
+        let paths: BTreeSet<PathBuf> = snapshot
+            .files()
+            .values()
+            .map(|file| file.path.clone())
+            .collect();
+
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains(&focus_path));
+        assert!(paths.contains(&other_path));
+        assert!(!paths.contains(&disk_path));
     }
 }
