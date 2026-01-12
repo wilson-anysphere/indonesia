@@ -81,9 +81,9 @@ pub(crate) fn load_bazel_workspace_model(
         &options.nova_config,
     );
 
-    let mut classpath = Vec::new();
+    let mut dependency_entries = Vec::new();
     for entry in &options.classpath_overrides {
-        classpath.push(ClasspathEntry {
+        dependency_entries.push(ClasspathEntry {
             kind: if entry.extension().is_some_and(|ext| ext == "jar") {
                 ClasspathEntryKind::Jar
             } else {
@@ -94,13 +94,24 @@ pub(crate) fn load_bazel_workspace_model(
     }
 
     sort_dedup_source_roots(&mut source_roots);
-    sort_dedup_classpath(&mut classpath);
+    sort_dedup_classpath(&mut dependency_entries);
 
     let module_name = root
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("root")
         .to_string();
+
+    let jpms_modules = crate::jpms::discover_jpms_modules(&[Module {
+        name: module_name.clone(),
+        root: root.to_path_buf(),
+        annotation_processing: Default::default(),
+    }]);
+
+    let (mut module_path, mut classpath) =
+        crate::jpms::classify_dependency_entries(&jpms_modules, dependency_entries);
+    sort_dedup_classpath(&mut module_path);
+    sort_dedup_classpath(&mut classpath);
 
     let module_config = WorkspaceModuleConfig {
         id: "bazel://".to_string(),
@@ -115,16 +126,10 @@ pub(crate) fn load_bazel_workspace_model(
         },
         source_roots,
         output_dirs: Vec::new(),
-        module_path: Vec::new(),
+        module_path,
         classpath,
         dependencies: Vec::new(),
     };
-
-    let jpms_modules = crate::jpms::discover_jpms_modules(&[Module {
-        name: module_config.name.clone(),
-        root: module_config.root.clone(),
-        annotation_processing: Default::default(),
-    }]);
 
     Ok(WorkspaceProjectModel::new(
         root.to_path_buf(),
