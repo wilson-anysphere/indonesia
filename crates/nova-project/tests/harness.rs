@@ -6,6 +6,7 @@
 #[test]
 fn integration_tests_are_consolidated_into_this_harness() {
     let tests_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let harness_path = tests_dir.join("harness.rs");
 
     let expected = std::path::Path::new(file!())
         .file_name()
@@ -44,6 +45,52 @@ fn integration_tests_are_consolidated_into_this_harness() {
         root_rs_files,
         [expected.clone()],
         "expected a single root integration test harness file (tests/{expected}); found: {root_rs_files:?}"
+    );
+
+    // Ensure every `tests/cases/*.rs` module is included in this harness, otherwise those tests
+    // silently won't run.
+    let harness_source = std::fs::read_to_string(&harness_path).unwrap_or_else(|err| {
+        panic!(
+            "failed to read nova-project integration test harness {}: {err}",
+            harness_path.display()
+        )
+    });
+
+    let cases_dir = tests_dir.join("cases");
+    let mut case_rs_files = Vec::new();
+    for entry in std::fs::read_dir(&cases_dir).unwrap_or_else(|err| {
+        panic!(
+            "failed to read nova-project test cases dir {}: {err}",
+            cases_dir.display()
+        )
+    }) {
+        let entry = entry.unwrap_or_else(|err| {
+            panic!(
+                "failed to read entry in {}: {err}",
+                cases_dir.display()
+            )
+        });
+        let path = entry.path();
+
+        if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("rs") {
+            case_rs_files.push(
+                path.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+    }
+
+    case_rs_files.sort();
+    let missing: Vec<_> = case_rs_files
+        .iter()
+        .filter(|file| !harness_source.contains(&format!("cases/{file}")))
+        .cloned()
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "tests/harness.rs is missing module includes for case files: {missing:?}"
     );
 }
 
