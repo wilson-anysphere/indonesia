@@ -15,6 +15,11 @@ consumed by `nova-project`:
 This file is intentionally *not* a global cache: it lives in the workspace so it can be updated by
 running Gradle in that workspace, then read later without invoking Gradle again.
 
+The relative on-disk path and glob are defined in `nova-build-model`:
+
+- `nova_build_model::GRADLE_SNAPSHOT_REL_PATH`
+- `nova_build_model::GRADLE_SNAPSHOT_GLOB`
+
 ---
 
 ## Typical end-to-end flow (discovery → classpath → reload)
