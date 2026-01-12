@@ -17,8 +17,12 @@ use nova_core::SymbolId;
 /// - For ASCII-only trigrams, this is a packed 3-byte value stored in big-endian
 ///   order: `b0 << 16 | b1 << 8 | b2` (matching the original implementation).
 /// - When the `unicode` feature is enabled and the text contains non-ASCII
-///   units, we hash the three normalized+casefolded Unicode units into a `u32`
-///   instead. Collisions are acceptable (they only introduce false positives).
+///   scalar values (`char`s), we hash the three normalized+casefolded scalar
+///   values into a `u32` instead.
+///
+/// Hashed Unicode trigrams have their high bit set so they cannot collide with
+/// packed ASCII trigrams; collisions among hashed values are acceptable (they
+/// only introduce false positives during candidate filtering).
 pub type Trigram = u32;
 
 #[inline]

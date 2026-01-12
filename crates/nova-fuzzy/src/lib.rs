@@ -25,8 +25,10 @@
 //!   unchanged.
 //! - **Trigram preprocessing:** trigram extraction applies the same
 //!   NFKC+casefold transform. ASCII trigrams keep the existing packed 3-byte
-//!   representation; non-ASCII trigrams are hashed into a `u32` (with the high bit
-//!   set to avoid collisions with packed ASCII trigrams).
+//!   representation. In Unicode mode, trigrams are taken over the normalized +
+//!   casefolded Unicode scalar values; non-ASCII trigrams are hashed into a `u32`
+//!   (with the high bit set to avoid collisions with packed ASCII trigrams), so
+//!   collisions only introduce false positives during candidate filtering.
 
 #![forbid(unsafe_code)]
 
