@@ -15,7 +15,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use nova_core::{
     Diagnostic as CoreDiagnostic, DiagnosticSeverity, FileId, LineIndex, Position, ProjectId, Range,
@@ -23,8 +23,18 @@ use nova_core::{
 use nova_framework::{Database, FrameworkAnalyzer, NavigationTarget, Symbol, VirtualMember};
 use nova_types::{ClassId, Diagnostic, Severity, Span};
 
-#[derive(Debug, Default)]
-pub struct DaggerAnalyzer;
+#[derive(Debug)]
+pub struct DaggerAnalyzer {
+    cache: Mutex<HashMap<ProjectId, Arc<CachedDaggerProject>>>,
+}
+
+impl Default for DaggerAnalyzer {
+    fn default() -> Self {
+        Self {
+            cache: Mutex::new(HashMap::new()),
+        }
+    }
+}
 
 impl FrameworkAnalyzer for DaggerAnalyzer {
     fn applies_to(&self, db: &dyn Database, project: ProjectId) -> bool {
@@ -61,8 +71,8 @@ impl FrameworkAnalyzer for DaggerAnalyzer {
             return Vec::new();
         }
 
-        let project = db.project_of_file(file);
-        let Some(project) = project_analysis(db, project) else {
+        let project_id = db.project_of_file(file);
+        let Some(project) = self.project_analysis(db, project_id) else {
             return Vec::new();
         };
 
@@ -100,7 +110,7 @@ impl FrameworkAnalyzer for DaggerAnalyzer {
         }
 
         let project_id = db.project_of_file(file);
-        let Some(project) = project_analysis(db, project_id) else {
+        let Some(project) = self.project_analysis(db, project_id) else {
             return Vec::new();
         };
 
@@ -178,90 +188,92 @@ impl CachedDaggerProject {
     }
 }
 
-fn cache() -> &'static Mutex<HashMap<ProjectId, Arc<CachedDaggerProject>>> {
-    static CACHE: OnceLock<Mutex<HashMap<ProjectId, Arc<CachedDaggerProject>>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
+impl DaggerAnalyzer {
+    fn project_analysis(
+        &self,
+        db: &dyn Database,
+        project: ProjectId,
+    ) -> Option<Arc<CachedDaggerProject>> {
+        let mut pairs: Vec<(PathBuf, FileId)> = Vec::new();
 
-fn project_analysis(db: &dyn Database, project: ProjectId) -> Option<Arc<CachedDaggerProject>> {
-    let mut pairs: Vec<(PathBuf, FileId)> = Vec::new();
+        for file in db.all_files(project) {
+            let Some(path) = db.file_path(file).map(Path::to_path_buf) else {
+                continue;
+            };
 
-    for file in db.all_files(project) {
-        let Some(path) = db.file_path(file).map(Path::to_path_buf) else {
-            continue;
-        };
+            if path.extension().and_then(|e| e.to_str()) != Some("java") {
+                continue;
+            }
 
-        if path.extension().and_then(|e| e.to_str()) != Some("java") {
-            continue;
+            let Some(_) = db.file_text(file) else {
+                continue;
+            };
+
+            pairs.push((path, file));
         }
 
-        let Some(_) = db.file_text(file) else {
-            continue;
-        };
-
-        pairs.push((path.clone(), file));
-    }
-
-    if pairs.is_empty() {
-        return None;
-    }
-
-    pairs.sort_by(|a, b| a.0.cmp(&b.0));
-
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    for (path, file) in &pairs {
-        let Some(text) = db.file_text(*file) else {
-            continue;
-        };
-
-        path.hash(&mut hasher);
-        text.len().hash(&mut hasher);
-
-        let ptr = text.as_ptr();
-        let ptr_again = db.file_text(*file).map(|t| t.as_ptr());
-        if ptr_again.is_some_and(|p| p == ptr) {
-            ptr.hash(&mut hasher);
-        } else {
-            text.hash(&mut hasher);
+        if pairs.is_empty() {
+            return None;
         }
-    }
-    let fingerprint = hasher.finish();
 
-    if let Some(existing) = cache()
-        .lock()
-        .expect("dagger analysis cache mutex poisoned")
-        .get(&project)
-        .cloned()
-    {
-        if existing.fingerprint == fingerprint {
-            return Some(existing);
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for (path, file) in &pairs {
+            let Some(text) = db.file_text(*file) else {
+                continue;
+            };
+
+            path.hash(&mut hasher);
+            text.len().hash(&mut hasher);
+
+            let ptr = text.as_ptr();
+            let ptr_again = db.file_text(*file).map(|t| t.as_ptr());
+            if ptr_again.is_some_and(|p| p == ptr) {
+                ptr.hash(&mut hasher);
+            } else {
+                text.hash(&mut hasher);
+            }
         }
+        let fingerprint = hasher.finish();
+
+        if let Some(existing) = self
+            .cache
+            .lock()
+            .expect("dagger analysis cache mutex poisoned")
+            .get(&project)
+            .cloned()
+        {
+            if existing.fingerprint == fingerprint {
+                return Some(existing);
+            }
+        }
+
+        let mut files: Vec<JavaSourceFile> = Vec::with_capacity(pairs.len());
+        for (path, file_id) in pairs {
+            let Some(text) = db.file_text(file_id) else {
+                continue;
+            };
+            files.push(JavaSourceFile {
+                path,
+                text: text.to_string(),
+            });
+        }
+
+        if files.is_empty() {
+            return None;
+        }
+
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        let analysis = analyze_java_files(&files);
+
+        let cached = Arc::new(CachedDaggerProject::new(fingerprint, files, analysis));
+        self.cache
+            .lock()
+            .expect("dagger analysis cache mutex poisoned")
+            .insert(project, Arc::clone(&cached));
+        Some(cached)
     }
-
-    let mut files: Vec<JavaSourceFile> = Vec::with_capacity(pairs.len());
-    for (path, file_id) in pairs {
-        let Some(text) = db.file_text(file_id) else {
-            continue;
-        };
-        files.push(JavaSourceFile {
-            path,
-            text: text.to_string(),
-        });
-    }
-
-    if files.is_empty() {
-        return None;
-    }
-
-    files.sort_by(|a, b| a.path.cmp(&b.path));
-    let analysis = analyze_java_files(&files);
-
-    let cached = Arc::new(CachedDaggerProject::new(fingerprint, files, analysis));
-    cache()
-        .lock()
-        .expect("dagger analysis cache mutex poisoned")
-        .insert(project, Arc::clone(&cached));
-    Some(cached)
 }
 
 fn dagger_code(source: Option<&str>) -> Cow<'static, str> {
