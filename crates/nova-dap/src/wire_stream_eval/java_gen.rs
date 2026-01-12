@@ -156,6 +156,7 @@ pub fn generate_stream_eval_helper_java_source(
     imports: &[String],
     locals: &[(String, String)],
     fields: &[(String, String)],
+    static_fields: &[(String, String)],
     stages: &[String],
     terminal: Option<&str>,
 ) -> String {
@@ -291,6 +292,31 @@ pub fn generate_stream_eval_helper_java_source(
         }
         if !used_params.insert(sanitized.clone()) {
             // Locals (or other fields) already bound this name.
+            continue;
+        }
+
+        params.push((ty.to_string(), sanitized));
+    }
+
+    // Bind static fields after instance fields. Locals and instance fields shadow static fields,
+    // mirroring Java name resolution for unqualified identifiers.
+    let mut static_fields_sorted: Vec<_> = static_fields.iter().collect();
+    static_fields_sorted.sort_by(|a, b| a.0.trim().cmp(b.0.trim()));
+    for (name, ty) in static_fields_sorted {
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let ty = ty.trim();
+        if ty.is_empty() {
+            continue;
+        }
+
+        let sanitized = sanitize_java_param_name(name);
+        if sanitized != name {
+            continue;
+        }
+        if !used_params.insert(sanitized.clone()) {
             continue;
         }
 
@@ -684,6 +710,7 @@ mod tests {
                 ("foo-bar".to_string(), "int".to_string()),
             ],
             &[],
+            &[],
             &["this.foo()".to_string(), "this.bar()".to_string()],
             None,
         );
@@ -742,6 +769,7 @@ mod tests {
                 ),
             ],
             &[],
+            &[],
             &["s.forEach(System.out::println)".to_string()],
             None,
         );
@@ -771,6 +799,7 @@ mod tests {
                 ),
             ],
             &[],
+            &[],
             &["s.forEachOrdered(System.out::println)".to_string()],
             None,
         );
@@ -793,6 +822,7 @@ mod tests {
             "__NovaStreamEvalHelper",
             &[],
             &[("this".to_string(), "Object".to_string())],
+            &[],
             &[],
             &["java.util.stream.IntStream.range(0, 3).forEach(System.out::println)".to_string()],
             None,
@@ -818,17 +848,15 @@ mod tests {
             "__NovaStreamEvalHelper",
             &[],
             &[("this".to_string(), "com.example.Foo".to_string())],
-            &[(
-                "nums".to_string(),
-                "java.util.List<java.lang.Integer>".to_string(),
-            )],
+            &[("nums".to_string(), "java.util.List<java.lang.Integer>".to_string())],
+            &[("MY_LIST".to_string(), "java.util.List<java.lang.Integer>".to_string())],
             &["nums.stream().count()".to_string()],
             None,
         );
 
         // `__this` always comes first.
         assert!(
-            src.contains("public static Object stage0(com.example.Foo __this, java.util.List<java.lang.Integer> nums)")
+            src.contains("public static Object stage0(com.example.Foo __this, java.util.List<java.lang.Integer> nums, java.util.List<java.lang.Integer> MY_LIST)")
         );
         assert!(src.contains("return nums.stream().count();"));
     }
@@ -849,6 +877,7 @@ mod tests {
                     "java.util.stream.Stream<Integer>".to_string(),
                 ),
             ],
+            &[],
             &[],
             &[
                 r#"s.map(x -> x).mapToInt(x -> x).forEach(x -> System.out.println(")"))"#
@@ -883,6 +912,7 @@ mod tests {
                 ("foo bar".to_string(), "int".to_string()),
             ],
             &[],
+            &[],
             &["this.toString();".to_string()],
             None,
         );
@@ -907,6 +937,7 @@ mod tests {
             ],
             &[("this".to_string(), "Object".to_string())],
             &[],
+            &[],
             &["this".to_string()],
             None,
         );
@@ -927,6 +958,7 @@ mod tests {
                     "java.util.stream.Stream<Integer>".to_string(),
                 ),
             ],
+            &[],
             &[],
             &[],
             Some("s.forEach(System.out::println)"),

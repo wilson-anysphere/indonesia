@@ -879,6 +879,9 @@ const GENERIC_COUNT_FIELD_ID: u64 = 0x7004;
 const FIELD_HIDING_FIELD_SUPER_ID: u64 = 0x7005;
 const FIELD_HIDING_FIELD_SUB_ID: u64 = 0x7006;
 const MAIN_STATIC_FIELD_ID: u64 = 0x7007;
+const FIELD_HIDING_STATIC_SHARED_SUPER_ID: u64 = 0x7008;
+const FIELD_HIDING_STATIC_SHARED_SUB_ID: u64 = 0x7009;
+const FIELD_HIDING_STATIC_SUPER_ONLY_ID: u64 = 0x700A;
 
 // Sample objects used by `nova-dap`'s wire formatter tests.
 const SAMPLE_STRING_OBJECT_ID: u64 = 0x5101;
@@ -1681,23 +1684,44 @@ async fn handle_packet(
                     w.write_u32(0);
                 }
                 FIELD_HIDING_SUPERCLASS_ID => {
-                    w.write_u32(1);
+                    w.write_u32(3);
                     w.write_id(FIELD_HIDING_FIELD_SUPER_ID, sizes.field_id);
                     w.write_string("hidden");
                     w.write_string("I");
                     w.write_string("");
                     w.write_u32(1);
+
+                    // public static int shared
+                    w.write_id(FIELD_HIDING_STATIC_SHARED_SUPER_ID, sizes.field_id);
+                    w.write_string("shared");
+                    w.write_string("I");
+                    w.write_string("");
+                    w.write_u32(0x0001 | 0x0008);
+
+                    // public static int superOnly
+                    w.write_id(FIELD_HIDING_STATIC_SUPER_ONLY_ID, sizes.field_id);
+                    w.write_string("superOnly");
+                    w.write_string("I");
+                    w.write_string("");
+                    w.write_u32(0x0001 | 0x0008);
                 }
                 FIELD_HIDING_SUBCLASS_ID => {
-                    w.write_u32(1);
+                    w.write_u32(2);
                     w.write_id(FIELD_HIDING_FIELD_SUB_ID, sizes.field_id);
                     w.write_string("hidden");
                     w.write_string("I");
                     w.write_string("");
                     w.write_u32(1);
+
+                    // public static int shared (hides the superclass field)
+                    w.write_id(FIELD_HIDING_STATIC_SHARED_SUB_ID, sizes.field_id);
+                    w.write_string("shared");
+                    w.write_string("I");
+                    w.write_string("");
+                    w.write_u32(0x0001 | 0x0008);
                 }
                 CLASS_ID => {
-                    w.write_u32(2);
+                    w.write_u32(3);
                     w.write_id(GENERIC_LIST_FIELD_ID, sizes.field_id);
                     w.write_string("strings");
                     w.write_string("Ljava/util/List;");
@@ -1709,6 +1733,13 @@ async fn handle_packet(
                     w.write_string("I");
                     w.write_string("");
                     w.write_u32(1);
+
+                    // public static int staticField
+                    w.write_id(MAIN_STATIC_FIELD_ID, sizes.field_id);
+                    w.write_string("staticField");
+                    w.write_string("I");
+                    w.write_string("");
+                    w.write_u32(0x0001 | 0x0008);
                 }
                 _ => {
                     w.write_u32(0);
@@ -1834,18 +1865,33 @@ async fn handle_packet(
                     w.write_u32(0);
                 }
                 FIELD_HIDING_SUPERCLASS_ID => {
-                    w.write_u32(1);
+                    w.write_u32(3);
                     w.write_id(FIELD_HIDING_FIELD_SUPER_ID, sizes.field_id);
                     w.write_string("hidden");
                     w.write_string("I");
                     w.write_u32(1);
+
+                    w.write_id(FIELD_HIDING_STATIC_SHARED_SUPER_ID, sizes.field_id);
+                    w.write_string("shared");
+                    w.write_string("I");
+                    w.write_u32(0x0001 | 0x0008);
+
+                    w.write_id(FIELD_HIDING_STATIC_SUPER_ONLY_ID, sizes.field_id);
+                    w.write_string("superOnly");
+                    w.write_string("I");
+                    w.write_u32(0x0001 | 0x0008);
                 }
                 FIELD_HIDING_SUBCLASS_ID => {
-                    w.write_u32(1);
+                    w.write_u32(2);
                     w.write_id(FIELD_HIDING_FIELD_SUB_ID, sizes.field_id);
                     w.write_string("hidden");
                     w.write_string("I");
                     w.write_u32(1);
+
+                    w.write_id(FIELD_HIDING_STATIC_SHARED_SUB_ID, sizes.field_id);
+                    w.write_string("shared");
+                    w.write_string("I");
+                    w.write_u32(0x0001 | 0x0008);
                 }
                 CLASS_ID => {
                     // Include a static field so higher-level DAP integrations can exercise
@@ -1945,6 +1991,15 @@ async fn handle_packet(
                 let value = match (type_id, field_id) {
                     (OBJECT_CLASS_ID, FIELD_ID) => JdwpValue::Int(7),
                     (CLASS_ID, MAIN_STATIC_FIELD_ID) => JdwpValue::Int(0),
+                    (FIELD_HIDING_SUBCLASS_ID, FIELD_HIDING_STATIC_SHARED_SUB_ID) => {
+                        JdwpValue::Int(1)
+                    }
+                    (FIELD_HIDING_SUPERCLASS_ID, FIELD_HIDING_STATIC_SHARED_SUPER_ID) => {
+                        JdwpValue::Int(2)
+                    }
+                    (FIELD_HIDING_SUPERCLASS_ID, FIELD_HIDING_STATIC_SUPER_ONLY_ID) => {
+                        JdwpValue::Int(3)
+                    }
                     (THROWABLE_CLASS_ID, DETAIL_MESSAGE_FIELD_ID) => JdwpValue::Object {
                         // String values are tagged as `s` (JDWP Tag.STRING) in replies.
                         tag: b's',

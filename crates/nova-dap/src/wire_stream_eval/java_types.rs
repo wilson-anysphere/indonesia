@@ -52,12 +52,16 @@ fn fmt_class_type_signature(sig: &ClassTypeSignature) -> String {
         out.push('.');
     }
 
+    // Important: when rendering nested types, only include type arguments for the *final*
+    // segment. Including type arguments on an outer segment can make the type un-compilable
+    // for static nested types (e.g. `Map<String, Integer>.Entry`).
+    let last_idx = sig.segments.len().saturating_sub(1);
     for (idx, seg) in sig.segments.iter().enumerate() {
         if idx > 0 {
             out.push('.');
         }
-        out.push_str(&seg.name);
-        if !seg.type_arguments.is_empty() {
+        out.push_str(&seg.name.replace('$', "."));
+        if idx == last_idx && !seg.type_arguments.is_empty() {
             out.push('<');
             for (arg_idx, arg) in seg.type_arguments.iter().enumerate() {
                 if arg_idx > 0 {
@@ -94,7 +98,7 @@ fn java_type_from_descriptor(signature: &str) -> String {
     }
 
     let base = if let Some(class) = sig.strip_prefix('L').and_then(|s| s.strip_suffix(';')) {
-        class.replace('/', ".")
+        class.replace('/', ".").replace('$', ".")
     } else {
         match sig.as_bytes().first().copied() {
             Some(b'B') => "byte".to_string(),
@@ -170,7 +174,7 @@ mod tests {
                 "Ljava/util/Map$Entry;",
                 Some("Ljava/util/Map<Ljava/lang/String;Ljava/lang/Integer;>.Entry<*>;")
             ),
-            "java.util.Map<java.lang.String, java.lang.Integer>.Entry<?>"
+            "java.util.Map.Entry<?>"
         );
     }
 }

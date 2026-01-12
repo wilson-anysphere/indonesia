@@ -33,6 +33,12 @@ pub struct StreamEvalFrameBindings {
     pub locals: Vec<StreamEvalBinding>,
     /// Instance fields exposed as unqualified identifiers, ordered deterministically.
     pub fields: Vec<StreamEvalBinding>,
+    /// Static fields exposed as unqualified identifiers, ordered deterministically.
+    ///
+    /// These are captured from the paused frame's *declaring class* (`Location.class_id`) and its
+    /// superclass chain. Locals and instance fields shadow static fields, mirroring Java name
+    /// resolution for unqualified identifiers.
+    pub static_fields: Vec<StreamEvalBinding>,
 }
 
 impl StreamEvalFrameBindings {
@@ -58,13 +64,22 @@ impl StreamEvalFrameBindings {
             .collect()
     }
 
+    pub fn static_fields_for_java_gen(&self) -> Vec<(String, String)> {
+        self.static_fields
+            .iter()
+            .map(|b| (b.name.clone(), b.java_type.clone()))
+            .collect()
+    }
+
     /// Returns invocation arguments in the same order as the generated helper method signature:
-    /// `(__this, <locals...>, <fields...>)`.
+    /// `(__this, <locals...>, <fields...>, <static_fields...>)`.
     pub fn args_for_helper(&self) -> Vec<JdwpValue> {
-        let mut out = Vec::with_capacity(1 + self.locals.len() + self.fields.len());
+        let mut out =
+            Vec::with_capacity(1 + self.locals.len() + self.fields.len() + self.static_fields.len());
         out.push(self.this.value.clone());
         out.extend(self.locals.iter().map(|b| b.value.clone()));
         out.extend(self.fields.iter().map(|b| b.value.clone()));
+        out.extend(self.static_fields.iter().map(|b| b.value.clone()));
         out
     }
 }
@@ -75,9 +90,11 @@ impl StreamEvalFrameBindings {
 /// - `this` (via `StackFrame.ThisObject`)
 /// - in-scope locals (via `Method.VariableTableWithGeneric` + `StackFrame.GetValues`)
 /// - instance fields on `this` (via `ReferenceType.FieldsWithGeneric` + `ObjectReference.GetValues`)
+/// - static fields in the frame's declaring class (and superclasses) (via
+///   `ReferenceType.FieldsWithGeneric` + `ReferenceType.GetValues`)
 ///
 /// Locals shadow fields: if a local variable name collides with a field name, the field is not
-/// bound.
+/// bound. Locals and instance fields shadow static fields.
 pub async fn build_frame_bindings(
     jdwp: &JdwpClient,
     thread: ThreadId,
@@ -106,6 +123,10 @@ pub async fn build_frame_bindings(
     let local_names: HashSet<String> = locals.iter().map(|b| b.name.clone()).collect();
 
     let fields = collect_instance_fields(jdwp, this_id, &local_names).await?;
+    let mut shadowed_names = local_names.clone();
+    shadowed_names.extend(fields.iter().map(|b| b.name.clone()));
+
+    let static_fields = collect_static_fields(jdwp, location.class_id, &shadowed_names).await?;
 
     Ok(StreamEvalFrameBindings {
         this: StreamEvalBinding {
@@ -115,6 +136,7 @@ pub async fn build_frame_bindings(
         },
         locals,
         fields,
+        static_fields,
     })
 }
 
@@ -320,6 +342,99 @@ async fn collect_instance_fields(
     Ok(out)
 }
 
+async fn collect_static_fields(
+    jdwp: &JdwpClient,
+    class_id: ReferenceTypeId,
+    shadowed_names: &HashSet<String>,
+) -> Result<Vec<StreamEvalBinding>, JdwpError> {
+    if class_id == 0 {
+        return Ok(Vec::new());
+    }
+
+    let hierarchy = class_hierarchy(jdwp, class_id).await?;
+
+    #[derive(Debug, Clone)]
+    struct SelectedField {
+        declaring_type: ReferenceTypeId,
+        field_id: FieldId,
+        name: String,
+        signature: String,
+        generic_signature: Option<String>,
+    }
+
+    let mut seen_names = HashSet::new();
+    let mut selected = Vec::new();
+
+    for class_id in hierarchy {
+        let fields = reference_type_fields_with_generic_fallback(jdwp, class_id).await?;
+        for field in fields {
+            if field.mod_bits & FIELD_MODIFIER_STATIC == 0 {
+                continue;
+            }
+
+            let name = field.name.trim();
+            if name.is_empty() {
+                continue;
+            }
+
+            // Locals and instance fields shadow static fields.
+            if shadowed_names.contains(name) {
+                continue;
+            }
+
+            // Only bind identifiers that can be used directly without rewriting the expression.
+            if sanitize_java_param_name(name) != name {
+                continue;
+            }
+
+            if !seen_names.insert(name.to_string()) {
+                continue;
+            }
+
+            selected.push(SelectedField {
+                declaring_type: class_id,
+                field_id: field.field_id,
+                name: name.to_string(),
+                signature: field.signature,
+                generic_signature: field.generic_signature,
+            });
+        }
+    }
+
+    let mut per_type: BTreeMap<ReferenceTypeId, Vec<FieldId>> = BTreeMap::new();
+    for field in &selected {
+        per_type
+            .entry(field.declaring_type)
+            .or_default()
+            .push(field.field_id);
+    }
+
+    let mut values_by_id: HashMap<FieldId, JdwpValue> = HashMap::new();
+    for (type_id, field_ids) in per_type {
+        let values = jdwp.reference_type_get_values(type_id, &field_ids).await?;
+        for (field_id, value) in field_ids.into_iter().zip(values.into_iter()) {
+            values_by_id.insert(field_id, value);
+        }
+    }
+
+    let mut out = Vec::with_capacity(selected.len());
+    for field in selected {
+        let Some(value) = values_by_id.get(&field.field_id).cloned() else {
+            continue;
+        };
+        let java_type =
+            java_type_from_signatures(&field.signature, field.generic_signature.as_deref());
+        out.push(StreamEvalBinding {
+            name: field.name,
+            java_type,
+            value,
+        });
+    }
+
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
 async fn class_hierarchy(
     jdwp: &JdwpClient,
     type_id: ReferenceTypeId,
@@ -443,15 +558,57 @@ mod tests {
         assert_eq!(bindings.fields[0].java_type, "int");
         assert_eq!(bindings.fields[0].value, JdwpValue::Int(7));
 
+        // Static fields in the declaring class are bound after locals + instance fields.
+        assert_eq!(bindings.static_fields.len(), 1);
+        assert_eq!(bindings.static_fields[0].name, "staticField");
+        assert_eq!(bindings.static_fields[0].java_type, "int");
+        assert_eq!(bindings.static_fields[0].value, JdwpValue::Int(0));
+
         let args = bindings.args_for_helper();
         assert_eq!(
             args.len(),
-            1 + bindings.locals.len() + bindings.fields.len()
+            1 + bindings.locals.len() + bindings.fields.len() + bindings.static_fields.len()
         );
         assert_eq!(args[0], bindings.this.value);
         assert_eq!(args[1], bindings.locals[0].value);
         assert_eq!(args[2], bindings.locals[1].value);
         assert_eq!(args[3], bindings.fields[0].value);
+        assert_eq!(args[4], bindings.static_fields[0].value);
+    }
+
+    #[tokio::test]
+    async fn static_fields_are_filtered_by_hierarchy_shadowing_and_ordered_deterministically() {
+        let server = MockJdwpServer::spawn().await.unwrap();
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+        let (_tag, class_id) = client
+            .object_reference_reference_type(FIELD_HIDING_OBJECT_ID)
+            .await
+            .unwrap();
+
+        let shadowed = HashSet::new();
+        let static_fields = collect_static_fields(&client, class_id, &shadowed)
+            .await
+            .unwrap();
+
+        // The mock class hierarchy includes a `shared` static field in both the subclass and
+        // superclass; the subclass declaration should win (name hiding).
+        assert_eq!(static_fields.len(), 2);
+        assert_eq!(static_fields[0].name, "shared");
+        assert_eq!(static_fields[0].java_type, "int");
+        assert_eq!(static_fields[0].value, JdwpValue::Int(1));
+        assert_eq!(static_fields[1].name, "superOnly");
+        assert_eq!(static_fields[1].java_type, "int");
+        assert_eq!(static_fields[1].value, JdwpValue::Int(3));
+
+        // Shadowing: locals/instance fields should prevent static fields from binding.
+        let mut shadowed = HashSet::new();
+        shadowed.insert("shared".to_string());
+        let static_fields = collect_static_fields(&client, class_id, &shadowed)
+            .await
+            .unwrap();
+        assert_eq!(static_fields.len(), 1);
+        assert_eq!(static_fields[0].name, "superOnly");
     }
 
     #[test]
