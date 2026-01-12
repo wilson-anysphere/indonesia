@@ -131,7 +131,7 @@ npm run compile
 - **Nova: Generate Bug Report** (`nova.bugReport`)
   - Prompts for optional reproduction notes (multi-line) and an optional max number of log lines.
   - Generates a diagnostic bundle via `nova/bugReport`.
-  - In multi-root workspaces, Nova may prompt you to select which workspace folder to target.
+  - In multi-root workspaces, Nova targets the active editor's workspace folder when possible; otherwise it may prompt you to select which workspace folder to target.
   - On success, Nova:
     - reveals the bundle folder in your OS file explorer
     - copies the bundle **archive path** (if available) or folder path to your clipboard
