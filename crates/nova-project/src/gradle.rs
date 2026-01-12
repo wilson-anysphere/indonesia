@@ -1725,7 +1725,10 @@ fn parse_gradle_dependencies_from_text(
 ) -> Vec<Dependency> {
     let mut deps = Vec::new();
 
-    // `implementation "g:a:v"` and similar.
+    // `implementation "g:a:v"` and similar (string notation).
+    //
+    // We also intentionally support coordinates *without* an explicit version (`group:artifact`),
+    // because many Gradle builds supply versions via plugins/BOMs/version catalogs.
     static RE_GAV: OnceLock<Regex> = OnceLock::new();
     let re_gav = RE_GAV.get_or_init(|| {
         // Keep this list conservative: only configurations that are commonly used for
@@ -1734,7 +1737,7 @@ fn parse_gradle_dependencies_from_text(
         let configs = GRADLE_DEPENDENCY_CONFIGS;
 
         Regex::new(&format!(
-            r#"(?i)\b{configs}\s*\(?\s*['"]([^:'"]+):([^:'"]+):([^'"]+)['"]"#,
+            r#"(?i)\b{configs}\b\s*\(?\s*['"]([^:'"]+):([^:'"]+)(?::([^'"]+))?['"]"#,
         ))
         .expect("valid regex")
     });
@@ -1743,7 +1746,7 @@ fn parse_gradle_dependencies_from_text(
         deps.push(Dependency {
             group_id: caps[1].to_string(),
             artifact_id: caps[2].to_string(),
-            version: Some(caps[3].to_string()),
+            version: caps.get(3).map(|m| m.as_str().to_string()),
             scope: None,
             classifier: None,
             type_: None,
@@ -1751,6 +1754,9 @@ fn parse_gradle_dependencies_from_text(
     }
 
     // `implementation group: 'g', name: 'a', version: 'v'` and similar.
+    //
+    // We also handle the common case where `version` is omitted:
+    //   implementation group: 'g', name: 'a'
     //
     // This is intentionally best-effort (regex-based): it aims to capture the common Groovy
     // "map notation" used in many real-world builds. It is not intended to be a complete Gradle
@@ -1764,7 +1770,7 @@ fn parse_gradle_dependencies_from_text(
         // - We accept both `implementation group: ...` and `implementation(group: ...)` forms.
         // - We don't try to parse non-literal versions (variables, method calls, etc).
         Regex::new(&format!(
-            r#"(?is)\b{configs}\s*\(?\s*group\s*:\s*['"]([^'"]+)['"]\s*,\s*name\s*:\s*['"]([^'"]+)['"]\s*,\s*version\s*:\s*['"]([^'"]+)['"]"#,
+            r#"(?is)\b{configs}\b\s*\(?\s*group\s*[:=]\s*['"]([^'"]+)['"]\s*,\s*(?:name|module)\s*[:=]\s*['"]([^'"]+)['"](?:\s*,\s*version\s*[:=]\s*['"]([^'"]+)['"])?"#,
         ))
         .expect("valid regex")
     });
@@ -1773,7 +1779,7 @@ fn parse_gradle_dependencies_from_text(
         deps.push(Dependency {
             group_id: caps[1].to_string(),
             artifact_id: caps[2].to_string(),
-            version: Some(caps[3].to_string()),
+            version: caps.get(3).map(|m| m.as_str().to_string()),
             scope: None,
             classifier: None,
             type_: None,

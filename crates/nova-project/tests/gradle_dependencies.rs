@@ -1,0 +1,70 @@
+use anyhow::Context;
+
+use nova_project::{load_project, BuildSystem, Dependency};
+
+#[test]
+fn gradle_extracts_versionless_dependencies() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir().context("tempdir")?;
+
+    // Intentionally mix Kotlin/Groovy call styles and both string + map notation.
+    std::fs::write(
+        dir.path().join("build.gradle"),
+        r#"
+plugins {
+  id 'java'
+}
+
+dependencies {
+  // Versionless string notation (common with BOMs, e.g. Spring Boot).
+  implementation("org.springframework.boot:spring-boot-starter-web")
+
+  // Versioned string notation.
+  testImplementation "org.junit.jupiter:junit-jupiter:5.10.0"
+
+  // Versionless map notation.
+  implementation group: 'com.example', name: 'my-lib'
+
+  // Duplicates (should be deduped deterministically).
+  implementation "org.springframework.boot:spring-boot-starter-web"
+  implementation group: 'com.example', name: 'my-lib'
+}
+"#,
+    )
+    .context("write build.gradle")?;
+
+    let config = load_project(dir.path()).context("load_project")?;
+    assert_eq!(config.build_system, BuildSystem::Gradle);
+
+    assert_eq!(
+        config.dependencies,
+        vec![
+            Dependency {
+                group_id: "com.example".to_string(),
+                artifact_id: "my-lib".to_string(),
+                version: None,
+                scope: None,
+                classifier: None,
+                type_: None,
+            },
+            Dependency {
+                group_id: "org.junit.jupiter".to_string(),
+                artifact_id: "junit-jupiter".to_string(),
+                version: Some("5.10.0".to_string()),
+                scope: None,
+                classifier: None,
+                type_: None,
+            },
+            Dependency {
+                group_id: "org.springframework.boot".to_string(),
+                artifact_id: "spring-boot-starter-web".to_string(),
+                version: None,
+                scope: None,
+                classifier: None,
+                type_: None,
+            },
+        ]
+    );
+
+    Ok(())
+}
+
