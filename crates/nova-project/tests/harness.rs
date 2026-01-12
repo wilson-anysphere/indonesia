@@ -96,6 +96,9 @@ mod gradle_reload_snapshot;
 #[path = "cases/gradle_snapshot.rs"]
 mod gradle_snapshot;
 
+#[path = "cases/gradle_snapshot_kts.rs"]
+mod gradle_snapshot_kts;
+
 #[path = "cases/gradle_version_catalog.rs"]
 mod gradle_version_catalog;
 
