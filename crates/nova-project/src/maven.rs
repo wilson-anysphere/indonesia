@@ -38,11 +38,7 @@ pub(crate) fn load_maven_project(
     // under-report language features used anywhere in the workspace.
     let mut workspace_java = root_effective.java.unwrap_or_default();
 
-    let maven_repo = options
-        .maven_repo
-        .clone()
-        .or_else(default_maven_repo)
-        .unwrap_or_else(|| PathBuf::from(".m2/repository"));
+    let maven_repo = discover_maven_repo(root, options);
 
     for module in &discovered_modules {
         let module_root = &module.root;
@@ -216,11 +212,7 @@ pub(crate) fn load_maven_workspace_model(
     discovered_modules.sort_by(|a, b| a.root.cmp(&b.root));
     discovered_modules.dedup_by(|a, b| a.root == b.root);
 
-    let maven_repo = options
-        .maven_repo
-        .clone()
-        .or_else(default_maven_repo)
-        .unwrap_or_else(|| PathBuf::from(".m2/repository"));
+    let maven_repo = discover_maven_repo(root, options);
 
     let mut module_configs = Vec::new();
     for module in &discovered_modules {
@@ -723,6 +715,67 @@ fn default_maven_repo() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)?;
     Some(home.join(".m2/repository"))
+}
+
+fn discover_maven_repo(workspace_root: &Path, options: &LoadOptions) -> PathBuf {
+    if let Some(repo) = options.maven_repo.clone() {
+        return repo;
+    }
+
+    if let Some(repo) = maven_repo_from_workspace_config(workspace_root) {
+        return repo;
+    }
+
+    default_maven_repo().unwrap_or_else(|| PathBuf::from(".m2/repository"))
+}
+
+fn maven_repo_from_workspace_config(workspace_root: &Path) -> Option<PathBuf> {
+    let config_path = workspace_root.join(".mvn/maven.config");
+    if !config_path.is_file() {
+        return None;
+    }
+
+    let contents = std::fs::read_to_string(&config_path).ok()?;
+    let mut repo: Option<PathBuf> = None;
+
+    for raw_arg in contents.split_whitespace() {
+        let arg = strip_wrapping_quotes(raw_arg);
+        let Some(value) = arg.strip_prefix("-Dmaven.repo.local=") else {
+            continue;
+        };
+
+        let value = strip_wrapping_quotes(value);
+        if value.is_empty() {
+            continue;
+        }
+
+        // Basic sanity check: avoid producing a nonsense path when the value uses Maven/Java
+        // placeholder syntax (e.g. `${user.home}`), which we don't currently expand.
+        if value.contains("${") {
+            continue;
+        }
+
+        let candidate = PathBuf::from(value);
+        repo = Some(if candidate.is_relative() {
+            workspace_root.join(candidate)
+        } else {
+            candidate
+        });
+    }
+
+    repo
+}
+
+fn strip_wrapping_quotes(s: &str) -> &str {
+    let bytes = s.as_bytes();
+    if bytes.len() >= 2 {
+        let first = bytes[0];
+        let last = bytes[bytes.len() - 1];
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+            return &s[1..s.len() - 1];
+        }
+    }
+    s
 }
 
 fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<PathBuf> {
