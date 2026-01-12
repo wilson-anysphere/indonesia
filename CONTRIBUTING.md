@@ -3,6 +3,19 @@
 Nova is under active development. Contributions are welcome — please keep changes focused and
 well-tested.
 
+## Agent / multi-runner environments
+
+If you're running commands in a shared or resource-capped environment (for example, a large
+multi-agent runner), please read and follow **[AGENTS.md](AGENTS.md)** and the **[Operational
+Guide](docs/00-operational-guide.md)**.
+
+In those environments:
+- Prefer `bash scripts/cargo_agent.sh …` over invoking `cargo …` directly (enforces memory limits).
+- Scope builds/tests to what you’re changing (for example `-p <crate>`, `--lib`, `--test <name>`).
+
+Note: CI uses `cargo nextest run` for the main suite and still runs raw `cargo test` for doctests
+(and as a fallback) on dedicated runners.
+
 ## Repository layout
 
 - `crates/` — Rust crates (binaries + libraries)
@@ -19,7 +32,7 @@ well-tested.
 - Node.js + npm (for the VS Code extension; CI uses Node 20)
 - Java (JDK 17 recommended) — optional, but required for:
   - `javac` differential tests (`.github/workflows/javac.yml`)
-  - DAP real-JVM smoke test (`bash scripts/cargo_agent.sh test -p nova-dap --test tests suite::real_jvm ...`)
+  - DAP real-JVM smoke test (local: `cargo test -p nova-dap --test tests suite::real_jvm …`; agent: `bash scripts/cargo_agent.sh test -p nova-dap --test tests suite::real_jvm …`)
   - best-effort real-project build validation (`./scripts/javac-validate.sh`)
 
 ## Common workflows
@@ -27,32 +40,52 @@ well-tested.
 ### Build
 
 ```bash
-cargo build
+# Local dev (recommended: build the crate you're working on)
+cargo build -p nova-cli
+
+# Agent / multi-runner (memory-capped wrapper)
+bash scripts/cargo_agent.sh build -p nova-cli
 ```
 
 ### Run
 
 ```bash
+# Local dev
 cargo run -p nova-cli -- --help
 cargo run -p nova-lsp -- --version
+cargo run -p nova-dap -- --version
+
+# Agent / multi-runner
+bash scripts/cargo_agent.sh run -p nova-cli -- --help
+bash scripts/cargo_agent.sh run -p nova-lsp -- --version
 bash scripts/cargo_agent.sh run -p nova-dap -- --version
 ```
 
 ### Tests
 
 ```bash
-# CI-equivalent default suite (fast, no network)
-# Install nextest first if needed: cargo install cargo-nextest --locked
-cargo nextest run --workspace --profile ci
+# Install nextest first if needed:
+cargo install cargo-nextest --locked
+bash scripts/cargo_agent.sh install cargo-nextest --locked
 
-# Nextest does not run doctests; CI runs these separately.
-cargo test --workspace --doc
+# Local dev (recommended: keep runs scoped to the crate/target you're changing)
+cargo nextest run -p nova-core --profile ci
 
-# Exercise feature-gated code paths (slower, enables all optional integrations)
-cargo nextest run --workspace --profile ci --all-features
-# or:
-# cargo test --workspace --all-features
+# Nextest does not run doctests; run them separately.
+cargo test -p nova-core --doc
+
+# Exercise feature-gated code paths for a single crate (slower)
+cargo nextest run -p nova-core --profile ci --all-features
+
+# Agent / multi-runner (same commands, via the wrapper)
+bash scripts/cargo_agent.sh nextest run -p nova-core --profile ci
+bash scripts/cargo_agent.sh test -p nova-core --doc
+bash scripts/cargo_agent.sh nextest run -p nova-core --profile ci --all-features
 ```
+
+CI runs the full workspace suite on dedicated runners (`cargo nextest run --locked --workspace --profile ci`,
+doctests via `cargo test --locked --workspace --doc`, and `--all-features` via `.github/workflows/test-all-features.yml`).
+In agent / multi-runner environments, avoid unscoped workspace runs and prefer the targeted commands above.
 
 More detailed guidance (fixtures, snapshots, ignored suites, CI mapping) lives in:
 `docs/14-testing-infrastructure.md`.
@@ -67,10 +100,13 @@ integration test binary (`crates/nova-syntax/tests/harness.rs`). There is no sta
 `--test golden_corpus` target — run it via `--test harness` (optionally filtering by test name).
 
 ```bash
-# Run the full `nova-syntax` integration test suite (`harness`)
-bash scripts/cargo_agent.sh test -p nova-syntax --test harness
+# Local dev
+cargo test -p nova-syntax --test harness
+BLESS=1 cargo test -p nova-syntax --test harness suite::golden_corpus
+BLESS=1 cargo test -p nova-refactor
 
-# Update / bless parser golden corpus expectations
+# Agent / multi-runner
+bash scripts/cargo_agent.sh test -p nova-syntax --test harness
 BLESS=1 bash scripts/cargo_agent.sh test -p nova-syntax --test harness suite::golden_corpus
 BLESS=1 bash scripts/cargo_agent.sh test -p nova-refactor
 ```
@@ -80,6 +116,11 @@ BLESS=1 bash scripts/cargo_agent.sh test -p nova-refactor
 Nova’s formatter tests use `insta` snapshots. To update snapshots:
 
 ```bash
+# Local dev
+INSTA_UPDATE=always cargo test -p nova-format --test format_fixtures
+INSTA_UPDATE=always cargo test -p nova-format --test format_snapshots
+
+# Agent / multi-runner
 INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_fixtures
 INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test format_snapshots
 ```
@@ -89,7 +130,11 @@ INSTA_UPDATE=always bash scripts/cargo_agent.sh test -p nova-format --test forma
 Requires a JDK (`javac` on `PATH`):
 
 ```bash
+# Local dev
 cargo test -p nova-types --test harness javac_differential -- --ignored
+
+# Agent / multi-runner
+bash scripts/cargo_agent.sh test -p nova-types --test harness javac_differential -- --ignored
 ```
 
 #### Real-project tests (ignored; requires `test-projects/` fixtures)
@@ -98,15 +143,25 @@ cargo test -p nova-types --test harness javac_differential -- --ignored
 ./scripts/run-real-project-tests.sh
 
 # or run directly after cloning fixtures:
+# Local dev
 cargo test -p nova-project --test harness -- --ignored real_projects::
 cargo test -p nova-cli --test cli -- --ignored suite::real_projects::
+
+# Agent / multi-runner
+bash scripts/cargo_agent.sh test -p nova-project --test harness -- --ignored real_projects::
+bash scripts/cargo_agent.sh test -p nova-cli --test cli -- --ignored suite::real_projects::
 ```
 
 ### Format & lint
 
 ```bash
+# Local dev
 cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy -p nova-core --all-targets --all-features -- -D warnings
+
+# Agent / multi-runner
+bash scripts/cargo_agent.sh fmt --all -- --check
+bash scripts/cargo_agent.sh clippy -p nova-core --all-targets --all-features -- -D warnings
 
 # Repo invariants (CI runs this; nova-devtools)
 ./scripts/check-repo-invariants.sh
@@ -127,7 +182,11 @@ artifacts and publish them on tags.
 Install cargo-dist:
 
 ```bash
+# Local dev
 cargo install cargo-dist --locked --version 0.30.3
+
+# Agent / multi-runner
+bash scripts/cargo_agent.sh install cargo-dist --locked --version 0.30.3
 ```
 
 Build artifacts for your current platform:
@@ -208,11 +267,20 @@ To run the same suite locally:
 
 ```bash
 rm -rf "${CARGO_TARGET_DIR:-target}/criterion"
+
+# Local dev
 cargo bench -p nova-core --bench critical_paths
 cargo bench -p nova-syntax --bench parse_java
 cargo bench -p nova-format --bench format
 cargo bench -p nova-refactor --bench refactor
 cargo bench -p nova-classpath --bench index
+
+# Agent / multi-runner
+bash scripts/cargo_agent.sh bench -p nova-core --bench critical_paths
+bash scripts/cargo_agent.sh bench -p nova-syntax --bench parse_java
+bash scripts/cargo_agent.sh bench -p nova-format --bench format
+bash scripts/cargo_agent.sh bench -p nova-refactor --bench refactor
+bash scripts/cargo_agent.sh bench -p nova-classpath --bench index
 ```
 
 For capture/compare tooling and threshold configuration, see [`perf/README.md`](perf/README.md).
@@ -226,9 +294,14 @@ issues. For more details (timeouts, minimization, remote protocol fuzzers), see
 
 ```bash
 rustup toolchain install nightly --component llvm-tools-preview --component rust-src
+
+# Local dev
 # Recommended (fast): install the prebuilt cargo-fuzz binary via cargo-binstall.
 cargo install cargo-binstall --locked
 cargo +nightly binstall cargo-fuzz --version 0.13.1 --no-confirm --locked --disable-strategies compile
+
+# Alternative (slower, builds from source):
+# cargo +nightly install cargo-fuzz --locked
 
 # Run from the repository root.
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
@@ -245,6 +318,16 @@ RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_properties_parse -- -max_total_tim
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_config_metadata -- -max_total_time=60 -max_len=262144
 ```
 
+Agent / multi-runner equivalent:
+
+```bash
+bash scripts/cargo_agent.sh install cargo-binstall --locked
+bash scripts/cargo_agent.sh +nightly binstall cargo-fuzz --version 0.13.1 --no-confirm --locked --disable-strategies compile
+
+# Run from the repository root. (Repeat with any fuzz target name.)
+RUST_BACKTRACE=1 bash scripts/cargo_agent.sh +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
+```
+
 Seed corpora (main harness) live under `fuzz/corpus/<target>/`. Crash artifacts (if any) are written under
 `fuzz/artifacts/<target>/`.
 
@@ -252,21 +335,25 @@ There are additional targets (e.g. `parse_java`, `format_java` idempotence, and 
 requires `--features refactor`)—list them with:
 
 ```bash
+# Local dev
 cargo +nightly fuzz list
+
+# Agent / multi-runner
+bash scripts/cargo_agent.sh +nightly fuzz list
 ```
 
 Remote protocol fuzzers live in separate harnesses and must be run from their crate directory:
 
 ```bash
 cd crates/nova-remote-proto
-cargo +nightly fuzz list
-cargo +nightly fuzz run decode_framed_message -- -max_total_time=60 -max_len=262144
-cargo +nightly fuzz run decode_v3_wire_frame -- -max_total_time=60 -max_len=262144
-cargo +nightly fuzz run decode_v3_rpc_payload -- -max_total_time=60 -max_len=262144
+bash ../../scripts/cargo_agent.sh +nightly fuzz list
+bash ../../scripts/cargo_agent.sh +nightly fuzz run decode_framed_message -- -max_total_time=60 -max_len=262144
+bash ../../scripts/cargo_agent.sh +nightly fuzz run decode_v3_wire_frame -- -max_total_time=60 -max_len=262144
+bash ../../scripts/cargo_agent.sh +nightly fuzz run decode_v3_rpc_payload -- -max_total_time=60 -max_len=262144
 
 cd ../nova-remote-rpc
-cargo +nightly fuzz list
-cargo +nightly fuzz run v3_framed_transport -- -max_total_time=60 -max_len=262144
+bash ../../scripts/cargo_agent.sh +nightly fuzz list
+bash ../../scripts/cargo_agent.sh +nightly fuzz run v3_framed_transport -- -max_total_time=60 -max_len=262144
 ```
 
 Crash artifacts for these per-crate harnesses are written under:
