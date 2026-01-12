@@ -442,3 +442,34 @@ test('package.json does not contain duplicate command or activation entries', as
     `duplicate contributes.commands entries: ${commandIds.filter((e, i) => commandIds.indexOf(e) !== i).join(', ')}`,
   );
 });
+
+test('package.json contributes nova.build.buildTool setting', async () => {
+  const pkgPath = path.resolve(__dirname, '../../package.json');
+  const raw = await fs.readFile(pkgPath, 'utf8');
+  const pkg = JSON.parse(raw) as {
+    contributes?: { configuration?: { properties?: unknown } };
+  };
+
+  const properties = pkg.contributes?.configuration?.properties;
+  assert.ok(properties && typeof properties === 'object');
+
+  const setting = (properties as Record<string, unknown>)['nova.build.buildTool'];
+  assert.ok(setting && typeof setting === 'object');
+
+  const typed = setting as {
+    type?: unknown;
+    enum?: unknown;
+    default?: unknown;
+    scope?: unknown;
+    description?: unknown;
+  };
+
+  assert.equal(typed.type, 'string');
+  assert.deepEqual(typed.enum, ['auto', 'maven', 'gradle', 'prompt']);
+  assert.equal(typed.default, 'auto');
+  assert.equal(typed.scope, 'resource');
+  assert.equal(
+    typed.description,
+    "Build tool to use for project builds/reloads. Use 'prompt' to choose each time.",
+  );
+});
