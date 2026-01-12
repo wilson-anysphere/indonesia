@@ -858,6 +858,140 @@ fn extract_variable_rejects_keyword_name() {
 }
 
 #[test]
+fn extract_variable_rejects_var_for_null_initializer() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    Object x = null;
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let expr_start = src.find("null").unwrap();
+    let expr_end = expr_start + "null".len();
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "extracted".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        SemanticRefactorError::VarNotAllowedForInitializer
+    ));
+}
+
+#[test]
+fn extract_variable_rejects_var_for_lambda_initializer() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  interface IntSupplier {
+    int getAsInt();
+  }
+
+  void m() {
+    IntSupplier s = () -> 1;
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let expr_start = src.find("() -> 1").unwrap();
+    let expr_end = expr_start + "() -> 1".len();
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "extracted".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        SemanticRefactorError::VarNotAllowedForInitializer
+    ));
+}
+
+#[test]
+fn extract_variable_rejects_var_for_method_reference_initializer() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  interface IntSupplier {
+    int getAsInt();
+  }
+
+  static int foo() { return 1; }
+
+  void m() {
+    IntSupplier s = Test::foo;
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let expr_start = src.find("Test::foo").unwrap();
+    let expr_end = expr_start + "Test::foo".len();
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "extracted".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        SemanticRefactorError::VarNotAllowedForInitializer
+    ));
+}
+
+#[test]
+fn extract_variable_rejects_var_for_array_initializer() {
+    let file = FileId::new("Test.java");
+    let src = r#"class Test {
+  void m() {
+    int[] xs = {1, 2};
+  }
+}
+"#;
+    let db = RefactorJavaDatabase::new([(file.clone(), src.to_string())]);
+    let expr_start = src.find("{1, 2}").unwrap();
+    let expr_end = expr_start + "{1, 2}".len();
+
+    let err = extract_variable(
+        &db,
+        ExtractVariableParams {
+            file: file.clone(),
+            expr_range: WorkspaceTextRange::new(expr_start, expr_end),
+            name: "extracted".into(),
+            use_var: true,
+            replace_all: false,
+        },
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        SemanticRefactorError::VarNotAllowedForInitializer
+    ));
+}
+
+#[test]
 fn extract_variable_use_var_false_emits_explicit_type() {
     let file = FileId::new("Test.java");
     let src = r#"class Test {

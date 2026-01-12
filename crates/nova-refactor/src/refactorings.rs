@@ -45,6 +45,8 @@ pub enum RefactorError {
     ExtractNotSupported { reason: &'static str },
     #[error("could not infer type for extracted expression")]
     TypeInferenceFailed,
+    #[error("cannot use `var` for this initializer; use an explicit type")]
+    VarNotAllowedForInitializer,
     #[error(transparent)]
     Edit(#[from] crate::edit::EditError),
 }
@@ -566,6 +568,10 @@ pub fn extract_variable(
 
     if let Some(reason) = extract_variable_crosses_execution_boundary(&expr) {
         return Err(RefactorError::ExtractNotSupported { reason });
+    }
+
+    if params.use_var && var_initializer_requires_explicit_type(&expr) {
+        return Err(RefactorError::VarNotAllowedForInitializer);
     }
 
     // Extracting a side-effectful expression into a new statement can change evaluation order or
@@ -2457,8 +2463,11 @@ fn extract_variable_crosses_execution_boundary(expr: &ast::Expression) -> Option
     // refactoring.
     for node in expr.syntax().ancestors() {
         if let Some(lambda) = ast::LambdaExpression::cast(node.clone()) {
-            if lambda.body().and_then(|body| body.expression()).is_some() {
-                return Some("cannot extract from expression-bodied lambda");
+            if let Some(body_expr) = lambda.body().and_then(|body| body.expression()) {
+                let body_range = syntax_range(body_expr.syntax());
+                if body_range.start <= expr_range.start && expr_range.end <= body_range.end {
+                    return Some("cannot extract from expression-bodied lambda");
+                }
             }
         }
 
@@ -2805,6 +2814,31 @@ fn infer_type_from_binary_expr(binary: &ast::BinaryExpression) -> String {
         }
         _ => "Object".to_string(),
     }
+}
+
+fn var_initializer_requires_explicit_type(expr: &ast::Expression) -> bool {
+    match expr {
+        ast::Expression::ParenthesizedExpression(par) => par
+            .expression()
+            .as_ref()
+            .is_some_and(var_initializer_requires_explicit_type),
+        ast::Expression::LiteralExpression(lit) => literal_is_null(lit),
+        ast::Expression::LambdaExpression(_)
+        | ast::Expression::MethodReferenceExpression(_)
+        | ast::Expression::ConstructorReferenceExpression(_)
+        | ast::Expression::ArrayInitializer(_) => true,
+        _ => false,
+    }
+}
+
+fn literal_is_null(lit: &ast::LiteralExpression) -> bool {
+    let tok = lit
+        .syntax()
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .find(|tok| !tok.kind().is_trivia() && tok.kind() != SyntaxKind::Eof);
+
+    matches!(tok.map(|t| t.kind()), Some(SyntaxKind::NullKw))
 }
 
 fn infer_type_from_literal(lit: &ast::LiteralExpression) -> String {
