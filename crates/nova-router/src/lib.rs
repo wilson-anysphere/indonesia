@@ -72,6 +72,12 @@ const WORKER_RPC_READ_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const WORKER_RPC_CANCEL_TIMEOUT: Duration = Duration::from_millis(200);
 const WORKER_SHUTDOWN_RPC_TIMEOUT: Duration = Duration::from_secs(2);
 
+// Collecting a full file snapshot (`Vec<FileText>`) can be very memory intensive for large shards.
+// Limit how many shards can be in the "collect + send snapshot" phase concurrently to keep peak
+// memory bounded while still allowing multiple workers to index in parallel once they have their
+// snapshot.
+const MAX_CONCURRENT_SHARD_FILE_SNAPSHOTS: usize = 2;
+
 const WORKER_RESTART_BACKOFF_INITIAL: Duration = Duration::from_millis(50);
 const WORKER_RESTART_BACKOFF_MAX: Duration = Duration::from_secs(5);
 const WORKER_SESSION_RESET_BACKOFF_AFTER: Duration = Duration::from_secs(10);
@@ -986,17 +992,35 @@ impl DistributedRouter {
         }
 
         let mut join_set = JoinSet::new();
+        let snapshot_semaphore = Arc::new(Semaphore::new(
+            MAX_CONCURRENT_SHARD_FILE_SNAPSHOTS.max(1),
+        ));
         for shard_id in 0..(self.state.layout.source_roots.len() as ShardId) {
             let state = self.state.clone();
             let root = self.state.layout.source_roots[shard_id as usize]
                 .path
                 .clone();
             let cancel = cancel.clone();
+            let snapshot_semaphore = Arc::clone(&snapshot_semaphore);
 
             join_set.spawn(async move {
                 if cancel.is_cancelled() {
                     return Err(rpc_cancelled_error());
                 }
+
+                let worker = wait_for_worker_cancelable(state.clone(), shard_id, &cancel)
+                    .await
+                    .with_context(|| format!("wait for worker for shard {shard_id}"))?;
+
+                if cancel.is_cancelled() {
+                    return Err(rpc_cancelled_error());
+                }
+
+                // Limit how many shards can build + send full file snapshots concurrently.
+                let snapshot_permit: OwnedSemaphorePermit = snapshot_semaphore
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| anyhow!("file snapshot semaphore closed"))?;
 
                 let files = collect_java_files(&root).await.with_context(|| {
                     format!("collect files for shard {shard_id} ({})", root.display())
@@ -1006,17 +1030,70 @@ impl DistributedRouter {
                     return Err(rpc_cancelled_error());
                 }
 
-                let worker = wait_for_worker_cancelable(state.clone(), shard_id, &cancel)
-                    .await
-                    .with_context(|| format!("wait for worker for shard {shard_id}"))?;
-
-                let resp = worker_call_cancelable(
-                    &worker,
-                    &cancel,
-                    Request::IndexShard { revision, files },
+                // Start the RPC call (which serializes/writes the full snapshot) while holding the
+                // snapshot permit, then drop it before waiting for the worker to finish indexing so
+                // the next shard can begin snapshotting.
+                let pending: PendingCall = match timeout(
+                    WORKER_RPC_WRITE_TIMEOUT,
+                    worker.conn.start_call(Request::IndexShard { revision, files }),
                 )
                 .await
-                .with_context(|| format!("index shard {shard_id}"))?;
+                {
+                    Ok(Ok(pending)) => pending,
+                    Ok(Err(err)) => {
+                        return Err(anyhow!(err)).with_context(|| {
+                            format!(
+                                "send request to worker {} (shard {})",
+                                worker.worker_id, worker.shard_id
+                            )
+                        });
+                    }
+                    Err(_) => {
+                        let _ = worker.conn.shutdown().await;
+                        return Err(anyhow!(
+                            "timed out writing request to worker {} (shard {})",
+                            worker.worker_id,
+                            worker.shard_id
+                        ));
+                    }
+                };
+
+                drop(snapshot_permit);
+
+                let request_id = pending.request_id();
+
+                let resp = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => {
+                        // Best-effort: cancellation is advisory and the caller may already have moved on.
+                        let _ = timeout(WORKER_RPC_CANCEL_TIMEOUT, worker.conn.cancel(request_id)).await;
+                        return Err(rpc_cancelled_error());
+                    }
+                    res = timeout(WORKER_RPC_READ_TIMEOUT, pending.wait()) => {
+                        match res {
+                            Ok(Ok(resp)) => resp,
+                            Ok(Err(err)) => match err {
+                                nova_remote_rpc::RpcError::Canceled => return Err(rpc_cancelled_error()),
+                                err => {
+                                    return Err(anyhow!(err)).with_context(|| {
+                                        format!(
+                                            "receive response from worker {} (shard {})",
+                                            worker.worker_id, worker.shard_id
+                                        )
+                                    })
+                                }
+                            },
+                            Err(_) => {
+                                let _ = worker.conn.shutdown().await;
+                                return Err(anyhow!(
+                                    "timed out waiting for response from worker {} (shard {})",
+                                    worker.worker_id,
+                                    worker.shard_id
+                                ));
+                            }
+                        }
+                    }
+                };
 
                 Ok::<_, anyhow::Error>((shard_id, worker, resp))
             });
