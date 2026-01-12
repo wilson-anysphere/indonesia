@@ -303,7 +303,10 @@ impl FrameworkAnalyzer for MicronautAnalyzer {
         if path.extension().and_then(|e| e.to_str()) != Some("java") {
             return Vec::new();
         }
-        if db.file_text(file).is_none() {
+        let Some(text) = db.file_text(file) else {
+            return Vec::new();
+        };
+        if !may_have_micronaut_file_diagnostics(text) {
             return Vec::new();
         }
 
@@ -347,6 +350,39 @@ impl FrameworkAnalyzer for MicronautAnalyzer {
     fn virtual_members(&self, _db: &dyn Database, _class: ClassId) -> Vec<VirtualMember> {
         Vec::new()
     }
+}
+
+fn may_have_micronaut_file_diagnostics(text: &str) -> bool {
+    // Framework analyzers are invoked for every file in an applicable project. To
+    // avoid running the (potentially expensive) project-wide Micronaut analysis
+    // for files that cannot produce any diagnostics, use a cheap string-based
+    // guard keyed to the features we currently support:
+    // - DI diagnostics require `@Inject`/`@Bean`/`@Factory`/`@Singleton` etc.
+    // - Validation diagnostics require common Bean Validation annotations like
+    //   `@NotNull`/`@NotBlank`.
+    const NEEDLES: &[&str] = &[
+        // Bean definitions / DI.
+        "Inject",
+        "Singleton",
+        "Prototype",
+        "Controller",
+        "Factory",
+        "Bean",
+        // Bean Validation (see `validation.rs`).
+        "NotNull",
+        "NotBlank",
+        "Email",
+        "Min",
+        "Max",
+        "Positive",
+        "PositiveOrZero",
+        "Negative",
+        "NegativeOrZero",
+        "DecimalMin",
+        "DecimalMax",
+    ];
+
+    NEEDLES.iter().any(|needle| text.contains(needle))
 }
 
 fn project_inputs(db: &dyn Database, file_ids: &[FileId]) -> (Vec<JavaSource>, Vec<ConfigFile>) {
