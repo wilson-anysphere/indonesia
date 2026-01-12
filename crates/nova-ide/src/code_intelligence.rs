@@ -877,7 +877,7 @@ pub(crate) fn core_completions(
 
     if is_new_expression_type_completion_context(text, prefix_start) {
         return decorate_completions(
-            text,
+            &text_index,
             prefix_start,
             offset,
             new_expression_type_completions(db, file, &prefix),
@@ -1080,7 +1080,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
 
     if is_new_expression_type_completion_context(text, prefix_start) {
         return decorate_completions(
-            text,
+            &text_index,
             prefix_start,
             offset,
             new_expression_type_completions(db, file, &prefix),
