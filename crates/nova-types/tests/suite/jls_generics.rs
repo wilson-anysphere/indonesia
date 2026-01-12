@@ -71,23 +71,20 @@ fn instantiate_supertype_is_order_independent_for_type_var_and_intersection_boun
     let t1 = env.add_type_param("T1", vec![Type::class(a, vec![]), Type::class(b, vec![])]);
     let t2 = env.add_type_param("T2", vec![Type::class(b, vec![]), Type::class(a, vec![])]);
 
-    let args1 =
-        instantiate_supertype(&env, &Type::TypeVar(t1), iface).expect("should instantiate supertype");
-    let args2 =
-        instantiate_supertype(&env, &Type::TypeVar(t2), iface).expect("should instantiate supertype");
-
+    // A and B provide conflicting instantiations of `I` (String vs Integer), so viewing the type
+    // variable as `I` is ambiguous. The result should still be deterministic across bound order.
+    let args1 = instantiate_supertype(&env, &Type::TypeVar(t1), iface);
+    let args2 = instantiate_supertype(&env, &Type::TypeVar(t2), iface);
     assert_eq!(args1, args2);
-    assert_eq!(args1, vec![Type::class(string, vec![])]);
+    assert!(args1.is_none());
 
     // And the same for raw intersection types in opposite order.
     let i1 = Type::Intersection(vec![Type::class(b, vec![]), Type::class(a, vec![])]);
     let i2 = Type::Intersection(vec![Type::class(a, vec![]), Type::class(b, vec![])]);
-    let i_args1 =
-        instantiate_supertype(&env, &i1, iface).expect("should instantiate supertype");
-    let i_args2 =
-        instantiate_supertype(&env, &i2, iface).expect("should instantiate supertype");
+    let i_args1 = instantiate_supertype(&env, &i1, iface);
+    let i_args2 = instantiate_supertype(&env, &i2, iface);
     assert_eq!(i_args1, i_args2);
-    assert_eq!(i_args1, vec![Type::class(string, vec![])]);
+    assert!(i_args1.is_none());
 }
 
 #[test]
