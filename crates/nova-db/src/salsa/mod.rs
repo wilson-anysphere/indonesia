@@ -293,6 +293,7 @@ struct SalsaMemoFootprintInner {
 #[derive(Debug, Default)]
 struct SalsaInputFootprintInner {
     file_content_by_file: HashMap<FileId, u64>,
+    project_config_by_project: HashMap<ProjectId, u64>,
     project_class_ids_by_project: HashMap<ProjectId, u64>,
     total_bytes: u64,
 }
@@ -428,6 +429,17 @@ impl SalsaInputFootprint {
         self.refresh_tracker();
     }
 
+    fn record_project_config_bytes(&self, project: ProjectId, bytes: u64) {
+        let mut inner = self.lock_inner();
+        let prev = inner
+            .project_config_by_project
+            .insert(project, bytes)
+            .unwrap_or(0);
+        inner.total_bytes = inner.total_bytes.saturating_sub(prev).saturating_add(bytes);
+        drop(inner);
+        self.refresh_tracker();
+    }
+
     fn record_project_class_ids_bytes(&self, project: ProjectId, bytes: u64) {
         let mut inner = self.lock_inner();
         let prev = inner
@@ -441,6 +453,284 @@ impl SalsaInputFootprint {
         drop(inner);
         self.refresh_tracker();
     }
+}
+
+fn estimated_project_config_bytes(config: &ProjectConfig) -> u64 {
+    use std::mem::size_of;
+    use std::path::Path;
+
+    fn add_bytes(total: &mut u64, bytes: u64) {
+        *total = total.saturating_add(bytes);
+    }
+
+    fn add_slice<T>(total: &mut u64, slice: &[T]) {
+        add_bytes(total, (slice.len() as u64).saturating_mul(size_of::<T>() as u64));
+    }
+
+    fn add_path(total: &mut u64, path: &Path) {
+        add_bytes(total, path.as_os_str().len() as u64);
+    }
+
+    fn add_pathbuf(total: &mut u64, path: &PathBuf) {
+        add_path(total, path.as_path());
+    }
+
+    fn add_opt_pathbuf(total: &mut u64, path: &Option<PathBuf>) {
+        if let Some(path) = path {
+            add_pathbuf(total, path);
+        }
+    }
+
+    fn add_string(total: &mut u64, s: &String) {
+        add_bytes(total, s.len() as u64);
+    }
+
+    fn add_opt_string(total: &mut u64, s: &Option<String>) {
+        if let Some(s) = s {
+            add_string(total, s);
+        }
+    }
+
+    fn add_module_name(total: &mut u64, name: &nova_modules::ModuleName) {
+        add_bytes(total, name.as_str().len() as u64);
+    }
+
+    fn annotation_processing_config_bytes(cfg: &nova_project::AnnotationProcessingConfig) -> u64 {
+        let mut bytes = 0u64;
+        add_opt_pathbuf(&mut bytes, &cfg.generated_sources_dir);
+        add_slice(&mut bytes, cfg.processor_path.as_slice());
+        for path in &cfg.processor_path {
+            add_pathbuf(&mut bytes, path);
+        }
+        add_slice(&mut bytes, cfg.processors.as_slice());
+        for proc in &cfg.processors {
+            add_string(&mut bytes, proc);
+        }
+        add_slice(&mut bytes, cfg.compiler_args.as_slice());
+        for arg in &cfg.compiler_args {
+            add_string(&mut bytes, arg);
+        }
+
+        // Best-effort: count key/value string lengths (ignore BTreeMap node overhead).
+        add_bytes(
+            &mut bytes,
+            (cfg.options.len() as u64).saturating_mul(size_of::<(String, String)>() as u64),
+        );
+        for (k, v) in &cfg.options {
+            add_string(&mut bytes, k);
+            add_string(&mut bytes, v);
+        }
+
+        bytes
+    }
+
+    fn annotation_processing_bytes(ap: &nova_project::AnnotationProcessing) -> u64 {
+        let mut bytes = 0u64;
+        if let Some(cfg) = &ap.main {
+            bytes = bytes.saturating_add(annotation_processing_config_bytes(cfg));
+        }
+        if let Some(cfg) = &ap.test {
+            bytes = bytes.saturating_add(annotation_processing_config_bytes(cfg));
+        }
+        bytes
+    }
+
+    fn source_root_bytes(root: &nova_project::SourceRoot) -> u64 {
+        let mut bytes = 0u64;
+        add_pathbuf(&mut bytes, &root.path);
+        bytes
+    }
+
+    fn classpath_entry_bytes(entry: &nova_project::ClasspathEntry) -> u64 {
+        let mut bytes = 0u64;
+        add_pathbuf(&mut bytes, &entry.path);
+        bytes
+    }
+
+    fn output_dir_bytes(dir: &nova_project::OutputDir) -> u64 {
+        let mut bytes = 0u64;
+        add_pathbuf(&mut bytes, &dir.path);
+        bytes
+    }
+
+    fn dependency_bytes(dep: &nova_project::Dependency) -> u64 {
+        let mut bytes = 0u64;
+        add_string(&mut bytes, &dep.group_id);
+        add_string(&mut bytes, &dep.artifact_id);
+        add_opt_string(&mut bytes, &dep.version);
+        add_opt_string(&mut bytes, &dep.scope);
+        add_opt_string(&mut bytes, &dep.classifier);
+        add_opt_string(&mut bytes, &dep.type_);
+        bytes
+    }
+
+    fn module_bytes(module: &nova_project::Module) -> u64 {
+        let mut bytes = 0u64;
+        add_string(&mut bytes, &module.name);
+        add_pathbuf(&mut bytes, &module.root);
+        bytes = bytes.saturating_add(annotation_processing_bytes(&module.annotation_processing));
+        bytes
+    }
+
+    fn module_info_bytes(info: &nova_modules::ModuleInfo) -> u64 {
+        let mut bytes = 0u64;
+        add_module_name(&mut bytes, &info.name);
+
+        add_slice(&mut bytes, info.requires.as_slice());
+        for req in &info.requires {
+            add_module_name(&mut bytes, &req.module);
+        }
+
+        add_slice(&mut bytes, info.exports.as_slice());
+        for export in &info.exports {
+            add_string(&mut bytes, &export.package);
+            add_slice(&mut bytes, export.to.as_slice());
+            for name in &export.to {
+                add_module_name(&mut bytes, name);
+            }
+        }
+
+        add_slice(&mut bytes, info.opens.as_slice());
+        for open in &info.opens {
+            add_string(&mut bytes, &open.package);
+            add_slice(&mut bytes, open.to.as_slice());
+            for name in &open.to {
+                add_module_name(&mut bytes, name);
+            }
+        }
+
+        add_slice(&mut bytes, info.uses.as_slice());
+        for uses in &info.uses {
+            add_string(&mut bytes, &uses.service);
+        }
+
+        add_slice(&mut bytes, info.provides.as_slice());
+        for provides in &info.provides {
+            add_string(&mut bytes, &provides.service);
+            add_slice(&mut bytes, provides.implementations.as_slice());
+            for impl_ in &provides.implementations {
+                add_string(&mut bytes, impl_);
+            }
+        }
+
+        bytes
+    }
+
+    fn module_graph_bytes(graph: &nova_modules::ModuleGraph) -> u64 {
+        let mut bytes = 0u64;
+        for (name, info) in graph.iter() {
+            // Best-effort container sizing.
+            bytes = bytes.saturating_add(size_of::<(nova_modules::ModuleName, nova_modules::ModuleInfo)>() as u64);
+            add_module_name(&mut bytes, name);
+            bytes = bytes.saturating_add(module_info_bytes(info));
+        }
+        bytes
+    }
+
+    fn jpms_module_root_bytes(root: &nova_project::JpmsModuleRoot) -> u64 {
+        let mut bytes = 0u64;
+        add_module_name(&mut bytes, &root.name);
+        add_pathbuf(&mut bytes, &root.root);
+        add_pathbuf(&mut bytes, &root.module_info);
+        bytes = bytes.saturating_add(module_info_bytes(&root.info));
+        bytes
+    }
+
+    fn jpms_workspace_bytes(workspace: &nova_project::JpmsWorkspace) -> u64 {
+        let mut bytes = 0u64;
+        bytes = bytes.saturating_add(module_graph_bytes(&workspace.graph));
+        add_bytes(
+            &mut bytes,
+            (workspace.module_roots.len() as u64)
+                .saturating_mul(size_of::<(nova_modules::ModuleName, PathBuf)>() as u64),
+        );
+        for (name, path) in &workspace.module_roots {
+            add_module_name(&mut bytes, name);
+            add_pathbuf(&mut bytes, path);
+        }
+        bytes
+    }
+
+    fn module_config_bytes(cfg: &nova_project::ModuleConfig) -> u64 {
+        let mut bytes = 0u64;
+        add_string(&mut bytes, &cfg.id);
+
+        add_slice(&mut bytes, cfg.source_roots.as_slice());
+        for root in &cfg.source_roots {
+            bytes = bytes.saturating_add(source_root_bytes(root));
+        }
+
+        add_slice(&mut bytes, cfg.classpath.as_slice());
+        for entry in &cfg.classpath {
+            bytes = bytes.saturating_add(classpath_entry_bytes(entry));
+        }
+
+        add_slice(&mut bytes, cfg.module_path.as_slice());
+        for entry in &cfg.module_path {
+            bytes = bytes.saturating_add(classpath_entry_bytes(entry));
+        }
+
+        add_opt_pathbuf(&mut bytes, &cfg.output_dir);
+
+        bytes
+    }
+
+    fn workspace_model_bytes(model: &nova_project::WorkspaceModel) -> u64 {
+        let mut bytes = 0u64;
+        add_slice(&mut bytes, model.modules.as_slice());
+        for cfg in &model.modules {
+            bytes = bytes.saturating_add(module_config_bytes(cfg));
+        }
+        bytes
+    }
+
+    let mut bytes = size_of::<ProjectConfig>() as u64;
+    add_pathbuf(&mut bytes, &config.workspace_root);
+
+    add_slice(&mut bytes, config.modules.as_slice());
+    for module in &config.modules {
+        bytes = bytes.saturating_add(module_bytes(module));
+    }
+
+    add_slice(&mut bytes, config.jpms_modules.as_slice());
+    for module in &config.jpms_modules {
+        bytes = bytes.saturating_add(jpms_module_root_bytes(module));
+    }
+
+    if let Some(workspace) = &config.jpms_workspace {
+        bytes = bytes.saturating_add(jpms_workspace_bytes(workspace));
+    }
+
+    add_slice(&mut bytes, config.source_roots.as_slice());
+    for root in &config.source_roots {
+        bytes = bytes.saturating_add(source_root_bytes(root));
+    }
+
+    add_slice(&mut bytes, config.module_path.as_slice());
+    for entry in &config.module_path {
+        bytes = bytes.saturating_add(classpath_entry_bytes(entry));
+    }
+
+    add_slice(&mut bytes, config.classpath.as_slice());
+    for entry in &config.classpath {
+        bytes = bytes.saturating_add(classpath_entry_bytes(entry));
+    }
+
+    add_slice(&mut bytes, config.output_dirs.as_slice());
+    for dir in &config.output_dirs {
+        bytes = bytes.saturating_add(output_dir_bytes(dir));
+    }
+
+    add_slice(&mut bytes, config.dependencies.as_slice());
+    for dep in &config.dependencies {
+        bytes = bytes.saturating_add(dependency_bytes(dep));
+    }
+
+    if let Some(model) = &config.workspace_model {
+        bytes = bytes.saturating_add(workspace_model_bytes(model));
+    }
+
+    bytes
 }
 
 #[derive(Debug)]
@@ -1831,6 +2121,9 @@ impl Database {
     }
 
     pub fn set_project_config(&self, project: ProjectId, config: Arc<ProjectConfig>) {
+        let bytes = estimated_project_config_bytes(&config);
+        self.input_footprint.record_project_config_bytes(project, bytes);
+
         self.inputs
             .lock()
             .project_config
@@ -3193,6 +3486,56 @@ class Foo {
         let expected = (mapping.len() as u64) * (std::mem::size_of::<(Arc<str>, ClassId)>() as u64)
             + ("com.example.Foo".len() as u64)
             + ("com.example.Bar".len() as u64);
+        assert_eq!(manager.report().usage.other, expected);
+        assert_eq!(db.salsa_input_bytes(), expected);
+    }
+
+    #[test]
+    fn salsa_input_tracker_accounts_project_config_bytes() {
+        let manager = MemoryManager::new(MemoryBudget::from_total(1_000_000));
+        let db = Database::new();
+        db.register_salsa_input_tracker(&manager);
+
+        let project = ProjectId::from_raw(0);
+        let config = ProjectConfig {
+            workspace_root: PathBuf::new(),
+            build_system: BuildSystem::Simple,
+            java: JavaConfig {
+                source: JavaVersion::JAVA_21,
+                target: JavaVersion::JAVA_21,
+                enable_preview: false,
+            },
+            modules: vec![nova_project::Module {
+                name: "m".to_string(),
+                root: PathBuf::new(),
+                annotation_processing: nova_project::AnnotationProcessing::default(),
+            }],
+            jpms_modules: Vec::new(),
+            jpms_workspace: None,
+            source_roots: Vec::new(),
+            module_path: Vec::new(),
+            classpath: Vec::new(),
+            output_dirs: Vec::new(),
+            dependencies: vec![nova_project::Dependency {
+                group_id: "g".to_string(),
+                artifact_id: "a".to_string(),
+                version: None,
+                scope: None,
+                classifier: None,
+                type_: None,
+            }],
+            workspace_model: None,
+        };
+
+        let expected = (std::mem::size_of::<ProjectConfig>()
+            + std::mem::size_of::<nova_project::Module>()
+            + std::mem::size_of::<nova_project::Dependency>()) as u64
+            + 1 /* module name */
+            + 1 /* group_id */
+            + 1 /* artifact_id */;
+
+        db.set_project_config(project, Arc::new(config));
+
         assert_eq!(manager.report().usage.other, expected);
         assert_eq!(db.salsa_input_bytes(), expected);
     }
