@@ -29,6 +29,21 @@ pub struct LoadOptions {
     /// By default Nova uses a heuristic (treat BUILD directories as source roots) to
     /// avoid invoking Bazel unexpectedly. Enable `bazel.enable_target_loading` to
     /// populate per-target compilation metadata by running `bazel query`/`aquery`.
+    ///
+    /// ### Optional BSP support
+    ///
+    /// `nova-build-bazel` can optionally use Bazel's Build Server Protocol (BSP) for
+    /// target discovery and compile info. Downstream users can enable this end-to-end
+    /// by compiling `nova-project` with the `bazel-bsp` feature:
+    ///
+    /// - `cargo ... --features nova-project/bazel-bsp` (workspace feature syntax)
+    ///
+    /// Runtime knobs (read by `nova-build-bazel` when BSP support is compiled in):
+    /// - `NOVA_BAZEL_USE_BSP`: set to `0`/`false` to force `bazel query`/`aquery`
+    /// - `NOVA_BSP_PROGRAM`: BSP launcher executable (defaults to `bsp4bazel`)
+    /// - `NOVA_BSP_ARGS`: launcher args (JSON array or whitespace-separated string)
+    ///
+    /// Note: `.bsp` config discovery is not currently implemented; use the env vars above.
     pub bazel: BazelLoadOptions,
 }
 

@@ -6,6 +6,11 @@ edition = "2021"
 [features]
 default = ["bazel"]
 bazel = ["dep:nova-build-bazel"]
+# Enable Bazel's Build Server Protocol (BSP) integration end-to-end.
+#
+# This keeps BSP optional (not on by default) while allowing downstream crates to enable it
+# transitively without depending on `nova-build-bazel` directly.
+bazel-bsp = ["bazel", "nova-build-bazel/bsp"]
 
 [dependencies]
 regex = "1.10.3"
