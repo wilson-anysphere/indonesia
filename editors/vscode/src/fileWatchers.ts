@@ -26,6 +26,9 @@ const BUILD_SYSTEM_GLOB_PATTERNS = [
   // Script plugins / shared Gradle configuration can live anywhere.
   '**/*.gradle',
   '**/*.gradle.kts',
+  // Gradle dependency lockfiles can affect resolved classpaths without modifying build scripts.
+  '**/gradle.lockfile',
+  '**/dependency-locks/**/*.lockfile',
   '**/gradle.properties',
   '**/gradlew',
   '**/gradlew.bat',
