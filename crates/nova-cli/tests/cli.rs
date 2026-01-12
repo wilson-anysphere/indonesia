@@ -1,3 +1,5 @@
+mod suite;
+
 use assert_cmd::Command;
 use assert_fs::prelude::*;
 use assert_fs::TempDir;
