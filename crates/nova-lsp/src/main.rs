@@ -2370,7 +2370,8 @@ fn goto_definition_jdk(
         // JDK is invalid/unavailable, fall back to environment-based discovery so the feature keeps
         // working in partially configured environments.
         let configured = state.project_root.as_deref().and_then(|root| {
-            let workspace_root = nova_project::workspace_root(root).unwrap_or_else(|| root.to_path_buf());
+            let workspace_root =
+                nova_project::workspace_root(root).unwrap_or_else(|| root.to_path_buf());
             let (config, _path) = nova_config::load_for_workspace(&workspace_root).ok()?;
             let jdk_config = config.jdk_config();
             nova_jdk::JdkIndex::discover(Some(&jdk_config)).ok()
