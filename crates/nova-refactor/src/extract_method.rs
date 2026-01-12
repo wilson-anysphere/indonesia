@@ -149,7 +149,7 @@ impl ExtractMethod {
             }
         }
 
-        let Some(selected_stmt) = find_statement_exact(&method_body, selection) else {
+        let Some(selected_stmts) = find_selected_statements(source, &method_body, selection) else {
             issues.push(ExtractMethodIssue::InvalidSelection);
             return Ok(ExtractMethodAnalysis {
                 region: ExtractRegionKind::Statements,
@@ -161,14 +161,7 @@ impl ExtractMethod {
             });
         };
 
-        let mut hazards = Vec::new();
-        match &selected_stmt {
-            ast::Statement::ReturnStatement(_) => hazards.push(ControlFlowHazard::Return),
-            ast::Statement::BreakStatement(_) => hazards.push(ControlFlowHazard::Break),
-            ast::Statement::ContinueStatement(_) => hazards.push(ControlFlowHazard::Continue),
-            ast::Statement::ThrowStatement(_) => hazards.push(ControlFlowHazard::Throw),
-            _ => {}
-        }
+        let hazards = collect_control_flow_hazards(&selected_stmts);
 
         for hazard in &hazards {
             match hazard {
@@ -190,7 +183,7 @@ impl ExtractMethod {
             .collect();
 
         let (reads_in_selection, writes_in_selection) =
-            collect_reads_writes_in_statement(&selected_stmt, &known);
+            collect_reads_writes_in_statements(&selected_stmts, &known);
 
         let reads_after = collect_reads_after_offset(&method_body, selection.end, &known);
 
@@ -403,11 +396,79 @@ fn find_enclosing_method(
     best.map(|(_, m, b)| (m, b))
 }
 
-fn find_statement_exact(body: &ast::Block, selection: TextRange) -> Option<ast::Statement> {
+fn find_statement_exact(source: &str, body: &ast::Block, selection: TextRange) -> Option<ast::Statement> {
     body.syntax()
         .descendants()
         .filter_map(ast::Statement::cast)
-        .find(|stmt| syntax_range(stmt.syntax()) == selection)
+        .find(|stmt| trim_range(source, syntax_range(stmt.syntax())) == selection)
+}
+
+fn find_selected_statements(
+    source: &str,
+    body: &ast::Block,
+    selection: TextRange,
+) -> Option<Vec<ast::Statement>> {
+    find_statement_sequence_in_block(source, body, selection)
+        .or_else(|| find_statement_exact(source, body, selection).map(|stmt| vec![stmt]))
+}
+
+fn find_statement_sequence_in_block(
+    source: &str,
+    body: &ast::Block,
+    selection: TextRange,
+) -> Option<Vec<ast::Statement>> {
+    for block in std::iter::once(body.clone()).chain(body.syntax().descendants().filter_map(ast::Block::cast))
+    {
+        let stmts: Vec<_> = block.statements().collect();
+        if stmts.is_empty() {
+            continue;
+        }
+
+        for start_idx in 0..stmts.len() {
+            let start_range = trim_range(source, syntax_range(stmts[start_idx].syntax()));
+            if start_range.start != selection.start {
+                continue;
+            }
+
+            let mut selected = Vec::new();
+            for stmt in stmts[start_idx..].iter() {
+                let range = trim_range(source, syntax_range(stmt.syntax()));
+                if range.end > selection.end {
+                    break;
+                }
+                selected.push(stmt.clone());
+                if range.end == selection.end {
+                    return Some(selected);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn collect_control_flow_hazards(stmts: &[ast::Statement]) -> Vec<ControlFlowHazard> {
+    let mut hazards = Vec::new();
+    for stmt in stmts {
+        for inner_stmt in std::iter::once(stmt.clone())
+            .chain(stmt.syntax().descendants().filter_map(ast::Statement::cast))
+        {
+            let hazard = match inner_stmt {
+                ast::Statement::ReturnStatement(_) => Some(ControlFlowHazard::Return),
+                ast::Statement::BreakStatement(_) => Some(ControlFlowHazard::Break),
+                ast::Statement::ContinueStatement(_) => Some(ControlFlowHazard::Continue),
+                ast::Statement::ThrowStatement(_) => Some(ControlFlowHazard::Throw),
+                _ => None,
+            };
+            let Some(hazard) = hazard else {
+                continue;
+            };
+            if hazards.contains(&hazard) {
+                continue;
+            }
+            hazards.push(hazard);
+        }
+    }
+    hazards
 }
 
 fn class_has_method_named(class_decl: &ast::ClassDeclaration, name: &str) -> bool {
@@ -525,6 +586,20 @@ fn collect_reads_writes_in_statement(
     let mut reads: Vec<(String, TextRange)> = Vec::new();
 
     match stmt {
+        ast::Statement::LocalVariableDeclarationStatement(local_decl) => {
+            if let Some(list) = local_decl.declarator_list() {
+                for decl in list.declarators() {
+                    let Some(name) = decl.name_token() else {
+                        continue;
+                    };
+                    let name = name.text().to_string();
+                    if known.contains(&name) {
+                        writes.insert(name);
+                    }
+                }
+            }
+            reads.extend(collect_ident_tokens(local_decl.syntax(), known));
+        }
         ast::Statement::ExpressionStatement(expr_stmt) => {
             let Some(expr) = expr_stmt.expression() else {
                 return (reads, writes);
@@ -570,6 +645,27 @@ fn collect_reads_writes_in_statement(
     let mut seen = HashSet::new();
     reads.retain(|(name, _)| seen.insert(name.clone()));
 
+    (reads, writes)
+}
+
+fn collect_reads_writes_in_statements(
+    stmts: &[ast::Statement],
+    known: &HashSet<String>,
+) -> (Vec<(String, TextRange)>, HashSet<String>) {
+    let mut reads = Vec::new();
+    let mut writes = HashSet::new();
+    for stmt in stmts {
+        let (stmt_reads, stmt_writes) = collect_reads_writes_in_statement(stmt, known);
+        reads.extend(stmt_reads);
+        writes.extend(stmt_writes);
+    }
+    reads.sort_by(|a, b| {
+        a.1.start
+            .cmp(&b.1.start)
+            .then_with(|| a.1.end.cmp(&b.1.end))
+    });
+    let mut seen = HashSet::new();
+    reads.retain(|(name, _)| seen.insert(name.clone()));
     (reads, writes)
 }
 
