@@ -159,10 +159,12 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
         // Structural fallback: if the host database exposes HIR classes, look for `@Mapper`.
         let classes = db.all_classes(project);
         if !classes.is_empty() {
-            return classes.into_iter().any(|id| {
+            if classes.into_iter().any(|id| {
                 let class = db.class(id);
                 class.has_annotation("Mapper") || class.has_annotation("org.mapstruct.Mapper")
-            });
+            }) {
+                return true;
+            }
         }
 
         // Text fallback: if we can enumerate files and read contents, look for MapStruct usage.

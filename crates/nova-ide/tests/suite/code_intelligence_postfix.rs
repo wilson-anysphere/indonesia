@@ -259,3 +259,27 @@ class A {
         "expected completion list to contain Foo::new; got {items:#?}"
     );
 }
+
+#[test]
+fn completion_includes_enum_constants_in_switch_case_labels() {
+    let (db, file, pos, _text) = fixture(
+        r#"
+enum Color { RED, GREEN }
+
+class A {
+  void m(Color c) {
+    switch (c) {
+      case R<|>:
+        break;
+    }
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    assert!(
+        items.iter().any(|item| item.label == "RED"),
+        "expected enum constant completion to include `RED`; got {items:#?}"
+    );
+}

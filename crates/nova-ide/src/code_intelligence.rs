@@ -3500,6 +3500,297 @@ fn offset_in_java_string_or_char_literal(text: &str, offset: usize) -> bool {
     false
 }
 
+fn completion_in_switch_case_label(text: &str, offset: usize, prefix_start: usize) -> bool {
+    // Avoid offering enum constant completions inside comments/strings.
+    if offset_in_java_comment(text, offset) || offset_in_java_string_or_char_literal(text, offset) {
+        return false;
+    }
+
+    let bytes = text.as_bytes();
+    let prefix_start = prefix_start.min(bytes.len());
+
+    // Scan backwards to the start of the current line (bounded).
+    let line_start = bytes[..prefix_start]
+        .iter()
+        .rposition(|b| *b == b'\n')
+        .map(|idx| idx + 1)
+        .unwrap_or(0);
+    const MAX_SCAN: usize = 256;
+    let scan_start = line_start.max(prefix_start.saturating_sub(MAX_SCAN));
+
+    // Find the last `case` keyword before the current identifier prefix.
+    for pos in (scan_start..=prefix_start.saturating_sub(4)).rev() {
+        if bytes.get(pos..pos + 4) != Some(&b"case"[..]) {
+            continue;
+        }
+
+        // Ensure `case` is a standalone keyword, not part of a larger identifier.
+        if pos > 0 && is_ident_continue(bytes[pos - 1] as char) {
+            continue;
+        }
+        if bytes
+            .get(pos + 4)
+            .is_some_and(|b| is_ident_continue(*b as char))
+        {
+            continue;
+        }
+
+        // Ensure we haven't already passed the label delimiter (`:` / `->`). If we have, we're in
+        // the statement body, not the label.
+        let mut i = pos + 4;
+        while i < prefix_start {
+            match bytes[i] {
+                b':' => return false,
+                b'-' if bytes.get(i + 1) == Some(&b'>') => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+
+        return true;
+    }
+
+    false
+}
+
+fn switch_selector_ident(tokens: &[Token], offset: usize) -> Option<String> {
+    let idx = tokens.iter().rposition(|t| t.span.start <= offset)?;
+
+    for i in (0..=idx).rev() {
+        let tok = &tokens[i];
+        if tok.kind != TokenKind::Ident || tok.text != "switch" {
+            continue;
+        }
+
+        let open_idx = i + 1;
+        if tokens.get(open_idx).is_none_or(|t| t.kind != TokenKind::Symbol('(')) {
+            continue;
+        }
+        let (close_idx, _close_offset) = find_matching_paren(tokens, open_idx)?;
+
+        let inner = tokens.get(open_idx + 1..close_idx)?;
+        if inner.len() != 1 || inner[0].kind != TokenKind::Ident {
+            continue;
+        }
+
+        // Best-effort containment check: ensure the cursor is inside the switch body braces so we
+        // don't accidentally grab an unrelated earlier switch.
+        let mut brace_open_idx = close_idx + 1;
+        while brace_open_idx < tokens.len() {
+            if tokens[brace_open_idx].kind == TokenKind::Symbol('{') {
+                break;
+            }
+            brace_open_idx += 1;
+        }
+        if brace_open_idx >= tokens.len() {
+            return Some(inner[0].text.clone());
+        }
+
+        if let Some((_brace_close_idx, body_span)) = find_matching_brace(tokens, brace_open_idx) {
+            if span_contains(body_span, offset) {
+                return Some(inner[0].text.clone());
+            }
+            continue;
+        }
+
+        return Some(inner[0].text.clone());
+    }
+
+    None
+}
+
+fn infer_receiver_type_name(analysis: &Analysis, ident: &str, offset: usize) -> Option<String> {
+    // Best-effort scope inference for a plain identifier receiver:
+    // 1) Local variables in the enclosing method (closest preceding declaration).
+    // 2) Parameters of the enclosing method.
+    // 3) Fields.
+    if let Some(method) = analysis
+        .methods
+        .iter()
+        .find(|m| span_contains(m.body_span, offset))
+    {
+        if let Some(var) = analysis
+            .vars
+            .iter()
+            .filter(|v| {
+                v.name == ident
+                    && v.name_span.start <= offset
+                    && span_contains(method.body_span, v.name_span.start)
+            })
+            .max_by_key(|v| v.name_span.start)
+        {
+            return Some(var.ty.clone());
+        }
+
+        if let Some(param) = method.params.iter().find(|p| p.name == ident) {
+            return Some(param.ty.clone());
+        }
+    } else {
+        if let Some(var) = analysis
+            .vars
+            .iter()
+            .filter(|v| v.name == ident && v.name_span.start <= offset)
+            .max_by_key(|v| v.name_span.start)
+        {
+            return Some(var.ty.clone());
+        }
+
+        if let Some(param) = analysis
+            .methods
+            .iter()
+            .flat_map(|m| m.params.iter())
+            .find(|p| p.name == ident)
+        {
+            return Some(param.ty.clone());
+        }
+    }
+
+    analysis
+        .fields
+        .iter()
+        .find(|f| f.name == ident)
+        .map(|f| f.ty.clone())
+}
+
+fn resolve_type_name_in_completion_env(
+    types: &TypeStore,
+    workspace_index: &completion_cache::WorkspaceTypeIndex,
+    package: &str,
+    imports: &JavaImportInfo,
+    ty: &str,
+) -> Option<ClassId> {
+    let ty = ty.trim();
+    if ty.is_empty() {
+        return None;
+    }
+
+    // Qualified name.
+    if ty.contains('.') {
+        if let Some(id) = types.class_id(ty) {
+            return Some(id);
+        }
+        // Best-effort nested type support: `Outer.Inner` -> `Outer$Inner`.
+        if let Some((outer, inner)) = ty.rsplit_once('.') {
+            let candidate = format!("{outer}${inner}");
+            if let Some(id) = types.class_id(&candidate) {
+                return Some(id);
+            }
+        }
+        return None;
+    }
+
+    // Single-type import.
+    if let Some(imported) = imports
+        .explicit_types
+        .iter()
+        .find(|fqn| fqn.rsplit('.').next().unwrap_or(fqn.as_str()) == ty)
+    {
+        if let Some(id) = types.class_id(imported) {
+            return Some(id);
+        }
+    }
+
+    // Same-package (or default package).
+    let same_package = if package.is_empty() {
+        ty.to_string()
+    } else {
+        format!("{package}.{ty}")
+    };
+    if let Some(id) = types.class_id(&same_package) {
+        return Some(id);
+    }
+
+    // `java.lang.*` is implicitly imported.
+    if let Some(id) = types.class_id(&format!("java.lang.{ty}")) {
+        return Some(id);
+    }
+
+    // Star imports.
+    for pkg in &imports.star_packages {
+        if pkg.is_empty() {
+            continue;
+        }
+        let candidate = format!("{pkg}.{ty}");
+        if let Some(id) = types.class_id(&candidate) {
+            return Some(id);
+        }
+    }
+
+    // Workspace unambiguous fallback (helps when imports are missing).
+    if let Some(fqn) = workspace_index.unique_fqn_for_simple_name(ty) {
+        if let Some(id) = types.class_id(fqn) {
+            return Some(id);
+        }
+    }
+
+    None
+}
+
+fn field_ty_is_class(types: &TypeStore, class_id: ClassId, ty: &Type) -> bool {
+    if *ty == Type::class(class_id, vec![]) {
+        return true;
+    }
+    match ty {
+        Type::Named(name) => types.class_id(name.as_str()) == Some(class_id),
+        _ => false,
+    }
+}
+
+fn enum_case_label_completions(
+    db: &dyn Database,
+    file: FileId,
+    text: &str,
+    offset: usize,
+    prefix_start: usize,
+    prefix: &str,
+) -> Option<Vec<CompletionItem>> {
+    if !completion_in_switch_case_label(text, offset, prefix_start) {
+        return None;
+    }
+
+    let analysis = analyze(text);
+    let selector = switch_selector_ident(&analysis.tokens, prefix_start)?;
+    let selector_ty = infer_receiver_type_name(&analysis, &selector, prefix_start)?;
+
+    let env = completion_cache::completion_env_for_file(db, file)?;
+    let package = parse_java_package_name(text).unwrap_or_default();
+    let imports = parse_java_imports(text);
+    let enum_id = resolve_type_name_in_completion_env(
+        env.types(),
+        env.workspace_index(),
+        &package,
+        &imports,
+        &selector_ty,
+    )?;
+
+    let enum_def = env.types().class(enum_id)?;
+    let mut items = Vec::new();
+    for field in &enum_def.fields {
+        if !prefix.is_empty() && !field.name.starts_with(prefix) {
+            continue;
+        }
+        if !field.is_static || !field.is_final {
+            continue;
+        }
+        if !field_ty_is_class(env.types(), enum_id, &field.ty) {
+            continue;
+        }
+        items.push(CompletionItem {
+            label: field.name.clone(),
+            kind: Some(CompletionItemKind::ENUM_MEMBER),
+            insert_text: Some(field.name.clone()),
+            ..Default::default()
+        });
+    }
+
+    if items.is_empty() {
+        return None;
+    }
+
+    let ctx = CompletionRankingContext::default();
+    rank_completions(prefix, &mut items, &ctx);
+    Some(items)
+}
 /// Core (non-framework) completions for a Java source file.
 ///
 /// Framework completions are provided via the unified `nova-ext` framework providers and
@@ -3702,6 +3993,11 @@ pub(crate) fn core_completions(
             }
             return decorate_completions(&text_index, prefix_start, offset, items);
         }
+    }
+
+    if let Some(items) = enum_case_label_completions(db, file, text, offset, prefix_start, &prefix)
+    {
+        return decorate_completions(&text_index, prefix_start, offset, items);
     }
 
     if type_position_completion_applicable(text, prefix_start, &prefix) {
@@ -4161,6 +4457,11 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         if !items.is_empty() {
             return decorate_completions(&text_index, prefix_start, offset, items);
         }
+    }
+
+    if let Some(items) = enum_case_label_completions(db, file, text, offset, prefix_start, &prefix)
+    {
+        return decorate_completions(&text_index, prefix_start, offset, items);
     }
 
     if type_position_completion_applicable(text, prefix_start, &prefix) {
