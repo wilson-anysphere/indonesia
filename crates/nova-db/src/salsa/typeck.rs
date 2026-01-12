@@ -10334,8 +10334,14 @@ fn find_best_expr_in_expr(
     owner: DefWithBodyId,
     best: &mut Option<(DefWithBodyId, HirExprId, usize)>,
 ) {
-    let range = body.exprs[expr].range();
-    if !range.is_empty() && !(range.start <= offset && offset < range.end) {
+    let expr_node = &body.exprs[expr];
+    let range = expr_node.range();
+
+    // Best-effort pruning: in well-formed HIR, child expression ranges are nested inside their
+    // parents. However, parse recovery can produce `Invalid` nodes with surprising spans; avoid
+    // pruning those so we still find a best match in broken code.
+    let can_prune = !matches!(expr_node, HirExpr::Invalid { .. });
+    if can_prune && !range.is_empty() && !(range.start <= offset && offset < range.end) {
         return;
     }
     // `Span` uses end-exclusive semantics (mirrors `text_size::TextRange`).
