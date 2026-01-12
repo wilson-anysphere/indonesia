@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BinaryHeap, HashMap};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -2535,24 +2535,25 @@ impl GlobalSymbolIndex {
         let query_first = query_bytes.first().copied().map(|b| b.to_ascii_lowercase());
         let mut matcher = FuzzyMatcher::new(query);
 
-        let mut scored = Vec::new();
+        let mut scored = BinaryHeap::with_capacity(limit);
 
         if query_bytes.len() < 3 {
             if let Some(b0) = query_first {
                 let bucket = &self.prefix1[b0 as usize];
                 if !bucket.is_empty() {
-                    self.score_candidates(bucket.iter().copied(), &mut matcher, &mut scored);
-                    return self.finish(scored, limit);
+                    self.score_candidates_top_k(bucket.iter().copied(), &mut matcher, limit, &mut scored);
+                    return self.finish_top_k(scored, limit);
                 }
             }
 
             let scan_limit = FALLBACK_SCAN_LIMIT.min(self.symbols.len());
-            self.score_candidates(
+            self.score_candidates_top_k(
                 (0..scan_limit).map(|id| id as u32),
                 &mut matcher,
+                limit,
                 &mut scored,
             );
-            return self.finish(scored, limit);
+            return self.finish_top_k(scored, limit);
         }
 
         let mut candidate_scratch = TrigramCandidateScratch::default();
@@ -2561,41 +2562,77 @@ impl GlobalSymbolIndex {
             .candidates_with_scratch(query, &mut candidate_scratch);
 
         if !candidates.is_empty() {
-            self.score_candidates(candidates.iter().copied(), &mut matcher, &mut scored);
-            return self.finish(scored, limit);
+            self.score_candidates_top_k(candidates.iter().copied(), &mut matcher, limit, &mut scored);
+            return self.finish_top_k(scored, limit);
         }
 
         if let Some(b0) = query_first {
             let bucket = &self.prefix1[b0 as usize];
             if !bucket.is_empty() {
-                self.score_candidates(bucket.iter().copied(), &mut matcher, &mut scored);
-                return self.finish(scored, limit);
+                self.score_candidates_top_k(bucket.iter().copied(), &mut matcher, limit, &mut scored);
+                return self.finish_top_k(scored, limit);
             }
         }
 
         let scan_limit = FALLBACK_SCAN_LIMIT.min(self.symbols.len());
-        self.score_candidates(
+        self.score_candidates_top_k(
             (0..scan_limit).map(|id| id as u32),
             &mut matcher,
+            limit,
             &mut scored,
         );
-        self.finish(scored, limit)
+        self.finish_top_k(scored, limit)
     }
 
-    fn score_candidates(
-        &self,
+    fn score_candidates_top_k<'a>(
+        &'a self,
         ids: impl IntoIterator<Item = u32>,
         matcher: &mut FuzzyMatcher,
-        out: &mut Vec<LocalScoredSymbol>,
+        limit: usize,
+        out: &mut BinaryHeap<ScoredSymbolHeapItem<'a>>,
     ) {
+        if limit == 0 {
+            return;
+        }
+
         for id in ids {
             let Some(sym) = self.symbols.get(id as usize) else {
                 continue;
             };
             if let Some(score) = matcher.score(&sym.name) {
-                out.push(LocalScoredSymbol { id, score });
+                let scored = LocalScoredSymbol { id, score };
+                if out.len() < limit {
+                    out.push(ScoredSymbolHeapItem {
+                        index: self,
+                        scored,
+                    });
+                    continue;
+                }
+
+                // The heap is maintained such that `peek()` returns the *worst* element in the
+                // current top-k set (i.e. the max element under `cmp_scored`).
+                let Some(worst) = out.peek() else {
+                    continue;
+                };
+
+                if self.cmp_scored(&scored, &worst.scored) == std::cmp::Ordering::Less {
+                    out.pop();
+                    out.push(ScoredSymbolHeapItem {
+                        index: self,
+                        scored,
+                    });
+                }
             }
         }
+    }
+
+    fn finish_top_k<'a>(
+        &'a self,
+        scored: BinaryHeap<ScoredSymbolHeapItem<'a>>,
+        limit: usize,
+    ) -> Vec<Symbol> {
+        let scored = scored.into_iter().map(|item| item.scored).collect();
+        self.finish(scored, limit)
     }
 
     fn finish(&self, mut scored: Vec<LocalScoredSymbol>, limit: usize) -> Vec<Symbol> {
@@ -2627,12 +2664,119 @@ impl GlobalSymbolIndex {
                 .then_with(|| a.id.cmp(&b.id))
         })
     }
+
+    #[cfg(test)]
+    fn score_candidates_all(
+        &self,
+        ids: impl IntoIterator<Item = u32>,
+        matcher: &mut FuzzyMatcher,
+        out: &mut Vec<LocalScoredSymbol>,
+    ) {
+        for id in ids {
+            let Some(sym) = self.symbols.get(id as usize) else {
+                continue;
+            };
+            if let Some(score) = matcher.score(&sym.name) {
+                out.push(LocalScoredSymbol { id, score });
+            }
+        }
+    }
+
+    /// Baseline implementation used by tests to verify the streaming top-k selector returns
+    /// identical results to the previous "collect-all then select_nth" approach.
+    #[cfg(test)]
+    fn search_full(&self, query: &str, limit: usize) -> Vec<Symbol> {
+        if limit == 0 || self.symbols.is_empty() {
+            return Vec::new();
+        }
+
+        if query.is_empty() {
+            return self.symbols.iter().take(limit).cloned().collect();
+        }
+
+        let query_bytes = query.as_bytes();
+        let query_first = query_bytes.first().copied().map(|b| b.to_ascii_lowercase());
+        let mut matcher = FuzzyMatcher::new(query);
+
+        let mut scored = Vec::new();
+
+        if query_bytes.len() < 3 {
+            if let Some(b0) = query_first {
+                let bucket = &self.prefix1[b0 as usize];
+                if !bucket.is_empty() {
+                    self.score_candidates_all(bucket.iter().copied(), &mut matcher, &mut scored);
+                    return self.finish(scored, limit);
+                }
+            }
+
+            let scan_limit = FALLBACK_SCAN_LIMIT.min(self.symbols.len());
+            self.score_candidates_all(
+                (0..scan_limit).map(|id| id as u32),
+                &mut matcher,
+                &mut scored,
+            );
+            return self.finish(scored, limit);
+        }
+
+        let mut candidate_scratch = TrigramCandidateScratch::default();
+        let candidates = self
+            .trigram
+            .candidates_with_scratch(query, &mut candidate_scratch);
+
+        if !candidates.is_empty() {
+            self.score_candidates_all(candidates.iter().copied(), &mut matcher, &mut scored);
+            return self.finish(scored, limit);
+        }
+
+        if let Some(b0) = query_first {
+            let bucket = &self.prefix1[b0 as usize];
+            if !bucket.is_empty() {
+                self.score_candidates_all(bucket.iter().copied(), &mut matcher, &mut scored);
+                return self.finish(scored, limit);
+            }
+        }
+
+        let scan_limit = FALLBACK_SCAN_LIMIT.min(self.symbols.len());
+        self.score_candidates_all(
+            (0..scan_limit).map(|id| id as u32),
+            &mut matcher,
+            &mut scored,
+        );
+        self.finish(scored, limit)
+    }
 }
 
 #[derive(Debug, Clone)]
 struct LocalScoredSymbol {
     id: u32,
     score: MatchScore,
+}
+
+#[derive(Debug, Clone)]
+struct ScoredSymbolHeapItem<'a> {
+    index: &'a GlobalSymbolIndex,
+    scored: LocalScoredSymbol,
+}
+
+impl PartialEq for ScoredSymbolHeapItem<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for ScoredSymbolHeapItem<'_> {}
+
+impl PartialOrd for ScoredSymbolHeapItem<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ScoredSymbolHeapItem<'_> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        debug_assert!(std::ptr::eq(self.index, other.index));
+        self.index.cmp_scored(&self.scored, &other.scored)
+    }
 }
 
 async fn write_global_symbols(
@@ -2823,5 +2967,50 @@ mod tests {
                 ("fooac".into(), "9799.java".into()),
             ]
         );
+    }
+
+    #[test]
+    fn global_symbol_search_streaming_top_k_matches_full_collection() {
+        let mut symbols = Vec::new();
+
+        // Ensure there are many matches and lots of tie-breaking.
+        symbols.push(Symbol {
+            name: "fooaa".into(),
+            path: "b.java".into(),
+        });
+        symbols.push(Symbol {
+            name: "fooaa".into(),
+            path: "a.java".into(),
+        });
+        symbols.push(Symbol {
+            name: "fooaa".into(),
+            path: "a.java".into(),
+        });
+
+        for a in b'a'..=b'z' {
+            for b in b'a'..=b'z' {
+                if a == b'a' && b == b'a' {
+                    continue;
+                }
+                let name = format!("foo{}{}", a as char, b as char);
+                symbols.push(Symbol {
+                    name,
+                    path: format!("{a}{b}.java"),
+                });
+            }
+        }
+
+        let index = GlobalSymbolIndex::new(symbols, 0);
+
+        // Exercise both the prefix-bucket (len < 3) and trigram-filtered paths.
+        for query in ["f", "fo", "foo"] {
+            for limit in [1_usize, 2, 5, 25, 200] {
+                assert_eq!(
+                    index.search(query, limit),
+                    index.search_full(query, limit),
+                    "mismatch for query={query:?} limit={limit}"
+                );
+            }
+        }
     }
 }
