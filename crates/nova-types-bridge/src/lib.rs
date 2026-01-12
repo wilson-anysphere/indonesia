@@ -62,17 +62,19 @@ impl<'a> ExternalTypeLoader<'a> {
         if let Some(id) = existing {
             // `ExternalTypeLoader` is designed to populate conservative placeholders created by
             // `TypeStore::intern_class_id`. Overwriting an existing, non-placeholder definition is a
-            // footgun: it can clobber workspace/source definitions (nova-db) and can allocate
-            // duplicate type params (since `define_class` replaces the `ClassDef` but does not
-            // reclaim `TypeVarId`s).
+            // footgun:
+            // - it can clobber workspace/source definitions (nova-db)
+            // - it can clobber the built-in minimal JDK type model (used for stable core types)
+            // - it can allocate duplicate type params (since `define_class` replaces the `ClassDef`
+            //   but does not reclaim `TypeVarId`s)
             //
-            // We still allow `java.*` to be refreshed from the JDK provider (the built-in minimal
-            // JDK model is intentionally incomplete and callers may want richer stubs).
-            if !binary_name.starts_with("java.")
-                && self
-                    .store
-                    .class(id)
-                    .is_some_and(|def| !is_placeholder_class_def(def))
+            // If callers want richer `java.*` stubs than the built-in minimal model, they should
+            // ensure those types are represented as placeholders (or avoid defining them up-front)
+            // so the loader can safely populate them.
+            if self
+                .store
+                .class(id)
+                .is_some_and(|def| !is_placeholder_class_def(def))
             {
                 self.loaded.insert(binary_name.to_string());
                 return Some(id);

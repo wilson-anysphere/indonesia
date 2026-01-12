@@ -10874,7 +10874,11 @@ fn find_enclosing_target_typed_expr_in_expr(
                 find_enclosing_target_typed_expr_in_expr(body, *arg, target, target_range, best);
             }
         }
-        HirExpr::ArrayCreation { dim_exprs, .. } => {
+        HirExpr::ArrayCreation {
+            dim_exprs,
+            initializer,
+            ..
+        } => {
             for dim_expr in dim_exprs {
                 find_enclosing_target_typed_expr_in_expr(
                     body,
@@ -10883,6 +10887,14 @@ fn find_enclosing_target_typed_expr_in_expr(
                     target_range,
                     best,
                 );
+            }
+        }
+        HirExpr::ArrayInitializer { items, .. } => {
+            for item in items {
+                find_enclosing_target_typed_expr_in_expr(body, *item, target, target_range, best);
+            }
+            if let Some(init) = initializer {
+                find_enclosing_target_typed_expr_in_expr(body, *init, target, target_range, best);
             }
         }
         HirExpr::ArrayInitializer { items, .. } => {
