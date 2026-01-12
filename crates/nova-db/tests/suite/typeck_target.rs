@@ -3,8 +3,18 @@
 //! Most `nova-db` integration tests are consolidated into `tests/harness.rs` for compile-time and
 //! memory efficiency (each `tests/*.rs` file is its own integration test binary).
 //!
-//! Run this suite via the consolidated harness + filter:
-//! `bash scripts/cargo_agent.sh test --locked -p nova-db --test harness suite::typeck_target`.
+//! Some tooling and older instructions still expect a `typeck` integration test target, so we
+//! keep this file around as a small dedicated harness (see `[[test]] name = "typeck"` in
+//! `crates/nova-db/Cargo.toml`).
+//!
+//! ```bash
+//! bash scripts/cargo_agent.sh test --locked -p nova-db --test typeck
+//! ```
+//!
+//! It can also be run via the consolidated harness + filter:
+//! ```bash
+//! bash scripts/cargo_agent.sh test --locked -p nova-db --test harness suite::typeck_target
+//! ```
 
 use std::path::PathBuf;
 use std::sync::Arc;

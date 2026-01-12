@@ -14,8 +14,9 @@
 //! integration test binary, which is expensive under the agent memory constraints and is enforced
 //! by repo invariants.
 //!
-//! Note: older instructions may refer to `cargo test --locked -p nova-db --test typeck`; that
-//! standalone target has been removed in favor of running the suite through the consolidated
-//! harness.
+//! Note: older instructions may refer to `cargo test --locked -p nova-db --test typeck`. We keep a
+//! small dedicated `typeck` integration test target (see `[[test]] name = "typeck"` in
+//! `crates/nova-db/Cargo.toml`) for compatibility, but prefer running tests via this consolidated
+//! harness for compile-time and memory efficiency.
 
 mod suite;
