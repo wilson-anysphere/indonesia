@@ -7,7 +7,9 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use nova_lsp::{INTERNAL_INTERRUPTIBLE_WORK_METHOD, INTERNAL_INTERRUPTIBLE_WORK_STARTED_NOTIFICATION};
+use nova_lsp::{
+    INTERNAL_INTERRUPTIBLE_WORK_METHOD, INTERNAL_INTERRUPTIBLE_WORK_STARTED_NOTIFICATION,
+};
 
 use crate::support::{stdio_server_lock, write_jsonrpc_message};
 

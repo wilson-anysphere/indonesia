@@ -575,11 +575,9 @@ where
                     .next()
                     .unwrap_or(seed_file);
 
-                let Some(fw_db) = crate::framework_db::framework_db_for_file(
-                    host_db,
-                    anchor_file,
-                    &ctx.cancel,
-                ) else {
+                let Some(fw_db) =
+                    crate::framework_db::framework_db_for_file(host_db, anchor_file, &ctx.cancel)
+                else {
                     return Vec::new();
                 };
 

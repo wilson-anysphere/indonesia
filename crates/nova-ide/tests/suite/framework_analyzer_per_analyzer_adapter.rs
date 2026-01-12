@@ -316,7 +316,11 @@ fn per_analyzer_providers_isolate_timeouts_and_panics() {
             true
         }
 
-        fn diagnostics(&self, _db: &dyn FrameworkDatabase, _file: nova_ext::FileId) -> Vec<nova_ext::Diagnostic> {
+        fn diagnostics(
+            &self,
+            _db: &dyn FrameworkDatabase,
+            _file: nova_ext::FileId,
+        ) -> Vec<nova_ext::Diagnostic> {
             vec![nova_ext::Diagnostic::warning(
                 "FAST",
                 "fast diagnostic",
@@ -340,7 +344,11 @@ fn per_analyzer_providers_isolate_timeouts_and_panics() {
 
     // Warm the `framework_db` cache so the fast analyzer doesn't occasionally hit the watchdog
     // timeout due to first-use indexing overhead under parallel test execution.
-    let _ = nova_ide::framework_db::framework_db_for_file(Arc::clone(&db), file, &CancellationToken::new());
+    let _ = nova_ide::framework_db::framework_db_for_file(
+        Arc::clone(&db),
+        file,
+        &CancellationToken::new(),
+    );
 
     let slow = FrameworkAnalyzerAdapterOnTextDb::new("a.slow", SlowOrPanickingAnalyzer).into_arc();
     let fast = FrameworkAnalyzerAdapterOnTextDb::new("b.fast", FastAnalyzer).into_arc();
@@ -393,8 +401,14 @@ fn per_analyzer_providers_isolate_timeouts_and_panics() {
         .get("a.slow")
         .expect("stats for slow diagnostics provider");
     assert_eq!(slow_diag.calls_total, 3, "expected 3 timed-out calls");
-    assert_eq!(slow_diag.timeouts_total, 3, "expected all calls to time out");
-    assert_eq!(slow_diag.skipped_total, 1, "expected provider to be skipped after circuit opens");
+    assert_eq!(
+        slow_diag.timeouts_total, 3,
+        "expected all calls to time out"
+    );
+    assert_eq!(
+        slow_diag.skipped_total, 1,
+        "expected provider to be skipped after circuit opens"
+    );
 
     let fast_diag = stats
         .diagnostic

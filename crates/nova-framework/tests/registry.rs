@@ -724,8 +724,7 @@ fn analyzer_registry_navigation_stops_before_applies_to_after_cancellation() {
     }));
 
     let cancel = CancellationToken::new();
-    let nav =
-        registry.framework_navigation_targets_with_cancel(&db, &Symbol::File(file), &cancel);
+    let nav = registry.framework_navigation_targets_with_cancel(&db, &Symbol::File(file), &cancel);
 
     assert!(cancel.is_cancelled());
     assert_eq!(nav.len(), 1);

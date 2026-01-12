@@ -613,7 +613,11 @@ fn module_path_exploded_jmods_index_multi_release_classes_based_on_target_releas
     let dir = tmp.path().join("mr-exploded-jmod");
     fs::create_dir_all(dir.join("classes/META-INF/versions/9/com/example/mr")).unwrap();
     fs::create_dir_all(dir.join("classes/com/example/mr")).unwrap();
-    fs::write(dir.join("classes/com/example/mr/Override.class"), &base_bytes).unwrap();
+    fs::write(
+        dir.join("classes/com/example/mr/Override.class"),
+        &base_bytes,
+    )
+    .unwrap();
     fs::write(
         dir.join("classes/META-INF/versions/9/com/example/mr/Override.class"),
         &mr_bytes,

@@ -12,4 +12,3 @@ pub(crate) fn fold_nfkc_casefold(input: &str, out: &mut String) {
     out.clear();
     out.extend(input.nfkc().case_fold());
 }
-

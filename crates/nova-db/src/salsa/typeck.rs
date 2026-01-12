@@ -1157,9 +1157,11 @@ fn type_of_expr_demand_result(
         }
 
         match expected_ty.as_ref() {
-            Some(expected) => checker
-                .infer_expr_with_expected(&mut loader, target_expr, Some(expected))
-                .ty,
+            Some(expected) => {
+                checker
+                    .infer_expr_with_expected(&mut loader, target_expr, Some(expected))
+                    .ty
+            }
             None => checker.infer_expr(&mut loader, target_expr).ty,
         }
     } else {
@@ -10524,7 +10526,13 @@ fn find_enclosing_target_typed_expr_in_stmt_inner(
     match &body.stmts[stmt] {
         HirStmt::Block { statements, .. } => {
             for stmt in statements {
-                find_enclosing_target_typed_expr_in_stmt_inner(body, *stmt, target, target_range, best);
+                find_enclosing_target_typed_expr_in_stmt_inner(
+                    body,
+                    *stmt,
+                    target,
+                    target_range,
+                    best,
+                );
             }
         }
         HirStmt::Let { initializer, .. } => {
@@ -10586,7 +10594,13 @@ fn find_enclosing_target_typed_expr_in_stmt_inner(
             ..
         } => {
             for stmt in init {
-                find_enclosing_target_typed_expr_in_stmt_inner(body, *stmt, target, target_range, best);
+                find_enclosing_target_typed_expr_in_stmt_inner(
+                    body,
+                    *stmt,
+                    target,
+                    target_range,
+                    best,
+                );
             }
             if let Some(expr) = condition {
                 find_enclosing_target_typed_expr_in_expr(body, *expr, target, target_range, best);
@@ -10705,7 +10719,13 @@ fn find_enclosing_target_typed_expr_in_expr(
         }
         HirExpr::ArrayCreation { dim_exprs, .. } => {
             for dim_expr in dim_exprs {
-                find_enclosing_target_typed_expr_in_expr(body, *dim_expr, target, target_range, best);
+                find_enclosing_target_typed_expr_in_expr(
+                    body,
+                    *dim_expr,
+                    target,
+                    target_range,
+                    best,
+                );
             }
         }
         HirExpr::Unary { expr, .. } => {
@@ -10733,7 +10753,13 @@ fn find_enclosing_target_typed_expr_in_expr(
                 find_enclosing_target_typed_expr_in_expr(body, *expr, target, target_range, best);
             }
             LambdaBody::Block(stmt) => {
-                find_enclosing_target_typed_expr_in_stmt_inner(body, *stmt, target, target_range, best);
+                find_enclosing_target_typed_expr_in_stmt_inner(
+                    body,
+                    *stmt,
+                    target,
+                    target_range,
+                    best,
+                );
             }
         },
         HirExpr::Invalid { children, .. } => {

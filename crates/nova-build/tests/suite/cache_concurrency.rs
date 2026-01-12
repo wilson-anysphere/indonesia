@@ -119,7 +119,8 @@ fn build_cache_keys_are_stable_when_project_root_is_a_symlink() {
         .load(&link_root, kind, &fingerprint)
         .unwrap()
         .unwrap_or_default();
-    data.modules.insert("module-a".to_string(), Default::default());
+    data.modules
+        .insert("module-a".to_string(), Default::default());
     cache.store(&link_root, kind, &fingerprint, &data).unwrap();
 
     // If `BuildCache` hashes the raw path string, loading via the real root would miss the entry.
