@@ -71,7 +71,8 @@ requires:
 - **SHOULD** be stable across revisions for classes whose identity did not change.
 - **MUST** be stable across memo eviction (`evict_salsa_memos` is intended to be a semantic no-op).
 - **NOT REQUIRED** to be stable across process restarts; persisted formats should use a stable
-  *class key* (e.g. binary name + origin) rather than raw `ClassId` integers.
+  *class key* (e.g. binary name + origin, and in JPMS mode potentially also the defining module)
+  rather than raw `ClassId` integers.
 
 ### 2) Purity constraint: non-tracked interners are unsafe inside queries
 
@@ -92,7 +93,8 @@ For **database-global** class identity, prefer a **deterministic mapping derived
 inputs**:
 
 - Define a stable `ClassKey` (at minimum: binary name; in practice likely `(ProjectId, origin,
-  binary_name)` where “origin” distinguishes source/classpath/JDK).
+  binary_name)` where “origin” distinguishes source/classpath/JDK, and in JPMS mode potentially
+  also the defining module to disambiguate duplicates).
 - Provide a Salsa query that enumerates all `ClassKey`s in a deterministic order (e.g. sorted),
   and derives `ClassId` from that ordering (or from another deterministic scheme).
 
@@ -226,7 +228,8 @@ Negative:
 
 Next implementation steps (not done in this ADR):
 
-1. Define `ClassKey` precisely (include project + origin + binary name).
+1. Define `ClassKey` precisely (include project + origin + binary name, and in JPMS mode potentially
+   also the defining module).
 2. Add a deterministic “class inventory” Salsa query that returns a stably ordered list/set of
    `ClassKey`s for a project.
 3. Add `class_id(project, key) -> ClassId` derived from that inventory.
