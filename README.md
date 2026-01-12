@@ -229,8 +229,8 @@ RUST_TEST_THREADS=1 ./scripts/run-real-project-tests.sh
 # or (alias):
 NOVA_REAL_PROJECT=guava ./scripts/run-real-project-tests.sh
 
-cargo test -p nova-project --test harness -- --include-ignored real_projects::
-cargo test -p nova-cli --test real_projects -- --include-ignored
+cargo test -p nova-project --test harness -- --ignored real_projects::
+cargo test -p nova-cli --test real_projects -- --ignored
 ```
 
 ### (Optional) Run `javac`/build validation
