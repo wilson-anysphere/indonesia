@@ -227,3 +227,53 @@ public interface TestMapper {
     let expected_span = Span::new(start, start + "TestMapper".len());
     assert_eq!(diag.span, Some(expected_span));
 }
+
+#[test]
+fn diagnostics_for_file_ignores_non_mapstruct_mapper_annotation() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+
+    let mapper_file = root.join("src/main/java/com/example/TestMapper.java");
+    let mapper_source = r#"package com.example;
+
+import org.apache.ibatis.annotations.Mapper;
+
+@Mapper
+public interface TestMapper {
+    Target map(Source source);
+}
+"#;
+    write_file(&mapper_file, mapper_source);
+
+    let diags = diagnostics_for_file(root, &mapper_file, mapper_source, false).unwrap();
+    assert!(
+        diags.is_empty(),
+        "expected no MapStruct diagnostics for a non-MapStruct @Mapper, got: {diags:?}"
+    );
+}
+
+#[test]
+fn diagnostics_for_file_detects_wildcard_import_mapper() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+
+    let mapper_file = root.join("src/main/java/com/example/TestMapper.java");
+    let mapper_source = r#"package com.example;
+
+import org.mapstruct.*;
+
+@Mapper
+public interface TestMapper {
+    Target map(Source source);
+}
+"#;
+    write_file(&mapper_file, mapper_source);
+
+    let diags = diagnostics_for_file(root, &mapper_file, mapper_source, false).unwrap();
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "MAPSTRUCT_MISSING_DEPENDENCY"),
+        "expected MAPSTRUCT_MISSING_DEPENDENCY, got: {diags:?}"
+    );
+}

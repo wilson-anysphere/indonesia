@@ -158,6 +158,11 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
 
         // Source fallback: if we can enumerate files and read contents, look for MapStruct usage in
         // sources. This is the most precise signal available without build metadata.
+        //
+        // Note: we intentionally avoid HIR-only `@Mapper` detection here. Nova's framework HIR
+        // currently stores annotation names in a mostly-unqualified form (simple name), and there
+        // are multiple popular `@Mapper` annotations (e.g. MyBatis). Requiring `org.mapstruct` in
+        // the source keeps applicability conservative.
         let files = db.all_files(project);
         if files
             .into_iter()
@@ -166,15 +171,15 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
             return true;
         }
 
-        // Structural fallback: if the host database exposes HIR classes, look for `@Mapper`.
-        //
-        // Note: IDE adapters may only expose concrete `class` declarations via `all_classes`
-        // (excluding `interface` declarations). File-text scanning above is therefore important for
-        // detecting `@Mapper` interfaces when annotations are not surfaced through `all_classes`.
-        let classes = db.all_classes(project);
-        classes.into_iter().any(|id| {
-            let class = db.class(id);
-            class.has_annotation("Mapper") || class.has_annotation("org.mapstruct.Mapper")
+        // Last resort: if the database preserves fully-qualified annotation names in HIR, accept a
+        // direct `org.mapstruct.*` match.
+        db.all_classes(project).into_iter().any(|id| {
+            db.class(id).annotations.iter().any(|ann| {
+                matches!(
+                    ann.name.as_str(),
+                    "org.mapstruct.Mapper" | "org.mapstruct.MapperConfig"
+                )
+            })
         })
     }
 
@@ -996,6 +1001,8 @@ fn package_of_source(root: Node<'_>, source: &str) -> Option<String> {
 struct JavaImports {
     /// Explicit (non-wildcard) imports mapping simple name -> package.
     explicit: HashMap<String, String>,
+    /// Wildcard imports (e.g. `import org.mapstruct.*;`) stored as a set of package names.
+    wildcard: HashSet<String>,
 }
 
 fn imports_of_source(root: Node<'_>, source: &str) -> JavaImports {
@@ -1006,18 +1013,31 @@ fn imports_of_source(root: Node<'_>, source: &str) -> JavaImports {
             continue;
         }
 
-        let name_node = child
-            .child_by_field_name("name")
-            .or_else(|| find_named_child(child, "scoped_identifier"))
-            .or_else(|| find_named_child(child, "identifier"));
-        let Some(name_node) = name_node else {
+        // Parse the full import declaration text so we can reliably distinguish wildcard imports.
+        // Tree-sitter represents `import foo.*;` as a separate `*` token, so looking only at the
+        // `name` field can misparse wildcard imports as explicit imports (e.g. `mapstruct -> org`).
+        let mut raw = node_text(source, child).trim();
+        let Some(rest) = raw.strip_prefix("import") else {
             continue;
         };
+        raw = rest.trim_start();
 
-        let raw = node_text(source, name_node).trim();
-        if raw.ends_with(".*") {
-            // Wildcard import; we don't have enough information here to resolve a
-            // specific type name.
+        // Ignore static imports (`import static foo.Bar.*;`): they don't affect type resolution.
+        if let Some(rest) = raw.strip_prefix("static") {
+            let _ = rest;
+            continue;
+        }
+
+        raw = raw.strip_suffix(';').unwrap_or(raw).trim();
+        if raw.is_empty() {
+            continue;
+        }
+
+        if let Some(pkg) = raw.strip_suffix(".*") {
+            let pkg = pkg.trim_end_matches('.').trim();
+            if !pkg.is_empty() {
+                out.wildcard.insert(pkg.to_string());
+            }
             continue;
         }
 
@@ -1030,6 +1050,34 @@ fn imports_of_source(root: Node<'_>, source: &str) -> JavaImports {
         out.explicit.insert(name.to_string(), pkg.to_string());
     }
     out
+}
+
+fn annotation_name(annotation: &ParsedAnnotation) -> Option<&str> {
+    let text = annotation.text.as_deref()?;
+    let text = text.trim();
+    let rest = text.strip_prefix('@')?.trim_start();
+    let end = rest
+        .find(|ch: char| ch == '(' || ch.is_whitespace())
+        .unwrap_or(rest.len());
+    Some(rest[..end].trim())
+}
+
+fn is_mapstruct_mapper_annotation(annotation: &ParsedAnnotation, imports: &JavaImports) -> bool {
+    if annotation.simple_name != "Mapper" {
+        return false;
+    }
+
+    if let Some(name) = annotation_name(annotation) {
+        if name.contains('.') {
+            return name == "org.mapstruct.Mapper";
+        }
+    }
+
+    imports
+        .explicit
+        .get("Mapper")
+        .is_some_and(|pkg| pkg == "org.mapstruct")
+        || imports.wildcard.contains("org.mapstruct")
 }
 
 fn parse_mapper_decl(
@@ -1045,7 +1093,9 @@ fn parse_mapper_decl(
     let annotations = modifiers
         .map(|m| collect_annotations(m, source))
         .unwrap_or_default();
-    let mapper_annotation = annotations.iter().find(|a| a.simple_name == "Mapper")?;
+    let mapper_annotation = annotations
+        .iter()
+        .find(|a| is_mapstruct_mapper_annotation(a, imports))?;
 
     let name_node = node
         .child_by_field_name("name")
