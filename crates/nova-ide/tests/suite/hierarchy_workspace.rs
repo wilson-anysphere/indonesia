@@ -131,6 +131,41 @@ class $0B extends A {}
 }
 
 #[test]
+fn type_hierarchy_across_files_resolves_interface_extends_edges() {
+    let fixture = FileIdFixture::parse(
+        r#"
+//- /I0.java
+interface $1I0 {}
+//- /I1.java
+interface $0I1 extends I0 {}
+"#,
+    );
+
+    let file_i1 = fixture.marker_file(0);
+    let pos_i1 = fixture.marker_position(0);
+
+    let items = prepare_type_hierarchy(&fixture.db, file_i1, pos_i1)
+        .expect("expected type hierarchy items");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].name, "I1");
+
+    let supers = type_hierarchy_supertypes(&fixture.db, file_i1, "I1");
+    assert!(
+        supers
+            .iter()
+            .any(|item| item.name == "I0" && item.uri == fixture.marker_uri(1)),
+        "expected supertypes to include I0; got {supers:#?}"
+    );
+
+    let subs = type_hierarchy_subtypes(&fixture.db, file_i1, "I0");
+    assert!(
+        subs.iter()
+            .any(|item| item.name == "I1" && item.uri == fixture.marker_uri(0)),
+        "expected subtypes to include I1; got {subs:#?}"
+    );
+}
+
+#[test]
 fn call_hierarchy_across_files_resolves_receiver_calls() {
     let fixture = FileIdFixture::parse(
         r#"
