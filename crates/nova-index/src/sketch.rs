@@ -45,6 +45,16 @@ pub struct Symbol {
     pub name_range: TextRange,
     /// Byte range of the full declaration (best-effort).
     pub decl_range: TextRange,
+    /// Best-effort method parameter types, if this symbol is a method.
+    ///
+    /// These are lexical strings extracted from the method's parameter list and
+    /// are *not* semantically resolved. Intended for overload disambiguation in
+    /// refactorings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub param_types: Option<Vec<String>>,
+    /// Best-effort method parameter names, if this symbol is a method.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub param_names: Option<Vec<String>>,
     /// Whether the declaration is annotated with `@Override`.
     pub is_override: bool,
     /// Base class name if this symbol is a class with an `extends` clause.
@@ -75,8 +85,8 @@ pub struct ReferenceCandidate {
 pub struct Index {
     files: BTreeMap<String, String>,
     symbols: Vec<Symbol>,
-    /// Maps (class_name, method_name) -> symbol id
-    method_symbols: HashMap<(String, String), SymbolId>,
+    /// Maps (class_name, method_name) -> method symbol ids (one per overload).
+    method_symbols: HashMap<(String, String), Vec<SymbolId>>,
     class_extends: HashMap<String, String>,
 }
 
@@ -159,6 +169,8 @@ impl Index {
                     file: file.clone(),
                     name_range: class.name_range,
                     decl_range: class.decl_range,
+                    param_types: None,
+                    param_names: None,
                     is_override: false,
                     extends: class.extends.clone(),
                 };
@@ -169,7 +181,9 @@ impl Index {
                     let id = SymbolId(next_id);
                     next_id += 1;
                     self.method_symbols
-                        .insert((class.name.clone(), method.name.clone()), id);
+                        .entry((class.name.clone(), method.name.clone()))
+                        .or_default()
+                        .push(id);
                     self.symbols.push(Symbol {
                         id,
                         kind: SymbolKind::Method,
@@ -178,7 +192,27 @@ impl Index {
                         file: file.clone(),
                         name_range: method.name_range,
                         decl_range: method.decl_range,
+                        param_types: Some(method.param_types),
+                        param_names: Some(method.param_names),
                         is_override: method.is_override,
+                        extends: None,
+                    });
+                }
+
+                for field in class.fields {
+                    let id = SymbolId(next_id);
+                    next_id += 1;
+                    self.symbols.push(Symbol {
+                        id,
+                        kind: SymbolKind::Field,
+                        name: field.name,
+                        container: Some(class.name.clone()),
+                        file: file.clone(),
+                        name_range: field.name_range,
+                        decl_range: field.decl_range,
+                        param_types: None,
+                        param_names: None,
+                        is_override: false,
                         extends: None,
                     });
                 }
@@ -193,7 +227,58 @@ impl Index {
     pub fn method_symbol_id(&self, class_name: &str, method_name: &str) -> Option<SymbolId> {
         self.method_symbols
             .get(&(class_name.to_string(), method_name.to_string()))
+            .and_then(|ids| ids.last())
             .copied()
+    }
+
+    /// Return all method overloads matching `class_name.method_name`.
+    #[must_use]
+    pub fn method_overloads(&self, class_name: &str, method_name: &str) -> Vec<SymbolId> {
+        self.method_symbols
+            .get(&(class_name.to_string(), method_name.to_string()))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Return all method overloads matching `class_name.method_name` with the given arity.
+    #[must_use]
+    pub fn method_overloads_by_arity(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        arity: usize,
+    ) -> Vec<SymbolId> {
+        self.method_overloads(class_name, method_name)
+            .into_iter()
+            .filter(|id| {
+                self.method_param_types(*id)
+                    .map_or(false, |tys| tys.len() == arity)
+            })
+            .collect()
+    }
+
+    /// Return the unique method overload matching `class_name.method_name(param_types...)`.
+    ///
+    /// This is a best-effort lexical match. Parameter type strings are compared verbatim against
+    /// [`Symbol::param_types`] after the parser's normalization.
+    pub fn method_overload_by_param_types(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        param_types: &[String],
+    ) -> Option<SymbolId> {
+        self.method_overloads(class_name, method_name)
+            .into_iter()
+            .find(|id| self.method_param_types(*id) == Some(param_types))
+    }
+
+    /// Best-effort parameter type strings for a method symbol.
+    pub fn method_param_types(&self, id: SymbolId) -> Option<&[String]> {
+        let sym = self.find_symbol(id)?;
+        if sym.kind != SymbolKind::Method {
+            return None;
+        }
+        sym.param_types.as_deref()
     }
 }
 
@@ -320,6 +405,7 @@ struct ParsedClass {
     decl_range: TextRange,
     extends: Option<String>,
     methods: Vec<ParsedMethod>,
+    fields: Vec<ParsedField>,
 }
 
 #[derive(Debug, Clone)]
@@ -327,7 +413,16 @@ struct ParsedMethod {
     name: String,
     name_range: TextRange,
     decl_range: TextRange,
+    param_types: Vec<String>,
+    param_names: Vec<String>,
     is_override: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedField {
+    name: String,
+    name_range: TextRange,
+    decl_range: TextRange,
 }
 
 /// A very small "parser" that understands just enough Java syntax for tests.
@@ -387,7 +482,7 @@ impl<'a> JavaSketchParser<'a> {
                 // Parse methods within class body.
                 let body_text = &self.text[body_start + 1..body_end - 1];
                 let body_offset = body_start + 1;
-                let methods = parse_methods_in_class(body_text, body_offset);
+                let (methods, fields) = parse_members_in_class(body_text, body_offset);
 
                 classes.push(ParsedClass {
                     name,
@@ -395,6 +490,7 @@ impl<'a> JavaSketchParser<'a> {
                     decl_range,
                     extends,
                     methods,
+                    fields,
                 });
                 self.cursor = body_end;
             }
@@ -472,11 +568,15 @@ impl<'a> JavaSketchParser<'a> {
     }
 }
 
-fn parse_methods_in_class(body_text: &str, body_offset: usize) -> Vec<ParsedMethod> {
+fn parse_members_in_class(
+    body_text: &str,
+    body_offset: usize,
+) -> (Vec<ParsedMethod>, Vec<ParsedField>) {
     // Extremely simple brace-depth based scanner. We only consider declarations at depth 0
     // (relative to class body).
     let bytes = body_text.as_bytes();
     let mut methods = Vec::new();
+    let mut fields = Vec::new();
     let mut i = 0;
     let mut depth = 0usize;
     let mut pending_override = false;
@@ -526,6 +626,22 @@ fn parse_methods_in_class(body_text: &str, body_offset: usize) -> Vec<ParsedMeth
                 }
                 continue;
             }
+            b'\'' => {
+                // Skip char literals.
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i] == b'\'' {
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+                continue;
+            }
             _ => {}
         }
 
@@ -553,6 +669,12 @@ fn parse_methods_in_class(body_text: &str, body_offset: usize) -> Vec<ParsedMeth
                     i += 1;
                 }
                 if i < bytes.len() && bytes[i] == b'(' {
+                    // Best-effort: avoid misclassifying call expressions in field initializers
+                    // (e.g. `int x = foo();`) as method declarations.
+                    if !looks_like_decl_name(body_text, name_start) {
+                        continue;
+                    }
+
                     // Find matching `)` and then `{` or `;`.
                     let open_paren = i;
                     if let Some(close_paren) = find_matching_paren(body_text, open_paren) {
@@ -561,6 +683,8 @@ fn parse_methods_in_class(body_text: &str, body_offset: usize) -> Vec<ParsedMeth
                             j += 1;
                         }
                         if j < bytes.len() && (bytes[j] == b'{' || bytes[j] == b';') {
+                            let params_src = &body_text[open_paren + 1..close_paren - 1];
+                            let (param_types, param_names) = parse_param_list(params_src);
                             // Determine start of declaration by scanning backwards to previous newline.
                             let decl_start = if pending_override {
                                 pending_override_decl_start.unwrap_or(0)
@@ -586,20 +710,47 @@ fn parse_methods_in_class(body_text: &str, body_offset: usize) -> Vec<ParsedMeth
                                     body_offset + name_end,
                                 ),
                                 decl_range: TextRange::new(body_offset + decl_start, decl_end),
+                                param_types,
+                                param_names,
                                 is_override: pending_override,
                             });
                             pending_override = false;
                             pending_override_decl_start = None;
+
+                            // Skip scanning inside the declaration we just recorded.
+                            i = decl_end.saturating_sub(body_offset);
+                            continue;
                         }
                     }
                 }
+                continue;
+            }
+
+            // Field declarations terminate with `;` at depth 0.
+            if bytes[i] == b';' {
+                let stmt_end = i;
+                let stmt_start = body_text[..stmt_end]
+                    .rfind('\n')
+                    .map(|p| p + 1)
+                    .unwrap_or(0);
+                let stmt_text = &body_text[stmt_start..stmt_end];
+                let decl_range =
+                    TextRange::new(body_offset + stmt_start, body_offset + stmt_end + 1);
+                fields.extend(parse_fields_in_statement(
+                    stmt_text,
+                    body_offset + stmt_start,
+                    decl_range,
+                ));
+                pending_override = false;
+                pending_override_decl_start = None;
+                i += 1;
                 continue;
             }
         }
 
         i += 1;
     }
-    methods
+    (methods, fields)
 }
 
 fn find_matching_paren(text: &str, open_paren: usize) -> Option<usize> {
@@ -629,8 +780,389 @@ fn find_matching_paren(text: &str, open_paren: usize) -> Option<usize> {
                     i += 1;
                 }
             }
+            b'\'' => {
+                // Skip char literals.
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i] == b'\'' {
+                        break;
+                    }
+                    i += 1;
+                }
+            }
             _ => {}
         }
+        i += 1;
+    }
+    None
+}
+
+fn looks_like_decl_name(text: &str, ident_start: usize) -> bool {
+    let bytes = text.as_bytes();
+    let mut i = ident_start;
+    while i > 0 && bytes[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    match bytes.get(i.wrapping_sub(1)) {
+        Some(b'=') | Some(b'.') => false,
+        _ => true,
+    }
+}
+
+fn parse_fields_in_statement(
+    stmt_text: &str,
+    stmt_offset_abs: usize,
+    decl_range: TextRange,
+) -> Vec<ParsedField> {
+    let mut out = Vec::new();
+    for (seg_start, seg_end) in split_top_level_ranges(stmt_text, b',') {
+        let seg = &stmt_text[seg_start..seg_end];
+        let lhs_end = find_top_level_byte(seg, b'=').unwrap_or(seg.len());
+        let lhs = &seg[..lhs_end];
+        let Some((name_start, name_end)) = last_identifier_range(lhs) else {
+            continue;
+        };
+        let name_abs_start = stmt_offset_abs + seg_start + name_start;
+        let name_abs_end = stmt_offset_abs + seg_start + name_end;
+        out.push(ParsedField {
+            name: stmt_text[seg_start + name_start..seg_start + name_end].to_string(),
+            name_range: TextRange::new(name_abs_start, name_abs_end),
+            decl_range,
+        });
+    }
+    out
+}
+
+fn last_identifier_range(text: &str) -> Option<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut end = bytes.len();
+    while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+
+    // Support `name[]` style declarators by stripping trailing `[]` pairs.
+    while end >= 2 && &text[end - 2..end] == "[]" {
+        end -= 2;
+        while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+            end -= 1;
+        }
+    }
+
+    if end == 0 {
+        return None;
+    }
+
+    let mut start = end;
+    while start > 0 && is_ident_continue(bytes[start - 1]) {
+        start -= 1;
+    }
+    if start == end {
+        return None;
+    }
+    if !is_ident_start(bytes[start]) {
+        return None;
+    }
+    Some((start, end))
+}
+
+fn parse_param_list(params_src: &str) -> (Vec<String>, Vec<String>) {
+    let params_src = params_src.trim();
+    if params_src.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+
+    let mut param_types = Vec::new();
+    let mut param_names = Vec::new();
+
+    for part in split_top_level(params_src, b',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+
+        let (ty, name) = parse_single_param(part);
+        param_types.push(ty);
+        param_names.push(name.unwrap_or_default());
+    }
+
+    (param_types, param_names)
+}
+
+fn parse_single_param(param: &str) -> (String, Option<String>) {
+    // Strip any trailing array suffix on the name token (e.g. `int x[]`).
+    let bytes = param.as_bytes();
+    let mut end = bytes.len();
+    while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    let mut array_suffix = 0usize;
+    while end >= 2 && &param[end - 2..end] == "[]" {
+        array_suffix += 1;
+        end -= 2;
+        while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+            end -= 1;
+        }
+    }
+    let core = &param[..end];
+    let Some((name_start, name_end)) = last_identifier_range(core) else {
+        return (normalize_ws(param), None);
+    };
+    let name = core[name_start..name_end].to_string();
+    let mut ty = core[..name_start].trim().to_string();
+
+    // Drop leading annotations/modifiers from the type part.
+    ty = strip_param_prefix_modifiers(&ty);
+
+    for _ in 0..array_suffix {
+        ty.push_str("[]");
+    }
+
+    (normalize_ws(&ty), Some(name))
+}
+
+fn strip_param_prefix_modifiers(ty: &str) -> String {
+    // Best-effort: remove leading annotations (including argument lists) and `final`.
+    let mut s = ty.trim_start();
+    loop {
+        if let Some(rest) = s.strip_prefix("final") {
+            // Ensure we're stripping a full token.
+            let next = rest.as_bytes().first().copied();
+            if next.is_none() || next.unwrap().is_ascii_whitespace() {
+                s = rest.trim_start();
+                continue;
+            }
+        }
+
+        if s.starts_with('@') {
+            // Skip `@Ident` and optional `( ... )`.
+            let bytes = s.as_bytes();
+            let mut i = 1usize;
+            while i < bytes.len() && is_ident_continue(bytes[i]) {
+                i += 1;
+            }
+            // Skip whitespace.
+            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if i < bytes.len() && bytes[i] == b'(' {
+                if let Some(close) = find_matching_paren(s, i) {
+                    i = close;
+                } else {
+                    break;
+                }
+            }
+            s = s[i..].trim_start();
+            continue;
+        }
+
+        break;
+    }
+
+    s.to_string()
+}
+
+fn normalize_ws(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut prev_ws = false;
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            if !prev_ws {
+                out.push(' ');
+                prev_ws = true;
+            }
+        } else {
+            prev_ws = false;
+            out.push(ch);
+        }
+    }
+    out.trim().to_string()
+}
+
+fn split_top_level(text: &str, sep: u8) -> Vec<String> {
+    split_top_level_ranges(text, sep)
+        .into_iter()
+        .map(|(s, e)| text[s..e].to_string())
+        .collect()
+}
+
+fn split_top_level_ranges(text: &str, sep: u8) -> Vec<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut out: Vec<(usize, usize)> = Vec::new();
+    let mut depth_paren = 0i32;
+    let mut depth_brack = 0i32;
+    let mut depth_brace = 0i32;
+    let mut depth_angle = 0i32;
+    let mut start = 0usize;
+    let mut i = 0usize;
+    let mut in_string = false;
+    let mut in_char = false;
+    let mut escaped = false;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_char {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'\'' {
+                in_char = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        // Skip comments.
+        if b == b'/' && i + 1 < bytes.len() {
+            if bytes[i + 1] == b'/' {
+                i += 2;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            if bytes[i + 1] == b'*' {
+                i += 2;
+                while i + 1 < bytes.len() {
+                    if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+        }
+
+        match b {
+            b'"' => in_string = true,
+            b'\'' => in_char = true,
+            b'(' => depth_paren += 1,
+            b')' => depth_paren -= 1,
+            b'[' => depth_brack += 1,
+            b']' => depth_brack -= 1,
+            b'{' => depth_brace += 1,
+            b'}' => depth_brace -= 1,
+            b'<' => depth_angle += 1,
+            b'>' => {
+                if depth_angle > 0 {
+                    depth_angle -= 1;
+                }
+            }
+            _ => {}
+        }
+
+        if b == sep && depth_paren == 0 && depth_brack == 0 && depth_brace == 0 && depth_angle == 0
+        {
+            out.push((start, i));
+            start = i + 1;
+        }
+
+        i += 1;
+    }
+
+    out.push((start, bytes.len()));
+    out
+}
+
+fn find_top_level_byte(text: &str, needle: u8) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut depth_paren = 0i32;
+    let mut depth_brack = 0i32;
+    let mut depth_brace = 0i32;
+    let mut depth_angle = 0i32;
+    let mut i = 0usize;
+    let mut in_string = false;
+    let mut in_char = false;
+    let mut escaped = false;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_char {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'\'' {
+                in_char = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        // Skip comments.
+        if b == b'/' && i + 1 < bytes.len() {
+            if bytes[i + 1] == b'/' {
+                i += 2;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            if bytes[i + 1] == b'*' {
+                i += 2;
+                while i + 1 < bytes.len() {
+                    if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+        }
+
+        match b {
+            b'"' => in_string = true,
+            b'\'' => in_char = true,
+            b'(' => depth_paren += 1,
+            b')' => depth_paren -= 1,
+            b'[' => depth_brack += 1,
+            b']' => depth_brack -= 1,
+            b'{' => depth_brace += 1,
+            b'}' => depth_brace -= 1,
+            b'<' => depth_angle += 1,
+            b'>' => {
+                if depth_angle > 0 {
+                    depth_angle -= 1;
+                }
+            }
+            _ => {}
+        }
+
+        if b == needle
+            && depth_paren == 0
+            && depth_brack == 0
+            && depth_brace == 0
+            && depth_angle == 0
+        {
+            return Some(i);
+        }
+
         i += 1;
     }
     None
