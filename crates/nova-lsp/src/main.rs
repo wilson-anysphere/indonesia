@@ -8988,33 +8988,57 @@ fn run_ai_generate_tests_apply<O: RpcOut + Sync>(
 
     let (action_file, insert_range, workspace) = if file_rel.starts_with("src/main/java/") {
         if let Some(test_file) = derive_test_file_path(&source, &abs_path) {
-            config.safety.allowed_path_prefixes = vec![test_file.clone()];
-            config.safety.allow_new_files = true;
+            // `derive_test_file_path` returns a workspace-relative path (e.g. `src/test/java/...`).
+            // Enforce `ai.privacy.excluded_paths` on the derived destination to ensure we never
+            // generate/modify tests in excluded directories.
+            //
+            // Match conservatively: treat patterns as matching either paths relative to the
+            // workspace root or absolute paths resolved against the root.
+            let test_file_is_excluded = ai.is_excluded_path(Path::new(&test_file))
+                || state.project_root.as_deref().is_some_and(|root_path| {
+                    ai.is_excluded_path(&root_path.join(&test_file))
+                });
 
-            let mut workspace = VirtualWorkspace::new([(file_rel.clone(), source)]);
-            let root_path = state
-                .project_root
-                .as_deref()
-                .filter(|root| abs_path.starts_with(root))
-                .or_else(|| abs_path.parent())
-                .ok_or_else(|| {
-                    (
-                        -32603,
-                        format!(
-                            "failed to determine workspace root for `{}`",
-                            abs_path.display()
-                        ),
-                    )
-                })?;
-            if let Ok(existing) = std::fs::read_to_string(root_path.join(&test_file)) {
-                workspace.insert(test_file.clone(), existing);
+            if test_file_is_excluded {
+                // Fallback: insert tests into the current file at the selection range.
+                config.safety.allowed_path_prefixes = vec![file_rel.clone()];
+                (
+                    file_rel.clone(),
+                    selection_range,
+                    VirtualWorkspace::new([(file_rel.clone(), source)]),
+                )
+            } else {
+                config.safety.allowed_path_prefixes = vec![test_file.clone()];
+                config.safety.allow_new_files = true;
+
+                let mut workspace = VirtualWorkspace::new([(file_rel.clone(), source)]);
+                let root_path = state
+                    .project_root
+                    .as_deref()
+                    .filter(|root| abs_path.starts_with(root))
+                    .or_else(|| abs_path.parent())
+                    .ok_or_else(|| {
+                        (
+                            -32603,
+                            format!(
+                                "failed to determine workspace root for `{}`",
+                                abs_path.display()
+                            ),
+                        )
+                    })?;
+                if let Ok(existing) = std::fs::read_to_string(root_path.join(&test_file)) {
+                    workspace.insert(test_file.clone(), existing);
+                }
+
+                (
+                    test_file,
+                    LspTypesRange::new(
+                        LspTypesPosition::new(0, 0),
+                        LspTypesPosition::new(0, 0),
+                    ),
+                    workspace,
+                )
             }
-
-            (
-                test_file,
-                LspTypesRange::new(LspTypesPosition::new(0, 0), LspTypesPosition::new(0, 0)),
-                workspace,
-            )
         } else {
             (
                 file_rel.clone(),

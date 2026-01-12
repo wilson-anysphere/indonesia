@@ -3136,6 +3136,285 @@ fn stdio_server_ai_generate_tests_custom_request_sends_apply_edit() {
 }
 
 #[test]
+fn stdio_server_ai_generate_tests_custom_request_respects_excluded_paths() {
+    let _lock = crate::support::stdio_server_lock();
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+    let root_uri = uri_for_path(root);
+
+    // Configure AI via `nova.toml` so we can set `ai.privacy.excluded_paths`.
+    //
+    // With `excluded_paths = ["src/test/java/**"]`, the `nova/ai/generateTests` endpoint must *not*
+    // derive a `src/test/java/...` destination (even though the source file lives under
+    // `src/main/java/`). Instead, it should fall back to inserting tests into the source file.
+    let config_path = root.join("nova.toml");
+
+    let src_dir = root.join("src/main/java/com/example");
+    std::fs::create_dir_all(&src_dir).expect("create src dir");
+    let file_path = src_dir.join("Example.java");
+    let file_uri = uri_for_path(&file_path);
+
+    // `run_ai_generate_tests_apply` prefers generating a new test file under `src/test/java/...`
+    // when the source file is in `src/main/java/...`.
+    let test_dir = root.join("src/test/java/com/example");
+    std::fs::create_dir_all(&test_dir).expect("create test dir");
+    let test_file_path = test_dir.join("ExampleTest.java");
+
+    let text =
+        "package com.example;\n\npublic class Example {\n    public int answer() { return 1; }\n}\n";
+    std::fs::write(&file_path, text).expect("write file");
+
+    // Selection range over the method name is enough for the AI prompt.
+    let method_offset = text.find("answer").expect("method present");
+    let pos = TextPos::new(text);
+    let start = pos.lsp_position(method_offset).expect("start pos");
+    let end = pos
+        .lsp_position(method_offset + "answer".len())
+        .expect("end pos");
+    let range = Range::new(start, end);
+
+    // `ai.privacy.excluded_paths` prevents generating tests under `src/test/java`, so this should
+    // fall back to inserting tests into the source file.
+    let patch = json!({
+      "edits": [
+        {
+          "file": "src/main/java/com/example/Example.java",
+          "range": { "start": { "line": 4, "character": 0 }, "end": { "line": 4, "character": 0 } },
+          "text": "    // AI-generated tests would go here\n"
+        }
+      ]
+    })
+    .to_string();
+    let ai_server = crate::support::TestAiServer::start(json!({ "completion": patch }));
+
+    // Write `nova.toml` with the actual AI server endpoint.
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "http"
+url = "{}/complete"
+model = "default"
+
+[ai.privacy]
+local_only = true
+excluded_paths = ["src/test/java/**"]
+"#,
+            ai_server.base_url()
+        ),
+    )
+    .expect("write config");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        // The test config file should be authoritative; clear any legacy env-var AI wiring that
+        // could override `--config` (common in developer shells).
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        // Ensure a developer's environment doesn't disable AI for this test.
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": root_uri, "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": text
+                }
+            }
+        }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/generateTests",
+            "params": {
+                "target": "public int answer()",
+                "context": null,
+                "uri": file_uri,
+                "range": range
+            }
+        }),
+    );
+
+    let (messages, resp) = drain_notifications_until_id(&mut stdout, 2);
+    assert!(
+        resp.get("error").is_none(),
+        "expected nova/ai/generateTests success, got: {resp:#?}"
+    );
+    assert_eq!(resp.get("result"), Some(&serde_json::Value::Null));
+
+    let apply_edit = find_apply_edit_request(&messages);
+    assert_eq!(
+        apply_edit
+            .get("params")
+            .and_then(|p| p.get("label"))
+            .and_then(|v| v.as_str()),
+        Some("AI: Generate tests")
+    );
+    let edit = apply_edit
+        .get("params")
+        .and_then(|p| p.get("edit"))
+        .expect("applyEdit params.edit");
+    let edit: WorkspaceEdit = serde_json::from_value(edit.clone()).expect("workspace edit");
+
+    let expected_source_uri: Uri = file_uri.parse().expect("file uri");
+    let expected_test_uri: Uri = uri_for_path(&test_file_path).parse().expect("test uri");
+
+    let mut all_new_texts = Vec::new();
+    let mut saw_excluded_test_uri = false;
+
+    if let Some(changes) = &edit.changes {
+        if let Some(edits) = changes.get(&expected_source_uri) {
+            all_new_texts.extend(edits.iter().map(|e| e.new_text.clone()));
+        }
+        if changes.contains_key(&expected_test_uri) {
+            saw_excluded_test_uri = true;
+        }
+    }
+    if let Some(doc_changes) = &edit.document_changes {
+        match doc_changes {
+            lsp_types::DocumentChanges::Edits(edits) => {
+                for doc_edit in edits {
+                    if doc_edit.text_document.uri == expected_test_uri {
+                        saw_excluded_test_uri = true;
+                    }
+                    if doc_edit.text_document.uri != expected_source_uri {
+                        continue;
+                    }
+                    for edit in &doc_edit.edits {
+                        match edit {
+                            lsp_types::OneOf::Left(edit) => all_new_texts.push(edit.new_text.clone()),
+                            lsp_types::OneOf::Right(edit) => {
+                                all_new_texts.push(edit.text_edit.new_text.clone())
+                            }
+                        }
+                    }
+                }
+            }
+            lsp_types::DocumentChanges::Operations(ops) => {
+                for op in ops {
+                    match op {
+                        lsp_types::DocumentChangeOperation::Op(lsp_types::ResourceOp::Create(
+                            create,
+                        )) if create.uri == expected_test_uri => {
+                            saw_excluded_test_uri = true;
+                        }
+                        lsp_types::DocumentChangeOperation::Op(lsp_types::ResourceOp::Rename(
+                            rename,
+                        )) if rename.old_uri == expected_test_uri
+                            || rename.new_uri == expected_test_uri =>
+                        {
+                            saw_excluded_test_uri = true;
+                        }
+                        lsp_types::DocumentChangeOperation::Op(lsp_types::ResourceOp::Delete(
+                            delete,
+                        )) if delete.uri == expected_test_uri => {
+                            saw_excluded_test_uri = true;
+                        }
+                        lsp_types::DocumentChangeOperation::Edit(doc_edit) => {
+                            if doc_edit.text_document.uri == expected_test_uri {
+                                saw_excluded_test_uri = true;
+                            }
+                            if doc_edit.text_document.uri != expected_source_uri {
+                                continue;
+                            }
+                            for edit in &doc_edit.edits {
+                                match edit {
+                                    lsp_types::OneOf::Left(edit) => {
+                                        all_new_texts.push(edit.new_text.clone())
+                                    }
+                                    lsp_types::OneOf::Right(edit) => {
+                                        all_new_texts.push(edit.text_edit.new_text.clone())
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        !saw_excluded_test_uri,
+        "expected no edits for excluded test uri, got: {edit:#?}"
+    );
+    assert!(
+        all_new_texts
+            .iter()
+            .any(|text| text.contains("AI-generated tests would go here")),
+        "expected inserted comment, got: {edit:#?}"
+    );
+
+    let apply_edit_id = apply_edit.get("id").cloned().expect("applyEdit id");
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": apply_edit_id,
+            "result": { "applied": true }
+        }),
+    );
+
+    ai_server.assert_hits(1);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
 fn stdio_server_ai_custom_requests_reject_excluded_paths() {
     let _lock = crate::support::stdio_server_lock();
     let ai_server = crate::support::TestAiServer::start(json!({ "completion": "unused" }));
