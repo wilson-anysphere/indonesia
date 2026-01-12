@@ -28,6 +28,12 @@ use super::{
     },
 };
 
+// The mock JDWP server stores some VM state in growable `Vec`s for convenience (e.g. array
+// contents). Real JVM arrays have a fixed length, but for the mock we still want to defend against
+// buggy or malicious JDWP clients triggering unbounded allocations.
+const MAX_MOCK_ARRAY_ELEMENTS: usize =
+    crate::MAX_JDWP_PACKET_BYTES / std::mem::size_of::<JdwpValue>();
+
 /// A tiny JDWP server used for unit/integration testing.
 ///
 /// It intentionally supports a *small* subset of JDWP sufficient to exercise
@@ -2597,8 +2603,6 @@ async fn handle_packet(
                     // This mock stores array values in a growable `Vec<JdwpValue>`, which is not
                     // how a real JVM represents arrays (they have a fixed length). Still, we want
                     // the mock to fail gracefully rather than abort the process on OOM.
-                    const MAX_MOCK_ARRAY_ELEMENTS: usize =
-                        crate::MAX_JDWP_PACKET_BYTES / std::mem::size_of::<JdwpValue>();
                     let mut ok = true;
                     {
                         let mut arrays = state.array_values.lock().await;
@@ -2852,27 +2856,34 @@ async fn handle_packet(
 
             match res {
                 Ok((array_type_id, length)) if length >= 0 => {
-                    let array_id = state.alloc_object_id();
-                    let mut values = Vec::new();
-                    for _ in 0..length {
-                        values.push(JdwpValue::Int(0));
+                    let length_usize = length as usize;
+                    if length_usize > MAX_MOCK_ARRAY_ELEMENTS {
+                        (1, Vec::new())
+                    } else {
+                        let array_id = state.alloc_object_id();
+                        let mut values = Vec::new();
+                        if values.try_reserve_exact(length_usize).is_err() {
+                            (1, Vec::new())
+                        } else {
+                            values.resize(length_usize, JdwpValue::Int(0));
+                            state.array_values.lock().await.insert(array_id, values);
+                            state
+                                .array_type_ids
+                                .lock()
+                                .await
+                                .insert(array_id, array_type_id);
+                            state.array_type_new_instance_calls.lock().await.push(
+                                ArrayTypeNewInstanceCall {
+                                    array_type_id,
+                                    length,
+                                    returned_id: array_id,
+                                },
+                            );
+                            let mut w = JdwpWriter::new();
+                            w.write_object_id(array_id, sizes);
+                            (0, w.into_vec())
+                        }
                     }
-                    state.array_values.lock().await.insert(array_id, values);
-                    state
-                        .array_type_ids
-                        .lock()
-                        .await
-                        .insert(array_id, array_type_id);
-                    state.array_type_new_instance_calls.lock().await.push(
-                        ArrayTypeNewInstanceCall {
-                            array_type_id,
-                            length,
-                            returned_id: array_id,
-                        },
-                    );
-                    let mut w = JdwpWriter::new();
-                    w.write_object_id(array_id, sizes);
-                    (0, w.into_vec())
                 }
                 Ok((_array_type_id, _length)) => (1, Vec::new()),
                 Err(_) => (1, Vec::new()),
