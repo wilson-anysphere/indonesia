@@ -253,6 +253,81 @@ fn workspace_root(start: &Path) -> Option<PathBuf> {
     nearest_ancestor(start_dir, |dir| dir.join("src").is_dir())
 }
 
+#[cfg(test)]
+mod workspace_root_tests {
+    use super::workspace_root;
+    use std::path::Path;
+
+    fn write_file(path: &Path) {
+        std::fs::create_dir_all(path.parent().expect("file parent"))
+            .expect("create file parent dirs");
+        std::fs::write(path, "").expect("write file");
+    }
+
+    #[test]
+    fn workspace_root_detects_maven_pom() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        write_file(&root.join("pom.xml"));
+        let java = root.join("src").join("Main.java");
+        write_file(&java);
+
+        assert_eq!(workspace_root(&java).as_deref(), Some(root));
+    }
+
+    #[test]
+    fn workspace_root_detects_gradle_settings() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        write_file(&root.join("settings.gradle"));
+        let java = root.join("sub").join("Main.java");
+        write_file(&java);
+
+        assert_eq!(workspace_root(&java).as_deref(), Some(root));
+    }
+
+    #[test]
+    fn workspace_root_detects_bazel_markers() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        write_file(&root.join("WORKSPACE"));
+        let java = root.join("sub").join("Main.java");
+        write_file(&java);
+
+        assert_eq!(workspace_root(&java).as_deref(), Some(root));
+    }
+
+    #[test]
+    fn workspace_root_falls_back_to_src_ancestor() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+        let java = root.join("sub").join("Main.java");
+        write_file(&java);
+
+        assert_eq!(workspace_root(&java).as_deref(), Some(root));
+    }
+
+    #[test]
+    fn workspace_root_prefers_explicit_simple_project_dir_over_ancestor_markers() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        let outer = root.join("outer");
+        let simple = outer.join("simple");
+        std::fs::create_dir_all(simple.join("src")).expect("mkdir simple/src");
+
+        // Ancestor marker (should not steal the root when the caller provides `simple/`).
+        write_file(&outer.join("pom.xml"));
+
+        assert_eq!(workspace_root(&simple).as_deref(), Some(simple.as_path()));
+    }
+}
+
 impl Default for SpringAnalyzer {
     fn default() -> Self {
         Self {
