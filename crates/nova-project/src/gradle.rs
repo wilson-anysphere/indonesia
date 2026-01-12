@@ -3058,6 +3058,7 @@ dependencies {
 
     #[test]
     fn parses_gradle_dependencies_from_text_version_catalog_bracket_notation() {
+        let gradle_properties = GradleProperties::new();
         let catalog_toml = r#"
 [versions]
 guava = "32.0.0"
@@ -3071,7 +3072,8 @@ junit = { module = "junit:junit", version = { ref = "junit" } }
 [bundles]
 test = ["junit", "guava"]
 "#;
-        let catalog = parse_gradle_version_catalog_from_toml(catalog_toml).expect("parse catalog");
+        let catalog = parse_gradle_version_catalog_from_toml(catalog_toml, &gradle_properties)
+            .expect("parse catalog");
 
         let build_script = r#"
 dependencies {
@@ -3080,7 +3082,8 @@ dependencies {
 }
 "#;
 
-        let deps = parse_gradle_dependencies_from_text(build_script, Some(&catalog));
+        let deps =
+            parse_gradle_dependencies_from_text(build_script, Some(&catalog), &gradle_properties);
         let got: BTreeSet<_> = deps
             .into_iter()
             .map(|d| (d.group_id, d.artifact_id, d.version, d.scope))
