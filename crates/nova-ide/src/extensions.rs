@@ -1085,7 +1085,6 @@ where
                 &cancel,
                 source,
                 &uri,
-                &cancel,
                 span,
                 &diagnostics,
             ));
@@ -1178,7 +1177,6 @@ where
             actions.extend(type_mismatch_quick_fixes_from_context(
                 &cancel,
                 source,
-                &cancel,
                 &uri,
                 &cancel,
                 span,

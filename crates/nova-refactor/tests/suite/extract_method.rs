@@ -513,6 +513,44 @@ class C {
 }
 
 #[test]
+fn extract_method_inside_instance_initializer_block() {
+    let fixture = r#"
+class C {
+    {
+        /*start*/System.out.println(1);/*end*/
+    }
+}
+"#;
+
+    let (source, selection) = extract_range(fixture);
+    let refactoring = ExtractMethod {
+        file: "Main.java".to_string(),
+        selection,
+        name: "extracted".to_string(),
+        visibility: Visibility::Private,
+        insertion_strategy: InsertionStrategy::AfterCurrentMethod,
+    };
+
+    let edit = refactoring.apply(&source).expect("apply should succeed");
+    assert_no_overlaps(&edit);
+    let actual = apply_single_file("Main.java", &source, &edit);
+
+    let expected = r#"
+class C {
+    {
+        extracted();
+    }
+
+    private void extracted() {
+        System.out.println(1);
+    }
+}
+"#;
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn extract_method_inside_static_initializer_block() {
     let fixture = r#"
 class C {
