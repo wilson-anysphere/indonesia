@@ -7815,7 +7815,40 @@ fn type_name_completions(
     //
     // Prefer types that are already accessible (same-package / already imported). If a type isn't
     // accessible but is importable, still offer it and attach an import edit.
-    let workspace_types = workspace_types_with_prefix(db, prefix);
+    let workspace_types = if let Some(env) = completion_cache::completion_env_for_file(db, file) {
+        // The cached completion environment includes a small set of minimal JDK types for other
+        // completion paths. Filter those out here so the dedicated JDK completion pass can handle
+        // them below.
+        const MAX_WORKSPACE_TYPE_CANDIDATES: usize = 2048;
+        let mut out = Vec::new();
+        for ty in env.workspace_index().types_with_prefix(prefix) {
+            if out.len() >= MAX_WORKSPACE_TYPE_CANDIDATES {
+                break;
+            }
+            if ty.qualified.starts_with("java.") {
+                continue;
+            }
+
+            let kind = env
+                .types()
+                .class_id(&ty.qualified)
+                .and_then(|id| env.types().class(id))
+                .map(|def| match def.kind {
+                    ClassKind::Interface => CompletionItemKind::INTERFACE,
+                    ClassKind::Class => CompletionItemKind::CLASS,
+                })
+                .unwrap_or(CompletionItemKind::CLASS);
+
+            out.push(WorkspaceType {
+                name: ty.simple.clone(),
+                kind,
+                package: (!ty.package.is_empty()).then(|| ty.package.clone()),
+            });
+        }
+        out
+    } else {
+        workspace_types_with_prefix(db, prefix)
+    };
 
     // 1a) Accessible workspace types (no edits).
     for ty in &workspace_types {
