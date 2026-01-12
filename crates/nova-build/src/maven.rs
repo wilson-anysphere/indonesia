@@ -30,7 +30,6 @@ fn maven_compiler_arg_looks_like_jpms(arg: &str) -> bool {
         arg == *flag || arg.strip_prefix(flag).is_some_and(|rest| rest.starts_with('='))
     })
 }
-
 #[derive(Debug, Clone)]
 pub struct MavenConfig {
     /// Path to the Maven executable (defaults to `mvn` in `PATH`).
@@ -810,7 +809,6 @@ fn absolutize_path(base_dir: &Path, path: PathBuf) -> PathBuf {
         base_dir.join(path)
     }
 }
-
 pub fn parse_maven_effective_pom_annotation_processing(
     effective_pom_xml: &str,
     module_root: &Path,
@@ -1744,7 +1742,7 @@ mod tests {
     }
 
     #[test]
-    fn infer_module_path_includes_only_stable_modules_and_excludes_output_dir() {
+    fn infer_module_path_includes_classpath_when_module_info_present() {
         let testdata_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata");
         let named = testdata_dir.join("named-module.jar");
         let automatic = testdata_dir.join("automatic-module-name-1.2.3.jar");
@@ -1759,14 +1757,15 @@ mod tests {
         )
         .unwrap();
 
-        // Simulate a stable module output dir; it should still be excluded because it is the
-        // module's own output directory.
+        // Simulate a stable module output dir; even if it doesn't contain `module-info.class` yet,
+        // Maven module-path inference should keep it on the module-path so IDE consumers can
+        // resolve workspace outputs consistently.
         let out_dir = tmp.path().join("target/classes");
         std::fs::create_dir_all(&out_dir).unwrap();
         std::fs::write(out_dir.join("module-info.class"), b"").unwrap();
 
         let resolved_compile_classpath =
-            vec![out_dir.clone(), named.clone(), automatic.clone(), dep];
+            vec![out_dir.clone(), named.clone(), automatic.clone(), dep.clone()];
         let module_path = infer_module_path_for_compile_config(
             &resolved_compile_classpath,
             &[main_src_root],
@@ -1774,7 +1773,7 @@ mod tests {
             false,
         );
 
-        assert_eq!(module_path, vec![named, automatic]);
+        assert_eq!(module_path, vec![out_dir, named, automatic, dep]);
     }
 
     #[test]

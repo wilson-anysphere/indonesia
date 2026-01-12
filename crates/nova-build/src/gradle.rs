@@ -193,6 +193,23 @@ impl GradleBuild {
         cached_projects.dedup_by(|a, b| a.path == b.path);
         data.projects = Some(cached_projects);
 
+        // Snapshot project list for `.nova/queries/gradle.json` (best-effort). This snapshot is
+        // consumed by `nova-project` to avoid invoking Gradle during discovery.
+        let snapshot_projects: Vec<GradleSnapshotProject> = data
+            .projects
+            .as_ref()
+            .map(|projects| {
+                projects
+                    .iter()
+                    .map(|p| GradleSnapshotProject {
+                        path: p.path.clone(),
+                        project_dir: p.dir.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut snapshot_configs: BTreeMap<String, GradleSnapshotJavaCompileConfig> = BTreeMap::new();
+
         let mut out = Vec::new();
         let mut root_config = None::<JavaCompileConfig>;
         let mut root_missing_compile_classpath = false;
@@ -241,6 +258,24 @@ impl GradleBuild {
                 non_root_configs_for_union.push(config.clone());
             }
 
+            snapshot_configs.insert(
+                project.path.clone(),
+                GradleSnapshotJavaCompileConfig {
+                    project_dir: project_dir.clone(),
+                    compile_classpath: config.compile_classpath.clone(),
+                    test_classpath: config.test_classpath.clone(),
+                    module_path: config.module_path.clone(),
+                    main_source_roots: config.main_source_roots.clone(),
+                    test_source_roots: config.test_source_roots.clone(),
+                    main_output_dir: config.main_output_dir.clone(),
+                    test_output_dir: config.test_output_dir.clone(),
+                    source: config.source.clone(),
+                    target: config.target.clone(),
+                    release: config.release.clone(),
+                    enable_preview: config.enable_preview,
+                },
+            );
+
             out.push((project.path, config));
         }
 
@@ -261,6 +296,13 @@ impl GradleBuild {
         }
 
         cache.store(project_root, BuildSystemKind::Gradle, &fingerprint, &data)?;
+
+        // Best-effort: persist a workspace-local Gradle model snapshot so `nova-project` can reuse
+        // these resolved configs without invoking Gradle during project discovery.
+        let _ = update_gradle_snapshot(project_root, &fingerprint, |snapshot| {
+            snapshot.projects = snapshot_projects;
+            snapshot.java_compile_configs = snapshot_configs;
+        });
 
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out.dedup_by(|a, b| a.0 == b.0);
