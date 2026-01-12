@@ -3134,6 +3134,52 @@ class C {
 }
 
 #[test]
+fn array_constructor_reference_is_typed_from_call_argument_target() {
+    let src = r#"
+interface Maker { String[] make(int n); }
+class C {
+    static void take(Maker m) {}
+    void m() {
+        C.take(String[]::new);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("String[]::new")
+        .expect("snippet should contain array constructor reference")
+        + "String[]::".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Maker");
+}
+
+#[test]
+fn array_constructor_reference_is_typed_from_constructor_argument_target() {
+    let src = r#"
+interface Maker { String[] make(int n); }
+class C {
+    C(Maker m) {}
+    void m() {
+        new C(String[]::new);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("String[]::new")
+        .expect("snippet should contain array constructor reference")
+        + "String[]::".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "Maker");
+}
+
+#[test]
 fn class_literal_is_typed_as_java_lang_class() {
     let src = r#"
 class C { void m(){ Object x = String.class; } }
