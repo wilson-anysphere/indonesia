@@ -572,11 +572,11 @@ fn collect_hir_members(
 }
 
 fn is_identifier_start(ch: char) -> bool {
-    ch == '_' || ch.is_ascii_alphabetic()
+    ch == '_' || ch == '$' || ch.is_ascii_alphabetic()
 }
 
 fn is_identifier_continue(ch: char) -> bool {
-    ch == '_' || ch.is_ascii_alphanumeric()
+    ch == '_' || ch == '$' || ch.is_ascii_alphanumeric()
 }
 
 fn collect_type_references(ty: &str, out: &mut BTreeSet<String>) {
@@ -781,5 +781,35 @@ mod tests {
         assert!(indexes.annotations.annotations.contains_key("@Anno"));
         assert!(indexes.annotations.annotations.contains_key("@Inject"));
         assert!(indexes.annotations.annotations.contains_key("@Param"));
+    }
+
+    #[test]
+    fn collect_type_references_supports_dollar_sign() {
+        let mut refs = BTreeSet::new();
+        collect_type_references("com.example.Foo$Bar", &mut refs);
+        assert_eq!(
+            refs,
+            BTreeSet::from([String::from("Foo$Bar")]),
+            "expected qualified types containing `$` to keep the full simple name"
+        );
+
+        refs.clear();
+        collect_type_references("Foo$Bar", &mut refs);
+        assert_eq!(
+            refs,
+            BTreeSet::from([String::from("Foo$Bar")]),
+            "expected unqualified types containing `$` to keep the full simple name"
+        );
+    }
+
+    #[test]
+    fn collect_type_references_handles_qualified_and_generic_types() {
+        let mut refs = BTreeSet::new();
+        collect_type_references(
+            "java.util.Map<String, java.util.List<com.example.Foo>>",
+            &mut refs,
+        );
+        let expected = BTreeSet::from_iter(["Map", "String", "List", "Foo"].map(String::from));
+        assert_eq!(refs, expected);
     }
 }
