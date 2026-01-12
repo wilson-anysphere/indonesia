@@ -7635,7 +7635,6 @@ fn record_lightweight_expr(
                         }
                     }
                 }
-
                 match &arm.body {
                     java_syntax::ast::SwitchArmBody::Expr(expr) => record_lightweight_expr(
                         file,

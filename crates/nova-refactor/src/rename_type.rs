@@ -671,16 +671,12 @@ fn expr_scope_for_offset(
                 visit_expr(body, *selector, offset, best_expr, best_stmt);
                 for arm in arms {
                     for label in &arm.labels {
-                        match label {
-                            hir::SwitchLabel::Case { values, .. } => {
-                                for value in values {
-                                    visit_expr(body, *value, offset, best_expr, best_stmt);
-                                }
+                        if let hir::SwitchLabel::Case { values, .. } = label {
+                            for value in values {
+                                visit_expr(body, *value, offset, best_expr, best_stmt);
                             }
-                            hir::SwitchLabel::Default { .. } => {}
                         }
                     }
-
                     match &arm.body {
                         hir::SwitchArmBody::Expr(expr) => {
                             visit_expr(body, *expr, offset, best_expr, best_stmt)

@@ -493,16 +493,12 @@ fn find_best_expr_in_expr(
             find_best_expr_in_expr(body, *selector, offset, owner, best);
             for arm in arms {
                 for label in &arm.labels {
-                    match label {
-                        hir::SwitchLabel::Case { values, .. } => {
-                            for value in values {
-                                find_best_expr_in_expr(body, *value, offset, owner, best);
-                            }
+                    if let hir::SwitchLabel::Case { values, .. } = label {
+                        for value in values {
+                            find_best_expr_in_expr(body, *value, offset, owner, best);
                         }
-                        hir::SwitchLabel::Default { .. } => {}
                     }
                 }
-
                 match &arm.body {
                     hir::SwitchArmBody::Expr(expr) => {
                         find_best_expr_in_expr(body, *expr, offset, owner, best)
