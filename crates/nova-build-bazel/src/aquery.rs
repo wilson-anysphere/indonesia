@@ -1138,19 +1138,23 @@ mod tests {
 
     #[test]
     fn java_compile_info_json_roundtrip_preserves_annotation_processing() {
-        let mut apt = AnnotationProcessingConfig::default();
-        apt.enabled = true;
-        apt.generated_sources_dir = Some(std::path::PathBuf::from("gen"));
-        apt.processor_path = vec![std::path::PathBuf::from("proc.jar")];
-        apt.processors = vec!["com.example.Proc".to_string()];
-        apt.options = std::collections::BTreeMap::from([("key".to_string(), "value".to_string())]);
-        apt.compiler_args = vec![
-            "-processorpath".to_string(),
-            "proc.jar".to_string(),
-            "-Akey=value".to_string(),
-            "-s".to_string(),
-            "gen".to_string(),
-        ];
+        let apt = AnnotationProcessingConfig {
+            enabled: true,
+            generated_sources_dir: Some(std::path::PathBuf::from("gen")),
+            processor_path: vec![std::path::PathBuf::from("proc.jar")],
+            processors: vec!["com.example.Proc".to_string()],
+            options: std::collections::BTreeMap::from([(
+                "key".to_string(),
+                "value".to_string(),
+            )]),
+            compiler_args: vec![
+                "-processorpath".to_string(),
+                "proc.jar".to_string(),
+                "-Akey=value".to_string(),
+                "-s".to_string(),
+                "gen".to_string(),
+            ],
+        };
 
         let info = JavaCompileInfo {
             classpath: vec!["cp.jar".to_string()],

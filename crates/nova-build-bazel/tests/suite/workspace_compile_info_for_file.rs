@@ -290,16 +290,16 @@ fn compile_info_for_file_resolves_owner_returns_compile_info_and_caches_aquery()
     let calls = runner.calls();
     let aquery_calls: Vec<Vec<String>> = calls
         .iter()
-        .cloned()
         .filter(|args| args.first().map(String::as_str) == Some("aquery"))
+        .cloned()
         .collect();
     assert_eq!(aquery_calls.len(), 1, "expected exactly one aquery call");
 
     let owner_queries: Vec<Vec<String>> = calls
         .iter()
-        .cloned()
-        .filter(|args| args.get(0).map(String::as_str) == Some("query"))
+        .filter(|args| args.first().map(String::as_str) == Some("query"))
         .filter(|args| args.get(2).map(String::as_str) == Some("--output=label_kind"))
+        .cloned()
         .collect();
     assert_eq!(
         owner_queries.len(),
@@ -339,14 +339,13 @@ fn compile_info_for_file_in_run_target_closure_uses_scoped_rdeps_and_caches() {
 
     let aquery_calls: Vec<Vec<String>> = calls
         .iter()
-        .cloned()
         .filter(|args| args.first().map(String::as_str) == Some("aquery"))
+        .cloned()
         .collect();
     assert_eq!(aquery_calls.len(), 1, "expected exactly one aquery call");
 
     let scoped_owner_queries: Vec<Vec<String>> = calls
         .iter()
-        .cloned()
         .filter(|args| {
             args.as_slice()
                 == [
@@ -355,6 +354,7 @@ fn compile_info_for_file_in_run_target_closure_uses_scoped_rdeps_and_caches() {
                     "--output=label_kind",
                 ]
         })
+        .cloned()
         .collect();
     assert_eq!(
         scoped_owner_queries.len(),
