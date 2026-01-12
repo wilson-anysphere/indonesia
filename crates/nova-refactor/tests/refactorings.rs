@@ -1856,6 +1856,10 @@ fn extract_variable_plus_does_not_infer_string_from_nested_string_literal() {
     // the expression subtree).
     //
     // Use `TextDatabase` so we exercise the parser-only inference path (no typeck).
+    //
+    // Without type-checker information we refuse to proceed when the best we can do is a generic
+    // `Object` guess. This test asserts we *don't* incorrectly infer `String` from the nested
+    // `"x"` literal (which would allow the refactoring to proceed).
     let file = FileId::new("Test.java");
     let fixture = r#"class Test {
   int foo(String s) { return 1; }
@@ -1869,7 +1873,7 @@ fn extract_variable_plus_does_not_infer_string_from_nested_string_literal() {
     let (src, expr_range) = extract_range(fixture);
     let db = TextDatabase::new([(file.clone(), src.clone())]);
 
-    let edit = extract_variable(
+    let err = extract_variable(
         &db,
         ExtractVariableParams {
             file: file.clone(),
@@ -1879,19 +1883,10 @@ fn extract_variable_plus_does_not_infer_string_from_nested_string_literal() {
             replace_all: false,
         },
     )
-    .unwrap();
-
-    let after = apply_text_edits(&src, &edit.text_edits).unwrap();
-    let expected = r#"class Test {
-  int foo(String s) { return 1; }
-
-  void m() {
-    Object tmp = 1 + foo("x");
-    System.out.println(tmp);
-  }
-}
-"#;
-    assert_eq!(after, expected);
+    .unwrap_err();
+    let SemanticRefactorError::TypeInferenceFailed = err else {
+        panic!("expected TypeInferenceFailed, got: {err:?}");
+    };
 }
 
 #[test]
