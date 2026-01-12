@@ -487,6 +487,57 @@ fn method_resolution_prefers_class_bound_over_interface_bound_for_type_var_recei
 }
 
 #[test]
+fn method_resolution_type_var_receiver_keeps_non_errorish_bounds_when_unknown_present() {
+    let mut env = TypeStore::with_minimal_jdk();
+    let string = env.well_known().string;
+
+    let iface = env.add_class(ClassDef {
+        name: "com.example.IUnknownBound".to_string(),
+        kind: ClassKind::Interface,
+        type_params: vec![],
+        super_class: None,
+        interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
+        methods: vec![MethodDef {
+            name: "foo".to_string(),
+            type_params: vec![],
+            params: vec![],
+            return_type: Type::class(string, vec![]),
+            is_static: false,
+            is_varargs: false,
+            is_abstract: true,
+        }],
+    });
+
+    // If receiver normalization prunes via `is_subtype` (where `Unknown` is treated as compatible
+    // with everything), it's easy to accidentally collapse `Unknown & I` to `Unknown`, preventing
+    // member lookup from using `I`.
+    //
+    // Ensure we keep the real bound regardless of ordering.
+    let t1 = env.add_type_param("T1", vec![Type::Unknown, Type::class(iface, vec![])]);
+    let t2 = env.add_type_param("T2", vec![Type::class(iface, vec![]), Type::Unknown]);
+
+    for tv in [t1, t2] {
+        let call = MethodCall {
+            receiver: Type::TypeVar(tv),
+            call_kind: CallKind::Instance,
+            name: "foo",
+            args: vec![],
+            expected_return: None,
+            explicit_type_args: vec![],
+        };
+
+        let mut ctx = TyContext::new(&env);
+        let MethodResolution::Found(res) = resolve_method_call(&mut ctx, &call) else {
+            panic!("expected method resolution success");
+        };
+
+        assert_eq!(res.return_type, Type::class(string, vec![]));
+    }
+}
+
+#[test]
 fn field_resolution_prefers_class_bound_over_interface_bound_for_type_var_receiver() {
     let mut env = TypeStore::with_minimal_jdk();
     let object = env.well_known().object;

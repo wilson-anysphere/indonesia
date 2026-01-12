@@ -98,9 +98,13 @@ impl<'env> TyContext<'env> {
                         0 => object.clone(),
                         1 => bounds[0].clone(),
                         // Preserve *all* bounds so member lookup can see methods from any bound.
-                        // Use `make_intersection` to flatten/simplify nested intersections
-                        // and prune redundant supertypes (e.g. `A & B` where `A <: B`).
-                        _ => crate::make_intersection(ctx, bounds),
+                        //
+                        // Note: avoid `make_intersection` here since it intentionally prunes
+                        // redundant supertypes based on Nova's best-effort `is_subtype`
+                        // relation. That pruning treats error-ish types (`Unknown`/`Error`) as
+                        // subtypes of everything, which can accidentally erase informative bounds
+                        // for member access (e.g. `Unknown & I` collapsing to `Unknown`).
+                        _ => normalize_intersection_for_member_access(ctx, bounds),
                     };
                     normalize_inner(ctx, replacement, depth - 1, object)
                 }
@@ -109,7 +113,7 @@ impl<'env> TyContext<'env> {
                         .into_iter()
                         .map(|t| normalize_inner(ctx, t, depth - 1, object))
                         .collect();
-                    crate::make_intersection(ctx, types)
+                    normalize_intersection_for_member_access(ctx, types)
                 }
                 Type::Wildcard(bound) => {
                     let replacement = match bound {
