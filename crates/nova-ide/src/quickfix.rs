@@ -28,7 +28,7 @@ pub(crate) fn unresolved_type_quick_fixes(
             continue;
         };
 
-        if !spans_intersect(diag_span, selection) {
+        if !crate::quick_fix::spans_intersect(diag_span, selection) {
             continue;
         }
 
@@ -65,29 +65,6 @@ pub(crate) fn unresolved_type_quick_fixes(
     }
 
     actions
-}
-
-fn spans_intersect(a: Span, b: Span) -> bool {
-    let (a_start, a_end) = if a.start <= a.end {
-        (a.start, a.end)
-    } else {
-        (a.end, a.start)
-    };
-    let (b_start, b_end) = if b.start <= b.end {
-        (b.start, b.end)
-    } else {
-        (b.end, b.start)
-    };
-
-    // Treat zero-length spans as a point (useful for cursor-based LSP code action requests).
-    if a_start == a_end {
-        return b_start <= a_start && a_start <= b_end;
-    }
-    if b_start == b_end {
-        return a_start <= b_start && b_start <= a_end;
-    }
-
-    a_start < b_end && b_start < a_end
 }
 
 fn single_file_workspace_edit(uri: &Uri, edits: Vec<TextEdit>) -> WorkspaceEdit {
