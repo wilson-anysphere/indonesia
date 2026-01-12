@@ -2,14 +2,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use nova_classpath::{ClasspathEntry, ClasspathIndex};
-use nova_core::{Name, TypeName};
+use nova_core::{Name, StaticMemberId, TypeName};
 use nova_db::{ArcEq, FileId, NovaInputs, NovaResolve, ProjectId, SalsaRootDatabase, SourceRootId};
 use nova_hir::module_info::lower_module_info_source_strict;
 use nova_jdk::JdkIndex;
 use nova_modules::ModuleName;
 use nova_project::JpmsModuleRoot;
 use nova_project::{BuildSystem, JavaConfig, Module, ProjectConfig};
-use nova_resolve::{NameResolution, Resolution, TypeResolution};
+use nova_resolve::{NameResolution, Resolution, StaticMemberResolution, TypeResolution};
+use nova_types::Severity;
 use tempfile::TempDir;
 
 fn executions(db: &SalsaRootDatabase, query_name: &str) -> u64 {
@@ -378,6 +379,102 @@ class C {
     let scopes = db.scope_graph(c_file);
     let resolved = db.resolve_name(c_file, scopes.file_scope, Name::from("Foo"));
     assert_eq!(resolved, None);
+}
+
+#[test]
+fn duplicate_single_type_imports_are_not_ambiguous() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+
+    let file = FileId::from_raw(1);
+    set_file(
+        &mut db,
+        project,
+        file,
+        "src/C.java",
+        r#"
+import java.util.List;
+import java.util.List;
+
+class C {}
+"#,
+    );
+    db.set_project_files(project, Arc::new(vec![file]));
+
+    let diags = db.import_diagnostics(file);
+    assert!(
+        !diags.iter().any(|d| d.code.as_ref() == "ambiguous-import"),
+        "expected no ambiguous-import diagnostic, got {diags:?}"
+    );
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "duplicate-import" && d.severity == Severity::Warning),
+        "expected duplicate-import warning diagnostic, got {diags:?}"
+    );
+
+    let scopes = db.scope_graph(file);
+    let resolved = db.resolve_name(file, scopes.file_scope, Name::from("List"));
+    assert_eq!(
+        resolved,
+        Some(Resolution::Type(TypeResolution::External(TypeName::from(
+            "java.util.List"
+        ))))
+    );
+}
+
+#[test]
+fn duplicate_static_single_imports_are_not_ambiguous() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+
+    let file = FileId::from_raw(1);
+    set_file(
+        &mut db,
+        project,
+        file,
+        "src/C.java",
+        r#"
+import static java.lang.Math.max;
+import static java.lang.Math.max;
+
+class C {}
+"#,
+    );
+    db.set_project_files(project, Arc::new(vec![file]));
+
+    let diags = db.import_diagnostics(file);
+    assert!(
+        !diags.iter().any(|d| d.code.as_ref() == "ambiguous-import"),
+        "expected no ambiguous-import diagnostic, got {diags:?}"
+    );
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "duplicate-import" && d.severity == Severity::Warning),
+        "expected duplicate-import warning diagnostic, got {diags:?}"
+    );
+
+    let scopes = db.scope_graph(file);
+    let resolved = db.resolve_name(file, scopes.file_scope, Name::from("max"));
+    assert_eq!(
+        resolved,
+        Some(Resolution::StaticMember(StaticMemberResolution::External(
+            StaticMemberId::new("java.lang.Math::max")
+        )))
+    );
 }
 
 #[test]
