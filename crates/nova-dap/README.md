@@ -39,6 +39,9 @@ target/debug/nova-dap --listen 127.0.0.1:4711
 target/debug/nova-dap --listen 127.0.0.1:0
 ```
 
+Note: `--listen` expects a full `host:port` socket address (e.g. `127.0.0.1:0`,
+not just `:0`).
+
 When `--listen` is used, `nova-dap` accepts a single incoming connection and
 prints the bound address to stderr (for example: `listening on 127.0.0.1:4711`).
 
