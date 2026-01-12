@@ -78,7 +78,8 @@ where
         ctx: ExtensionContext<dyn FrameworkDatabase + Send + Sync>,
         params: DiagnosticParams,
     ) -> Vec<Diagnostic> {
-        self.analyzer.diagnostics(ctx.db.as_ref(), params.file)
+        self.analyzer
+            .diagnostics_with_cancel(ctx.db.as_ref(), params.file, &ctx.cancel)
     }
 }
 
@@ -105,7 +106,7 @@ where
             offset: params.offset,
         };
         self.analyzer
-            .completions(ctx.db.as_ref(), &completion_ctx)
+            .completions_with_cancel(ctx.db.as_ref(), &completion_ctx, &ctx.cancel)
     }
 }
 
@@ -132,7 +133,7 @@ where
         };
 
         self.analyzer
-            .navigation(ctx.db.as_ref(), &symbol)
+            .navigation_with_cancel(ctx.db.as_ref(), &symbol, &ctx.cancel)
             .into_iter()
             .map(|target| NavigationTarget {
                 file: target.file,
@@ -161,7 +162,7 @@ where
         params: InlayHintParams,
     ) -> Vec<InlayHint> {
         self.analyzer
-            .inlay_hints(ctx.db.as_ref(), params.file)
+            .inlay_hints_with_cancel(ctx.db.as_ref(), params.file, &ctx.cancel)
             .into_iter()
             .map(|hint| InlayHint {
                 span: hint.span,
@@ -875,6 +876,30 @@ mod tests {
         }
     }
 
+    struct CancellationAwareAnalyzer;
+    impl FrameworkAnalyzer for CancellationAwareAnalyzer {
+        fn applies_to(&self, _db: &dyn Database, _project: ProjectId) -> bool {
+            true
+        }
+
+        fn diagnostics_with_cancel(
+            &self,
+            _db: &dyn Database,
+            _file: nova_ext::FileId,
+            cancel: &CancellationToken,
+        ) -> Vec<Diagnostic> {
+            if cancel.is_cancelled() {
+                Vec::new()
+            } else {
+                vec![Diagnostic::warning(
+                    "FW",
+                    "framework",
+                    Some(Span::new(0, 1)),
+                )]
+            }
+        }
+    }
+
     struct ExtraDiagProvider;
     impl DiagnosticProvider<dyn Database + Send + Sync> for ExtraDiagProvider {
         fn id(&self) -> &str {
@@ -964,6 +989,31 @@ mod tests {
         let actions = ide.code_actions(CancellationToken::new(), file, None);
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].title, "extra action");
+    }
+
+    #[test]
+    fn framework_analyzer_adapter_propagates_cancellation() {
+        let mut db = MemoryDatabase::new();
+        let project = db.add_project();
+        let file = db.add_file(project);
+
+        let db: Arc<dyn Database + Send + Sync> = Arc::new(db);
+        let mut ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), project);
+
+        let analyzer = FrameworkAnalyzerAdapter::new("framework.cancel", CancellationAwareAnalyzer)
+            .into_arc();
+        ide.registry_mut()
+            .register_diagnostic_provider(analyzer)
+            .unwrap();
+
+        let diags = ide.diagnostics(CancellationToken::new(), file);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].message, "framework");
+
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let diags = ide.diagnostics(cancel, file);
+        assert!(diags.is_empty());
     }
 
     #[test]

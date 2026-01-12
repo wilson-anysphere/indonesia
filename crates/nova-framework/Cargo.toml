@@ -6,5 +6,6 @@ edition = "2021"
 [dependencies]
 nova-core = { path = "../nova-core" }
 nova-hir = { path = "../nova-hir" }
+nova-scheduler = { path = "../nova-scheduler" }
 nova-types = { path = "../nova-types" }
 nova-vfs = { path = "../nova-vfs" }

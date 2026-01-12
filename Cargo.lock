@@ -3731,6 +3731,7 @@ version = "0.1.0"
 dependencies = [
  "nova-core",
  "nova-hir",
+ "nova-scheduler",
  "nova-types",
  "nova-vfs",
 ]
