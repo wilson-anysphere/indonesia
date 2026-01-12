@@ -633,23 +633,73 @@ impl TextWriter {
 /// should prefer [`decompiled_uri_for_classfile`], which produces the canonical
 /// `nova:///decompiled/<hash>/<binary-name>.java` URI format.
 pub fn uri_for_class_internal_name(internal_name: &str) -> String {
+    let internal_name = normalize_legacy_internal_name(internal_name);
     format!(
         "{DECOMPILE_URI_SCHEME}:///{}.class",
-        internal_name.trim_start_matches('/')
+        internal_name
     )
 }
 
 /// Attempts to extract the class internal name from a decompiled URI.
 pub fn class_internal_name_from_uri(uri: &str) -> Option<String> {
+    if uri.contains('?') || uri.contains('#') {
+        return None;
+    }
     let prefix = format!("{DECOMPILE_URI_SCHEME}:///");
     let path = uri.strip_prefix(&prefix)?;
-    let path = path.strip_prefix('/').unwrap_or(path);
-    let path = path.strip_suffix(".class").unwrap_or(path);
+    let path = path.trim_matches(|c| c == '/' || c == '\\');
     if path.is_empty() {
-        None
-    } else {
-        Some(path.to_string())
+        return None;
     }
+
+    let path = if path.contains('\\') {
+        std::borrow::Cow::Owned(path.replace('\\', "/"))
+    } else {
+        std::borrow::Cow::Borrowed(path)
+    };
+
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if segments.is_empty() {
+        return None;
+    }
+    if segments.contains(&"..") {
+        return None;
+    }
+
+    let last = segments.last()?;
+    let stem = last.strip_suffix(".class").unwrap_or(last);
+    if stem.is_empty() {
+        return None;
+    }
+
+    let mut internal = String::new();
+    for (idx, seg) in segments.iter().enumerate() {
+        if idx > 0 {
+            internal.push('/');
+        }
+        if idx + 1 == segments.len() {
+            internal.push_str(stem);
+        } else {
+            internal.push_str(seg);
+        }
+    }
+
+    Some(internal)
+}
+
+fn normalize_legacy_internal_name(internal_name: &str) -> String {
+    let internal_name = internal_name
+        .strip_suffix(".class")
+        .unwrap_or(internal_name);
+    let internal_name = internal_name.trim_matches(|c| c == '/' || c == '\\');
+    let internal_name = if internal_name.contains('\\') {
+        internal_name.replace('\\', "/")
+    } else {
+        internal_name.to_string()
+    };
+
+    let segments: Vec<&str> = internal_name.split('/').filter(|s| !s.is_empty()).collect();
+    segments.join("/")
 }
 
 /// Parsed representation of a canonical decompiled virtual-document URI.
