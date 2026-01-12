@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use nova_stream_debug::StreamOperationKind;
+
 /// Sanitize a local-variable name into a valid Java identifier suitable for use as a method
 /// parameter.
 ///
@@ -238,7 +240,17 @@ pub fn generate_stream_eval_helper_java_source(
 
     for (idx, stage) in stages.iter().enumerate() {
         let stage_name = format!("stage{idx}");
-        out.push_str("  public static Object ");
+        let stage = stage.trim();
+        let stage = stage.strip_suffix(';').unwrap_or(stage).trim();
+        let stage = rewrite_this_tokens(stage, THIS_IDENT);
+        let stage_is_void = is_known_void_stream_expression(&stage);
+
+        out.push_str("  public static ");
+        if stage_is_void {
+            out.push_str("void ");
+        } else {
+            out.push_str("Object ");
+        }
         out.push_str(&stage_name);
         out.push('(');
 
@@ -252,12 +264,15 @@ pub fn generate_stream_eval_helper_java_source(
         }
         out.push_str(") {\n");
 
-        let stage = stage.trim();
-        let stage = stage.strip_suffix(';').unwrap_or(stage).trim();
-        let stage = rewrite_this_tokens(stage, THIS_IDENT);
-        out.push_str("    return ");
-        out.push_str(&stage);
-        out.push_str(";\n  }\n");
+        if stage_is_void {
+            out.push_str("    ");
+            out.push_str(&stage);
+            out.push_str(";\n  }\n");
+        } else {
+            out.push_str("    return ");
+            out.push_str(&stage);
+            out.push_str(";\n  }\n");
+        }
 
         if idx + 1 < stages.len() {
             out.push('\n');
@@ -266,6 +281,21 @@ pub fn generate_stream_eval_helper_java_source(
 
     out.push_str("}\n");
     out
+}
+
+fn is_known_void_stream_expression(expr: &str) -> bool {
+    let Ok(chain) = nova_stream_debug::analyze_stream_expression(expr) else {
+        return false;
+    };
+    let Some(term) = chain.terminal else {
+        return false;
+    };
+    if term.kind == StreamOperationKind::ForEach {
+        return true;
+    }
+    term.resolved
+        .as_ref()
+        .is_some_and(|resolved| resolved.return_type == "void")
 }
 
 fn is_java_identifier_start_ascii(ch: char) -> bool {
@@ -442,5 +472,28 @@ mod tests {
         assert_eq!(sanitize_java_param_name("class"), "class_");
         assert_eq!(sanitize_java_param_name("return"), "return_");
         assert_eq!(sanitize_java_param_name("this"), "__this");
+    }
+
+    #[test]
+    fn java_source_generation_emits_void_methods_for_foreach_stages() {
+        let src = generate_stream_eval_helper_java_source(
+            "com.example",
+            &[],
+            &[
+                ("this".to_string(), "Object".to_string()),
+                ("s".to_string(), "java.util.stream.Stream<Integer>".to_string()),
+            ],
+            &["s.forEach(System.out::println)".to_string()],
+        );
+
+        assert!(
+            src.contains("public static void stage0"),
+            "expected stage0 to be void for forEach:\n{src}"
+        );
+        assert!(
+            !src.contains("return s.forEach"),
+            "should not emit `return <void expr>;`:\n{src}"
+        );
+        assert!(src.contains("s.forEach(System.out::println);"));
     }
 }
