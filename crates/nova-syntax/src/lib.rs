@@ -544,16 +544,93 @@ pub fn parse(text: &str) -> ParseResult {
         })
         .collect();
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum TemplateBoundary {
+        Start,
+        End,
+    }
+
+    fn template_boundary(kind: SyntaxKind) -> Option<TemplateBoundary> {
+        // Most lexer tokens are defined before `Eof`. If string templates introduce additional
+        // token kinds (likely appended at the end of `SyntaxKind`), avoid formatting the kind name
+        // for common tokens.
+        if (kind as u16) <= (SyntaxKind::Eof as u16) {
+            return None;
+        }
+
+        // We can't directly match on the template token kinds here because they're introduced by
+        // the lexer and may change over time. Instead, key off the debug name to keep `parse`
+        // compatible across lexer revisions while ensuring string templates remain opaque to the
+        // legacy formatter (`nova-format::format_java`).
+        let name = format!("{kind:?}");
+        if name.ends_with("TemplateStart") {
+            Some(TemplateBoundary::Start)
+        } else if name.ends_with("TemplateEnd") {
+            Some(TemplateBoundary::End)
+        } else {
+            None
+        }
+    }
+
     let mut children: Vec<GreenChild> = Vec::new();
-    for token in tokens {
+    let mut idx = 0usize;
+    while idx < tokens.len() {
+        let token = &tokens[idx];
         if token.kind == SyntaxKind::Eof {
+            idx += 1;
             continue;
         }
+
+        // Keep string templates (preview feature) opaque to the legacy token-only formatter by
+        // collapsing the entire template token run into a single `StringLiteral` token.
+        //
+        // The formatter will re-tokenize punctuation token text; if we emit `\{`/`}` pieces as
+        // punctuation tokens, it can misinterpret `{`/`}` as real block braces and corrupt
+        // indentation/spacing.
+        if matches!(template_boundary(token.kind), Some(TemplateBoundary::Start)) {
+            let start = token.range.start;
+            let mut end = token.range.end;
+            let mut template_depth = 0u32;
+
+            while idx < tokens.len() {
+                let tok = &tokens[idx];
+                end = tok.range.end;
+
+                if tok.kind == SyntaxKind::Eof {
+                    break;
+                }
+
+                match template_boundary(tok.kind) {
+                    Some(TemplateBoundary::Start) => {
+                        template_depth += 1;
+                    }
+                    Some(TemplateBoundary::End) => {
+                        template_depth = template_depth.saturating_sub(1);
+                        idx += 1;
+                        if template_depth == 0 {
+                            break;
+                        }
+                        continue;
+                    }
+                    None => {}
+                }
+
+                idx += 1;
+            }
+
+            children.push(GreenChild::Token(GreenToken {
+                kind: SyntaxKind::StringLiteral,
+                range: TextRange { start, end },
+            }));
+            continue;
+        }
+
         let kind = map_kind(token.kind, token.text(text));
         children.push(GreenChild::Token(GreenToken {
             kind,
             range: token.range,
         }));
+        idx += 1;
     }
 
     ParseResult {

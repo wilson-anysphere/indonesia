@@ -773,6 +773,47 @@ fn cache_parse_detects_doc_comments() {
 }
 
 #[test]
+fn cache_parse_treats_string_templates_as_opaque_string_literal_tokens() {
+    let input = "class Foo { String s = STR.\"hi \\{name}\"; }";
+    let parsed = crate::parse(input);
+    let tokens: Vec<_> = parsed.tokens().collect();
+
+    let template_tokens: Vec<_> = tokens
+        .iter()
+        .copied()
+        .filter(|t| t.kind == SyntaxKind::StringLiteral && t.text(input).contains("\\{"))
+        .collect();
+    assert_eq!(
+        template_tokens.len(),
+        1,
+        "expected exactly one StringLiteral token for template, got: {:?}",
+        tokens
+            .iter()
+            .map(|t| (t.kind, t.text(input).to_string()))
+            .collect::<Vec<_>>()
+    );
+
+    let template = template_tokens[0];
+    assert_eq!(template.text(input), "\"hi \\{name}\"");
+
+    let template_range = template.range;
+    let overlapping: Vec<_> = tokens
+        .iter()
+        .copied()
+        .filter(|t| t.range.start < template_range.end && t.range.end > template_range.start)
+        .collect();
+    assert_eq!(
+        overlapping.len(),
+        1,
+        "expected template to be opaque (no inner tokens), got: {:?}",
+        overlapping
+            .iter()
+            .map(|t| (t.kind, t.text(input).to_string()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn parse_expression_parses_binary_expression() {
     let result = parse_expression("a + b");
     assert_eq!(result.errors, Vec::new());
