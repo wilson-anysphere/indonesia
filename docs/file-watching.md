@@ -18,7 +18,7 @@ Watcher backends are normalized into a small set of operations:
 - **Modified**
 - **Deleted**
 - **Moved** (rename/move)
-- **Rescan** (not a file change): indicates the watcher dropped events and consumers should rescan watched roots.
+- **Rescan** (not a file change): indicates the watcher dropped events and consumers should rescan watched paths/roots.
 
 Rename detection is *heuristic* on many platforms. Some backends emit a rename as two separate
 events (`from` then `to`) and may reorder or coalesce them. `nova-vfs` is responsible for pairing
