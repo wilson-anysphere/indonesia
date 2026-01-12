@@ -8,8 +8,8 @@
 //! For `nova-types` unit tests, this crate also exposes [`minimal_jdk`], a tiny
 //! semantic class/type model of a few key JDK types.
 
-mod discovery;
 mod ct_sym;
+mod discovery;
 mod index;
 mod jmod;
 mod persist;

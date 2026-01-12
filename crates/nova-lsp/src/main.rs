@@ -2810,8 +2810,7 @@ fn handle_workspace_symbol(
                 path = workspace.root().join(path);
             }
 
-            let abs = nova_core::AbsPathBuf::try_from(path)
-                .map_err(|e| (-32603, e.to_string()))?;
+            let abs = nova_core::AbsPathBuf::try_from(path).map_err(|e| (-32603, e.to_string()))?;
             let uri = nova_core::path_to_file_uri(&abs)
                 .map_err(|e| (-32603, e.to_string()))?
                 .parse::<LspUri>()

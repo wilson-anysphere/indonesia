@@ -67,7 +67,10 @@ impl<'a> JavaPrettyFormatter<'a> {
                 } else {
                     // Fallback nodes print verbatim source, including any nested comment tokens.
                     // Consume those comments so they don't trip the drain assertion.
-                    push_with_separator(&mut parts, self.print_verbatim_node_with_boundary_comments(child));
+                    push_with_separator(
+                        &mut parts,
+                        self.print_verbatim_node_with_boundary_comments(child),
+                    );
                 }
                 continue;
             }
@@ -142,7 +145,11 @@ fn boundary_significant_tokens(node: &SyntaxNode) -> Option<(SyntaxToken, Syntax
     let mut iter = node
         .descendants_with_tokens()
         .filter_map(|el| el.into_token())
-        .filter(|tok| tok.kind() != SyntaxKind::Eof && !tok.kind().is_trivia() && !is_synthetic_missing(tok.kind()));
+        .filter(|tok| {
+            tok.kind() != SyntaxKind::Eof
+                && !tok.kind().is_trivia()
+                && !is_synthetic_missing(tok.kind())
+        });
 
     let first = iter.next()?;
     let mut last = first.clone();

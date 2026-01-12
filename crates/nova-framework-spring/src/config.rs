@@ -1075,8 +1075,7 @@ fn yaml_value_completion_start(text: &str, offset: usize) -> Option<usize> {
     }
 
     let mut value_rel_start = colon_rel + 1;
-    while value_rel_start < after_indent.len() && after_indent.as_bytes()[value_rel_start] == b' '
-    {
+    while value_rel_start < after_indent.len() && after_indent.as_bytes()[value_rel_start] == b' ' {
         value_rel_start += 1;
     }
     let value_abs_start = base_offset + value_rel_start;

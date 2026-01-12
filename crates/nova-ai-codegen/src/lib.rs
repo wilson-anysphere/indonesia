@@ -574,19 +574,18 @@ fn diagnostic_bucket(diag: &NovaDiagnostic) -> ValidationBucket {
 }
 
 fn diagnostic_span_bounds(diag: &NovaDiagnostic) -> (usize, usize) {
-    diag.span.map(|span| (span.start, span.end)).unwrap_or((0, 0))
+    diag.span
+        .map(|span| (span.start, span.end))
+        .unwrap_or((0, 0))
 }
 
-fn diagnostic_position_and_range(text: &str, diag: &NovaDiagnostic) -> (nova_core::Position, TextRange) {
+fn diagnostic_position_and_range(
+    text: &str,
+    diag: &NovaDiagnostic,
+) -> (nova_core::Position, TextRange) {
     let span = diag.span.unwrap_or(nova_types::Span { start: 0, end: 0 });
-    let start = span
-        .start
-        .min(text.len())
-        .min(u32::MAX as usize) as u32;
-    let end = span
-        .end
-        .min(text.len())
-        .min(u32::MAX as usize) as u32;
+    let start = span.start.min(text.len()).min(u32::MAX as usize) as u32;
+    let end = span.end.min(text.len()).min(u32::MAX as usize) as u32;
     let range = TextRange::new(TextSize::from(start), TextSize::from(end.max(start)));
 
     let index = LineIndex::new(text);

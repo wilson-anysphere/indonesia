@@ -203,10 +203,7 @@ fn json_schema_requires_non_empty_api_key_when_set() {
     let api_key = value
         .pointer("/definitions/AiConfig/properties/api_key")
         .expect("api_key schema property exists");
-    assert_eq!(
-        api_key.get("minLength").and_then(|v| v.as_u64()),
-        Some(1)
-    );
+    assert_eq!(api_key.get("minLength").and_then(|v| v.as_u64()), Some(1));
 }
 
 #[test]

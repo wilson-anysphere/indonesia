@@ -337,13 +337,21 @@ impl ProjectContext {
     fn render(&self, include_file_paths: bool) -> String {
         let mut out = String::new();
 
-        if let Some(build_system) = self.build_system.as_deref().filter(|s| !s.trim().is_empty()) {
+        if let Some(build_system) = self
+            .build_system
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+        {
             out.push_str("Build system: ");
             out.push_str(build_system.trim());
             out.push('\n');
         }
 
-        if let Some(java_version) = self.java_version.as_deref().filter(|s| !s.trim().is_empty()) {
+        if let Some(java_version) = self
+            .java_version
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+        {
             out.push_str("Java: ");
             out.push_str(java_version.trim());
             out.push('\n');
@@ -363,7 +371,12 @@ impl ProjectContext {
 
         if !self.classpath.is_empty() {
             out.push_str("Classpath:\n");
-            for entry in self.classpath.iter().filter(|e| !e.trim().is_empty()).take(32) {
+            for entry in self
+                .classpath
+                .iter()
+                .filter(|e| !e.trim().is_empty())
+                .take(32)
+            {
                 out.push_str("- ");
                 out.push_str(&render_project_path_entry(entry, include_file_paths));
                 out.push('\n');
@@ -1648,8 +1661,16 @@ class Foo {
         };
 
         let built = builder.build(req);
-        assert!(built.text.contains("## Project context"), "{:?}", built.text);
-        assert!(built.text.contains("Build system: maven"), "{:?}", built.text);
+        assert!(
+            built.text.contains("## Project context"),
+            "{:?}",
+            built.text
+        );
+        assert!(
+            built.text.contains("Build system: maven"),
+            "{:?}",
+            built.text
+        );
         assert!(built.text.contains("Java: 17"), "{:?}", built.text);
         assert!(built.text.contains("Spring"), "{:?}", built.text);
         // Basename only, no absolute path.

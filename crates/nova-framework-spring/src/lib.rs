@@ -25,12 +25,11 @@ pub use completions::{
 
 pub use config::{
     completion_span_for_properties_file, completion_span_for_value_placeholder,
-    completion_span_for_yaml_file,
-    completions_for_properties_file, completions_for_value_placeholder, completions_for_yaml_file,
-    diagnostics_for_config_file, find_references_for_value_placeholder,
-    goto_definition_for_value_placeholder, goto_usages_for_config_key, ConfigLocation,
-    SpringWorkspaceIndex, SPRING_CONFIG_TYPE_MISMATCH, SPRING_DEPRECATED_CONFIG_KEY,
-    SPRING_DUPLICATE_CONFIG_KEY, SPRING_UNKNOWN_CONFIG_KEY,
+    completion_span_for_yaml_file, completions_for_properties_file,
+    completions_for_value_placeholder, completions_for_yaml_file, diagnostics_for_config_file,
+    find_references_for_value_placeholder, goto_definition_for_value_placeholder,
+    goto_usages_for_config_key, ConfigLocation, SpringWorkspaceIndex, SPRING_CONFIG_TYPE_MISMATCH,
+    SPRING_DEPRECATED_CONFIG_KEY, SPRING_DUPLICATE_CONFIG_KEY, SPRING_UNKNOWN_CONFIG_KEY,
 };
 
 pub use nova_types::{CompletionItem, Diagnostic, Severity, Span};

@@ -251,7 +251,10 @@ fn allowlist_blocks_paths_outside_prefixes() {
 
 #[test]
 fn rejects_file_deletes_by_default() {
-    let workspace = VirtualWorkspace::new(vec![("Delete.java".to_string(), "class Delete {}".to_string())]);
+    let workspace = VirtualWorkspace::new(vec![(
+        "Delete.java".to_string(),
+        "class Delete {}".to_string(),
+    )]);
 
     let patch = Patch::Json(JsonPatch {
         edits: Vec::new(),
@@ -276,7 +279,8 @@ fn rejects_file_deletes_by_default() {
 
 #[test]
 fn rejects_file_renames_by_default() {
-    let workspace = VirtualWorkspace::new(vec![("Old.java".to_string(), "class Old {}".to_string())]);
+    let workspace =
+        VirtualWorkspace::new(vec![("Old.java".to_string(), "class Old {}".to_string())]);
 
     let patch = Patch::Json(JsonPatch {
         edits: Vec::new(),
@@ -287,7 +291,9 @@ fn rejects_file_renames_by_default() {
     });
 
     let err = enforce_patch_safety(&patch, &workspace, &PatchSafetyConfig::default()).unwrap_err();
-    assert!(matches!(err, SafetyError::RenameNotAllowed { from, to } if from == "Old.java" && to == "New.java"));
+    assert!(
+        matches!(err, SafetyError::RenameNotAllowed { from, to } if from == "Old.java" && to == "New.java")
+    );
 
     let patch = Patch::UnifiedDiff(UnifiedDiffPatch {
         files: vec![UnifiedDiffFile {
@@ -297,7 +303,9 @@ fn rejects_file_renames_by_default() {
         }],
     });
     let err = enforce_patch_safety(&patch, &workspace, &PatchSafetyConfig::default()).unwrap_err();
-    assert!(matches!(err, SafetyError::RenameNotAllowed { from, to } if from == "Old.java" && to == "New.java"));
+    assert!(
+        matches!(err, SafetyError::RenameNotAllowed { from, to } if from == "Old.java" && to == "New.java")
+    );
 }
 
 #[test]

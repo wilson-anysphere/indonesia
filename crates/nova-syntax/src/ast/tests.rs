@@ -1028,7 +1028,9 @@ fn new_expression_anonymous_class_body_is_accessible() {
         .descendants()
         .find_map(NewExpression::cast)
         .expect("expected a new expression");
-    let body = new_expr.class_body().expect("expected anonymous class body");
+    let body = new_expr
+        .class_body()
+        .expect("expected anonymous class body");
 
     assert!(
         body.members()
