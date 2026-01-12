@@ -20,7 +20,7 @@ rustup toolchain install nightly --component llvm-tools-preview --component rust
 ```bash
 # Recommended (fast): install the prebuilt cargo-fuzz binary via cargo-binstall.
 cargo install cargo-binstall --locked
-cargo +nightly binstall cargo-fuzz --version 0.13.1 --no-confirm --locked --disable-strategies compile
+cargo +nightly binstall cargo-fuzz --version 0.13.1 --no-confirm --locked --disable-strategies compile --disable-telemetry
 
 # Alternative (slower): build cargo-fuzz from source.
 # cargo +nightly install cargo-fuzz --version 0.13.1 --locked

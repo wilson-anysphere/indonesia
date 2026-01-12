@@ -449,7 +449,7 @@ CI runs short, time-boxed fuzz jobs in `.github/workflows/fuzz.yml` (scheduled +
 rustup toolchain install nightly --component llvm-tools-preview --component rust-src
 # Recommended (fast): install the prebuilt cargo-fuzz binary via cargo-binstall.
 cargo install cargo-binstall --locked
-cargo +nightly binstall cargo-fuzz --version 0.13.1 --no-confirm --locked --disable-strategies compile
+cargo +nightly binstall cargo-fuzz --version 0.13.1 --no-confirm --locked --disable-strategies compile --disable-telemetry
 
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_reparse_java -- -max_total_time=60 -max_len=262144

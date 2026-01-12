@@ -58,7 +58,7 @@ rustup toolchain install nightly --component llvm-tools-preview --component rust
 
 # Recommended (fast): install the prebuilt cargo-fuzz binary via cargo-binstall.
 cargo install cargo-binstall --locked
-cargo +nightly binstall cargo-fuzz --version 0.13.1 --no-confirm --locked --disable-strategies compile
+cargo +nightly binstall cargo-fuzz --version 0.13.1 --no-confirm --locked --disable-strategies compile --disable-telemetry
 
 cd crates/nova-remote-proto
 cargo +nightly fuzz run decode_framed_message
