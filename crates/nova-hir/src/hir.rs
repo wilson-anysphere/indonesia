@@ -298,6 +298,7 @@ pub enum Expr {
     Call {
         callee: ExprId,
         args: Vec<ExprId>,
+        explicit_type_args: Vec<(String, Span)>,
         range: Span,
     },
     New {

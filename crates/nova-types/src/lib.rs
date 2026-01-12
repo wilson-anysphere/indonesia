@@ -1389,6 +1389,8 @@ impl TypeStore {
 
         // java.util.List<E>
         let list_e = store.add_type_param("E", vec![Type::class(object, vec![])]);
+        // java.util.List static factory methods (Java 9+)
+        let list_of_e = store.add_type_param("E", vec![Type::class(object, vec![])]);
         let list = store
             .lookup_class("java.util.List")
             .expect("minimal JDK must contain java.util.List");
@@ -1420,6 +1422,15 @@ impl TypeStore {
                         is_static: false,
                         is_varargs: false,
                         is_abstract: true,
+                    },
+                    MethodDef {
+                        name: "of".to_string(),
+                        type_params: vec![list_of_e],
+                        params: vec![],
+                        return_type: Type::class(list, vec![Type::TypeVar(list_of_e)]),
+                        is_static: true,
+                        is_varargs: false,
+                        is_abstract: false,
                     },
                 ],
             },

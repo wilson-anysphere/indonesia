@@ -5006,9 +5006,12 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     }
                 }
             }
-            HirExpr::Call { callee, args, .. } => {
-                self.infer_call(loader, *callee, args, expr, expected)
-            }
+            HirExpr::Call {
+                callee,
+                args,
+                explicit_type_args,
+                ..
+            } => self.infer_call(loader, *callee, args, explicit_type_args, expr, expected),
             HirExpr::New {
                 class,
                 class_range,
@@ -6390,6 +6393,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
         loader: &mut ExternalTypeLoader<'_>,
         callee: HirExprId,
         args: &[HirExprId],
+        explicit_type_args: &[(String, Span)],
         expr: HirExprId,
         expected: Option<&Type>,
     ) -> ExprInfo {
@@ -6420,6 +6424,14 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     let _ = this.infer_expr_with_expected(loader, *arg, Some(param_ty));
                 }
             };
+
+        let mut resolved_explicit_type_args = Vec::with_capacity(explicit_type_args.len());
+        let mut explicit_type_args_errorish = false;
+        for (text, span) in explicit_type_args {
+            let ty = self.resolve_source_type(loader, text.as_str(), Some(*span));
+            explicit_type_args_errorish |= ty.is_errorish();
+            resolved_explicit_type_args.push(ty);
+        }
 
         match &self.body.exprs[callee] {
             HirExpr::This { .. } => self.infer_explicit_constructor_invocation(
@@ -6458,7 +6470,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                     name: name.as_str(),
                     args: arg_types,
                     expected_return: expected.cloned(),
-                    explicit_type_args: Vec::new(),
+                    explicit_type_args: resolved_explicit_type_args.clone(),
                 };
 
                 let env_ro: &dyn TypeEnv = &*loader.store;
@@ -6474,12 +6486,14 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         }
                     }
                     MethodResolution::Ambiguous(amb) => {
-                        self.diagnostics.push(self.ambiguous_call_diag(
-                            env_ro,
-                            name.as_str(),
-                            &amb.candidates,
-                            self.body.exprs[expr].range(),
-                        ));
+                        if !explicit_type_args_errorish {
+                            self.diagnostics.push(self.ambiguous_call_diag(
+                                env_ro,
+                                name.as_str(),
+                                &amb.candidates,
+                                self.body.exprs[expr].range(),
+                            ));
+                        }
                         if let Some(first) = amb.candidates.first() {
                             self.call_resolutions[expr.idx()] = Some(first.clone());
                             apply_arg_targets(self, loader, first);
@@ -6495,7 +6509,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         }
                     }
                     MethodResolution::NotFound(not_found) => {
-                        if is_static_receiver {
+                        if is_static_receiver && !explicit_type_args_errorish {
                             // Best-effort: if this call *would* resolve in an instance context, emit
                             // a more precise static-context diagnostic instead of `unresolved-method`.
                             let instance_call = MethodCall {
@@ -6526,11 +6540,13 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             }
                         }
 
-                        self.diagnostics.push(self.unresolved_method_diag(
-                            env_ro,
-                            &not_found,
-                            self.body.exprs[expr].range(),
-                        ));
+                        if !explicit_type_args_errorish {
+                            self.diagnostics.push(self.unresolved_method_diag(
+                                env_ro,
+                                &not_found,
+                                self.body.exprs[expr].range(),
+                            ));
+                        }
                         ExprInfo {
                             ty: Type::Error,
                             is_type_ref: false,
@@ -6561,7 +6577,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                         name: name.as_str(),
                         args: arg_types.clone(),
                         expected_return: expected.cloned(),
-                        explicit_type_args: Vec::new(),
+                        explicit_type_args: resolved_explicit_type_args.clone(),
                     };
 
                     let env_ro: &dyn TypeEnv = &*loader.store;
@@ -6577,12 +6593,14 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             };
                         }
                         MethodResolution::Ambiguous(amb) => {
-                            self.diagnostics.push(self.ambiguous_call_diag(
-                                env_ro,
-                                name.as_str(),
-                                &amb.candidates,
-                                self.body.exprs[expr].range(),
-                            ));
+                            if !explicit_type_args_errorish {
+                                self.diagnostics.push(self.ambiguous_call_diag(
+                                    env_ro,
+                                    name.as_str(),
+                                    &amb.candidates,
+                                    self.body.exprs[expr].range(),
+                                ));
+                            }
                             if let Some(first) = amb.candidates.first() {
                                 self.call_resolutions[expr.idx()] = Some(first.clone());
                                 apply_arg_targets(self, loader, first);
@@ -6608,19 +6626,21 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             name: name.as_str(),
                             args: arg_types.clone(),
                             expected_return: None,
-                            explicit_type_args: Vec::new(),
+                            explicit_type_args: resolved_explicit_type_args.clone(),
                         };
                         let mut ctx = TyContext::new(env_ro);
                         match nova_types::resolve_method_call(&mut ctx, &call) {
                             MethodResolution::Found(_) | MethodResolution::Ambiguous(_) => {
-                                self.diagnostics.push(Diagnostic::error(
-                                    "static-context",
-                                    format!(
-                                        "cannot call instance method `{}` from a static context",
-                                        name
-                                    ),
-                                    Some(self.body.exprs[expr].range()),
-                                ));
+                                if !explicit_type_args_errorish {
+                                    self.diagnostics.push(Diagnostic::error(
+                                        "static-context",
+                                        format!(
+                                            "cannot call instance method `{}` from a static context",
+                                            name
+                                        ),
+                                        Some(self.body.exprs[expr].range()),
+                                    ));
+                                }
                                 return ExprInfo {
                                     ty: Type::Error,
                                     is_type_ref: false,
@@ -6660,7 +6680,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             name: member,
                             args: arg_types,
                             expected_return: expected.cloned(),
-                            explicit_type_args: Vec::new(),
+                            explicit_type_args: resolved_explicit_type_args.clone(),
                         };
 
                         let env_ro: &dyn TypeEnv = &*loader.store;
@@ -6676,12 +6696,14 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                                 }
                             }
                             MethodResolution::Ambiguous(amb) => {
-                                self.diagnostics.push(self.ambiguous_call_diag(
-                                    env_ro,
-                                    member,
-                                    &amb.candidates,
-                                    self.body.exprs[expr].range(),
-                                ));
+                                if !explicit_type_args_errorish {
+                                    self.diagnostics.push(self.ambiguous_call_diag(
+                                        env_ro,
+                                        member,
+                                        &amb.candidates,
+                                        self.body.exprs[expr].range(),
+                                    ));
+                                }
                                 if let Some(first) = amb.candidates.first() {
                                     self.call_resolutions[expr.idx()] = Some(first.clone());
                                     apply_arg_targets(self, loader, first);
@@ -6697,11 +6719,13 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                                 }
                             }
                             MethodResolution::NotFound(not_found) => {
-                                self.diagnostics.push(self.unresolved_method_diag(
-                                    env_ro,
-                                    &not_found,
-                                    self.body.exprs[expr].range(),
-                                ));
+                                if !explicit_type_args_errorish {
+                                    self.diagnostics.push(self.unresolved_method_diag(
+                                        env_ro,
+                                        &not_found,
+                                        self.body.exprs[expr].range(),
+                                    ));
+                                }
                                 ExprInfo {
                                     ty: Type::Error,
                                     is_type_ref: false,
@@ -6816,7 +6840,7 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                             name: name.as_str(),
                             args: arg_types,
                             expected_return: expected.cloned(),
-                            explicit_type_args: Vec::new(),
+                            explicit_type_args: resolved_explicit_type_args.clone(),
                         };
 
                         let env_ro: &dyn TypeEnv = &*loader.store;
@@ -6832,12 +6856,14 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                                 }
                             }
                             MethodResolution::Ambiguous(amb) => {
-                                self.diagnostics.push(self.ambiguous_call_diag(
-                                    env_ro,
-                                    name.as_str(),
-                                    &amb.candidates,
-                                    self.body.exprs[expr].range(),
-                                ));
+                                if !explicit_type_args_errorish {
+                                    self.diagnostics.push(self.ambiguous_call_diag(
+                                        env_ro,
+                                        name.as_str(),
+                                        &amb.candidates,
+                                        self.body.exprs[expr].range(),
+                                    ));
+                                }
                                 if let Some(first) = amb.candidates.first() {
                                     self.call_resolutions[expr.idx()] = Some(first.clone());
                                     apply_arg_targets(self, loader, first);
@@ -6853,11 +6879,13 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                                 }
                             }
                             MethodResolution::NotFound(not_found) => {
-                                self.diagnostics.push(self.unresolved_method_diag(
-                                    env_ro,
-                                    &not_found,
-                                    self.body.exprs[expr].range(),
-                                ));
+                                if !explicit_type_args_errorish {
+                                    self.diagnostics.push(self.unresolved_method_diag(
+                                        env_ro,
+                                        &not_found,
+                                        self.body.exprs[expr].range(),
+                                    ));
+                                }
                                 ExprInfo {
                                     ty: Type::Error,
                                     is_type_ref: false,

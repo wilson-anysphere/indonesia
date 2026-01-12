@@ -491,6 +491,7 @@ pub mod ast {
     pub struct CallExpr {
         pub callee: Box<Expr>,
         pub args: Vec<Expr>,
+        pub explicit_type_args: Vec<TypeRef>,
         pub range: Span,
     }
 
@@ -1374,7 +1375,7 @@ impl Lowerer {
             .non_trivia_span(node)
             .unwrap_or_else(|| self.spans.map_node(node));
         ast::TypeRef {
-            text: self.collect_non_trivia_text(node),
+            text: self.collect_type_ref_text(node),
             range,
         }
     }
@@ -2464,6 +2465,33 @@ impl Lowerer {
             ast::Expr::Missing(self.spans.map_node(node))
         };
 
+        let explicit_type_args = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::TypeArguments)
+            .or_else(|| {
+                callee_node.as_ref().and_then(|callee| {
+                    callee
+                        .children()
+                        .find(|child| child.kind() == SyntaxKind::TypeArguments)
+                })
+            })
+            .map(|type_args| {
+                type_args
+                    .children()
+                    .filter(|child| child.kind() == SyntaxKind::TypeArgument)
+                    .map(|type_arg| {
+                        let range = self
+                            .non_trivia_span(&type_arg)
+                            .unwrap_or_else(|| self.spans.map_node(&type_arg));
+                        ast::TypeRef {
+                            text: self.collect_type_ref_text(&type_arg),
+                            range,
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         if let Some(name_token) = name_token {
             let name_range = self.spans.map_token(&name_token);
             if callee.range().end < name_range.end {
@@ -2490,6 +2518,7 @@ impl Lowerer {
         ast::Expr::Call(ast::CallExpr {
             callee: Box::new(callee),
             args,
+            explicit_type_args,
             range: self.spans.map_node(node),
         })
     }
@@ -2946,6 +2975,40 @@ impl Lowerer {
                 continue;
             }
             out.push_str(tok.text());
+        }
+        out
+    }
+
+    fn collect_type_ref_text(&self, node: &SyntaxNode) -> String {
+        let tokens: Vec<_> = node
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .filter(|tok| tok.kind() != SyntaxKind::Eof)
+            .collect();
+
+        let Some(first) = tokens
+            .iter()
+            .position(|tok| !tok.kind().is_trivia() && tok.kind() != SyntaxKind::Eof)
+        else {
+            return String::new();
+        };
+        let Some(last) = tokens
+            .iter()
+            .rposition(|tok| !tok.kind().is_trivia() && tok.kind() != SyntaxKind::Eof)
+        else {
+            return String::new();
+        };
+
+        let mut out = String::new();
+        for tok in &tokens[first..=last] {
+            match tok.kind() {
+                SyntaxKind::LineComment | SyntaxKind::BlockComment | SyntaxKind::DocComment => {
+                    // Type reference parsing does not understand comment syntax; replace with
+                    // spaces so downstream offsets remain stable.
+                    out.push_str(&" ".repeat(tok.text().len()));
+                }
+                _ => out.push_str(tok.text()),
+            }
         }
         out
     }

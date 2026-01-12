@@ -1272,9 +1272,15 @@ impl<'a> BodyLower<'a> {
                     self.check_cancelled();
                     args.push(self.lower_expr(arg));
                 }
+                let explicit_type_args = call
+                    .explicit_type_args
+                    .iter()
+                    .map(|ty| (ty.text.clone(), ty.range))
+                    .collect();
                 self.alloc_expr(Expr::Call {
                     callee,
                     args,
+                    explicit_type_args,
                     range: call.range,
                 })
             }

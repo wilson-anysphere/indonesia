@@ -217,6 +217,29 @@ class C {
 }
 
 #[test]
+fn explicit_type_args_affect_return_type() {
+    let src = r#"
+import java.util.List;
+class C {
+    void m() {
+        List<String> xs = List.<String>of();
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "unresolved-method"),
+        "expected call to resolve, got {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "type-mismatch"),
+        "expected no type-mismatch diagnostics, got {diags:?}"
+    );
+}
+
+#[test]
 fn invalid_cast_produces_diagnostic() {
     let src = r#"
 class C {
