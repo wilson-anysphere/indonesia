@@ -1,7 +1,8 @@
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Instant;
 
-use nova_core::Name;
+use nova_core::{ClassId, Name, TypeName};
 use nova_modules::{ModuleGraph, ModuleName};
 use nova_project::ProjectConfig;
 use nova_types::Diagnostic;
@@ -28,6 +29,18 @@ pub trait NovaResolve: NovaHir + HasQueryStats + HasPersistence {
     /// Workspace-wide type namespace for a project.
     fn workspace_def_map(&self, project: ProjectId) -> Arc<nova_resolve::WorkspaceDefMap>;
 
+    /// Deterministic, query-derived mapping from workspace (source) type keys to `ClassId`.
+    ///
+    /// The mapping is global across all projects discovered via `all_file_ids()` and
+    /// is stable across query order and memo eviction.
+    fn workspace_class_id_map(&self) -> Arc<WorkspaceClassIdMap>;
+
+    /// Lookup the stable `ClassId` for a workspace (source) type.
+    fn class_id_for_type(&self, project: ProjectId, name: TypeName) -> Option<ClassId>;
+
+    /// Inverse lookup: map a `ClassId` back to its `(ProjectId, TypeName)` key.
+    fn class_key(&self, id: ClassId) -> Option<(ProjectId, TypeName)>;
+
     /// JPMS compilation environment (module graph + module-aware classpath index).
     fn jpms_compilation_env(
         &self,
@@ -53,6 +66,32 @@ pub trait NovaResolve: NovaHir + HasQueryStats + HasPersistence {
         scope: nova_resolve::ScopeId,
         name: Name,
     ) -> nova_resolve::NameResolution;
+}
+
+/// Deterministic mapping between workspace (source) classes and [`ClassId`]s.
+///
+/// IDs are allocated globally across all known projects, in lexicographic order of:
+/// `(project.to_raw(), binary_name)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceClassIdMap {
+    by_key: HashMap<(ProjectId, String), ClassId>,
+    by_id: Vec<(ProjectId, String)>,
+}
+
+impl WorkspaceClassIdMap {
+    #[must_use]
+    pub fn class_id_for_type(&self, project: ProjectId, name: &TypeName) -> Option<ClassId> {
+        self.by_key
+            .get(&(project, name.as_str().to_owned()))
+            .copied()
+    }
+
+    #[must_use]
+    pub fn class_key(&self, id: ClassId) -> Option<(ProjectId, TypeName)> {
+        let idx = id.to_raw() as usize;
+        let (project, name) = self.by_id.get(idx)?;
+        Some((*project, TypeName::new(name.clone())))
+    }
 }
 
 fn scope_graph(db: &dyn NovaResolve, file: FileId) -> Arc<nova_resolve::ItemTreeScopeBuildResult> {
@@ -131,6 +170,57 @@ fn workspace_def_map(
     let result = Arc::new(out);
     db.record_query_stat("workspace_def_map", start.elapsed());
     result
+}
+
+fn workspace_class_id_map(db: &dyn NovaResolve) -> Arc<WorkspaceClassIdMap> {
+    let start = Instant::now();
+
+    #[cfg(feature = "tracing")]
+    let _span = tracing::debug_span!("query", name = "workspace_class_id_map").entered();
+
+    cancel::check_cancelled(db);
+
+    let files = db.all_file_ids();
+    let mut projects = BTreeSet::<ProjectId>::new();
+    for (i, &file) in files.iter().enumerate() {
+        cancel::checkpoint_cancelled_every(db, i as u32, 256);
+        projects.insert(db.file_project(file));
+    }
+
+    let mut keys: Vec<(ProjectId, String)> = Vec::new();
+    for (i, &project) in projects.iter().enumerate() {
+        cancel::checkpoint_cancelled_every(db, i as u32, 32);
+        let workspace = db.workspace_def_map(project);
+        keys.extend(
+            workspace
+                .iter_type_names()
+                .map(|name| (project, name.as_str().to_owned())),
+        );
+    }
+
+    keys.sort_by(|(a_project, a_name), (b_project, b_name)| {
+        a_project
+            .to_raw()
+            .cmp(&b_project.to_raw())
+            .then_with(|| a_name.cmp(b_name))
+    });
+
+    let mut by_key = HashMap::with_capacity(keys.len());
+    for (idx, key) in keys.iter().enumerate() {
+        by_key.insert((key.0, key.1.clone()), ClassId::from_raw(idx as u32));
+    }
+
+    let result = Arc::new(WorkspaceClassIdMap { by_key, by_id: keys });
+    db.record_query_stat("workspace_class_id_map", start.elapsed());
+    result
+}
+
+fn class_id_for_type(db: &dyn NovaResolve, project: ProjectId, name: TypeName) -> Option<ClassId> {
+    db.workspace_class_id_map().class_id_for_type(project, &name)
+}
+
+fn class_key(db: &dyn NovaResolve, id: ClassId) -> Option<(ProjectId, TypeName)> {
+    db.workspace_class_id_map().class_key(id)
 }
 
 fn jpms_compilation_env(

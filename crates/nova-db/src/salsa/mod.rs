@@ -55,7 +55,7 @@ pub use interned_class_key::{InternedClassKey, InternedClassKeyId, NovaInternedC
 pub use item_tree_store::ItemTreeStore;
 pub use inputs::NovaInputs;
 pub use diagnostics::NovaDiagnostics;
-pub use resolve::NovaResolve;
+pub use resolve::{NovaResolve, WorkspaceClassIdMap};
 pub use semantic::NovaSemantic;
 pub use stats::{HasQueryStats, QueryStat, QueryStatReport, QueryStats, QueryStatsReport};
 pub use syntax::{NovaSyntax, SyntaxTree};

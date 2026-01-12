@@ -458,7 +458,7 @@ pub use salsa::{
     catch_cancelled, ArcEq, Database as SalsaDatabase, NovaDatabase, NovaDiagnostics, NovaFlow,
     NovaHir, NovaIde, NovaIndexing, NovaInputs, NovaResolve, NovaSemantic, NovaSyntax, NovaTypeck,
     QueryStat, QueryStatReport, QueryStats, QueryStatsReport, RootDatabase as SalsaRootDatabase,
-    Snapshot, SyntaxTree,
+    Snapshot, SyntaxTree, WorkspaceClassIdMap,
 };
 
 pub use persistence::{
