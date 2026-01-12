@@ -39,7 +39,9 @@ describe('buildIntegrationUtils', () => {
 
     expect(shouldRefreshBuildDiagnosticsOnStatusTransition({ prev: 'building', next: 'building' })).toBe(false);
     expect(shouldRefreshBuildDiagnosticsOnStatusTransition({ prev: 'idle', next: 'idle' })).toBe(false);
-    expect(shouldRefreshBuildDiagnosticsOnStatusTransition({ prev: 'idle', next: 'failed' })).toBe(false);
+    expect(shouldRefreshBuildDiagnosticsOnStatusTransition({ prev: 'idle', next: 'failed' })).toBe(true);
+    expect(shouldRefreshBuildDiagnosticsOnStatusTransition({ prev: 'failed', next: 'idle' })).toBe(true);
+    expect(shouldRefreshBuildDiagnosticsOnStatusTransition({ prev: 'failed', next: 'failed' })).toBe(false);
 
     // Best-effort: if we missed earlier polling state, refresh once when we first see a failure.
     expect(shouldRefreshBuildDiagnosticsOnStatusTransition({ prev: undefined, next: 'failed' })).toBe(true);

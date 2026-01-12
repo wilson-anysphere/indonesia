@@ -39,20 +39,27 @@ export function shouldRefreshBuildDiagnosticsOnStatusTransition(opts: {
     return false;
   }
 
+  if (prev === next) {
+    return false;
+  }
+
   // Build diagnostics can become stale when builds are triggered outside of the explicit
-  // `nova.buildProject` command. Refresh once when we observe the build finishing.
+  // `nova.buildProject` command. Refresh once when we observe the build reaching a terminal
+  // state that could imply new diagnostics.
   //
   // Primary cases:
   // - building -> idle   (build succeeded)
   // - building -> failed (build failed)
   //
-  // Best-effort: also refresh when we see a terminal failed state without having observed
-  // a prior status (e.g. extension started mid-build or missed a status update).
-  if (prev === 'building') {
-    return next === 'idle' || next === 'failed';
+  // Best-effort cases:
+  // - idle -> failed     (build finished between polls)
+  // - failed -> idle     (build finished between polls, clearing old errors)
+  // - undefined -> failed (extension started mid-failure, or status temporarily unavailable)
+  if (next === 'failed') {
+    return prev !== 'failed';
   }
-  if (typeof prev === 'undefined') {
-    return next === 'failed';
+  if (next === 'idle') {
+    return prev === 'building' || prev === 'failed';
   }
   return false;
 }
