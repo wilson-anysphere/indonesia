@@ -7086,6 +7086,74 @@ public class Bar {}"#;
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn manual_watcher_directory_modify_triggers_rescan_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path().join("project");
+        fs::create_dir_all(project_root.join("src")).unwrap();
+        fs::write(
+            project_root.join("src/Main.java"),
+            "class Main {}".as_bytes(),
+        )
+        .unwrap();
+        // Canonicalize to resolve macOS /var -> /private/var symlink, matching Workspace::open behavior.
+        let project_root = project_root.canonicalize().unwrap();
+
+        let workspace = crate::Workspace::open(&project_root).unwrap();
+        let engine = workspace.engine.clone();
+
+        let manual = ManualFileWatcher::new();
+        let handle: ManualFileWatcherHandle = manual.handle();
+        let _watcher = engine
+            .start_watching_with_watcher(Box::new(manual), WatchDebounceConfig::ZERO)
+            .unwrap();
+
+        // Create a new Java file on disk, but only send a directory-level watcher event. Some
+        // watcher backends can surface directory metadata changes rather than per-file events.
+        let new_file = project_root.join("src/Added.java");
+        let new_text = "class Added { int x; }";
+        fs::write(&new_file, new_text.as_bytes()).unwrap();
+
+        let src_dir = project_root.join("src");
+        handle
+            .push(WatchEvent::Changes {
+                changes: vec![FileChange::Modified {
+                    path: VfsPath::local(src_dir),
+                }],
+            })
+            .unwrap();
+
+        let vfs_path = VfsPath::local(new_file);
+        timeout(Duration::from_secs(5), async move {
+            loop {
+                let Some(file_id) = engine.vfs.get_id(&vfs_path) else {
+                    yield_now().await;
+                    continue;
+                };
+
+                let ready = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    engine.query_db.with_snapshot(|snap| {
+                        snap.file_exists(file_id)
+                            && snap.file_content(file_id).as_str() == new_text
+                            && snap.file_rel_path(file_id).as_str() == "src/Added.java"
+                            && snap
+                                .project_files(ProjectId::from_raw(0))
+                                .contains(&file_id)
+                    })
+                }))
+                .unwrap_or(false);
+
+                if ready {
+                    break;
+                }
+
+                yield_now().await;
+            }
+        })
+        .await
+        .expect("timed out waiting for directory-modified-triggered project reload");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn manual_watcher_directory_delete_triggers_rescan_fallback() {
         let dir = tempfile::tempdir().unwrap();
         let project_root = dir.path().join("project");
