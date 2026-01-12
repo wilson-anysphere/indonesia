@@ -18,9 +18,9 @@ describe('getNovaConfigChangeEffects', () => {
     expect(effects.shouldClearAiCompletionCache).toBe(true);
   });
 
-  it('prompts for language server restart when nova.aiCompletions.maxItems changes', () => {
+  it('does not prompt for language server restart when nova.aiCompletions.maxItems changes (client-only)', () => {
     const effects = getNovaConfigChangeEffects(eventFor(['nova.aiCompletions.maxItems']));
-    expect(effects.shouldPromptRestartLanguageServer).toBe(true);
+    expect(effects.shouldPromptRestartLanguageServer).toBe(false);
     expect(effects.shouldClearAiCompletionCache).toBe(true);
   });
 
@@ -30,4 +30,3 @@ describe('getNovaConfigChangeEffects', () => {
     expect(effects.shouldPromptRestartLanguageServer).toBe(false);
   });
 });
-
