@@ -1024,6 +1024,11 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
 fn run_lsp_launcher(args: &LspLauncherArgs, config_path: Option<&Path>) -> Result<i32> {
     use std::process::{Command, Stdio};
 
+    fn passthrough_has_flag(args: &[String], flag: &str) -> bool {
+        args.iter()
+            .any(|arg| arg == flag || arg.starts_with(&format!("{flag}=")))
+    }
+
     let program = args
         .nova_lsp
         .as_deref()
@@ -1049,7 +1054,7 @@ fn run_lsp_launcher(args: &LspLauncherArgs, config_path: Option<&Path>) -> Resul
     // Forward the CLI's global `--config <path>` to `nova-lsp` unless the user is already
     // explicitly passing `--config` in the passthrough args.
     if let Some(config_path) = config_path {
-        if !args.args.iter().any(|arg| arg == "--config") {
+        if !passthrough_has_flag(&args.args, "--config") {
             cmd.arg("--config").arg(config_path);
         }
     }
@@ -1075,6 +1080,11 @@ fn run_lsp_launcher(args: &LspLauncherArgs, config_path: Option<&Path>) -> Resul
 fn run_dap_launcher(args: &DapLauncherArgs, config_path: Option<&Path>) -> Result<i32> {
     use std::process::{Command, Stdio};
 
+    fn passthrough_has_flag(args: &[String], flag: &str) -> bool {
+        args.iter()
+            .any(|arg| arg == flag || arg.starts_with(&format!("{flag}=")))
+    }
+
     let program = args
         .nova_dap
         .as_deref()
@@ -1091,7 +1101,7 @@ fn run_dap_launcher(args: &DapLauncherArgs, config_path: Option<&Path>) -> Resul
         .stderr(Stdio::inherit());
 
     if let Some(config_path) = config_path {
-        if !args.args.iter().any(|arg| arg == "--config") {
+        if !passthrough_has_flag(&args.args, "--config") {
             cmd.arg("--config").arg(config_path);
         }
     }

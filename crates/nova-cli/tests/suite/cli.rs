@@ -210,6 +210,37 @@ fn lsp_forwards_global_config_to_child() {
 }
 
 #[test]
+fn lsp_passthrough_config_equals_overrides_global_config() {
+    let temp = TempDir::new().expect("tempdir");
+    let global_config = temp.child("global.toml");
+    global_config.write_str("").expect("write global config");
+    let child_config = temp.child("child.toml");
+    child_config.write_str("").expect("write child config");
+
+    let nova_lsp = lsp_test_server();
+
+    // Child config is provided using `--config=<path>` so this test ensures the
+    // launcher detects both `--config <path>` and `--config=<path>` forms.
+    let output = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
+        .arg("--config")
+        .arg(global_config.path())
+        .arg("lsp")
+        .arg("--nova-lsp")
+        .arg(&nova_lsp)
+        .arg("--")
+        .arg(format!("--config={}", child_config.path().display()))
+        .arg("--version")
+        .env("NOVA_CLI_TEST_EXPECT_CONFIG", child_config.path())
+        .output()
+        .expect("run nova lsp --config ... lsp -- --config=... --version");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn lsp_stdio_initialize_shutdown_exit_passthrough() {
     let _guard = STDIO_SERVER_LOCK
         .lock()
@@ -355,6 +386,35 @@ fn dap_version_passthrough_matches_nova_dap() {
     assert_eq!(
         direct.stdout, via_nova_path.stdout,
         "expected identical stdout for `nova-dap --version` and `nova dap --path ... --version`"
+    );
+}
+
+#[test]
+fn dap_passthrough_config_equals_overrides_global_config() {
+    let temp = TempDir::new().expect("tempdir");
+    let global_config = temp.child("global.toml");
+    global_config.write_str("").expect("write global config");
+    let child_config = temp.child("child.toml");
+    child_config.write_str("").expect("write child config");
+
+    let stub = lsp_test_server();
+
+    let output = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
+        .arg("--config")
+        .arg(global_config.path())
+        .arg("dap")
+        .arg("--nova-dap")
+        .arg(&stub)
+        .arg("--")
+        .arg(format!("--config={}", child_config.path().display()))
+        .arg("--version")
+        .env("NOVA_CLI_TEST_EXPECT_CONFIG", child_config.path())
+        .output()
+        .expect("run nova dap --config ... dap -- --config=... --version");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
