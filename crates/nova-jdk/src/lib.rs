@@ -33,6 +33,46 @@ pub use index::IndexingStats;
 pub use index::JdkIndexError;
 pub use stub::{JdkClassStub, JdkFieldStub, JdkMethodStub};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JdkIndexBacking {
+    Builtin,
+    Jmods,
+    CtSym,
+    BootJars,
+}
+
+impl Default for JdkIndexBacking {
+    fn default() -> Self {
+        Self::Builtin
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct JdkIndexInfo {
+    /// JDK installation root directory, if known.
+    ///
+    /// For [`JdkIndexBacking::Builtin`] this is an empty [`PathBuf`].
+    pub root: PathBuf,
+    pub backing: JdkIndexBacking,
+    pub api_release: Option<u16>,
+    pub src_zip: Option<PathBuf>,
+}
+
+impl Default for JdkIndexInfo {
+    fn default() -> Self {
+        Self {
+            root: PathBuf::new(),
+            backing: JdkIndexBacking::Builtin,
+            api_release: None,
+            src_zip: None,
+        }
+    }
+}
+
+fn canonicalize_best_effort(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
 impl From<&JdkFieldStub> for FieldStub {
     fn from(value: &JdkFieldStub) -> Self {
         FieldStub {
@@ -85,7 +125,9 @@ pub struct JdkIndex {
     packages: HashSet<String>,
     static_members: HashMap<String, HashMap<String, StaticMemberId>>,
 
-    // Optional richer symbol index backed by JMOD ingestion.
+    info: JdkIndexInfo,
+
+    // Optional richer symbol index backed by platform containers.
     symbols: Option<index::JdkSymbolIndex>,
 }
 
@@ -190,6 +232,14 @@ impl JdkIndex {
         stats: Option<&IndexingStats>,
     ) -> Result<Self, JdkIndexError> {
         Self::discover_with_cache_and_stats_policy(config, cache_dir, cache_dir.is_some(), stats)
+    }
+
+    pub fn info(&self) -> &JdkIndexInfo {
+        &self.info
+    }
+
+    pub fn src_zip(&self) -> Option<&Path> {
+        self.info.src_zip.as_deref()
     }
 
     /// Lookup a parsed class stub by binary name (`java.lang.String`), internal
@@ -312,8 +362,22 @@ impl JdkIndex {
         stats: Option<&IndexingStats>,
     ) -> Result<Self, JdkIndexError> {
         let mut this = Self::new();
+        let root = root.as_ref().to_path_buf();
+        let install = JdkInstallation::from_root(&root)?;
+        let root = canonicalize_best_effort(install.root());
+        this.info = JdkIndexInfo {
+            root: root.clone(),
+            backing: if install.jmods_dir().is_some() {
+                JdkIndexBacking::Jmods
+            } else {
+                JdkIndexBacking::BootJars
+            },
+            api_release: None,
+            src_zip: discovery::src_zip_from_root(&root),
+        };
+
         this.symbols = Some(index::JdkSymbolIndex::from_jdk_root_with_cache(
-            root,
+            install.root(),
             cache_dir,
             allow_write,
             stats,
@@ -328,8 +392,21 @@ impl JdkIndex {
         stats: Option<&IndexingStats>,
     ) -> Result<Self, JdkIndexError> {
         let mut this = Self::new();
-        this.symbols = Some(index::JdkSymbolIndex::discover_with_cache(
-            config,
+        let install = JdkInstallation::discover(config)?;
+        let root = canonicalize_best_effort(install.root());
+        this.info = JdkIndexInfo {
+            root: root.clone(),
+            backing: if install.jmods_dir().is_some() {
+                JdkIndexBacking::Jmods
+            } else {
+                JdkIndexBacking::BootJars
+            },
+            api_release: None,
+            src_zip: discovery::src_zip_from_root(&root),
+        };
+
+        this.symbols = Some(index::JdkSymbolIndex::from_jdk_root_with_cache(
+            install.root(),
             cache_dir,
             allow_write,
             stats,

@@ -6,7 +6,10 @@ use std::time::Duration;
 
 use nova_classfile::ClassFile;
 use nova_core::{JdkConfig, Name, StaticMemberId, TypeIndex, TypeName};
-use nova_jdk::{internal_name_to_source_entry_path, IndexingStats, JdkIndex, JdkInstallation};
+use nova_jdk::{
+    internal_name_to_source_entry_path, IndexingStats, JdkIndex, JdkIndexBacking,
+    JdkInstallation,
+};
 use nova_modules::ModuleName;
 use nova_types::TypeProvider;
 use tempfile::tempdir;
@@ -86,7 +89,15 @@ impl Drop for EnvVarGuard {
 
 #[test]
 fn loads_java_lang_string_from_test_jmod() -> Result<(), Box<dyn std::error::Error>> {
-    let index = JdkIndex::from_jdk_root(fake_jdk_root())?;
+    let root = fake_jdk_root();
+    let index = JdkIndex::from_jdk_root(&root)?;
+
+    assert_eq!(index.info().backing, JdkIndexBacking::Jmods);
+    assert_eq!(
+        index.info().root,
+        std::fs::canonicalize(&root).unwrap_or(root.clone())
+    );
+    assert!(index.src_zip().is_none());
 
     let java_base = ModuleName::new("java.base");
     let graph = index
@@ -486,11 +497,19 @@ fn src_zip_is_discovered_in_common_jdk_layouts() -> Result<(), Box<dyn std::erro
     std::fs::write(&lib_src, "")?;
 
     let install = JdkInstallation::from_root(root)?;
-    assert_eq!(install.src_zip(), Some(lib_src));
+    assert_eq!(install.src_zip(), Some(lib_src.clone()));
+
+    let index = JdkIndex::from_jdk_root(root)?;
+    let expected_lib_src = std::fs::canonicalize(&lib_src).unwrap_or(lib_src.clone());
+    assert_eq!(index.src_zip(), Some(expected_lib_src.as_path()));
 
     let root_src = root.join("src.zip");
     std::fs::write(&root_src, "")?;
-    assert_eq!(install.src_zip(), Some(root_src));
+    assert_eq!(install.src_zip(), Some(root_src.clone()));
+
+    let index = JdkIndex::from_jdk_root(root)?;
+    let expected_root_src = std::fs::canonicalize(&root_src).unwrap_or(root_src.clone());
+    assert_eq!(index.src_zip(), Some(expected_root_src.as_path()));
 
     Ok(())
 }
