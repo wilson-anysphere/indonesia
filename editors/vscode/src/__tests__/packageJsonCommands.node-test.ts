@@ -148,3 +148,35 @@ test('package.json contributes Nova Frameworks viewsWelcome empty-state guidance
   });
   assert.ok(hasUnsupportedHint);
 });
+
+test('package.json does not contain duplicate command or activation entries', async () => {
+  const pkgPath = path.resolve(__dirname, '../../package.json');
+  const raw = await fs.readFile(pkgPath, 'utf8');
+  const pkg = JSON.parse(raw) as {
+    activationEvents?: unknown;
+    contributes?: { commands?: unknown };
+  };
+
+  const activationEvents = Array.isArray(pkg.activationEvents)
+    ? pkg.activationEvents.filter((entry): entry is string => typeof entry === 'string')
+    : [];
+
+  const activationSet = new Set(activationEvents);
+  assert.equal(
+    activationEvents.length,
+    activationSet.size,
+    `duplicate activationEvents: ${activationEvents.filter((e, i) => activationEvents.indexOf(e) !== i).join(', ')}`,
+  );
+
+  const commands = Array.isArray(pkg.contributes?.commands) ? pkg.contributes.commands : [];
+  const commandIds = commands
+    .map((entry) => (entry && typeof entry === 'object' ? (entry as { command?: unknown }).command : undefined))
+    .filter((id): id is string => typeof id === 'string');
+
+  const commandSet = new Set(commandIds);
+  assert.equal(
+    commandIds.length,
+    commandSet.size,
+    `duplicate contributes.commands entries: ${commandIds.filter((e, i) => commandIds.indexOf(e) !== i).join(', ')}`,
+  );
+});

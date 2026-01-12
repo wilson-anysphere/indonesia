@@ -684,7 +684,9 @@ async function openJsonDocument(name: string, payload: unknown): Promise<void> {
 
   const text = JSON.stringify(payload, null, 2);
   await editor.edit((builder) => {
-    builder.insert(new vscode.Position(0, 0), text);
+    // Replace full document content (the untitled document may already be open from a prior run).
+    const end = doc.positionAt(doc.getText().length);
+    builder.replace(new vscode.Range(new vscode.Position(0, 0), end), text);
   });
 }
 
