@@ -75,6 +75,13 @@ pub fn collect_gradle_build_files(root: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(out)
 }
 
+fn is_gradle_marker_root(root: &Path) -> bool {
+    root.join("settings.gradle").is_file()
+        || root.join("settings.gradle.kts").is_file()
+        || root.join("build.gradle").is_file()
+        || root.join("build.gradle.kts").is_file()
+}
+
 fn included_build_roots_from_settings(workspace_root: &Path) -> io::Result<Vec<PathBuf>> {
     let settings_path = ["settings.gradle.kts", "settings.gradle"]
         .into_iter()
@@ -90,7 +97,7 @@ fn included_build_roots_from_settings(workspace_root: &Path) -> io::Result<Vec<P
     let mut roots: Vec<PathBuf> = include_builds
         .into_iter()
         .map(|dir_rel| workspace_root.join(dir_rel))
-        .filter(|p| p.is_dir())
+        .filter(|p| p.is_dir() && is_gradle_marker_root(p))
         .collect();
     roots.sort();
     roots.dedup();
@@ -746,6 +753,34 @@ mod tests {
     }
 
     #[test]
+    fn collect_gradle_build_files_skips_include_build_roots_without_gradle_markers() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let included = dir.path().join("included");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(included.join("scripts")).unwrap();
+
+        write_file(
+            &root.join("settings.gradle"),
+            b"includeBuild(\"../included\")\n",
+        );
+
+        // Included build dir exists, but is missing `settings.gradle(.kts)` and `build.gradle(.kts)`.
+        // Ensure we don't fingerprint arbitrary `.gradle` files under it.
+        write_file(
+            &included.join("scripts/plugin.gradle"),
+            b"// script plugin\n",
+        );
+
+        let files = collect_gradle_build_files(&root).unwrap();
+        let unexpected = root.join("../included/scripts/plugin.gradle");
+        assert!(
+            !files.contains(&unexpected),
+            "did not expect non-build includeBuild root to contribute files; got: {files:?}"
+        );
+    }
+
+    #[test]
     fn collect_gradle_build_files_parses_include_build_with_triple_double_quotes() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("root");
@@ -811,11 +846,9 @@ mod tests {
         // some codepaths canonicalize paths and others don't).
         let fp_real =
             BuildFileFingerprint::from_files(&link_root, vec![file]).expect("fingerprint");
-        let fp_link = BuildFileFingerprint::from_files(
-            &link_root,
-            vec![link_root.join("build.gradle")],
-        )
-        .expect("fingerprint");
+        let fp_link =
+            BuildFileFingerprint::from_files(&link_root, vec![link_root.join("build.gradle")])
+                .expect("fingerprint");
 
         assert_eq!(fp_real, fp_link);
     }
