@@ -439,12 +439,14 @@ framework-introspection endpoints. The canonical method list + JSON schemas are 
 [`protocol-extensions.md`](protocol-extensions.md); clients should treat JSON-RPC `-32601 Method not found`
 as capability gating (older servers) and degrade gracefully.
 
-The real VS Code UX in this repo is a tree view that:
+The real VS Code UX in this repo is an Explorer tree view (`novaFrameworks`, labeled “Frameworks”) that:
 
-- groups items by “kind” (e.g., Web Endpoints, Micronaut Endpoints, Micronaut Beans)
-- lets you click an endpoint/bean to jump to the source file (best-effort)
-- exposes context menu actions (copy endpoint path, copy method+path, copy bean id/type, reveal in explorer)
-  keyed off `TreeItem.contextValue` (`novaFrameworkEndpoint` / `novaFrameworkBean`)
+- shows a flat list of discovered **web endpoints** (via `nova/web/endpoints`)
+- lets you click an endpoint to jump to the source file (best-effort)
+- exposes context menu actions (copy endpoint path, copy method+path, reveal in explorer). These are keyed off
+  `TreeItem.contextValue` (e.g., `novaFrameworkEndpoint` for endpoints; `novaFrameworkBean` is reserved for bean nodes).
+- can be extended to show framework-specific items like Micronaut endpoints/beans when the corresponding `nova/*`
+  methods are available.
 
 Payload notes (see `protocol-extensions.md` for full schemas):
 
@@ -578,8 +580,14 @@ class FrameworkDashboardTreeDataProvider implements vscode.TreeDataProvider<Fram
     try {
       return await this.client.sendRequest(method, params);
     } catch (err: any) {
-      // JSON-RPC method not found
+      // JSON-RPC method not found / capability gating.
+      //
+      // Note: some Nova server builds report unknown custom methods as `-32602` with an
+      // "unknown (stateless) method" message (because everything is routed through one dispatcher).
+      const message = typeof err?.message === 'string' ? err.message.toLowerCase() : '';
       if (err?.code === -32601) return undefined;
+      if (err?.code === -32602 && message.includes('unknown (stateless) method')) return undefined;
+      if (message.includes('method not found')) return undefined;
       throw err;
     }
   }
