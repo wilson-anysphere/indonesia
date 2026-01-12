@@ -12,6 +12,7 @@ mod dap_java_launch;
 mod dap_launch;
 mod dap_session;
 mod debugger_ux;
+mod enable_method_return_values;
 mod exception_breakpoints;
 mod jdwp_client;
 mod logpoints_hitcounts;
@@ -22,4 +23,3 @@ mod stream_debug;
 mod wire_breakpoint_mapping;
 mod wire_format;
 mod wire_variables_preview;
-

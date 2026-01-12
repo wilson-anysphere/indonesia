@@ -1,6 +1,4 @@
-mod harness;
-
-use harness::spawn_wire_server;
+use crate::harness::spawn_wire_server;
 use nova_jdwp::wire::mock::MockJdwpServer;
 use serde_json::json;
 
@@ -25,4 +23,3 @@ async fn dap_enable_method_return_values_succeeds_when_supported() {
     client.disconnect().await;
     server_task.await.unwrap().unwrap();
 }
-
