@@ -638,7 +638,13 @@ impl FrameworkWorkspaceCache {
 
             let text = db.file_content(file_id);
             match kind {
-                SpringWorkspaceFileKind::Java => index.add_java_file(path, text),
+                SpringWorkspaceFileKind::Java => {
+                    // Avoid scanning every Java file in the workspace; only files that might
+                    // contain Spring config usages can contribute anything to the index.
+                    if text.contains("@Value") || text.contains("@ConfigurationProperties") {
+                        index.add_java_file(path, text);
+                    }
+                }
                 SpringWorkspaceFileKind::Config => index.add_config_file(path, text),
             }
         }
