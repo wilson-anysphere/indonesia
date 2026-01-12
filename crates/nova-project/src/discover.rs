@@ -520,8 +520,18 @@ fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
         BuildSystem::Bazel => {
             matches!(
                 name,
-                "WORKSPACE" | "WORKSPACE.bazel" | "MODULE.bazel" | "BUILD" | "BUILD.bazel"
-            ) || path.extension().is_some_and(|ext| ext == "bzl")
+                "WORKSPACE"
+                    | "WORKSPACE.bazel"
+                    | "MODULE.bazel"
+                    | "MODULE.bazel.lock"
+                    | "BUILD"
+                    | "BUILD.bazel"
+                    | ".bazelrc"
+                    | ".bazelversion"
+                    | "bazelisk.rc"
+                    | ".bazelignore"
+            ) || name.starts_with(".bazelrc.")
+                || path.extension().is_some_and(|ext| ext == "bzl")
         }
         BuildSystem::Simple => {
             // Simple projects can "upgrade" to another build system as soon as a marker file
