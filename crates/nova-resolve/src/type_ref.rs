@@ -871,11 +871,41 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         // Type-use annotation names can appear anywhere inside a type reference (`@A String`,
         // `Outer.@A Inner`, `String @A []`, ...). Nova does not model these in `nova_types::Type`,
         // so type refs should parse/resolve as if the annotation were absent.
-        // Type-use annotations are ignored by Nova's current type model and should not introduce
-        // `unresolved-type` diagnostics (they are frequently incomplete while editing and would be
-        // noisy). This matches the rest of the type ref parser, which is designed to be resilient
-        // in the presence of arbitrary annotation syntax.
-        let _ = name_range;
+        //
+        // However, if the caller provides a reliable `base_span` (i.e. its length matches the
+        // `TypeRef.text` string length), we can still emit best-effort diagnostics for the
+        // annotation type name. This is useful for signature diagnostics and IDE tooling.
+        //
+        // `TypeRef.text` is often whitespace-stripped by the syntax layer; in that case, callers
+        // may pass a `base_span` derived from the original source whose length does not match the
+        // stripped text. Skip diagnostics in that case to avoid mis-anchored spans.
+        let Some(base_span) = self.base_span else {
+            return;
+        };
+        if base_span.len() != self.text.len() {
+            return;
+        }
+        if name_range.is_empty() {
+            return;
+        }
+        let text = self.text.get(name_range.clone()).unwrap_or("");
+        if text.is_empty() {
+            return;
+        }
+
+        let segments: Vec<String> = text
+            .split('.')
+            .filter(|seg| !seg.is_empty())
+            .map(|seg| seg.to_string())
+            .collect();
+        if segments.is_empty() {
+            return;
+        }
+
+        // Feed the name through the normal type resolution logic so we get consistent
+        // `ambiguous-type` / `unresolved-type` diagnostics and JPMS-aware name resolution.
+        let per_segment_args = vec![Vec::new(); segments.len()];
+        let _ = self.resolve_named_type(segments, per_segment_args, name_range);
     }
 
     fn find_best_annotation_name_end(
