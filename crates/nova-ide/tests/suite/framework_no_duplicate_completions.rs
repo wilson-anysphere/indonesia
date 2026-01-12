@@ -6,24 +6,7 @@ use tempfile::TempDir;
 
 use crate::framework_harness::{ide_with_default_registry, CARET};
 
-#[test]
-fn framework_completions_not_duplicated_when_build_metadata_is_available() {
-    let tmp = TempDir::new().expect("tempdir");
-    let root = tmp.path().join("project");
-
-    // Maven build metadata marker.
-    std::fs::create_dir_all(&root).expect("mkdir root");
-    std::fs::write(
-        root.join("pom.xml"),
-        r#"<project>
-  <modelVersion>4.0.0</modelVersion>
-  <groupId>com.example</groupId>
-  <artifactId>demo</artifactId>
-  <version>1.0.0</version>
-</project>"#,
-    )
-    .expect("write pom.xml");
-
+fn assert_mapstruct_seat_count_completion_not_duplicated(root: &std::path::Path) {
     let pkg_dir = root.join("src/main/java/com/example");
     std::fs::create_dir_all(&pkg_dir).expect("mkdir java package dir");
 
@@ -62,7 +45,8 @@ public interface CarMapper {
     let mapper_text = mapper_text_with_caret.replace(CARET, "");
 
     // Write the mapper to disk so the legacy framework-cache completion path would be able to
-    // compute completions if it ran (this test asserts it does *not* run in Maven workspaces).
+    // compute completions if it ran (this test asserts it does *not* run in build-metadata
+    // workspaces).
     std::fs::write(&mapper_path, &mapper_text).expect("write CarMapper.java");
 
     // Load all relevant files into the in-memory DB so the AnalyzerRegistry-backed MapStruct
@@ -88,4 +72,38 @@ public interface CarMapper {
         count, 1,
         "expected exactly one seatCount completion item; got {items:#?}"
     );
+}
+
+#[test]
+fn framework_completions_not_duplicated_when_build_metadata_is_available() {
+    let tmp = TempDir::new().expect("tempdir");
+    let root = tmp.path().join("project");
+
+    // Maven build metadata marker.
+    std::fs::create_dir_all(&root).expect("mkdir root");
+    std::fs::write(
+        root.join("pom.xml"),
+        r#"<project>
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>demo</artifactId>
+  <version>1.0.0</version>
+</project>"#,
+    )
+    .expect("write pom.xml");
+
+    assert_mapstruct_seat_count_completion_not_duplicated(&root);
+}
+
+#[test]
+fn framework_completions_not_duplicated_when_gradle_build_metadata_is_available() {
+    let tmp = TempDir::new().expect("tempdir");
+    let root = tmp.path().join("project");
+
+    // Gradle build metadata marker.
+    std::fs::create_dir_all(&root).expect("mkdir root");
+    std::fs::write(root.join("build.gradle"), "plugins { id 'java' }\n")
+        .expect("write build.gradle");
+
+    assert_mapstruct_seat_count_completion_not_duplicated(&root);
 }
