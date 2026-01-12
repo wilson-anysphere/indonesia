@@ -605,7 +605,15 @@ async fn run_javac_attempt(
     let stderr = stderr_task.await.unwrap_or_default();
 
     if !status.success() {
-        let message = format_javac_failure(&stdout, &stderr);
+        let diagnostics = crate::javac::format_javac_failure(&stdout, &stderr);
+        let message = if diagnostics.trim().is_empty() {
+            format!(
+                "stream debug helper compilation failed\nGenerated source: {}\n\njavac exited with {status} but produced no diagnostics",
+                src_path.display()
+            )
+        } else {
+            format_stream_debug_helper_compile_failure(src_path, &diagnostics)
+        };
         return Err(WireStreamDebugError::Compile(message));
     }
 
@@ -621,27 +629,63 @@ fn stream_debug_temp_dir() -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
-fn format_javac_failure(stdout: &[u8], stderr: &[u8]) -> String {
-    let mut combined = String::new();
-    if !stdout.is_empty() {
-        combined.push_str(&String::from_utf8_lossy(stdout));
+fn format_stream_debug_helper_compile_failure(source_path: &Path, diagnostics: &str) -> String {
+    let mut out = String::new();
+    out.push_str("stream debug helper compilation failed\n");
+    out.push_str(&format!("Generated source: {}\n\n", source_path.display()));
+    out.push_str("Javac diagnostics:\n");
+    out.push_str(diagnostics);
+
+    for hint in stream_debug_compile_hints(diagnostics) {
+        out.push_str("\n\nHint: ");
+        out.push_str(&hint);
     }
-    if !stderr.is_empty() {
-        if !combined.is_empty() {
-            combined.push('\n');
-        }
-        combined.push_str(&String::from_utf8_lossy(stderr));
-    }
-    truncate_message(combined.trim().to_string(), 8 * 1024)
+
+    out
 }
 
-fn truncate_message(mut message: String, max_len: usize) -> String {
-    if message.len() <= max_len {
-        return message;
+fn stream_debug_compile_hints(javac_output: &str) -> Vec<String> {
+    let lower = javac_output.to_lowercase();
+    let mut hints = Vec::new();
+
+    // Missing Collectors import / symbol.
+    if javac_output.contains("Collectors") && lower.contains("cannot find symbol") {
+        hints.push(
+            "`Collectors` was not found. Try using the fully-qualified name \
+`java.util.stream.Collectors` (e.g. `java.util.stream.Collectors.toList()`), or ensure the adapter \
+can locate your source file so it can copy your project's imports."
+                .to_string(),
+        );
     }
-    message.truncate(max_len);
-    message.push_str("…");
-    message
+
+    // Private access failures (injected helper class is not an inner class).
+    if lower.contains("has private access")
+        || lower.contains("private access")
+        || lower.contains("cannot access private")
+    {
+        hints.push(
+            "The stream debugger compiles an injected helper class. It can only access public / \
+protected / package-private members; private members are not accessible from the helper. Consider \
+using a public accessor or rewriting the expression."
+                .to_string(),
+        );
+    }
+
+    // Type inference / raw types / lambda inference failures.
+    if lower.contains("cannot infer type")
+        || lower.contains("cannot infer type arguments")
+        || lower.contains("inference variable")
+        || lower.contains("bad return type in lambda expression")
+    {
+        hints.push(
+            "Java type inference can fail in the injected helper context (especially with raw or \
+erased generic types). Try adding explicit casts or types, e.g. \
+`((java.util.List<Foo>) list).stream()` or assigning the stream to a typed local variable."
+                .to_string(),
+        );
+    }
+
+    hints
 }
 
 #[cfg(test)]
@@ -651,6 +695,41 @@ mod tests {
     use std::time::Duration;
 
     use nova_jdwp::wire::mock::{DelayedReply, MockJdwpServer, MockJdwpServerConfig};
+
+    #[test]
+    fn stream_debug_compile_failure_formats_javac_diagnostics_with_context_and_hints() {
+        let raw_javac_stderr = concat!(
+            "/tmp/NovaStreamDebugHelper.java:10: error: cannot find symbol\n",
+            "        return list.stream().collect(Collectors.toList());\n",
+            "                                    ^\n",
+            "  symbol:   variable Collectors\n",
+            "  location: class NovaStreamDebugHelper\n",
+            "1 error\n",
+        );
+
+        let diagnostics = crate::javac::format_javac_failure(&[], raw_javac_stderr.as_bytes());
+        let message = format_stream_debug_helper_compile_failure(
+            Path::new("/tmp/NovaStreamDebugHelper.java"),
+            &diagnostics,
+        );
+
+        assert!(
+            message.contains("stream debug helper compilation failed"),
+            "missing context header:\n{message}"
+        );
+        assert!(
+            message.contains("Generated source: /tmp/NovaStreamDebugHelper.java"),
+            "missing source path:\n{message}"
+        );
+        assert!(
+            message.contains("/tmp/NovaStreamDebugHelper.java:10:"),
+            "expected formatted javac location:\n{message}"
+        );
+        assert!(
+            message.contains("java.util.stream.Collectors"),
+            "expected Collectors hint:\n{message}"
+        );
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn sample_stream_inspection_temporarily_pins_object_ids() {
