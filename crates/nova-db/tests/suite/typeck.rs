@@ -728,6 +728,23 @@ class C { void m(){ int[][] a = new int[1][2]; } }
 }
 
 #[test]
+fn array_creation_with_extra_dims_has_array_type() {
+    let src = r#"
+class C { void m(){ int[][] a = new int[1][]; } }
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("new int[1][]")
+        .expect("snippet should contain array creation")
+        + "new ".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "int[][]");
+}
+
+#[test]
 fn array_creation_dimension_type_must_be_integral() {
     let src = r#"
 class C { void m(){ int[] a = new int[1.0]; } }
