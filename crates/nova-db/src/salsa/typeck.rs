@@ -3709,8 +3709,29 @@ impl<'a, 'idx> BodyChecker<'a, 'idx> {
                 is_type_ref: false,
             },
             Resolution::Field(field) => {
-                let field_def = self.tree.field(field);
-                let is_static = field_def.modifiers.raw & Modifiers::STATIC != 0;
+                let tree = self.db.hir_item_tree(field.file);
+                let field_def = tree.field(field);
+
+                // Enum constants are implicitly `static final`, and interface fields are implicitly
+                // `public static final`. Model both here so static-context diagnostics don't fire
+                // for valid references like `A` inside an enum's static method.
+                let mut is_static = field_def.kind == FieldKind::EnumConstant
+                    || field_def.modifiers.raw & Modifiers::STATIC != 0;
+                if !is_static {
+                    if let Some(owner) = self.field_owners.get(&field).cloned() {
+                        let id = loader
+                            .store
+                            .lookup_class(&owner)
+                            .or_else(|| self.ensure_workspace_class(loader, &owner))
+                            .or_else(|| loader.ensure_class(&owner));
+                        if let Some(id) = id {
+                            is_static = loader
+                                .store
+                                .class(id)
+                                .is_some_and(|def| def.kind == ClassKind::Interface);
+                        }
+                    }
+                }
                 if self.is_static_context() && !is_static {
                     self.diagnostics.push(Diagnostic::error(
                         "static-context",

@@ -1015,6 +1015,44 @@ class C {
 }
 
 #[test]
+fn enum_constants_are_static_fields_unqualified() {
+    let src = r#"
+enum E {
+    A;
+    static E m() {
+        return A;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "static-context"),
+        "expected unqualified enum constant reference in a static context to be allowed; got {diags:?}"
+    );
+}
+
+#[test]
+fn interface_fields_are_static_fields_unqualified() {
+    let src = r#"
+interface I {
+    int X = 1;
+    static int m() {
+        return X;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().all(|d| d.code.as_ref() != "static-context"),
+        "expected unqualified interface field reference in a static context to be allowed; got {diags:?}"
+    );
+}
+
+#[test]
 fn foreach_var_infers_element_type_for_array() {
     let src = r#"
 class C {
