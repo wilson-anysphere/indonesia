@@ -4688,13 +4688,21 @@ fn glb_all(env: &dyn TypeEnv, tys: &[Type], object: &Type) -> Type {
 }
 
 fn lub_all(env: &dyn TypeEnv, tys: &[Type], object: &Type) -> Type {
-    let mut it = tys.iter();
-    let Some(first) = it.next() else {
+    if tys.is_empty() {
         return object.clone();
-    };
-    let mut acc = first.clone();
+    }
+
+    // Sort first for determinism. (Our best-effort `lub` is intended to be commutative, and
+    // callers generally treat bound ordering as semantically irrelevant.)
+    let mut sorted = tys.to_vec();
+    sorted.sort_by_cached_key(|t| type_sort_key(env, t));
+
+    let mut it = sorted.into_iter();
+    let first = it.next().unwrap_or_else(|| object.clone());
+    // Normalize any pre-existing intersection even when there is only a single lower bound.
+    let mut acc = make_intersection(env, vec![first]);
     for t in it {
-        acc = lub(env, &acc, t);
+        acc = lub(env, &acc, &t);
     }
     acc
 }
