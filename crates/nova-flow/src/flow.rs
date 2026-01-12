@@ -125,6 +125,21 @@ fn unreachable_diagnostics(
     reachable: &[bool],
     check_cancelled: &mut dyn FnMut(),
 ) -> Vec<Diagnostic> {
+    // A statement can appear in multiple blocks (e.g. best-effort CFG lowering for `try/finally`
+    // clones the `finally` block). Avoid reporting a statement as unreachable if it appears in
+    // *any* reachable basic block.
+    let mut reachable_stmts: HashSet<StmtId> = HashSet::new();
+    for (idx, bb) in cfg.blocks.iter().enumerate() {
+        check_cancelled();
+        if !reachable[idx] {
+            continue;
+        }
+        reachable_stmts.extend(bb.stmts.iter().copied());
+        if let Some(stmt) = bb.terminator.from_stmt() {
+            reachable_stmts.insert(stmt);
+        }
+    }
+
     let mut diags = Vec::new();
     for (idx, bb) in cfg.blocks.iter().enumerate() {
         check_cancelled();
@@ -138,6 +153,10 @@ fn unreachable_diagnostics(
             .copied()
             .or_else(|| bb.terminator.from_stmt());
         let Some(stmt) = stmt else { continue };
+
+        if reachable_stmts.contains(&stmt) {
+            continue;
+        }
 
         let span = Some(body.stmt(stmt).span);
         diags.push(diagnostic(
@@ -155,6 +174,20 @@ fn unreachable_diagnostics(
 struct BreakContext {
     break_target: BlockId,
     continue_target: Option<BlockId>,
+}
+
+#[derive(Debug, Clone)]
+struct FinallyContext {
+    finally_bb: BlockId,
+    /// Block index threshold used to approximate whether a `break`/`continue` target is inside
+    /// this `try` statement.
+    ///
+    /// Any block created before this `try` statement was lowered will have an index less than
+    /// `scope_start`, so jumps to such blocks are treated as leaving the `try` (and therefore
+    /// must run the `finally` block). Jumps to blocks created afterwards are treated as staying
+    /// within the `try` body (e.g. breaking out of a loop that is inside the `try`).
+    scope_start: usize,
+    targets: Vec<BlockId>,
 }
 
 #[must_use]
@@ -175,15 +208,22 @@ struct HirCfgBuilder<'a, 'c> {
     body: &'a Body,
     cfg: CfgBuilder,
     break_stack: Vec<BreakContext>,
+    finally_stack: Vec<FinallyContext>,
+    exit_bb: BlockId,
     check_cancelled: &'c mut dyn FnMut(),
 }
 
 impl<'a, 'c> HirCfgBuilder<'a, 'c> {
     fn new(body: &'a Body, check_cancelled: &'c mut dyn FnMut()) -> Self {
+        let mut cfg = CfgBuilder::new();
+        let exit_bb = cfg.new_block();
+        cfg.set_terminator(exit_bb, Terminator::Exit);
         Self {
             body,
-            cfg: CfgBuilder::new(),
+            cfg,
             break_stack: Vec::new(),
+            finally_stack: Vec::new(),
+            exit_bb,
             check_cancelled,
         }
     }
@@ -507,7 +547,14 @@ impl<'a, 'c> HirCfgBuilder<'a, 'c> {
                 finally,
             } => {
                 let after_bb = self.cfg.new_block();
-                let finally_bb = finally.as_ref().map(|_| self.cfg.new_block());
+                let (finally_normal_bb, finally_abrupt_bb) = match finally {
+                    Some(_) => {
+                        let normal = self.cfg.new_block();
+                        let abrupt = self.cfg.new_block();
+                        (Some(normal), Some(abrupt))
+                    }
+                    None => (None, None),
+                };
 
                 let body_entry = self.cfg.new_block();
                 let catch_entries: Vec<_> = catches.iter().map(|_| self.cfg.new_block()).collect();
@@ -533,7 +580,15 @@ impl<'a, 'c> HirCfgBuilder<'a, 'c> {
                     );
                 }
 
-                let join = finally_bb.unwrap_or(after_bb);
+                let join = finally_normal_bb.unwrap_or(after_bb);
+
+                if let Some(finally_bb) = finally_abrupt_bb {
+                    self.finally_stack.push(FinallyContext {
+                        finally_bb,
+                        scope_start: after_bb.index(),
+                        targets: Vec::new(),
+                    });
+                }
 
                 if let Some(end) = self.build_stmt(*body, body_entry) {
                     self.cfg.set_terminator(
@@ -558,7 +613,13 @@ impl<'a, 'c> HirCfgBuilder<'a, 'c> {
                     }
                 }
 
-                if let (Some(finally_stmt), Some(finally_entry)) = (*finally, finally_bb) {
+                let finally_ctx = if finally_abrupt_bb.is_some() {
+                    self.finally_stack.pop()
+                } else {
+                    None
+                };
+
+                if let (Some(finally_stmt), Some(finally_entry)) = (*finally, finally_normal_bb) {
                     if let Some(end) = self.build_stmt(finally_stmt, finally_entry) {
                         self.cfg.set_terminator(
                             end,
@@ -570,29 +631,113 @@ impl<'a, 'c> HirCfgBuilder<'a, 'c> {
                     }
                 }
 
+                if let (Some(finally_stmt), Some(finally_entry), Some(ctx)) =
+                    (*finally, finally_abrupt_bb, finally_ctx)
+                {
+                    if let Some(end) = self.build_stmt(finally_stmt, finally_entry) {
+                        let mut targets = ctx.targets;
+                        targets.sort_by_key(|bb| bb.index());
+                        targets.dedup();
+
+                        match targets.as_slice() {
+                            [] => {
+                                self.cfg.set_terminator(end, Terminator::Exit);
+                            }
+                            [only] => {
+                                self.cfg.set_terminator(
+                                    end,
+                                    Terminator::Goto {
+                                        target: *only,
+                                        from: None,
+                                    },
+                                );
+                            }
+                            _ => {
+                                self.cfg.set_terminator(
+                                    end,
+                                    Terminator::Multi { targets, from: stmt },
+                                );
+                            }
+                        }
+                    }
+                }
+
                 Some(after_bb)
             }
 
             StmtKind::Return(value) => {
-                self.cfg.set_terminator(
-                    entry,
-                    Terminator::Return {
-                        value: *value,
-                        from: stmt,
-                    },
-                );
-                None
+                if self.finally_stack.is_empty() {
+                    self.cfg.set_terminator(
+                        entry,
+                        Terminator::Return {
+                            value: *value,
+                            from: stmt,
+                        },
+                    );
+                    None
+                } else {
+                    // Route `return` through the innermost `finally` block, but keep the statement
+                    // itself in the basic block so dataflow analyses can inspect the returned
+                    // expression.
+                    self.cfg.push_stmt(entry, stmt);
+                    let finally_bbs: Vec<BlockId> = self
+                        .finally_stack
+                        .iter()
+                        .map(|ctx| ctx.finally_bb)
+                        .collect();
+                    for (idx, ctx) in self.finally_stack.iter_mut().enumerate() {
+                        let target = if idx == 0 {
+                            self.exit_bb
+                        } else {
+                            finally_bbs[idx - 1]
+                        };
+                        ctx.targets.push(target);
+                    }
+                    self.cfg.set_terminator(
+                        entry,
+                        Terminator::Goto {
+                            target: *finally_bbs.last().expect("finally stack is non-empty"),
+                            from: Some(stmt),
+                        },
+                    );
+                    None
+                }
             }
 
             StmtKind::Throw(exception) => {
-                self.cfg.set_terminator(
-                    entry,
-                    Terminator::Throw {
-                        exception: *exception,
-                        from: stmt,
-                    },
-                );
-                None
+                if self.finally_stack.is_empty() {
+                    self.cfg.set_terminator(
+                        entry,
+                        Terminator::Throw {
+                            exception: *exception,
+                            from: stmt,
+                        },
+                    );
+                    None
+                } else {
+                    self.cfg.push_stmt(entry, stmt);
+                    let finally_bbs: Vec<BlockId> = self
+                        .finally_stack
+                        .iter()
+                        .map(|ctx| ctx.finally_bb)
+                        .collect();
+                    for (idx, ctx) in self.finally_stack.iter_mut().enumerate() {
+                        let target = if idx == 0 {
+                            self.exit_bb
+                        } else {
+                            finally_bbs[idx - 1]
+                        };
+                        ctx.targets.push(target);
+                    }
+                    self.cfg.set_terminator(
+                        entry,
+                        Terminator::Goto {
+                            target: *finally_bbs.last().expect("finally stack is non-empty"),
+                            from: Some(stmt),
+                        },
+                    );
+                    None
+                }
             }
 
             StmtKind::Break => {
@@ -601,14 +746,59 @@ impl<'a, 'c> HirCfgBuilder<'a, 'c> {
                     .last()
                     .map(|ctx| ctx.break_target)
                     .unwrap_or(entry);
-                self.cfg.set_terminator(
-                    entry,
-                    Terminator::Goto {
-                        target,
-                        from: Some(stmt),
-                    },
-                );
-                None
+                if self.finally_stack.is_empty() {
+                    self.cfg.set_terminator(
+                        entry,
+                        Terminator::Goto {
+                            target,
+                            from: Some(stmt),
+                        },
+                    );
+                    None
+                } else {
+                    let mut leaving = 0;
+                    while leaving < self.finally_stack.len()
+                        && target.index()
+                            < self.finally_stack[self.finally_stack.len() - 1 - leaving].scope_start
+                    {
+                        leaving += 1;
+                    }
+
+                    if leaving == 0 {
+                        self.cfg.set_terminator(
+                            entry,
+                            Terminator::Goto {
+                                target,
+                                from: Some(stmt),
+                            },
+                        );
+                        return None;
+                    }
+
+                    let len = self.finally_stack.len();
+                    let leave_start = len - leaving;
+                    let finally_bbs: Vec<BlockId> = self
+                        .finally_stack
+                        .iter()
+                        .map(|ctx| ctx.finally_bb)
+                        .collect();
+                    for idx in leave_start..len {
+                        let dest = if idx == leave_start {
+                            target
+                        } else {
+                            finally_bbs[idx - 1]
+                        };
+                        self.finally_stack[idx].targets.push(dest);
+                    }
+                    self.cfg.set_terminator(
+                        entry,
+                        Terminator::Goto {
+                            target: *finally_bbs.last().expect("finally stack is non-empty"),
+                            from: Some(stmt),
+                        },
+                    );
+                    None
+                }
             }
 
             StmtKind::Continue => {
@@ -618,14 +808,59 @@ impl<'a, 'c> HirCfgBuilder<'a, 'c> {
                     .rev()
                     .find_map(|ctx| ctx.continue_target)
                     .unwrap_or(entry);
-                self.cfg.set_terminator(
-                    entry,
-                    Terminator::Goto {
-                        target,
-                        from: Some(stmt),
-                    },
-                );
-                None
+                if self.finally_stack.is_empty() {
+                    self.cfg.set_terminator(
+                        entry,
+                        Terminator::Goto {
+                            target,
+                            from: Some(stmt),
+                        },
+                    );
+                    None
+                } else {
+                    let mut leaving = 0;
+                    while leaving < self.finally_stack.len()
+                        && target.index()
+                            < self.finally_stack[self.finally_stack.len() - 1 - leaving].scope_start
+                    {
+                        leaving += 1;
+                    }
+
+                    if leaving == 0 {
+                        self.cfg.set_terminator(
+                            entry,
+                            Terminator::Goto {
+                                target,
+                                from: Some(stmt),
+                            },
+                        );
+                        return None;
+                    }
+
+                    let len = self.finally_stack.len();
+                    let leave_start = len - leaving;
+                    let finally_bbs: Vec<BlockId> = self
+                        .finally_stack
+                        .iter()
+                        .map(|ctx| ctx.finally_bb)
+                        .collect();
+                    for idx in leave_start..len {
+                        let dest = if idx == leave_start {
+                            target
+                        } else {
+                            finally_bbs[idx - 1]
+                        };
+                        self.finally_stack[idx].targets.push(dest);
+                    }
+                    self.cfg.set_terminator(
+                        entry,
+                        Terminator::Goto {
+                            target: *finally_bbs.last().expect("finally stack is non-empty"),
+                            from: Some(stmt),
+                        },
+                    );
+                    None
+                }
             }
         }
     }
@@ -787,6 +1022,12 @@ fn transfer_stmt_definite_assignment(
         StmtKind::Expr(expr) => {
             check_expr_assigned(body, *expr, state, diags);
         }
+        StmtKind::Return(value) => {
+            if let Some(value) = value {
+                check_expr_assigned(body, *value, state, diags);
+            }
+        }
+        StmtKind::Throw(exception) => check_expr_assigned(body, *exception, state, diags),
         StmtKind::Block(_) => unreachable!("block statements are flattened in CFG"),
         StmtKind::If { .. }
         | StmtKind::While { .. }
@@ -794,8 +1035,6 @@ fn transfer_stmt_definite_assignment(
         | StmtKind::For { .. }
         | StmtKind::Switch { .. }
         | StmtKind::Try { .. }
-        | StmtKind::Return(_)
-        | StmtKind::Throw(_)
         | StmtKind::Break
         | StmtKind::Continue
         | StmtKind::Nop => {}
@@ -1140,6 +1379,14 @@ fn transfer_stmt_null_deref(
         StmtKind::Expr(expr) => {
             let _ = check_expr_null_deref(body, *expr, state, diags);
         }
+        StmtKind::Return(value) => {
+            if let Some(value) = value {
+                let _ = check_expr_null_deref(body, *value, state, diags);
+            }
+        }
+        StmtKind::Throw(exception) => {
+            let _ = check_expr_null_deref(body, *exception, state, diags);
+        }
         StmtKind::Block(_) => unreachable!("block statements are flattened in CFG"),
         StmtKind::If { .. }
         | StmtKind::While { .. }
@@ -1147,8 +1394,6 @@ fn transfer_stmt_null_deref(
         | StmtKind::For { .. }
         | StmtKind::Switch { .. }
         | StmtKind::Try { .. }
-        | StmtKind::Return(_)
-        | StmtKind::Throw(_)
         | StmtKind::Break
         | StmtKind::Continue
         | StmtKind::Nop => {}

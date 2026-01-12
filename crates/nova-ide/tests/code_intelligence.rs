@@ -653,3 +653,117 @@ class A {
         "expected unreachable-code diagnostic in initializer; got {diags:#?}"
     );
 }
+
+#[test]
+fn diagnostics_do_not_mark_finally_unreachable_on_return() {
+    let text = r#"
+class A {
+  void m() {
+    try {
+      return;
+    } finally {
+      int x = 1;
+    }
+    int y = 2;
+  }
+}
+"#;
+
+    let (db, file) = fixture_file(text);
+    let diags = file_diagnostics(&db, file);
+
+    let x_needle = "int x = 1;";
+    let x_start = text.find(x_needle).expect("expected int x in fixture");
+    let x_end = x_start + x_needle.len();
+
+    let y_needle = "int y = 2;";
+    let y_start = text.find(y_needle).expect("expected int y in fixture");
+    let y_end = y_start + y_needle.len();
+
+    assert!(
+        !diags.iter().any(|d| d.code == "FLOW_UNREACHABLE"
+            && d.span.is_some_and(|span| span.start < x_end && span.end > x_start)),
+        "expected finally block to be reachable; got {diags:#?}"
+    );
+    assert!(
+        diags.iter().any(|d| d.code == "FLOW_UNREACHABLE"
+            && d.span.is_some_and(|span| span.start < y_end && span.end > y_start)),
+        "expected statement after try/finally to be unreachable; got {diags:#?}"
+    );
+}
+
+#[test]
+fn diagnostics_do_not_mark_outer_finally_unreachable_on_nested_return() {
+    let text = r#"
+class A {
+  void m() {
+    try {
+      try {
+        return;
+      } finally {
+        int x = 1;
+      }
+    } finally {
+      int y = 2;
+    }
+  }
+}
+"#;
+
+    let (db, file) = fixture_file(text);
+    let diags = file_diagnostics(&db, file);
+
+    let x_needle = "int x = 1;";
+    let x_start = text.find(x_needle).expect("expected int x in fixture");
+    let x_end = x_start + x_needle.len();
+
+    let y_needle = "int y = 2;";
+    let y_start = text.find(y_needle).expect("expected int y in fixture");
+    let y_end = y_start + y_needle.len();
+
+    assert!(
+        !diags.iter().any(|d| d.code == "FLOW_UNREACHABLE"
+            && d.span.is_some_and(|span| span.start < x_end && span.end > x_start)),
+        "expected inner finally block to be reachable; got {diags:#?}"
+    );
+    assert!(
+        !diags.iter().any(|d| d.code == "FLOW_UNREACHABLE"
+            && d.span.is_some_and(|span| span.start < y_end && span.end > y_start)),
+        "expected outer finally block to be reachable; got {diags:#?}"
+    );
+}
+
+#[test]
+fn diagnostics_report_use_before_assignment_after_break_inside_try() {
+    let text = r#"
+class A {
+  void m() {
+    int x;
+    try {
+      for (;;) {
+        break;
+      }
+      int y = x;
+    } finally {
+      x = 1;
+    }
+  }
+}
+"#;
+
+    let (db, file) = fixture_file(text);
+    let diags = file_diagnostics(&db, file);
+
+    let needle = "int y = x;";
+    let start = text
+        .find(needle)
+        .unwrap_or_else(|| panic!("expected `{needle}` in fixture"));
+    let end = start + needle.len();
+
+    assert!(
+        diags.iter().any(|d| d.code == "FLOW_UNASSIGNED"
+            && d.severity == Severity::Error
+            && d.span.is_some_and(|span| span.start < end && span.end > start)),
+        "expected use-before-assignment diagnostic after break; got {diags:#?}"
+    );
+}
