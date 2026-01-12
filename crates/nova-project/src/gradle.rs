@@ -690,9 +690,12 @@ pub(crate) fn load_gradle_workspace_model(
         .map(|module_ref| {
             let module_root = if module_ref.dir_rel == "." {
                 root.to_path_buf()
+            } else if let Some(dir) = snapshot_project_dirs.get(&module_ref.project_path) {
+                dir.clone()
             } else {
                 root.join(&module_ref.dir_rel)
             };
+            let module_root = canonicalize_or_fallback(&module_root);
             (module_ref.project_path.clone(), module_root)
         })
         .collect();

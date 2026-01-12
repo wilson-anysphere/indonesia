@@ -372,36 +372,32 @@ fn loads_gradle_includeflat_workspace() {
 
     assert_eq!(config.build_system, BuildSystem::Gradle);
 
+    let expected_app_root =
+        std::fs::canonicalize(config.workspace_root.join("../app")).expect("canonicalize app root");
+    let expected_lib_root =
+        std::fs::canonicalize(config.workspace_root.join("../lib")).expect("canonicalize lib root");
+
     assert!(
-        config
-            .modules
-            .iter()
-            .any(|m| m.root == config.workspace_root.join("../app")),
-        "expected includeFlat module root to resolve to ../app"
+        config.modules.iter().any(|m| m.root == expected_app_root),
+        "expected includeFlat module root to canonicalize to ../app"
     );
     assert!(
-        config
-            .modules
-            .iter()
-            .any(|m| m.root == config.workspace_root.join("../lib")),
-        "expected includeFlat module root to resolve to ../lib"
+        config.modules.iter().any(|m| m.root == expected_lib_root),
+        "expected includeFlat module root to canonicalize to ../lib"
     );
 
-    let roots: BTreeSet<_> = config
-        .source_roots
-        .iter()
-        .map(|sr| {
-            (
-                sr.kind,
-                sr.path
-                    .strip_prefix(&config.workspace_root)
-                    .unwrap()
-                    .to_path_buf(),
-            )
-        })
-        .collect();
-    assert!(roots.contains(&(SourceRootKind::Main, PathBuf::from("../app/src/main/java"))));
-    assert!(roots.contains(&(SourceRootKind::Main, PathBuf::from("../lib/src/main/java"))));
+    assert!(
+        config.source_roots.iter().any(|sr| {
+            sr.kind == SourceRootKind::Main && sr.path == expected_app_root.join("src/main/java")
+        }),
+        "expected includeFlat app source root to be discovered under the canonicalized module root"
+    );
+    assert!(
+        config.source_roots.iter().any(|sr| {
+            sr.kind == SourceRootKind::Main && sr.path == expected_lib_root.join("src/main/java")
+        }),
+        "expected includeFlat lib source root to be discovered under the canonicalized module root"
+    );
 }
 
 #[test]
@@ -416,36 +412,32 @@ fn loads_gradle_includeflat_kts_workspace() {
 
     assert_eq!(config.build_system, BuildSystem::Gradle);
 
+    let expected_app_root =
+        std::fs::canonicalize(config.workspace_root.join("../app")).expect("canonicalize app root");
+    let expected_lib_root =
+        std::fs::canonicalize(config.workspace_root.join("../lib")).expect("canonicalize lib root");
+
     assert!(
-        config
-            .modules
-            .iter()
-            .any(|m| m.root == config.workspace_root.join("../app")),
-        "expected includeFlat module root to resolve to ../app"
+        config.modules.iter().any(|m| m.root == expected_app_root),
+        "expected includeFlat module root to canonicalize to ../app"
     );
     assert!(
-        config
-            .modules
-            .iter()
-            .any(|m| m.root == config.workspace_root.join("../lib")),
-        "expected includeFlat module root to resolve to ../lib"
+        config.modules.iter().any(|m| m.root == expected_lib_root),
+        "expected includeFlat module root to canonicalize to ../lib"
     );
 
-    let roots: BTreeSet<_> = config
-        .source_roots
-        .iter()
-        .map(|sr| {
-            (
-                sr.kind,
-                sr.path
-                    .strip_prefix(&config.workspace_root)
-                    .unwrap()
-                    .to_path_buf(),
-            )
-        })
-        .collect();
-    assert!(roots.contains(&(SourceRootKind::Main, PathBuf::from("../app/src/main/java"))));
-    assert!(roots.contains(&(SourceRootKind::Main, PathBuf::from("../lib/src/main/java"))));
+    assert!(
+        config.source_roots.iter().any(|sr| {
+            sr.kind == SourceRootKind::Main && sr.path == expected_app_root.join("src/main/java")
+        }),
+        "expected includeFlat app source root to be discovered under the canonicalized module root"
+    );
+    assert!(
+        config.source_roots.iter().any(|sr| {
+            sr.kind == SourceRootKind::Main && sr.path == expected_lib_root.join("src/main/java")
+        }),
+        "expected includeFlat lib source root to be discovered under the canonicalized module root"
+    );
 }
 
 #[test]
