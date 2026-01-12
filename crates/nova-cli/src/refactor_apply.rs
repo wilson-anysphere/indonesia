@@ -48,13 +48,13 @@ pub(crate) fn build_java_workspace_snapshot(focus_file: &Path) -> Result<JavaWor
 
         let text = fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
-        let id_str =
-            crate::path_relative_to(&project_root, &path).unwrap_or_else(|_| crate::display_path(&path));
+        let id_str = super::path_relative_to(&project_root, &path)
+            .unwrap_or_else(|_| super::display_path(&path));
         files.insert(FileId::new(id_str), text);
     }
 
-    let focus_id_str = crate::path_relative_to(&project_root, &focus_path)
-        .unwrap_or_else(|_| crate::display_path(focus_file));
+    let focus_id_str = super::path_relative_to(&project_root, &focus_path)
+        .unwrap_or_else(|_| super::display_path(focus_file));
     let focus_file = FileId::new(focus_id_str);
 
     Ok(JavaWorkspaceSnapshot {

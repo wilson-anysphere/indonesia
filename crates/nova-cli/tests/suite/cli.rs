@@ -234,6 +234,46 @@ fn lsp_stdio_initialize_shutdown_exit_passthrough() {
 }
 
 #[test]
+fn lsp_exit_without_shutdown_propagates_failure_status() {
+    let _guard = STDIO_SERVER_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let (_temp, path_with_nova_lsp) = path_with_test_nova_lsp();
+
+    let mut child = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("nova"))
+        .arg("lsp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .env("PATH", path_with_nova_lsp)
+        .spawn()
+        .expect("spawn nova lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+
+    // Per LSP spec, exiting without a prior shutdown request should return non-zero.
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "expected exit code 1, got {status:?}"
+    );
+}
+
+#[test]
 fn dap_version_passthrough_matches_nova_dap() {
     let (_temp, path_with_nova_dap) = path_with_test_nova_dap();
 
