@@ -2791,6 +2791,14 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
             )
         }
 
+        fn strip_this_dot(expr: &str) -> Option<&str> {
+            let expr = expr.trim();
+            let rest = expr.strip_prefix("this")?;
+            let rest = rest.trim_start();
+            let rest = rest.strip_prefix('.')?;
+            Some(rest.trim_start())
+        }
+
         // Resolve the source sample by inspecting the underlying collection/array object.
         let (source_elements, source_truncated, source_collection_type) = {
             let (name, kind) = match &analysis.source {
@@ -2835,30 +2843,50 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                 }
             };
 
-            let name = name.trim();
-            if name.is_empty() {
+            let original_name = name.trim();
+            if original_name.is_empty() {
                 return Err(DebuggerError::InvalidRequest(format!(
                     "stream source {kind} expression is empty"
                 )));
+            }
+
+            let mut lookup_name = original_name;
+            let mut force_field = false;
+            if let Some(rest) = strip_this_dot(original_name) {
+                if !rest.is_empty() {
+                    lookup_name = rest;
+                    force_field = true;
+                }
             }
 
             // The frame selected by the DAP client may correspond to a synthetic lambda frame
             // on the same source line, which won't have access to the original local variables.
             // Best-effort: if the variable isn't found in the requested frame, walk up the
             // stack and use the first frame where it is in-scope.
-            let mut value = resolve_local_in_frame(
-                &jdwp,
-                cancel,
-                frame.thread,
-                frame.frame_id,
-                frame.location,
-                name,
-            )
-            .await?;
+            let mut value = if force_field {
+                resolve_field_in_frame(&jdwp, cancel, frame.thread, frame.frame_id, lookup_name)
+                    .await?
+            } else {
+                resolve_local_in_frame(
+                    &jdwp,
+                    cancel,
+                    frame.thread,
+                    frame.frame_id,
+                    frame.location,
+                    lookup_name,
+                )
+                .await?
+            };
 
-            if value.is_none() {
-                value = resolve_field_in_frame(&jdwp, cancel, frame.thread, frame.frame_id, name)
-                    .await?;
+            if !force_field && value.is_none() {
+                value = resolve_field_in_frame(
+                    &jdwp,
+                    cancel,
+                    frame.thread,
+                    frame.frame_id,
+                    lookup_name,
+                )
+                .await?;
             }
 
             if value.is_none() {
@@ -2867,36 +2895,49 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                     if frame_info.frame_id == frame.frame_id {
                         continue;
                     }
-                    value = resolve_local_in_frame(
-                        &jdwp,
-                        cancel,
-                        frame.thread,
-                        frame_info.frame_id,
-                        frame_info.location,
-                        name,
-                    )
-                    .await?;
+                    value = if force_field {
+                        resolve_field_in_frame(
+                            &jdwp,
+                            cancel,
+                            frame.thread,
+                            frame_info.frame_id,
+                            lookup_name,
+                        )
+                        .await?
+                    } else {
+                        resolve_local_in_frame(
+                            &jdwp,
+                            cancel,
+                            frame.thread,
+                            frame_info.frame_id,
+                            frame_info.location,
+                            lookup_name,
+                        )
+                        .await?
+                    };
                     if value.is_some() {
                         break;
                     }
 
-                    value = resolve_field_in_frame(
-                        &jdwp,
-                        cancel,
-                        frame.thread,
-                        frame_info.frame_id,
-                        name,
-                    )
-                    .await?;
-                    if value.is_some() {
-                        break;
+                    if !force_field {
+                        value = resolve_field_in_frame(
+                            &jdwp,
+                            cancel,
+                            frame.thread,
+                            frame_info.frame_id,
+                            lookup_name,
+                        )
+                        .await?;
+                        if value.is_some() {
+                            break;
+                        }
                     }
                 }
             }
 
             let Some(value) = value else {
                 return Err(DebuggerError::InvalidRequest(format!(
-                    "stream source {kind} `{name}` not found in scope"
+                    "stream source {kind} `{original_name}` not found in scope"
                 )));
             };
 
@@ -2904,7 +2945,7 @@ Rewrite the expression to recreate the stream (e.g. `collection.stream()` or `ja
                 JdwpValue::Object { id, .. } if id != 0 => id,
                 _ => {
                     return Err(DebuggerError::InvalidRequest(format!(
-                        "stream source `{name}` is not an object"
+                        "stream source `{original_name}` is not an object"
                     )))
                 }
             };
@@ -5805,10 +5846,10 @@ mod tests {
         .await
         .unwrap();
 
-        let cancel = CancellationToken::new();
+        let setup_cancel = CancellationToken::new();
 
         let (frames, _total) = dbg
-            .stack_trace(&cancel, THREAD_ID as i64, None, None)
+            .stack_trace(&setup_cancel, THREAD_ID as i64, None, None)
             .await
             .unwrap();
         let frame_id = frames
@@ -5880,46 +5921,55 @@ mod tests {
             allow_terminal_ops: true,
         };
 
-        let expr = "field.stream().filter(x -> x > 1).map(x -> x * 2).count()";
-        let fut = dbg
-            .stream_debug(cancel, frame_id, expr.to_string(), cfg)
-            .unwrap();
-        let body = fut.await.unwrap();
+        for expr in [
+            "field.stream().filter(x -> x > 1).map(x -> x * 2).count()",
+            "this.field.stream().filter(x -> x > 1).map(x -> x * 2).count()",
+        ] {
+            let fut = dbg
+                .stream_debug(
+                    CancellationToken::new(),
+                    frame_id,
+                    expr.to_string(),
+                    cfg.clone(),
+                )
+                .unwrap();
+            let body = fut.await.unwrap();
 
-        assert_eq!(
-            body.runtime.source_sample.elements,
-            vec!["1".to_string(), "2".to_string(), "3".to_string()]
-        );
+            assert_eq!(
+                body.runtime.source_sample.elements,
+                vec!["1".to_string(), "2".to_string(), "3".to_string()]
+            );
 
-        let filter_step = body
-            .runtime
-            .steps
-            .iter()
-            .find(|step| step.operation == "filter")
-            .expect("expected filter step");
-        assert_eq!(
-            filter_step.output.elements,
-            vec!["2".to_string(), "3".to_string()]
-        );
+            let filter_step = body
+                .runtime
+                .steps
+                .iter()
+                .find(|step| step.operation == "filter")
+                .expect("expected filter step");
+            assert_eq!(
+                filter_step.output.elements,
+                vec!["2".to_string(), "3".to_string()]
+            );
 
-        let map_step = body
-            .runtime
-            .steps
-            .iter()
-            .find(|step| step.operation == "map")
-            .expect("expected map step");
-        assert_eq!(
-            map_step.output.elements,
-            vec!["4".to_string(), "6".to_string()]
-        );
+            let map_step = body
+                .runtime
+                .steps
+                .iter()
+                .find(|step| step.operation == "map")
+                .expect("expected map step");
+            assert_eq!(
+                map_step.output.elements,
+                vec!["4".to_string(), "6".to_string()]
+            );
 
-        assert_eq!(
-            body.runtime
-                .terminal
-                .as_ref()
-                .and_then(|t| t.value.as_deref()),
-            Some("2")
-        );
+            assert_eq!(
+                body.runtime
+                    .terminal
+                    .as_ref()
+                    .and_then(|t| t.value.as_deref()),
+                Some("2")
+            );
+        }
     }
 }
 
