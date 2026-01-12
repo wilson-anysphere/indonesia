@@ -110,7 +110,7 @@ types** by making the mapping a **host-managed Salsa input**:
 This keeps `ClassId` identity stable across workspace reloads and across `evict_salsa_memos`, as long
 as the same `WorkspaceLoader` instance is reused by the host.
 
-Regression coverage for this behavior lives in `crates/nova-db/tests/class_id_registry.rs`.
+Regression coverage for this behavior lives in `crates/nova-db/tests/suite/class_id_registry.rs`.
 
 `#[ra_salsa::interned]` is acceptable for storing the *key/value data* of classes, but Nova MUST NOT
 rely on the raw interned integer as a stable `nova_ids::ClassId` unless we also ensure one of:
