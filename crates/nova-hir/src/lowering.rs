@@ -196,6 +196,24 @@ impl ItemTreeLower<'_> {
                 let ast_id = self.ast_id_map.ast_id(&node)?;
                 let (mut members, components) = self.lower_record_components(&node);
                 members.extend(self.lower_members(&record.members));
+                let header_params = self.lower_record_header_params(&node);
+                if !header_params.is_empty() {
+                    for member in &members {
+                        let Member::Constructor(ctor_id) = *member else {
+                            continue;
+                        };
+                        let is_compact = self
+                            .ast_id_map
+                            .ptr(ctor_id.ast_id)
+                            .is_some_and(|ptr| ptr.kind == SyntaxKind::CompactConstructorDeclaration);
+                        if !is_compact {
+                            continue;
+                        }
+                        if let Some(ctor) = self.tree.constructors.get_mut(&ctor_id.ast_id) {
+                            ctor.params = header_params.clone();
+                        }
+                    }
+                }
                 let id = RecordId::new(self.file, ast_id);
                 let type_params = lower_type_params(&node);
                 let implements = collect_direct_child_types_after_token(
@@ -506,6 +524,39 @@ impl ItemTreeLower<'_> {
         }
 
         (members, components)
+    }
+
+    fn lower_record_header_params(&mut self, record_decl: &SyntaxNode) -> Vec<Param> {
+        let Some(param_list) = record_decl
+            .children()
+            .find(|child| child.kind() == SyntaxKind::ParameterList)
+        else {
+            return Vec::new();
+        };
+
+        let mut params = Vec::new();
+        for param in param_list
+            .children()
+            .filter(|child| child.kind() == SyntaxKind::Parameter)
+        {
+            self.check_cancelled();
+
+            let Some((ty, ty_range, name, range, name_range)) = lower_parameter_signature(&param)
+            else {
+                continue;
+            };
+
+            params.push(Param {
+                modifiers: Modifiers::default(),
+                annotations: Vec::new(),
+                ty,
+                ty_range,
+                name,
+                range,
+                name_range,
+            });
+        }
+        params
     }
 }
 

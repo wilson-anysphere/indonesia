@@ -326,3 +326,48 @@ class C<List> {
         ))))
     );
 }
+
+#[test]
+fn record_compact_constructor_header_params_are_in_constructor_scope() {
+    let source = r#"
+record Point(int x, int y) {
+    Point { }
+}
+"#;
+
+    let db = TestDb {
+        files: vec![Arc::from(source)],
+    };
+    let file = nova_core::FileId::from_raw(0);
+    let tree = item_tree(&db, file);
+
+    let record_id = match tree.items.first().copied() {
+        Some(Item::Record(id)) => id,
+        other => panic!("expected record item, got {other:?}"),
+    };
+
+    let ctor_id = tree
+        .record(record_id)
+        .members
+        .iter()
+        .find_map(|member| match *member {
+            Member::Constructor(id) => Some(id),
+            _ => None,
+        })
+        .expect("record compact constructor");
+
+    let scopes = build_scopes_for_item_tree(file, &tree);
+    let ctor_scope = *scopes
+        .constructor_scopes
+        .get(&ctor_id)
+        .expect("ctor scope");
+
+    let jdk = JdkIndex::new();
+    let resolver = Resolver::new(&jdk);
+
+    let x = resolver.resolve_name(&scopes.scopes, ctor_scope, &Name::from("x"));
+    let y = resolver.resolve_name(&scopes.scopes, ctor_scope, &Name::from("y"));
+
+    assert!(matches!(x, Some(Resolution::Parameter(_))));
+    assert!(matches!(y, Some(Resolution::Parameter(_))));
+}

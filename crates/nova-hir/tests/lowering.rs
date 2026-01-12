@@ -437,7 +437,13 @@ record Point(int x, int y) {
     assert_eq!(tree.constructors.len(), 1);
     let (&ctor_ast_id, ctor) = tree.constructors.iter().next().expect("constructor");
     assert_eq!(ctor.name, "Point");
-    assert!(ctor.params.is_empty());
+    assert_eq!(
+        ctor.params
+            .iter()
+            .map(|param| (param.ty.as_str(), param.name.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("int", "x"), ("int", "y")]
+    );
     assert!(ctor.body.is_some());
 
     let ctor_id = nova_hir::ids::ConstructorId::new(file, ctor_ast_id);
@@ -448,6 +454,52 @@ record Point(int x, int y) {
         .map(|(_, local)| local.name.as_str())
         .collect();
     assert_eq!(local_names, vec!["z"]);
+}
+
+#[test]
+fn lower_record_compact_constructor_params_stable_under_header_whitespace_edits() {
+    let v1 = r#"
+record Point(int x, int y) {
+    Point { }
+}
+"#;
+    let v2 = r#"
+record Point( int   x ,int y ) {
+    Point { }
+}
+"#;
+
+    let file = FileId::from_raw(0);
+
+    let tree1 = item_tree(
+        &TestDb {
+            files: vec![Arc::from(v1)],
+        },
+        file,
+    );
+    let ctor1 = tree1.constructors.values().next().expect("constructor");
+    let params1: Vec<_> = ctor1
+        .params
+        .iter()
+        .map(|param| (param.ty.as_str(), param.name.as_str()))
+        .collect();
+
+    let tree2 = item_tree(
+        &TestDb {
+            files: vec![Arc::from(v2)],
+        },
+        file,
+    );
+    let ctor2 = tree2.constructors.values().next().expect("constructor");
+    let params2: Vec<_> = ctor2
+        .params
+        .iter()
+        .map(|param| (param.ty.as_str(), param.name.as_str()))
+        .collect();
+
+    assert_eq!(params1, vec![("int", "x"), ("int", "y")]);
+    assert_eq!(params2, vec![("int", "x"), ("int", "y")]);
+    assert_eq!(params1, params2);
 }
 
 #[test]
