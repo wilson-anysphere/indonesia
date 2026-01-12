@@ -26,6 +26,8 @@ mod ide_extensions_completion;
 mod ide_extensions_navigation;
 #[path = "suite/mapstruct_completions.rs"]
 mod mapstruct_completions;
+#[path = "suite/mapstruct_diagnostics.rs"]
+mod mapstruct_diagnostics;
 #[path = "suite/mapstruct_goto_definition.rs"]
 mod mapstruct_goto_definition;
 #[path = "suite/mapstruct_implementation.rs"]
