@@ -314,18 +314,107 @@ pub fn generate_stream_eval_helper_java_source(
 }
 
 fn is_known_void_stream_expression(expr: &str) -> bool {
-    let Ok(chain) = nova_stream_debug::analyze_stream_expression(expr) else {
-        return false;
-    };
-    let Some(term) = chain.terminal else {
-        return false;
-    };
-    if term.kind == StreamOperationKind::ForEach {
-        return true;
+    // Best-effort void detection:
+    // - Prefer stream analysis when available (most precise).
+    // - Fall back to a syntactic check for `.forEach(...)`/`.forEachOrdered(...)` at the end of the
+    //   expression so we don't emit `return <void expr>;` when analysis fails due to unsupported
+    //   intermediate ops (e.g. `mapToInt`).
+    match nova_stream_debug::analyze_stream_expression(expr) {
+        Ok(chain) => {
+            if let Some(term) = chain.terminal {
+                term.kind == StreamOperationKind::ForEach
+                    || term
+                        .resolved
+                        .as_ref()
+                        .is_some_and(|resolved| resolved.return_type == "void")
+            } else {
+                expr_ends_with_void_foreach_call(expr)
+            }
+        }
+        Err(_) => expr_ends_with_void_foreach_call(expr),
     }
-    term.resolved
-        .as_ref()
-        .is_some_and(|resolved| resolved.return_type == "void")
+}
+
+fn expr_ends_with_void_foreach_call(expr: &str) -> bool {
+    let expr = expr.trim();
+    let expr = expr.strip_suffix(';').unwrap_or(expr).trim();
+
+    // `forEach` and `forEachOrdered` are void-returning across the standard library types that
+    // matter for stream debugging (Stream / primitive streams / Iterable / Map).
+    expr_ends_with_member_call_named(expr, "forEach")
+        || expr_ends_with_member_call_named(expr, "forEachOrdered")
+}
+
+fn expr_ends_with_member_call_named(expr: &str, method: &str) -> bool {
+    if !expr.ends_with(')') {
+        return false;
+    }
+
+    // Walk backwards to find the `(` matching the final `)` so we can extract the method name
+    // without being confused by nested parens inside lambda bodies / method calls in arguments.
+    let mut depth = 0u32;
+    let mut open_paren = None::<usize>;
+    for (idx, ch) in expr.char_indices().rev() {
+        match ch {
+            ')' => depth += 1,
+            '(' => {
+                if depth == 0 {
+                    return false;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    open_paren = Some(idx);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let Some(open_paren) = open_paren else {
+        return false;
+    };
+
+    let before_paren = &expr[..open_paren];
+
+    // Trim whitespace before the `(`.
+    let Some(method_end) = before_paren.char_indices().rev().find_map(|(idx, ch)| {
+        (!ch.is_whitespace()).then_some(idx + ch.len_utf8())
+    }) else {
+        return false;
+    };
+
+    // Scan backwards over identifier characters to find the method name.
+    let mut seen_ident = false;
+    let mut method_start = method_end;
+    for (idx, ch) in before_paren[..method_end].char_indices().rev() {
+        if is_java_identifier_part_ascii(ch) {
+            seen_ident = true;
+            method_start = idx;
+        } else if seen_ident {
+            break;
+        } else if ch.is_whitespace() {
+            continue;
+        } else {
+            break;
+        }
+    }
+
+    if !seen_ident {
+        return false;
+    }
+
+    let name = &before_paren[method_start..method_end];
+    if name != method {
+        return false;
+    }
+
+    // Ensure this is a member call like `foo.forEach(...)`, not a bare `forEach(...)`.
+    before_paren[..method_start]
+        .chars()
+        .rev()
+        .find(|ch| !ch.is_whitespace())
+        .is_some_and(|ch| ch == '.')
 }
 
 fn is_java_identifier_start_ascii(ch: char) -> bool {
@@ -591,5 +680,32 @@ mod tests {
             src.contains("public static Object stage0(com.example.Foo __this, java.util.List<java.lang.Integer> nums)")
         );
         assert!(src.contains("return nums.stream().count();"));
+    }
+
+    #[test]
+    fn java_source_generation_emits_void_methods_for_foreach_even_when_analysis_has_no_terminal() {
+        // `mapToInt` is not currently part of the stream analyzer's supported op set. If the
+        // analyzer bails before it reaches the terminal `forEach`, we still want to avoid emitting
+        // `return <void expr>;` which will not compile.
+        let src = generate_stream_eval_helper_java_source(
+            "com.example",
+            &[],
+            &[
+                ("this".to_string(), "Object".to_string()),
+                ("s".to_string(), "java.util.stream.Stream<Integer>".to_string()),
+            ],
+            &[],
+            &["s.map(x -> x).mapToInt(x -> x).forEach(System.out::println)".to_string()],
+        );
+
+        assert!(
+            src.contains("public static void stage0"),
+            "expected stage0 to be void for forEach:\n{src}"
+        );
+        assert!(
+            !src.contains("return s.map"),
+            "should not emit `return <void expr>;`:\n{src}"
+        );
+        assert!(src.contains("s.map(x -> x).mapToInt(x -> x).forEach(System.out::println);"));
     }
 }

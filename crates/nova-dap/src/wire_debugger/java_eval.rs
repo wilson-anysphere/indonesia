@@ -713,18 +713,92 @@ fn is_known_void_stream_expression(expr: &str) -> bool {
     // We determine "known void" by running the stream analyzer over the expression and checking
     // the resolved terminal operation kind/return type. If analysis fails (not a stream pipeline),
     // fall back to "not void".
-    let Ok(chain) = nova_stream_debug::analyze_stream_expression(expr) else {
-        return false;
-    };
-    let Some(term) = chain.terminal else {
-        return false;
-    };
-    if term.kind == StreamOperationKind::ForEach {
-        return true;
+    match nova_stream_debug::analyze_stream_expression(expr) {
+        Ok(chain) => {
+            if let Some(term) = chain.terminal {
+                term.kind == StreamOperationKind::ForEach
+                    || term
+                        .resolved
+                        .as_ref()
+                        .is_some_and(|resolved| resolved.return_type == "void")
+            } else {
+                expr_ends_with_void_foreach_call(expr)
+            }
+        }
+        Err(_) => expr_ends_with_void_foreach_call(expr),
     }
-    term.resolved
-        .as_ref()
-        .is_some_and(|resolved| resolved.return_type == "void")
+}
+
+fn expr_ends_with_void_foreach_call(expr: &str) -> bool {
+    let expr = expr.trim();
+    let expr = expr.strip_suffix(';').unwrap_or(expr).trim();
+    expr_ends_with_member_call_named(expr, "forEach")
+        || expr_ends_with_member_call_named(expr, "forEachOrdered")
+}
+
+fn expr_ends_with_member_call_named(expr: &str, method: &str) -> bool {
+    if !expr.ends_with(')') {
+        return false;
+    }
+
+    let mut depth = 0u32;
+    let mut open_paren = None::<usize>;
+    for (idx, ch) in expr.char_indices().rev() {
+        match ch {
+            ')' => depth += 1,
+            '(' => {
+                if depth == 0 {
+                    return false;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    open_paren = Some(idx);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let Some(open_paren) = open_paren else {
+        return false;
+    };
+    let before_paren = &expr[..open_paren];
+
+    let Some(method_end) = before_paren.char_indices().rev().find_map(|(idx, ch)| {
+        (!ch.is_whitespace()).then_some(idx + ch.len_utf8())
+    }) else {
+        return false;
+    };
+
+    let mut seen_ident = false;
+    let mut method_start = method_end;
+    for (idx, ch) in before_paren[..method_end].char_indices().rev() {
+        if is_ident_part(ch) {
+            seen_ident = true;
+            method_start = idx;
+        } else if seen_ident {
+            break;
+        } else if ch.is_whitespace() {
+            continue;
+        } else {
+            break;
+        }
+    }
+
+    if !seen_ident {
+        return false;
+    }
+
+    if &before_paren[method_start..method_end] != method {
+        return false;
+    }
+
+    before_paren[..method_start]
+        .chars()
+        .rev()
+        .find(|ch| !ch.is_whitespace())
+        .is_some_and(|ch| ch == '.')
 }
 
 fn extract_import_lines(path: &Path) -> Vec<String> {
@@ -1018,6 +1092,29 @@ mod tests {
         );
         assert!(
             !src.contains("return java.util.stream.IntStream.range"),
+            "should not emit `return <void expr>;`:\n{src}"
+        );
+    }
+
+    #[test]
+    fn render_eval_source_uses_void_return_type_for_foreach_terminal_when_analysis_has_no_terminal() {
+        // `mapToInt` is not currently modeled by the stream analyzer. Ensure we still treat the
+        // overall expression as void when it ends with `forEach`.
+        let src = render_eval_source(
+            None,
+            "NovaStreamEval_Test",
+            &[],
+            &["java.util.stream.Stream<Integer> s".to_string()],
+            &[],
+            Some("s.map(x -> x).mapToInt(x -> x).forEach(System.out::println)"),
+        );
+
+        assert!(
+            src.contains("public static void terminal"),
+            "expected void terminal method, got:\n{src}"
+        );
+        assert!(
+            !src.contains("return s.map"),
             "should not emit `return <void expr>;`:\n{src}"
         );
     }
