@@ -116,4 +116,189 @@ describe('build integration polling', () => {
 
     expect(foundGuard).toBe(true);
   });
+
+  it('queues a diagnostics refresh when a manual build command is in flight', async () => {
+    const testDir = path.dirname(fileURLToPath(import.meta.url));
+    const buildIntegrationPath = path.resolve(testDir, '..', 'buildIntegration.ts');
+    const contents = await fs.readFile(buildIntegrationPath, 'utf8');
+
+    const sourceFile = ts.createSourceFile(buildIntegrationPath, contents, ts.ScriptTarget.ESNext, true);
+
+    const unwrapExpression = (expr: ts.Expression): ts.Expression => {
+      let out = expr;
+      while (true) {
+        if (ts.isParenthesizedExpression(out)) {
+          out = out.expression;
+          continue;
+        }
+        if (ts.isAsExpression(out) || ts.isTypeAssertionExpression(out)) {
+          out = out.expression;
+          continue;
+        }
+        break;
+      }
+      return out;
+    };
+
+    const isSilentTrueObject = (expr: ts.Expression): boolean => {
+      const unwrapped = unwrapExpression(expr);
+      if (!ts.isObjectLiteralExpression(unwrapped)) {
+        return false;
+      }
+      for (const prop of unwrapped.properties) {
+        if (!ts.isPropertyAssignment(prop)) {
+          continue;
+        }
+        const name = prop.name;
+        const key = ts.isIdentifier(name) ? name.text : ts.isStringLiteral(name) ? name.text : undefined;
+        if (key !== 'silent') {
+          continue;
+        }
+        const value = unwrapExpression(prop.initializer);
+        if (value.kind === ts.SyntaxKind.TrueKeyword) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    const containsSilentRefreshCall = (node: ts.Node): boolean => {
+      let found = false;
+      const visit = (n: ts.Node) => {
+        if (found) {
+          return;
+        }
+        if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === 'refreshBuildDiagnostics') {
+          const [arg0, arg1] = n.arguments;
+          if (arg0 && ts.isIdentifier(arg0) && arg0.text === 'folder' && arg1 && isSilentTrueObject(arg1)) {
+            found = true;
+            return;
+          }
+        }
+        ts.forEachChild(n, visit);
+      };
+      visit(node);
+      return found;
+    };
+
+    const containsPendingRefreshAssignment = (node: ts.Node): boolean => {
+      let found = false;
+      const visit = (n: ts.Node) => {
+        if (found) {
+          return;
+        }
+        if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+          const left = unwrapExpression(n.left);
+          const right = unwrapExpression(n.right);
+          if (
+            right.kind === ts.SyntaxKind.TrueKeyword &&
+            ts.isPropertyAccessExpression(left) &&
+            ts.isIdentifier(unwrapExpression(left.expression)) &&
+            (unwrapExpression(left.expression) as ts.Identifier).text === 'state' &&
+            left.name.text === 'pendingDiagnosticsRefreshAfterBuildCommand'
+          ) {
+            found = true;
+            return;
+          }
+        }
+        ts.forEachChild(n, visit);
+      };
+      visit(node);
+      return found;
+    };
+
+    const findPollBuildStatusOnce = (): ts.ArrowFunction | undefined => {
+      let found: ts.ArrowFunction | undefined;
+      const visit = (node: ts.Node) => {
+        if (found) {
+          return;
+        }
+        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === 'pollBuildStatusOnce') {
+          const init = node.initializer ? unwrapExpression(node.initializer) : undefined;
+          if (init && ts.isArrowFunction(init)) {
+            found = init;
+            return;
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(sourceFile);
+      return found;
+    };
+
+    const pollBuildStatusOnce = findPollBuildStatusOnce();
+    expect(pollBuildStatusOnce).toBeDefined();
+
+    const buildCommandConditionKind = (expr: ts.Expression): 'positive' | 'negated' | undefined => {
+      const unwrapped = unwrapExpression(expr);
+      if (ts.isPropertyAccessExpression(unwrapped)) {
+        if (
+          unwrapped.name.text === 'buildCommandInFlight' &&
+          ts.isIdentifier(unwrapExpression(unwrapped.expression)) &&
+          (unwrapExpression(unwrapped.expression) as ts.Identifier).text === 'state'
+        ) {
+          return 'positive';
+        }
+      }
+      if (ts.isPrefixUnaryExpression(unwrapped) && unwrapped.operator === ts.SyntaxKind.ExclamationToken) {
+        const operand = unwrapExpression(unwrapped.operand);
+        if (
+          ts.isPropertyAccessExpression(operand) &&
+          operand.name.text === 'buildCommandInFlight' &&
+          ts.isIdentifier(unwrapExpression(operand.expression)) &&
+          (unwrapExpression(operand.expression) as ts.Identifier).text === 'state'
+        ) {
+          return 'negated';
+        }
+      }
+      return undefined;
+    };
+
+    let foundQueueingLogic = false;
+
+    const visit = (node: ts.Node) => {
+      if (foundQueueingLogic) {
+        return;
+      }
+      if (ts.isIfStatement(node)) {
+        const condition = node.expression;
+        if (
+          ts.isCallExpression(condition) &&
+          ts.isIdentifier(condition.expression) &&
+          condition.expression.text === 'shouldRefreshBuildDiagnosticsOnStatusTransition'
+        ) {
+          // Look for an inner `if` that gates the refresh based on `state.buildCommandInFlight`.
+          const scan = (inner: ts.Node) => {
+            if (foundQueueingLogic) {
+              return;
+            }
+            if (ts.isIfStatement(inner)) {
+              const kind = buildCommandConditionKind(inner.expression);
+              if (kind) {
+                const thenHasRefresh = containsSilentRefreshCall(inner.thenStatement);
+                const elseHasRefresh = Boolean(inner.elseStatement && containsSilentRefreshCall(inner.elseStatement));
+                const thenHasPending = containsPendingRefreshAssignment(inner.thenStatement);
+                const elseHasPending = Boolean(inner.elseStatement && containsPendingRefreshAssignment(inner.elseStatement));
+
+                if (kind === 'negated' && thenHasRefresh && elseHasPending) {
+                  foundQueueingLogic = true;
+                  return;
+                }
+                if (kind === 'positive' && thenHasPending && elseHasRefresh) {
+                  foundQueueingLogic = true;
+                  return;
+                }
+              }
+            }
+            ts.forEachChild(inner, scan);
+          };
+          scan(node.thenStatement);
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(pollBuildStatusOnce!);
+
+    expect(foundQueueingLogic).toBe(true);
+  });
 });
